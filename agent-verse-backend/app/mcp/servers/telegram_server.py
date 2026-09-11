@@ -112,8 +112,21 @@ TOOL_DEFINITIONS = [
 ]
 
 
-async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+def _resolve_token(credentials: dict[str, str] | None) -> str:
+    """Resolve the Telegram bot token from connector credentials (set via the
+    Connectors UI), falling back to the TELEGRAM_BOT_TOKEN environment variable."""
+    creds = credentials or {}
+    for name in ("api_key", "token", "bot_token", "TELEGRAM_BOT_TOKEN"):
+        val = creds.get(name)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return os.getenv("TELEGRAM_BOT_TOKEN", "")
+
+
+async def call_tool(
+    tool_name: str, arguments: dict[str, Any], credentials: dict[str, str] | None = None
+) -> dict[str, Any]:
+    token = _resolve_token(credentials)
     if not token:
         return {"error": "TELEGRAM_BOT_TOKEN not configured"}
 

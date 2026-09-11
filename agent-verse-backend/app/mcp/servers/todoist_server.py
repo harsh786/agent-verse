@@ -149,17 +149,29 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _todoist_headers() -> dict[str, str]:
-    token = os.getenv("TODOIST_API_TOKEN", "")
+def _resolve_token(credentials: dict[str, str] | None) -> str:
+    """Resolve the Todoist API token from connector credentials (set via the
+    Connectors UI), falling back to the TODOIST_API_TOKEN environment variable."""
+    creds = credentials or {}
+    for name in ("api_key", "token", "api_token", "TODOIST_API_TOKEN"):
+        val = creds.get(name)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return os.getenv("TODOIST_API_TOKEN", "")
+
+
+def _todoist_headers(token: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
 
-async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+async def call_tool(
+    tool_name: str, arguments: dict[str, Any], credentials: dict[str, str] | None = None
+) -> dict[str, Any]:
     try:
-        return await _call_tool_inner(tool_name, arguments)
+        return await _call_tool_inner(tool_name, arguments, credentials)
     except httpx.HTTPStatusError as exc:
         error_body = ""
         with contextlib.suppress(Exception):
@@ -173,13 +185,15 @@ async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]
         return {"error": str(exc)}
 
 
-async def _call_tool_inner(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    token = os.getenv("TODOIST_API_TOKEN", "")
+async def _call_tool_inner(
+    tool_name: str, arguments: dict[str, Any], credentials: dict[str, str] | None = None
+) -> dict[str, Any]:
+    token = _resolve_token(credentials)
     if not token:
         return {"error": "TODOIST_API_TOKEN not configured"}
 
     async with httpx.AsyncClient(
-        base_url=TODOIST_BASE, headers=_todoist_headers(), timeout=30.0
+        base_url=TODOIST_BASE, headers=_todoist_headers(token), timeout=30.0
     ) as client:
         if tool_name == "todoist_list_tasks":
             params: dict[str, Any] = {}

@@ -105,21 +105,36 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _headers() -> dict[str, str]:
-    key = os.getenv("TAVILY_API_KEY", "")
+def _resolve_key(credentials: dict[str, str] | None) -> str:
+    """Resolve the Tavily API key from the connector's stored credentials first
+    (so it can be set securely via the Connectors UI), falling back to the
+    TAVILY_API_KEY environment variable."""
+    creds = credentials or {}
+    for name in ("api_key", "token", "apiKey", "key", "TAVILY_API_KEY"):
+        val = creds.get(name)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return os.getenv("TAVILY_API_KEY", "")
+
+
+def _headers(key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
 
 
-async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    key = os.getenv("TAVILY_API_KEY", "")
+async def call_tool(
+    tool_name: str, arguments: dict[str, Any], credentials: dict[str, str] | None = None
+) -> dict[str, Any]:
+    key = _resolve_key(credentials)
     if not key:
         return {"error": "TAVILY_API_KEY not configured"}
 
     try:
-        async with httpx.AsyncClient(base_url=TAVILY_BASE, headers=_headers(), timeout=30.0) as c:
+        async with httpx.AsyncClient(
+            base_url=TAVILY_BASE, headers=_headers(key), timeout=30.0
+        ) as c:
             if tool_name == "tavily_search":
                 payload: dict[str, Any] = {
                     "query": arguments["query"],
