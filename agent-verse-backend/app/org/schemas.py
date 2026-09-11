@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 # ─── Shared ────────────────────────────────────────────────────────────────────
 
@@ -163,6 +163,38 @@ class MissionResponse(_BaseResponse):
     completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    # Read from the ORM (from_attributes) but never serialized directly — it
+    # carries internal plumbing (goal_id, the raw result). The curated
+    # computed_fields below expose only the publish-related, non-secret bits so
+    # the UI can show "published to" receipts and the approval-pending state.
+    extra_data: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def published(self) -> dict[str, Any] | None:
+        """Receipt from a completed publish step (connector, link/output, time)."""
+        rec = (self.extra_data or {}).get("published")
+        return rec if isinstance(rec, dict) else None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def publish_pending(self) -> bool:
+        """True when a finished deliverable is waiting at the publish approval gate."""
+        return bool((self.extra_data or {}).get("publish_pending"))
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def publish_target(self) -> dict[str, Any] | None:
+        """The mission's publish destination (no argument template — shape only)."""
+        cfg = (self.extra_data or {}).get("publish")
+        if not isinstance(cfg, dict) or not cfg.get("connector_server_id"):
+            return None
+        return {
+            "connector_server_id": str(cfg.get("connector_server_id", "")),
+            "tool_name": str(cfg.get("tool_name", "")),
+            "approved": bool(cfg.get("approved", False)),
+        }
 
 
 class MissionStatusUpdate(BaseModel):

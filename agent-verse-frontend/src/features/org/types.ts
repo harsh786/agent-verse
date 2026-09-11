@@ -98,6 +98,22 @@ export interface OrgMission {
   updated_at:       string;
   /** Populated by /missions/execute: goal_id, topology, departments, dispatched */
   metadata?:        Record<string, unknown>;
+  /** Receipt from a completed autonomous publish step (connector + link + time). */
+  published?:       MissionPublishReceipt | null;
+  /** A finished deliverable is waiting at the publish approval gate. */
+  publish_pending?: boolean;
+  /** The mission's publish destination (shape only — no argument template). */
+  publish_target?:  { connector_server_id: string; tool_name: string; approved: boolean } | null;
+}
+
+/** Proof a deliverable was published somewhere — rendered as a "published to" receipt. */
+export interface MissionPublishReceipt {
+  server_id:    string;
+  tool_name:    string;
+  success:      boolean;
+  error?:       string;
+  output?:      unknown;
+  published_at: string;
 }
 
 export interface OrgSchedule {

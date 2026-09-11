@@ -271,7 +271,12 @@ function MissionBody({
       )}
 
       {/* ── Deliverable (the aggregated mission result from finalize_mission) ── */}
-      <MissionDeliverable outputs={mission.outputs ?? []} evidence={mission.evidence ?? []} />
+      <MissionDeliverable
+        outputs={mission.outputs ?? []}
+        evidence={mission.evidence ?? []}
+        published={mission.published ?? null}
+        publishPending={Boolean(mission.publish_pending)}
+      />
 
       {/* ── Live Agent Execution Panel ── */}
       {goalId && (

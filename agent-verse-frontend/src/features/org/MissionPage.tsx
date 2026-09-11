@@ -27,7 +27,7 @@ import { ArtifactGallery } from './ArtifactGallery';
 import { ActivityFeed } from './components/ActivityFeed';
 import { MissionDeliverable } from './components/MissionDeliverable';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
-import type { MissionStatus } from './types';
+import type { MissionStatus, MissionPublishReceipt } from './types';
 
 // ── Status config ──────────────────────────────────────────────────────────
 
@@ -102,7 +102,11 @@ export function MissionPage({ orgId: orgIdProp, missionId: missionIdProp }: Miss
   // Output tab once so the result is never a blackbox behind the task board.
   const outputs = ((mission as any)?.outputs ?? []) as unknown[];
   const evidence = ((mission as any)?.evidence ?? []) as unknown[];
-  const hasOutput = outputs.length > 0;
+  const published = ((mission as any)?.published ?? null) as MissionPublishReceipt | null;
+  const publishPending = Boolean((mission as any)?.publish_pending);
+  // Output tab is worth opening for a produced deliverable OR a publish outcome
+  // (a live "published to" receipt, or a deliverable waiting at the approval gate).
+  const hasOutput = outputs.length > 0 || published !== null || publishPending;
   const autoOpenedRef = useRef(false);
   useEffect(() => {
     if (hasOutput && !autoOpenedRef.current) {
@@ -220,7 +224,12 @@ export function MissionPage({ orgId: orgIdProp, missionId: missionIdProp }: Miss
 
           {hasOutput && (
             <TabsContent value="output" className="mt-4">
-              <MissionDeliverable outputs={outputs} evidence={evidence} />
+              <MissionDeliverable
+                outputs={outputs}
+                evidence={evidence}
+                published={published}
+                publishPending={publishPending}
+              />
             </TabsContent>
           )}
 
