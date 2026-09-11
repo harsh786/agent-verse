@@ -136,6 +136,12 @@ class WorkflowResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     trigger_type: str | None = None
+    # Populated by /publish for webhook/api-triggered workflows: the stable signed
+    # URL an external system (e.g. the onboarding portal) POSTs to in order to
+    # start a run by URL. None on draft/list/get responses.
+    webhook_url: str | None = None
+    webhook_token: str | None = None
+    webhook_path: str | None = None
 
     model_config = {"from_attributes": True}
 

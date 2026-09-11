@@ -173,6 +173,13 @@ async def test_low_risk_merchant_auto_approves_and_calls_back() -> None:
     values = await _final_state(compiler, definition, run_id)
     outs = values["step_outputs"]
 
+    # Evidence gathering + analysis ran as parallel steps: the aggregate outputs
+    # exist AND every concurrent branch output is addressable by its own id.
+    assert set(outs["gather_evidence"]) == {"ocr_registration", "ocr_owner_id", "scan_website"}
+    assert set(outs["analyze"]) == {"parse_registration", "parse_owner_id", "assess_website"}
+    assert outs["parse_registration"]["registration_number"] == "REG-99887766"
+    assert outs["assess_website"]["live"] is True
+
     # Low-risk branch ran; human review did not.
     assert "set_decision_auto" in outs
     assert "set_decision_human" not in outs
@@ -224,3 +231,23 @@ async def test_high_risk_merchant_escalates_then_callbacks_on_approve() -> None:
 
     _pending_after, total_after = await hitl_gateway.list_pending(tenant_id="t-kyc")
     assert total_after == 0
+
+
+async def test_kyc_workflow_is_webhook_triggerable() -> None:
+    """The portal starts a KYC run by POSTing to a signed webhook URL. The
+    template must declare a webhook trigger the /wf-hooks endpoint accepts, and
+    the signed token must round-trip to (tenant, workflow)."""
+    from app.workflow.trigger_extract import extract_triggers
+    from app.workflow.webhook_tokens import make_webhook_token, verify_webhook_token
+
+    definition = SystemTemplateStore().get("merchant-kyc").definition
+
+    # /wf-hooks/{token} only fires workflows that declare a webhook/api trigger.
+    triggers = extract_triggers(definition.to_json())
+    assert any(t.get("type") in ("webhook", "api") for t in triggers)
+
+    # The signed token the portal is handed resolves back to this workflow.
+    token = make_webhook_token("t-kyc", "wf-merchant-kyc")
+    assert verify_webhook_token(token) == ("t-kyc", "wf-merchant-kyc")
+    # A tampered token is rejected (auth is the signature in the URL).
+    assert verify_webhook_token(token + "x") is None

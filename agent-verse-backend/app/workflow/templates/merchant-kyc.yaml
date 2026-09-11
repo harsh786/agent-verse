@@ -38,66 +38,69 @@ definition:
     website_url: {type: string, required: true}
     callback_url: {type: string, required: true}
   steps:
-    # ── Lane A: documents ─────────────────────────────────────────────────
-    - id: ocr_registration
-      name: "OCR business registration"
-      type: ocr
-      input:
-        image_base64: "{{inputs.registration_doc}}"
-      timeout: "120s"
-
-    - id: parse_registration
-      name: "Parse registration fields"
-      type: llm
-      depends_on: ['ocr_registration']
-      prompt: >-
-        Extract the following fields from this business-registration document
-        text and return ONLY a JSON object with keys business_name,
-        registration_number, address. Text:
-        {{steps.ocr_registration.output.raw_text}}
-
-    - id: ocr_owner_id
-      name: "OCR owner government ID"
-      type: ocr
-      depends_on: ['parse_registration']
-      input:
-        image_base64: "{{inputs.owner_id_doc}}"
-      timeout: "120s"
-
-    - id: parse_owner_id
-      name: "Parse owner ID fields"
-      type: llm
-      depends_on: ['ocr_owner_id']
-      prompt: >-
-        Extract owner_name, id_number and expiry_date from this government-ID
-        text and return ONLY a JSON object. Text:
-        {{steps.ocr_owner_id.output.raw_text}}
-
-    # ── Website lane (sequential after the document lane) ─────────────────
-    - id: scan_website
-      name: "RPA scan merchant website"
-      type: rpa
-      depends_on: ['parse_owner_id']
-      input:
-        url: "{{inputs.website_url}}"
+    # ── Gather evidence: OCR both documents + RPA-scan the website, ALL
+    #    concurrently. A single `parallel` node fans out via asyncio.gather and
+    #    merges the branch outputs atomically (so there's no LangGraph
+    #    concurrent-state clash), giving real parallelism across the I/O-heavy
+    #    OCR/RPA calls. Each branch output is addressable as {{steps.<id>.output}}.
+    - id: gather_evidence
+      name: "Gather evidence (OCR docs + scan site)"
+      type: parallel
       timeout: "180s"
+      parallel_branches:
+        - id: ocr_registration
+          name: "OCR business registration"
+          type: ocr
+          input:
+            image_base64: "{{inputs.registration_doc}}"
+        - id: ocr_owner_id
+          name: "OCR owner government ID"
+          type: ocr
+          input:
+            image_base64: "{{inputs.owner_id_doc}}"
+        - id: scan_website
+          name: "RPA scan merchant website"
+          type: rpa
+          input:
+            url: "{{inputs.website_url}}"
 
-    - id: assess_website
-      name: "Assess website legitimacy"
-      type: llm
-      depends_on: ['scan_website']
-      prompt: >-
-        From this website scan report, return ONLY a JSON object with keys
-        live (bool), matches_business (bool), has_contact_page (bool),
-        has_privacy_page (bool), prohibited_flags (array of strings for any
-        adult/gambling/crypto/weapons signals). Report:
-        {{steps.scan_website.output.report}}
+    # ── Analyze the gathered evidence, also concurrently: parse both documents
+    #    and assess the website in parallel (each reads a gather_evidence branch).
+    - id: analyze
+      name: "Analyze evidence (parse docs + assess site)"
+      type: parallel
+      depends_on: ['gather_evidence']
+      parallel_branches:
+        - id: parse_registration
+          name: "Parse registration fields"
+          type: llm
+          prompt: >-
+            Extract the following fields from this business-registration document
+            text and return ONLY a JSON object with keys business_name,
+            registration_number, address. Text:
+            {{steps.ocr_registration.output.raw_text}}
+        - id: parse_owner_id
+          name: "Parse owner ID fields"
+          type: llm
+          prompt: >-
+            Extract owner_name, id_number and expiry_date from this government-ID
+            text and return ONLY a JSON object. Text:
+            {{steps.ocr_owner_id.output.raw_text}}
+        - id: assess_website
+          name: "Assess website legitimacy"
+          type: llm
+          prompt: >-
+            From this website scan report, return ONLY a JSON object with keys
+            live (bool), matches_business (bool), has_contact_page (bool),
+            has_privacy_page (bool), prohibited_flags (array of strings for any
+            adult/gambling/crypto/weapons signals). Report:
+            {{steps.scan_website.output.report}}
 
     # ── Join: cross-consistency + risk tier ───────────────────────────────
     - id: risk_assessment
       name: "Cross-consistency & risk scoring"
       type: llm
-      depends_on: ['assess_website']
+      depends_on: ['analyze']
       prompt: >-
         You are a KYC risk analyst. Compare the application, the parsed
         registration, the parsed owner ID, and the website assessment for
