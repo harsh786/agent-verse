@@ -88,13 +88,26 @@ async def dispose_task_engine() -> None:
 
 @asynccontextmanager
 async def get_db_session() -> AsyncIterator[AsyncSession]:
-    """Context-manager that yields an AsyncSession and commits/rolls back."""
+    """Context-manager that yields an AsyncSession and commits/rolls back.
+
+    Cleanup catches ``BaseException`` — not just ``Exception`` — because a client
+    disconnect propagates ``asyncio.CancelledError`` (a ``BaseException``), and a
+    bare ``except Exception`` would skip the rollback and leave the pooled
+    connection stuck ``idle in transaction`` (the DB connection leak behind the
+    request-hang "blips"). The rollback is shielded so the cancellation that is
+    tearing the task down cannot also abort the rollback mid-await; the original
+    exception is always re-raised.
+    """
+    import asyncio
+    import contextlib
+
     async with get_session_factory()() as session:
         try:
             yield session
             await session.commit()
-        except Exception:
-            await session.rollback()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await asyncio.shield(session.rollback())
             raise
 
 

@@ -44,15 +44,28 @@ class RPAStepNode:
         self._executor = services.get("rpa_executor")
         self._provider = services.get("llm_provider") or services.get("provider")
 
-    def _build_executor(self) -> tuple[Any, Any]:
+    def _build_executor(self) -> tuple[Any, Any, Any]:
         from app.rpa.artifacts import RPAArtifactStore
         from app.rpa.executor import RPAExecutor
 
         store = self._artifact_store or RPAArtifactStore()
+        # A stateful browser session keeps one page alive across the
+        # open→extract→screenshot sequence, so the screenshot step actually
+        # captures the page opened earlier (the standalone path opens a fresh
+        # browser per call and can't screenshot prior state → no screenshots).
+        session_manager: Any = None
+        try:
+            from app.rpa.session_manager import BrowserSessionManager
+
+            session_manager = BrowserSessionManager(headless=True)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("rpa_session_manager_unavailable", error=str(exc)[:120])
         executor = self._executor or RPAExecutor(
-            artifact_store=store, vision_provider=self._provider
+            artifact_store=store,
+            vision_provider=self._provider,
+            session_manager=session_manager,
         )
-        return executor, store
+        return executor, store, session_manager
 
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         resolved = self.ctx.resolve_dict(self.step.input, state)
@@ -85,10 +98,13 @@ class RPAStepNode:
         goal_id = str(state.get("run_id", "") or "")
         tenant_id = str(state.get("tenant_id", "") or "")
 
+        import uuid as _uuid
+
         from app.rpa.report import build_and_store_report_pdf, run_scrape_report
 
+        session_id = _uuid.uuid4().hex
+        executor, store, session_manager = self._build_executor()
         try:
-            executor, store = self._build_executor()
             report, _results = await run_scrape_report(
                 executor,
                 url=url,
@@ -96,11 +112,19 @@ class RPAStepNode:
                 goal_id=goal_id,
                 selectors=list(selectors) if selectors else None,
                 title=title if isinstance(title, str) else None,
+                session_id=session_id,
                 allow_http_fetch=allow_http_fetch,
             )
         except Exception as exc:  # never crash the run; surface as degraded
             _log.warning("rpa_step_failed", step_id=self.step.id, error=str(exc))
             return {"error": str(exc), "degraded": True}
+        finally:
+            # Always tear down the live browser session so it doesn't leak.
+            if session_manager is not None:
+                import contextlib
+
+                with contextlib.suppress(Exception):
+                    await session_manager.close(session_id, tenant_id)
 
         output: dict[str, Any] = {
             "report": {
