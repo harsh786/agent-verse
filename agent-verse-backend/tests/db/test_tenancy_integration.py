@@ -62,10 +62,19 @@ async def test_tenant_isolation_across_all_three_layers() -> None:
             )
         """)
         await pool.execute("ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY")
+        # FORCE so even the table owner is subject to RLS. Crucially, RLS is
+        # ALWAYS bypassed by superusers, and the testcontainer's default user is a
+        # superuser — so the isolation checks below must run as a non-superuser
+        # role, otherwise RLS never applies and the test is meaningless.
+        await pool.execute("ALTER TABLE api_keys FORCE ROW LEVEL SECURITY")
         await pool.execute("""
             CREATE POLICY api_keys_tenant_isolation ON api_keys
             USING (tenant_id = current_setting('app.tenant_id', true))
         """)
+        await pool.execute("DROP ROLE IF EXISTS app_tenant")
+        await pool.execute("CREATE ROLE app_tenant NOSUPERUSER NOBYPASSRLS")
+        await pool.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON api_keys TO app_tenant")
+        await pool.execute("GRANT SELECT ON tenants TO app_tenant")
 
         # Create two tenants and their keys
         await pool.execute(
@@ -89,20 +98,25 @@ async def test_tenant_isolation_across_all_three_layers() -> None:
             "kid-b", "tenant-B", "B Key", hash_b,
         )
 
-        # Verify RLS: tenant A cannot see tenant B's keys
+        # Verify RLS: tenant A cannot see tenant B's keys. Run as the
+        # non-superuser app_tenant role so RLS is actually enforced.
         async with pool.acquire() as conn:
+            await conn.execute("SET ROLE app_tenant")
             await conn.execute("SET app.tenant_id = 'tenant-A'")
             rows = await conn.fetch("SELECT id FROM api_keys")
             key_ids = {r["id"] for r in rows}
             assert "kid-a" in key_ids, "Tenant A should see own key"
             assert "kid-b" not in key_ids, "Tenant A must NOT see tenant B's key"
+            await conn.execute("RESET ROLE")
 
         async with pool.acquire() as conn:
+            await conn.execute("SET ROLE app_tenant")
             await conn.execute("SET app.tenant_id = 'tenant-B'")
             rows = await conn.fetch("SELECT id FROM api_keys")
             key_ids = {r["id"] for r in rows}
             assert "kid-b" in key_ids
             assert "kid-a" not in key_ids
+            await conn.execute("RESET ROLE")
 
         await pool.close()
 

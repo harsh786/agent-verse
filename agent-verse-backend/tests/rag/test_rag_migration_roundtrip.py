@@ -122,16 +122,16 @@ def owner_migration_postgres() -> Iterator[str]:
 
 
 def test_0091_upgrade_downgrade_upgrade_round_trip(isolated_postgres: str) -> None:
-    _alembic(isolated_postgres, "upgrade", "0090_parent_child_retrieval")
+    _alembic(isolated_postgres, "upgrade", "0090")
     before = asyncio.run(_schema_state(isolated_postgres))
 
-    _alembic(isolated_postgres, "upgrade", "0091_rag_ingestion_structures")
+    _alembic(isolated_postgres, "upgrade", "0091")
     upgraded = asyncio.run(_schema_state(isolated_postgres))
 
-    _alembic(isolated_postgres, "downgrade", "0090_parent_child_retrieval")
+    _alembic(isolated_postgres, "downgrade", "0090")
     downgraded = asyncio.run(_schema_state(isolated_postgres))
 
-    _alembic(isolated_postgres, "upgrade", "0091_rag_ingestion_structures")
+    _alembic(isolated_postgres, "upgrade", "0091")
     reupgraded = asyncio.run(_schema_state(isolated_postgres))
 
     for dimension in DIMENSIONS:
@@ -213,13 +213,13 @@ async def _repository_job_schema(database_url: str) -> _RepositoryJobSchema:
 
 
 def test_0092_upgrade_downgrade_upgrade_round_trip(isolated_postgres: str) -> None:
-    _alembic(isolated_postgres, "upgrade", "0091_rag_ingestion_structures")
+    _alembic(isolated_postgres, "upgrade", "0091")
     before = asyncio.run(_repository_job_schema(isolated_postgres))
-    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+    _alembic(isolated_postgres, "upgrade", "0092")
     upgraded = asyncio.run(_repository_job_schema(isolated_postgres))
-    _alembic(isolated_postgres, "downgrade", "0091_rag_ingestion_structures")
+    _alembic(isolated_postgres, "downgrade", "0091")
     downgraded = asyncio.run(_repository_job_schema(isolated_postgres))
-    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+    _alembic(isolated_postgres, "upgrade", "0092")
     reupgraded = asyncio.run(_repository_job_schema(isolated_postgres))
 
     lease_columns = {"job_source_hash", "lease_owner", "lease_expires_at", "heartbeat_at"}
@@ -285,9 +285,9 @@ async def _read_preexisting_repository_jobs(database_url: str) -> list[tuple[str
 def test_0092_backfills_sha256_and_interrupts_preexisting_running_job(
     isolated_postgres: str,
 ) -> None:
-    _alembic(isolated_postgres, "downgrade", "0091_rag_ingestion_structures")
+    _alembic(isolated_postgres, "downgrade", "0091")
     asyncio.run(_seed_preexisting_repository_jobs(isolated_postgres))
-    _alembic(isolated_postgres, "upgrade", "0092_repository_ingestion_leases")
+    _alembic(isolated_postgres, "upgrade", "0092")
 
     rows = asyncio.run(_read_preexisting_repository_jobs(isolated_postgres))
     expected_hash = hashlib.sha256(
@@ -575,11 +575,11 @@ async def _owner_migration_state(
 def test_0092_owner_migrator_backfills_all_tenants_and_restores_force_rls(
     owner_migration_postgres: str,
 ) -> None:
-    _alembic(owner_migration_postgres, "upgrade", "0091_rag_ingestion_structures")
+    _alembic(owner_migration_postgres, "upgrade", "0091")
     asyncio.run(_seed_owner_migration_case(owner_migration_postgres))
     owner_url = _owner_url(owner_migration_postgres)
 
-    result = _run_alembic(owner_url, "upgrade", "0092_repository_ingestion_leases")
+    result = _run_alembic(owner_url, "upgrade", "0092")
 
     assert result.returncode == 0, result.stderr
     state = asyncio.run(_owner_migration_state(owner_migration_postgres, owner_url))
@@ -645,7 +645,7 @@ async def _failed_owner_migration_state(database_url: str) -> tuple[str, bool, b
 def test_0092_owner_migrator_failure_rolls_back_force_rls(
     owner_migration_postgres: str,
 ) -> None:
-    _alembic(owner_migration_postgres, "upgrade", "0091_rag_ingestion_structures")
+    _alembic(owner_migration_postgres, "upgrade", "0091")
     asyncio.run(
         _seed_owner_migration_case(owner_migration_postgres, invalid_job=True)
     )
@@ -653,12 +653,12 @@ def test_0092_owner_migrator_failure_rolls_back_force_rls(
     result = _run_alembic(
         _owner_url(owner_migration_postgres),
         "upgrade",
-        "0092_repository_ingestion_leases",
+        "0092",
     )
 
     assert result.returncode != 0
     assert asyncio.run(_failed_owner_migration_state(owner_migration_postgres)) == (
-        "0091_rag_ingestion_structures",
+        "0091",
         True,
         True,
         0,

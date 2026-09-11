@@ -16,7 +16,22 @@ import pytest
 OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")  # must be set via environment variable
 os.environ["OPENAI_API_KEY"] = OPENAI_KEY
 
-pytestmark = pytest.mark.integration
+# These tests call the REAL OpenAI API with OpenAI model names (e.g.
+# text-embedding-3-small). Only a genuine OpenAI key ("sk-…") against the OpenAI
+# endpoint can satisfy them — an OpenAI-compatible key for another provider
+# (e.g. NVIDIA "nvapi-…" with OPENAI_BASE_URL pointed elsewhere) makes them fail
+# on unknown models rather than testing anything. Skip unless a real OpenAI key
+# is configured for the real OpenAI endpoint.
+_OPENAI_BASE = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+_REAL_OPENAI = OPENAI_KEY.startswith("sk-") and "api.openai.com" in _OPENAI_BASE
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not _REAL_OPENAI,
+        reason="needs a real OpenAI API key (sk-…) against the OpenAI endpoint",
+    ),
+]
 
 
 # ── REAL LLM GOAL EXECUTION ───────────────────────────────────────────────────

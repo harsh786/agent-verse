@@ -77,8 +77,10 @@ def test_coordination_migration_is_linear_and_reversible() -> None:
     migration = Path("app/db/migrations/versions/0097_coordination_runtime.py")
     source = migration.read_text()
 
-    assert 'revision = "0097_coordination_runtime"' in source
-    assert 'down_revision = "0096_strategy_runtime_v2"' in source
+    # Revision ids are the numeric form; the descriptive name lives in the
+    # filename and docstring only.
+    assert 'revision = "0097"' in source
+    assert 'down_revision = "0096"' in source
     assert "def downgrade()" in source
     for table_name in COORDINATION_TABLES:
         assert table_name in source

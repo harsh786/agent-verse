@@ -20,8 +20,10 @@ def test_goal_model_has_versioned_runtime_profile_snapshot_columns() -> None:
 def test_strategy_runtime_migration_is_linear_reversible_and_tenant_scoped() -> None:
     migration = Path("app/db/migrations/versions/0096_strategy_runtime_v2.py").read_text()
 
-    assert 'revision = "0096_strategy_runtime_v2"' in migration
-    assert 'down_revision = "0095_raft_lifecycle"' in migration
+    # Revision ids are the numeric form; the descriptive name lives in the
+    # filename and docstring only.
+    assert 'revision = "0096"' in migration
+    assert 'down_revision = "0095"' in migration
     assert "strategy_certification_evidence" in migration
     assert "runtime_profile_version" in migration
     assert "strategy_registry_revision" in migration
