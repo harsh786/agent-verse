@@ -75,6 +75,27 @@ _CONNECTOR_AUTH_FIELDS: dict[str, list[AuthFieldSpec]] = {
             hint="Create a Slack App and use the Bot Token from OAuth & Permissions",
         ),
     ],
+    "telegram": [
+        AuthFieldSpec(
+            "api_key",
+            "Bot Token",
+            "123456789:ABCdefGhIJKlmNoPQRsTUVwxyz",
+            "password",
+            hint="Create a bot with @BotFather and paste the token it gives you.",
+        ),
+        AuthFieldSpec(
+            "default_chat_id",
+            "Default Chat ID",
+            "1397083658",
+            "text",
+            required=False,
+            hint=(
+                "Optional. Where messages go when a goal doesn't specify a chat. "
+                "Message your bot once, then get your numeric chat id from "
+                "https://api.telegram.org/bot<token>/getUpdates (the chat.id field)."
+            ),
+        ),
+    ],
     "linear": [
         AuthFieldSpec(
             "api_key",
@@ -189,6 +210,16 @@ CONNECTOR_CATALOG: list[ConnectorSpec] = [
         category="communication",
         builtin_server_id="builtin-slack",
         display_name="Slack",
+    ),
+    ConnectorSpec(
+        name="telegram",
+        description="Telegram — send bot messages, documents and photos to chats and channels",
+        auth_type="api_key",
+        default_url="https://api.telegram.org",
+        icon="telegram",
+        category="communication",
+        builtin_server_id="builtin-telegram",
+        display_name="Telegram",
     ),
     ConnectorSpec(
         name="salesforce",
