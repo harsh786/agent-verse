@@ -160,8 +160,33 @@ async def fork_template(slug: str, body: ForkRequest, request: Request) -> dict[
     except TemplateNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    # Persist the fork as a real (draft) workflow so it can be opened/edited/run.
+    # store.fork() only builds an in-memory definition; without persisting, the
+    # returned id points at nothing and /workflows/{id}/edit 404s.
+    svc = getattr(request.app.state, "workflow_service", None)
+    created_id = definition.id
+    if svc is not None:
+        try:
+            result = await svc.create(
+                tenant_id=tenant_id,
+                name=definition.name,
+                description=getattr(definition, "description", "") or "",
+                definition=definition.model_dump(mode="json"),
+                labels={"forked_from": slug},
+            )
+            created_id = (
+                getattr(result, "id", None)
+                or (result.get("id") if isinstance(result, dict) else None)
+                or definition.id
+            )
+        except Exception as exc:  # surface a clear error instead of a dead id
+            _log.warning("template_fork_persist_failed", slug=slug, error=str(exc)[:160])
+            raise HTTPException(status_code=500, detail=f"Could not fork template: {exc}") from exc
+
+    # Return both keys so the client can read `id` (and legacy `workflow_id`).
     return {
-        "workflow_id": definition.id,
+        "id": created_id,
+        "workflow_id": created_id,
         "name": definition.name,
         "forked_from": slug,
         "tenant_id": tenant_id,

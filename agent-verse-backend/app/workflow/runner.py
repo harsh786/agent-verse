@@ -13,6 +13,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import uuid
 from typing import Any
@@ -279,6 +280,14 @@ class WorkflowRunner:
         )
         compiled = self._compiler.compile(definition)
         config = {"configurable": {"thread_id": run_id}}
+        # Mark RUNNING before executing so started_at is stamped at the real start
+        # (update_status COALESCEs started_at on 'running') — otherwise the run
+        # jumps straight to a terminal status and duration can't be computed.
+        if self._run_store is not None and not is_test_run:
+            with contextlib.suppress(Exception):
+                await self._run_store.update_status(
+                    run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id
+                )
         try:
             final_state = await compiled.ainvoke(initial_state, config)
         except Exception as exc:
@@ -381,12 +390,18 @@ class WorkflowRunner:
         outputs = (
             final_state.get("outputs") if isinstance(final_state, dict) else None
         ) or None
+        _fs = final_state if isinstance(final_state, dict) else {}
         await self._run_store.update_status(
             run_id,
             status,
             tenant_id=tenant_id,
-            error=(final_state.get("error") if isinstance(final_state, dict) else None),
+            error=_fs.get("error"),
             outputs=outputs,
+            # Persist the run's accumulated telemetry so the run row (and UI) show
+            # real cost/tokens/duration instead of 0 — the graph accumulates these
+            # in state but never writes them to the run row itself.
+            cost_usd=_fs.get("cost_usd"),
+            tokens_used=_fs.get("tokens_used"),
         )
 
     async def resume_from_hitl(

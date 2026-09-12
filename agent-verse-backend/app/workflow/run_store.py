@@ -100,6 +100,7 @@ class WorkflowRunStore(Protocol):
         outputs: dict[str, Any] | None = None,
         current_step_id: str | None = None,
         cost_usd: float | None = None,
+        tokens_used: int | None = None,
     ) -> bool: ...
 
     async def get_workflow_id(self, run_id: str, tenant_id: str | None = None) -> str: ...
@@ -314,6 +315,7 @@ class PostgresWorkflowRunStore:
         outputs: dict[str, Any] | None = None,
         current_step_id: str | None = None,
         cost_usd: float | None = None,
+        tokens_used: int | None = None,
     ) -> bool:
         from sqlalchemy import text as sa_text
 
@@ -340,6 +342,9 @@ class PostgresWorkflowRunStore:
         if cost_usd is not None:
             sets.append("cost_usd = :cost_usd")
             params["cost_usd"] = cost_usd
+        if tokens_used is not None:
+            sets.append("tokens_used = :tokens_used")
+            params["tokens_used"] = tokens_used
 
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
@@ -808,6 +813,7 @@ class PostgresWorkflowRunStore:
             "duration_ms": _duration_ms(row["started_at"], row["completed_at"]),
             "step_count": int(row.get("step_count") or 0),
             "cost_usd": float(row["cost_usd"] or 0),
+            "tokens_used": int(row.get("tokens_used") or 0),
         }
 
     @staticmethod

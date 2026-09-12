@@ -88,9 +88,22 @@ class LLMStepNode:
             )
             response = await self.llm_provider.complete(req)
             raw_text = response.content.strip()
-            tokens_in = getattr(response, "prompt_tokens", 0)
-            tokens_out = getattr(response, "completion_tokens", 0)
-            cost_usd = getattr(response, "cost_usd", 0.0)
+            # CompletionResponse exposes input_tokens/output_tokens (and a `usage`
+            # object); the older prompt_tokens/completion_tokens names don't exist
+            # on it, so reading those always yielded 0 tokens. Prefer the real
+            # fields, falling back to usage.* then the legacy names.
+            _usage = getattr(response, "usage", None)
+            tokens_in = (
+                getattr(response, "input_tokens", 0)
+                or getattr(_usage, "prompt_tokens", 0)
+                or getattr(response, "prompt_tokens", 0)
+            )
+            tokens_out = (
+                getattr(response, "output_tokens", 0)
+                or getattr(_usage, "completion_tokens", 0)
+                or getattr(response, "completion_tokens", 0)
+            )
+            cost_usd = getattr(response, "cost_usd", 0.0) or getattr(_usage, "cost_usd", 0.0)
 
             # Parse JSON from response
             import json

@@ -62,6 +62,7 @@ class RunDetailResponse(BaseModel):
     duration_ms: float | None = None
     step_count: int = 0
     cost_usd: float = 0.0
+    tokens_used: int = 0
 
     model_config = {"from_attributes": True}
 
