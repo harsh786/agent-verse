@@ -41,6 +41,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.ai_router.selection import resolve_embed_model
 from app.api.agents import AgentStore
 from app.api.templates import template_store as _template_store
 from app.api.workflows import _WorkflowStore as WorkflowStore
@@ -77,7 +78,6 @@ from app.observability.health import HealthCheck, HealthRegistry
 from app.observability.logging import configure_logging, get_logger
 from app.observability.tracing import configure_tracing
 from app.providers.fake import FakeProvider
-from app.providers.model_defaults import configured_embed_model
 from app.providers.vault import (
     RedisConnectorSecretStore,
     get_vault,
@@ -635,8 +635,8 @@ def create_app(
                     or "sk-noauth"
                 ),
                 base_url=_embed_base_url,
-                default_model=_embed_model or configured_embed_model("text-embedding-3-small"),
-                embed_model=_embed_model or configured_embed_model("text-embedding-3-small"),
+                default_model=_embed_model or resolve_embed_model("text-embedding-3-small"),
+                embed_model=_embed_model or resolve_embed_model("text-embedding-3-small"),
             )
             logger.info(
                 "dedicated_embed_provider_wired", base_url=_embed_base_url, model=_embed_model
@@ -657,8 +657,8 @@ def create_app(
             _embedder = OpenAICompatibleProvider(
                 api_key=_openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=configured_embed_model("text-embedding-3-small"),
-                embed_model=configured_embed_model("text-embedding-3-small"),
+                default_model=resolve_embed_model("text-embedding-3-small"),
+                embed_model=resolve_embed_model("text-embedding-3-small"),
             )
         except Exception:
             pass
@@ -709,8 +709,8 @@ def create_app(
             _embed_providers_by_name["openai"] = OpenAICompatibleProvider(
                 api_key=_openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=configured_embed_model("text-embedding-3-small"),
-                embed_model=configured_embed_model("text-embedding-3-small"),
+                default_model=resolve_embed_model("text-embedding-3-small"),
+                embed_model=resolve_embed_model("text-embedding-3-small"),
             )
         except Exception:
             pass

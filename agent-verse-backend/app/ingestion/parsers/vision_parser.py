@@ -65,10 +65,10 @@ async def warm_up_vision_model() -> bool:
         return True
     _warmed_up = True  # set first: never warm more than once, even on failure
     try:
-        from app.providers.model_defaults import configured_vision_model
+        from app.ai_router.selection import resolve_vision_model
         from app.providers.openai_client import async_openai_client
 
-        model = configured_vision_model("")
+        model = resolve_vision_model("")
         if not model:
             return False
         client = async_openai_client()
@@ -206,8 +206,8 @@ class VisionParser:
         message content, delegating all provider-specific details to the
         provider implementation.
         """
+        from app.ai_router.selection import resolve_vision_model
         from app.providers.base import CompletionRequest, Message
-        from app.providers.model_defaults import configured_vision_model
 
         request = CompletionRequest(
             messages=[
@@ -218,7 +218,7 @@ class VisionParser:
                 )
             ],
             # Dedicated vision/OCR model; empty defers to the provider default.
-            model=configured_vision_model(""),
+            model=resolve_vision_model(""),
             system="You are an expert image analyst. Describe the image accurately.",
             max_tokens=500,
         )
@@ -232,9 +232,9 @@ class VisionParser:
         # Model comes from config, not a hardcoded slug: the dedicated vision/OCR
         # model (VISION_MODEL/OCR_MODEL), else the reasoning model, resolved on the
         # OpenAI-compatible endpoint configured via OPENAI_BASE_URL.
-        from app.providers.model_defaults import configured_vision_model
+        from app.ai_router.selection import resolve_vision_model
 
-        ocr_model = configured_vision_model("gpt-4o")
+        ocr_model = resolve_vision_model("gpt-4o")
         response = await client.chat.completions.create(
             model=ocr_model,
             timeout=_VISION_TIMEOUT_S,
@@ -260,9 +260,13 @@ class VisionParser:
     async def _describe_with_anthropic(self, b64_image: str, mime_type: str, prompt: str) -> str:
         import anthropic  # type: ignore[import]
 
+        from app.ai_router.selection import resolve_vision_model
+
         client = anthropic.AsyncAnthropic()
         response = await client.messages.create(
-            model=os.getenv("ANTHROPIC_VISION_MODEL") or "claude-3-5-sonnet-20241022",
+            model=os.getenv("ANTHROPIC_VISION_MODEL")
+            or resolve_vision_model("")
+            or "claude-3-5-sonnet-20241022",
             max_tokens=500,
             messages=[
                 {

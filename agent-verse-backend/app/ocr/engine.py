@@ -22,13 +22,14 @@ _log = logging.getLogger(__name__)
 def _ocr_model() -> str:
     """The configured OCR/vision model (independent of the reasoning model).
 
-    Resolves VISION_MODEL/OCR_MODEL/NVIDIA_VISION_MODEL, else the reasoning
-    model. Empty string lets the provider fall back to its own default model, so
-    no cloud slug is ever forced onto a differently-configured endpoint.
+    Prefers the cheapest CONFIGURED vision/OCR model from the generic registry,
+    else VISION_MODEL/OCR_MODEL/NVIDIA_VISION_MODEL, else the reasoning model.
+    Empty string lets the provider fall back to its own default model, so no cloud
+    slug is ever forced onto a differently-configured endpoint.
     """
-    from app.providers.model_defaults import configured_vision_model
+    from app.ai_router.selection import resolve_vision_model
 
-    return configured_vision_model("")
+    return resolve_vision_model("")
 
 CONFIDENCE_THRESHOLD = 0.6
 

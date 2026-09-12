@@ -107,6 +107,76 @@ def test_role_string_aliases_resolve():
 # ── router CHEAPEST tie-break ─────────────────────────────────────────────────
 
 
+# ── capability resolvers (embed / vision / rerank) ───────────────────────────
+
+
+def test_resolve_embed_model_prefers_registry(monkeypatch):
+    import app.ai_router.selection as sel
+    from app.ai_router.registry import model_registry
+
+    monkeypatch.setattr(sel, "_lazy_seeded", True)  # skip env auto-seed
+    model_registry.clear_configured()
+    model_registry.register_configured(
+        ModelEndpoint(provider="p", display_name="cheap-embed", model_id="cheap-embed", capabilities=[ModelCapability.EMBEDDING],
+                      cost_per_1k_input=0.0, is_available=True)
+    )
+    model_registry.register_configured(
+        ModelEndpoint(provider="p", display_name="pricey-embed", model_id="pricey-embed",
+                      capabilities=[ModelCapability.EMBEDDING], cost_per_1k_input=0.02,
+                      is_available=True)
+    )
+    try:
+        assert sel.resolve_embed_model("fallback") == "cheap-embed"
+    finally:
+        model_registry.clear_configured()
+
+
+def test_resolve_embed_model_falls_back_to_env(monkeypatch):
+    import app.ai_router.selection as sel
+    from app.ai_router.registry import model_registry
+
+    monkeypatch.setattr(sel, "_lazy_seeded", True)
+    model_registry.clear_configured()
+    for v in ("NVIDIA_EMBED_MODEL", "EMBEDDING_MODEL"):
+        monkeypatch.delenv(v, raising=False)
+    assert sel.resolve_embed_model("fallback-embed") == "fallback-embed"
+
+
+def test_resolve_vision_model_prefers_registry(monkeypatch):
+    import app.ai_router.selection as sel
+    from app.ai_router.registry import model_registry
+
+    monkeypatch.setattr(sel, "_lazy_seeded", True)
+    model_registry.clear_configured()
+    model_registry.register_configured(
+        ModelEndpoint(provider="p", display_name="vision-a", model_id="vision-a",
+                      capabilities=[ModelCapability.VISION], supports_vision=True,
+                      cost_per_1k_input=0.0, is_available=True)
+    )
+    try:
+        assert sel.resolve_vision_model("fallback") == "vision-a"
+    finally:
+        model_registry.clear_configured()
+
+
+def test_resolve_rerank_model(monkeypatch):
+    import app.ai_router.selection as sel
+    from app.ai_router.registry import model_registry
+
+    monkeypatch.setattr(sel, "_lazy_seeded", True)
+    model_registry.clear_configured()
+    assert sel.resolve_rerank_model("default-rr") == "default-rr"
+    model_registry.register_configured(
+        ModelEndpoint(provider="p", display_name="rr-1", model_id="rr-1",
+                      capabilities=[ModelCapability.RERANK],
+                      cost_per_1k_input=0.0, is_available=True)
+    )
+    try:
+        assert sel.resolve_rerank_model("default-rr") == "rr-1"
+    finally:
+        model_registry.clear_configured()
+
+
 def test_airouter_cheapest_prefers_zero_cost_then_quality(monkeypatch):
     from app.ai_router.models import ModelRoutePolicy
 

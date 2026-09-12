@@ -134,10 +134,19 @@ def hosted_reranker_from_settings(settings: Any) -> HostedReranker | None:
     url = str(getattr(settings, "rag_hosted_reranker_url", "") or "").strip()
     if not url:
         return None
+    _cfg_model = str(getattr(settings, "rag_hosted_reranker_model", "rerank-english-v3.0"))
+    # Prefer the cheapest CONFIGURED reranker model from the generic registry,
+    # else the settings model.
+    try:
+        from app.ai_router.selection import resolve_rerank_model
+
+        _model = resolve_rerank_model(_cfg_model)
+    except Exception:  # pragma: no cover - never block reranker build
+        _model = _cfg_model
     return HostedReranker(
         url=url,
         api_key=str(getattr(settings, "rag_hosted_reranker_api_key", "") or ""),
-        model=str(getattr(settings, "rag_hosted_reranker_model", "rerank-english-v3.0")),
+        model=_model,
         timeout_seconds=float(getattr(settings, "rag_hosted_reranker_timeout_seconds", 10.0)),
         allow_internal=bool(getattr(settings, "rag_hosted_reranker_allow_internal", False)),
     )

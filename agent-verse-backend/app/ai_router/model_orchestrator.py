@@ -211,12 +211,24 @@ class ModelOrchestrator:
         spec = _MULTIMODAL_MODELS.get(modality, _MULTIMODAL_MODELS["text"])
         requires_vision = bool(spec.get("requires_vision", False))
         requires_audio = modality == "audio"
+        # Prefer the cheapest CONFIGURED vision/OCR model from the generic registry
+        # for image/vision extraction, instead of the hardcoded cloud slug — so the
+        # deployment's actual model is used. Falls back to the spec when none is
+        # configured.
+        _extractor = str(spec["extractor"])
+        if requires_vision:
+            try:
+                from app.ai_router.selection import resolve_vision_model
+
+                _extractor = resolve_vision_model(_extractor)
+            except Exception:  # pragma: no cover - never block selection
+                pass
         # The extractor must preserve the modality capability across a failover;
         # the reasoner reasons over already-extracted text, so a plain chat model is fine.
         return MultimodalModelAssignment(
             modality=modality,
             extractor_model=self._with_failover(
-                str(spec["extractor"]),
+                _extractor,
                 requires_vision=requires_vision,
                 requires_audio=requires_audio,
             ),

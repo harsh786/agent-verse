@@ -113,3 +113,32 @@ def select_configured_model_id(
 
     chosen = _cheapest(candidates)
     return chosen.model_id if chosen is not None else ""
+
+
+# ── Capability resolvers (registry-first, env fallback) ──────────────────────
+# Convenience wrappers used by every capability's call sites: prefer the cheapest
+# CONFIGURED model, else fall back to the existing env-based resolver. Import the
+# env resolvers lazily to avoid an import cycle with the seeder.
+
+
+def resolve_embed_model(fallback: str = "") -> str:
+    """Cheapest configured embedding model, else the env-configured one."""
+    from app.providers.model_defaults import configured_embed_model
+
+    return select_configured_model_id(TaskType.EMBEDDING) or configured_embed_model(fallback)
+
+
+def resolve_vision_model(fallback: str = "") -> str:
+    """Cheapest configured vision/OCR model, else the env-configured one."""
+    from app.providers.model_defaults import configured_vision_model
+
+    return (
+        select_configured_model_id(TaskType.VISION, require_vision=True)
+        or select_configured_model_id(TaskType.OCR)
+        or configured_vision_model(fallback)
+    )
+
+
+def resolve_rerank_model(fallback: str = "") -> str:
+    """Cheapest configured reranker model, else *fallback*."""
+    return select_configured_model_id(TaskType.RERANK) or fallback
