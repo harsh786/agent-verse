@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft, CheckCircle, XCircle, Clock, Loader2,
   DollarSign, Cpu, Timer, ChevronDown, ChevronRight, Hash,
+  Pause, Play, Square,
 } from 'lucide-react';
 import { useState } from 'react';
 import { workflowEngineApi, type WEStepResult } from '../../lib/api/client';
@@ -103,10 +104,24 @@ export default function WorkflowRunDetailPage() {
     refetchInterval: run?.status === 'running' ? 2000 : false,
   });
 
+  const refreshRun = () => {
+    qc.invalidateQueries({ queryKey: ['workflow-engine', 'run', runId] });
+    qc.invalidateQueries({ queryKey: ['workflow-engine', 'run-steps', runId] });
+  };
   const cancelMutation = useMutation({
     mutationFn: () => workflowEngineApi.cancelRun(runId!),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'run', runId] }),
+    onSuccess: refreshRun,
   });
+  const pauseMutation = useMutation({
+    mutationFn: () => workflowEngineApi.pauseRun(runId!),
+    onSuccess: refreshRun,
+  });
+  const resumeMutation = useMutation({
+    mutationFn: () => workflowEngineApi.resumeRun(runId!),
+    onSuccess: refreshRun,
+  });
+  const controlBusy =
+    cancelMutation.isPending || pauseMutation.isPending || resumeMutation.isPending;
 
   if (isLoading) {
     return (
@@ -155,15 +170,45 @@ export default function WorkflowRunDetailPage() {
           <code className="text-xs text-[#F1F5F9]/30 font-mono">{run.run_id}</code>
         </div>
 
-        {run.status === 'running' && (
-          <button
-            onClick={() => cancelMutation.mutate()}
-            className="ml-auto px-3 py-1.5 rounded-xl bg-red-500/15 hover:bg-red-500/25
-                       text-red-400 text-xs font-medium transition-colors"
-            aria-label="Cancel run"
-          >
-            Cancel
-          </button>
+        {/* Run controls — stop / pause / resume, shown per current status */}
+        {['running', 'pending', 'paused'].includes(run.status) && (
+          <div className="ml-auto flex items-center gap-2">
+            {controlBusy && <Loader2 className="h-3.5 w-3.5 text-[#F1F5F9]/40 animate-spin" />}
+            {(run.status === 'running' || run.status === 'pending') && (
+              <button
+                onClick={() => pauseMutation.mutate()}
+                disabled={controlBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15
+                           hover:bg-amber-500/25 text-amber-400 text-xs font-medium
+                           transition-colors disabled:opacity-50"
+                aria-label="Pause run"
+              >
+                <Pause className="h-3.5 w-3.5" /> Pause
+              </button>
+            )}
+            {run.status === 'paused' && (
+              <button
+                onClick={() => resumeMutation.mutate()}
+                disabled={controlBusy}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-500/15
+                           hover:bg-emerald-500/25 text-emerald-400 text-xs font-medium
+                           transition-colors disabled:opacity-50"
+                aria-label="Resume run"
+              >
+                <Play className="h-3.5 w-3.5" /> Resume
+              </button>
+            )}
+            <button
+              onClick={() => cancelMutation.mutate()}
+              disabled={controlBusy}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/15
+                         hover:bg-red-500/25 text-red-400 text-xs font-medium
+                         transition-colors disabled:opacity-50"
+              aria-label="Stop run"
+            >
+              <Square className="h-3.5 w-3.5" /> Stop
+            </button>
+          </div>
         )}
       </header>
 
