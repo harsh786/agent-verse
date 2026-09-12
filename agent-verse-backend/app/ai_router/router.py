@@ -53,7 +53,9 @@ class AIRouter:
         # Apply task requirements
         if task_type == TaskType.EMBEDDING:
             candidates = [m for m in candidates if ModelCapability.EMBEDDING in m.capabilities]
-        elif task_type == TaskType.OCR:
+        elif task_type == TaskType.RERANK:
+            candidates = [m for m in candidates if ModelCapability.RERANK in m.capabilities]
+        elif task_type in (TaskType.OCR, TaskType.VISION):
             candidates = [
                 m
                 for m in candidates
@@ -85,7 +87,17 @@ class AIRouter:
         routing_mode = policy.routing_mode if policy else RoutingMode.HIGHEST_QUALITY
 
         if routing_mode == RoutingMode.CHEAPEST:
-            return min(candidates, key=lambda m: m.cost_per_1k_input)
+            # Cheapest first; ties broken by higher quality, then lower latency.
+            # Unpriced/self-hosted models carry cost 0.0 so they win over paid
+            # cloud when both qualify (prefer your own infra).
+            return min(
+                candidates,
+                key=lambda m: (
+                    m.cost_per_1k_input,
+                    -m.quality_score,
+                    m.avg_latency_ms or 1_000_000,
+                ),
+            )
         elif routing_mode == RoutingMode.FASTEST:
             return min(candidates, key=lambda m: m.avg_latency_ms or 1000)
         else:  # HIGHEST_QUALITY (default)

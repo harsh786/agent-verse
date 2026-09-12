@@ -117,11 +117,31 @@ class ModelRouter:
         )
         self._config = _apply_env_model_overrides(self._config)
 
+    # Reasoning roles that route through the generic configured-model registry.
+    _REGISTRY_TASKS = frozenset(
+        {"planning", "execution", "verification", "classification",
+         "reflection", "think", "thinking"}
+    )
+
     def model_for(self, task_type: str, fallback: str = "") -> str:
         """Return the optimal model name for the given task type.
 
         task_type: "planning" | "execution" | "verification" | "embedding" | "classification"
+
+        Reasoning roles first consult the generic cost-aware model registry
+        (cheapest configured model for the capability); when the registry has no
+        configured candidate it falls back to the env/provider-profile resolution
+        below — so behavior is unchanged until models are registered.
         """
+        if task_type in self._REGISTRY_TASKS:
+            try:
+                from app.ai_router.selection import select_configured_model_id
+
+                _choice = select_configured_model_id(task_type)
+                if _choice:
+                    return _choice
+            except Exception:  # pragma: no cover - never block on the registry
+                pass
         mapping = {
             "planning": self._config.planning_model,
             "execution": self._config.execution_model,

@@ -182,6 +182,35 @@ class ModelRegistry:
         self._health: dict[str, ProviderHealth] = {}
         # tenant_id → task_value → policy
         self._tenant_policies: dict[str, dict[str, ModelRoutePolicy]] = {}
+        # Models the deployment actually CONFIGURED (seeded from env/Settings/
+        # LLMConfigStore + UI). Kept separate from the static BUILTIN_MODELS cloud
+        # catalog so capability selection only ever picks a model this deployment
+        # can actually serve. See app/ai_router/seeder.py.
+        self._configured: dict[str, ModelEndpoint] = {}
+
+    def register_configured(self, endpoint: ModelEndpoint) -> None:
+        """Register (or replace) a model this deployment is configured to serve."""
+        self._configured[f"{endpoint.provider}/{endpoint.model_id}"] = endpoint
+
+    def clear_configured(self) -> None:
+        """Drop all configured models (idempotent re-seeding)."""
+        self._configured.clear()
+
+    def list_configured(self, capability: ModelCapability | None = None) -> list[ModelEndpoint]:
+        """Configured, available models, optionally filtered by capability."""
+        models = [m for m in self._configured.values() if m.is_available]
+        if capability is not None:
+            models = [m for m in models if capability in m.capabilities]
+        return models
+
+    def price_for(self, model_id: str) -> tuple[float, float]:
+        """Best-effort (input, output) per-1k price for a model slug from the
+        reference catalog; (0.0, 0.0) when unknown (self-hosted)."""
+        want = model_id.split("/")[-1].lower()
+        for m in BUILTIN_MODELS:
+            if m.model_id.split("/")[-1].lower() == want:
+                return (m.cost_per_1k_input, m.cost_per_1k_output)
+        return (0.0, 0.0)
 
     def list_models(
         self,

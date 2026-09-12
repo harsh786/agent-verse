@@ -344,7 +344,27 @@ class ModelOrchestratorAdapter:
         fallback: str = "",
         goal: str = "",
     ) -> str:
-        """Return the best model for a task type, using orchestrator's tier selection."""
+        """Return the best model for a task type.
+
+        Reasoning roles first consult the generic cost-aware model registry
+        (cheapest CONFIGURED model for the capability). This replaces the
+        hardcoded ``_TIER_MODELS`` cloud slugs (e.g. ``gpt-4o``) with a model the
+        deployment can actually serve, and picks the cheapest when several are
+        configured. Falls back to the tier assignment when nothing is registered.
+        """
+        if task_type in (
+            "planning", "execution", "verification", "classification",
+            "reflection", "think", "thinking",
+        ):
+            try:
+                from app.ai_router.selection import select_configured_model_id
+
+                _choice = select_configured_model_id(task_type)
+                if _choice:
+                    return _choice
+            except Exception:  # pragma: no cover - never block on the registry
+                pass
+
         assignment = self._cached_assignment
         if assignment is None:
             # No profile yet — use default tier models
