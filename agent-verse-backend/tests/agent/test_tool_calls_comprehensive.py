@@ -100,6 +100,29 @@ def test_extract_double_wrapped_array_tool_call() -> None:
     assert result.tool == "docker_ps"
 
 
+def test_extract_unbalanced_array_wrapper_tool_call() -> None:
+    """Some models emit an unbalanced array wrapper: '[[ {..} ]' (two opening
+    brackets, one closing). json.loads fails on the whole thing, but the inner
+    tool-call object is complete and MUST still be dispatched — otherwise a
+    delivery step (e.g. telegram_send_message) silently never fires and the raw
+    JSON leaks into the goal answer."""
+    text = '[[\n\n{\n  "name": "telegram_send_message",\n  "parameters": {\n    "text": "hi"\n  }\n}\n]'
+    result = extract_tool_call(text)
+    assert result is not None
+    assert result.tool == "telegram_send_message"
+    assert result.arguments == {"text": "hi"}
+
+
+def test_extract_array_wrapped_call_missing_closing_brackets() -> None:
+    """A tool call wrapped in '[[' whose trailing brackets were cut off entirely
+    (but whose object is complete) is still recovered."""
+    text = '[[{"name": "slack_send", "parameters": {"channel": "ops", "text": "done"}}'
+    result = extract_tool_call(text)
+    assert result is not None
+    assert result.tool == "slack_send"
+    assert result.arguments == {"channel": "ops", "text": "done"}
+
+
 def test_extract_plain_data_array_returns_none() -> None:
     """A JSON array of plain data records (no name+parameters shape) is a direct
     answer, not a tool call — must not be misread as one."""

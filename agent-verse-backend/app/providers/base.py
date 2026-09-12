@@ -52,6 +52,9 @@ class CompletionRequest:
     json_object: bool = False  # request plain JSON-object mode (no schema): the model
     # must return a single JSON object. Weaker than response_schema (no shape
     # enforcement) but reliably suppresses prose / chain-of-thought preambles.
+    tool_choice: str | None = None  # override tool-call policy when tools are present:
+    # "required" forces a tool call, "auto" lets the model choose, "none" forbids.
+    # None keeps each provider's default (force a call when tools are offered).
     cache_prefix: str | None = None  # stable prefix for Anthropic ephemeral caching
 
 

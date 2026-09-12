@@ -51,6 +51,66 @@ def resolve_effective_tool_risk(
     return tool_risk
 
 
+def select_action_tools_for_convergence(tool_defs: list[Any]) -> list[Any]:
+    """Filter tools for the tool-call-budget-exhausted phase.
+
+    The executor caps total tool calls per goal to force convergence — otherwise a
+    model can re-search forever across replans. But dropping *all* tools also
+    starves the goal-completing final step (e.g. ``telegram_send_message`` to
+    deliver the answer), so the goal can never actually finish.
+
+    Keep only ACTION tools (writes / deliveries) and drop READ/SEARCH tools: the
+    model can no longer keep searching, but it can still perform the one delivery
+    action that completes the goal. Classification reuses ``classify_tool_risk`` —
+    anything it labels ``read`` is dropped; ``write_low`` / ``write_high`` /
+    ``destructive`` are kept.
+    """
+    from app.agent.tool_risk import classify_tool_risk
+
+    kept: list[Any] = []
+    for td in tool_defs:
+        name = getattr(td, "name", "") or ""
+        if classify_tool_risk(name) != "read":
+            kept.append(td)
+    return kept
+
+
+_DELIVERY_CONTENT_ARG_KEYS = ("text", "message", "body", "content", "html", "caption")
+
+
+def surface_delivered_content(
+    raw_output: str,
+    tool: str,
+    arguments: dict[str, Any] | None,
+    success: bool,
+    *,
+    max_chars: int = 4000,
+) -> str:
+    """Fold the content a delivery/action tool SENT back into the step output.
+
+    A delivery tool (telegram/slack/email send) returns only a receipt — e.g.
+    ``{'ok': True, 'message_id': 127}``. The actual deliverable (the brief, the
+    message body) lives in the call *arguments*, so it never appears in the step
+    output the verifier inspects — which then fails the goal with "the brief was
+    not produced / not visible" even though it was composed and delivered.
+
+    Prepend the sent content so the verifier can confirm the deliverable. No-op
+    when the call failed, has no arguments, or carries no text-bearing argument.
+    """
+    if not success or not arguments:
+        return raw_output
+    sent = ""
+    for key in _DELIVERY_CONTENT_ARG_KEYS:
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            sent = value.strip()
+            break
+    if not sent:
+        return raw_output
+    sent = sent[:max_chars]
+    return f"Delivered via {tool}:\n{sent}\n\n[delivery receipt] {raw_output or ''}".strip()
+
+
 def _guardrail_should_fail_closed(step: str, risk_level: Any = None) -> bool:
     """SAFE-4 (P0-15): decide whether an errored safety check must fail CLOSED.
 

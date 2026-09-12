@@ -85,6 +85,20 @@ def extract_tool_call(text: str) -> ToolCall | None:
                 None,
             )
         if not isinstance(obj, dict):
+            # Unbalanced / truncated array wrapper (e.g. "[[ {..} ]" or a call cut
+            # off at max_tokens): json.loads failed above, but the inner tool-call
+            # object is often intact. Recover the first balanced JSON object so the
+            # call is still dispatched instead of leaking verbatim as the answer.
+            # Require the same name+parameters tool-call shape the array path does,
+            # so a plain data array like [{"tool": "x"}] is not misread as a call.
+            _recovered = _first_json_object(candidate)
+            if (
+                isinstance(_recovered, dict)
+                and (_recovered.get("name") or _recovered.get("tool") or _recovered.get("function"))
+                and any(k in _recovered for k in ("parameters", "arguments", "input", "args"))
+            ):
+                obj = _recovered
+        if not isinstance(obj, dict):
             return None
     else:
         match = re.search(r"```(?:json|tool_call)?\s*(.*?)```", candidate, flags=re.DOTALL)
@@ -147,6 +161,45 @@ def extract_tool_call(text: str) -> ToolCall | None:
             return None  # List, number, etc. — can't map to named params
 
     return ToolCall(tool=tool_text, arguments=args)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """Return the first balanced top-level JSON object in *text*, or None.
+
+    String-aware brace scan so braces inside string values (e.g. a message body)
+    don't confuse it. Tolerates surrounding junk — an unbalanced array wrapper
+    ("[[ {..} ]") or trailing prose — around an otherwise-valid tool-call object.
+    """
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        for j in range(start, len(text)):
+            ch = text[j]
+            if in_str:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start : j + 1])
+                        if isinstance(obj, dict):
+                            return obj
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break  # this candidate failed; look for the next '{'
+        start = text.find("{", start + 1)
+    return None
 
 
 def _try_parse_json(text: str) -> dict | None:

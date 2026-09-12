@@ -222,7 +222,10 @@ class OpenAICompatibleProvider:
             # Force the model to use one of the provided tools rather than responding
             # with plain text. This ensures structured tool_calls are returned when
             # tools are available, enabling proper tool dispatch in the agent graph.
-            kwargs["tool_choice"] = "required"
+            # A caller can override (e.g. "auto") when a step may legitimately answer
+            # without a tool call — such as a final synthesis step that still has a
+            # delivery tool on hand.
+            kwargs["tool_choice"] = request.tool_choice or "required"
         if request.response_schema is not None and self._is_canonical_openai:
             kwargs["response_format"] = {
                 "type": "json_schema",

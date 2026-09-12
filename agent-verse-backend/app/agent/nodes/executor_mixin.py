@@ -1036,13 +1036,26 @@ class ExecutorMixin:
         _tool_budget = int(getattr(self, "_tool_call_budget", _DEFAULT_TOOL_CALL_BUDGET))
         _tool_calls_used = sum(len(s.tool_calls or []) for s in state.steps)
         _budget_exhausted = _tool_budget > 0 and _tool_calls_used >= _tool_budget
+        # Tools + tool-call policy for this step. Default: offer every tool and let
+        # the provider force a call (tool_choice defaults to "required").
+        _step_tool_defs = _tool_defs
+        _step_tool_choice: str | None = None
         if _budget_exhausted:
+            # Budget spent: stop the re-search loop but do NOT starve the final
+            # delivery action. Keep only ACTION tools (writes/deliveries), drop
+            # read/search tools, and use tool_choice="auto" so a pure synthesis
+            # step can answer in text while a delivery step can still fire its tool.
+            from app.agent.nodes._helpers import select_action_tools_for_convergence
+
+            _step_tool_defs = select_action_tools_for_convergence(_tool_defs)
+            _step_tool_choice = "auto"
             _executor_prompt = _executor_prompt + (
                 f"\n\nTOOL-CALL BUDGET REACHED ({_tool_calls_used}/{_tool_budget}). Do NOT "
-                "call any more tools. Using ONLY the information already gathered in the "
-                "context above, produce the best possible final answer for the goal now, "
-                "in the requested format. If some data is missing, answer with what you "
-                "have and briefly note the gaps."
+                "perform any more search/retrieval. Using the information already gathered "
+                "in the context above, produce the best possible final answer now. If the "
+                "goal requires a delivery/notification action (e.g. sending a message), you "
+                "MAY still call that one action tool to complete the goal; otherwise answer "
+                "directly. If some data is missing, answer with what you have and note gaps."
             )
 
         # Resolve executor model via model_router when available (Bug 3 fix)
@@ -1057,8 +1070,11 @@ class ExecutorMixin:
                 Message(role="user", content=content),
             ],
             model=_exec_model,
-            # Drop tools once the budget is spent so the model cannot keep searching.
-            tools=[] if _budget_exhausted else _tool_defs,
+            # Once the budget is spent, only ACTION tools remain (so the model cannot
+            # keep searching but can still deliver the final answer); tool_choice
+            # relaxes to "auto" so a synthesis step is not forced to call a tool.
+            tools=_step_tool_defs,
+            tool_choice=_step_tool_choice,
         )
 
         # 8a. Bulkhead — distributed concurrency limit per tenant (RedisBulkhead or Semaphore)
@@ -1983,6 +1999,18 @@ class ExecutorMixin:
                                 time.monotonic() - tool_call_started,
                             )
                             raw_output = raw_result_output if result.success else raw_result_error
+                            # Surface the SENT content (e.g. the brief in a telegram
+                            # send) so the verifier can confirm the deliverable — the
+                            # tool result is only a receipt ({'ok': True, ...}).
+                            if tool_call is not None:
+                                from app.agent.nodes._helpers import surface_delivered_content
+
+                                raw_output = surface_delivered_content(
+                                    raw_output,
+                                    tool_call.tool,
+                                    tool_call.arguments,
+                                    result.success,
+                                )
                             raw_output_sanitized = True
 
         # ── Strategy B: parallel tool calls ─────────────────────────────────────

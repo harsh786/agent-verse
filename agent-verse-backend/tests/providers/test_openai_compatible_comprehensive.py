@@ -224,6 +224,46 @@ async def test_response_schema_downgrades_to_json_object_for_third_party() -> No
 
 
 @pytest.mark.asyncio
+async def test_tool_choice_defaults_to_required_when_tools_present() -> None:
+    """Backwards-compatible default: offering tools forces a tool call."""
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response("ok"))
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(api_key="key")
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="hi")],
+                model="m",
+                tools=[ToolDefinition(name="t", description="d", input_schema={})],
+            )
+        )
+    assert mock_client.chat.completions.create.call_args.kwargs["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_tool_choice_override_is_honored() -> None:
+    """A caller can relax tool_choice to 'auto' (e.g. a final synthesis step that
+    still has a delivery tool available)."""
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response("ok"))
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(api_key="key")
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="hi")],
+                model="m",
+                tools=[ToolDefinition(name="t", description="d", input_schema={})],
+                tool_choice="auto",
+            )
+        )
+    assert mock_client.chat.completions.create.call_args.kwargs["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
 async def test_no_response_format_by_default() -> None:
     mock_openai, mock_client = _make_openai_module()
     mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response("hi"))
