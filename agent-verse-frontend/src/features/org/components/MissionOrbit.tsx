@@ -14,6 +14,8 @@ import type { OrgMission } from '../types';
 interface MissionOrbitProps {
   missions: OrgMission[];
   className?: string;
+  /** Canvas size in px (square). Defaults to the original compact 240. */
+  size?: number;
 }
 
 const PALETTE = [
@@ -25,30 +27,34 @@ const PALETTE = [
   '#EF4444', // red
 ];
 
-const SIZE = 240;   // canvas size
-const CX   = SIZE / 2;
-const CY   = SIZE / 2;
+const BASE = 240;   // reference canvas size the layout was tuned for
 
-function getOrbitPosition(index: number, total: number, radius: number) {
+function getOrbitPosition(index: number, total: number, radius: number, cx: number, cy: number) {
   const angle = (index / total) * 2 * Math.PI - Math.PI / 2;
   return {
-    x: CX + radius * Math.cos(angle),
-    y: CY + radius * Math.sin(angle),
+    x: cx + radius * Math.cos(angle),
+    y: cy + radius * Math.sin(angle),
   };
 }
 
-export function MissionOrbit({ missions, className }: MissionOrbitProps) {
+export function MissionOrbit({ missions, className, size = BASE }: MissionOrbitProps) {
   const reduce  = useReducedMotion();
   const active  = missions.filter(m => m.status === 'active').slice(0, 8);
   const total   = active.length;
-  const radius  = total <= 3 ? 68 : total <= 6 ? 80 : 90;
+  // Everything scales off the requested size so the orbit can fill a larger hero.
+  const k       = size / BASE;
+  const CX      = size / 2;
+  const CY      = size / 2;
+  const radius  = (total <= 3 ? 68 : total <= 6 ? 80 : 90) * k;
+  const hubSize = 40 * k;
+  const nodeSize = 52 * k;
 
   if (total === 0) return null;
 
   return (
     <div
       className={`relative select-none ${className ?? ''}`}
-      style={{ width: SIZE, height: SIZE }}
+      style={{ width: size, height: size }}
       aria-label={`${total} active mission${total !== 1 ? 's' : ''} orbiting`}
     >
       {/* Background subtle glow */}
@@ -63,8 +69,8 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
       {/* Orbit ring */}
       <svg
         className="absolute inset-0 pointer-events-none"
-        width={SIZE}
-        height={SIZE}
+        width={size}
+        height={size}
         aria-hidden
       >
         {/* Outer orbit ring */}
@@ -77,7 +83,7 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
         />
         {/* Lines from hub to each mission */}
         {active.map((_, i) => {
-          const pos = getOrbitPosition(i, total, radius);
+          const pos = getOrbitPosition(i, total, radius, CX, CY);
           return (
             <line
               key={i}
@@ -94,8 +100,8 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
       <motion.div
         className="absolute flex items-center justify-center rounded-full border-2 border-[#00D4FF]/50 bg-[#050A14]"
         style={{
-          width: 40, height: 40,
-          left: CX - 20, top: CY - 20,
+          width: hubSize, height: hubSize,
+          left: CX - hubSize / 2, top: CY - hubSize / 2,
           boxShadow: '0 0 16px rgba(0,212,255,0.45), 0 0 40px rgba(0,212,255,0.12)',
         }}
         animate={reduce ? {} : { scale: [1, 1.06, 1], opacity: [0.9, 1, 0.9] }}
@@ -107,7 +113,7 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
 
       {/* Mission nodes */}
       {active.map((mission, i) => {
-        const pos   = getOrbitPosition(i, total, radius);
+        const pos   = getOrbitPosition(i, total, radius, CX, CY);
         const color = PALETTE[i % PALETTE.length];
         const delay = i * 0.12;
 
@@ -115,7 +121,7 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
           <motion.div
             key={mission.id}
             className="absolute"
-            style={{ left: pos.x - 26, top: pos.y - 26 }}
+            style={{ left: pos.x - nodeSize / 2, top: pos.y - nodeSize / 2 }}
             initial={{ opacity: 0, scale: 0 }}
             animate={{ opacity: 1, scale: 1 }}
             transition={{ type: 'spring', stiffness: 320, damping: 24, delay }}
@@ -132,8 +138,9 @@ export function MissionOrbit({ missions, className }: MissionOrbitProps) {
 
             {/* Node */}
             <div
-              className="relative w-[52px] h-[52px] rounded-full flex flex-col items-center justify-center cursor-pointer"
+              className="relative rounded-full flex flex-col items-center justify-center cursor-pointer"
               style={{
+                width: nodeSize, height: nodeSize,
                 background: `${color}14`,
                 border: `1.5px solid ${color}40`,
                 boxShadow: `0 0 10px ${color}30`,

@@ -179,6 +179,56 @@ export function OrgPage() {
     [rightWidth],
   );
 
+  // Resizable section HEIGHTS (vertical). The mission hero (left) and the agent
+  // network (right panel) can each be dragged taller/shorter; persisted per-browser.
+  const MISSION_MIN = 240;
+  const MISSION_MAX = 760;
+  const [missionHeight, setMissionHeight] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('av-org-mission-h'));
+      return v >= MISSION_MIN && v <= MISSION_MAX ? v : 500;
+    } catch {
+      return 500;
+    }
+  });
+  const NET_MIN = 200;
+  const NET_MAX = 640;
+  const [networkHeight, setNetworkHeight] = useState<number>(() => {
+    try {
+      const v = Number(localStorage.getItem('av-org-net-h'));
+      return v >= NET_MIN && v <= NET_MAX ? v : 420;
+    } catch {
+      return 420;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('av-org-mission-h', String(missionHeight)); } catch { /* no-op */ }
+  }, [missionHeight]);
+  useEffect(() => {
+    try { localStorage.setItem('av-org-net-h', String(networkHeight)); } catch { /* no-op */ }
+  }, [networkHeight]);
+  // Factory: returns a pointer handler that drags a section's height between min/max.
+  const startVResize = useCallback(
+    (startH: number, setter: (n: number) => void, min: number, max: number) =>
+      (e: React.PointerEvent) => {
+        e.preventDefault();
+        const startY = e.clientY;
+        const onMove = (ev: PointerEvent) =>
+          setter(Math.min(max, Math.max(min, startH + (ev.clientY - startY))));
+        const onUp = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+      },
+    [],
+  );
+
   const { data: org, isLoading: orgLoading, refetch } = useOrganization(orgId ?? null);
   const { data: health }    = useOrgHealth(orgId ?? null);
   // Pending approval count for badge — use after health is declared
@@ -529,60 +579,44 @@ export function OrgPage() {
               centered — then the mission list beneath it. */}
           <main
             className="flex-1 min-w-0 flex flex-col overflow-y-auto"
-            aria-label="Live agent network and missions"
+            aria-label="Active missions"
           >
-            {/* ── JARVIS centerpiece: Live Agent Network ── */}
-            <section
-              className="relative shrink-0 border-b border-[#1E2535] bg-[radial-gradient(ellipse_at_top,rgba(0,212,255,0.08),transparent_72%)]"
-              aria-label="Live agent network"
-            >
-              <div className="flex items-center justify-between px-6 pt-4 pb-1">
-                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#00D4FF]/85">
-                  <Network className="h-3 w-3" aria-hidden />
-                  Live Agent Network
-                  {constellationIsLive ? (
-                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
-                      · {liveAgents.length} agent{liveAgents.length !== 1 ? 's' : ''} active
-                    </span>
-                  ) : departmentAgents.length > 0 ? (
-                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
-                      · {departmentAgents.length} department{departmentAgents.length !== 1 ? 's' : ''} standing by
-                    </span>
-                  ) : null}
-                </p>
-                <button
-                  onClick={() => setShowConstellation(v => !v)}
-                  className="min-h-[32px] px-2 text-[10px] text-[#475569] transition-colors hover:text-[#94A3B8]"
-                  aria-expanded={showConstellation}
-                  aria-label={showConstellation ? 'Hide agent network' : 'Show agent network'}
+            {/* ── Hero: Active Missions (mission orbit) — resizable height ── */}
+            {activeMissions.length > 0 && (
+              <>
+                <section
+                  className="relative shrink-0 overflow-hidden border-b border-[#1E2535] bg-[radial-gradient(ellipse_at_top,rgba(0,212,255,0.08),transparent_72%)]"
+                  style={{ height: missionHeight }}
+                  aria-label="Active mission orbit visualization"
                 >
-                  {showConstellation ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <AnimatePresence initial={false}>
-                {showConstellation && (
-                  <motion.div
-                    initial={{ height: 0, opacity: 0 }}
-                    animate={{ height: 'auto', opacity: 1 }}
-                    exit={{ height: 0, opacity: 0 }}
-                    transition={{ duration: 0.35, ease: [0.4, 0, 0.2, 1] }}
-                    className="overflow-hidden"
-                  >
-                    <div className="flex items-center justify-center overflow-x-auto px-3 pb-5 pt-1">
-                      <AgentConstellation
-                        orgId={orgId}
-                        missions={activeMissions}
-                        agents={constellationAgents}
-                        // Real message beams only — never fabricated when the
-                        // scene is showing idle departments.
-                        communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
-                        className="max-w-full"
-                      />
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </section>
+                  <div className="flex items-center gap-2 px-6 pt-4 pb-1">
+                    <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#00D4FF]/85">
+                      <Cpu className="h-3 w-3" aria-hidden />
+                      {activeMissions.length} Active Mission{activeMissions.length !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                  <div className="flex h-[calc(100%-2.25rem)] items-center justify-center overflow-auto px-3 pb-4 pt-1">
+                    {/* Fill the hero: orbit grows with the (resizable) section height. */}
+                    <MissionOrbit
+                      missions={activeMissions}
+                      size={Math.max(280, Math.min(missionHeight - 80, 560))}
+                    />
+                  </div>
+                </section>
+                <div
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize missions section"
+                  onPointerDown={startVResize(missionHeight, setMissionHeight, MISSION_MIN, MISSION_MAX)}
+                  className={cn(
+                    'group flex h-1.5 shrink-0 cursor-row-resize items-center justify-center',
+                    'bg-[#1E2535] hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors',
+                  )}
+                >
+                  <span className="h-0.5 w-8 rounded-full bg-[#334155] group-hover:bg-blue-400" />
+                </div>
+              </>
+            )}
 
             {/* ── Missions — beneath the visualization ── */}
             <StatusFilterBar value={statusFilter} onChange={setStatusFilter} />
@@ -636,29 +670,64 @@ export function OrgPage() {
             className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
             aria-label="Command panel"
           >
-            {/* Mission Orbit — active missions as orbiting nodes. The full
-                agent constellation now lives in the center column as the hero. */}
-            {activeMissions.length > 0 && (
-              <section
-                className="flex flex-col items-center justify-center border-b border-[#1E2535] py-4 min-w-0 shrink-0"
-                aria-label="Active mission orbit visualization"
-              >
-                <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-[#00D4FF]/60 mb-2 flex items-center gap-1.5">
-                  <Cpu className="h-2.5 w-2.5" aria-hidden />
-                  {activeMissions.length} Active Mission{activeMissions.length !== 1 ? 's' : ''}
-                </p>
-                <MissionOrbit missions={activeMissions} />
-              </section>
-            )}
-
-            {/* Live activity feed — the JARVIS event stream, kept prominent right
-                under the agent network so both are visible without scrolling. */}
+            {/* Live Agent Network — the constellation now lives in the command
+                panel; the mission orbit is the center-column hero. Resizable height. */}
             <section
-              className="border-b border-[#1E2535] shrink-0 max-h-[22rem] overflow-y-auto p-4"
-              aria-label="Live activity"
+              className="relative shrink-0 overflow-hidden border-b border-[#1E2535] bg-[radial-gradient(ellipse_at_top,rgba(0,212,255,0.08),transparent_72%)]"
+              style={showConstellation ? { height: networkHeight } : undefined}
+              aria-label="Live agent network"
             >
-              <ActivityFeed orgId={orgId} />
+              <div className="flex items-center justify-between px-4 pt-4 pb-1">
+                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-[#00D4FF]/85">
+                  <Network className="h-3 w-3" aria-hidden />
+                  Live Agent Network
+                  {constellationIsLive ? (
+                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
+                      · {liveAgents.length} active
+                    </span>
+                  ) : departmentAgents.length > 0 ? (
+                    <span className="font-normal normal-case tracking-normal text-[#64748B]">
+                      · {departmentAgents.length} standing by
+                    </span>
+                  ) : null}
+                </p>
+                <button
+                  onClick={() => setShowConstellation(v => !v)}
+                  className="min-h-[32px] px-2 text-[10px] text-[#475569] transition-colors hover:text-[#94A3B8]"
+                  aria-expanded={showConstellation}
+                  aria-label={showConstellation ? 'Hide agent network' : 'Show agent network'}
+                >
+                  {showConstellation ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              {showConstellation && (
+                <div className="flex h-[calc(100%-2.25rem)] items-center justify-center overflow-auto px-3 pb-4 pt-1">
+                  <AgentConstellation
+                    orgId={orgId}
+                    missions={activeMissions}
+                    agents={constellationAgents}
+                    // Real message beams only — never fabricated when the
+                    // scene is showing idle departments.
+                    communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
+                    className="max-w-full"
+                  />
+                </div>
+              )}
             </section>
+            {showConstellation && (
+              <div
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize agent network section"
+                onPointerDown={startVResize(networkHeight, setNetworkHeight, NET_MIN, NET_MAX)}
+                className={cn(
+                  'group flex h-1.5 shrink-0 cursor-row-resize items-center justify-center',
+                  'bg-[#1E2535] hover:bg-blue-500/40 active:bg-blue-500/60 transition-colors',
+                )}
+              >
+                <span className="h-0.5 w-8 rounded-full bg-[#334155] group-hover:bg-blue-400" />
+              </div>
+            )}
 
             {/* Morning brief panel */}
             <div className="p-4 border-b border-[#1E2535]">
@@ -687,6 +756,15 @@ export function OrgPage() {
                   setDeptFilter((prev) => (prev?.id === d.id ? null : { id: d.id, name: d.name }))
                 }
               />
+            </section>
+
+            {/* Live activity feed — the JARVIS event stream, now beneath the
+                department tree per the requested panel order. */}
+            <section
+              className="border-b border-[#1E2535] shrink-0 max-h-[24rem] overflow-y-auto p-4"
+              aria-label="Live activity"
+            >
+              <ActivityFeed orgId={orgId} />
             </section>
           </aside>
         </div>
