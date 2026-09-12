@@ -354,6 +354,16 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
     try:
         cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
     except Exception as exc:
+        # A duplicate (tenant_id, name) is a client conflict, not a server outage —
+        # return 409 rather than masking it as 503 "persistence unavailable".
+        if "uq_collection_name" in str(exc) or "UniqueViolation" in type(exc).__name__:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A collection named '{body.name}' already exists",
+            ) from exc
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).exception("create_collection_failed: %s", exc)
         raise HTTPException(
             status_code=503,
             detail="Knowledge persistence is unavailable",

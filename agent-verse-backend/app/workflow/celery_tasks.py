@@ -79,6 +79,41 @@ def _build_worker_runner() -> Any:
         _wf_knowledge = KnowledgeStore(db_factory)
     except Exception as _ks_exc:
         _log.warning("worker_runner_knowledge_store_unavailable", error=str(_ks_exc)[:120])
+    # Wire a real MCP client so workflow tool steps dispatch actual connectors
+    # (Telegram, Slack, HTTP tools, …) instead of returning a mock. Mirrors the
+    # goal worker's MCP wiring; the FastAPI lifespan never runs in a Celery worker.
+    _wf_mcp_client: Any = None
+    try:
+        import os as _os
+
+        import redis.asyncio as _aioredis_wf
+
+        from app.mcp.client import MCPClient
+        from app.mcp.registry import MCPRegistry
+        from app.mcp.servers.registry_wiring import get_builtin_server_configs
+        from app.providers.vault import (
+            RedisConnectorSecretStore,
+            get_vault,
+            resolve_connector_secret_ref_for_tenant,
+        )
+
+        for _bcfg in get_builtin_server_configs():
+            MCPRegistry.register_builtin_handler(_bcfg["server_id"], _bcfg["handler"])
+        _wf_redis = _aioredis_wf.from_url(
+            _os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+        )
+        _wf_secret_store = RedisConnectorSecretStore(redis=_wf_redis, vault=get_vault())
+
+        async def _wf_resolve_secret(ref: str, tenant_ctx: Any = None) -> str | None:
+            return await resolve_connector_secret_ref_for_tenant(
+                ref, store=_wf_secret_store, tenant_ctx=tenant_ctx
+            )
+
+        _wf_mcp_client = MCPClient(
+            MCPRegistry(_wf_redis), secret_resolver=_wf_resolve_secret, redis=_wf_redis
+        )
+    except Exception as _mcp_exc:
+        _log.warning("worker_runner_mcp_client_unavailable", error=str(_mcp_exc)[:120])
     compiler = WorkflowCompiler(
         context_resolver=ContextResolver(),
         checkpointer=_WORKER_CHECKPOINTER,
@@ -88,6 +123,7 @@ def _build_worker_runner() -> Any:
         provider=_wf_provider,
         ocr_engine=OcrEngine(),
         knowledge_store=_wf_knowledge,
+        mcp_client=_wf_mcp_client,
     )
     _WORKER_RUNNER = WorkflowRunner(
         compiler=compiler,

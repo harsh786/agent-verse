@@ -1175,6 +1175,41 @@ class MCPClient:
                 server_id=server_id,
             )
 
+    async def call_tool_by_name(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        tenant_ctx: TenantContext,
+    ) -> ToolCallResult:
+        """Dispatch a tool by NAME, resolving which registered server exposes it.
+
+        Convenience for callers that only know the tool name (e.g. workflow tool
+        steps) rather than the server_id. Discovers the tenant's servers, finds
+        the first that exposes ``tool_name``, and calls :meth:`call_tool`.
+        """
+        try:
+            records = await self._registry.list_server_records(tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            return ToolCallResult(tool_name=tool_name, success=False, error=str(exc))
+        for server_id, _cfg in records:
+            try:
+                tools = await self.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
+            except Exception:
+                continue
+            if any(getattr(t, "name", None) == tool_name for t in tools):
+                return await self.call_tool(
+                    server_id=server_id,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                    tenant_ctx=tenant_ctx,
+                )
+        return ToolCallResult(
+            tool_name=tool_name,
+            success=False,
+            error=f"no registered connector exposes tool '{tool_name}'",
+        )
+
     async def _update_tool_stats(
         self,
         server_id: str,

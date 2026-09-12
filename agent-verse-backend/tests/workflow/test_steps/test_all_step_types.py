@@ -33,15 +33,21 @@ def _state(**kwargs) -> dict:
 
 @pytest.mark.asyncio
 async def test_tool_step_success() -> None:
+    from types import SimpleNamespace
+
     from app.workflow.steps.tool_step import ToolStepNode
     step = StepDefinition(id="s1", type="tool", tool="test.tool")
     mcp_client = AsyncMock()
-    mcp_client.call_tool.return_value = {"result": "success"}
+    # Real dispatch goes through call_tool_by_name (resolves tool -> connector).
+    mcp_client.call_tool_by_name.return_value = SimpleNamespace(
+        success=True, output={"result": "success"}, error=None
+    )
     node = ToolStepNode(step, _ctx(), mcp_client=mcp_client)
     state = _state()
     result = await node.execute(state)  # type: ignore[arg-type]
     assert "step_outputs" in result
-    assert result["step_outputs"]["s1"]["result"] == "success"
+    assert result["step_outputs"]["s1"]["success"] is True
+    assert result["step_outputs"]["s1"]["output"]["result"] == "success"
 
 
 @pytest.mark.asyncio
@@ -58,12 +64,16 @@ async def test_tool_step_no_mcp_client() -> None:
 @pytest.mark.asyncio
 async def test_tool_step_mcp_error() -> None:
     from app.workflow.steps.tool_step import ToolStepNode
+    from types import SimpleNamespace
+
     step = StepDefinition(id="s1", type="tool", tool="fail.tool")
     mcp_client = AsyncMock()
-    mcp_client.call_tool.side_effect = RuntimeError("tool failed")
+    # A failed tool result must propagate so the runner's on_failure handling runs.
+    mcp_client.call_tool_by_name.return_value = SimpleNamespace(
+        success=False, output=None, error="tool failed"
+    )
     node = ToolStepNode(step, _ctx(), mcp_client=mcp_client)
     state = _state()
-    # Tool step propagates exceptions (runner handles them)
     with pytest.raises(RuntimeError, match="tool failed"):
         await node.execute(state)  # type: ignore[arg-type]
 
