@@ -41,8 +41,11 @@ class ParallelStepNode:
 
         merged_outputs: dict[str, Any] = dict(state.get("step_outputs") or {})
         merged_timings: dict[str, Any] = dict(state.get("step_timings") or {})
-        total_cost = state.get("cost_usd") or 0.0
-        total_tokens = state.get("tokens_used") or 0
+        # Sum branch DELTAS from zero — each branch returns its own cost/tokens
+        # delta and the WorkflowState reducer adds this into the run total. Seeding
+        # from state.cost_usd here would double-count the running total.
+        total_cost = 0.0
+        total_tokens = 0
 
         parallel_output: dict[str, Any] = {}
 

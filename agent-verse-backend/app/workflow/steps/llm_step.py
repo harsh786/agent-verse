@@ -110,6 +110,8 @@ class LLMStepNode:
         return {
             "step_outputs": {**(state.get("step_outputs") or {}), self.step.id: output},
             "step_timings": {**(state.get("step_timings") or {}), self.step.id: duration_ms},
-            "cost_usd": (state.get("cost_usd") or 0.0) + cost_usd,
-            "tokens_used": (state.get("tokens_used") or 0) + tokens_in + tokens_out,
+            # Return the DELTA this step incurred; the WorkflowState reducer sums
+            # deltas so concurrent steps are all accounted (see state._add).
+            "cost_usd": cost_usd,
+            "tokens_used": tokens_in + tokens_out,
         }

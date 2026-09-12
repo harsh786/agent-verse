@@ -145,39 +145,76 @@ class OcrStepNode:
             "page_count": result.page_count,
         }
 
+    _MAX_URL_BYTES = 25 * 1024 * 1024  # 25 MB download cap
+    _MAX_REDIRECTS = 3
+
     @staticmethod
     async def _fetch_url_bytes(
         url: str, content_type: str | None
     ) -> tuple[bytes | None, str | None, str | None]:
         """Download a document over http(s) for OCR — SSRF-guarded, size-capped.
 
-        Reuses the same ``SSRFGuard`` the HTTP step uses so a templated URL cannot
-        reach internal/link-local addresses. Caps the download at 25 MB.
+        Security:
+        * SSRF — the initial URL AND every redirect hop are validated with the
+          same ``SSRFGuard`` the HTTP step uses, so neither a templated URL nor a
+          server-controlled redirect (``Location: http://169.254.169.254/…``) can
+          reach internal/link-local addresses. Auto-redirects are disabled; hops
+          are followed manually (max ``_MAX_REDIRECTS``) so each is re-validated.
+        * Resource cap — the body is STREAMED with a running byte counter and the
+          transfer is aborted the instant it exceeds the cap (and the declared
+          Content-Length is rejected up front), so a hostile server cannot force
+          us to buffer an unbounded response before the size is checked.
         """
         import os as _os
-        from urllib.parse import urlparse
+        from urllib.parse import urljoin, urlparse
 
         import httpx
 
         from app.workflow.security import SSRFBlockedError, SSRFGuard
 
+        guard = SSRFGuard()
+        cap = OcrStepNode._MAX_URL_BYTES
+        current = url
         try:
-            SSRFGuard().validate(url)
-        except SSRFBlockedError as exc:
-            _log.warning("ocr_url_ssrf_blocked", url=url[:120], error=str(exc))
-            return None, None, None
-        max_bytes = 25 * 1024 * 1024
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                body = resp.content
-                if len(body) > max_bytes:
-                    _log.warning("ocr_url_too_large", url=url[:120], size=len(body))
-                    return None, None, None
-                ct = content_type or resp.headers.get("content-type", "").split(";")[0] or None
-                name = _os.path.basename(urlparse(url).path) or "document"
-                return body, ct, name
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+                for _hop in range(OcrStepNode._MAX_REDIRECTS + 1):
+                    try:
+                        guard.validate(current)
+                    except SSRFBlockedError as exc:
+                        _log.warning("ocr_url_ssrf_blocked", url=current[:120], error=str(exc))
+                        return None, None, None
+                    async with client.stream("GET", current) as resp:
+                        # Follow one redirect hop manually so the target is re-validated.
+                        if resp.is_redirect:
+                            loc = resp.headers.get("location")
+                            if not loc:
+                                return None, None, None
+                            current = urljoin(current, loc)
+                            continue
+                        resp.raise_for_status()
+                        # Reject an oversized declared length before reading a byte.
+                        clen = resp.headers.get("content-length")
+                        if clen and clen.isdigit() and int(clen) > cap:
+                            _log.warning("ocr_url_too_large_declared", url=current[:120], size=clen)
+                            return None, None, None
+                        chunks: list[bytes] = []
+                        total = 0
+                        async for chunk in resp.aiter_bytes():
+                            total += len(chunk)
+                            if total > cap:
+                                _log.warning("ocr_url_too_large", url=current[:120], size=total)
+                                return None, None, None
+                            chunks.append(chunk)
+                        body = b"".join(chunks)
+                        ct = (
+                            content_type
+                            or resp.headers.get("content-type", "").split(";")[0]
+                            or None
+                        )
+                        name = _os.path.basename(urlparse(current).path) or "document"
+                        return body, ct, name
+                _log.warning("ocr_url_too_many_redirects", url=url[:120])
+                return None, None, None
         except Exception as exc:
             _log.warning("ocr_url_fetch_failed", url=url[:120], error=str(exc))
             return None, None, None
@@ -193,10 +230,20 @@ class OcrStepNode:
         ):
             b64 = resolved.get(key)
             if b64:
+                # Cap the encoded payload BEFORE decoding — base64 is templatable
+                # from external (webhook) input, so an unbounded decode is a memory
+                # exhaustion vector. 4/3 encoding ratio → cap the string accordingly.
+                if len(str(b64)) > (OcrStepNode._MAX_URL_BYTES // 3) * 4 + 16:
+                    _log.warning("ocr_base64_too_large", key=key, size=len(str(b64)))
+                    return None, None, None
                 try:
-                    return base64.b64decode(b64), ct, filename
+                    data = base64.b64decode(b64)
                 except Exception:
                     return None, None, None
+                if len(data) > OcrStepNode._MAX_URL_BYTES:
+                    _log.warning("ocr_base64_decoded_too_large", key=key, size=len(data))
+                    return None, None, None
+                return data, ct, filename
         # file_path — a server-local file. SECURITY: file_path can be templated
         # from external (webhook) inputs, so an unrestricted read is arbitrary
         # file access (e.g. /etc/passwd, another tenant's data). Only read files

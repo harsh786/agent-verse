@@ -28,11 +28,12 @@ def _merge_dict(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str,
     return {**a, **b}
 
 
-def _keep_max(a: float | int | None, b: float | int | None) -> float | int:
-    """Combine cumulative telemetry counters. Step nodes return the running total
-    (base + delta), so the latest/highest value is the correct accumulated one;
-    max is exact for sequential runs and a safe approximation under concurrency."""
-    return max(a or 0, b or 0)
+def _add(a: float | int | None, b: float | int | None) -> float | int:
+    """Sum telemetry deltas. Step nodes return the DELTA their step incurred (not a
+    running total), so concurrent steps each contribute their full cost/tokens —
+    accounting stays exact under fan-out/parallel (a max reducer would undercount
+    concurrent spend and let a tenant slip past cost/token budgets)."""
+    return (a or 0) + (b or 0)
 
 
 class WorkflowRunStatus(enum.StrEnum):
@@ -90,8 +91,8 @@ class WorkflowState(TypedDict, total=False):
     foreach_progress: Annotated[dict[str, dict[str, int]], _merge_dict]
 
     # ── Telemetry ────────────────────────────────────────────────────────
-    cost_usd: Annotated[float, _keep_max]
-    tokens_used: Annotated[int, _keep_max]
+    cost_usd: Annotated[float, _add]
+    tokens_used: Annotated[int, _add]
     step_timings: Annotated[dict[str, int], _merge_dict]  # step_id → duration_ms
 
     # ── Operator control ─────────────────────────────────────────────────
