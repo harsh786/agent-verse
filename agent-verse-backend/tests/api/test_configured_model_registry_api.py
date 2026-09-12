@@ -11,7 +11,9 @@ from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 _CTX = TenantContext(tenant_id="tid-mr", plan=PlanTier.PROFESSIONAL, api_key_id="kid-mr")
 _KEY = "ak_mr_test"
-_HEADERS = {"X-API-Key": _KEY}
+_ADMIN = "platform-admin-secret"
+_HEADERS = {"X-API-Key": _KEY}  # read-only tenant headers
+_ADMIN_HEADERS = {"X-API-Key": _KEY, "X-Admin-Key": _ADMIN}  # platform-admin headers
 
 
 class _FakeRedis:
@@ -42,6 +44,7 @@ def _client(monkeypatch):
     import app.ai_router.selection as sel
 
     monkeypatch.setattr(sel, "_lazy_seeded", True)
+    monkeypatch.setenv("PLATFORM_ADMIN_KEY", _ADMIN)  # enable admin-gated mutations
     model_registry.clear_configured()
     set_model_registry_store(ModelRegistryStore(_FakeRedis()))
     return TestClient(_make_app())
@@ -53,7 +56,7 @@ def test_upsert_then_list_and_select_cheapest(monkeypatch):
     for mid, cost in (("pricey-llm", 0.02), ("cheap-llm", 0.0)):
         r = client.post(
             "/models/configured",
-            headers=_HEADERS,
+            headers=_ADMIN_HEADERS,
             json={
                 "provider": "custom",
                 "model_id": mid,
@@ -71,19 +74,42 @@ def test_upsert_then_list_and_select_cheapest(monkeypatch):
     assert tg["selected_model_id"] == "cheap-llm"
 
 
+def test_reads_allowed_for_tenant_but_writes_require_platform_admin(monkeypatch):
+    client = _client(monkeypatch)
+    payload = {"provider": "custom", "model_id": "sneaky",
+               "capabilities": ["text_generation"], "cost_per_1k_input": 0.0}
+    # A regular tenant (no admin key) can READ...
+    assert client.get("/models/configured", headers=_HEADERS).status_code == 200
+    # ...but cannot mutate the global registry.
+    assert client.post("/models/configured", headers=_HEADERS, json=payload).status_code == 403
+    assert client.delete("/models/configured/custom/x", headers=_HEADERS).status_code == 403
+    assert client.post("/models/configured/reseed", headers=_HEADERS).status_code == 403
+    # An invalid admin key is rejected too.
+    bad = {"X-API-Key": _KEY, "X-Admin-Key": "wrong"}
+    assert client.post("/models/configured", headers=bad, json=payload).status_code == 403
+
+
+def test_unknown_provider_rejected(monkeypatch):
+    client = _client(monkeypatch)
+    r = client.post("/models/configured", headers=_ADMIN_HEADERS,
+                    json={"provider": "evilcorp", "model_id": "x",
+                          "capabilities": ["text_generation"]})
+    assert r.status_code == 400
+
+
 def test_upsert_validation_requires_capability(monkeypatch):
     client = _client(monkeypatch)
-    r = client.post("/models/configured", headers=_HEADERS,
+    r = client.post("/models/configured", headers=_ADMIN_HEADERS,
                     json={"model_id": "x", "capabilities": []})
     assert r.status_code == 400
 
 
 def test_delete_configured_model(monkeypatch):
     client = _client(monkeypatch)
-    client.post("/models/configured", headers=_HEADERS,
+    client.post("/models/configured", headers=_ADMIN_HEADERS,
                 json={"provider": "custom", "model_id": "gone",
                       "capabilities": ["embedding"], "cost_per_1k_input": 0.0})
-    d = client.delete("/models/configured/custom/gone", headers=_HEADERS)
+    d = client.delete("/models/configured/custom/gone", headers=_ADMIN_HEADERS)
     assert d.status_code == 200 and d.json()["removed"] is True
     listing = client.get("/models/configured", headers=_HEADERS).json()
     assert all(g["capability"] != "embedding" for g in listing["capabilities"])
@@ -91,11 +117,11 @@ def test_delete_configured_model(monkeypatch):
 
 def test_persistence_survives_reseed(monkeypatch):
     client = _client(monkeypatch)
-    client.post("/models/configured", headers=_HEADERS,
+    client.post("/models/configured", headers=_ADMIN_HEADERS,
                 json={"provider": "custom", "model_id": "persist-me",
                       "capabilities": ["rerank"], "cost_per_1k_input": 0.0})
     # reseed (simulates a restart re-reading the persistent store)
-    r = client.post("/models/configured/reseed", headers=_HEADERS)
+    r = client.post("/models/configured/reseed", headers=_ADMIN_HEADERS)
     assert r.status_code == 200
     listing = client.get("/models/configured", headers=_HEADERS).json()
     rr = next(g for g in listing["capabilities"] if g["capability"] == "rerank")

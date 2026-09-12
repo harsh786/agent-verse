@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
+import os
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.ai_router.models import ModelCapability, ModelRoutePolicy, RoutingMode, TaskType
 from app.ai_router.registry import model_registry
@@ -12,14 +14,39 @@ from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/models", tags=["model-registry"])
 
+# Providers we can actually resolve to an adapter — reject anything else so a
+# registered model can never point selection at an unresolvable provider.
+_ALLOWED_PROVIDERS = frozenset(
+    {
+        "anthropic", "openai", "openai_compatible", "azure_openai", "nvidia",
+        "gemini", "google", "voyage", "groq", "ollama", "openrouter",
+        "bedrock", "vertex", "mistral", "cohere", "custom",
+    }
+)
+
 
 def _require_tenant(request: Request) -> TenantContext:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
-        from fastapi import HTTPException
-
         raise HTTPException(401, "Unauthorized")
     return ctx
+
+
+def _require_platform_admin(request: Request) -> None:
+    """Authorize a platform-operator for GLOBAL, cross-tenant registry mutations.
+
+    The configured model registry is deployment-wide (every tenant's goals select
+    from it), so mutating it is an operator action — a regular tenant API key must
+    not be able to change what models other tenants use. Requires the platform
+    admin key (``PLATFORM_ADMIN_KEY`` via the ``X-Admin-Key`` header), matching
+    app/api/admin.py. 503 when unconfigured; 403 when missing/invalid.
+    """
+    admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
+    if not admin_key:
+        raise HTTPException(503, "Platform admin not configured; registry is read-only")
+    presented = request.headers.get("x-admin-key", "") or request.headers.get("X-Admin-Key", "")
+    if not presented or not hmac.compare_digest(presented.encode(), admin_key.encode()):
+        raise HTTPException(403, "Platform admin privileges required to modify the model registry")
 
 
 def _health_dict(provider: str) -> dict[str, Any]:
@@ -217,10 +244,10 @@ async def list_configured_models(request: Request) -> dict[str, Any]:
 @router.post("/configured")
 async def upsert_configured_model(request: Request) -> dict[str, Any]:
     """Add or override a configured model. Persists to the store and takes effect
-    immediately (registry re-seeded)."""
+    immediately (registry re-seeded). Platform-admin only — the registry is
+    deployment-global (shared across tenants)."""
     _require_tenant(request)
-    from fastapi import HTTPException
-
+    _require_platform_admin(request)
     from app.ai_router.registry_store import get_model_registry_store
     from app.ai_router.seeder import seed_registry_from_config
 
@@ -234,8 +261,14 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, f"invalid capability: {exc}") from exc
 
+    provider = str(body.get("provider", "") or "").strip() or "custom"
+    if provider not in _ALLOWED_PROVIDERS:
+        raise HTTPException(
+            400, f"unknown provider '{provider}'; must be a registered adapter"
+        )
+
     endpoint = {
-        "provider": str(body.get("provider", "") or "").strip() or "custom",
+        "provider": provider,
         "model_id": model_id,
         "display_name": str(body.get("display_name", "") or model_id),
         "capabilities": valid_caps,
@@ -257,8 +290,9 @@ async def upsert_configured_model(request: Request) -> dict[str, Any]:
 
 @router.delete("/configured/{provider}/{model_id:path}")
 async def delete_configured_model(request: Request, provider: str, model_id: str) -> dict[str, Any]:
-    """Remove a configured model override."""
+    """Remove a configured model override. Platform-admin only (global registry)."""
     _require_tenant(request)
+    _require_platform_admin(request)
     from app.ai_router.registry_store import get_model_registry_store
     from app.ai_router.seeder import seed_registry_from_config
 
@@ -271,8 +305,10 @@ async def delete_configured_model(request: Request, provider: str, model_id: str
 
 @router.post("/configured/reseed")
 async def reseed_configured_models(request: Request) -> dict[str, Any]:
-    """Re-seed the configured registry from env + persisted overrides."""
+    """Re-seed the configured registry from env + persisted overrides.
+    Platform-admin only (global registry)."""
     _require_tenant(request)
+    _require_platform_admin(request)
     from app.ai_router.seeder import seed_registry_from_config
 
     count = seed_registry_from_config()
