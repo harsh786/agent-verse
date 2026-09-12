@@ -2020,11 +2020,20 @@ class ExecutorMixin:
         if not raw_output_sanitized:
             raw_output = self._sanitize_tool_raw_output(raw_output)
 
-        # Check output for data leakage
+        # Check output for data leakage — redact only the genuine PII spans so a
+        # single hit (e.g. a stray number) never destroys an otherwise-valid answer.
         if self._guardrail_checker is not None:
-            output_issues = self._guardrail_checker.check_output(output=raw_output)
+            _redactor = getattr(self._guardrail_checker, "redact_output", None)
+            if callable(_redactor):
+                raw_output, output_issues = _redactor(output=raw_output)
+            else:  # older checker without span redaction
+                output_issues = self._guardrail_checker.check_output(output=raw_output)
+                if output_issues:
+                    raw_output = f"[Output redacted by guardrails: {'; '.join(output_issues)}]"
             if output_issues:
-                raw_output = f"[Output redacted by guardrails: {'; '.join(output_issues)}]"
+                await self._emit(
+                    {"type": "pii_redacted", "issues": output_issues, "scope": "final_output"}
+                )
 
         # GuardrailEngine v2: scan output for PII/secrets/cloud-destruction patterns
         _guardrail_engine_v2_out = (

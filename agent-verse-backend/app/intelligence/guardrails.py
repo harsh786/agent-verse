@@ -44,16 +44,66 @@ _DANGEROUS_PATTERNS = [
     re.compile(r">\s*/dev/sd", re.IGNORECASE),
 ]
 
-_PII_PATTERNS = [
-    # SSN: 123-45-6789
-    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    # Credit card: 16-digit run
-    re.compile(
-        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|[25][1-7][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b"
+# Each rule is (pattern, label, requires_luhn). Card patterns require a Luhn
+# checksum so that runs of years/IDs/timestamps (e.g. "2015 2019 2021 2024") are
+# NOT misclassified as credit cards — the source of false positives that redacted
+# valid answers.
+_PII_RULES: list[tuple[re.Pattern[str], str, bool]] = [
+    # SSN: 123-45-6789 (specific enough; no checksum)
+    (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "SSN", False),
+    # Credit card — brand-specific runs, validated by Luhn
+    (
+        re.compile(
+            r"\b(?:4[0-9]{12}(?:[0-9]{3})?|[25][1-7][0-9]{14}|6(?:011|5[0-9][0-9])[0-9]{12}|3[47][0-9]{13}|3(?:0[0-5]|[68][0-9])[0-9]{11}|(?:2131|1800|35\d{3})\d{11})\b"
+        ),
+        "CARD",
+        True,
     ),
-    # Generic 16-digit card (fallback)
-    re.compile(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"),
+    # Generic 16-digit grouping (fallback) — REQUIRES Luhn to avoid year/ID runs
+    (re.compile(r"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b"), "CARD", True),
 ]
+
+
+def _luhn_valid(text: str) -> bool:
+    """Return True if the digits in *text* satisfy the Luhn checksum (a real card
+    number). Filters out arbitrary digit runs (years, ids, timestamps)."""
+    digits = [int(c) for c in text if c.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    checksum = 0
+    for i, d in enumerate(digits):
+        # Double every second digit counting from the right (position 1, 3, ...).
+        if (len(digits) - 1 - i) % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        checksum += d
+    return checksum % 10 == 0
+
+
+def _pii_spans(text: str) -> list[tuple[int, int, str]]:
+    """Return (start, end, label) for every genuine PII match in *text*."""
+    spans: list[tuple[int, int, str]] = []
+    for pattern, label, requires_luhn in _PII_RULES:
+        for m in pattern.finditer(text):
+            if requires_luhn and not _luhn_valid(m.group()):
+                continue
+            spans.append((m.start(), m.end(), label))
+    return spans
+
+
+def redact_pii(text: str) -> tuple[str, list[str]]:
+    """Redact ONLY the matched PII spans (never the whole output) and return the
+    redacted text plus the distinct issue labels found."""
+    spans = _pii_spans(text)
+    if not spans:
+        return text, []
+    # Redact right-to-left so earlier offsets stay valid.
+    redacted = text
+    for start, end, label in sorted(spans, key=lambda s: s[0], reverse=True):
+        redacted = f"{redacted[:start]}[REDACTED:{label}]{redacted[end:]}"
+    labels = sorted({label for _, _, label in spans})
+    return redacted, [f"Possible {lbl} detected in output" for lbl in labels]
 
 _ALWAYS_ALLOWED = {"llm_call"}
 
@@ -217,13 +267,20 @@ class GuardrailChecker:
         return issues
 
     def check_output(self, *, output: str) -> list[str]:
-        """Check LLM or tool output for PII leakage; return list of issues."""
-        issues: list[str] = []
-        for pattern in _PII_PATTERNS:
-            if pattern.search(output):
-                issues.append("Possible PII detected in output")
-                break
+        """Check LLM or tool output for PII leakage; return list of issues.
+
+        Card patterns are Luhn-validated so year/id/timestamp runs are not flagged.
+        """
+        _, issues = redact_pii(output)
         return issues
+
+    def redact_output(self, *, output: str) -> tuple[str, list[str]]:
+        """Redact only the genuine PII spans in *output*, preserving the rest.
+
+        Returns (redacted_output, issues). Prefer this over check_output so a
+        single PII hit never destroys an otherwise-valid answer.
+        """
+        return redact_pii(output)
 
     def check_goal(self, goal: str) -> list[str]:
         """Check a goal text for injection attempts; return list of issues."""
