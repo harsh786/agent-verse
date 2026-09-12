@@ -159,6 +159,126 @@ async def test_model(request: Request) -> dict[str, Any]:
         return {"status": "error", "error": str(exc), "model": model_id}
 
 
+# ── Configured registry (the models selection actually picks from) ─────────────
+
+# Capability → the task used to compute which model is currently SELECTED (the
+# cheapest qualifying one) for display in the UI.
+_CAPABILITY_SELECT_TASK = {
+    ModelCapability.TEXT_GENERATION: TaskType.EXECUTION,
+    ModelCapability.EMBEDDING: TaskType.EMBEDDING,
+    ModelCapability.VISION: TaskType.VISION,
+    ModelCapability.OCR: TaskType.OCR,
+    ModelCapability.RERANK: TaskType.RERANK,
+}
+
+
+def _configured_dict(m: Any) -> dict[str, Any]:
+    return {
+        "provider": m.provider,
+        "model_id": m.model_id,
+        "display_name": m.display_name,
+        "capabilities": [c.value for c in m.capabilities],
+        "cost_per_1k_input": m.cost_per_1k_input,
+        "cost_per_1k_output": m.cost_per_1k_output,
+        "supports_tools": m.supports_tools,
+        "supports_vision": m.supports_vision,
+        "supports_structured_output": m.supports_structured_output,
+        "quality_score": m.quality_score,
+        "is_available": m.is_available,
+    }
+
+
+@router.get("/configured")
+async def list_configured_models(request: Request) -> dict[str, Any]:
+    """List the deployment's configured models, grouped by capability, marking the
+    one currently SELECTED (cheapest) for each capability."""
+    _require_tenant(request)
+    from app.ai_router.selection import select_configured_model_id
+
+    groups: list[dict[str, Any]] = []
+    for cap, task in _CAPABILITY_SELECT_TASK.items():
+        models = model_registry.list_configured(cap)
+        if not models:
+            continue
+        selected = select_configured_model_id(task)
+        groups.append(
+            {
+                "capability": cap.value,
+                "selected_model_id": selected,
+                "models": sorted(
+                    (_configured_dict(m) for m in models),
+                    key=lambda d: (d["cost_per_1k_input"], -d["quality_score"]),
+                ),
+            }
+        )
+    return {"capabilities": groups, "total": len(model_registry.list_configured())}
+
+
+@router.post("/configured")
+async def upsert_configured_model(request: Request) -> dict[str, Any]:
+    """Add or override a configured model. Persists to the store and takes effect
+    immediately (registry re-seeded)."""
+    _require_tenant(request)
+    from fastapi import HTTPException
+
+    from app.ai_router.registry_store import get_model_registry_store
+    from app.ai_router.seeder import seed_registry_from_config
+
+    body = await request.json()
+    model_id = str(body.get("model_id", "") or "").strip()
+    caps = [str(c) for c in (body.get("capabilities") or []) if c]
+    if not model_id or not caps:
+        raise HTTPException(400, "model_id and at least one capability are required")
+    try:
+        valid_caps = [ModelCapability(c).value for c in caps]
+    except ValueError as exc:
+        raise HTTPException(400, f"invalid capability: {exc}") from exc
+
+    endpoint = {
+        "provider": str(body.get("provider", "") or "").strip() or "custom",
+        "model_id": model_id,
+        "display_name": str(body.get("display_name", "") or model_id),
+        "capabilities": valid_caps,
+        "cost_per_1k_input": float(body.get("cost_per_1k_input", 0.0) or 0.0),
+        "cost_per_1k_output": float(body.get("cost_per_1k_output", 0.0) or 0.0),
+        "supports_tools": bool(body.get("supports_tools", False)),
+        "supports_vision": bool(body.get("supports_vision", False)),
+        "supports_structured_output": bool(body.get("supports_structured_output", False)),
+        "quality_score": float(body.get("quality_score", 0.7) or 0.7),
+        "is_available": bool(body.get("is_available", True)),
+    }
+    store = get_model_registry_store()
+    if store is None:
+        raise HTTPException(503, "model registry store unavailable")
+    store.upsert(endpoint)
+    seed_registry_from_config()  # reload env + overrides so it takes effect now
+    return {"status": "saved", "model_id": model_id}
+
+
+@router.delete("/configured/{provider}/{model_id:path}")
+async def delete_configured_model(request: Request, provider: str, model_id: str) -> dict[str, Any]:
+    """Remove a configured model override."""
+    _require_tenant(request)
+    from app.ai_router.registry_store import get_model_registry_store
+    from app.ai_router.seeder import seed_registry_from_config
+
+    store = get_model_registry_store()
+    removed_store = store.remove(provider, model_id) if store is not None else False
+    removed_reg = model_registry.remove_configured(provider, model_id)
+    seed_registry_from_config()
+    return {"status": "deleted", "removed": removed_store or removed_reg}
+
+
+@router.post("/configured/reseed")
+async def reseed_configured_models(request: Request) -> dict[str, Any]:
+    """Re-seed the configured registry from env + persisted overrides."""
+    _require_tenant(request)
+    from app.ai_router.seeder import seed_registry_from_config
+
+    count = seed_registry_from_config()
+    return {"status": "reseeded", "configured_models": count}
+
+
 @router.get("/routing-policies")
 async def get_routing_policies(request: Request) -> dict[str, Any]:
     """Get the tenant's model routing policies."""

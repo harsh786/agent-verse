@@ -557,6 +557,47 @@ export const connectorsApi = {
     ),
 };
 
+// ── Model registry (generic, cost-aware model selection) ───────────────────────
+
+export interface ConfiguredModel {
+  provider: string;
+  model_id: string;
+  display_name: string;
+  capabilities: string[];
+  cost_per_1k_input: number;
+  cost_per_1k_output: number;
+  supports_tools: boolean;
+  supports_vision: boolean;
+  supports_structured_output: boolean;
+  quality_score: number;
+  is_available: boolean;
+}
+
+export interface CapabilityGroup {
+  capability: string;
+  selected_model_id: string;
+  models: ConfiguredModel[];
+}
+
+export const modelsApi = {
+  listConfigured: () =>
+    request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured"),
+  upsertConfigured: (body: Partial<ConfiguredModel> & { model_id: string; capabilities: string[] }) =>
+    request<{ status: string; model_id: string }>("/models/configured", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteConfigured: (provider: string, modelId: string) =>
+    request<{ status: string; removed: boolean }>(
+      `/models/configured/${encodeURIComponent(provider)}/${encodeURIComponent(modelId)}`,
+      { method: "DELETE" }
+    ),
+  reseed: () =>
+    request<{ status: string; configured_models: number }>("/models/configured/reseed", {
+      method: "POST",
+    }),
+};
+
 // ── Tenants ───────────────────────────────────────────────────────────────────
 
 export interface SignupRequest {

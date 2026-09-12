@@ -192,6 +192,10 @@ class ModelRegistry:
         """Register (or replace) a model this deployment is configured to serve."""
         self._configured[f"{endpoint.provider}/{endpoint.model_id}"] = endpoint
 
+    def remove_configured(self, provider: str, model_id: str) -> bool:
+        """Remove a configured model; return True if it existed."""
+        return self._configured.pop(f"{provider}/{model_id}", None) is not None
+
     def clear_configured(self) -> None:
         """Drop all configured models (idempotent re-seeding)."""
         self._configured.clear()

@@ -84,6 +84,7 @@ const ApprovalsPage = lazy(() => import('@/features/approvals/ApprovalsPage').th
 const OnboardingPage = lazy(() => import('@/features/onboarding/OnboardingPage').then(m => ({ default: m.OnboardingPage })));
 const ConnectorsCatalogPage = lazy(() => import('@/features/connectors/ConnectorsCatalogPage').then(m => ({ default: m.ConnectorsCatalogPage })));
 const ConnectorsRegisteredPage = lazy(() => import('@/features/connectors/ConnectorsRegisteredPage').then(m => ({ default: m.ConnectorsRegisteredPage })));
+const ModelRegistryPage = lazy(() => import('@/features/models/ModelRegistryPage').then(m => ({ default: m.ModelRegistryPage })));
 const ConnectorDetailPage = lazy(() => import('@/features/connectors/ConnectorDetailPage').then(m => ({ default: m.ConnectorDetailPage })));
 const SchedulesPage = lazy(() => import('@/features/schedules/SchedulesPage'));
 const KnowledgePage = lazy(() => import('@/features/knowledge/KnowledgePage'));
@@ -242,6 +243,7 @@ export default function App() {
         <Route path="connectors/catalog"    element={lazy_rb("Connectors Catalog", <ConnectorsCatalogPage />)} />
         <Route path="connectors"            element={lazy_rb("Connectors",         <ConnectorsRegisteredPage />)} />
         <Route path="connectors/:connectorId" element={lazy_rb("Connector Detail", <ConnectorDetailPage />)} />
+        <Route path="models"                element={lazy_rb("Model Registry",     <ModelRegistryPage />)} />
         <Route path="schedules"             element={lazy_rb("Schedules",          <SchedulesPage />)} />
         <Route path="knowledge"             element={lazy_rb("Knowledge",          <KnowledgePage />)} />
         <Route path="sources"              element={lazy_rb("Sources",            <SourcesPage />)} />

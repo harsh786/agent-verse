@@ -97,6 +97,39 @@ def _register(registry: ModelRegistry, model_id: str, capabilities: list[ModelCa
     )
 
 
+def _load_overrides(reg: ModelRegistry) -> None:
+    """Register user-added/overridden models from the persistent store."""
+    try:
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        if store is None:
+            return
+        for e in store.list():
+            caps = [ModelCapability(c) for c in (e.get("capabilities") or []) if c]
+            if not e.get("model_id") or not caps:
+                continue
+            reg.register_configured(
+                ModelEndpoint(
+                    provider=str(e.get("provider") or _provider_for_model(str(e["model_id"]))),
+                    model_id=str(e["model_id"]),
+                    display_name=str(e.get("display_name") or e["model_id"]),
+                    capabilities=caps,
+                    cost_per_1k_input=float(e.get("cost_per_1k_input", 0.0) or 0.0),
+                    cost_per_1k_output=float(e.get("cost_per_1k_output", 0.0) or 0.0),
+                    supports_tools=bool(e.get("supports_tools", _TU in caps)),
+                    supports_vision=bool(e.get("supports_vision", _VI in caps)),
+                    supports_structured_output=bool(
+                        e.get("supports_structured_output", _SO in caps)
+                    ),
+                    quality_score=float(e.get("quality_score", 0.7) or 0.7),
+                    is_available=bool(e.get("is_available", True)),
+                )
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("model_registry_overrides_load_failed error=%s", str(exc)[:120])
+
+
 def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
     """(Re)seed the registry's configured set from the current environment.
 
@@ -119,6 +152,9 @@ def seed_registry_from_config(registry: ModelRegistry | None = None) -> int:
         _rr = (os.getenv("RAG_HOSTED_RERANKER_MODEL", "") or "").strip()
         if _rr and (os.getenv("RAG_HOSTED_RERANKER_URL", "") or "").strip():
             _register(reg, _rr, [_RR])
+        # Overlay user-registered overrides from the persistent store (UI/API).
+        # These win over env-seeded models with the same provider/model_id.
+        _load_overrides(reg)
         count = len(reg.list_configured())
         logger.info("model_registry_seeded", configured_models=count)
         return count

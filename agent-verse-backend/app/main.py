@@ -956,6 +956,25 @@ def create_app(
                 _llm_store = LLMConfigStore(redis_client=real_redis)
                 set_llm_config_store(_llm_store)
                 app.state.llm_config_store = _llm_store
+                # Wire the model-registry override store (SYNC redis — the seeder
+                # loads overrides synchronously) + seed the registry now so the
+                # configured/cost-aware selection reflects env + UI overrides.
+                try:
+                    import redis as _sync_redis_mod
+
+                    from app.ai_router.registry_store import (
+                        ModelRegistryStore,
+                        set_model_registry_store,
+                    )
+                    from app.ai_router.seeder import seed_registry_from_config
+
+                    _mr_redis = _sync_redis_mod.from_url(
+                        str(settings.redis_url), decode_responses=True
+                    )
+                    set_model_registry_store(ModelRegistryStore(_mr_redis))
+                    seed_registry_from_config()
+                except Exception as _mr_exc:
+                    logger.warning("model_registry_store_wire_failed", error=str(_mr_exc))
                 # Wire RedisSaver checkpointer for persistent LangGraph state (Fix 7 + Fix 2)
                 # langgraph-checkpoint-redis >= 0.0.6 returns an async context manager from
                 # from_conn_string(); we must enter it via __aenter__ to get the real saver.

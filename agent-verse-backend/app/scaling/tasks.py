@@ -1803,6 +1803,26 @@ def run_goal(
             except Exception as _ct_exc:  # pragma: no cover - defensive
                 logger.warning("capability_tracker_wire_failed: %s", _ct_exc)
 
+            # Wire the model-registry override store (sync redis) + re-seed so this
+            # worker's cost-aware model selection reflects env + UI overrides,
+            # including any registered since the worker started.
+            try:
+                import redis as _sync_redis_mod
+
+                from app.ai_router.registry_store import (
+                    ModelRegistryStore,
+                    get_model_registry_store,
+                    set_model_registry_store,
+                )
+                from app.ai_router.seeder import seed_registry_from_config
+
+                if get_model_registry_store() is None:
+                    _mr_redis = _sync_redis_mod.from_url(REDIS_URL, decode_responses=True)
+                    set_model_registry_store(ModelRegistryStore(_mr_redis))
+                seed_registry_from_config()
+            except Exception as _mr_exc:  # pragma: no cover - defensive
+                logger.warning("model_registry_store_wire_failed: %s", _mr_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
