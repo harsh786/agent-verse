@@ -38,14 +38,11 @@ export function ModelRegistryPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
   // Registry mutations are platform-admin-only. The operator supplies the
-  // platform admin key here; it's kept only in this browser (localStorage).
-  const [adminKey, setAdminKey] = useState<string>(() => {
-    try { return localStorage.getItem('mr_admin_key') ?? ''; } catch { return ''; }
-  });
-  const saveAdminKey = (v: string) => {
-    setAdminKey(v);
-    try { v ? localStorage.setItem('mr_admin_key', v) : localStorage.removeItem('mr_admin_key'); } catch { /* ignore */ }
-  };
+  // platform admin key here; it is kept IN MEMORY ONLY (never written to
+  // localStorage/sessionStorage) so this sensitive credential is not persisted
+  // in the browser — it is re-entered per session and cleared on reload.
+  const [adminKey, setAdminKey] = useState<string>('');
+  const saveAdminKey = (v: string) => setAdminKey(v);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['configured-models'],
