@@ -517,7 +517,59 @@ async def list_approvals(
     # show up with risk buckets/sort like any HITL request — the in-memory gateway
     # loses its requests on restart, but the gate tasks persist in the DB.
     results.extend(await _org_gate_approvals(tenant_ctx, org_id, resolved=False))
-    return results
+
+    # Hide phantom approvals whose owning mission/goal already finished: once the
+    # work is completed/failed/cancelled there is nothing left to approve, so the
+    # gate must not keep nagging the operator. Defensive read-time filter that
+    # covers gates still lingering in gateway memory or as org tasks.
+    return await _drop_terminal_owner_approvals(tenant_ctx, results)
+
+
+async def _drop_terminal_owner_approvals(
+    tenant_ctx: TenantContext, approvals: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Remove approvals whose goal_id maps to a terminal mission or goal."""
+    goal_ids = [str(a["goal_id"]) for a in approvals if a.get("goal_id")]
+    if not goal_ids:
+        return approvals
+    from sqlalchemy import text
+
+    from app.db.session import get_session_factory
+
+    terminal: set[str] = set()
+    try:
+        db = get_session_factory()
+        async with db() as sess, sess.begin():
+            # org_missions / goals enforce RLS — scope this session to the tenant
+            # so the terminal lookups can see the owning rows.
+            await sess.execute(
+                text("SELECT set_config('app.tenant_id', :t, true)"),
+                {"t": str(tenant_ctx.tenant_id)},
+            )
+            m = (
+                await sess.execute(
+                    text(
+                        "SELECT id::text FROM org_missions WHERE id::text = ANY(:ids) "
+                        "AND status IN ('completed','failed','cancelled','archived')"
+                    ),
+                    {"ids": goal_ids},
+                )
+            ).scalars().all()
+            g = (
+                await sess.execute(
+                    text(
+                        "SELECT id FROM goals WHERE id = ANY(:ids) "
+                        "AND status IN ('complete','failed','cancelled')"
+                    ),
+                    {"ids": goal_ids},
+                )
+            ).scalars().all()
+            terminal = {str(x) for x in [*m, *g]}
+    except Exception:
+        return approvals  # never let the filter break the inbox
+    if not terminal:
+        return approvals
+    return [a for a in approvals if str(a.get("goal_id") or "") not in terminal]
 
 
 async def _resolve_org_gate(

@@ -191,6 +191,62 @@ class HITLGateway:
 
         return req  # ApprovalRequest: awaitable + string-compatible via __str__/__eq__/__hash__
 
+    async def _db_update_resolution(
+        self,
+        request_id: str,
+        tenant_id: str,
+        status: str,
+        approver: str = "",
+        note: str = "",
+    ) -> None:
+        """Persist a resolution (approved/rejected/expired) to the DB row.
+
+        Without this, ``approve``/``reject`` only mutated the in-memory request;
+        the ``approval_requests`` row stayed ``pending`` and ``startup_restore``
+        re-hydrated it on the next restart — so an approved gate reappeared in the
+        inbox. Writing the terminal status here makes an approval durable.
+        """
+        if self._db_session_factory is None:
+            return
+        try:
+            from sqlalchemy import text
+
+            async with self._db_session_factory() as session, session.begin():
+                await session.execute(
+                    text(
+                        "UPDATE approval_requests "
+                        "SET status = :s, approver = :a, note = :n, resolved_at = NOW() "
+                        "WHERE id = :id AND tenant_id = :tid AND status = 'pending'"
+                    ),
+                    {
+                        "s": status,
+                        "a": approver or None,
+                        "n": note or "",
+                        "id": request_id,
+                        "tid": tenant_id,
+                    },
+                )
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_db_resolve_failed", error=str(exc))
+
+    def _schedule_db_resolution(
+        self, request_id: str, tenant_id: str, status: str, approver: str = "", note: str = ""
+    ) -> None:
+        """Fire-and-forget the DB resolution write (same pattern as create-persist)."""
+        if self._db_session_factory is None:
+            return
+        import asyncio as _aio
+
+        try:
+            loop = _aio.get_running_loop()
+            loop.create_task(  # noqa: RUF006
+                self._db_update_resolution(request_id, tenant_id, status, approver, note)
+            )
+        except RuntimeError:
+            pass  # No running loop (shouldn't happen in async context)
+
     async def _db_persist_approval_request(self, req: ApprovalRequest, tenant_id: str) -> None:
         """Persist new approval request to DB (Fix 4)."""
         if self._db_session_factory is None:
@@ -327,6 +383,12 @@ class HITLGateway:
         if req.approvals_received >= req.required_approvers:
             req.status = ApprovalStatus.APPROVED
             req._event.set()  # Unblock waiting agent
+            # Durably record the resolution so it survives a restart (otherwise
+            # startup_restore re-loads the still-'pending' DB row and the approved
+            # gate reappears in the inbox).
+            self._schedule_db_resolution(
+                req.request_id, tenant_ctx.tenant_id, "approved", approver, note
+            )
             # C6.1: Publish cross-replica notification via Redis BLPOP
             if self._redis is not None:
                 try:
@@ -358,6 +420,8 @@ class HITLGateway:
         req.approver = approver
         req.note = note
         req._event.set()  # Unblock waiting agent
+        # Durably record the rejection so it survives a restart.
+        self._schedule_db_resolution(request_id, tenant_ctx.tenant_id, "rejected", approver, note)
 
         # Phase 12: Publish rejection with note so goal_service can forward to planner
         if self._redis is not None:
@@ -548,26 +612,73 @@ class HITLGateway:
         if db is None:
             return 0
         try:
-            from sqlalchemy import select
+            from sqlalchemy import text
 
-            from app.db.models.governance import ApprovalRequest as DBApprovalReq
+            # Cross-tenant startup scan — bypass RLS (system_session) so the
+            # phantom check can see every tenant's missions/goals. All reads +
+            # the expire write share one transaction to avoid autobegin clashes.
+            from app.db.rls import system_session
 
-            async with db() as session:
-                result = await session.execute(
-                    select(DBApprovalReq).where(DBApprovalReq.status == "pending")
-                )
-                rows = result.scalars().all()
-            for row in rows:
+            async with db() as session, session.begin(), system_session(session):
+                raw = (
+                    await session.execute(
+                        text(
+                            "SELECT id, tenant_id, goal_id, action, risk_level "
+                            "FROM approval_requests WHERE status = 'pending'"
+                        )
+                    )
+                ).mappings().all()
+
+                # Don't resurrect gates whose owning mission/goal already finished:
+                # those are phantom approvals (the work is done — nothing to approve).
+                # Expire them in the DB so they never re-appear, and skip loading them.
+                goal_ids = [r["goal_id"] for r in raw if r["goal_id"]]
+                terminal: set[str] = set()
+                if goal_ids:
+                    m = (
+                        await session.execute(
+                            text(
+                                "SELECT id::text FROM org_missions "
+                                "WHERE id::text = ANY(:ids) "
+                                "AND status IN ('completed','failed','cancelled','archived')"
+                            ),
+                            {"ids": goal_ids},
+                        )
+                    ).scalars().all()
+                    g = (
+                        await session.execute(
+                            text(
+                                "SELECT id FROM goals WHERE id = ANY(:ids) "
+                                "AND status IN ('complete','failed','cancelled')"
+                            ),
+                            {"ids": goal_ids},
+                        )
+                    ).scalars().all()
+                    terminal = {str(x) for x in [*m, *g]}
+                    if terminal:
+                        await session.execute(
+                            text(
+                                "UPDATE approval_requests SET status='expired', "
+                                "resolved_at=NOW() WHERE status='pending' "
+                                "AND goal_id = ANY(:ids)"
+                            ),
+                            {"ids": list(terminal)},
+                        )
+
+            loaded = 0
+            for row in raw:
+                if row["goal_id"] and str(row["goal_id"]) in terminal:
+                    continue  # phantom — owning mission/goal already terminal
                 req = ApprovalRequest(
-                    goal_id=row.goal_id,
-                    action=row.action or "unknown",
-                    risk_level=row.risk_level or "unknown",
-                    request_id=row.id,
+                    goal_id=row["goal_id"],
+                    action=row["action"] or "unknown",
+                    risk_level=row["risk_level"] or "unknown",
+                    request_id=row["id"],
                     status=ApprovalStatus.PENDING,
                 )
-                tenant_id = getattr(row, "tenant_id", "unknown")
-                self._requests[(tenant_id, row.id)] = req
-            return len(rows)
+                self._requests[(row["tenant_id"], row["id"])] = req
+                loaded += 1
+            return loaded
         except Exception as exc:
             from app.observability.logging import get_logger
 
