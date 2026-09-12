@@ -408,6 +408,8 @@ export interface CreateAgentRequest {
   description?: string;
   tools?: string[];
   model?: string;
+  /** MCP connector server ids the agent may call as tools. */
+  connector_ids?: string[];
 }
 
 export interface AgentSnapshot {

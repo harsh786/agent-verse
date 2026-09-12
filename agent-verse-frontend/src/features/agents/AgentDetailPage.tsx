@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 
 import {
-  goalsApi, agentsApi, knowledgeApi, credentialsApi,
+  goalsApi, agentsApi, knowledgeApi, credentialsApi, connectorsApi,
   type CreateAgentRequest,
 } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
@@ -159,6 +159,8 @@ export function AgentDetailPage() {
   const [tab, setTab] = useState<AgentTab>('overview');
   const [editing, setEditing] = useState(false);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  // connector_ids is an array, so it lives outside the string-valued editForm.
+  const [editConnectors, setEditConnectors] = useState<string[]>([]);
   // Fix 9: exportMsg replaced with toast — no local state needed
   const [snapshotMsg, setSnapshotMsg] = useState("");
   const [versionOpen, setVersionOpen] = useState(false);
@@ -217,9 +219,20 @@ export function AgentDetailPage() {
     },
   });
 
+  // Tenant's registered connectors — offered as attachable tools while editing.
+  const { data: registeredConnectors = [] } = useQuery({
+    queryKey: ["connectors"],
+    queryFn: () => connectorsApi.list(),
+    enabled: editing,
+  });
+
   // Fix 6: Use agentsApi.update instead of raw fetch
   const saveMutation = useMutation({
-    mutationFn: () => agentsApi.update(agentId!, editForm as Partial<CreateAgentRequest>),
+    mutationFn: () =>
+      agentsApi.update(agentId!, {
+        ...(editForm as Partial<CreateAgentRequest>),
+        connector_ids: editConnectors,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agent", agentId] });
       setEditing(false);
@@ -394,6 +407,9 @@ export function AgentDetailPage() {
                   goal_template: agent.goal_template ?? "",
                   autonomy_mode: agent.autonomy_mode ?? "",
                 });
+                setEditConnectors(
+                  Array.isArray(agent.connector_ids) ? [...(agent.connector_ids as string[])] : [],
+                );
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm border border-border rounded-md hover:bg-accent transition-colors"
             >
@@ -468,6 +484,54 @@ export function AgentDetailPage() {
                 rows={3}
                 className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none resize-none"
               />
+            </div>
+            {/* Connectors — attach the tenant's registered tools so the agent
+                can actually call them (readiness needs at least one). */}
+            <div>
+              <label className="block text-xs font-medium mb-1">
+                Connectors{editConnectors.length > 0 ? ` (${editConnectors.length} selected)` : ''}
+              </label>
+              {registeredConnectors.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No connectors registered yet.{' '}
+                  <button
+                    type="button"
+                    onClick={() => navigate('/connectors/catalog')}
+                    className="text-primary hover:underline"
+                  >
+                    Add a connector
+                  </button>
+                </p>
+              ) : (
+                <div className="max-h-44 overflow-y-auto rounded-lg border border-input bg-background divide-y divide-border">
+                  {registeredConnectors.map((c) => {
+                    const checked = editConnectors.includes(c.server_id);
+                    return (
+                      <label
+                        key={c.server_id}
+                        className="flex items-center gap-2.5 px-3 py-2 text-sm cursor-pointer hover:bg-accent/50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) =>
+                            setEditConnectors((prev) =>
+                              e.target.checked
+                                ? [...prev, c.server_id]
+                                : prev.filter((id) => id !== c.server_id),
+                            )
+                          }
+                          className="h-4 w-4 rounded border-input accent-[#00D4FF]"
+                        />
+                        <span className="flex-1 min-w-0 truncate">{c.name || c.server_id}</span>
+                        {c.status && (
+                          <span className="text-[10px] text-muted-foreground shrink-0">{c.status}</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </div>
             <div className="flex justify-end">
               <button
