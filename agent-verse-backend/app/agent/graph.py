@@ -143,6 +143,14 @@ class AgentGraph(
         # Goal-tree decomposition
         enable_goal_tree: bool = False,
         goal_tree_threshold: int = 4,  # decompose when plan >= this many steps
+        # Adaptive, model-capability-aware execution strategy (A/B/C). When on,
+        # the plan/tool/latency strategy is resolved per model instead of one
+        # fixed behavior for all models. Default-on but safe: an unknown or weak
+        # model resolves to today's SEQUENTIAL + SINGLE behavior.
+        enable_adaptive_strategy: bool = True,
+        execution_strategy: Any | None = None,  # explicit override (tests / callers)
+        fast_model_id: str = "",  # a low-latency model for Strategy C verifier routing
+        capability_tracker: Any | None = None,  # P5 adaptivity (RedisCapabilityTracker)
         # LangGraph checkpointer (RedisSaver when available, else MemorySaver)
         checkpointer: Any | None = None,
         # Distributed bulkhead registry (RedisBulkheadRegistry or None)
@@ -227,6 +235,13 @@ class AgentGraph(
         self._autonomy_mode = autonomy_mode
         self._enable_goal_tree = enable_goal_tree
         self._goal_tree_threshold = goal_tree_threshold
+        # Adaptive execution strategy (A/B/C). Resolved once from the wired
+        # per-role model ids; adaptivity (P5) refines it per goal at plan time.
+        self._enable_adaptive_strategy = enable_adaptive_strategy
+        self._strategy_override = execution_strategy
+        self._fast_model_id = fast_model_id or ""
+        self._capability_tracker = capability_tracker
+        self._execution_strategy = self._resolve_execution_strategy()
         self._hitl_timeout: float = 300.0
         self._checkpointer = checkpointer if checkpointer is not None else MemorySaver()
         # Ensure the checkpointer supports async — LangGraph's ainvoke requires
@@ -289,6 +304,63 @@ class AgentGraph(
     @property
     def runtime_profile(self) -> Any | None:
         return self._runtime_profile
+
+    def _role_model_id(self, provider: Any) -> str:
+        """Best-effort model id for a wired role provider (planner/executor/verifier)."""
+        return str(getattr(provider, "_default_model", "") or "")
+
+    def _resolve_execution_strategy(self) -> Any:
+        """Resolve the per-model execution strategy from the wired role models.
+
+        Returns the safe SEQUENTIAL+SINGLE default when adaptivity is disabled or
+        resolution fails, so this never changes behavior for unknown/weak models.
+        """
+        from app.agent.execution_strategy import ExecutionStrategy
+
+        if self._strategy_override is not None:
+            return self._strategy_override
+        if not self._enable_adaptive_strategy:
+            return ExecutionStrategy.safe_default("adaptive strategy disabled")
+        try:
+            from app.agent.execution_strategy import profile_for, resolve
+
+            return resolve(
+                planner=profile_for(self._role_model_id(self._planner)),
+                executor=profile_for(self._role_model_id(self._executor)),
+                verifier=profile_for(self._role_model_id(self._verifier)),
+                fast_model_id=self._fast_model_id or None,
+            )
+        except Exception:  # pragma: no cover - defensive
+            return ExecutionStrategy.safe_default("resolution error")
+
+    async def _current_strategy(self, tenant_ctx: Any = None) -> Any:
+        """The execution strategy for the current goal.
+
+        Starts from the statically-resolved strategy and, when a capability
+        tracker is wired (P5), downgrades it using observed per-model success
+        rates. Any error falls back to the static strategy.
+        """
+        base = self._execution_strategy
+        tracker = getattr(self, "_capability_tracker", None)
+        if (
+            not self._enable_adaptive_strategy
+            or self._strategy_override is not None
+            or tracker is None
+        ):
+            return base
+        try:
+            from app.agent.strategy_adaptivity import refine_strategy
+
+            tid = getattr(tenant_ctx, "tenant_id", None)
+            s_rate = await tracker.rate(
+                self._role_model_id(self._planner), tenant_id=tid, kind="structured"
+            )
+            p_rate = await tracker.rate(
+                self._role_model_id(self._executor), tenant_id=tid, kind="parallel"
+            )
+            return refine_strategy(base, structured_ok_rate=s_rate, parallel_ok_rate=p_rate)
+        except Exception:  # pragma: no cover - defensive
+            return base
 
     @staticmethod
     def _auto_select_multi_agent(runtime_profile: Any | None) -> frozenset[str]:

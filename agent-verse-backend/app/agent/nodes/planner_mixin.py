@@ -49,6 +49,29 @@ class PlannerMixin:
         agent_state.status = GoalStatus.PLANNING
         agent_state.iterations = iteration
 
+        # ── Adaptive execution strategy (A/B/C) ────────────────────────────────
+        # Resolve the per-model strategy once per goal (first plan) and stash it
+        # so the executor reads the same decision. Refined by observed reliability
+        # when a capability tracker is wired (P5).
+        _strategy = agent_state.context.get("_execution_strategy")
+        if _strategy is None:
+            try:
+                _strategy = await self._current_strategy(tenant_ctx)
+            except Exception:  # pragma: no cover - defensive
+                _strategy = getattr(self, "_execution_strategy", None)
+            if _strategy is not None:
+                agent_state.context["_execution_strategy"] = _strategy
+                _pm = getattr(_strategy.plan_mode, "value", str(_strategy.plan_mode))
+                _tm = getattr(_strategy.tool_mode, "value", str(_strategy.tool_mode))
+                await self._emit(
+                    {
+                        "type": "execution_strategy_resolved",
+                        "plan_mode": _pm,
+                        "tool_mode": _tm,
+                        "reason": getattr(_strategy, "reason", ""),
+                    }
+                )
+
         # ── ContextPipeline processing ─────────────────────────────────────────
         try:
             from app.context.context_pipeline import ContextPipeline
@@ -288,10 +311,15 @@ class PlannerMixin:
             if _plan_variant is not None:
                 agent_state.context["planner_variant_id"] = _plan_variant.variant_id
         else:
-            # Use structured planner when goal-tree is enabled for dependency-aware parallel execution  # noqa: E501
-            _planner_prompt = (
-                STRUCTURED_PLANNER_SYSTEM if self._enable_goal_tree else PLANNER_SYSTEM
-            )
+            # Strategy A: use the structured (dependency-graph) planner when the
+            # resolved strategy says so — decoupled from goal-tree decomposition,
+            # which stays gated on its own flag. Falls back to the plain planner
+            # for weak/unknown models (safe default) or when no strategy resolved.
+            from app.agent.execution_strategy import PlanMode as _PlanMode
+
+            _plan_mode = getattr(_strategy, "plan_mode", None) if _strategy is not None else None
+            _want_structured = _plan_mode == _PlanMode.STRUCTURED or self._enable_goal_tree
+            _planner_prompt = STRUCTURED_PLANNER_SYSTEM if _want_structured else PLANNER_SYSTEM
         agent_system_prompt = agent_state.context.get("system_prompt", "")
         system_content = (
             f"{agent_system_prompt}\n\n{_planner_prompt}"
