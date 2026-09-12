@@ -188,6 +188,19 @@ async def resume_run(run_id: str, request: Request) -> dict[str, str]:
     ok = await svc.resume_run(tenant_id=tenant_id, run_id=run_id)
     if not ok:
         raise HTTPException(status_code=409, detail="Run is not paused")
+    # Status is now RUNNING; re-dispatch execution so the run actually continues
+    # (the engine skips already-completed steps). Best-effort — if no runner is
+    # wired the status flip alone stands.
+    runner = getattr(request.app.state, "workflow_runner", None)
+    if runner is not None and hasattr(runner, "resume"):
+        try:
+            await runner.resume(run_id, tenant_id)
+        except Exception as exc:  # noqa: BLE001 — surface as 202 with a note
+            return {
+                "run_id": run_id,
+                "status": WorkflowRunStatus.RUNNING.value,
+                "warning": f"resume dispatch failed: {str(exc)[:120]}",
+            }
     return {"run_id": run_id, "status": WorkflowRunStatus.RUNNING.value}
 
 

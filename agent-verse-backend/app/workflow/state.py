@@ -36,6 +36,18 @@ def _add(a: float | int | None, b: float | int | None) -> float | int:
     return (a or 0) + (b or 0)
 
 
+class WorkflowRunControlSignal(Exception):
+    """Base for cooperative run-control halts raised between steps."""
+
+
+class WorkflowCancelled(WorkflowRunControlSignal):
+    """An operator cancelled the run (via the API); abort remaining steps."""
+
+
+class WorkflowPaused(WorkflowRunControlSignal):
+    """An operator paused the run (via the API); halt, keeping progress."""
+
+
 class WorkflowRunStatus(enum.StrEnum):
     PENDING = "pending"
     RUNNING = "running"

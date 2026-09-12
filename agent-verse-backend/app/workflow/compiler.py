@@ -14,6 +14,7 @@ The compiler:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -23,7 +24,13 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import WorkflowDefinition
 from app.workflow.registry import StepTypeRegistry
-from app.workflow.state import StepStatus, WorkflowRunStatus, WorkflowState
+from app.workflow.state import (
+    StepStatus,
+    WorkflowCancelled,
+    WorkflowPaused,
+    WorkflowRunStatus,
+    WorkflowState,
+)
 
 _log = get_logger(__name__)
 
@@ -171,6 +178,37 @@ class WorkflowCompiler:
             # Check operator pause before each step
             if state.get("paused_by"):
                 return {"status": WorkflowRunStatus.PAUSED}
+
+            # ── Cooperative run control (operator stop/pause/resume via the API) ──
+            # Checked at every step boundary against the persisted run status.
+            _rid = state.get("run_id")
+            _tid = state.get("tenant_id")
+            if run_store is not None and _rid and _tid and not state.get("is_test_run"):
+                # RESUME: a step already completed in a prior (paused) attempt of
+                # this run is not re-executed — return its persisted output so the
+                # run continues from where it stopped without redoing work.
+                if hasattr(run_store, "get_step_result"):
+                    _prior = None
+                    with contextlib.suppress(Exception):
+                        _prior = await run_store.get_step_result(_tid, _rid, step.id)
+                    if (
+                        _prior
+                        and _prior.get("status") == StepStatus.COMPLETE.value
+                        and _prior.get("output") is not None
+                    ):
+                        return {"step_outputs": {step.id: _prior["output"]}}
+                # STOP / PAUSE: honor an operator control status set via the API.
+                # Raising halts the whole run (propagates out of ainvoke) so no
+                # further steps execute — the runner maps the signal to the
+                # terminal/paused run status.
+                if hasattr(run_store, "get_status"):
+                    _cur = None
+                    with contextlib.suppress(Exception):
+                        _cur = await run_store.get_status(_tid, _rid)
+                    if _cur == WorkflowRunStatus.CANCELLED.value:
+                        raise WorkflowCancelled(str(_rid))
+                    if _cur == WorkflowRunStatus.PAUSED.value:
+                        raise WorkflowPaused(str(_rid))
 
             # Persist step-result rows when a run store is wired (skip test runs,
             # which have no persisted run row to attach to).

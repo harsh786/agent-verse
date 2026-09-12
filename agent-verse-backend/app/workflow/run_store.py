@@ -374,6 +374,44 @@ class PostgresWorkflowRunStore:
             ).first()
             return str(row[0]) if row and row[0] is not None else ""
 
+    async def get_status(self, tenant_id: str, run_id: str) -> str | None:
+        """Lightweight current-status read — used by the engine's cooperative
+        cancel/pause check between steps (avoids the heavier get() per step)."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text("SELECT status FROM workflow_runs WHERE id = CAST(:rid AS uuid)"),
+                    {"rid": run_id},
+                )
+            ).first()
+            return str(row[0]) if row and row[0] is not None else None
+
+    async def get_step_result(
+        self, tenant_id: str, run_id: str, step_id: str
+    ) -> dict[str, Any] | None:
+        """Return the latest persisted result row for one step of a run, or None.
+
+        Lets a resumed run skip steps already completed in a prior (paused)
+        attempt instead of redoing their work."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT * FROM workflow_step_results "
+                        "WHERE run_id = CAST(:rid AS uuid) AND step_id = :sid "
+                        "ORDER BY attempt_number DESC, started_at DESC LIMIT 1"
+                    ),
+                    {"rid": run_id, "sid": step_id},
+                )
+            ).mappings().first()
+            return self._row_to_step(row) if row else None
+
     async def get_definition(self, workflow_id: str, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import text as sa_text
 

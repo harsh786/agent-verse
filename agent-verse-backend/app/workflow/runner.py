@@ -23,7 +23,12 @@ import httpx
 from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import WorkflowDefinition
-from app.workflow.state import WorkflowRunStatus, WorkflowState
+from app.workflow.state import (
+    WorkflowCancelled,
+    WorkflowPaused,
+    WorkflowRunStatus,
+    WorkflowState,
+)
 
 _log = get_logger(__name__)
 
@@ -156,6 +161,32 @@ class WorkflowRunner:
             )
 
         return run_id
+
+    async def resume(self, run_id: str, tenant_id: str) -> None:
+        """Re-dispatch a paused run so it continues from where it stopped.
+
+        The status was flipped back to RUNNING by the API (WorkflowService
+        .resume_run). Re-executing reconstructs state from the run record and the
+        compiler skips steps already persisted COMPLETE (see node_fn), so no
+        completed work is redone. Uses Celery in production, inline otherwise.
+        """
+        workflow_id = (
+            await self._run_store.get_workflow_id(run_id, tenant_id)
+            if self._run_store is not None
+            else ""
+        )
+        if not workflow_id:
+            return
+        if self._celery is None:
+            await self.execute_fresh(run_id, workflow_id, tenant_id)
+        else:
+            from app.workflow.celery_tasks import execute_workflow_run
+
+            execute_workflow_run.apply_async(
+                args=[run_id, workflow_id, tenant_id],
+                kwargs={},
+                queue=f"workflows.{await self._get_plan_tier(tenant_id)}",
+            )
 
     async def _execute_inline(
         self,
@@ -290,6 +321,21 @@ class WorkflowRunner:
                 )
         try:
             final_state = await compiled.ainvoke(initial_state, config)
+        except WorkflowCancelled:
+            # Operator stopped the run — it's already marked CANCELLED via the API;
+            # confirm the terminal status and do NOT mark it failed.
+            _log.info("workflow_run_cancelled", run_id=run_id)
+            if self._run_store is not None:
+                with contextlib.suppress(Exception):
+                    await self._run_store.update_status(
+                        run_id, WorkflowRunStatus.CANCELLED, tenant_id=tenant_id
+                    )
+            return
+        except WorkflowPaused:
+            # Operator paused the run — leave it PAUSED (set via the API) with its
+            # completed steps persisted, so Resume can continue from here.
+            _log.info("workflow_run_paused", run_id=run_id)
+            return
         except Exception as exc:
             _log.error(
                 "workflow_run_failed_worker", run_id=run_id, error=repr(exc), exc_info=True
