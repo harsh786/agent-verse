@@ -269,7 +269,7 @@ class PatternAssembler:
             model_executor=config_overrides.get("model_executor", "gpt-5.2"),
             model_verifier=config_overrides.get("model_verifier", "gpt-5.2"),
             model_classifier="gpt-4o-mini",
-            max_iterations=config_overrides.get("max_iterations", 15),
+            max_iterations=config_overrides.get("max_iterations", 6),
             max_refine_iterations=config_overrides.get("max_refine_iterations", 2),
             persistence_mode=config_overrides.get("persistence_mode", False),
             max_persistence_attempts=config_overrides.get("max_persistence_attempts", 3),

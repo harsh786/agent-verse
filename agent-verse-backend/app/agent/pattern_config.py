@@ -67,7 +67,7 @@ class PatternConfig:
     model_executor: str = "gpt-5.2"
     model_verifier: str = "gpt-5.2"
     model_classifier: str = "gpt-4o-mini"
-    max_iterations: int = 15
+    max_iterations: int = 6
     max_refine_iterations: int = 2
     persistence_mode: bool = False
     max_persistence_attempts: int = 3

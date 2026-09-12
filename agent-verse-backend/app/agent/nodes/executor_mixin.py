@@ -55,6 +55,13 @@ from app.agent.nodes._helpers import (
     _is_high_risk_step,
 )
 
+# Per-goal tool-call budget. Once the goal has spent this many tool calls across
+# all steps, the executor stops calling tools and is instructed to synthesize a
+# final answer from the data already gathered. Without this, a weak planner
+# re-searches on every replan and never converges (observed: 34 web searches
+# across 11 replans before a goal failed). Overridable via ``_tool_call_budget``.
+_DEFAULT_TOOL_CALL_BUDGET = 12
+
 
 class ExecutorMixin:
     """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
@@ -967,6 +974,22 @@ class ExecutorMixin:
                 '"result": "INSUFFICIENT DATA: <what is missing>"}.'
             )
 
+        # Tool-call budget — force convergence. Once the goal has spent its budget
+        # of tool calls across all steps, stop searching and make the executor
+        # synthesize the final answer from what it already gathered, rather than
+        # re-searching on every replan (which never converges for weak planners).
+        _tool_budget = int(getattr(self, "_tool_call_budget", _DEFAULT_TOOL_CALL_BUDGET))
+        _tool_calls_used = sum(len(s.tool_calls or []) for s in state.steps)
+        _budget_exhausted = _tool_budget > 0 and _tool_calls_used >= _tool_budget
+        if _budget_exhausted:
+            _executor_prompt = _executor_prompt + (
+                f"\n\nTOOL-CALL BUDGET REACHED ({_tool_calls_used}/{_tool_budget}). Do NOT "
+                "call any more tools. Using ONLY the information already gathered in the "
+                "context above, produce the best possible final answer for the goal now, "
+                "in the requested format. If some data is missing, answer with what you "
+                "have and briefly note the gaps."
+            )
+
         # Resolve executor model via model_router when available (Bug 3 fix)
         _exec_model = ""
         if self._model_router is not None:
@@ -979,7 +1002,8 @@ class ExecutorMixin:
                 Message(role="user", content=content),
             ],
             model=_exec_model,
-            tools=_tool_defs,
+            # Drop tools once the budget is spent so the model cannot keep searching.
+            tools=[] if _budget_exhausted else _tool_defs,
         )
 
         # 8a. Bulkhead — distributed concurrency limit per tenant (RedisBulkhead or Semaphore)

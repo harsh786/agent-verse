@@ -938,7 +938,7 @@ class GoalService:
                 _model_router = None
 
         # Extract per-agent execution settings (FIX 4)
-        _max_iterations = int(_agent_config.get("max_iterations", 15))
+        _max_iterations = int(_agent_config.get("max_iterations", 6))
         _model_override = str(_agent_config.get("model_override", "") or "")
 
         # Apply model override to the model router before building the graph
