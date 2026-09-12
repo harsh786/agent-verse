@@ -999,6 +999,16 @@ class ExecutorMixin:
             _tool_lines = "\n".join(f"  - {n}" for n in sorted(_allowed_tools_set)[:30])
             _executor_prompt = (
                 _executor_prompt + f"\n\nALLOWED TOOLS (ONLY use these exact names):\n{_tool_lines}"
+                # Tools exist, but not every step needs one. Weak models otherwise
+                # emit garbage (e.g. a bare "Hello!") when no listed tool fits the
+                # step — because the prompt pressures them to call something. Make
+                # "answer directly" an explicit, valid option so a self-contained
+                # step (arithmetic, a definition) is answered in one turn instead of
+                # looping until the verifier rejects the noise.
+                + "\n\nIf NONE of these tools is relevant to the current step "
+                "(e.g. it is arithmetic, a definition, or reasoning you can do "
+                "yourself), do NOT force a tool call — answer the step directly in "
+                "plain, concise prose."
             )
         elif not _tool_defs:
             # No tools are available for this step. Weaker models, still steered by
@@ -2024,10 +2034,14 @@ class ExecutorMixin:
         # single hit (e.g. a stray number) never destroys an otherwise-valid answer.
         if self._guardrail_checker is not None:
             _redactor = getattr(self._guardrail_checker, "redact_output", None)
-            if callable(_redactor):
-                raw_output, output_issues = _redactor(output=raw_output)
+            output_issues: list[str] = []
+            _res = _redactor(output=raw_output) if callable(_redactor) else None
+            if isinstance(_res, tuple) and len(_res) == 2 and isinstance(_res[1], list):
+                # span redaction available (real GuardrailChecker)
+                raw_output, output_issues = _res
             else:  # older checker without span redaction
-                output_issues = self._guardrail_checker.check_output(output=raw_output)
+                _co = self._guardrail_checker.check_output(output=raw_output)
+                output_issues = _co if isinstance(_co, list) else []
                 if output_issues:
                     raw_output = f"[Output redacted by guardrails: {'; '.join(output_issues)}]"
             if output_issues:
