@@ -36,7 +36,7 @@ import '@xyflow/react/dist/style.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Save, Play, Zap, Code2, Undo2, Redo2, Layout, X,
-  ChevronLeft, AlertCircle, Loader2,
+  ChevronLeft, AlertCircle, Loader2, History,
 } from 'lucide-react';
 
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
@@ -94,6 +94,7 @@ function BuilderCanvas({
   isSaving: boolean;
 }) {
   const rfInstance = useReactFlow();
+  const navigate = useNavigate();
   const { applyLayout } = useAutoLayout();
 
   // Parse initial definition from API
@@ -108,7 +109,7 @@ function BuilderCanvas({
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [showYaml, setShowYaml] = useState(false);
   const [yamlText, setYamlText] = useState(yaml);
-  const [runStatus, setRunStatus] = useState<Record<string, string>>({});
+  const [runStatus] = useState<Record<string, string>>({});
   const [isTestRunning, setIsTestRunning] = useState(false);
 
   const history = useHistory({ nodes: canvasState.nodes, edges: canvasState.edges });
@@ -248,15 +249,21 @@ function BuilderCanvas({
   };
 
   // ── Test run ────────────────────────────────────────────────────────────────
+  // Runs the workflow for real and opens the live Run Detail view, where every
+  // step's real input/output/status is rendered (n8n-style). Save first so the
+  // run executes the current canvas.
   const testMutation = useMutation({
-    mutationFn: () => workflowEngineApi.trigger(wf.id, { dry_run: true }),
+    mutationFn: async () => {
+      handleSave();
+      return workflowEngineApi.trigger(wf.id, {});
+    },
     onMutate: () => setIsTestRunning(true),
-    onSuccess: (_run) => {
+    onSuccess: (run) => {
       setIsTestRunning(false);
-      // Mark all nodes as complete in overlay
-      const allComplete: Record<string, string> = {};
-      nodes.forEach((node) => { allComplete[node.id] = 'complete'; });
-      setRunStatus(allComplete);
+      const runId = (run as { run_id?: string; id?: string })?.run_id
+        ?? (run as { id?: string })?.id;
+      if (runId) navigate(`/workflows/${wf.id}/runs/${runId}`);
+      else navigate(`/workflows/${wf.id}/runs`);
     },
     onError: () => setIsTestRunning(false),
   });
@@ -329,6 +336,17 @@ function BuilderCanvas({
 
           <div className="w-px h-5 bg-[#0F1826]/10 mx-0.5" />
 
+          {/* Runs — view all executions of this workflow (any status) */}
+          <button
+            onClick={() => navigate(`/workflows/${wf.id}/runs`)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[#F1F5F9]/60
+                       hover:text-[#F1F5F9] hover:bg-[#0A0D14]/8 text-xs font-medium transition-colors"
+            aria-label="View workflow runs"
+            title="View all executions"
+          >
+            <History className="h-3.5 w-3.5" /> Runs
+          </button>
+
           {/* Test */}
           <button
             onClick={() => testMutation.mutate()}
@@ -376,9 +394,21 @@ function BuilderCanvas({
           onPaneClick={onPaneClick}
           connectionMode={ConnectionMode.Loose}
           fitView
-          fitViewOptions={{ padding: 0.15 }}
-          minZoom={0.1}
-          maxZoom={2.5}
+          fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
+          /* Constrained, predictable zoom range — 0.1 let the canvas shrink to
+             nothing on a single scroll tick, which felt broken. */
+          minZoom={0.4}
+          maxZoom={2}
+          /* n8n-like navigation: smooth scroll + pinch to zoom, double-click to
+             zoom in, drag the pane to pan. */
+          zoomOnScroll
+          zoomOnPinch
+          zoomOnDoubleClick
+          panOnScroll={false}
+          panOnDrag
+          snapToGrid
+          snapGrid={[16, 16]}
+          proOptions={{ hideAttribution: true }}
           className="bg-[#060810]"
           aria-label="Workflow canvas"
           deleteKeyCode={null /* handled by our shortcut hook */}

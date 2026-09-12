@@ -27,6 +27,9 @@ export const NODE_COLORS = {
   foreach:      { bg: 'bg-cyan-500/15',    border: 'border-cyan-400/60',    text: 'text-cyan-300' },
   // Human
   hitl:         { bg: 'bg-rose-500/15',    border: 'border-rose-400/60',    text: 'text-rose-300' },
+  // Perception
+  ocr:          { bg: 'bg-lime-500/15',    border: 'border-lime-400/60',    text: 'text-lime-300' },
+  rpa:          { bg: 'bg-pink-500/15',    border: 'border-pink-400/60',    text: 'text-pink-300' },
   // Data
   transform:    { bg: 'bg-green-500/15',   border: 'border-green-400/60',   text: 'text-green-300' },
   set_variable: { bg: 'bg-yellow-500/15',  border: 'border-yellow-400/60',  text: 'text-yellow-300' },
@@ -47,6 +50,8 @@ export const NODE_ICONS: Record<NodeType | string, string> = {
   rag:          '🔍',
   tool:         '🔧',
   http:         '🌐',
+  ocr:          '🔡',
+  rpa:          '🖱',
   conditional:  '◇',
   parallel:     '⫸',
   foreach:      '↺',
@@ -67,6 +72,8 @@ export const NODE_LABELS: Record<NodeType | string, string> = {
   rag:          'RAG Retrieval',
   tool:         'MCP Tool',
   http:         'HTTP Request',
+  ocr:          'OCR Extract',
+  rpa:          'Web Automation',
   conditional:  'Condition',
   parallel:     'Parallel',
   foreach:      'For Each',
@@ -84,6 +91,7 @@ export const NODE_LABELS: Record<NodeType | string, string> = {
 export const NODE_CATEGORIES: Record<string, (NodeType | string)[]> = {
   'Entry':       ['trigger'],
   'AI':          ['llm', 'rag'],
+  'Perception':  ['ocr', 'rpa'],
   'Integration': ['tool', 'http'],
   'Control':     ['conditional', 'parallel', 'foreach', 'wait'],
   'Human':       ['hitl'],
@@ -99,6 +107,8 @@ export const NODE_SHAPES: Record<NodeType | string, 'rect' | 'diamond' | 'pill' 
   rag:          'rect',
   tool:         'rect',
   http:         'rect',
+  ocr:          'rect',
+  rpa:          'rect',
   conditional:  'diamond',
   parallel:     'fork',
   foreach:      'rect',

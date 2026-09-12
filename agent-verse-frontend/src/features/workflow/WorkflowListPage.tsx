@@ -238,8 +238,9 @@ export default function WorkflowListPage() {
   const qc = useQueryClient();
 
   const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('');
-  const [, setShowTemplates] = useState(false);
+  // Default to the Published tab: it's the set of workflows that actually run,
+  // and it excludes archived (soft-deleted) rows — so deleting feels like deleting.
+  const [statusFilter, setStatusFilter] = useState<string>('published');
   const [showYamlCreate, setShowYamlCreate] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -250,7 +251,25 @@ export default function WorkflowListPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => workflowEngineApi.delete(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] }),
+    // Optimistically drop the row from every cached list so a deleted workflow
+    // vanishes immediately instead of lingering until the refetch resolves.
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ['workflow-engine', 'list'] });
+      const snapshots = qc.getQueriesData<{ items?: WEWorkflow[] }>({
+        queryKey: ['workflow-engine', 'list'],
+      });
+      for (const [key, value] of snapshots) {
+        if (value?.items) {
+          qc.setQueryData(key, { ...value, items: value.items.filter((w) => w.id !== id) });
+        }
+      }
+      return { snapshots };
+    },
+    onError: (_e, _id, ctx) => {
+      // Roll back on failure.
+      ctx?.snapshots?.forEach(([key, value]) => qc.setQueryData(key, value));
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] }),
   });
 
   const createBlank = async () => {
@@ -265,10 +284,14 @@ export default function WorkflowListPage() {
     }
   };
 
-  const filtered = (data?.items ?? []).filter((w) =>
-    !search || w.name.toLowerCase().includes(search.toLowerCase())
-      || w.description?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = (data?.items ?? [])
+    // The "All" tab shows active workflows only — archived (soft-deleted) rows
+    // are reachable via the dedicated Archived tab, never mixed into All.
+    .filter((w) => (statusFilter === '' ? w.status !== 'archived' : true))
+    .filter((w) =>
+      !search || w.name.toLowerCase().includes(search.toLowerCase())
+        || w.description?.toLowerCase().includes(search.toLowerCase())
+    );
 
   return (
     <JARVISPageShell>
@@ -287,7 +310,7 @@ export default function WorkflowListPage() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setShowTemplates(true)}
+              onClick={() => navigate('/workflows/marketplace')}
               className="flex items-center gap-2 px-3.5 py-2 rounded-xl border border-white/15
                          hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm transition-colors"
               aria-label="Browse workflow templates"
@@ -376,7 +399,7 @@ export default function WorkflowListPage() {
         ) : filtered.length === 0 ? (
           <EmptyState
             onCreateBlank={createBlank}
-            onBrowseTemplates={() => setShowTemplates(true)}
+            onBrowseTemplates={() => navigate('/workflows/marketplace')}
             onCreateYaml={() => setShowYamlCreate(true)}
           />
         ) : (
