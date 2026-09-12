@@ -648,9 +648,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/graph.py": {
-    "mtime": 1789123800.923281,
-    "seen": 1789123925.968895,
-    "ast_hash": "3decb61b1e9419c91d6a03b8b4db520e",
+    "mtime": 1789205123.1452284,
+    "seen": 1789207264.8627682,
+    "ast_hash": "b5aa8c328e40575c32b8e2f374aae10d",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/graph_types.py": {
@@ -684,15 +684,15 @@
     "semantic_hash": "a14653216bded9d46822e36bd196033c"
   },
   "agent-verse-backend/app/agent/nodes/_helpers.py": {
-    "mtime": 1789041190.2019718,
-    "seen": 1789122812.659594,
-    "ast_hash": "edaa52af422a7838fa4c13711bdd82dc",
+    "mtime": 1789201730.4561694,
+    "seen": 1789207264.8627799,
+    "ast_hash": "34926b3d6372be0bbed7ea660428e132",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/nodes/executor_mixin.py": {
-    "mtime": 1789102564.8622336,
-    "seen": 1789122812.659594,
-    "ast_hash": "c93ba1402ab41e4dd7970eb716e1f2a9",
+    "mtime": 1789205170.087131,
+    "seen": 1789207264.8627808,
+    "ast_hash": "aada831376b737a32590f9fd62971085",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/nodes/initialize_mixin.py": {
@@ -702,9 +702,9 @@
     "semantic_hash": "25a60994c7489533ab989c75f400b457"
   },
   "agent-verse-backend/app/agent/nodes/planner_mixin.py": {
-    "mtime": 1789041190.204227,
-    "seen": 1789122812.659596,
-    "ast_hash": "92f6dd9f1898654ddbd551464ddbfabf",
+    "mtime": 1789204198.080976,
+    "seen": 1789207264.862782,
+    "ast_hash": "e00ef19871b05df3726deaad97ad5b82",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/nodes/rag_mixin.py": {
@@ -726,22 +726,22 @@
     "semantic_hash": "a10a8a66fc3f97add0e69dab2268e4bd"
   },
   "agent-verse-backend/app/agent/nodes/verifier_mixin.py": {
-    "mtime": 1789097918.904678,
-    "seen": 1789122812.659598,
-    "ast_hash": "c57a2faaa12327021d18f427a1d05969",
+    "mtime": 1789204040.1709716,
+    "seen": 1789207264.862784,
+    "ast_hash": "4322876c39c109d2af7f715e4f2f6cc8",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/pattern_assembler.py": {
-    "mtime": 1788836616.5202503,
-    "seen": 1788900052.176863,
-    "ast_hash": "6e13ba56c4a0b7fb6997e11249493275",
+    "mtime": 1789196365.906667,
+    "seen": 1789197300.393576,
+    "ast_hash": "2cae3cdec4d7ffe28165113fec1c6a87",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/pattern_config.py": {
-    "mtime": 1788637202.7488465,
-    "seen": 1788713773.847737,
-    "ast_hash": "e51db861037f350f1a0c2ecbe4a59bb6",
-    "semantic_hash": "e51db861037f350f1a0c2ecbe4a59bb6"
+    "mtime": 1789196365.9048467,
+    "seen": 1789197300.3935769,
+    "ast_hash": "49aa565e66f322ba05e9bb26fc4c2a3a",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/patterns/__init__.py": {
     "mtime": 1788637202.7492907,
@@ -966,10 +966,10 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/sanitization.py": {
-    "mtime": 1788637202.7589943,
-    "seen": 1788713773.8477519,
-    "ast_hash": "725d3c9ff0441e86aef4836a6720c6f6",
-    "semantic_hash": "725d3c9ff0441e86aef4836a6720c6f6"
+    "mtime": 1789194239.3523238,
+    "seen": 1789197300.393599,
+    "ast_hash": "f9d676f83d8fb310d3f869e7c264aeee",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/schemas.py": {
     "mtime": 1788637202.7592962,
@@ -1026,10 +1026,10 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/tool_context.py": {
-    "mtime": 1788637202.7616725,
-    "seen": 1788713773.8477561,
-    "ast_hash": "2eab1cdc4b45d73d49326f4646b48576",
-    "semantic_hash": "2eab1cdc4b45d73d49326f4646b48576"
+    "mtime": 1789201620.7138517,
+    "seen": 1789207264.862816,
+    "ast_hash": "4932437633a347bf81ae5519c01ea957",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/agent/tool_risk.py": {
     "mtime": 1788637202.7619362,
@@ -1122,10 +1122,10 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/ai_router/models.py": {
-    "mtime": 1788637202.765928,
-    "seen": 1788713773.8477619,
-    "ast_hash": "5b523c9d2f50b092a80a7d3a7a1bf252",
-    "semantic_hash": "5b523c9d2f50b092a80a7d3a7a1bf252"
+    "mtime": 1789203066.5697892,
+    "seen": 1789207264.8628259,
+    "ast_hash": "1201e9c3ec8aa49f49e9a1946209f003",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/ai_router/provider_health_policy.py": {
     "mtime": 1788637202.766163,
@@ -1212,9 +1212,9 @@
     "semantic_hash": "4786976c75ad674560bf1ea76a2af756"
   },
   "agent-verse-backend/app/api/agents.py": {
-    "mtime": 1789041190.2152946,
-    "seen": 1789122812.659648,
-    "ast_hash": "1a2b4d8c97ec0a6ae776de8598ddb462",
+    "mtime": 1789205995.52843,
+    "seen": 1789207264.862835,
+    "ast_hash": "91c352ae6435690eae203893280d894e",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/ai_ops.py": {
@@ -1278,9 +1278,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/connectors.py": {
-    "mtime": 1789097531.7846746,
-    "seen": 1789122812.659654,
-    "ast_hash": "67532ff8d4b90018c9a84a2943158055",
+    "mtime": 1789201669.4465618,
+    "seen": 1789207264.8628411,
+    "ast_hash": "1053bacab02fae940ed0315a65f5eb1f",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/coordination.py": {
@@ -1386,9 +1386,9 @@
     "semantic_hash": "7d65709382d6d47ad118a9f735dcf687"
   },
   "agent-verse-backend/app/api/governance.py": {
-    "mtime": 1789066402.3552864,
-    "seen": 1789122812.6596649,
-    "ast_hash": "4410e195e40c9418a6b8209423604646",
+    "mtime": 1789199921.4021492,
+    "seen": 1789200220.0273669,
+    "ast_hash": "7db2d3df5d5ada723873e5525c5042f6",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/gst_billing.py": {
@@ -1428,9 +1428,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/knowledge.py": {
-    "mtime": 1789041190.225765,
-    "seen": 1789122812.659669,
-    "ast_hash": "eb677657d7bbcf172f2069f3b7e625cd",
+    "mtime": 1789207010.581217,
+    "seen": 1789207264.862855,
+    "ast_hash": "7d58f92d7e16f7bf92627fea5b50185c",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/api/knowledge_graph.py": {
@@ -4002,9 +4002,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/governance/hitl.py": {
-    "mtime": 1789041190.2658443,
-    "seen": 1789122812.6599228,
-    "ast_hash": "382a1aa791e9cb240e30aeb41e6b7c01",
+    "mtime": 1789200060.888381,
+    "seen": 1789200220.027638,
+    "ast_hash": "89d8355b8fd0ca8987f74e3c3be9030a",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/governance/legal_holds.py": {
@@ -4740,10 +4740,10 @@
     "semantic_hash": "50082f0e2ff197ce92f2c379837ceb56"
   },
   "agent-verse-backend/app/intelligence/meta_agent.py": {
-    "mtime": 1788637202.9249647,
-    "seen": 1788713773.847989,
-    "ast_hash": "0dd45787c5a80067ee2b585a747b79e2",
-    "semantic_hash": "0dd45787c5a80067ee2b585a747b79e2"
+    "mtime": 1789150901.228438,
+    "seen": 1789151115.263835,
+    "ast_hash": "b7b08000cfbbfb114473cbb7b0406875",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/intelligence/nli_checker.py": {
     "mtime": 1788837718.7794273,
@@ -4950,10 +4950,10 @@
     "semantic_hash": "1f2121b0c9ac07582b0daa33835fd67f"
   },
   "agent-verse-backend/app/mcp/catalog.py": {
-    "mtime": 1788637202.9334424,
-    "seen": 1788713773.848002,
-    "ast_hash": "9987aee7c2bd8898f5462d48daebe8a6",
-    "semantic_hash": "9987aee7c2bd8898f5462d48daebe8a6"
+    "mtime": 1789200305.632916,
+    "seen": 1789207264.8632162,
+    "ast_hash": "f54577021742dc33bd5477a271581301",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/certification.py": {
     "mtime": 1788637202.933622,
@@ -4968,9 +4968,9 @@
     "semantic_hash": "276cd6dc63d75e508411b0de277edd49"
   },
   "agent-verse-backend/app/mcp/client.py": {
-    "mtime": 1788948151.8501422,
-    "seen": 1789122812.660023,
-    "ast_hash": "a39da730346bfbaf4a16638874c4cb45",
+    "mtime": 1789150630.4525175,
+    "seen": 1789151115.2638578,
+    "ast_hash": "816e6e86011d6adfd11156919ec49f29",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/code_interpreter.py": {
@@ -4992,10 +4992,10 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/registry.py": {
-    "mtime": 1788637202.9349804,
-    "seen": 1788713773.848005,
-    "ast_hash": "a05e61283be26b886e640e1be66587fd",
-    "semantic_hash": "a05e61283be26b886e640e1be66587fd"
+    "mtime": 1789201615.385402,
+    "seen": 1789207264.86322,
+    "ast_hash": "5e97e752adb3b6cd5c495a31d10084a9",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/servers/__init__.py": {
     "mtime": 1788637202.9353032,
@@ -6468,9 +6468,9 @@
     "semantic_hash": "aebe346f4d65ef6c56a1d8bc82fa21db"
   },
   "agent-verse-backend/app/mcp/servers/registry_wiring.py": {
-    "mtime": 1789103075.440597,
-    "seen": 1789122812.660162,
-    "ast_hash": "d4a9d8359ac892be14e590d2cea64d7c",
+    "mtime": 1789148848.4818108,
+    "seen": 1789151115.263999,
+    "ast_hash": "53410510a0a55aa463c945f2e218cadc",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/servers/reply_io_server.py": {
@@ -6672,10 +6672,10 @@
     "semantic_hash": "05253c1224e27c2c8780016c7556d0bc"
   },
   "agent-verse-backend/app/mcp/servers/tavily_server.py": {
-    "mtime": 1788637202.9992416,
-    "seen": 1788713773.848116,
-    "ast_hash": "ff7bbae3dd86c805d58010e1bcdc832e",
-    "semantic_hash": "ff7bbae3dd86c805d58010e1bcdc832e"
+    "mtime": 1789147733.932819,
+    "seen": 1789151115.2640169,
+    "ast_hash": "ac8376508d7880747a697f1257ba3b10",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/servers/teachable_server.py": {
     "mtime": 1788637202.9994714,
@@ -6690,10 +6690,10 @@
     "semantic_hash": "180258e2782ad65ae464b5ec4891b762"
   },
   "agent-verse-backend/app/mcp/servers/telegram_server.py": {
-    "mtime": 1788637202.9999504,
-    "seen": 1788713773.8481169,
-    "ast_hash": "39fbc1b0f155cdf3b4ccfad5c3c20826",
-    "semantic_hash": "39fbc1b0f155cdf3b4ccfad5c3c20826"
+    "mtime": 1789200211.8899467,
+    "seen": 1789200220.0278919,
+    "ast_hash": "d7c17cd4602fc364eed7faa93f538027",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/servers/terraform_server.py": {
     "mtime": 1788637203.00017,
@@ -6726,10 +6726,10 @@
     "semantic_hash": "377bff2eef927c3dd6e5d38adffee738"
   },
   "agent-verse-backend/app/mcp/servers/todoist_server.py": {
-    "mtime": 1788637203.0012953,
-    "seen": 1788713773.848119,
-    "ast_hash": "53eeb84e15646c88fefa8b4f93fe1ac6",
-    "semantic_hash": "53eeb84e15646c88fefa8b4f93fe1ac6"
+    "mtime": 1789147780.8684814,
+    "seen": 1789151115.264022,
+    "ast_hash": "84cf6b8e65ffebc303822b71496ff012",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/mcp/servers/toggl_server.py": {
     "mtime": 1788637203.0014849,
@@ -8046,8 +8046,8 @@
     "semantic_hash": "b633b76cce6bbbcccf8c36130bbad2e7"
   },
   "agent-verse-backend/app/rag/gateway.py": {
-    "mtime": 1789130142.3066802,
-    "seen": 1789134442.975955,
+    "mtime": 1789206983.5075853,
+    "seen": 1789207264.863517,
     "ast_hash": "d19f8ec8ffde348e3f19c51fc0803309",
     "semantic_hash": ""
   },
@@ -8244,10 +8244,10 @@
     "semantic_hash": "d2196d11367a2dcd87c5e6540249f38b"
   },
   "agent-verse-backend/app/reliability/result_processor.py": {
-    "mtime": 1788637203.0640078,
-    "seen": 1788713773.848237,
-    "ast_hash": "dfa0b19c69fd5613a01f5665503d09b8",
-    "semantic_hash": "dfa0b19c69fd5613a01f5665503d09b8"
+    "mtime": 1789194244.6756377,
+    "seen": 1789197300.394326,
+    "ast_hash": "7a241dea3cece470c4e1832f54c3159f",
+    "semantic_hash": ""
   },
   "agent-verse-backend/app/reliability/rollback.py": {
     "mtime": 1788637203.0642884,
@@ -8472,9 +8472,9 @@
     "semantic_hash": "638d3bd728d6ff30458750bf52c510be"
   },
   "agent-verse-backend/app/scaling/tasks.py": {
-    "mtime": 1789122025.9000764,
-    "seen": 1789122812.660361,
-    "ast_hash": "6ee52770838ddb86bf4cc08ca3aa2320",
+    "mtime": 1789205183.6345117,
+    "seen": 1789207264.863564,
+    "ast_hash": "38e7f1f317e30da20e0da340a33b9ef8",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/sdk/__init__.py": {
@@ -8580,9 +8580,9 @@
     "semantic_hash": "dfbc6bd7b9dc59f56c5aeaa106041afb"
   },
   "agent-verse-backend/app/services/goal_service.py": {
-    "mtime": 1789097392.6681826,
-    "seen": 1789122812.6603708,
-    "ast_hash": "a12e330ac5b8f5bb6221fdd1d39be544",
+    "mtime": 1789196365.9023962,
+    "seen": 1789197300.394359,
+    "ast_hash": "22adda748db52747583142749071a27e",
     "semantic_hash": ""
   },
   "agent-verse-backend/app/services/llm_config_store.py": {
@@ -9990,10 +9990,10 @@
     "semantic_hash": "0345cf334c84865831bdbfc162e521e7"
   },
   "agent-verse-frontend/src/features/agents/AgentDetailPage.tsx": {
-    "mtime": 1788637207.429158,
-    "seen": 1788713773.848355,
-    "ast_hash": "d8a2669bbbe3179f0c28265791e45918",
-    "semantic_hash": "d8a2669bbbe3179f0c28265791e45918"
+    "mtime": 1789205617.3320339,
+    "seen": 1789207264.864733,
+    "ast_hash": "f7d4fd0260462a8214b0fc0537837a81",
+    "semantic_hash": ""
   },
   "agent-verse-frontend/src/features/agents/AgentIdentityPage.test.tsx": {
     "mtime": 1788637207.429423,
@@ -10038,10 +10038,10 @@
     "semantic_hash": "ce248c849165a42e2f006f16acc54013"
   },
   "agent-verse-frontend/src/features/agents/AgentsListPage.tsx": {
-    "mtime": 1788637207.4311426,
-    "seen": 1788713773.848358,
-    "ast_hash": "4332ddcddf354601cc847420650ccc0b",
-    "semantic_hash": "4332ddcddf354601cc847420650ccc0b"
+    "mtime": 1789205526.0332794,
+    "seen": 1789207264.864737,
+    "ast_hash": "ca2508aa0ead8e3326073cf99cb32a36",
+    "semantic_hash": ""
   },
   "agent-verse-frontend/src/features/agents/__tests__/AgentBuilder.test.tsx": {
     "mtime": 1788637207.4315565,
@@ -10488,10 +10488,10 @@
     "semantic_hash": "445f34bb8185f7e95508c2fe38b664af"
   },
   "agent-verse-frontend/src/features/connectors/ConnectorsRegisteredPage.tsx": {
-    "mtime": 1788637207.4520426,
-    "seen": 1788713773.848387,
-    "ast_hash": "0dfd53f0678222960f791e56b7b5f8b0",
-    "semantic_hash": "0dfd53f0678222960f791e56b7b5f8b0"
+    "mtime": 1789202274.572823,
+    "seen": 1789207264.8647811,
+    "ast_hash": "20deb1fdeda6cfca9fabc0afa51e16ba",
+    "semantic_hash": ""
   },
   "agent-verse-frontend/src/features/connectors/OAuthCallbackPage.tsx": {
     "mtime": 1788637207.4522817,
@@ -10800,9 +10800,9 @@
     "semantic_hash": "b2679264bf3b9bb7457b0c925d696134"
   },
   "agent-verse-frontend/src/features/goals/GoalDetailPage.tsx": {
-    "mtime": 1789095457.1974118,
-    "seen": 1789122812.661542,
-    "ast_hash": "f43f1b392f191bc6450eee40e91aeef9",
+    "mtime": 1789192544.095421,
+    "seen": 1789197300.39561,
+    "ast_hash": "3f3f8c796339eff02d9486174c4d763e",
     "semantic_hash": ""
   },
   "agent-verse-frontend/src/features/goals/GoalDiffPage.test.tsx": {
@@ -10872,10 +10872,10 @@
     "semantic_hash": "404efb8039db9f6be001dc89441e2373"
   },
   "agent-verse-frontend/src/features/goals/components/GoalExecutionGraph.tsx": {
-    "mtime": 1788637207.4696486,
-    "seen": 1788713773.8484118,
-    "ast_hash": "ddaacc7acaa5f40b407d65ee4a2b4aa2",
-    "semantic_hash": "ddaacc7acaa5f40b407d65ee4a2b4aa2"
+    "mtime": 1789193377.081453,
+    "seen": 1789197300.395618,
+    "ast_hash": "91907fe10b5a6bb894fd14cdbdb67e07",
+    "semantic_hash": ""
   },
   "agent-verse-frontend/src/features/goals/components/GoalExplainPanel.tsx": {
     "mtime": 1788637207.469834,
@@ -12354,10 +12354,10 @@
     "semantic_hash": "62a04f85126ea3b81134e48743a6a059"
   },
   "agent-verse-frontend/src/hooks/useGoalExecutionGraph.ts": {
-    "mtime": 1788637207.5402663,
-    "seen": 1788713773.8485482,
-    "ast_hash": "e2a667950194d1321024a3fddbd414cd",
-    "semantic_hash": "e2a667950194d1321024a3fddbd414cd"
+    "mtime": 1789192390.5694666,
+    "seen": 1789197300.3957639,
+    "ast_hash": "5d8e5ef013a3a55420ec7c73867f9dca",
+    "semantic_hash": ""
   },
   "agent-verse-frontend/src/hooks/useSSEToParticles.ts": {
     "mtime": 1788637207.5404906,
@@ -12414,9 +12414,9 @@
     "semantic_hash": "ff0301954bad293b533478e958041dd7"
   },
   "agent-verse-frontend/src/lib/api/client.ts": {
-    "mtime": 1789137744.2482886,
-    "seen": 1789138125.047464,
-    "ast_hash": "bc1f18b1014326f202a67ad7d5328f0b",
+    "mtime": 1789206004.7560432,
+    "seen": 1789207264.864991,
+    "ast_hash": "68a1c51766deb56dccf10bec5edbe5d7",
     "semantic_hash": ""
   },
   "agent-verse-frontend/src/lib/api/governance-realtime.test.ts": {
@@ -13296,9 +13296,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_hallucination_fixes.py": {
-    "mtime": 1788888039.9181502,
-    "seen": 1788900052.177807,
-    "ast_hash": "c82b31f7a75359d507c9290633683194",
+    "mtime": 1789202813.2866392,
+    "seen": 1789207264.8637388,
+    "ast_hash": "e45063cb75ce775c4490778c09d902b2",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_hitl_gate.py": {
@@ -13326,9 +13326,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_medium_fixes.py": {
-    "mtime": 1789041190.4570506,
-    "seen": 1789122812.660529,
-    "ast_hash": "f7c6d3e1196c2caaf2e6131b4c46df9c",
+    "mtime": 1789202832.3721335,
+    "seen": 1789207264.863743,
+    "ast_hash": "bb2c247788c67b46d831f3db03a45607",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_memory_persistence.py": {
@@ -13368,9 +13368,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_pattern_config.py": {
-    "mtime": 1788637203.2180383,
-    "seen": 1788900052.1778119,
-    "ast_hash": "a93209f41522ab85eba48a4e196d2fa7",
+    "mtime": 1789202826.4285648,
+    "seen": 1789207264.863748,
+    "ast_hash": "5a7e2c47bc3b0f34b0a628a64b9bfbc6",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_perf_optimizations.py": {
@@ -13506,9 +13506,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_sanitization_comprehensive.py": {
-    "mtime": 1789041190.4857197,
-    "seen": 1789122812.660546,
-    "ast_hash": "8e862d7700757641577699c3c4ecaeab",
+    "mtime": 1789202822.445279,
+    "seen": 1789207264.863761,
+    "ast_hash": "75b590f24acc4f1aea043ea59a0bddd6",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/agent/test_schemas.py": {
@@ -16998,9 +16998,9 @@
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/intelligence/test_meta_agent_comprehensive.py": {
-    "mtime": 1788637203.3459206,
-    "seen": 1788900052.178185,
-    "ast_hash": "5536a7585bf6c0d620e20bedc588c570",
+    "mtime": 1789150978.606327,
+    "seen": 1789151115.264846,
+    "ast_hash": "8c885f37210de1f60131314d93281d81",
     "semantic_hash": ""
   },
   "agent-verse-backend/tests/intelligence/test_optimizer_wired.py": {
@@ -21138,9 +21138,9 @@
     "semantic_hash": ""
   },
   "agent-verse-frontend/package.json": {
-    "mtime": 1789095110.77661,
-    "seen": 1789122812.661412,
-    "ast_hash": "6d2fafb1c8d88cdf7a9fb46c81eaf1af",
+    "mtime": 1789192437.3448567,
+    "seen": 1789197300.395492,
+    "ast_hash": "f6eed404d13fbf3ab2297d12cc6adacd",
     "semantic_hash": ""
   },
   "agent-verse-frontend/playwright.config.ts": {
@@ -25800,8 +25800,8 @@
     "semantic_hash": ""
   },
   "agent-verse-frontend/.claude/launch.json": {
-    "mtime": 1789041546.0163362,
-    "seen": 1789122812.661332,
+    "mtime": 1789141591.6124692,
+    "seen": 1789151115.265224,
     "ast_hash": "2df25c7d40a2547dea160671969f635b",
     "semantic_hash": ""
   },
@@ -26037,6 +26037,84 @@
     "mtime": 1789123779.835554,
     "seen": 1789123925.970282,
     "ast_hash": "ab62bbf663fecd61633931b66e1078fc",
+    "semantic_hash": ""
+  },
+  "agent-verse-frontend/src/components/ui/RichMarkdown.tsx": {
+    "mtime": 1789192477.2698243,
+    "seen": 1789197300.395524,
+    "ast_hash": "71f1c15c921bcdb5bd58e14dd919be88",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/governance/test_hitl_approval_persistence.py": {
+    "mtime": 1789200012.0462546,
+    "seen": 1789200220.028613,
+    "ast_hash": "f328ee2cf491a9266d5b1b14eac829d6",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-09-12-adaptive-execution-strategy-plan.md": {
+    "mtime": 1789199280.197038,
+    "seen": 1789200220.0299342,
+    "ast_hash": "3ee03a035ab16a7730bf5ade6da570d9",
+    "semantic_hash": ""
+  },
+  "docs/superpowers/plans/2026-09-12-parallel-execution-latency-plan.md": {
+    "mtime": 1789198949.8398983,
+    "seen": 1789200220.0299351,
+    "ast_hash": "9ae50298a05e6acecffc17ed94422861",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/app/agent/execution_strategy.py": {
+    "mtime": 1789205097.6622305,
+    "seen": 1789207264.8627641,
+    "ast_hash": "448190362a30c2c0c9044712df0575dc",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/app/agent/strategy_adaptivity.py": {
+    "mtime": 1789205090.8671968,
+    "seen": 1789207264.8628118,
+    "ast_hash": "daa91e182395ee4e78948b4211f19a2a",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_cache_poisoning_guard.py": {
+    "mtime": 1789202571.8868053,
+    "seen": 1789207264.863719,
+    "ast_hash": "a039f641a6b2b39f831bc4bbd377627e",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_connector_auto_approve.py": {
+    "mtime": 1789201770.0228498,
+    "seen": 1789207264.863721,
+    "ast_hash": "914ccb62c85fc841ddbeb1bf9b40e231",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_execution_strategy.py": {
+    "mtime": 1789205242.6462781,
+    "seen": 1789207264.863729,
+    "ast_hash": "d1fa7204dc87fdf9b15e95e435cfea5e",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_parallel_tool_calls.py": {
+    "mtime": 1789203901.4295113,
+    "seen": 1789207264.8637471,
+    "ast_hash": "5055ffbcf5f9f86fb43f546ea10dc6b7",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_strategy_adaptivity.py": {
+    "mtime": 1789205230.3094585,
+    "seen": 1789207264.8637629,
+    "ast_hash": "07392031452defff870533dad6883fdb",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/agent/test_strategy_wiring.py": {
+    "mtime": 1789204076.8853188,
+    "seen": 1789207264.863764,
+    "ast_hash": "20e25b0fcf8483c1951bbb9d77dd2627",
+    "semantic_hash": ""
+  },
+  "agent-verse-backend/tests/mcp/test_telegram_server.py": {
+    "mtime": 1789200278.4856837,
+    "seen": 1789207264.864264,
+    "ast_hash": "d7ec211ab97cb1d704de171ef0fb96b2",
     "semantic_hash": ""
   }
 }
