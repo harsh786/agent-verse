@@ -5,6 +5,7 @@ import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { InteractiveKnowledgeGraph } from './InteractiveKnowledgeGraph';
 
 const NODE_TYPE_ICONS: Record<string, React.ElementType> = {
   entity: GitBranch,
@@ -31,6 +32,7 @@ export function GraphExplorerPage() {
   const [selectedNode, setSelectedNode] = useState<any | null>(null);
   const [extractText, setExtractText] = useState('');
   const [showExtract, setShowExtract] = useState(false);
+  const [view, setView] = useState<'list' | 'graph'>('list');
 
   const { data: nodesData, isLoading } = useQuery({
     queryKey: ['kg-nodes', nodeTypeFilter, search],
@@ -97,13 +99,30 @@ export function GraphExplorerPage() {
             <Network className="h-5 w-5 text-[#00D4FF]" />
             Graph Explorer
           </h1>
-          <button
-            onClick={() => setShowExtract(!showExtract)}
-            className="text-xs px-2 py-1 bg-primary text-primary-foreground rounded-lg hover:opacity-90"
-          >
-            <Plus className="h-3.5 w-3.5 inline mr-1" />
-            Extract
-          </button>
+          <div className="flex items-center gap-2">
+            {/* List / Graph view toggle for the right panel */}
+            <div className="flex items-center rounded-lg border border-border overflow-hidden">
+              {(['list', 'graph'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-2 py-1 text-[11px] capitalize transition-colors ${
+                    view === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-muted/50'
+                  }`}
+                  aria-pressed={view === v}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowExtract(!showExtract)}
+              className="text-xs px-2 py-1 bg-primary text-primary-foreground rounded-lg hover:opacity-90"
+            >
+              <Plus className="h-3.5 w-3.5 inline mr-1" />
+              Extract
+            </button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -209,9 +228,11 @@ export function GraphExplorerPage() {
         </div>
       </div>
 
-      {/* Right panel: Node detail */}
+      {/* Right panel: interactive graph (graph view) or node detail (list view) */}
       <div className="flex-1 bg-card border border-border rounded-xl overflow-hidden">
-        {!selectedNode ? (
+        {view === 'graph' ? (
+          <InteractiveKnowledgeGraph fill />
+        ) : !selectedNode ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
             <Network className="h-16 w-16 opacity-10 mb-4" />
             <p className="text-base font-medium">Select a node to explore</p>

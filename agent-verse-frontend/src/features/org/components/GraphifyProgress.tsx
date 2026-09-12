@@ -25,6 +25,9 @@ export interface GraphifyProgressProps {
   orgId:     string;
   onClose?:  () => void;
   onComplete?: (stats: GraphifyStats) => void;
+  /** When provided, a "View glowing graph" button is shown once the build
+   *  completes (used by the Org page to open the immersive graph overlay). */
+  onViewGraph?: () => void;
 }
 
 export interface GraphifyStats {
@@ -56,7 +59,7 @@ const COUNT_SPRING  = { type: 'spring', stiffness: 200, damping: 28 } as const;
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgressProps) {
+export function GraphifyProgress({ orgId, onClose, onComplete, onViewGraph }: GraphifyProgressProps) {
   const reduce = useReducedMotion();
   const [phase, setPhase]       = useState<GraphifyPhase>('idle');
   const [progress, setProgress] = useState(0);
@@ -332,13 +335,27 @@ export function GraphifyProgress({ orgId, onClose, onComplete }: GraphifyProgres
         )}
 
         {phase === 'complete' && (
-          <div
-            className="jarvis-pop-in flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2"
-          >
-            <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden />
-            <p className="text-[13px] text-emerald-300 font-medium">
-              Graph built — {stats.nodes} nodes, {stats.edges} edges
-            </p>
+          <div className="jarvis-pop-in space-y-2">
+            <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2">
+              <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" aria-hidden />
+              <p className="text-[13px] text-emerald-300 font-medium">
+                Graph built — {stats.nodes} nodes, {stats.edges} edges
+              </p>
+            </div>
+            {onViewGraph && (
+              <button
+                onClick={onViewGraph}
+                aria-label="View glowing knowledge graph"
+                style={{ touchAction: 'manipulation' }}
+                className={cn(
+                  'w-full py-2.5 rounded-xl text-[14px] font-semibold text-white',
+                  'bg-gradient-to-r from-[#00D4FF] to-violet-600 hover:from-[#33ddff] hover:to-violet-500',
+                  'active:scale-[0.98] transition-[transform,filter] duration-150',
+                )}
+              >
+                View glowing graph →
+              </button>
+            )}
           </div>
         )}
       </div>

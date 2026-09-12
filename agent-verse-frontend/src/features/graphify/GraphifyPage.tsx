@@ -6,12 +6,14 @@
  * an interactive glowing knowledge graph.
  */
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Share2, Sparkles, Zap, Info } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem, SPRING_FAST } from '@/components/ui/JARVISPageShell';
 import { GraphifyProgress } from '@/features/org/components/GraphifyProgress';
+import { InteractiveKnowledgeGraph } from '@/features/knowledge-graph/InteractiveKnowledgeGraph';
 
 import { getAuthHeader } from '@/stores/auth';
 
@@ -25,6 +27,7 @@ async function fetchOrgs(): Promise<{ id: string; name: string }[]> {
 }
 
 export function GraphifyPage() {
+  const qc = useQueryClient();
   const [selectedOrg, setSelectedOrg] = useState<string | null>(null);
   const [running, setRunning]         = useState(false);
   const [done, setDone]               = useState(false);
@@ -121,29 +124,47 @@ export function GraphifyPage() {
             <GraphifyProgress
               orgId={selectedOrg}
               onClose={() => { setRunning(false); }}
-              onComplete={() => { setRunning(false); setDone(true); }}
+              onComplete={() => {
+                setRunning(false);
+                setDone(true);
+                // Reveal the freshly-built graph in the viewer below.
+                qc.invalidateQueries({ queryKey: ['kg-graph'] });
+              }}
             />
           </JARVISStaggerItem>
         )}
 
         {done && (
           <JARVISStaggerItem>
-            <div
-              className="jarvis-pop-in p-5 bg-green-500/10 border border-green-500/30 rounded-2xl text-center"
-            >
-              <div className="text-2xl mb-2">✅</div>
-              <p className="text-sm font-semibold text-green-400">Knowledge graph built successfully!</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                Navigate to the <strong>Knowledge Graph</strong> page to explore the glowing graph.
-              </p>
-              <motion.button
-                onClick={() => setDone(false)}
-                whileHover={{ scale: 1.02 }}
-                transition={SPRING_FAST}
-                className="mt-3 px-4 py-1.5 text-xs rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30 text-[#00D4FF]"
-              >
-                Run again
-              </motion.button>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg">✅</span>
+                  <p className="text-sm font-semibold text-green-400">
+                    Knowledge graph built — explore it below
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Link
+                    to="/knowledge-graph"
+                    className="px-3 py-1.5 text-xs rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30
+                               text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-colors"
+                  >
+                    Open full explorer
+                  </Link>
+                  <motion.button
+                    onClick={() => setDone(false)}
+                    whileHover={{ scale: 1.02 }}
+                    transition={SPRING_FAST}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-white/5 border border-white/10
+                               text-[#F1F5F9]/70 hover:text-[#F1F5F9]"
+                  >
+                    Run again
+                  </motion.button>
+                </div>
+              </div>
+              {/* The glowing, interactive graph — rendered right here after build */}
+              <InteractiveKnowledgeGraph height={560} />
             </div>
           </JARVISStaggerItem>
         )}

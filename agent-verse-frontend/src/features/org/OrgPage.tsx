@@ -16,7 +16,9 @@
  */
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { InteractiveKnowledgeGraph } from '@/features/knowledge-graph/InteractiveKnowledgeGraph';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISBootScreen } from '@/components/ui/JARVISBootScreen';
 import { Building2, Plus, RefreshCw, Zap, Network, Mic, Plug, Clock, Cpu, Terminal, BookOpen, Volume2, VolumeX, X, CalendarClock } from 'lucide-react';
@@ -131,6 +133,10 @@ export function OrgPage() {
   // Toolbar side-panels all open in ONE right slide-over drawer — clear, labeled,
   // and obviously toggled — instead of injecting hidden panels into the column.
   const [activePanel, setActivePanel]         = useState<PanelKey | null>(null);
+  // Immersive knowledge-graph overlay (opened after a Graphify build, or via the
+  // panel's "View graph" button) — renders the glowing force graph over the org.
+  const [graphOpen, setGraphOpen]             = useState(false);
+  const qc = useQueryClient();
   const togglePanel = useCallback(
     (k: PanelKey) => setActivePanel((p) => (p === k ? null : k)),
     [],
@@ -845,7 +851,18 @@ export function OrgPage() {
               </div>
               <div className="flex-1 overflow-y-auto">
                 {activePanel === 'graphify' && (
-                  <div className="p-4"><GraphifyProgress orgId={orgId} onClose={() => setActivePanel(null)} /></div>
+                  <div className="p-4">
+                    <GraphifyProgress
+                      orgId={orgId}
+                      onClose={() => setActivePanel(null)}
+                      onComplete={() => {
+                        qc.invalidateQueries({ queryKey: ['kg-graph'] });
+                        setActivePanel(null);
+                        setGraphOpen(true);
+                      }}
+                      onViewGraph={() => { setActivePanel(null); setGraphOpen(true); }}
+                    />
+                  </div>
                 )}
                 {activePanel === 'connectors' && (
                   <div className="h-full"><ConnectorMarketplace orgId={orgId} onClose={() => setActivePanel(null)} /></div>
@@ -862,6 +879,48 @@ export function OrgPage() {
             </motion.aside>
           </div>
       )}
+
+      {/* ── Immersive Knowledge Graph overlay — the glowing, interactive graph ── */}
+      <AnimatePresence>
+        {graphOpen && (
+          <motion.div
+            className="fixed inset-0 z-50 flex flex-col bg-[#050710]/95 backdrop-blur-md"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Knowledge graph"
+          >
+            <div className="flex items-center gap-2.5 px-5 py-3.5 border-b border-[#1E2535] shrink-0">
+              <Network className="h-5 w-5 text-[#00D4FF]" aria-hidden />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-[#F1F5F9]">Knowledge Graph</p>
+                <p className="text-[11px] text-[#475569] truncate">
+                  {org?.name ? `${org.name} — ` : ''}interactive org knowledge graph
+                </p>
+              </div>
+              <button
+                onClick={() => navigate('/knowledge-graph')}
+                className="ml-auto text-xs px-3 py-1.5 rounded-lg bg-[#00D4FF]/10 border border-[#00D4FF]/30
+                           text-[#00D4FF] hover:bg-[#00D4FF]/20 transition-colors"
+              >
+                Full explorer
+              </button>
+              <button
+                onClick={() => setGraphOpen(false)}
+                aria-label="Close knowledge graph"
+                className="p-1.5 rounded-lg text-[#64748B] hover:text-[#F1F5F9] hover:bg-[#1A1F2E] transition-colors"
+              >
+                <X className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 p-4">
+              <InteractiveKnowledgeGraph fill />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }
