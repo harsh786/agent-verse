@@ -1970,6 +1970,34 @@ class ExecutorMixin:
                             raw_output = raw_result_output if result.success else raw_result_error
                             raw_output_sanitized = True
 
+        # ── Strategy B: parallel tool calls ─────────────────────────────────────
+        # When the resolved strategy is PARALLEL and this turn produced more than
+        # one structured tool call, dispatch the ADDITIONAL calls concurrently (the
+        # first was handled by the full path above). Safety-gated helper; only
+        # active for models whose profile opts into parallel tool calls, so the
+        # default single-call path is completely unaffected.
+        _strategy_b = state.context.get("_execution_strategy")
+        _tool_mode_b = getattr(getattr(_strategy_b, "tool_mode", None), "value", "single")
+        if (
+            _tool_mode_b == "parallel"
+            and _structured_tcs
+            and len(_structured_tcs) > 1
+            and tool_call is not None
+        ):
+            try:
+                _extra_outputs = await self._dispatch_parallel_extra_tool_calls(
+                    _structured_tcs[1:],
+                    step,
+                    state,
+                    tenant_ctx,
+                    locals().get("_allowed_tools_set") or set(),
+                )
+                for _en, _eo in _extra_outputs:
+                    raw_output = f"{raw_output or ''}\n\n[parallel tool: {_en}]\n{_eo}"
+                raw_output_sanitized = True
+            except Exception as _pb_exc:  # pragma: no cover - defensive
+                self._logger.warning("parallel_tool_dispatch_failed", error=str(_pb_exc)[:120])
+
         # 9. Result processor / graph sanitizer — redact secrets, truncate
         if not raw_output_sanitized:
             raw_output = self._sanitize_tool_raw_output(raw_output)
@@ -2159,6 +2187,119 @@ class ExecutorMixin:
             pass
 
         return raw_output
+
+    async def _dispatch_parallel_extra_tool_calls(
+        self,
+        extra_tcs: list[dict[str, Any]],
+        step: str,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        allowed_tools_set: set[str],
+    ) -> list[tuple[str, str]]:
+        """Strategy B — run the *additional* tool calls of one executor turn
+        concurrently, each through the core safety gates (name validation, tool
+        lookup, risk gate honoring the per-connector auto_approve opt-in, argument
+        validation, dispatch, output sanitization). The first tool call is handled
+        by the full primary path; this is only reached for models whose profile
+        opts into parallel tool calls.
+
+        Returns ``(tool_name, sanitized_output)`` pairs. A failure in one call
+        never sinks the batch — its error is captured and the others proceed.
+        """
+        import asyncio as _asyncio
+        import os as _os
+
+        from app.agent.tool_calls import (
+            validate_tool_arguments as _validate_args,
+        )
+        from app.agent.tool_calls import (
+            validate_tool_name as _validate_tn,
+        )
+        from app.agent.tool_risk import classify_tool_risk
+
+        _allow_fa_write_high = (
+            _os.getenv("ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH", "false").lower() == "true"
+        )
+        _tc_ctx = state.context.get("tool_context")
+
+        async def _one(stc: dict[str, Any]) -> tuple[str, str] | None:
+            name = stc.get("name") or stc.get("tool_name", "")
+            args = stc.get("input") or stc.get("arguments") or {}
+            if not isinstance(args, dict):
+                args = {}
+            if not name:
+                return None
+            if _validate_tn(name, allowed_tools_set):
+                return (name, f"[rejected: unknown tool '{name}']")
+            tool_ref = _tc_ctx.find_tool(name) if _tc_ctx is not None else None
+            if tool_ref is None:
+                return (name, f"[tool not found: '{name}']")
+            # Risk gate — same rules as the primary path (per-connector opt-in).
+            risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
+            eff = resolve_effective_tool_risk(
+                risk,
+                autonomy_mode=self._autonomy_mode,
+                connector_auto_approve=bool(getattr(tool_ref, "auto_approve", False)),
+                allow_fa_write_high=_allow_fa_write_high,
+            )
+            if eff == "destructive":
+                return (tool_ref.name, f"[denied: '{tool_ref.name}' is destructive]")
+            if eff == "write_high":
+                # Not opted in — mirror the primary path's non-supervised behavior.
+                return (
+                    tool_ref.name,
+                    f"High-risk tool '{tool_ref.name}' requires approval (non-supervised mode).",
+                )
+            _arg_errors = _validate_args(args, getattr(tool_ref, "input_schema", None) or {})
+            if _arg_errors:
+                return (tool_ref.name, f"[argument validation failed: {'; '.join(_arg_errors)}]")
+            _t0 = time.monotonic()
+            try:
+                result = await self._mcp_client.call_tool(
+                    server_id=tool_ref.server_id,
+                    tool_name=tool_ref.name,
+                    arguments=args,
+                    tenant_ctx=tenant_ctx,
+                )
+            except Exception as exc:
+                record_tool_call(
+                    tool_ref.name, tool_ref.server_id, "failed", time.monotonic() - _t0
+                )
+                return (tool_ref.name, f"[error: {exc}]")
+            record_tool_call(
+                tool_ref.name,
+                tool_ref.server_id,
+                "success" if result.success else "failed",
+                time.monotonic() - _t0,
+            )
+            if state.steps:
+                state.steps[-1].tool_calls.append(
+                    {
+                        "tool_name": tool_ref.name,
+                        "server_id": tool_ref.server_id,
+                        "success": result.success,
+                        "error": result.error or "",
+                        "output": str(result.output)[:300] if result.output else "",
+                    }
+                )
+            await self._emit(
+                {
+                    "type": "tool_call_complete",
+                    "tool": tool_ref.name,
+                    "server_id": tool_ref.server_id,
+                    "success": result.success,
+                    "parallel": True,
+                }
+            )
+            out = self._sanitize_tool_raw_output(
+                result.output if result.success else result.error
+            )
+            return (tool_ref.name, out)
+
+        results = await _asyncio.gather(
+            *[_one(stc) for stc in extra_tcs], return_exceptions=True
+        )
+        return [r for r in results if isinstance(r, tuple)]
 
     async def _execute_step_with_cache(
         self, step: str, state: AgentState, tenant_ctx: TenantContext
