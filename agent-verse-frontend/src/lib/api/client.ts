@@ -464,6 +464,9 @@ export interface ConnectorRequest {
   auth_type: string;
   auth_config: Record<string, string>;
   description?: string;
+  // When true, this connector's high-risk tools run without human approval in
+  // autonomous goals (explicit per-connector opt-in; default-secure off).
+  auto_approve?: boolean;
 }
 
 export interface ConnectorResponse {
@@ -480,6 +483,7 @@ export interface ConnectorResponse {
   test_result?: { success: boolean; latency_ms?: number; error?: string };
   has_builtin?: boolean;
   builtin_server_id?: string;
+  auto_approve?: boolean;
 }
 
 export interface CatalogAuthField {

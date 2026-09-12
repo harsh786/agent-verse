@@ -570,6 +570,7 @@ interface FormState {
   url: string;
   auth_type: string;
   auth_values: Record<string, string>;
+  auto_approve: boolean;
 }
 
 const EMPTY_FORM: FormState = {
@@ -577,6 +578,7 @@ const EMPTY_FORM: FormState = {
   url: '',
   auth_type: 'bearer',
   auth_values: {},
+  auto_approve: false,
 };
 
 function buildAuthConfig(_authType: string, authValues: Record<string, string>): Record<string, string> {
@@ -613,6 +615,7 @@ export function ConnectorsRegisteredPage() {
         url: prefill.url ?? prefill.default_url ?? '',
         auth_type: prefill.auth_type ?? 'bearer',
         auth_values: {},
+        auto_approve: false,
       };
     }
     return EMPTY_FORM;
@@ -639,6 +642,7 @@ export function ConnectorsRegisteredPage() {
         url: form.url.trim(),
         auth_type: form.auth_type,
         auth_config,
+        auto_approve: form.auto_approve,
       };
       if (editingId) {
         return connectorsApi.update(editingId, payload);
@@ -680,6 +684,7 @@ export function ConnectorsRegisteredPage() {
       url: c.url,
       auth_type: c.auth_type ?? 'bearer',
       auth_values: parseAuthConfigToValues(c.auth_type ?? 'bearer', c.auth_config ?? {}),
+      auto_approve: Boolean(c.auto_approve),
     });
     setFormError('');
     setShowModal(true);
@@ -1010,6 +1015,28 @@ export function ConnectorsRegisteredPage() {
                   </div>
                 )
               )}
+
+              {/* Autonomous execution opt-in */}
+              <label
+                htmlFor="connector-auto-approve"
+                className="flex items-start gap-3 rounded-xl border border-border bg-muted/20 p-4 cursor-pointer"
+              >
+                <input
+                  id="connector-auto-approve"
+                  type="checkbox"
+                  checked={form.auto_approve}
+                  onChange={(e) => setForm((f) => ({ ...f, auto_approve: e.target.checked }))}
+                  className="mt-0.5 h-4 w-4 rounded border-input accent-primary"
+                />
+                <div className="space-y-0.5">
+                  <span className="block text-sm font-medium">Allow autonomous execution</span>
+                  <span className="block text-xs text-muted-foreground leading-relaxed">
+                    Let agents run this connector's high-risk tools (e.g. send a message) without
+                    waiting for human approval in autonomous goals. Only enable for connectors you
+                    trust to act on your behalf — everything else still requires approval.
+                  </span>
+                </div>
+              </label>
 
               {/* Error */}
               {formError && (
