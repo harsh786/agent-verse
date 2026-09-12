@@ -334,11 +334,13 @@ class AgentGraph(
             return ExecutionStrategy.safe_default("resolution error")
 
     async def _current_strategy(self, tenant_ctx: Any = None) -> Any:
-        """The execution strategy for the current goal.
+        """The execution strategy for the current goal — chosen adaptively.
 
-        Starts from the statically-resolved strategy and, when a capability
-        tracker is wired (P5), downgrades it using observed per-model success
-        rates. Any error falls back to the static strategy.
+        Starts from the statically-seeded strategy, then lets *observation* win:
+        the capability tracker's per-model success rates promote or demote plan/
+        tool mode (bidirectional learning), and during cold-start it probes the
+        richer strategy to discover a model's real capabilities. With no tracker
+        wired it falls back to the static seed. Any error falls back safely.
         """
         base = self._execution_strategy
         tracker = getattr(self, "_capability_tracker", None)
@@ -349,16 +351,22 @@ class AgentGraph(
         ):
             return base
         try:
-            from app.agent.strategy_adaptivity import refine_strategy
+            from app.agent.execution_strategy import profile_for
+            from app.agent.strategy_adaptivity import apply_exploration, refine_strategy
 
+            planner_model = self._role_model_id(self._planner)
+            executor_model = self._role_model_id(self._executor)
             tid = getattr(tenant_ctx, "tenant_id", None)
-            s_rate = await tracker.rate(
-                self._role_model_id(self._planner), tenant_id=tid, kind="structured"
+            s_rate = await tracker.rate(planner_model, tenant_id=tid, kind="structured")
+            p_rate = await tracker.rate(executor_model, tenant_id=tid, kind="parallel")
+            learned = refine_strategy(base, structured_ok_rate=s_rate, parallel_ok_rate=p_rate)
+            return apply_exploration(
+                learned,
+                planner_profile=profile_for(planner_model),
+                executor_profile=profile_for(executor_model),
+                structured_rate_known=s_rate is not None,
+                parallel_rate_known=p_rate is not None,
             )
-            p_rate = await tracker.rate(
-                self._role_model_id(self._executor), tenant_id=tid, kind="parallel"
-            )
-            return refine_strategy(base, structured_ok_rate=s_rate, parallel_ok_rate=p_rate)
         except Exception:  # pragma: no cover - defensive
             return base
 

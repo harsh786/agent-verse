@@ -1787,10 +1787,11 @@ def run_goal(
                 )
             )
 
-            # P5: capability tracker for adaptive strategy (best-effort; a Redis
-            # error just means the static resolver is used). fast_model_id enables
-            # Strategy C verifier routing only when an operator configures a
-            # genuinely faster verification model.
+            # Adaptive strategy: wire the capability tracker so the engine LEARNS
+            # each model's real capabilities from observation (best-effort; a Redis
+            # error just falls back to the static seed). Strategy C (fast-verifier
+            # routing) is auto-derived from the role models' latency tiers — no
+            # flag or env var required.
             _capability_tracker = None
             try:
                 import redis.asyncio as _aioredis_ct
@@ -1801,7 +1802,6 @@ def run_goal(
                 _capability_tracker = RedisCapabilityTracker(_ct_redis)
             except Exception as _ct_exc:  # pragma: no cover - defensive
                 logger.warning("capability_tracker_wire_failed: %s", _ct_exc)
-            _fast_verifier_model = os.getenv("FAST_VERIFIER_MODEL", "") or ""
 
             _agent_runner = AgentGraph(
                 planner=provider,
@@ -1810,7 +1810,6 @@ def run_goal(
                 model_router=_model_router,
                 autonomy_mode=_agent_autonomy_mode,
                 capability_tracker=_capability_tracker,
-                fast_model_id=_fast_verifier_model,
                 max_iterations=_agent_max_iterations if _agent_max_iterations is not None else 100,
                 result_processor=ResultProcessor(),
                 dedup_cache=DeduplicationCache(),

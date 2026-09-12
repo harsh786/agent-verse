@@ -114,7 +114,33 @@ def test_verifier_routed_to_fast_model():
 
 
 def test_no_verifier_reroute_without_fast_model():
+    # planner+executor both medium, no faster candidate -> no reroute
     assert resolve(planner=_frontier(), executor=_frontier()).verifier_model == ""
+
+
+def test_verifier_auto_routes_to_fastest_role_model():
+    """Strategy C with NO flag: verification auto-routes to the fastest role model."""
+    fast_exec = ModelCapabilityProfile(
+        model_id="gpt-4o-mini", parallel_tool_calls=True, latency_tier=LatencyTier.FAST.value
+    )
+    slow_planner = ModelCapabilityProfile(
+        model_id="big-model",
+        structured_planning=True,
+        strict_schema_enforced=True,
+        json_reliability=JsonReliability.HIGH.value,
+        latency_tier=LatencyTier.SLOW.value,
+    )
+    s = resolve(planner=slow_planner, executor=fast_exec, verifier=slow_planner)
+    assert s.verifier_model == "gpt-4o-mini"
+
+
+def test_is_seeded():
+    from app.agent.execution_strategy import is_seeded
+
+    assert is_seeded("openai/gpt-oss-20b") is True
+    assert is_seeded("claude-opus-5") is True
+    assert is_seeded("some-brand-new-model") is False
+    assert is_seeded("") is False
 
 
 def test_no_verifier_reroute_when_already_fast():

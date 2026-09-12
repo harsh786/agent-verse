@@ -158,6 +158,9 @@ _STATIC_PROFILES: list[tuple[str, ModelCapabilityProfile]] = [
 ]
 
 
+_TIER_RANK = {LatencyTier.FAST.value: 0, LatencyTier.MEDIUM.value: 1, LatencyTier.SLOW.value: 2}
+
+
 def latency_tier_for_ms(avg_latency_ms: float) -> str:
     """Derive a latency tier from an observed average latency."""
     if avg_latency_ms <= 0:
@@ -167,6 +170,16 @@ def latency_tier_for_ms(avg_latency_ms: float) -> str:
     if avg_latency_ms < 8000:
         return LatencyTier.MEDIUM.value
     return LatencyTier.SLOW.value
+
+
+def is_seeded(model_id: str | None) -> bool:
+    """True when the model matches a family in the static seed registry.
+
+    Used by the adaptivity layer to distinguish a model we have a prior for
+    (explore rarely) from a genuinely unknown model (explore to learn it).
+    """
+    mid = (model_id or "").lower().strip()
+    return bool(mid) and any(needle in mid for needle, _ in _STATIC_PROFILES)
 
 
 def profile_for(model_id: str | None) -> ModelCapabilityProfile:
@@ -220,17 +233,26 @@ def resolve(
 
     wave_width_cap = 5 if planner.json_reliability == JsonReliability.HIGH.value else 3
 
-    # Strategy C — route the verifier to a fast model when one is available and
-    # the verifier is not already fast. Never downgrades planner/executor.
-    verifier_model = ""
+    # Strategy C — route verification (latency-sensitive, quality-tolerant) to the
+    # fastest available role model. Derived automatically from the role profiles'
+    # latency tiers (learned from observation or seeded), so no manual fast-model
+    # flag is needed. An explicit fast_model_id hint still wins when provided.
     v_profile = verifier or executor
-    if (
-        fast_model_id
-        and v_profile.latency_tier != LatencyTier.FAST.value
-        and fast_model_id != v_profile.model_id
-    ):
+    verifier_model = ""
+    _candidates = [p for p in (planner, executor, verifier) if p is not None]
+    _fastest = min(
+        _candidates, key=lambda p: _TIER_RANK.get(p.latency_tier, 1), default=None
+    )
+    if fast_model_id and fast_model_id != v_profile.model_id:
         verifier_model = fast_model_id
         reasons.append(f"C:verifier->{fast_model_id}")
+    elif (
+        _fastest is not None
+        and _TIER_RANK.get(_fastest.latency_tier, 1) < _TIER_RANK.get(v_profile.latency_tier, 1)
+        and _fastest.model_id != v_profile.model_id
+    ):
+        verifier_model = _fastest.model_id
+        reasons.append(f"C:verifier->{_fastest.model_id}(fastest)")
 
     return ExecutionStrategy(
         plan_mode=plan_mode,

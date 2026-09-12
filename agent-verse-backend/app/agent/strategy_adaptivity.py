@@ -13,16 +13,32 @@ so the static resolver behavior is preserved.
 
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 from typing import Any
 
-from app.agent.execution_strategy import ExecutionStrategy, PlanMode, ToolMode
+from app.agent.execution_strategy import (
+    ExecutionStrategy,
+    JsonReliability,
+    ModelCapabilityProfile,
+    PlanMode,
+    ToolMode,
+    is_seeded,
+)
 
-# Below this observed success rate, force the safe mode even if the static
-# profile allowed the richer strategy.
-_DOWNGRADE_THRESHOLD = 0.6
+# Observation thresholds with a hysteresis band so a model near the boundary
+# does not flap between strategies.
+_UPGRADE_THRESHOLD = 0.8  # >= this observed success -> promote to the richer mode
+_DOWNGRADE_THRESHOLD = 0.6  # < this -> demote to the safe mode
 # Require this many observations before trusting a rate.
 _MIN_OBSERVATIONS = 4
+
+# Cold-start exploration: how often to *probe* the richer strategy before enough
+# data exists, so capabilities are discovered rather than assumed. Probing is
+# safe — a malformed structured plan falls back to sequential parsing, and
+# parallel only affects a turn that emits multiple tool calls.
+_EXPLORE_RATE_UNKNOWN = 1.0  # unknown model: always probe until we have data
+_EXPLORE_RATE_SEEDED_INCAPABLE = 0.1  # seed says "no" — occasional cheap re-check
 
 
 def refine_strategy(
@@ -31,34 +47,82 @@ def refine_strategy(
     structured_ok_rate: float | None = None,
     parallel_ok_rate: float | None = None,
 ) -> ExecutionStrategy:
-    """Return a possibly-downgraded strategy from observed reliability rates.
+    """Refine a strategy from observed reliability rates — learns BOTH directions.
 
-    Only ever *downgrades* (STRUCTURED->SEQUENTIAL, PARALLEL->SINGLE) — it never
-    upgrades beyond what the static resolver allowed. ``None`` rates (unknown /
-    too few samples) leave the corresponding mode unchanged.
+    * observed success ``>= _UPGRADE_THRESHOLD`` promotes to the richer mode
+      (SEQUENTIAL->STRUCTURED, SINGLE->PARALLEL) even if the static seed said no;
+    * observed success ``< _DOWNGRADE_THRESHOLD`` demotes to the safe mode;
+    * rates in the hysteresis band, or ``None`` (unknown / too few samples), leave
+      the mode unchanged.
+
+    Observation always wins over the static seed once enough data exists — the
+    seed is only a cold-start prior.
     """
-    updated = base
-    if (
-        updated.plan_mode == PlanMode.STRUCTURED
-        and structured_ok_rate is not None
-        and structured_ok_rate < _DOWNGRADE_THRESHOLD
-    ):
-        updated = replace(
-            updated,
-            plan_mode=PlanMode.SEQUENTIAL,
-            reason=f"{updated.reason}; A:downgraded(structured_ok={structured_ok_rate:.2f})",
-        )
-    if (
-        updated.tool_mode == ToolMode.PARALLEL
-        and parallel_ok_rate is not None
-        and parallel_ok_rate < _DOWNGRADE_THRESHOLD
-    ):
-        updated = replace(
-            updated,
-            tool_mode=ToolMode.SINGLE,
-            reason=f"{updated.reason}; B:downgraded(parallel_ok={parallel_ok_rate:.2f})",
-        )
-    return updated
+    plan_mode = base.plan_mode
+    tool_mode = base.tool_mode
+    reasons = [base.reason] if base.reason else []
+
+    if structured_ok_rate is not None:
+        if structured_ok_rate >= _UPGRADE_THRESHOLD and plan_mode != PlanMode.STRUCTURED:
+            plan_mode = PlanMode.STRUCTURED
+            reasons.append(f"A:learned-up(structured_ok={structured_ok_rate:.2f})")
+        elif structured_ok_rate < _DOWNGRADE_THRESHOLD and plan_mode != PlanMode.SEQUENTIAL:
+            plan_mode = PlanMode.SEQUENTIAL
+            reasons.append(f"A:learned-down(structured_ok={structured_ok_rate:.2f})")
+
+    if parallel_ok_rate is not None:
+        if parallel_ok_rate >= _UPGRADE_THRESHOLD and tool_mode != ToolMode.PARALLEL:
+            tool_mode = ToolMode.PARALLEL
+            reasons.append(f"B:learned-up(parallel_ok={parallel_ok_rate:.2f})")
+        elif parallel_ok_rate < _DOWNGRADE_THRESHOLD and tool_mode != ToolMode.SINGLE:
+            tool_mode = ToolMode.SINGLE
+            reasons.append(f"B:learned-down(parallel_ok={parallel_ok_rate:.2f})")
+
+    return replace(base, plan_mode=plan_mode, tool_mode=tool_mode, reason="; ".join(reasons))
+
+
+def _explore_probability(profile: ModelCapabilityProfile, *, already_capable: bool) -> float:
+    """How often to probe the richer strategy for a model with no data yet."""
+    if already_capable:
+        return 0.0  # base is already the richer mode — nothing to discover
+    if not is_seeded(profile.model_id):
+        return _EXPLORE_RATE_UNKNOWN  # unknown model — learn it
+    if profile.json_reliability == JsonReliability.LOW.value:
+        return 0.0  # seed is confident it's incapable — don't waste probes
+    return _EXPLORE_RATE_SEEDED_INCAPABLE  # seed says no but plausible — re-check rarely
+
+
+def apply_exploration(
+    strategy: ExecutionStrategy,
+    *,
+    planner_profile: ModelCapabilityProfile,
+    executor_profile: ModelCapabilityProfile,
+    structured_rate_known: bool,
+    parallel_rate_known: bool,
+    rng: random.Random | None = None,
+) -> ExecutionStrategy:
+    """Cold-start exploration: when a mode has no observed data yet, occasionally
+    probe the richer strategy so its reliability can be measured. Once data exists
+    (``*_rate_known``), the learned rate governs and exploration stops.
+    """
+    _rng = rng or random
+    plan_mode = strategy.plan_mode
+    tool_mode = strategy.tool_mode
+    reasons = [strategy.reason] if strategy.reason else []
+
+    if plan_mode == PlanMode.SEQUENTIAL and not structured_rate_known:
+        p = _explore_probability(planner_profile, already_capable=False)
+        if p > 0 and _rng.random() < p:
+            plan_mode = PlanMode.STRUCTURED
+            reasons.append("A:explore")
+
+    if tool_mode == ToolMode.SINGLE and not parallel_rate_known:
+        p = _explore_probability(executor_profile, already_capable=False)
+        if p > 0 and _rng.random() < p:
+            tool_mode = ToolMode.PARALLEL
+            reasons.append("B:explore")
+
+    return replace(strategy, plan_mode=plan_mode, tool_mode=tool_mode, reason="; ".join(reasons))
 
 
 class RedisCapabilityTracker:

@@ -1995,6 +1995,24 @@ class ExecutorMixin:
                 for _en, _eo in _extra_outputs:
                     raw_output = f"{raw_output or ''}\n\n[parallel tool: {_en}]\n{_eo}"
                 raw_output_sanitized = True
+                # P5 adaptivity: record whether parallel tool calls actually worked
+                # for this executor model, so the engine can learn (up/down) whether
+                # to keep using PARALLEL for it. Only sampled when the model really
+                # emitted multiple calls (the relevant signal).
+                _cap_tracker_b = getattr(self, "_capability_tracker", None)
+                if _cap_tracker_b is not None and _extra_outputs:
+                    _parallel_ok = all(
+                        "[error" not in _o.lower() and "requires approval" not in _o.lower()
+                        for _, _o in _extra_outputs
+                    )
+                    _exec_model_b = str(getattr(self._executor, "_default_model", "") or "")
+                    with contextlib.suppress(Exception):
+                        await _cap_tracker_b.record(
+                            _exec_model_b,
+                            ok=_parallel_ok,
+                            tenant_id=getattr(tenant_ctx, "tenant_id", None),
+                            kind="parallel",
+                        )
             except Exception as _pb_exc:  # pragma: no cover - defensive
                 self._logger.warning("parallel_tool_dispatch_failed", error=str(_pb_exc)[:120])
 

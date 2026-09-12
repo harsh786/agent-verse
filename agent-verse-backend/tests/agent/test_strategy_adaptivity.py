@@ -4,15 +4,30 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent.execution_strategy import ExecutionStrategy, PlanMode, ToolMode
-from app.agent.strategy_adaptivity import RedisCapabilityTracker, refine_strategy
+import random
+
+from app.agent.execution_strategy import (
+    ExecutionStrategy,
+    ModelCapabilityProfile,
+    PlanMode,
+    ToolMode,
+)
+from app.agent.strategy_adaptivity import (
+    RedisCapabilityTracker,
+    apply_exploration,
+    refine_strategy,
+)
 
 
 def _structured_parallel() -> ExecutionStrategy:
     return ExecutionStrategy(plan_mode=PlanMode.STRUCTURED, tool_mode=ToolMode.PARALLEL)
 
 
-# ── pure refine_strategy ─────────────────────────────────────────────────────
+def _sequential_single() -> ExecutionStrategy:
+    return ExecutionStrategy(plan_mode=PlanMode.SEQUENTIAL, tool_mode=ToolMode.SINGLE)
+
+
+# ── pure refine_strategy — bidirectional ─────────────────────────────────────
 
 
 def test_low_structured_rate_downgrades_plan_mode():
@@ -39,11 +54,78 @@ def test_unknown_rates_are_noop():
     assert s.tool_mode == ToolMode.PARALLEL
 
 
-def test_never_upgrades():
-    seq = ExecutionStrategy(plan_mode=PlanMode.SEQUENTIAL, tool_mode=ToolMode.SINGLE)
-    s = refine_strategy(seq, structured_ok_rate=1.0, parallel_ok_rate=1.0)
+def test_high_rate_upgrades_from_seed():
+    """Observation wins over the seed: a model that reliably emits structured
+    plans / parallel tools is promoted even though the seed defaulted to safe."""
+    s = refine_strategy(_sequential_single(), structured_ok_rate=0.9, parallel_ok_rate=0.85)
+    assert s.plan_mode == PlanMode.STRUCTURED
+    assert s.tool_mode == ToolMode.PARALLEL
+
+
+def test_hysteresis_band_keeps_current():
+    # 0.7 is between downgrade (0.6) and upgrade (0.8) -> no change either way
+    assert refine_strategy(_sequential_single(), structured_ok_rate=0.7).plan_mode == (
+        PlanMode.SEQUENTIAL
+    )
+    assert refine_strategy(_structured_parallel(), structured_ok_rate=0.7).plan_mode == (
+        PlanMode.STRUCTURED
+    )
+
+
+# ── cold-start exploration ───────────────────────────────────────────────────
+
+
+def _profile(model_id: str, json_reliability: str = "medium") -> ModelCapabilityProfile:
+    return ModelCapabilityProfile(model_id=model_id, json_reliability=json_reliability)
+
+
+class _AlwaysExplore(random.Random):
+    def random(self) -> float:
+        return 0.0  # below any positive probability
+
+
+class _NeverExplore(random.Random):
+    def random(self) -> float:
+        return 0.99
+
+
+def test_unknown_model_is_probed_during_cold_start():
+    s = apply_exploration(
+        _sequential_single(),
+        planner_profile=_profile("brand-new-model"),
+        executor_profile=_profile("brand-new-model"),
+        structured_rate_known=False,
+        parallel_rate_known=False,
+        rng=_AlwaysExplore(),
+    )
+    assert s.plan_mode == PlanMode.STRUCTURED
+    assert s.tool_mode == ToolMode.PARALLEL
+
+
+def test_no_exploration_once_rate_is_known():
+    s = apply_exploration(
+        _sequential_single(),
+        planner_profile=_profile("brand-new-model"),
+        executor_profile=_profile("brand-new-model"),
+        structured_rate_known=True,
+        parallel_rate_known=True,
+        rng=_AlwaysExplore(),
+    )
     assert s.plan_mode == PlanMode.SEQUENTIAL
     assert s.tool_mode == ToolMode.SINGLE
+
+
+def test_seeded_incapable_low_reliability_not_probed():
+    # a seeded model with low json reliability is confidently incapable -> no probe
+    s = apply_exploration(
+        _sequential_single(),
+        planner_profile=ModelCapabilityProfile(model_id="gpt-oss", json_reliability="low"),
+        executor_profile=ModelCapabilityProfile(model_id="gpt-oss", json_reliability="low"),
+        structured_rate_known=False,
+        parallel_rate_known=False,
+        rng=_AlwaysExplore(),
+    )
+    assert s.plan_mode == PlanMode.SEQUENTIAL
 
 
 # ── RedisCapabilityTracker (fake redis) ──────────────────────────────────────
