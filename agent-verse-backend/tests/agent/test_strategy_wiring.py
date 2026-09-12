@@ -82,6 +82,26 @@ def test_graph_resolves_strategy_from_model_ids():
     assert _graph("openai/gpt-oss-20b")._execution_strategy.plan_mode == PlanMode.SEQUENTIAL
 
 
+@pytest.mark.asyncio
+async def test_strategy_c_routes_verifier_to_fast_model():
+    """Strategy C: the verifier request uses the strategy's nominated fast model."""
+    from app.agent.graph import AgentGraph
+    from app.providers.fake import FakeProvider
+
+    verifier = FakeProvider(responses=['{"success": true, "reason": "ok"}'])
+    graph = AgentGraph(
+        planner=FakeProvider(responses=['{"steps": ["do it"]}']),
+        executor=FakeProvider(responses=["done"]),
+        verifier=verifier,
+        execution_strategy=ExecutionStrategy(
+            plan_mode=PlanMode.SEQUENTIAL, tool_mode=ToolMode.SINGLE, verifier_model="fast-verifier"
+        ),
+    )
+    await graph.run(goal="Do a thing", tenant_ctx=T)
+    models = [getattr(r, "model", "") for r in verifier.call_history]
+    assert "fast-verifier" in models
+
+
 def test_adaptive_strategy_can_be_disabled():
     from app.agent.graph import AgentGraph
     from app.providers.fake import FakeProvider

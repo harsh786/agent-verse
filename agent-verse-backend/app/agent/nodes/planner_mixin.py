@@ -554,6 +554,27 @@ class PlannerMixin:
             self._logger.warning("plan_tool_validation", warning=_warn)
 
         agent_state.plan = _plan_display
+
+        # ── P5 adaptivity: record structured-plan reliability ──────────────────
+        # When we asked for a structured (dependency-graph) plan, record whether
+        # the model actually produced one. The tracker's rolling success rate
+        # feeds _current_strategy so a model that keeps emitting malformed JSON is
+        # auto-downgraded to SEQUENTIAL (and restored when it recovers).
+        _cap_tracker = getattr(self, "_capability_tracker", None)
+        if _cap_tracker is not None:
+            from app.agent.execution_strategy import PlanMode as _PlanModeP5
+
+            _pmode = getattr(_strategy, "plan_mode", None) if _strategy is not None else None
+            if _pmode == _PlanModeP5.STRUCTURED:
+                _structured_ok = bool(raw_steps and isinstance(raw_steps[0], dict))
+                with contextlib.suppress(Exception):
+                    await _cap_tracker.record(
+                        planning_model,
+                        ok=_structured_ok,
+                        tenant_id=tenant_ctx.tenant_id,
+                        kind="structured",
+                    )
+
         await self._emit({"type": "plan_ready", "steps": _plan_display, "iteration": iteration})
         # ── Predictive Prefetch: embed all step descriptions now so semantic
         # cache lookups during execution are instant (sub-millisecond) ──────────

@@ -66,6 +66,16 @@ class VerifierMixin:
         if self._model_router is not None:
             with contextlib.suppress(Exception):
                 _verify_model = self._model_router.model_for("verification") or ""
+        # Strategy C: route verification (a latency-sensitive, quality-tolerant
+        # role) to a faster model when the resolved strategy nominates one.
+        _strategy_c = agent_state.context.get("_execution_strategy")
+        _strategy_verify_model = getattr(_strategy_c, "verifier_model", "") if _strategy_c else ""
+        if _strategy_verify_model:
+            _verify_model = _strategy_verify_model
+            with contextlib.suppress(Exception):
+                await self._emit(
+                    {"type": "verifier_model_routed", "model": _verify_model, "reason": "latency"}
+                )
         # ── LLM Response Cache for verifier ───────────────────────────────────
         _llm_rc = getattr(self, "_llm_response_cache", None)
         _verify_cached = False
