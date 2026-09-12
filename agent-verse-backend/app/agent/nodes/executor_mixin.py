@@ -53,6 +53,7 @@ from app.agent.nodes._helpers import (
     _extract_scope_value,
     _guardrail_should_fail_closed,
     _is_high_risk_step,
+    resolve_effective_tool_risk,
 )
 
 # Per-goal tool-call budget. Once the goal has spent this many tool calls across
@@ -1542,12 +1543,26 @@ class ExecutorMixin:
                     _allow_fa_write_high = (
                         _os.getenv("ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH", "false").lower() == "true"
                     )
-                    if (
-                        tool_risk == "write_high"
-                        and self._autonomy_mode == "fully-autonomous"
-                        and _allow_fa_write_high
-                    ):
-                        tool_risk = "write_low"
+                    # Per-connector opt-in: the user explicitly marked this connector
+                    # "Allow autonomous execution", so its high-risk tools run without
+                    # a human approver in autonomous goals. Scoped to this connector.
+                    _connector_auto_approve = bool(getattr(tool_ref, "auto_approve", False))
+                    _effective_risk = resolve_effective_tool_risk(
+                        tool_risk,
+                        autonomy_mode=self._autonomy_mode,
+                        connector_auto_approve=_connector_auto_approve,
+                        allow_fa_write_high=_allow_fa_write_high,
+                    )
+                    if _effective_risk != tool_risk and _connector_auto_approve:
+                        await self._emit(
+                            {
+                                "type": "tool_call_auto_approved",
+                                "tool": tool_ref.name,
+                                "server_id": tool_ref.server_id,
+                                "reason": "connector opted into autonomous execution",
+                            }
+                        )
+                    tool_risk = _effective_risk
                     # else: falls through to write_high HITL gate below (default-secure)
                     if tool_risk == "destructive":
                         error = self._sanitize_tool_raw_output(

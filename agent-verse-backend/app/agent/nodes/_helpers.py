@@ -23,6 +23,34 @@ def _is_high_risk_step(step: str) -> bool:
     )
 
 
+def resolve_effective_tool_risk(
+    tool_risk: str,
+    *,
+    autonomy_mode: str,
+    connector_auto_approve: bool,
+    allow_fa_write_high: bool,
+) -> str:
+    """Decide the effective risk for a tool call after autonomous-execution opt-ins.
+
+    A ``write_high`` tool is downgraded to ``write_low`` (i.e. executed without a
+    human approval gate) only when the user has explicitly opted in — either:
+
+    * the tool's connector is marked ``auto_approve`` (per-connector opt-in), or
+    * the run is ``fully-autonomous`` AND the global
+      ``ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH`` flag is set.
+
+    Every other risk level (and every non-opted-in ``write_high``) is returned
+    unchanged so the default-secure HITL / deny gates still apply.
+    """
+    if tool_risk != "write_high":
+        return tool_risk
+    if connector_auto_approve:
+        return "write_low"
+    if autonomy_mode == "fully-autonomous" and allow_fa_write_high:
+        return "write_low"
+    return tool_risk
+
+
 def _guardrail_should_fail_closed(step: str, risk_level: Any = None) -> bool:
     """SAFE-4 (P0-15): decide whether an errored safety check must fail CLOSED.
 

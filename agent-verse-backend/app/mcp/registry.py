@@ -62,6 +62,10 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
     capabilities: list[str] = Field(default_factory=list)
     tool_definitions: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-connector opt-in: when True, this connector's high-risk (write_high)
+    # tools are auto-approved in autonomous (non-supervised) goals instead of
+    # stalling on human approval. Explicit, scoped consent — default-secure OFF.
+    auto_approve: bool = False
     # Callable for built-in server dispatch — excluded from JSON serialization
     builtin_handler: Any = Field(default=None, exclude=True)
     # Transport: "http" (default) | "ws" | "websocket"

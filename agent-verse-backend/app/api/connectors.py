@@ -87,6 +87,9 @@ class RegisterConnectorRequest(BaseModel):
     auth_config: dict[str, Any] = {}
     description: str = ""
     priority: int = 0
+    # When True, this connector's high-risk tools run without human approval in
+    # autonomous goals (explicit per-connector opt-in; default-secure OFF).
+    auto_approve: bool = False
 
 
 def _require_tenant(request: Request) -> Any:
@@ -427,6 +430,7 @@ async def register_connector(request: Request, body: RegisterConnectorRequest) -
             description=body.description,
             priority=body.priority,
             tool_definitions=_builtin_tool_defs,
+            auto_approve=body.auto_approve,
         )
 
     server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
@@ -488,6 +492,11 @@ async def update_connector(
         auth_config=stored_auth_config,
         description=body.description,
         priority=body.priority,
+        auto_approve=body.auto_approve,
+        # Preserve the canonical builtin id + tool defs on update so the connector
+        # keeps its tools (a fresh UUID would strip them after a restart).
+        server_id=existing.server_id,
+        tool_definitions=list(existing.tool_definitions or []),
     )
     updated = await reg.update(server_id, cfg, tenant_ctx=tenant_ctx)
     if not updated:

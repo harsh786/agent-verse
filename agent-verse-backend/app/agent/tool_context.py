@@ -17,6 +17,9 @@ class ToolRef:
     name: str
     description: str
     input_schema: dict[str, Any]
+    # Mirrors MCPServerConfig.auto_approve — when True the connector's high-risk
+    # tools run without human approval in autonomous mode (explicit user opt-in).
+    auto_approve: bool = False
 
 
 @dataclass

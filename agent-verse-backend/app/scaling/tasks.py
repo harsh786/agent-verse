@@ -1528,6 +1528,7 @@ def run_goal(
                         name=discovered.name,
                         description=discovered.description,
                         input_schema=discovered.input_schema,
+                        auto_approve=bool(getattr(cfg, "auto_approve", False)),
                     )
                 )
         return redis_client, mcp_client, ToolContext(connectors=connectors, tools=tools)
