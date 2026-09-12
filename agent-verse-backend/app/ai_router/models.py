@@ -65,6 +65,17 @@ class ModelEndpoint:
     quality_score: float = 0.7
     compliance_ready: bool = False
     base_url: str | None = None
+    # ── Reliability capabilities (drive the adaptive execution strategy) ──────
+    # The supports_* flags above are hard capabilities (does the API accept the
+    # request shape). These capture whether the model *reliably delivers*, which
+    # is what the strategy resolver gates on. e.g. gpt-oss-20b has
+    # supports_structured_output=True at the API but structured_planning=False in
+    # practice (it emits malformed dependency-graph JSON).
+    structured_planning: bool = False  # reliably emits {steps:[{id,depends_on}]}
+    parallel_tool_calls: bool = False  # emits & benefits from multi-tool turns
+    json_reliability: str = "low"  # "high" | "medium" | "low"
+    latency_tier: str = "medium"  # "fast" | "medium" | "slow"
+    strict_schema_enforced: bool = False  # endpoint truly enforces json_schema
     extra: dict[str, Any] = field(default_factory=dict)
 
 
