@@ -63,6 +63,80 @@ from app.agent.nodes._helpers import (
 # across 11 replans before a goal failed). Overridable via ``_tool_call_budget``.
 _DEFAULT_TOOL_CALL_BUDGET = 12
 
+# Prefixes that mark plain LLM reasoning ("I'll call the tool…") rather than an
+# actual tool result. Such text must never be cached or served as a step result.
+_LLM_REASONING_PREFIXES = (
+    "i'll ",
+    "i will ",
+    "i'll use",
+    "i will use",
+    "to complete",
+    "let me ",
+    "i need to ",
+    "i can ",
+    "i should ",
+    "step 1",
+    "first,",
+    "first i",
+    "i'll now",
+    "i'll start",
+    "i'll call",
+    "i'll search",
+    "now i'll",
+    "next, i",
+    "to search",
+)
+
+# Empty-collection markers — a "no rows" result is not a reusable answer.
+_EMPTY_RESULT_MARKERS = (
+    '{"issues": [], "total": 0}',
+    '{"projects": []}',
+    '{"items": []}',
+    "[]",
+    "{}",
+)
+
+
+def _is_uncacheable_output(output: str | None) -> bool:
+    """Single source of truth for "must not enter or be served from the cache".
+
+    Applied symmetrically on BOTH write and read so a poisoned entry — an error,
+    an approval placeholder, an empty collection, or plain LLM reasoning text —
+    can never be stored *or* served as if it were a successful tool result.
+    Previously the read paths were weaker than the write path, so a stale
+    "requires approval (non-supervised mode)" or error response could be served
+    as a fake success and satisfy the verifier.
+    """
+    text = (output or "").strip()
+    if len(text) < 10:
+        return True
+    lowered = text.lower()
+    if (
+        lowered.startswith('{"error')
+        or lowered.startswith("error:")
+        or "requires approval" in lowered
+        or "model_not_found" in lowered
+        or "invalid model" in lowered
+        or "rate_limit_exceeded" in lowered
+        or "mcp client unavailable" in lowered
+        or "tool not available" in lowered
+        or "argument validation failed" in lowered
+        or "circuit open" in lowered
+    ):
+        return True
+    if text in _EMPTY_RESULT_MARKERS or '"total": 0' in text or '"issues": []' in text or (
+        '"projects": []' in text
+    ):
+        return True
+    # Plain LLM reasoning text ("I'll call the tool…") — not an actual result.
+    if lowered.startswith(_LLM_REASONING_PREFIXES):
+        return True
+    if "will use" in lowered and "tool" in lowered:
+        return True
+    if "will call" in lowered and len(text) < 500:  # noqa: SIM103
+        return True
+    return False
+
 
 class ExecutorMixin:
     """Mixin: _node_execute, _execute_step_with_loop, _execute_step, _execute_step_with_cache."""
@@ -227,48 +301,13 @@ class ExecutorMixin:
                         )
                         for desc, hit in zip(_all_descs, _batch_hits, strict=False):
                             if hit is not None:
-                                # Skip cached empty/error results so they are not
-                                # served on fresh runs — forces a real tool call.
+                                # Skip cached empty/error/approval/reasoning results so
+                                # they are never served on fresh runs — forces a real
+                                # tool call. Same filter as the write path (defect: read
+                                # was weaker, so a stale "requires approval"/error could
+                                # be served as a fake success).
                                 cached_resp = hit.response if hasattr(hit, "response") else str(hit)
-                                _cr_stripped = cached_resp.strip().lower() if cached_resp else ""
-                                _is_llm_reasoning = (
-                                    _cr_stripped.startswith(
-                                        (
-                                            "i'll ",
-                                            "i will ",
-                                            "i'll use",
-                                            "i will use",
-                                            "to complete",
-                                            "let me ",
-                                            "i need to ",
-                                            "i can ",
-                                            "i should ",
-                                            "step 1",
-                                            "first,",
-                                            "first i",
-                                            "i'll now",
-                                            "i'll start",
-                                            "i'll call",
-                                            "i'll search",
-                                            "now i'll",
-                                            "next, i",
-                                            "to search",
-                                        )
-                                    )
-                                    or ("will use" in _cr_stripped and "tool" in _cr_stripped)
-                                    or ("will call" in _cr_stripped and len(_cr_stripped) < 500)
-                                )
-                                _is_empty = (
-                                    not cached_resp
-                                    or '"total": 0' in cached_resp
-                                    or '"issues": []' in cached_resp
-                                    or '"projects": []' in cached_resp
-                                    or cached_resp.strip() in ("{}", "[]", "")
-                                    or len(cached_resp.strip()) < 10
-                                    # Never serve stale LLM text as tool result
-                                    or _is_llm_reasoning
-                                )
-                                if not _is_empty:
+                                if not _is_uncacheable_output(cached_resp):
                                     _batch_cache_results[desc] = cached_resp
                         if _batch_cache_results:
                             self._logger.info(
@@ -2153,8 +2192,10 @@ class ExecutorMixin:
                         tenant_id=tenant_ctx.tenant_id,
                     )
                     # Only serve non-empty, non-error responses from cache.
-                    # Empty responses (stored by failed prior runs) must be ignored.
-                    if hit is not None and hit.response and len(hit.response.strip()) >= 10:
+                    # Same rejection rules as the write path (approval placeholders,
+                    # errors, empty collections, reasoning text) so a poisoned entry
+                    # can never be served as a fake success.
+                    if hit is not None and not _is_uncacheable_output(hit.response):
                         await self._emit(
                             {
                                 "type": "cache_hit",
@@ -2171,67 +2212,14 @@ class ExecutorMixin:
 
         raw_output = await self._execute_step(step, state, tenant_ctx)
 
-        # Store result — skip caching error responses so bad LLM outputs
-        # (API errors, model-not-found messages, timeouts) never poison the cache.
-        # Also skip caching empty/minimal results — they often represent transient
-        # failures (401 auth, wrong JQL, empty project) and should not be served
-        # as "correct" cached answers on future runs.
-        # CRITICAL: Never cache plain-text "I'll call..." executor reasoning text.
-        # Only cache actual tool call results (JSON or clearly structured output).
-        _out_stripped = (raw_output or "").strip()
-        _looks_like_llm_reasoning = (
-            _out_stripped.lower().startswith(
-                (
-                    "i'll ",
-                    "i will ",
-                    "i'll use",
-                    "i will use",
-                    "to complete",
-                    "let me ",
-                    "i need to ",
-                    "i can ",
-                    "i should ",
-                    "step 1",
-                    "first,",
-                    "first i",
-                    "i'll now",
-                    "i'll start",
-                    "i'll call",
-                    "i'll search",
-                    "now i'll",
-                    "next, i",
-                    "to search",
-                )
-            )
-            or ("will use" in _out_stripped.lower() and "tool" in _out_stripped.lower())
-            or ("will call" in _out_stripped.lower() and len(_out_stripped) < 500)
-        )
-        _is_error_output = (
-            not raw_output
-            or raw_output.strip().startswith('{"error')
-            or "model_not_found" in raw_output.lower()
-            or "invalid model" in raw_output.lower()
-            or "rate_limit_exceeded" in raw_output.lower()
-            or raw_output.strip().lower().startswith("error:")
-            or "mcp client unavailable" in raw_output.lower()
-            or "tool not available" in raw_output.lower()
-            or "argument validation failed" in raw_output.lower()
-            or "circuit open" in raw_output.lower()
-            or "requires approval" in raw_output.lower()
-            # Don't cache empty collection results (Jira 0 issues, empty lists)
-            or raw_output.strip()
-            in ('{"issues": [], "total": 0}', '{"projects": []}', '{"items": []}', "[]", "{}")
-            or '"total": 0' in raw_output
-            or '"issues": []' in raw_output
-            or '"projects": []' in raw_output
-            or len(raw_output.strip()) < 10
-            # Don't cache plain LLM reasoning text (no actual tool result)
-            or _looks_like_llm_reasoning
-        )
+        # Store result — but never cache error responses, approval placeholders,
+        # empty collections, or plain LLM reasoning text ("I'll call…"), so bad
+        # outputs never poison the cache and get served as a fake success on a
+        # future run. Single source of truth, applied symmetrically on read too.
         if (
             self._semantic_cache is not None
             and _cache_embedding is not None
-            and not _is_error_output
+            and not _is_uncacheable_output(raw_output)
         ):
             with contextlib.suppress(Exception):  # write failures must never block execution
                 await self._semantic_cache.store_async(
