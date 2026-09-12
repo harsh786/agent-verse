@@ -797,7 +797,16 @@ export function ConnectorsRegisteredPage() {
                         </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-xs text-muted-foreground max-w-xs truncate">
-                        {c.url}
+                        {c.upstream_url
+                          ? c.upstream_url
+                          : c.url === 'builtin://'
+                            ? 'Built-in'
+                            : c.url}
+                        {c.upstream_url && (
+                          <span className="ml-1.5 not-italic font-sans text-[10px] uppercase tracking-wide text-muted-foreground/50">
+                            built-in
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {c.auth_type && (

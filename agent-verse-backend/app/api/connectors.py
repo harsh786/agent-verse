@@ -246,6 +246,43 @@ async def _persist_connector_secrets(
         )
 
 
+# Real upstream API endpoints for built-in connectors that aren't in the curated
+# CONNECTOR_CATALOG, so the UI can show where a "builtin://" connector actually
+# calls (the endpoint is baked into the built-in server implementation).
+_BUILTIN_UPSTREAM_URLS: dict[str, str] = {
+    "tavily": "https://api.tavily.com",
+    "telegram": "https://api.telegram.org",
+    "todoist": "https://api.todoist.com/rest/v2",
+    "discord": "https://discord.com/api",
+    "brave search": "https://api.search.brave.com",
+    "serpapi": "https://serpapi.com/search",
+    "firecrawl": "https://api.firecrawl.dev",
+    "airtable": "https://api.airtable.com/v0",
+    "gmail": "https://gmail.googleapis.com",
+    "google sheets": "https://sheets.googleapis.com/v4",
+    "google calendar": "https://www.googleapis.com/calendar/v3",
+}
+
+_CATALOG_URL_CACHE: dict[str, str] | None = None
+
+
+def _upstream_url_for(name: str) -> str:
+    """Best-effort real upstream API URL for a connector by name (catalog first,
+    then a small supplement for common built-ins). Empty when unknown/local."""
+    global _CATALOG_URL_CACHE
+    if _CATALOG_URL_CACHE is None:
+        try:
+            from app.mcp.catalog import CONNECTOR_CATALOG
+
+            _CATALOG_URL_CACHE = {
+                s.name.lower(): s.default_url for s in CONNECTOR_CATALOG if s.default_url
+            }
+        except Exception:
+            _CATALOG_URL_CACHE = {}
+    key = (name or "").strip().lower()
+    return _CATALOG_URL_CACHE.get(key) or _BUILTIN_UPSTREAM_URLS.get(key, "")
+
+
 def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data = cfg.model_dump(exclude={"server_id"})
     data["auth_config"] = _mask_auth_config(dict(cfg.auth_config))
@@ -256,6 +293,10 @@ def _public_connector(server_id: str, cfg: MCPServerConfig) -> dict[str, Any]:
     data["has_builtin"] = (
         cfg.builtin_handler is not None or _MCPReg.get_builtin_handler(server_id) is not None
     )
+    # The stored url is "builtin://" for built-in connectors (a dispatch marker);
+    # surface the real upstream API endpoint separately so the UI can show it.
+    if (cfg.url or "").startswith("builtin://"):
+        data["upstream_url"] = _upstream_url_for(cfg.name)
     return {"server_id": server_id, **data}
 
 

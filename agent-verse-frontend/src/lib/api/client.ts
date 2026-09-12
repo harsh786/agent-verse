@@ -470,6 +470,9 @@ export interface ConnectorResponse {
   server_id: string;
   name: string;
   url: string;
+  // Real upstream API endpoint for a built-in connector (whose `url` is the
+  // internal "builtin://" dispatch marker). Empty for local/unknown built-ins.
+  upstream_url?: string;
   status?: string;
   auth_type?: string;
   auth_config?: Record<string, string>;
