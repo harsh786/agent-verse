@@ -8,7 +8,31 @@ with each node's returned dict (LangGraph reducer pattern).
 from __future__ import annotations
 
 import enum
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
+
+
+# ── State reducers ────────────────────────────────────────────────────────────
+# LangGraph runs steps with no unmet dependency (and every `parallel` branch)
+# CONCURRENTLY. When two concurrent nodes write the same state key, LangGraph
+# requires a reducer to merge the updates — without one it raises
+# InvalidUpdateError ("Can receive only one value per step"). These reducers make
+# the accumulator keys merge cleanly so fan-out / parallel workflows work.
+
+
+def _merge_dict(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, Any]:
+    """Shallow-merge two accumulator dicts (later keys win)."""
+    if not a:
+        return b or {}
+    if not b:
+        return a
+    return {**a, **b}
+
+
+def _keep_max(a: float | int | None, b: float | int | None) -> float | int:
+    """Combine cumulative telemetry counters. Step nodes return the running total
+    (base + delta), so the latest/highest value is the correct accumulated one;
+    max is exact for sequential runs and a safe approximation under concurrency."""
+    return max(a or 0, b or 0)
 
 
 class WorkflowRunStatus(enum.StrEnum):
@@ -40,11 +64,12 @@ class WorkflowState(TypedDict, total=False):
     # ── Inputs & outputs ─────────────────────────────────────────────────
     inputs: dict[str, Any]  # trigger / API inputs (after trigger_transform)
     raw_trigger: dict[str, Any]  # raw payload before trigger_transform
-    step_outputs: dict[str, Any]  # step_id → output dict (immutable after step)
+    # step_outputs: merged so concurrent/parallel steps don't collide (see reducers).
+    step_outputs: Annotated[dict[str, Any], _merge_dict]  # step_id → output dict
     outputs: dict[str, Any]  # final workflow-level outputs
 
     # ── Mutable variables (set_variable steps) ───────────────────────────
-    vars: dict[str, Any]  # read via {{vars.X}}
+    vars: Annotated[dict[str, Any], _merge_dict]  # read via {{vars.X}}
 
     # ── Execution state ───────────────────────────────────────────────────
     status: WorkflowRunStatus
@@ -62,12 +87,12 @@ class WorkflowState(TypedDict, total=False):
 
     # ── foreach progress ─────────────────────────────────────────────────
     # step_id → {"current": N, "total": M, "failed": K}
-    foreach_progress: dict[str, dict[str, int]]
+    foreach_progress: Annotated[dict[str, dict[str, int]], _merge_dict]
 
     # ── Telemetry ────────────────────────────────────────────────────────
-    cost_usd: float
-    tokens_used: int
-    step_timings: dict[str, int]  # step_id → duration_ms
+    cost_usd: Annotated[float, _keep_max]
+    tokens_used: Annotated[int, _keep_max]
+    step_timings: Annotated[dict[str, int], _merge_dict]  # step_id → duration_ms
 
     # ── Operator control ─────────────────────────────────────────────────
     paused_by: str | None  # user_id who operator-paused

@@ -28,7 +28,14 @@ _default_store = SystemTemplateStore()
 
 
 def _store(request: Request) -> SystemTemplateStore:
-    return getattr(request.app.state, "template_store", _default_store)
+    # The workflow-engine template store is wired as `template_store_we`; prefer
+    # it. (`template_store` is a different, generic store — app/api/templates.py —
+    # so reading that key first returned a store without .list()/.categories(),
+    # which 500'd the endpoint.) Tests inject a mock as `template_store`.
+    store = getattr(request.app.state, "template_store_we", None)
+    if store is None:
+        store = getattr(request.app.state, "template_store", None)
+    return store if store is not None else _default_store
 
 
 def _tenant_id(request: Request) -> str:

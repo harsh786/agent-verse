@@ -10,6 +10,7 @@ Input keys (resolved from the step ``input`` dict):
   * ``document_base64`` (+ optional ``content_type`` / ``filename``) — any format
   * ``image_base64`` — an image
   * ``pdf_base64`` — a PDF
+  * ``url`` — an http(s) URL to download and OCR (SSRF-guarded, size-capped)
   * ``file_path`` — a server-local file, allowed ONLY under the directories in
     ``WORKFLOW_FILE_ALLOWED_DIRS`` (secure-by-default: refused when unset)
 Output (``step_outputs[step_id]``): ``raw_text``, ``document_type``,
@@ -103,10 +104,26 @@ class OcrStepNode:
         }
 
     async def _run_ocr(self, resolved: dict[str, Any]) -> dict[str, Any]:
-        data, content_type, filename = self._resolve_bytes(resolved)
+        # URL ingestion (async, SSRF-guarded) takes precedence, then base64 /
+        # file_path (sync). Lets a workflow OCR a remote document directly.
+        data: bytes | None = None
+        content_type = resolved.get("content_type")
+        filename = resolved.get("filename")
+        url = resolved.get("url")
+        if url:
+            data, content_type, filename = await self._fetch_url_bytes(str(url), content_type)
+            if data is None:
+                return {
+                    "error": f"ocr step could not fetch url: {str(url)[:120]}",
+                    "raw_text": "",
+                    "degraded": True,
+                }
+        else:
+            data, content_type, filename = self._resolve_bytes(resolved)
         if data is None:
             return {
-                "error": "ocr step requires one of document_base64, image_base64, pdf_base64",
+                "error": "ocr step requires one of url, document_base64, image_base64, "
+                "pdf_base64, or an allowlisted file_path",
                 "raw_text": "",
                 "degraded": True,
             }
@@ -127,6 +144,43 @@ class OcrStepNode:
             "overall_confidence": round(result.overall_confidence, 4),
             "page_count": result.page_count,
         }
+
+    @staticmethod
+    async def _fetch_url_bytes(
+        url: str, content_type: str | None
+    ) -> tuple[bytes | None, str | None, str | None]:
+        """Download a document over http(s) for OCR — SSRF-guarded, size-capped.
+
+        Reuses the same ``SSRFGuard`` the HTTP step uses so a templated URL cannot
+        reach internal/link-local addresses. Caps the download at 25 MB.
+        """
+        import os as _os
+        from urllib.parse import urlparse
+
+        import httpx
+
+        from app.workflow.security import SSRFBlockedError, SSRFGuard
+
+        try:
+            SSRFGuard().validate(url)
+        except SSRFBlockedError as exc:
+            _log.warning("ocr_url_ssrf_blocked", url=url[:120], error=str(exc))
+            return None, None, None
+        max_bytes = 25 * 1024 * 1024
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                body = resp.content
+                if len(body) > max_bytes:
+                    _log.warning("ocr_url_too_large", url=url[:120], size=len(body))
+                    return None, None, None
+                ct = content_type or resp.headers.get("content-type", "").split(";")[0] or None
+                name = _os.path.basename(urlparse(url).path) or "document"
+                return body, ct, name
+        except Exception as exc:
+            _log.warning("ocr_url_fetch_failed", url=url[:120], error=str(exc))
+            return None, None, None
 
     @staticmethod
     def _resolve_bytes(resolved: dict[str, Any]) -> tuple[bytes | None, str | None, str | None]:
