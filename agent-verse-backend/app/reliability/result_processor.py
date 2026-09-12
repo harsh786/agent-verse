@@ -29,7 +29,7 @@ _BASE64_PATTERN = re.compile(
 )
 
 _TRUNCATION_MARKER = "...[truncated]"
-_DEFAULT_MAX_LENGTH = 4000
+_DEFAULT_MAX_LENGTH = 16000
 
 
 class ResultProcessor:

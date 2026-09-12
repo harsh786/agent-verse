@@ -5,8 +5,12 @@ from __future__ import annotations
 import re
 from typing import Any, Protocol
 
-_TOOL_EVENT_MAX_LENGTH = 1000
-_EXECUTOR_CONTEXT_MAX_LENGTH = 5000  # LLM context for executor — richer than SSE events
+# Cap for event payloads (step/tool outputs shown in the timeline AND used as the
+# goal's result summary). 1000 was far too small — it truncated real answers
+# (tables, multi-item recommendations) mid-content. 16000 comfortably fits a full
+# synthesized answer while still bounding a runaway tool dump (e.g. a scraped page).
+_TOOL_EVENT_MAX_LENGTH = 16000
+_EXECUTOR_CONTEXT_MAX_LENGTH = 16000  # LLM context for executor — richer than SSE events
 _TOOL_EVENT_TRUNCATION_MARKER = "...[truncated]"
 _SENSITIVE_KV_PATTERN = re.compile(
     r"(?i)(['\"]?\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|secret|password|passwd|pwd|token)"
