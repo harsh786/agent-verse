@@ -137,8 +137,13 @@ export function GoalExecutionGraph({ events, className }: GoalExecutionGraphProp
     animated: e.animated,
   }));
 
+  // Re-fit the viewport whenever the node count changes. The `fitView` prop only
+  // fits on mount (when 0–1 nodes exist); for a completed goal all nodes stream
+  // in afterwards, so without this the view stays panned off-screen and the
+  // graph looks blank. A short delay lets the new nodes measure/layout first.
+
   return (
-    <div ref={containerRef} className={cn('relative bg-[#020408] rounded-xl overflow-hidden', className)} style={{ minHeight: 400 }}>
+    <div ref={containerRef} className={cn('relative bg-[#020408] rounded-xl overflow-hidden', className)} style={{ height: 480 }}>
       {/* Token stats HUD */}
       <div className="absolute top-2 right-2 z-10 flex gap-2 text-[10px] font-mono">
         {graph.tokenStats.output > 0 && (
@@ -163,8 +168,13 @@ export function GoalExecutionGraph({ events, className }: GoalExecutionGraphProp
         edges={rfEdges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
+        // Anchor the view to the top-left of the flow at a readable zoom. fitView
+        // is unreliable here (nodes mount during the page-enter animation, so
+        // their sizes aren't measured when it runs, and this tall vertical DAG
+        // wouldn't fit legibly anyway); a fixed default viewport always shows the
+        // Goal → Plan → Steps flow and stays pannable/zoomable.
+        defaultViewport={{ x: 60, y: 24, zoom: 0.7 }}
+        minZoom={0.2}
         proOptions={{ hideAttribution: true }}
         style={{ background: 'transparent' }}
       >

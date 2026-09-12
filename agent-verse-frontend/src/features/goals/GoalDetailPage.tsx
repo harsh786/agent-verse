@@ -24,7 +24,7 @@ import {
   Copy, Printer, Terminal, ListTree, BookOpen, Sparkles, Zap,
   Clock, AlertTriangle, Bot, Plug, Layers, Inbox,
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
+import { RichMarkdown } from "@/components/ui/RichMarkdown";
 import { goalsApi, governanceApi, agentsApi } from "@/lib/api/client";
 import { useGoalStream } from "@/lib/sse/useGoalStream";
 import { useAuthStore } from "@/stores/auth";
@@ -71,14 +71,6 @@ function unwrapToolResult(v: unknown): string {
     }
   }
   return v;
-}
-
-function goalTitle(text: string): string {
-  if (!text) return "Untitled goal";
-  const line = text.split("\n").find((l) => l.trim()) ?? text;
-  const end = line.search(/[.!?]/);
-  const s = end > 20 ? line.slice(0, end + 1) : line;
-  return s.length > 120 ? s.slice(0, 117) + "…" : s;
 }
 
 function fmtVal(v: unknown): string | undefined {
@@ -212,9 +204,7 @@ function RichResultPanel({
             <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
             Result
           </div>
-          <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed">
-            <ReactMarkdown>{finalOutput ?? summary ?? ""}</ReactMarkdown>
-          </div>
+          <RichMarkdown>{finalOutput ?? summary ?? ""}</RichMarkdown>
         </div>
       )}
 
@@ -882,7 +872,7 @@ export function GoalDetailPage() {
         </button>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
-            <h1 className="text-xl font-bold leading-snug break-words">{goalTitle(goal.goal)}</h1>
+            <h1 className="text-xl font-bold leading-snug break-words whitespace-pre-wrap" title={goal.goal}>{goal.goal}</h1>
             <p className="text-xs text-muted-foreground font-mono mt-1">{goal.goal_id ?? goalId}</p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">

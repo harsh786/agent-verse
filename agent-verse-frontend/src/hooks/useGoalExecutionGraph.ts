@@ -237,7 +237,15 @@ export function useGoalExecutionGraph(events: GoalEvent[]): GoalExecutionGraph {
     }
     const newEvts = events.slice(lastLen.current);
     lastLen.current = events.length;
-    for (const evt of newEvts) dispatch({ type: 'EVT', evt });
+    for (const evt of newEvts) {
+      // Persisted replay events nest their payload under `data` ({type, ts, data}),
+      // while live SSE events are flat. Flatten so the reducer's field reads
+      // (evt.steps, evt.step, evt.output, …) work for both shapes — otherwise a
+      // completed goal's graph renders empty (plan_ready with 0 steps).
+      const data = (evt as { data?: Record<string, unknown> }).data;
+      const flat = data && typeof data === 'object' ? { ...data, ...evt } : evt;
+      dispatch({ type: 'EVT', evt: flat as GoalEvent });
+    }
   }, [events]);
 
   return state;
