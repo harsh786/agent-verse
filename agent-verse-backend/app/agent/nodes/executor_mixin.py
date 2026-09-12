@@ -885,7 +885,12 @@ class ExecutorMixin:
             raise
         # ── end search directives ──────────────────────────────────────────
 
-        content = f"Step: {step}"
+        # Ground the executor in the overall GOAL, not just the step. Weak
+        # planners sometimes emit a degenerate step that is the answer itself
+        # (e.g. plan=["Step 1: Rome"] for "capital of Italy"); without the goal
+        # the executor has no actionable instruction and returns INSUFFICIENT
+        # DATA, stalling the loop. Including the goal lets it answer regardless.
+        content = f"Goal: {state.goal}\nStep: {step}"
         if context_parts:
             content += "\n\n" + "\n\n".join(context_parts)
 
