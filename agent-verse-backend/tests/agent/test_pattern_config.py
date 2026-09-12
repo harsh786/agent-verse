@@ -37,7 +37,7 @@ def test_pattern_config_defaults() -> None:
     assert cfg.model_executor == "gpt-5.2"
     assert cfg.model_verifier == "gpt-5.2"
     assert cfg.model_classifier == "gpt-4o-mini"
-    assert cfg.max_iterations == 15
+    assert cfg.max_iterations == 6
     assert cfg.max_refine_iterations == 2
     assert cfg.persistence_mode is False
     assert cfg.max_persistence_attempts == 3

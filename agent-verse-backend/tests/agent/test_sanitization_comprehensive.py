@@ -92,9 +92,10 @@ def test_sanitize_raw_output_short_text_unchanged() -> None:
 
 
 def test_sanitize_raw_output_truncates_long_text() -> None:
-    long_text = "A" * 2000
+    # Default cap is 16000, so the text must exceed it to be truncated.
+    long_text = "A" * 20000
     result = sanitize_tool_raw_output(long_text)
-    assert len(result) < len(long_text) + 20
+    assert len(result) < len(long_text)
     assert "...[truncated]" in result
 
 

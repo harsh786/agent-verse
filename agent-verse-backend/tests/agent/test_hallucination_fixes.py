@@ -79,8 +79,10 @@ def test_executor_context_limit_is_larger_than_sse_limit():
     assert _EXECUTOR_CONTEXT_MAX_LENGTH >= 5000, (
         f"Executor context limit must be >= 5000, got {_EXECUTOR_CONTEXT_MAX_LENGTH}"
     )
-    assert _EXECUTOR_CONTEXT_MAX_LENGTH > _TOOL_EVENT_MAX_LENGTH, (
-        "Executor context limit must be larger than SSE event limit"
+    # Both caps were raised to 16000 (SSE events no longer truncate real answers),
+    # so the executor context must be AT LEAST the SSE event limit — never smaller.
+    assert _EXECUTOR_CONTEXT_MAX_LENGTH >= _TOOL_EVENT_MAX_LENGTH, (
+        "Executor context limit must be at least the SSE event limit"
     )
 
 
@@ -96,13 +98,18 @@ def test_sanitize_tool_raw_output_respects_custom_max_length():
     assert "...[truncated]" in result
 
 
-def test_sanitize_tool_raw_output_uses_1000_default():
-    """Default max_length is 1000 for backward compat (SSE events)."""
-    from app.agent.sanitization import sanitize_tool_raw_output
+def test_sanitize_tool_raw_output_uses_16000_default():
+    """Default max_length is 16000 — large enough not to truncate real answers
+    (tables, multi-item recommendations) while still bounding a runaway dump."""
+    from app.agent.sanitization import _TOOL_EVENT_MAX_LENGTH, sanitize_tool_raw_output
 
-    long_text = "x" * 2000
-    result = sanitize_tool_raw_output(long_text)
-    assert len(result) <= 1000 + len("...[truncated]")
+    assert _TOOL_EVENT_MAX_LENGTH == 16000
+    # 2000 chars is well under the cap → not truncated
+    assert "...[truncated]" not in sanitize_tool_raw_output("x" * 2000)
+    # over the cap → truncated at cap + marker
+    result = sanitize_tool_raw_output("x" * 20000)
+    assert len(result) <= 16000 + len("...[truncated]")
+    assert "...[truncated]" in result
 
 
 # ── Vector 2: Full failed-step visibility for verifier ───────────────────────

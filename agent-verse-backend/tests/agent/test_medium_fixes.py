@@ -20,9 +20,11 @@ def test_no_duplicate_stuck_goal_schedule():
     """Beat schedule must not have two entries for stuck-goal detection."""
     from app.scaling.celery_app import celery_app
     schedule = celery_app.conf.beat_schedule
+    # Match only the stuck-GOAL detector task — not any beat entry whose key
+    # merely contains "stuck" (e.g. the unrelated resweep-stuck-missions task).
     stuck_goal_entries = [
         k for k, v in schedule.items()
-        if "stuck" in k.lower() or "detect_stuck" in v.get("task", "")
+        if v.get("task", "") == "app.scaling.tasks.detect_stuck_goals"
     ]
     assert len(stuck_goal_entries) == 1, (
         f"Expected exactly one stuck-goal beat schedule entry, found {stuck_goal_entries}"
