@@ -579,22 +579,33 @@ export interface CapabilityGroup {
   models: ConfiguredModel[];
 }
 
+// Mutating registry endpoints are platform-admin-only (the registry is global,
+// shared across tenants). The operator supplies the platform admin key, sent as
+// X-Admin-Key. Reads need only the normal tenant key.
+const _adminHeaders = (adminKey?: string): Record<string, string> =>
+  adminKey ? { "X-Admin-Key": adminKey } : {};
+
 export const modelsApi = {
   listConfigured: () =>
     request<{ capabilities: CapabilityGroup[]; total: number }>("/models/configured"),
-  upsertConfigured: (body: Partial<ConfiguredModel> & { model_id: string; capabilities: string[] }) =>
+  upsertConfigured: (
+    body: Partial<ConfiguredModel> & { model_id: string; capabilities: string[] },
+    adminKey?: string
+  ) =>
     request<{ status: string; model_id: string }>("/models/configured", {
       method: "POST",
       body: JSON.stringify(body),
+      headers: _adminHeaders(adminKey),
     }),
-  deleteConfigured: (provider: string, modelId: string) =>
+  deleteConfigured: (provider: string, modelId: string, adminKey?: string) =>
     request<{ status: string; removed: boolean }>(
       `/models/configured/${encodeURIComponent(provider)}/${encodeURIComponent(modelId)}`,
-      { method: "DELETE" }
+      { method: "DELETE", headers: _adminHeaders(adminKey) }
     ),
-  reseed: () =>
+  reseed: (adminKey?: string) =>
     request<{ status: string; configured_models: number }>("/models/configured/reseed", {
       method: "POST",
+      headers: _adminHeaders(adminKey),
     }),
 };
 
@@ -2852,6 +2863,7 @@ export interface WERun {
   duration_ms?: number;
   step_count: number;
   cost_usd: number;
+  tokens_used?: number;
 }
 
 export interface WEWorkflowTemplate {

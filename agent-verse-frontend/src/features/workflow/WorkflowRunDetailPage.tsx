@@ -5,7 +5,7 @@ import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ChevronLeft, CheckCircle, XCircle, Clock, Loader2,
-  DollarSign, Cpu, Timer, ChevronDown, ChevronRight,
+  DollarSign, Cpu, Timer, ChevronDown, ChevronRight, Hash,
 } from 'lucide-react';
 import { useState } from 'react';
 import { workflowEngineApi, type WEStepResult } from '../../lib/api/client';
@@ -171,7 +171,7 @@ export default function WorkflowRunDetailPage() {
         className="jarvis-rise-in max-w-3xl mx-auto px-6 py-8 space-y-6"
       >
         {/* Summary cards */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
             {
               icon: <Timer className="h-4 w-4" />,
@@ -179,6 +179,11 @@ export default function WorkflowRunDetailPage() {
               value: durationMs != null
                 ? durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`
                 : '—',
+            },
+            {
+              icon: <Hash className="h-4 w-4" />,
+              label: 'Tokens',
+              value: (run.tokens_used ?? 0).toLocaleString(),
             },
             {
               icon: <DollarSign className="h-4 w-4" />,
