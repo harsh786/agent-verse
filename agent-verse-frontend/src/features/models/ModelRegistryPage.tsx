@@ -37,6 +37,15 @@ export function ModelRegistryPage() {
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [formError, setFormError] = useState('');
+  // Registry mutations are platform-admin-only. The operator supplies the
+  // platform admin key here; it's kept only in this browser (localStorage).
+  const [adminKey, setAdminKey] = useState<string>(() => {
+    try { return localStorage.getItem('mr_admin_key') ?? ''; } catch { return ''; }
+  });
+  const saveAdminKey = (v: string) => {
+    setAdminKey(v);
+    try { v ? localStorage.setItem('mr_admin_key', v) : localStorage.removeItem('mr_admin_key'); } catch { /* ignore */ }
+  };
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['configured-models'],
@@ -56,7 +65,7 @@ export function ModelRegistryPage() {
         cost_per_1k_input: Number(form.cost_per_1k_input) || 0,
         supports_tools: form.supports_tools,
         supports_vision: form.supports_vision || form.capabilities.includes('vision'),
-      }),
+      }, adminKey),
     onSuccess: () => {
       invalidate();
       setShowModal(false);
@@ -67,11 +76,11 @@ export function ModelRegistryPage() {
   });
 
   const remove = useMutation({
-    mutationFn: (m: ConfiguredModel) => modelsApi.deleteConfigured(m.provider, m.model_id),
+    mutationFn: (m: ConfiguredModel) => modelsApi.deleteConfigured(m.provider, m.model_id, adminKey),
     onSuccess: invalidate,
   });
 
-  const reseed = useMutation({ mutationFn: () => modelsApi.reseed(), onSuccess: invalidate });
+  const reseed = useMutation({ mutationFn: () => modelsApi.reseed(adminKey), onSuccess: invalidate });
 
   const groups = data?.capabilities ?? [];
   const groupFor = (cap: string) => groups.find((g) => g.capability === cap);
@@ -97,11 +106,20 @@ export function ModelRegistryPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={adminKey}
+              onChange={(e) => saveAdminKey(e.target.value)}
+              placeholder="Platform admin key"
+              title="Required to add/remove/reseed models — the registry is deployment-global"
+              className="rounded-xl border border-border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary"
+            />
             <button
               type="button"
               onClick={() => reseed.mutate()}
-              disabled={reseed.isPending}
-              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
+              disabled={reseed.isPending || !adminKey}
+              title={adminKey ? 'Reseed from config' : 'Enter the platform admin key to modify the registry'}
+              className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
             >
               <RefreshCw className={`h-4 w-4 ${reseed.isPending ? 'animate-spin' : ''}`} />
               Reseed from config
@@ -109,12 +127,20 @@ export function ModelRegistryPage() {
             <button
               type="button"
               onClick={() => { setForm(EMPTY_FORM); setFormError(''); setShowModal(true); }}
-              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity"
+              disabled={!adminKey}
+              title={adminKey ? 'Add a model' : 'Enter the platform admin key to modify the registry'}
+              className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               <Plus className="h-4 w-4" /> Add Model
             </button>
           </div>
         </div>
+        {!adminKey && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Viewing is open to your tenant. Adding, removing, or reseeding models is a
+            platform-operator action — enter the platform admin key to enable it.
+          </p>
+        )}
 
         {isLoading && <p className="text-sm text-muted-foreground">Loading models…</p>}
         {isError && <p className="text-sm text-destructive">Failed to load the model registry.</p>}
@@ -167,8 +193,9 @@ export function ModelRegistryPage() {
                         <button
                           type="button"
                           onClick={() => remove.mutate(m)}
-                          disabled={remove.isPending}
-                          className="ml-3 shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
+                          disabled={remove.isPending || !adminKey}
+                          title={adminKey ? 'Remove model' : 'Platform admin key required'}
+                          className="ml-3 shrink-0 rounded-lg p-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40"
                           aria-label={`Remove ${m.model_id}`}
                         >
                           <Trash2 className="h-4 w-4" />
