@@ -508,7 +508,12 @@ async def search_knowledge(
         deprecated=True,
         description="Deprecated alias translated to the canonical top_k parameter.",
     ),
-    threshold: float = 0.5,
+    # Results are ranked by Reciprocal Rank Fusion (RRF), whose scores are
+    # structurally small — rank 1 ≈ 1/(60+1) ≈ 0.016 per leg. A 0.5 default here
+    # filtered out every result (RRF can never reach it), so search always
+    # returned nothing. Default to 0.0 and rely on RRF ranking + top_k; callers
+    # can still pass a threshold on the RRF scale if they want one.
+    threshold: float = 0.0,
     strategy: str = RAGStrategy.HYBRID.value,
     filters: str | None = Query(default=None, description="JSON object of metadata filters."),
 ) -> list[dict[str, Any]]:

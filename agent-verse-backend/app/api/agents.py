@@ -1129,8 +1129,14 @@ async def export_agent(
 
 # FIX 7: clone carries all new fields including eval_suite_id and policy_ids
 @router.post("/{agent_id}/clone", status_code=status.HTTP_201_CREATED)
-async def clone_agent(request: Request, agent_id: str, body: CloneAgentRequest) -> dict[str, Any]:
-    """Clone an existing agent with optional name override."""
+async def clone_agent(
+    request: Request, agent_id: str, body: CloneAgentRequest | None = None
+) -> dict[str, Any]:
+    """Clone an existing agent with optional name override.
+
+    The body is optional — a plain "clone" with no overrides (the common case,
+    e.g. the Clone button) must not 422 on an empty POST.
+    """
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
 
@@ -1142,7 +1148,7 @@ async def clone_agent(request: Request, agent_id: str, body: CloneAgentRequest) 
         )
 
     clone_data: dict[str, Any] = {
-        "name": body.name or f"{original['name']} (copy)",
+        "name": (body.name if body else None) or f"{original['name']} (copy)",
         "goal_template": original.get("goal_template", ""),
         "autonomy_mode": original.get("autonomy_mode", "bounded-autonomous"),
         "connector_ids": list(original.get("connector_ids", [])),

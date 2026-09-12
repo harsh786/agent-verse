@@ -443,7 +443,7 @@ export const agentsApi = {
   getPermissions: (id: string) =>
     request<{ read: string[]; write: string[] }>(`/agents/${id}/permissions`),
   clone: (id: string) =>
-    request<AgentResponse>(`/agents/${id}/clone`, { method: "POST" }),
+    request<AgentResponse>(`/agents/${id}/clone`, { method: "POST", body: "{}" }),
   assignKnowledge: (agentId: string, knowledgeId: string) =>
     request<void>(`/agents/${agentId}/knowledge/${knowledgeId}`, { method: "POST" }),
   removeKnowledge: (agentId: string, knowledgeId: string) =>
