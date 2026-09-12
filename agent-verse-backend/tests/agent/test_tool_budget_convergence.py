@@ -8,7 +8,10 @@ the model could only describe the call in text, which was not dispatched.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app.agent.nodes._helpers import (
+    collect_grounding_sources,
     select_action_tools_for_convergence,
     surface_delivered_content,
 )
@@ -68,3 +71,23 @@ def test_surface_delivered_content_noop_on_failure_or_no_content() -> None:
     )
     # No arguments → unchanged.
     assert surface_delivered_content("{'ok': True}", "t", None, True) == "{'ok': True}"
+
+
+def test_collect_grounding_sources_spans_all_steps_and_kb() -> None:
+    """Grounding evidence must include EARLIER steps' tool outputs and the
+    retrieved KB context — not just the current step — so KB-sourced facts are
+    not falsely flagged ungrounded."""
+    steps = [
+        SimpleNamespace(tool_calls=[{"output": "web result: geo-replication is active-active"}]),
+        SimpleNamespace(tool_calls=[{"output": "{'ok': True, 'message_id': 1}"}]),
+    ]
+    sources = collect_grounding_sources(steps, step_context="KB: NovaCache uses AES-256 at rest")
+    joined = "\n".join(sources)
+    assert "active-active" in joined  # earlier step's tool output
+    assert "AES-256" in joined  # retrieved KB context
+    assert len(sources) == 3
+
+
+def test_collect_grounding_sources_empty() -> None:
+    assert collect_grounding_sources([], "") == []
+    assert collect_grounding_sources(None, "") == []  # type: ignore[arg-type]

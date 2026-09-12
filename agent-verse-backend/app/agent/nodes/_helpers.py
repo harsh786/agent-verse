@@ -111,6 +111,29 @@ def surface_delivered_content(
     return f"Delivered via {tool}:\n{sent}\n\n[delivery receipt] {raw_output or ''}".strip()
 
 
+def collect_grounding_sources(steps: list[Any], step_context: str = "") -> list[str]:
+    """Assemble the evidence a step's claims may be grounded in.
+
+    A synthesis/delivery step legitimately draws on facts gathered EARLIER — the
+    knowledge base retrieved for the goal and every prior step's tool output. The
+    grounding check previously looked only at the *current* step's tool calls, so
+    KB-sourced facts (and facts from earlier searches) were wrongly flagged
+    "ungrounded", failing correct answers until the goal hit max_iterations.
+
+    Return every tool output across ALL steps plus the retrieved KB/RAG context.
+    A true hallucination — absent from all of this evidence — is still caught.
+    """
+    sources: list[str] = []
+    for s in steps or []:
+        for tc in getattr(s, "tool_calls", None) or []:
+            out = tc.get("output") if isinstance(tc, dict) else None
+            if out:
+                sources.append(str(out))
+    if step_context:
+        sources.append(str(step_context))
+    return sources
+
+
 def _guardrail_should_fail_closed(step: str, risk_level: Any = None) -> bool:
     """SAFE-4 (P0-15): decide whether an errored safety check must fail CLOSED.
 

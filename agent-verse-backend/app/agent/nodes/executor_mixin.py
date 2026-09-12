@@ -2179,11 +2179,16 @@ class ExecutorMixin:
 
             _raw_stripped = (raw_output or "").strip()
             _is_structured_tool_output = _raw_stripped.startswith(("{", "[", "{'"))
-            _tool_outputs_for_grounding = [
-                str(tc.get("output", ""))
-                for tc in (state.steps[-1].tool_calls if state.steps else [])
-                if tc.get("output")
-            ]
+            # Ground against ALL evidence gathered for the goal — every step's tool
+            # outputs plus the retrieved KB/RAG context — not just this step's tool
+            # calls. A synthesis/delivery step draws on earlier retrievals, so the
+            # narrow single-step view flagged KB-sourced facts as ungrounded and
+            # failed correct answers until max_iterations.
+            from app.agent.nodes._helpers import collect_grounding_sources
+
+            _tool_outputs_for_grounding = collect_grounding_sources(
+                state.steps, step_context or ""
+            )
             if raw_output and _tool_outputs_for_grounding and not _is_structured_tool_output:
                 # P0-4: high/critical-risk goals get zero ungrounded tolerance.
                 _rp_ground = state.context.get("_runtime_profile")
