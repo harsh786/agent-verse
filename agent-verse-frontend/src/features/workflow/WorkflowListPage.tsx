@@ -8,12 +8,13 @@
  * - Empty state with CTA
  * - WCAG 2.2 AA accessible
  */
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Plus, Search, Zap, LayoutTemplate, Play, Edit2, Trash2,
   CheckCircle, Clock, Archive, AlertCircle, Filter, RefreshCw, FileCode2,
+  Pause, Square, Loader2,
 } from 'lucide-react';
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
@@ -82,13 +83,64 @@ function TriggerBadge({ type, cron }: { type: string; cron?: string }) {
   );
 }
 
+type ActiveRun = { run_id: string; status: string };
+
+// Pause / Resume / Stop controls for a workflow's currently-active run, shown
+// inline on the card so an operator can control an execution without opening it.
+function CardRunControls({ run }: { run: ActiveRun }) {
+  const qc = useQueryClient();
+  const refresh = () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'active-runs'] });
+  const pause = useMutation({ mutationFn: () => workflowEngineApi.pauseRun(run.run_id), onSuccess: refresh });
+  const resume = useMutation({ mutationFn: () => workflowEngineApi.resumeRun(run.run_id), onSuccess: refresh });
+  const cancel = useMutation({ mutationFn: () => workflowEngineApi.cancelRun(run.run_id), onSuccess: refresh });
+  const busy = pause.isPending || resume.isPending || cancel.isPending;
+  const running = run.status === 'running' || run.status === 'pending';
+  return (
+    <div className="relative z-10 flex items-center gap-2 text-xs pt-1">
+      <span className="inline-flex items-center gap-1.5 text-[#F1F5F9]/50">
+        <span className={`h-1.5 w-1.5 rounded-full ${run.status === 'paused'
+          ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
+        {run.status}
+      </span>
+      {busy && <Loader2 className="h-3 w-3 animate-spin text-[#F1F5F9]/40" />}
+      {running && (
+        <button
+          onClick={() => pause.mutate()} disabled={busy} aria-label={`Pause run of ${run.run_id}`}
+          className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15
+                     hover:bg-amber-500/25 text-amber-400 font-medium disabled:opacity-50 transition-colors"
+        >
+          <Pause className="h-3 w-3" /> Pause
+        </button>
+      )}
+      {run.status === 'paused' && (
+        <button
+          onClick={() => resume.mutate()} disabled={busy} aria-label={`Resume run of ${run.run_id}`}
+          className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15
+                     hover:bg-emerald-500/25 text-emerald-400 font-medium disabled:opacity-50 transition-colors"
+        >
+          <Play className="h-3 w-3" /> Resume
+        </button>
+      )}
+      <button
+        onClick={() => cancel.mutate()} disabled={busy} aria-label={`Stop run of ${run.run_id}`}
+        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25
+                   text-red-400 font-medium disabled:opacity-50 transition-colors"
+      >
+        <Square className="h-3 w-3" /> Stop
+      </button>
+    </div>
+  );
+}
+
 function WorkflowCard({
   wf,
   onDelete,
+  activeRun,
   index = 0,
 }: {
   wf: WEWorkflow;
   onDelete: (id: string) => void;
+  activeRun?: ActiveRun | null;
   index?: number;
 }) {
 
@@ -133,6 +185,11 @@ function WorkflowCard({
           {new Date(wf.updated_at).toLocaleDateString()}
         </span>
       </div>
+
+      {/* Active-run controls — pause / resume / stop the current execution */}
+      {activeRun && ['running', 'pending', 'paused'].includes(activeRun.status) && (
+        <CardRunControls run={activeRun} />
+      )}
 
       {/* Actions — above the stretched link so they capture their own clicks */}
       <div className="relative z-10 flex items-center gap-2 pt-1 border-t border-white/5">
@@ -248,6 +305,22 @@ export default function WorkflowListPage() {
     queryFn: () => workflowEngineApi.list({ per_page: 100, status: statusFilter || undefined }),
     staleTime: 30_000,
   });
+
+  // Latest run per workflow (runs come back created_at DESC), polled so cards can
+  // offer pause/resume/stop on whichever run is currently active.
+  const { data: runsData } = useQuery({
+    queryKey: ['workflow-engine', 'active-runs'],
+    queryFn: () => workflowEngineApi.listRuns({ per_page: 100 }),
+    refetchInterval: 5000,
+    staleTime: 2000,
+  });
+  const activeRunByWorkflow = useMemo(() => {
+    const m = new Map<string, ActiveRun>();
+    for (const r of runsData?.items ?? []) {
+      if (!m.has(r.workflow_id)) m.set(r.workflow_id, { run_id: r.run_id, status: r.status });
+    }
+    return m;
+  }, [runsData]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => workflowEngineApi.delete(id),
@@ -413,6 +486,7 @@ export default function WorkflowListPage() {
                 key={wf.id}
                 wf={wf}
                 index={i}
+                activeRun={activeRunByWorkflow.get(wf.id) ?? null}
                 onDelete={(id) => deleteMutation.mutate(id)}
               />
             ))}
