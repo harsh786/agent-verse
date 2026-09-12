@@ -174,6 +174,56 @@ async def test_json_object_sets_response_format() -> None:
 
 
 @pytest.mark.asyncio
+async def test_response_schema_uses_json_schema_for_openai() -> None:
+    """On the canonical OpenAI endpoint, a response_schema uses strict json_schema
+    guided decoding (which OpenAI supports reliably)."""
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response('{"a":1}'))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        # base_url=None -> client talks to api.openai.com
+        provider = OpenAICompatibleProvider(api_key="key")
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="plan")],
+                model="gpt-4o",
+                response_schema=schema,
+            )
+        )
+    rf = mock_client.chat.completions.create.call_args.kwargs["response_format"]
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["schema"] == schema
+
+
+@pytest.mark.asyncio
+async def test_response_schema_downgrades_to_json_object_for_third_party() -> None:
+    """Third-party OpenAI-compatible endpoints (NVIDIA, Groq, vLLM, …) do NOT
+    reliably support strict json_schema guided decoding — it can silently produce
+    malformed / truncated output. For those endpoints a response_schema is
+    downgraded to plain json_object mode (schema shape still lives in the prompt)."""
+    mock_openai, mock_client = _make_openai_module()
+    mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response('{"a":1}'))
+    schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(
+            api_key="key", base_url="https://integrate.api.nvidia.com/v1"
+        )
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="plan")],
+                model="nvidia/nemotron-3-super-120b-a12b",
+                response_schema=schema,
+            )
+        )
+    rf = mock_client.chat.completions.create.call_args.kwargs["response_format"]
+    assert rf == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
 async def test_no_response_format_by_default() -> None:
     mock_openai, mock_client = _make_openai_module()
     mock_client.chat.completions.create = AsyncMock(return_value=_make_chat_response("hi"))

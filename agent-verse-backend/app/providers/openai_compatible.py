@@ -143,6 +143,15 @@ class OpenAICompatibleProvider:
             raise ImportError("Install 'openai' to use OpenAICompatibleProvider") from exc
 
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._base_url = base_url or ""
+        # Strict ``json_schema`` guided decoding is only reliable on the canonical
+        # OpenAI API. Third-party OpenAI-compatible endpoints (NVIDIA, Groq, vLLM,
+        # Together, …) advertise the parameter but can silently emit malformed /
+        # truncated output under it — so for those we downgrade a response_schema to
+        # plain ``json_object`` mode (see ``complete``). base_url=None ⇒ api.openai.com.
+        self._is_canonical_openai = (not self._base_url) or (
+            "api.openai.com" in self._base_url
+        )
         self._default_model = default_model
         # Embedding model is tracked separately from the chat model: a chat
         # default like "gpt-5.2" must never be sent to the embeddings endpoint.
@@ -214,7 +223,7 @@ class OpenAICompatibleProvider:
             # with plain text. This ensures structured tool_calls are returned when
             # tools are available, enabling proper tool dispatch in the agent graph.
             kwargs["tool_choice"] = "required"
-        if request.response_schema is not None:
+        if request.response_schema is not None and self._is_canonical_openai:
             kwargs["response_format"] = {
                 "type": "json_schema",
                 "json_schema": {
@@ -223,6 +232,13 @@ class OpenAICompatibleProvider:
                     "schema": request.response_schema,
                 },
             }
+        elif request.response_schema is not None:
+            # Third-party OpenAI-compatible endpoint: strict json_schema guided
+            # decoding is unreliable here (can return HTTP 200 with malformed /
+            # truncated JSON, which no error-path fallback can catch). Force plain
+            # json_object mode instead — the schema shape is already described in
+            # the prompt, and this reliably yields a single parseable JSON object.
+            kwargs["response_format"] = {"type": "json_object"}
         elif request.json_object:
             # Plain JSON-object mode: no schema to enforce, just force the model to
             # emit a single JSON object (suppresses prose / chain-of-thought that a
