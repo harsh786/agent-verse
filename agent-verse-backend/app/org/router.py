@@ -592,6 +592,12 @@ async def approve_brain_proposal(
     mission = await service.get_mission(mission_id)
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped, and the
+    # RBAC gate above authorises the URL's org — without this a dept-admin of org A
+    # could approve org B's proposed mission (same tenant) by id. 404 hides
+    # cross-org ids, same as approve_org_request/reject_org_request above.
+    if str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     if str(mission.status) != "proposed":
         raise _conflict(
             f"Mission '{mission_id}' is not in 'proposed' status (status={mission.status!r})",
@@ -617,6 +623,12 @@ async def reject_brain_proposal(
 ) -> MissionResponse:
     mission = await service.get_mission(mission_id)
     if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped, and the
+    # RBAC gate above authorises the URL's org — without this a dept-admin of org A
+    # could reject org B's proposed mission (same tenant) by id. 404 hides
+    # cross-org ids, same as approve_org_request/reject_org_request above.
+    if str(mission.org_id) != org_id:
         raise _not_found("Mission", mission_id, x_request_id)
     if str(mission.status) != "proposed":
         raise _conflict(

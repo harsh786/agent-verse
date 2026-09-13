@@ -34,6 +34,7 @@ org_router_module = sys.modules["app.org.router"]
 
 TENANT_ID = "00000000-0000-0000-0000-000000000001"
 ORG_ID = str(uuid.uuid4())
+OTHER_ORG_ID = str(uuid.uuid4())  # a second org in the SAME tenant, for cross-org isolation tests
 MISSION_ID = str(uuid.uuid4())
 NOW = datetime(2026, 8, 17, 12, 0, 0, tzinfo=UTC)
 
@@ -68,7 +69,7 @@ def _fake_mission(**kw: Any) -> MagicMock:
     m = MagicMock()
     m.id = uuid.UUID(MISSION_ID)
     m.tenant_id = uuid.UUID(TENANT_ID)
-    m.org_id = uuid.UUID(ORG_ID)
+    m.org_id = uuid.UUID(kw.get("org_id", ORG_ID))
     m.dept_id = None
     m.assigned_team_id = None
     m.title = kw.get("title", "Investigate idle capacity")
@@ -346,6 +347,20 @@ class TestBrainProposalApprove:
         assert r.status_code == 409
         mock_service.dispatch_mission_goal.assert_not_awaited()
 
+    async def test_approve_cross_org_mission_returns_404_and_does_not_dispatch(
+        self, client: AsyncClient, mock_service: MagicMock
+    ) -> None:
+        # Mission actually belongs to OTHER_ORG_ID, but get_mission is tenant-scoped
+        # only (not org-scoped), so it would happily return it for ORG_ID's URL.
+        # The router must reject this cross-org access with 404, never dispatching
+        # the goal -- this is the tenant-isolation regression this test guards.
+        mock_service.get_mission = AsyncMock(
+            return_value=_fake_mission(status="proposed", org_id=OTHER_ORG_ID)
+        )
+        r = await client.post(f"/v1/org/{ORG_ID}/brain/proposals/{MISSION_ID}/approve")
+        assert r.status_code == 404
+        mock_service.dispatch_mission_goal.assert_not_awaited()
+
 
 class TestBrainProposalReject:
     async def test_reject_proposed_mission_cancels_it(
@@ -371,6 +386,19 @@ class TestBrainProposalReject:
         mock_service.get_mission = AsyncMock(return_value=_fake_mission(status="completed"))
         r = await client.post(f"/v1/org/{ORG_ID}/brain/proposals/{MISSION_ID}/reject")
         assert r.status_code == 409
+        mock_service.update_mission_status.assert_not_awaited()
+
+    async def test_reject_cross_org_mission_returns_404_and_does_not_cancel(
+        self, client: AsyncClient, mock_service: MagicMock
+    ) -> None:
+        # Same cross-org isolation guard as the approve endpoint: a mission that
+        # belongs to OTHER_ORG_ID must not be cancellable via ORG_ID's URL, even
+        # though get_mission only filters by tenant + mission id.
+        mock_service.get_mission = AsyncMock(
+            return_value=_fake_mission(status="proposed", org_id=OTHER_ORG_ID)
+        )
+        r = await client.post(f"/v1/org/{ORG_ID}/brain/proposals/{MISSION_ID}/reject")
+        assert r.status_code == 404
         mock_service.update_mission_status.assert_not_awaited()
 
 
