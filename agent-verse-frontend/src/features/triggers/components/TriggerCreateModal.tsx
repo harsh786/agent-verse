@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { X, ChevronRight } from 'lucide-react';
 import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types';
-import { TRIGGER_FAMILY_LABELS } from '../types';
+import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY, SUPPORTED_TRIGGER_TYPES } from '../types';
 import { useCreateTrigger } from '../hooks';
 import { agentsApi, goalsApi } from '@/lib/api/client';
 import { TimeFamilyForm } from './families/TimeFamilyForm';
@@ -22,17 +22,22 @@ interface TriggerCreateModalProps {
   onClose: () => void;
 }
 
-const FAMILY_TYPES: Record<TriggerFamily, TriggerType[]> = {
-  time: ['cron', 'interval', 'one_shot', 'calendar', 'business_hours', 'market_hours', 'solar_event', 'recurring_relative', 'rate_limited_schedule', 'deadline'],
-  goal_chain: ['goal_completed', 'goal_failed', 'goal_score_below', 'goal_score_above', 'goal_timeout', 'goal_created', 'hitl_approved', 'hitl_rejected', 'memory_created', 'goal_chain_depth'],
-  conversational: ['chat_command', 'chat_keyword', 'chat_mention', 'slack_event', 'teams_webhook', 'discord_event', 'email_intent', 'email_arrival', 'sms_inbound', 'voice_transcript', 'meeting_ended', 'form_submission'],
-  webhook: ['github_webhook', 'jira_webhook', 'stripe_webhook', 'pagerduty_webhook', 'linear_webhook', 'custom_webhook'],
-  data: ['db_row_change', 's3_event', 'api_poll', 'rss_feed', 'kafka_message', 'graphql_subscription'],
-  monitoring: ['metric_threshold', 'log_pattern', 'grafana_alert', 'cloudwatch_alarm', 'sentry_event', 'uptime_check'],
-  state_condition: ['state_transition', 'condition_true', 'flag_change', 'quota_exceeded', 'cost_threshold', 'user_segment'],
-  ml_signal: ['model_drift', 'anomaly_detected', 'prediction_confidence', 'ab_test_winner', 'price_movement'],
-  iot: ['mqtt', 'geofence', 'sensor_threshold'],
-};
+// Derived from the canonical maps so it never drifts: only backend
+// dispatch-supported types are offered, grouped by their declared family.
+const FAMILY_TYPES: Record<TriggerFamily, TriggerType[]> = (() => {
+  const out = Object.fromEntries(
+    (Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).map((f) => [f, [] as TriggerType[]]),
+  ) as Record<TriggerFamily, TriggerType[]>;
+  for (const [type, family] of Object.entries(TRIGGER_TYPE_FAMILY) as [TriggerType, TriggerFamily][]) {
+    if (SUPPORTED_TRIGGER_TYPES.has(type)) out[family].push(type);
+  }
+  return out;
+})();
+
+// Families that currently have at least one creatable type (hide empty ones).
+const CREATABLE_FAMILIES = (Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).filter(
+  (f) => FAMILY_TYPES[f].length > 0,
+);
 
 const FAMILY_DESCRIPTIONS: Record<TriggerFamily, string> = {
   time: 'Schedule goals at fixed times, intervals, or calendar events',
@@ -108,7 +113,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
             <div>
               <h2 className="text-base font-semibold mb-4">Choose a trigger family</h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {(Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).map((family) => (
+                {CREATABLE_FAMILIES.map((family) => (
                   <button
                     key={family}
                     onClick={() => { setSelectedFamily(family); setStep('type'); }}

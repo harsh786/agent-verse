@@ -150,6 +150,25 @@ def test_webhook_signature_secret_round_trips(client):
     assert spec["github_event_filter"] == "push"
 
 
+@pytest.mark.parametrize("trigger_type", [
+    "once", "interval", "relative_delay", "business_calendar",  # time
+    "condition", "counter_threshold", "compound", "window_aggregate",  # state/condition
+    "webhook", "rest", "event",  # generic webhooks
+    "api_poll", "file_drop",  # data
+    "cloudwatch", "state_transition",  # monitoring / state
+])
+def test_reconciled_supported_types_are_creatable(client, trigger_type):
+    """Every trigger type the UI now offers (aligned to the backend dispatch map)
+    must actually create — no more 'Unknown trigger_type' 422s from UI-only names
+    like custom_webhook / kafka_message / one_shot."""
+    resp = client.post("/triggers", json={
+        "spec": {"trigger_type": trigger_type},
+        "goal_id": f"g-{trigger_type}",
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["spec"]["trigger_type"] == trigger_type
+
+
 def test_create_goal_chain_trigger(client):
     resp = client.post("/triggers", json={
         "spec": {"trigger_type": "goal_completed"},

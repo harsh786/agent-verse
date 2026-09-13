@@ -13,7 +13,7 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
 
   return (
     <div className="space-y-4">
-      {(triggerType === 'cron' || triggerType === 'rate_limited_schedule') && (
+      {(triggerType === 'cron') && (
         <Field label="Cron Expression" hint="e.g. 0 9 * * 1-5 (weekdays at 9am)">
           <input
             type="text"
@@ -35,7 +35,7 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           />
         </Field>
       )}
-      {triggerType === 'one_shot' && (
+      {triggerType === 'once' && (
         <Field label="Run At (ISO 8601)">
           <input
             type="datetime-local"
@@ -66,7 +66,7 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           </Field>
         </>
       )}
-      {triggerType === 'business_hours' && (
+      {triggerType === 'business_calendar' && (
         <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
           <input
             type="text"

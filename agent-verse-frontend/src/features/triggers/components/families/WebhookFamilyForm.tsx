@@ -13,7 +13,7 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
 
   return (
     <div className="space-y-4">
-      {triggerType === 'custom_webhook' && (
+      {triggerType === 'webhook' && (
         <Field label="Endpoint Name" hint="Used to generate the webhook URL path">
           <input
             type="text"

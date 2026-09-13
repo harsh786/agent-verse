@@ -31,7 +31,7 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
           className={inputCls}
         />
       </Field>
-      {(triggerType === 'goal_score_below' || triggerType === 'goal_score_above') && (
+      {(triggerType === 'goal_score_below') && (
         <Field label="Score Threshold (0.0–1.0)">
           <input
             type="number"

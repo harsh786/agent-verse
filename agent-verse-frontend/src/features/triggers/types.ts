@@ -18,29 +18,25 @@ export type TriggerFamily =
 
 // ── Trigger Types ─────────────────────────────────────────────────────────────
 
+// Mirrors the backend `app/triggers/models.py::TriggerType` enum EXACTLY (58
+// values). The backend rejects any trigger_type outside this set with 422, so
+// this union must stay in lock-step with it. Whether a type can actually be
+// created/dispatched today is a separate concern — see SUPPORTED_TRIGGER_TYPES.
 export type TriggerType =
-  // A. Time family
+  // A. Time / Schedule
   | 'cron'
   | 'interval'
-  | 'one_shot'
-  | 'calendar'
-  | 'business_hours'
-  | 'market_hours'
-  | 'solar_event'
-  | 'recurring_relative'
-  | 'rate_limited_schedule'
+  | 'once'
   | 'deadline'
-  // B. Goal chain
+  | 'relative_delay'
+  | 'business_calendar'
+  // B. Goal / Agent chain
   | 'goal_completed'
   | 'goal_failed'
   | 'goal_score_below'
-  | 'goal_score_above'
-  | 'goal_timeout'
-  | 'goal_created'
   | 'hitl_approved'
   | 'hitl_rejected'
   | 'memory_created'
-  | 'goal_chain_depth'
   // C. Conversational
   | 'chat_command'
   | 'chat_keyword'
@@ -54,40 +50,42 @@ export type TriggerType =
   | 'voice_transcript'
   | 'meeting_ended'
   | 'form_submission'
-  // D. Webhook
+  // D. External events / Webhooks
+  | 'webhook'
+  | 'rest'
+  | 'event'
   | 'github_webhook'
   | 'jira_webhook'
   | 'stripe_webhook'
-  | 'pagerduty_webhook'
   | 'linear_webhook'
-  | 'custom_webhook'
-  // E. Data
+  | 'confluence_webhook'
+  | 'salesforce_event'
+  // E. Data sources
   | 'db_row_change'
   | 's3_event'
   | 'api_poll'
   | 'rss_feed'
-  | 'kafka_message'
+  | 'file_drop'
+  | 'google_sheets'
+  | 'sharepoint'
   | 'graphql_subscription'
-  // F. Monitoring
-  | 'metric_threshold'
-  | 'log_pattern'
+  | 'websocket_message'
+  // F. Monitoring / Observability
+  | 'cloudwatch'
   | 'grafana_alert'
-  | 'cloudwatch_alarm'
-  | 'sentry_event'
-  | 'uptime_check'
-  // G. State/Condition
+  | 'sentry_issue'
+  | 'alertmanager'
+  | 'datadog'
+  | 'pagerduty'
+  | 'log_pattern'
+  // G. State / Condition
   | 'state_transition'
-  | 'condition_true'
-  | 'flag_change'
-  | 'quota_exceeded'
-  | 'cost_threshold'
-  | 'user_segment'
-  // H. ML signal
-  | 'model_drift'
-  | 'anomaly_detected'
-  | 'prediction_confidence'
-  | 'ab_test_winner'
-  | 'price_movement'
+  | 'condition'
+  | 'counter_threshold'
+  | 'compound'
+  | 'window_aggregate'
+  // H. Market / ML signal
+  | 'price_threshold'
   // I. IoT
   | 'mqtt'
   | 'geofence'
@@ -304,26 +302,51 @@ export const TRIGGER_FAMILY_LABELS: Record<TriggerFamily, string> = {
 };
 
 export const TRIGGER_TYPE_FAMILY: Record<TriggerType, TriggerFamily> = {
-  cron: 'time', interval: 'time', one_shot: 'time', calendar: 'time',
-  business_hours: 'time', market_hours: 'time', solar_event: 'time',
-  recurring_relative: 'time', rate_limited_schedule: 'time', deadline: 'time',
+  // A. Time / Schedule
+  cron: 'time', interval: 'time', once: 'time', deadline: 'time',
+  relative_delay: 'time', business_calendar: 'time',
+  // B. Goal / Agent chain
   goal_completed: 'goal_chain', goal_failed: 'goal_chain', goal_score_below: 'goal_chain',
-  goal_score_above: 'goal_chain', goal_timeout: 'goal_chain', goal_created: 'goal_chain',
   hitl_approved: 'goal_chain', hitl_rejected: 'goal_chain', memory_created: 'goal_chain',
-  goal_chain_depth: 'goal_chain',
+  // C. Conversational
   chat_command: 'conversational', chat_keyword: 'conversational', chat_mention: 'conversational',
   slack_event: 'conversational', teams_webhook: 'conversational', discord_event: 'conversational',
   email_intent: 'conversational', email_arrival: 'conversational', sms_inbound: 'conversational',
   voice_transcript: 'conversational', meeting_ended: 'conversational', form_submission: 'conversational',
-  github_webhook: 'webhook', jira_webhook: 'webhook', stripe_webhook: 'webhook',
-  pagerduty_webhook: 'webhook', linear_webhook: 'webhook', custom_webhook: 'webhook',
+  // D. External events / Webhooks
+  webhook: 'webhook', rest: 'webhook', event: 'webhook', github_webhook: 'webhook',
+  jira_webhook: 'webhook', stripe_webhook: 'webhook', linear_webhook: 'webhook',
+  confluence_webhook: 'webhook', salesforce_event: 'webhook',
+  // E. Data sources
   db_row_change: 'data', s3_event: 'data', api_poll: 'data', rss_feed: 'data',
-  kafka_message: 'data', graphql_subscription: 'data',
-  metric_threshold: 'monitoring', log_pattern: 'monitoring', grafana_alert: 'monitoring',
-  cloudwatch_alarm: 'monitoring', sentry_event: 'monitoring', uptime_check: 'monitoring',
-  state_transition: 'state_condition', condition_true: 'state_condition', flag_change: 'state_condition',
-  quota_exceeded: 'state_condition', cost_threshold: 'state_condition', user_segment: 'state_condition',
-  model_drift: 'ml_signal', anomaly_detected: 'ml_signal', prediction_confidence: 'ml_signal',
-  ab_test_winner: 'ml_signal', price_movement: 'ml_signal',
+  file_drop: 'data', google_sheets: 'data', sharepoint: 'data',
+  graphql_subscription: 'data', websocket_message: 'data',
+  // F. Monitoring / Observability
+  cloudwatch: 'monitoring', grafana_alert: 'monitoring', sentry_issue: 'monitoring',
+  alertmanager: 'monitoring', datadog: 'monitoring', pagerduty: 'monitoring', log_pattern: 'monitoring',
+  // G. State / Condition
+  state_transition: 'state_condition', condition: 'state_condition',
+  counter_threshold: 'state_condition', compound: 'state_condition', window_aggregate: 'state_condition',
+  // H. Market / ML signal
+  price_threshold: 'ml_signal',
+  // I. IoT
   mqtt: 'iot', geofence: 'iot', sensor_threshold: 'iot',
 };
+
+/**
+ * Trigger types that have a live runtime dispatch path today (backend
+ * `dispatch_map.is_supported`). The create UI must offer only these — the other
+ * enum values are recognised for parsing/round-trip but would 422 on create.
+ * Keep in sync with the backend dispatch map.
+ */
+export const SUPPORTED_TRIGGER_TYPES: ReadonlySet<TriggerType> = new Set<TriggerType>([
+  'cron', 'interval', 'once', 'deadline', 'relative_delay', 'business_calendar',
+  'goal_completed', 'goal_failed', 'goal_score_below', 'hitl_approved', 'hitl_rejected', 'memory_created',
+  'chat_command', 'chat_keyword', 'chat_mention', 'slack_event', 'teams_webhook', 'discord_event',
+  'email_intent', 'email_arrival', 'sms_inbound', 'voice_transcript', 'meeting_ended', 'form_submission',
+  'webhook', 'rest', 'event', 'github_webhook', 'jira_webhook', 'stripe_webhook', 'linear_webhook',
+  'confluence_webhook', 'salesforce_event',
+  'db_row_change', 'api_poll', 'rss_feed', 'file_drop',
+  'cloudwatch', 'grafana_alert', 'sentry_issue', 'alertmanager', 'datadog', 'pagerduty',
+  'state_transition', 'condition', 'counter_threshold', 'compound', 'window_aggregate',
+]);

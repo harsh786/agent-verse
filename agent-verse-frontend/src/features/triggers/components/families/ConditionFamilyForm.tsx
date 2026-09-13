@@ -13,7 +13,7 @@ export function ConditionFamilyForm({ triggerType, value, onChange }: FamilyForm
 
   return (
     <div className="space-y-4">
-      {triggerType === 'condition_true' && (
+      {triggerType === 'condition' && (
         <>
           <Field
             label="CEL Condition Expression"
@@ -64,7 +64,7 @@ export function ConditionFamilyForm({ triggerType, value, onChange }: FamilyForm
           </Field>
         </>
       )}
-      {triggerType === 'quota_exceeded' && (
+      {triggerType === 'counter_threshold' && (
         <>
           <Field label="Counter Key" hint="Unique identifier for the counter (e.g. api_calls_per_user)">
             <input
@@ -95,7 +95,7 @@ export function ConditionFamilyForm({ triggerType, value, onChange }: FamilyForm
           </Field>
         </>
       )}
-      {triggerType === 'cost_threshold' && (
+      {triggerType === 'window_aggregate' && (
         <Field label="Cost Threshold (USD)">
           <input
             type="number"

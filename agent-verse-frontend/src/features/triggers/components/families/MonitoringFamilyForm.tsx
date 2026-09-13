@@ -13,7 +13,7 @@ export function MonitoringFamilyForm({ triggerType, value, onChange }: FamilyFor
 
   return (
     <div className="space-y-4">
-      {(triggerType === 'metric_threshold' || triggerType === 'grafana_alert' || triggerType === 'cloudwatch_alarm') && (
+      {(triggerType === 'cloudwatch' || triggerType === 'grafana_alert' || triggerType === 'datadog') && (
         <Field label="Alert Severity Filter" hint="Only trigger for alerts at or above this severity">
           <select
             value={(value.alert_severity_filter as string) ?? ''}
@@ -51,7 +51,7 @@ export function MonitoringFamilyForm({ triggerType, value, onChange }: FamilyFor
           </Field>
         </>
       )}
-      {triggerType === 'sentry_event' && (
+      {triggerType === 'sentry_issue' && (
         <Field label="Sentry Project (optional)" hint="Filter by Sentry project slug">
           <input
             type="text"
@@ -62,7 +62,7 @@ export function MonitoringFamilyForm({ triggerType, value, onChange }: FamilyFor
           />
         </Field>
       )}
-      {triggerType === 'uptime_check' && (
+      {triggerType === 'pagerduty' && (
         <Field label="Check URL" hint="URL to monitor for uptime">
           <input
             type="url"
