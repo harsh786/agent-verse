@@ -14,7 +14,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Plus, Search, Zap, LayoutTemplate, Play, Edit2, Trash2,
   CheckCircle, Clock, Archive, AlertCircle, Filter, RefreshCw, FileCode2,
-  Pause, Square, Loader2,
+  Pause, Square, Loader2, RotateCcw,
 } from 'lucide-react';
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
 import { getStatusClasses } from './design/tokens';
@@ -85,22 +85,34 @@ function TriggerBadge({ type, cron }: { type: string; cron?: string }) {
 
 type ActiveRun = { run_id: string; status: string };
 
-// Pause / Resume / Stop controls for a workflow's currently-active run, shown
-// inline on the card so an operator can control an execution without opening it.
-function CardRunControls({ run }: { run: ActiveRun }) {
+const TERMINAL_RUN = ['cancelled', 'failed', 'error', 'timed_out'];
+
+// Run controls for a workflow's latest run, shown inline on the card so an
+// operator can control an execution without opening it:
+//   running/pending → Pause + Stop
+//   paused          → Resume + Stop
+//   cancelled/failed→ status + Re-run  (a stopped run is terminal and cannot be
+//                     resumed, so instead of leaving the card blank we offer a
+//                     clear next action)
+function CardRunControls({ run, workflowId }: { run: ActiveRun; workflowId: string }) {
   const qc = useQueryClient();
   const refresh = () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'active-runs'] });
   const pause = useMutation({ mutationFn: () => workflowEngineApi.pauseRun(run.run_id), onSuccess: refresh });
   const resume = useMutation({ mutationFn: () => workflowEngineApi.resumeRun(run.run_id), onSuccess: refresh });
   const cancel = useMutation({ mutationFn: () => workflowEngineApi.cancelRun(run.run_id), onSuccess: refresh });
-  const busy = pause.isPending || resume.isPending || cancel.isPending;
+  const rerun = useMutation({ mutationFn: () => workflowEngineApi.trigger(workflowId, {}), onSuccess: refresh });
+  const busy = pause.isPending || resume.isPending || cancel.isPending || rerun.isPending;
   const running = run.status === 'running' || run.status === 'pending';
+  const terminal = TERMINAL_RUN.includes(run.status);
+  const dotClass = run.status === 'paused' ? 'bg-amber-400'
+    : terminal ? 'bg-red-400'
+    : 'bg-emerald-400 animate-pulse';
+  const label = run.status === 'cancelled' ? 'stopped' : run.status;
   return (
     <div className="relative z-10 flex items-center gap-2 text-xs pt-1">
       <span className="inline-flex items-center gap-1.5 text-[#F1F5F9]/50">
-        <span className={`h-1.5 w-1.5 rounded-full ${run.status === 'paused'
-          ? 'bg-amber-400' : 'bg-emerald-400 animate-pulse'}`} />
-        {run.status}
+        <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
+        {label}
       </span>
       {busy && <Loader2 className="h-3 w-3 animate-spin text-[#F1F5F9]/40" />}
       {running && (
@@ -121,13 +133,24 @@ function CardRunControls({ run }: { run: ActiveRun }) {
           <Play className="h-3 w-3" /> Resume
         </button>
       )}
-      <button
-        onClick={() => cancel.mutate()} disabled={busy} aria-label={`Stop run of ${run.run_id}`}
-        className="flex items-center gap-1 px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25
-                   text-red-400 font-medium disabled:opacity-50 transition-colors"
-      >
-        <Square className="h-3 w-3" /> Stop
-      </button>
+      {(running || run.status === 'paused') && (
+        <button
+          onClick={() => cancel.mutate()} disabled={busy} aria-label={`Stop run of ${run.run_id}`}
+          className="flex items-center gap-1 px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25
+                     text-red-400 font-medium disabled:opacity-50 transition-colors"
+        >
+          <Square className="h-3 w-3" /> Stop
+        </button>
+      )}
+      {terminal && (
+        <button
+          onClick={() => rerun.mutate()} disabled={busy} aria-label={`Re-run ${workflowId}`}
+          className="ml-auto flex items-center gap-1 px-2 py-1 rounded-lg bg-sky-500/15
+                     hover:bg-sky-500/25 text-sky-400 font-medium disabled:opacity-50 transition-colors"
+        >
+          <RotateCcw className="h-3 w-3" /> Re-run
+        </button>
+      )}
     </div>
   );
 }
@@ -186,9 +209,10 @@ function WorkflowCard({
         </span>
       </div>
 
-      {/* Active-run controls — pause / resume / stop the current execution */}
-      {activeRun && ['running', 'pending', 'paused'].includes(activeRun.status) && (
-        <CardRunControls run={activeRun} />
+      {/* Run controls — pause/resume/stop an active run, or re-run a stopped one.
+          'complete' shows nothing (keeps the card clean). */}
+      {activeRun && activeRun.status !== 'complete' && activeRun.status !== 'completed' && (
+        <CardRunControls run={activeRun} workflowId={wf.id} />
       )}
 
       {/* Actions — above the stretched link so they capture their own clicks */}
