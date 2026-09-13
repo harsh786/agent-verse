@@ -226,6 +226,15 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
     if not is_supported(spec.trigger_type):
         raise HTTPException(status_code=422, detail=unsupported_reason(spec.trigger_type))
 
+    # Fail fast on a misconfigured spec (missing/invalid type-specific fields) so a
+    # trigger that could never fire correctly is never persisted.
+    from app.triggers.validation import validate_spec
+
+    try:
+        validate_spec(spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     schedule_id = store.create(
         spec=spec,
         tenant_ctx=tenant_ctx,
@@ -451,6 +460,14 @@ async def update_trigger(
         rec["paused"] = body.paused
     if body.spec is not None:
         new_spec = _build_spec(body.spec)
+        # Validate the replacement spec the same way create does — an update must
+        # not be able to persist a misconfigured trigger either.
+        from app.triggers.validation import validate_spec
+
+        try:
+            validate_spec(new_spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         rec["spec"] = new_spec
 
     return _serialize_record(rec)

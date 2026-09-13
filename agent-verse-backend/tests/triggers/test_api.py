@@ -150,23 +150,57 @@ def test_webhook_signature_secret_round_trips(client):
     assert spec["github_event_filter"] == "push"
 
 
-@pytest.mark.parametrize("trigger_type", [
-    "once", "interval", "relative_delay", "business_calendar",  # time
-    "condition", "counter_threshold", "compound", "window_aggregate",  # state/condition
-    "webhook", "rest", "event",  # generic webhooks
-    "api_poll", "file_drop",  # data
-    "cloudwatch", "state_transition",  # monitoring / state
+@pytest.mark.parametrize("trigger_type,extra", [
+    ("once", {"fire_at_iso": "2030-01-01T09:00:00Z"}),
+    ("interval", {"interval_seconds": 3600}),
+    ("relative_delay", {"relative_offset_seconds": 300}),
+    ("business_calendar", {"business_calendar_id": "cal-1"}),
+    ("condition", {"condition_expression": "payload.x > 1"}),
+    ("counter_threshold", {"counter_key": "k", "counter_threshold": 5}),
+    ("compound", {"compound_trigger_ids": ["t1", "t2"]}),
+    ("window_aggregate", {"window_field": "amount"}),
+    ("webhook", {}),
+    ("rest", {}),
+    ("event", {}),
+    ("api_poll", {"poll_url": "https://api.example.com/status"}),
+    ("file_drop", {"file_drop_path": "/watch/inbox"}),
+    ("cloudwatch", {}),
+    ("state_transition", {"state_machine_id": "sm-1"}),
 ])
-def test_reconciled_supported_types_are_creatable(client, trigger_type):
-    """Every trigger type the UI now offers (aligned to the backend dispatch map)
-    must actually create — no more 'Unknown trigger_type' 422s from UI-only names
-    like custom_webhook / kafka_message / one_shot."""
+def test_reconciled_supported_types_are_creatable(client, trigger_type, extra):
+    """Every trigger type the UI now offers (aligned to the backend dispatch map),
+    given its required fields, must actually create — no more 'Unknown
+    trigger_type' 422s from UI-only names like custom_webhook / kafka_message."""
     resp = client.post("/triggers", json={
-        "spec": {"trigger_type": trigger_type},
+        "spec": {"trigger_type": trigger_type, **extra},
         "goal_id": f"g-{trigger_type}",
     })
     assert resp.status_code == 201, resp.text
     assert resp.json()["spec"]["trigger_type"] == trigger_type
+
+
+@pytest.mark.parametrize("spec,expect_msg", [
+    ({"trigger_type": "cron"}, "cron_expression"),
+    ({"trigger_type": "cron", "cron_expression": "not a cron"}, "Invalid cron"),
+    ({"trigger_type": "interval", "interval_seconds": 0}, "interval_seconds > 0"),
+    ({"trigger_type": "once"}, "fire_at_iso"),
+    ({"trigger_type": "once", "fire_at_iso": "nonsense"}, "valid ISO"),
+    ({"trigger_type": "api_poll"}, "poll_url"),
+    ({"trigger_type": "rss_feed"}, "rss_url"),
+    ({"trigger_type": "db_row_change"}, "db_table"),
+    ({"trigger_type": "condition"}, "condition_expression"),
+    ({"trigger_type": "counter_threshold", "counter_key": "k"}, "counter_threshold > 0"),
+    ({"trigger_type": "state_transition"}, "state_machine_id"),
+    ({"trigger_type": "cron", "cron_expression": "0 9 * * *", "priority": "urgent"}, "priority"),
+    ({"trigger_type": "cron", "cron_expression": "0 9 * * *", "max_firings_per_hour": -1}, "max_firings_per_hour"),
+    ({"trigger_type": "cron", "cron_expression": "0 9 * * *", "expires_at_iso": "bad"}, "expires_at_iso"),
+])
+def test_misconfigured_spec_is_rejected(client, spec, expect_msg):
+    """A recognised type with missing/invalid required fields is rejected (422)
+    with a clear message — a broken trigger can never be persisted."""
+    resp = client.post("/triggers", json={"spec": spec, "goal_id": "g-bad"})
+    assert resp.status_code == 422, resp.text
+    assert expect_msg in resp.json()["detail"], resp.json()
 
 
 def test_create_goal_chain_trigger(client):
@@ -202,7 +236,7 @@ def test_create_agent_only_no_template_allowed(client):
     """A trigger may reference an agent and run its own goal — no goal template
     required in that case."""
     resp = client.post("/triggers", json={
-        "spec": {"trigger_type": "cron"},
+        "spec": {"trigger_type": "webhook"},
         "goal_id": "",
         "agent_id": "agent-123",
         "goal_template": "",  # empty, but an agent is referenced
@@ -256,7 +290,7 @@ def test_pause_unknown_returns_404(client):
 
 def test_delete_trigger(client):
     cr = client.post("/triggers", json={
-        "spec": {"trigger_type": "once"},
+        "spec": {"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z"},
         "goal_id": "",
         "goal_template": "One-shot task",
     })
