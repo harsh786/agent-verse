@@ -853,7 +853,7 @@ class OrgService:
         assigned_team_id: str | None = None,
         autonomy_level: int | None = None,
         source: str = "manual",
-        status: str = "active",
+        status: str | None = None,
         success_criteria: list[Any] | None = None,
         budget_usd: float | None = None,
         deadline: datetime | None = None,
@@ -867,27 +867,29 @@ class OrgService:
             span.set_attribute("org_id", org_id)
             span.set_attribute("mission.priority", priority)
             span.set_attribute("mission.source", source)
-            mission = OrgMission(
-                tenant_id=self._tenant_id,
-                org_id=uuid.UUID(org_id),
-                dept_id=uuid.UUID(dept_id) if dept_id else None,
-                title=title,
-                objective=objective,
-                why=why,
-                expected_outcome=expected_outcome,
-                priority=priority,
-                status=status,
-                assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
-                autonomy_level=autonomy_level,
-                source=source,
-                success_criteria=success_criteria or [],
-                budget_usd=budget_usd,
-                deadline=deadline,
-                tags=tags or [],
-                created_by=created_by,
-                trigger_event=trigger_event,
-                metadata=metadata or {},
-            )
+            mission_kwargs = {
+                "tenant_id": self._tenant_id,
+                "org_id": uuid.UUID(org_id),
+                "dept_id": uuid.UUID(dept_id) if dept_id else None,
+                "title": title,
+                "objective": objective,
+                "why": why,
+                "expected_outcome": expected_outcome,
+                "priority": priority,
+                "assigned_team_id": uuid.UUID(assigned_team_id) if assigned_team_id else None,
+                "autonomy_level": autonomy_level,
+                "source": source,
+                "success_criteria": success_criteria or [],
+                "budget_usd": budget_usd,
+                "deadline": deadline,
+                "tags": tags or [],
+                "created_by": created_by,
+                "trigger_event": trigger_event,
+                "metadata": metadata or {},
+            }
+            if status is not None:
+                mission_kwargs["status"] = status
+            mission = OrgMission(**mission_kwargs)
             self._session.add(mission)
             await self._session.flush()
             await self._emit_event(
