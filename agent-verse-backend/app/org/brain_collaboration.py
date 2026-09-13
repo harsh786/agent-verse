@@ -66,17 +66,29 @@ class CollaborationModelGateway(Protocol):
 
 @runtime_checkable
 class CollaborationEventPublisher(Protocol):
-    """Matches ``app.org.event_publisher.OrgEventPublisher.publish``'s
-    positional shape (and ``app.org.events.get_org_event_publisher()``'s
-    real, production-wired singleton)."""
+    """Matches the REAL, production-wired singleton's contract:
+    ``app.org.events.OrgEventPublisher.publish`` (returned by
+    ``app.org.events.get_org_event_publisher()``), which
+    ``app/scaling/tasks.py::_collaboration_tick_for_org`` actually passes in.
+
+    Note this is a *different* shape than the dead, unused
+    ``app.org.event_publisher.OrgEventPublisher.publish`` (positional
+    ``event_type, payload, tenant_id, org_id``) — that module is not wired
+    into production anywhere. Calling the real publisher with those
+    positional args silently sends the payload where ``tenant_id`` belongs
+    and vice versa, so every argument here is keyword, matching real callers
+    (``app/org/router.py``, ``app/org/service.py``,
+    ``app/org/approval_chain.py``).
+    """
 
     async def publish(
         self,
+        *,
         event_type: str,
-        payload: dict[str, Any],
-        tenant_id: str,
         org_id: str,
-    ) -> str: ...
+        tenant_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> Any: ...
 
 
 class LLMProviderCollaborationGateway:
@@ -196,10 +208,10 @@ class CollaborationTick:
                     continue
 
                 await self._event_publisher.publish(
-                    EVENT_TYPE_COLLABORATION_MESSAGE,
-                    {"lead": lead, "message": message},
-                    tenant_id,
-                    org_id,
+                    event_type=EVENT_TYPE_COLLABORATION_MESSAGE,
+                    org_id=org_id,
+                    tenant_id=tenant_id,
+                    payload={"lead": lead, "message": message},
                 )
                 emitted += 1
 

@@ -5303,8 +5303,7 @@ async def _collaboration_tick_for_org(
     from app.db.rls import sqlalchemy_rls_context
     from app.org.brain_collaboration import CollaborationTick, LLMProviderCollaborationGateway
     from app.org.brain_settings import resolve_autonomy_settings
-    from app.org.event_publisher import OrgEventPublisher
-    from app.org.events import get_org_event_publisher
+    from app.org.events import OrgEventPublisher, get_org_event_publisher
     from app.org.model_gateway import get_gateway
     from app.org.models import OrgDepartment
     from app.org.service import OrgService

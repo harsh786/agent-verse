@@ -145,6 +145,7 @@ ORG_AUDIT_EVENTS = [
     "org.budget.exceeded",
     "org.policy.violation",
     "org.cross_dept.message_sent",
+    "org.collaboration.message",
     "org.memory.promoted",
     "org.knowledge.updated",
     "org.knowledge.stale",

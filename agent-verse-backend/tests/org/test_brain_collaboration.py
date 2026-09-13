@@ -60,11 +60,33 @@ class _FakeModelGateway:
 
 
 class _FakeEventPublisher:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, dict, str, str]] = []
+    """Mirrors the REAL, production-wired ``app.org.events.OrgEventPublisher
+    .publish`` contract (keyword-only here to force call sites to match it by
+    name, not position) -- NOT the dead ``app.org.event_publisher`` module's
+    positional shape. This is the exact bug class Finding 1 covers: calling
+    the real singleton with the dead module's positional order silently
+    scrambles ``org_id``/``tenant_id``/``payload``.
+    """
 
-    async def publish(self, event_type, payload, tenant_id, org_id) -> str:
-        self.events.append((event_type, payload, tenant_id, org_id))
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def publish(
+        self,
+        *,
+        event_type: str,
+        org_id: str,
+        tenant_id: str,
+        payload: dict | None = None,
+    ) -> str:
+        self.events.append(
+            {
+                "event_type": event_type,
+                "org_id": org_id,
+                "tenant_id": tenant_id,
+                "payload": payload or {},
+            }
+        )
         return "corr-id"
 
 
@@ -176,12 +198,14 @@ async def test_enabled_l4_emits_at_most_cap_messages_as_collaboration_event():
     assert emitted == 3
     assert len(publisher.events) == 3
     assert len(gateway.calls) == 3
-    for event_type, payload, tenant_id, org_id in publisher.events:
-        assert event_type == EVENT_TYPE_COLLABORATION_MESSAGE
-        assert tenant_id == "t1"
-        assert org_id == "org1"
-        assert payload["lead"] in leads[:3]
-        assert payload["message"] == "Shipping the integration by end of day."
+    for event in publisher.events:
+        assert event["event_type"] == EVENT_TYPE_COLLABORATION_MESSAGE
+        # Correct org_id/tenant_id land in the correct real-signature slots
+        # (not scrambled by the dead module's positional order).
+        assert event["org_id"] == "org1"
+        assert event["tenant_id"] == "t1"
+        assert event["payload"]["lead"] in leads[:3]
+        assert event["payload"]["message"] == "Shipping the integration by end of day."
     for _prompt, max_tokens in gateway.calls:
         assert max_tokens <= 40
 
@@ -208,8 +232,10 @@ async def test_model_error_mid_tick_stops_fail_closed():
 
     assert emitted == 1
     assert len(publisher.events) == 1
-    assert publisher.events[0][0] == EVENT_TYPE_COLLABORATION_MESSAGE
-    assert publisher.events[0][1]["lead"] == "alice"
+    assert publisher.events[0]["event_type"] == EVENT_TYPE_COLLABORATION_MESSAGE
+    assert publisher.events[0]["org_id"] == "org1"
+    assert publisher.events[0]["tenant_id"] == "t1"
+    assert publisher.events[0]["payload"]["lead"] == "alice"
     # The gateway was called twice: once succeeding, once raising -- and the
     # tick stopped there rather than trying "carol"/"dave".
     assert len(gateway.calls) == 2
