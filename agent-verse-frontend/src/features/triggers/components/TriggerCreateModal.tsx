@@ -4,7 +4,7 @@ import { X, ChevronRight } from 'lucide-react';
 import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types';
 import { TRIGGER_FAMILY_LABELS } from '../types';
 import { useCreateTrigger } from '../hooks';
-import { agentsApi } from '@/lib/api/client';
+import { agentsApi, goalsApi } from '@/lib/api/client';
 import { TimeFamilyForm } from './families/TimeFamilyForm';
 import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
 import { WebhookFamilyForm } from './families/WebhookFamilyForm';
@@ -53,10 +53,18 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
   const [specFields, setSpecFields] = useState<Record<string, unknown>>({});
   const [goalTemplate, setGoalTemplate] = useState('');
   const [agentId, setAgentId] = useState('');
+  const [goalId, setGoalId] = useState('');
 
   const create = useCreateTrigger();
   // Existing agents to reference — a trigger can just run an agent's own goal.
   const { data: agents = [] } = useQuery({ queryKey: ['agents'], queryFn: agentsApi.list });
+  // Existing goals to bind to — binding a concrete goal_id avoids the noise of a
+  // free-text template matching many goals (each fire re-runs THIS goal).
+  const { data: goalsResp } = useQuery({
+    queryKey: ['goals', 'trigger-picker'],
+    queryFn: () => goalsApi.list({ page_size: 50 }),
+  });
+  const goals = goalsResp?.goals ?? [];
 
   function handleSubmit() {
     if (!selectedType) return;
@@ -65,7 +73,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
         trigger_type: selectedType,
         ...specFields,
       },
-      goal_id: '',
+      goal_id: goalId,
       agent_id: agentId || undefined,
       goal_template: goalTemplate,
     };
@@ -181,6 +189,30 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
                   configured goal, or write a goal template (or both). */}
               <div className="mt-5 space-y-4">
                 <div>
+                  <label className="text-sm font-medium" htmlFor="goal-id">Bind to an existing goal</label>
+                  <select
+                    id="goal-id"
+                    value={goalId}
+                    onChange={(e) => setGoalId(e.target.value)}
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">None — use a template or agent below</option>
+                    {goals.map((g) => {
+                      const id = g.goal_id ?? g.id;
+                      const label = g.goal.length > 60 ? `${g.goal.slice(0, 60)}…` : g.goal;
+                      return (
+                        <option key={id} value={id}>
+                          {label} · {g.status} · {id.slice(0, 8)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Re-runs this exact goal on every fire — the precise choice when
+                    several goals share similar text (no template ambiguity).
+                  </p>
+                </div>
+                <div>
                   <label className="text-sm font-medium" htmlFor="agent-id">Run as agent</label>
                   <select
                     id="agent-id"
@@ -231,7 +263,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
             </button>
             <button
               onClick={handleSubmit}
-              disabled={create.isPending || (!goalTemplate.trim() && !agentId)}
+              disabled={create.isPending || (!goalId && !goalTemplate.trim() && !agentId)}
               className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {create.isPending ? 'Creating…' : 'Create Trigger'}

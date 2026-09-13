@@ -66,6 +66,90 @@ def test_create_cron_trigger(client):
     assert data["paused"] is False
 
 
+def test_create_trigger_bound_to_goal_id_only(client):
+    """A trigger may bind a concrete goal_id with no template/agent — re-runs THAT
+    goal on fire (avoids the noise of a free-text template matching many goals)."""
+    resp = client.post("/triggers", json={
+        "spec": {"trigger_type": "cron", "cron_expression": "0 9 * * *"},
+        "goal_id": "g-bound-123",
+    })
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["goal_id"] == "g-bound-123"
+
+
+def test_create_trigger_requires_goal_id_template_or_agent(client):
+    """With none of goal_id / goal_template / agent_id, creation is rejected (422)."""
+    resp = client.post("/triggers", json={
+        "spec": {"trigger_type": "cron", "cron_expression": "0 9 * * *"},
+    })
+    assert resp.status_code == 422
+
+
+def test_list_triggers_surface_created_at_timestamp(client):
+    """Every listed trigger carries a created_at timestamp so the UI can show it."""
+    client.post("/triggers", json={
+        "spec": {"trigger_type": "cron", "cron_expression": "0 9 * * *"},
+        "goal_id": "g-ts-1",
+    })
+    listed = client.get("/triggers").json()
+    assert listed, "expected at least one trigger"
+    assert listed[0].get("created_at"), "created_at must be serialized for the UI"
+    assert listed[0]["goal_id"] == "g-ts-1"
+
+
+def test_advanced_spec_fields_round_trip(client):
+    """Previously-drifted / advanced spec fields must survive create → list.
+
+    The frontend used to emit drifted names (run_at, condition_cel, webhook_secret,
+    warn_before_seconds, max_firings) that the backend silently dropped. With the
+    contract aligned, the real backend field names must round-trip intact — proving
+    advanced config actually persists (the root cause of "triggers won't work in
+    production").
+    """
+    resp = client.post("/triggers", json={
+        "spec": {
+            "trigger_type": "cron",
+            "cron_expression": "0 9 * * *",
+            "timezone": "America/New_York",
+            "description": "Morning digest",
+            # cross-cutting advanced params
+            "condition": "payload.env == 'prod'",
+            "priority": "high",
+            "max_firings_per_hour": 5,
+            "expires_at_iso": "2030-01-01T00:00:00Z",
+            "tags": ["ops", "digest"],
+            "simulation_mode": True,
+        },
+        "goal_id": "g-adv-1",
+    })
+    assert resp.status_code == 201, resp.text
+    spec = client.get("/triggers").json()[0]["spec"]
+    assert spec["cron_expression"] == "0 9 * * *"
+    assert spec["timezone"] == "America/New_York"
+    assert spec["condition"] == "payload.env == 'prod'"
+    assert spec["priority"] == "high"
+    assert spec["max_firings_per_hour"] == 5
+    assert spec["expires_at_iso"] == "2030-01-01T00:00:00Z"
+    assert spec["tags"] == ["ops", "digest"]
+    assert spec["simulation_mode"] is True
+
+
+def test_webhook_signature_secret_round_trips(client):
+    """The aligned webhook HMAC field name persists (was 'webhook_secret' drift)."""
+    resp = client.post("/triggers", json={
+        "spec": {
+            "trigger_type": "github_webhook",
+            "webhook_signature_secret": "whsec_test_123",
+            "github_event_filter": "push",
+        },
+        "goal_template": "handle webhook",
+    })
+    assert resp.status_code == 201, resp.text
+    spec = client.get("/triggers").json()[0]["spec"]
+    assert spec["webhook_signature_secret"] == "whsec_test_123"
+    assert spec["github_event_filter"] == "push"
+
+
 def test_create_goal_chain_trigger(client):
     resp = client.post("/triggers", json={
         "spec": {"trigger_type": "goal_completed"},

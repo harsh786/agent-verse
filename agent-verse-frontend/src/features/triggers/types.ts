@@ -95,39 +95,131 @@ export type TriggerType =
 
 // ── TriggerSpec ───────────────────────────────────────────────────────────────
 
+/**
+ * Faithful mirror of the backend `app/triggers/models.py::TriggerSpec` dataclass.
+ * Field NAMES must match the backend exactly — the API filters unknown keys, so a
+ * drifted name (the old `run_at`/`condition_cel`/`webhook_secret`) silently fails
+ * to round-trip. Keep this in lock-step with the backend spec.
+ */
 export interface TriggerSpec {
-  trigger_id: string;
+  trigger_id?: string;
   trigger_type: TriggerType;
-  name?: string;
+  // ── Cross-cutting (all families) ──
   description?: string;
-  // Time
+  goal_template?: string;
+  condition?: string; // CEL expression gating any trigger type
+  priority?: 'high' | 'normal' | 'low';
+  max_firings_per_hour?: number; // 0 = unlimited (rate cap)
+  expires_at_iso?: string; // auto-disable after this ISO datetime
+  on_failure_notify?: string; // email/Slack channel on dispatch failure
+  tags?: string[];
+  // ── A: Time / Schedule ──
   cron_expression?: string;
+  timezone?: string;
   interval_seconds?: number;
-  run_at?: string;
-  // Goal chain
+  fire_at_iso?: string;
+  business_calendar_id?: string;
+  relative_to_field?: string;
+  relative_offset_seconds?: number;
+  deadline_field?: string;
+  deadline_warning_seconds?: number;
+  // ── B: Goal / Agent chain ──
   watch_goal_id?: string;
   watch_agent_id?: string;
   score_threshold?: number;
-  // Condition
-  condition_cel?: string;
-  // Template
-  goal_template?: string;
-  // Webhook
-  webhook_secret?: string;
-  webhook_url?: string;
-  // MQTT
-  mqtt_topic?: string;
+  score_dimension?: string;
+  hitl_queue_id?: string;
+  memory_type?: string;
+  // ── C: Conversational ──
+  channel_type?: string;
+  channel_id?: string;
+  command_pattern?: string;
+  keyword_pattern?: string;
+  mention_bot_id?: string;
+  email_sender_filter?: string;
+  email_subject_pattern?: string;
+  phone_number_filter?: string;
+  voice_language?: string;
+  meeting_platform?: string;
+  form_id?: string;
+  // ── D: Condition / State ──
+  condition_expression?: string;
+  counter_key?: string;
+  counter_threshold?: number;
+  counter_window_secs?: number;
+  compound_logic?: 'AND' | 'OR';
+  compound_trigger_ids?: string[];
+  state_machine_id?: string;
+  from_state?: string;
+  to_state?: string;
+  window_seconds?: number;
+  window_field?: string;
+  window_aggregation?: 'sum' | 'avg' | 'max' | 'min' | 'count';
+  window_threshold?: number;
+  // ── E: External events / Webhooks ──
+  event_channel?: string;
+  event_filter?: string;
+  webhook_token?: string;
+  webhook_signature_secret?: string;
+  allowed_api_keys?: string[];
+  github_event_filter?: string;
+  jira_project_filter?: string;
+  stripe_event_filter?: string;
+  discord_server_id?: string;
+  discord_channel_id?: string;
+  salesforce_object?: string;
+  teams_team_id?: string;
+  teams_channel_id?: string;
+  confluence_space_key?: string;
+  linear_team_id?: string;
+  // ── F: Data sources ──
+  file_drop_path?: string;
+  db_table?: string;
+  db_operation?: string;
+  db_filter?: string;
+  rss_url?: string;
+  sheets_spreadsheet_id?: string;
+  sheets_range?: string;
+  sharepoint_site_url?: string;
+  sharepoint_library?: string;
+  // ── G: Monitoring / Observability ──
+  alert_severity_filter?: string;
+  alert_labels?: Record<string, string>;
+  log_pattern_regex?: string;
+  log_stream?: string;
+  cloudwatch_namespace?: string;
+  cloudwatch_metric?: string;
+  sentry_project?: string;
+  sentry_environment?: string;
+  // ── H: Polling / Streaming / Market ──
+  poll_url?: string;
+  poll_method?: string;
+  poll_headers?: Record<string, string>;
+  poll_body?: Record<string, unknown>;
+  poll_jsonpath?: string;
+  poll_expected_value?: string;
+  poll_interval_seconds?: number;
+  graphql_endpoint?: string;
+  graphql_subscription_query?: string;
+  websocket_url?: string;
+  websocket_message_pattern?: string;
+  price_symbol?: string;
+  price_threshold?: number;
+  price_direction?: 'above' | 'below';
+  // ── I: IoT ──
   mqtt_broker_url?: string;
+  mqtt_topic?: string;
   mqtt_qos?: number;
-  // Geofence
   geofence_polygon?: [number, number][];
   geofence_action?: 'enter' | 'exit' | 'both';
-  // Misc
-  enabled?: boolean;
-  paused?: boolean;
-  max_firings?: number;
-  created_at?: string;
-  updated_at?: string;
+  sensor_device_id?: string;
+  sensor_metric?: string;
+  sensor_threshold?: number;
+  sensor_comparison?: 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
+  // ── Governance / Misc ──
+  allowed_roles?: string[];
+  simulation_mode?: boolean;
+  version?: number;
 }
 
 // ── Stored Trigger ────────────────────────────────────────────────────────────

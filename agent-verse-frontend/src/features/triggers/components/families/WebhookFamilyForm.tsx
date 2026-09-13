@@ -17,8 +17,8 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
         <Field label="Endpoint Name" hint="Used to generate the webhook URL path">
           <input
             type="text"
-            value={(value.webhook_endpoint_name as string) ?? ''}
-            onChange={(e) => set('webhook_endpoint_name', e.target.value)}
+            value={(value.description as string) ?? ''}
+            onChange={(e) => set('description', e.target.value)}
             placeholder="my-webhook"
             className={inputCls}
           />
@@ -30,8 +30,8 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
       >
         <input
           type="password"
-          value={(value.webhook_secret as string) ?? ''}
-          onChange={(e) => set('webhook_secret', e.target.value)}
+          value={(value.webhook_signature_secret as string) ?? ''}
+          onChange={(e) => set('webhook_signature_secret', e.target.value)}
           placeholder="whsec_…"
           className={inputCls}
           autoComplete="new-password"
@@ -62,8 +62,8 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
       <Field label="Condition CEL" hint="Optional filter expression, e.g. payload.action == 'opened'">
         <input
           type="text"
-          value={(value.condition_cel as string) ?? ''}
-          onChange={(e) => set('condition_cel', e.target.value)}
+          value={(value.condition as string) ?? ''}
+          onChange={(e) => set('condition', e.target.value)}
           placeholder="payload.ref == 'refs/heads/main'"
           className={inputCls}
         />

@@ -17,6 +17,7 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable
+from datetime import UTC, datetime
 from typing import Any
 
 from app.tenancy.context import TenantContext
@@ -273,6 +274,7 @@ class ScheduleStore:
             "goal_template": goal_template,
             "spec": spec,
             "paused": False,
+            "created_at": datetime.now(UTC),
         }
         self._data[(tenant_ctx.tenant_id, sched_id)] = rec
         self._write_redis_schedule(tenant_ctx.tenant_id, rec)
@@ -314,6 +316,7 @@ class ScheduleStore:
             "goal_template": goal_template,
             "spec": spec,
             "paused": False,
+            "created_at": datetime.now(UTC),
         }
         db_created = False
         if self._db is not None:
@@ -637,6 +640,9 @@ class ScheduleStore:
                             "goal_template": _row_goal_tmpl,
                             "spec": spec,
                             "paused": row.paused,
+                            "created_at": getattr(row, "created_at", None),
+                            "last_fired_at": getattr(row, "last_fired_at", None),
+                            "next_fire_at": getattr(row, "next_fire_at", None),
                         }
                         self._write_redis_schedule(row.tenant_id, self._data[key])
                         loaded += 1

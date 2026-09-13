@@ -39,8 +39,8 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
         <Field label="Run At (ISO 8601)">
           <input
             type="datetime-local"
-            value={(value.run_at as string) ?? ''}
-            onChange={(e) => set('run_at', e.target.value)}
+            value={(value.fire_at_iso as string) ?? ''}
+            onChange={(e) => set('fire_at_iso', e.target.value)}
             className={inputCls}
           />
         </Field>
@@ -50,8 +50,8 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           <Field label="Deadline (ISO 8601)">
             <input
               type="datetime-local"
-              value={(value.run_at as string) ?? ''}
-              onChange={(e) => set('run_at', e.target.value)}
+              value={(value.fire_at_iso as string) ?? ''}
+              onChange={(e) => set('fire_at_iso', e.target.value)}
               className={inputCls}
             />
           </Field>
@@ -59,8 +59,8 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
             <input
               type="number"
               min={0}
-              value={(value.warn_before_seconds as number) ?? 3600}
-              onChange={(e) => set('warn_before_seconds', Number(e.target.value))}
+              value={(value.deadline_warning_seconds as number) ?? 3600}
+              onChange={(e) => set('deadline_warning_seconds', Number(e.target.value))}
               className={inputCls}
             />
           </Field>
@@ -81,8 +81,8 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
         <input
           type="number"
           min={0}
-          value={(value.max_firings as number) ?? 0}
-          onChange={(e) => set('max_firings', Number(e.target.value))}
+          value={(value.max_firings_per_hour as number) ?? 0}
+          onChange={(e) => set('max_firings_per_hour', Number(e.target.value))}
           className={inputCls}
         />
       </Field>

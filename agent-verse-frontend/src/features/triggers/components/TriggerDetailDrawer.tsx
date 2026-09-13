@@ -20,7 +20,7 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
       className="fixed inset-0 z-50 flex"
       role="dialog"
       aria-modal="true"
-      aria-label={`Trigger detail: ${trigger.spec.name ?? trigger.spec.trigger_type}`}
+      aria-label={`Trigger detail: ${trigger.spec.description ?? trigger.spec.trigger_type}`}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -39,7 +39,7 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               </span>
             </div>
             <h2 className="mt-1 text-base font-semibold">
-              {trigger.spec.name ?? 'Trigger Detail'}
+              {trigger.spec.description ?? 'Trigger Detail'}
             </h2>
             <div className="mt-1">
               <TriggerStatusBadge paused={trigger.paused} />

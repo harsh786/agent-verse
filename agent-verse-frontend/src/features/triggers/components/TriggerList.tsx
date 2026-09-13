@@ -31,7 +31,7 @@ export function TriggerList({ triggers, isLoading }: TriggerListProps) {
       !search ||
       t.goal_template.toLowerCase().includes(search.toLowerCase()) ||
       t.spec.trigger_type.toLowerCase().includes(search.toLowerCase()) ||
-      (t.spec.name ?? '').toLowerCase().includes(search.toLowerCase());
+      (t.spec.description ?? '').toLowerCase().includes(search.toLowerCase());
     const family = TRIGGER_TYPE_FAMILY[t.spec.trigger_type];
     const matchFamily = familyFilter === 'all' || family === familyFilter;
     return matchSearch && matchFamily;

@@ -72,10 +72,17 @@ class CreateTriggerRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_goal_or_agent(self) -> CreateTriggerRequest:
-        """A trigger must have something to run: a goal template OR a referenced
-        agent (whose own goal will run). Neither → nothing to fire (422)."""
-        if not (self.goal_template or "").strip() and not (self.agent_id or "").strip():
-            raise ValueError("Provide a goal_template or reference an agent_id")
+        """A trigger must have something concrete to run on fire, in priority order:
+        a bound ``goal_id`` (re-run a specific existing goal — avoids the noise of a
+        free-text template matching many goals), a ``goal_template`` (NL, with
+        ``{{payload.*}}`` interpolation), or a referenced ``agent_id`` (whose own
+        goal runs). None of the three → nothing to fire (422)."""
+        if (
+            not (self.goal_id or "").strip()
+            and not (self.goal_template or "").strip()
+            and not (self.agent_id or "").strip()
+        ):
+            raise ValueError("Provide a goal_id, a goal_template, or reference an agent_id")
         return self
 
 
@@ -141,6 +148,13 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
         "goal_template": rec.get("goal_template", ""),
         "paused": rec.get("paused", False),
     }
+    # Surface lifecycle timestamps so the UI can show when a trigger was created
+    # and when it will next / last fire. Values may be datetime (DB-hydrated) or
+    # already-ISO strings; normalise to ISO for the JSON response.
+    for _ts in ("created_at", "next_fire_at", "last_fired_at"):
+        _val = rec.get(_ts)
+        if _val is not None:
+            out[_ts] = _val.isoformat() if hasattr(_val, "isoformat") else _val
     if spec is not None:
         import dataclasses
 

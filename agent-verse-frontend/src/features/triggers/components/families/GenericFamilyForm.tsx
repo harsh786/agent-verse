@@ -23,8 +23,8 @@ export function GenericFamilyForm({ triggerType, value, onChange }: FamilyFormPr
       <Field label="Condition CEL (optional)" hint="e.g. payload.severity == 'critical'">
         <input
           type="text"
-          value={(value.condition_cel as string) ?? ''}
-          onChange={(e) => set('condition_cel', e.target.value)}
+          value={(value.condition as string) ?? ''}
+          onChange={(e) => set('condition', e.target.value)}
           placeholder="payload.value > 100"
           className={inputCls}
         />
