@@ -16,6 +16,7 @@ from typing import Any, cast
 from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
+from app.org.feature_flags import is_feature_enabled
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
 
@@ -5074,14 +5075,93 @@ def delta_reingest_files(
 
 # ── N8: Org Autonomous Operating Loop (runs every 5 min via Celery Beat) ─────
 
+_BRAIN_TICK_ZERO: dict[str, int] = {"proposed": 0, "executed": 0, "blocked": 0}
+
+
+async def _brain_tick_for_org(
+    *,
+    db_factory: Any,
+    redis: Any,
+    org_id: Any,
+    tenant_id: Any,
+    autonomy_level: int,
+) -> dict[str, int]:
+    """Run one ``OrgBrain`` SENSE/DECIDE/GUARD/ACT/NARRATE tick for a single org.
+
+    Short-circuits (returns ``{"proposed": 0, "executed": 0, "blocked": 0}``
+    without touching the DB or Redis beyond the lock check) when:
+      * the ``org_autonomy_enabled`` feature flag is off for this tenant, or
+      * the org's autonomy level is below 3, or
+      * the org's per-tick Redis lock (``BrainCounters.acquire_tick_lock``)
+        is already held (a concurrent beat/worker run is mid-tick).
+
+    Otherwise builds the real ``OrgBrain`` dependencies inside an RLS-scoped
+    session (mirroring the health-check block this replaces) and runs the
+    tick. ``session.begin()`` commits automatically on clean exit, so the
+    decision rows (``BrainDecisionStore``) and any created/executed missions
+    persist without an explicit ``session.commit()``.
+    """
+    from app.org.brain_counters import BrainCounters
+
+    if not is_feature_enabled("org_autonomy_enabled", str(tenant_id)):
+        return dict(_BRAIN_TICK_ZERO)
+    if int(autonomy_level) < 3:
+        return dict(_BRAIN_TICK_ZERO)
+
+    counters = BrainCounters(redis, str(org_id))
+    if not await counters.acquire_tick_lock():
+        return dict(_BRAIN_TICK_ZERO)
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.org.autonomy import AutonomyEnforcer
+    from app.org.brain import OrgBrain
+    from app.org.brain_planner import make_planner
+    from app.org.brain_store import BrainDecisionStore
+    from app.org.goal_refinement import GoalRefinementPipeline
+    from app.org.loop_detector import OrgLoopDetector
+    from app.org.service import OrgService
+
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        svc = OrgService(session, str(tenant_id))
+        org = await svc.get_organization(str(org_id))
+        if org is None:
+            return dict(_BRAIN_TICK_ZERO)
+
+        brain = OrgBrain(
+            org_service=svc,
+            brain_store=BrainDecisionStore(session),
+            counters=counters,
+            enforcer=AutonomyEnforcer(),
+            loop_detector=OrgLoopDetector(),
+            planner=make_planner(GoalRefinementPipeline()),
+        )
+        return await brain.run_tick(
+            org_id=str(org_id),
+            tenant_id=str(tenant_id),
+            autonomy_level=int(autonomy_level),
+            org_settings=dict(org.settings or {}),
+            monthly_budget_usd=float(org.monthly_budget_usd or 0.0),
+            org_goals=list(org.goals or []),
+            org_mission=str(org.mission or ""),
+        )
+
 
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
 def org_brain_loop() -> dict[str, int]:
-    """N8 — Autonomous Operating Loop: OBSERVE → DISCOVER → PREDICT → PRIORITIZE.
+    """N8 — Autonomous Operating Loop: SENSE → DECIDE → GUARD → ACT → NARRATE.
 
-    Runs every 5 minutes via Celery Beat. Only triggers new work at autonomy L3+.
+    Runs every 5 minutes via Celery Beat. Drives ``OrgBrain.run_tick`` (via
+    ``_brain_tick_for_org``) for every active org, gated by the
+    ``org_autonomy_enabled`` feature flag, autonomy level (L3+), and a
+    per-org Redis tick lock.
     """
     import asyncio as _asyncio
+
+    zero_totals = {"processed": 0, "triggered": 0, **_BRAIN_TICK_ZERO}
 
     async def _run() -> dict[str, int]:
         import structlog as _slog
@@ -5092,14 +5172,16 @@ def org_brain_loop() -> dict[str, int]:
 
         with tracer.start_as_current_span("org_brain.autonomous_loop") as span:
             processed = 0
-            discovered = 0
             triggered = 0
+            proposed_total = 0
+            executed_total = 0
+            blocked_total = 0
             try:
                 from app.main import app as _app
 
                 db_factory = getattr(_app.state, "db_factory", None)
                 if db_factory is None:
-                    return {"processed": 0, "discovered": 0, "triggered": 0}
+                    return dict(zero_totals)
 
                 from sqlalchemy import select
 
@@ -5117,40 +5199,53 @@ def org_brain_loop() -> dict[str, int]:
                     )
                     orgs = result.all()
 
-                for org_id, tenant_id, autonomy_level in orgs:
-                    processed += 1
-                    try:
-                        from app.db.rls import sqlalchemy_rls_context
-                        from app.org.service import OrgService
+                import redis.asyncio as _aioredis
 
-                        async with (
-                            db_factory() as s2,
-                            s2.begin(),
-                            sqlalchemy_rls_context(s2, str(tenant_id)),
-                        ):
-                            svc = OrgService(s2, str(tenant_id))
-                            health = await svc.get_org_health(str(org_id))
-                        blocked = health.get("task_counts", {}).get("blocked", 0)
-                        failed = health.get("task_counts", {}).get("failed", 0)
-                        if blocked > 3 or failed > 0:
-                            discovered += 1
-                        if autonomy_level >= 3 and (blocked > 5 or failed > 2):
-                            triggered += 1
-                            _log.info(
-                                "org_brain.work_triggered",
-                                org_id=str(org_id),
-                                tenant_id=str(tenant_id),
+                redis = _aioredis.from_url(REDIS_URL, decode_responses=True)
+                try:
+                    for org_id, tenant_id, autonomy_level in orgs:
+                        processed += 1
+                        try:
+                            tick_result = await _brain_tick_for_org(
+                                db_factory=db_factory,
+                                redis=redis,
+                                org_id=org_id,
+                                tenant_id=tenant_id,
+                                autonomy_level=autonomy_level,
                             )
-                    except Exception as exc:
-                        _log.warning("org_brain.org_error", org_id=str(org_id), error=str(exc))
+                            proposed_total += tick_result.get("proposed", 0)
+                            executed_total += tick_result.get("executed", 0)
+                            blocked_total += tick_result.get("blocked", 0)
+                            if tick_result.get("executed", 0) or tick_result.get("proposed", 0):
+                                triggered += 1
+                                _log.info(
+                                    "org_brain.work_triggered",
+                                    org_id=str(org_id),
+                                    tenant_id=str(tenant_id),
+                                    **tick_result,
+                                )
+                        except Exception as exc:
+                            _log.warning(
+                                "org_brain.org_error", org_id=str(org_id), error=str(exc)
+                            )
+                finally:
+                    await redis.aclose()
 
                 span.set_attribute("orgs_processed", processed)
-                span.set_attribute("discovered", discovered)
                 span.set_attribute("triggered", triggered)
-                _log.info("org_brain.loop_done", processed=processed, discovered=discovered)
+                span.set_attribute("proposed", proposed_total)
+                span.set_attribute("executed", executed_total)
+                span.set_attribute("blocked", blocked_total)
+                _log.info("org_brain.loop_done", processed=processed, triggered=triggered)
             except Exception as exc:
                 _log.error("org_brain.loop_failed", error=str(exc))
-        return {"processed": processed, "discovered": discovered, "triggered": triggered}
+        return {
+            "processed": processed,
+            "triggered": triggered,
+            "proposed": proposed_total,
+            "executed": executed_total,
+            "blocked": blocked_total,
+        }
 
     loop = _asyncio.new_event_loop()
     try:
