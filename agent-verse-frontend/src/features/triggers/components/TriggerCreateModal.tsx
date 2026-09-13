@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { X, ChevronRight } from 'lucide-react';
 import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types';
 import { TRIGGER_FAMILY_LABELS } from '../types';
 import { useCreateTrigger } from '../hooks';
+import { agentsApi } from '@/lib/api/client';
 import { TimeFamilyForm } from './families/TimeFamilyForm';
 import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
 import { WebhookFamilyForm } from './families/WebhookFamilyForm';
@@ -53,6 +55,8 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
   const [agentId, setAgentId] = useState('');
 
   const create = useCreateTrigger();
+  // Existing agents to reference — a trigger can just run an agent's own goal.
+  const { data: agents = [] } = useQuery({ queryKey: ['agents'], queryFn: agentsApi.list });
 
   function handleSubmit() {
     if (!selectedType) return;
@@ -172,28 +176,47 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
                 <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
               )}
 
-              {/* Common fields */}
+              {/* Common fields — reference an existing agent and/or a goal.
+                  A trigger needs at least one: pick an agent to run its own
+                  configured goal, or write a goal template (or both). */}
               <div className="mt-5 space-y-4">
                 <div>
-                  <label className="text-sm font-medium" htmlFor="goal-template">Goal Template *</label>
+                  <label className="text-sm font-medium" htmlFor="agent-id">Run as agent</label>
+                  <select
+                    id="agent-id"
+                    value={agentId}
+                    onChange={(e) => setAgentId(e.target.value)}
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">Auto-route (no specific agent)</option>
+                    {agents.map((a) => (
+                      <option key={a.agent_id} value={a.agent_id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Reference an agent you already created — the trigger runs that agent
+                    (and its own goal) on each fire.
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium" htmlFor="goal-template">
+                    Goal Template <span className="text-muted-foreground font-normal">(optional)</span>
+                  </label>
                   <textarea
                     id="goal-template"
                     value={goalTemplate}
                     onChange={(e) => setGoalTemplate(e.target.value)}
-                    placeholder="Describe the goal to create when this trigger fires…"
+                    placeholder={agentId
+                      ? "Leave blank to run the selected agent's own goal, or override it here…"
+                      : 'Describe the goal to create when this trigger fires…'}
                     rows={3}
                     className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
-                </div>
-                <div>
-                  <label className="text-sm font-medium" htmlFor="agent-id">Agent ID (optional)</label>
-                  <input
-                    id="agent-id"
-                    value={agentId}
-                    onChange={(e) => setAgentId(e.target.value)}
-                    placeholder="Leave blank to auto-route"
-                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
-                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {agentId
+                      ? "Optional override — blank uses the agent's goal."
+                      : 'Required unless you selected an agent above.'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -208,7 +231,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
             </button>
             <button
               onClick={handleSubmit}
-              disabled={create.isPending || !goalTemplate.trim()}
+              disabled={create.isPending || (!goalTemplate.trim() && !agentId)}
               className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {create.isPending ? 'Creating…' : 'Create Trigger'}

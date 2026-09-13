@@ -174,8 +174,19 @@ class TriggerDispatcher:
                     )
 
             # ── Step 9: Goal template rendering ──────────────────────────────
+            # Precedence: the trigger's own goal template → the referenced agent's
+            # configured goal (so a trigger can simply reference an agent without
+            # re-authoring a goal) → a generic default.
+            _template = (trigger_spec.goal_template or "").strip()
+            _ref_agent = (
+                getattr(trigger_spec, "agent_id", "")
+                or getattr(trigger_spec, "watch_agent_id", "")
+                or ""
+            )
+            if not _template and _ref_agent:
+                _template = self._agent_goal_template(_ref_agent, tenant_ctx)
             goal_text = self._render_template(
-                trigger_spec.goal_template or "Trigger fired: {{trigger_type}}",
+                _template or "Trigger fired: {{trigger_type}}",
                 payload,
                 trigger_type=str(trigger_spec.trigger_type),
             )
@@ -305,6 +316,26 @@ class TriggerDispatcher:
             result = result.replace(f"{{{{{k}}}}}", v)
         return result[:2048]  # max rendered length
 
+    def _agent_goal_template(self, agent_id: str, tenant_ctx: object) -> str:
+        """Return a referenced agent's own goal_template, or "" if unavailable.
+
+        Lets a trigger that only references an agent run that agent's configured
+        goal without the operator re-authoring a goal template on the trigger.
+        """
+        gs = self._goal_service
+        if gs is None or not hasattr(gs, "_get_agent_store"):
+            return ""
+        try:
+            store = gs._get_agent_store()  # type: ignore[attr-defined]
+            if store is None:
+                return ""
+            rec = store.get(agent_id, tenant_ctx=tenant_ctx)
+            if isinstance(rec, dict):
+                return (rec.get("goal_template") or "").strip()
+        except Exception as exc:  # never block a fire on agent lookup
+            _log.warning("trigger_agent_goal_lookup_failed agent=%s: %s", agent_id, exc)
+        return ""
+
     async def _create_goal(
         self,
         spec: TriggerSpec,
@@ -318,7 +349,10 @@ class TriggerDispatcher:
             result = await self._goal_service.create_goal(
                 tenant_ctx=tenant_ctx,
                 goal_text=goal_text,
-                agent_id=getattr(spec, "watch_agent_id", "") or None,
+                # Route the fired goal to the agent the trigger references. The
+                # create form sets `agent_id`; `watch_agent_id` is the legacy
+                # event-watch field — honor either so referencing an agent works.
+                agent_id=(getattr(spec, "agent_id", "") or getattr(spec, "watch_agent_id", "")) or None,
                 idempotency_key=idempotency_key,
             )
             if hasattr(result, "goal_id"):

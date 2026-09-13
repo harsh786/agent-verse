@@ -78,6 +78,10 @@ _CONFIG_EXCLUDE: frozenset[str] = frozenset({
     "event_channel", "fire_at_iso", "condition", "description", "goal_template",
     "webhook_signature_secret", "webhook_signature_secret_previous",
     "webhook_signature_grace_until",
+    # agent_id is a first-class Schedule column / record field and is echoed into
+    # the redis payload explicitly; keep it out of the config JSONB to avoid
+    # duplicating the referenced-agent id (bound onto the spec's watch_agent_id).
+    "watch_agent_id",
 })
 
 
@@ -110,6 +114,26 @@ def apply_config_to_spec(spec: TriggerSpec, config: Any) -> None:
 
 def _strip_secret_redis_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key.lower() not in _SECRET_REDIS_FIELDS}
+
+
+def bind_refs_to_spec(spec: TriggerSpec, *, agent_id: str = "", goal_template: str = "") -> None:
+    """Fold the record-level agent/goal references onto the spec in place.
+
+    ``agent_id`` and ``goal_template`` are trigger-level references, but every
+    dispatch path (the manual fire/simulate API, the celery beat schedule loop,
+    and all ~13 category consumers — goal-chain, event, condition, conversational,
+    data/file, monitoring, IoT, …) resolves the goal text and the routed agent
+    from the *spec* it is handed. Binding the refs onto the spec here makes the
+    spec self-contained, so a trigger that merely references an agent (with no
+    goal template) routes to that agent and runs the agent's own goal on EVERY
+    trigger type — not just the handful whose consumer happened to read the record.
+
+    An explicit spec-level value always wins over the record-level ref.
+    """
+    if agent_id and not (getattr(spec, "watch_agent_id", "") or "").strip():
+        spec.watch_agent_id = agent_id
+    if goal_template and not (getattr(spec, "goal_template", "") or "").strip():
+        spec.goal_template = goal_template
 
 
 class ScheduleStore:
@@ -234,6 +258,14 @@ class ScheduleStore:
         goal_template: str = "",
     ) -> str:
         sched_id = uuid.uuid4().hex
+        # Make the spec self-contained so every dispatch path (API fire, beat,
+        # all category consumers) routes to the referenced agent / runs its goal.
+        bind_refs_to_spec(spec, agent_id=agent_id, goal_template=goal_template)
+        # trigger_id is an instance attribute (not a dataclass field) read by the
+        # dispatcher to derive a per-trigger idempotency key. Without it every
+        # trigger dispatches as "unknown" and distinct triggers dedup against
+        # each other. (The beat path sets this the same way.)
+        spec.trigger_id = sched_id  # type: ignore[attr-defined]
         rec = {
             "schedule_id": sched_id,
             "goal_id": goal_id,
@@ -273,6 +305,8 @@ class ScheduleStore:
         goal_template: str = "",
     ) -> str:
         sched_id = uuid.uuid4().hex
+        bind_refs_to_spec(spec, agent_id=agent_id, goal_template=goal_template)
+        spec.trigger_id = sched_id  # type: ignore[attr-defined]
         rec = {
             "schedule_id": sched_id,
             "goal_id": goal_id,
@@ -587,11 +621,20 @@ class ScheduleStore:
                         # RSS/poll URL, db_table, time offsets, …) that spec_config
                         # persisted into the schedules.config column on create.
                         apply_config_to_spec(spec, getattr(row, "config", None))
+                        _row_agent = str(row.agent_id or "")
+                        _row_goal_tmpl = row.goal_id_template or ""
+                        # Keep the rehydrated spec self-contained across restarts /
+                        # replicas so agent-referencing triggers still route + run
+                        # the agent's goal on every dispatch path.
+                        bind_refs_to_spec(
+                            spec, agent_id=_row_agent, goal_template=_row_goal_tmpl
+                        )
+                        spec.trigger_id = row.id  # type: ignore[attr-defined]
                         self._data[key] = {
                             "schedule_id": row.id,
                             "goal_id": row.goal_id_template,
-                            "agent_id": str(row.agent_id or ""),
-                            "goal_template": row.goal_id_template,
+                            "agent_id": _row_agent,
+                            "goal_template": _row_goal_tmpl,
                             "spec": spec,
                             "paused": row.paused,
                         }

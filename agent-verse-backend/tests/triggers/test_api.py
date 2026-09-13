@@ -86,12 +86,25 @@ def test_create_unknown_type_returns_422(client):
 
 
 def test_create_empty_template_returns_422(client):
+    # Neither a goal template nor a referenced agent → nothing to run → 422.
     resp = client.post("/triggers", json={
         "spec": {"trigger_type": "cron"},
         "goal_id": "",
         "goal_template": "",  # empty
     })
     assert resp.status_code == 422
+
+
+def test_create_agent_only_no_template_allowed(client):
+    """A trigger may reference an agent and run its own goal — no goal template
+    required in that case."""
+    resp = client.post("/triggers", json={
+        "spec": {"trigger_type": "cron"},
+        "goal_id": "",
+        "agent_id": "agent-123",
+        "goal_template": "",  # empty, but an agent is referenced
+    })
+    assert resp.status_code in (200, 201)
 
 
 # ── Get ───────────────────────────────────────────────────────────────────────

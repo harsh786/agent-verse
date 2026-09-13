@@ -6,7 +6,7 @@ import contextlib
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
@@ -66,7 +66,17 @@ class CreateTriggerRequest(BaseModel):
     spec: TriggerSpecRequest
     goal_id: str = ""
     agent_id: str = ""
-    goal_template: str = Field(..., min_length=1)
+    # Optional: a trigger may simply reference an agent (agent_id) and run that
+    # agent's own goal on fire, so an explicit goal template is not required.
+    goal_template: str = Field(default="")
+
+    @model_validator(mode="after")
+    def _require_goal_or_agent(self) -> CreateTriggerRequest:
+        """A trigger must have something to run: a goal template OR a referenced
+        agent (whose own goal will run). Neither → nothing to fire (422)."""
+        if not (self.goal_template or "").strip() and not (self.agent_id or "").strip():
+            raise ValueError("Provide a goal_template or reference an agent_id")
+        return self
 
 
 class SimulateRequest(BaseModel):
@@ -140,6 +150,35 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
             if v is not None
         }
     return out
+
+
+def _spec_for_dispatch(rec: dict[str, Any]) -> TriggerSpec:
+    """Return the trigger's spec enriched with the record-level agent/goal refs.
+
+    ``agent_id`` and ``goal_template`` are persisted on the trigger *record*
+    (via ``store.create``), not on the embedded ``TriggerSpec``. The dispatcher,
+    however, resolves the goal text and the routed agent from the spec — so when
+    firing (or simulating) we must fold those record-level references onto the
+    spec. Without this, a trigger that merely references an agent (no goal
+    template) fires a generic default goal with no agent routing.
+    """
+    spec: TriggerSpec = rec["spec"]
+    # Only fill from the record when the spec doesn't already carry the value,
+    # so an explicit spec-level field still wins. Use getattr/setattr defensively
+    # so a non-dataclass stand-in (tests) or a spec missing a field is tolerated.
+    if not (getattr(spec, "goal_template", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.goal_template = rec.get("goal_template", "") or ""
+    if not (getattr(spec, "watch_agent_id", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.watch_agent_id = rec.get("agent_id", "") or ""
+    # trigger_id drives the dispatcher's per-trigger idempotency key; without the
+    # real schedule id every manual fire dedups as "unknown" against other
+    # triggers. Bind it here so the fire/simulate paths match the beat path.
+    if not (getattr(spec, "trigger_id", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.trigger_id = rec.get("schedule_id", "") or ""
+    return spec
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -298,7 +337,7 @@ async def simulate_trigger(
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
-    spec: TriggerSpec = rec["spec"]
+    spec = _spec_for_dispatch(rec)
     sample = body.payload or get_sample_payload(spec.trigger_type)
 
     dispatcher = _get_dispatcher(request)
@@ -329,7 +368,7 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
     if rec.get("paused"):
         raise HTTPException(status_code=409, detail="Trigger is paused")
 
-    spec: TriggerSpec = rec["spec"]
+    spec = _spec_for_dispatch(rec)
     sample = body.payload or get_sample_payload(spec.trigger_type)
 
     dispatcher = _get_dispatcher(request)

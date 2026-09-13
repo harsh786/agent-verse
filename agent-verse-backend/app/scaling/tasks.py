@@ -2217,7 +2217,11 @@ def _scheduled_goal_kwargs(
 ) -> dict[str, Any] | None:
     goal_text = str(sched.get("goal_template") or sched.get("goal_id") or "")
     tenant_id = str(sched.get("tenant_id") or "")
-    if not goal_text or not tenant_id:
+    agent_id = str(sched.get("agent_id") or "")
+    # Fire when there is EITHER a goal template OR a referenced agent (whose own
+    # goal will be run). Previously an agent-only trigger — no goal template —
+    # was skipped entirely, so referencing an agent never fired.
+    if (not goal_text and not agent_id) or not tenant_id:
         return None
 
     payload = {
@@ -2229,7 +2233,6 @@ def _scheduled_goal_kwargs(
         "goal_template": goal_text,
         "tenant_id": tenant_id,
     }
-    agent_id = str(sched.get("agent_id") or "")
     if agent_id:
         payload["agent_id"] = agent_id
     return payload
