@@ -30,14 +30,36 @@ already have places for graph facts, memory records, etc.). Completion by compos
 - Record on the same success/failure hooks the existing memories use
   (`verifier_mixin.py`).
 
+## DESIGN CORRECTION (from `app/memory/contracts.py`, verified)
+The canonical `MemoryKind` Literal is
+`{execution, reflexion, long_term, episodic, procedural, knowledge_graph, prospective}`
+and every `MemoryRecord` REQUIRES a `memory-embedding-v1`/1536-d embedding, evidence
+refs, and a classification. Consequences that change the plan:
+
+- **`knowledge_graph` and `prospective` are ALREADY canonical kinds** → they are
+  *persist-capable today*; the real gap is **recall-into-context wiring**, not storage.
+- **Working memory is ephemeral by design** and must NOT be forced into the durable,
+  evidence-backed canonical store (no natural embedding/evidence for a transient
+  scratchpad line, and it should die with the run). Its "persistence" is the already
+  checkpointed `AgentState.context` (survives crash/resume) with an optional Redis-TTL
+  mirror for cross-replica reads. Phase 1 is therefore **wiring**, not durable persistence.
+- **Voyager skills ≈ `procedural`** (skills are procedures). Rather than a parallel
+  store, fold the Voyager skill-library semantics (self-growing, dedup, similarity
+  recall) into the existing procedural memory kind unless a concrete gap justifies a
+  separate kind — decide in Phase 4 after reading `procedural.py` + `voyager_skills.py`.
+- **Salience** is a *ranking function*, not a store — wire `SalienceScorer` into
+  `ContextBudget`/recall ordering (no new kind).
+
 ## Phased TDD tasks
-### Phase 1 — Working memory (short-term scratchpad) [START HERE]
-- T1.1 `tests/memory/test_working_memory_persistence.py` — `WorkingMemory` writes/reads
-  through `PostgresMemoryRepository` with `memory_kind="working"`, TTL/retention,
-  tenant+goal scoping, eviction by capacity + salience. → add repo-backed path to `working_memory.py`.
-- T1.2 `tests/agent/test_working_memory_wired.py` — within a goal run, step outputs are
-  written to working memory and the next step's executor prompt includes a
-  `[Working memory]` block (bounded, salience-ranked). → wire `executor_mixin` + `rag_mixin`.
+### Phase 1 — Working memory (short-term scratchpad) [START HERE] — WIRING, not durable store
+- T1.1 `tests/memory/test_working_memory_salience.py` — `WorkingMemory` gains
+  salience-ranked eviction/recall (integrate `SalienceScorer`): when full, the
+  lowest-salience item is dropped (not blind FIFO); `most_salient(n)` returns the
+  top-ranked items. → extend `working_memory.py` (pure, no I/O).
+- T1.2 `tests/agent/test_working_memory_wired.py` — within a goal run, each step output
+  is pushed to a run-scoped `WorkingMemory` stored in `AgentState.context`
+  (checkpointed; optional Redis-TTL mirror), and the next step's executor prompt
+  includes a bounded, salience-ranked `[Working memory]` block. → wire `executor_mixin`.
 
 ### Phase 2 — Knowledge-graph / entity memory
 - T2.1 `tests/memory/test_kg_memory_persistence.py` — entities/relations upserted to
