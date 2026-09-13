@@ -1,5 +1,5 @@
 from app.org.autonomy import AutonomyEnforcer
-from app.org.brain_guardrails import TickCounters, Verdict, evaluate_guardrails
+from app.org.brain_guardrails import TickCounters, evaluate_guardrails
 from app.org.brain_settings import resolve_autonomy_settings
 from app.org.brain_types import BrainDecision
 from app.org.loop_detector import OrgLoopDetector
@@ -93,3 +93,16 @@ def test_high_risk_forces_propose_even_at_l5():
 def test_counters_unavailable_fails_closed_to_propose():
     v = _call(4, counters=_counters(counters_available=False))
     assert v.action == "propose"
+
+
+def test_paused_settings_blocks():
+    """Guardrail #1 paused branch: settings.paused=True with kill_switch=False blocks."""
+    v = _call(4, settings=_settings(paused=True), kill_switch=False)
+    assert v.action == "block" and "kill switch" in v.reason.lower()
+
+
+def test_env_kill_switch_blocks(monkeypatch):
+    """Guardrail #1 env branch: AV_ORG_AUTONOMY_DISABLED=1 blocks execution."""
+    monkeypatch.setenv("AV_ORG_AUTONOMY_DISABLED", "1")
+    v = _call(4, kill_switch=False)
+    assert v.action == "block" and "kill switch" in v.reason.lower()

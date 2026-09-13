@@ -33,6 +33,8 @@ class Verdict:
 
 
 def _global_kill_switch() -> bool:
+    # Environment-sensitive kill switch: ops can disable org autonomy globally.
+    # This module intentionally reads AV_ORG_AUTONOMY_DISABLED env var for safety.
     return os.getenv("AV_ORG_AUTONOMY_DISABLED", "").lower() in {"1", "true", "yes"}
 
 
@@ -43,7 +45,7 @@ def evaluate_guardrails(
     settings: AutonomySettings,
     counters: TickCounters,
     kill_switch: bool,
-    enforcer: AutonomyEnforcer,
+    enforcer: AutonomyEnforcer,  # Retained for forward risk policy (Task 6 external-send gating).
     loop_detector: OrgLoopDetector,
 ) -> Verdict:
     # 1. Kill switch (per-org paused or global env)
@@ -77,7 +79,9 @@ def evaluate_guardrails(
     runaway = loop_detector.check_cost_runaway(counters.day_spend_usd, settings.daily_budget_usd)
     if runaway.detected:
         return Verdict("block", f"cost runaway: {runaway.details}")
-    # 8. Risk gate — high-risk / external-send always needs approval.
+    # 8. Risk gate — high-risk actions require human approval at mission execute time.
+    # The DECIDE step tags external-send/destructive/spend actions as high-risk; this gate enforces
+    # risk_level == "high" → propose (HITL gating moves to individual step approval at execution).
     if decision.risk_level == "high":
         return Verdict("propose", "high-risk action requires human approval")
     return Verdict(baseline, "within policy")
