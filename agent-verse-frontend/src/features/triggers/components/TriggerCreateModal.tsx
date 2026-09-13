@@ -15,6 +15,7 @@ import { MonitoringFamilyForm } from './families/MonitoringFamilyForm';
 import { IoTFamilyForm } from './families/IoTFamilyForm';
 import { PollingFamilyForm } from './families/PollingFamilyForm';
 import { GenericFamilyForm } from './families/GenericFamilyForm';
+import { AdvancedOptionsForm } from './families/AdvancedOptionsForm';
 
 type Step = 'family' | 'type' | 'config' | 'confirm';
 
@@ -188,6 +189,9 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
               {!['time', 'goal_chain', 'webhook', 'conversational', 'state_condition', 'data', 'monitoring', 'iot', 'ml_signal'].includes(selectedFamily) && (
                 <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
               )}
+
+              {/* Cross-cutting production controls — apply to every trigger type */}
+              <AdvancedOptionsForm value={specFields} onChange={setSpecFields} />
 
               {/* Common fields — reference an existing agent and/or a goal.
                   A trigger needs at least one: pick an agent to run its own
