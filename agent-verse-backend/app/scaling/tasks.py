@@ -5254,6 +5254,211 @@ def org_brain_loop() -> dict[str, int]:
         loop.close()
 
 
+# ── Task 9: Ambient Collaboration Tick ("the team talks") ───────────────────
+# Runs every 15 minutes via Celery Beat, independently of ``org_brain_loop``.
+# Emits capped, low-cost "status chatter" org events from department leads
+# for active L3+ orgs that opted into ``collaboration_enabled``.
+
+_COLLABORATION_LEADS_QUERY_LIMIT = 8
+
+
+async def _collaboration_tick_for_org(
+    *,
+    db_factory: Any,
+    redis: Any,
+    llm_provider: Any,
+    org_id: Any,
+    tenant_id: Any,
+    autonomy_level: int,
+) -> int:
+    """Run one ``CollaborationTick`` for a single org. Returns messages emitted.
+
+    Short-circuits to ``0`` without touching the DB when:
+      * the ``org_autonomy_enabled`` feature flag is off for this tenant,
+      * the org's autonomy level is below 3, or
+      * no real ``llm_provider`` is wired into this worker process (fail
+        closed rather than emit chatter with no model behind it — see the
+        Task 9 report for how this is resolved from ``app.state``).
+
+    Otherwise resolves the org's ``AutonomySettings`` (which also gates on
+    ``collaboration_enabled``), derives a small, cheap ``leads`` list from
+    the org's active departments (department lead agent, else department
+    name — capped at ``_COLLABORATION_LEADS_QUERY_LIMIT``), and delegates to
+    ``CollaborationTick.run``.
+    """
+    from app.org.brain_counters import BrainCounters
+
+    if not is_feature_enabled("org_autonomy_enabled", str(tenant_id)):
+        return 0
+    if int(autonomy_level) < 3:
+        return 0
+    if llm_provider is None:
+        return 0
+
+    counters = BrainCounters(redis, str(org_id))
+    day_spend_usd, _count, _since = await counters.snapshot()
+
+    from sqlalchemy import select
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.org.brain_collaboration import CollaborationTick, LLMProviderCollaborationGateway
+    from app.org.brain_settings import resolve_autonomy_settings
+    from app.org.event_publisher import OrgEventPublisher
+    from app.org.events import get_org_event_publisher
+    from app.org.model_gateway import get_gateway
+    from app.org.models import OrgDepartment
+    from app.org.service import OrgService
+
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        svc = OrgService(session, str(tenant_id))
+        org = await svc.get_organization(str(org_id))
+        if org is None:
+            return 0
+
+        settings = resolve_autonomy_settings(
+            dict(org.settings or {}), float(org.monthly_budget_usd or 0.0)
+        )
+        if not settings.collaboration_enabled:
+            return 0
+
+        dept_rows = await session.execute(
+            select(OrgDepartment.name, OrgDepartment.manager_agent_id)
+            .where(OrgDepartment.org_id == org_id, OrgDepartment.status == "active")
+            .limit(_COLLABORATION_LEADS_QUERY_LIMIT)
+        )
+        leads: list[str] = []
+        for name, manager_agent_id in dept_rows.all():
+            lead = str(manager_agent_id or name or "").strip()
+            if lead and lead not in leads:
+                leads.append(lead)
+        if not leads:
+            return 0
+
+        publisher: OrgEventPublisher = get_org_event_publisher()
+        gateway = LLMProviderCollaborationGateway(llm_provider, gateway=get_gateway())
+        tick = CollaborationTick(gateway, publisher, counters)
+        return await tick.run(
+            org_id=str(org_id),
+            tenant_id=str(tenant_id),
+            settings=settings,
+            autonomy_level=int(autonomy_level),
+            leads=leads,
+            day_spend_usd=day_spend_usd,
+        )
+
+
+@celery_app.task(name="app.scaling.tasks.org_collaboration_loop", queue="maintenance")
+def org_collaboration_loop() -> dict[str, int]:
+    """Task 9 — ambient collaboration tick ("the team talks").
+
+    Runs every 15 minutes via Celery Beat. Drives ``CollaborationTick.run``
+    (via ``_collaboration_tick_for_org``) for every active org, gated by the
+    ``org_autonomy_enabled`` feature flag, autonomy level (L3+), and the
+    org's own ``collaboration_enabled`` autonomy setting. Isolated per-org
+    try/except mirrors ``org_brain_loop`` so one org's failure never blocks
+    the rest of the batch.
+    """
+    import asyncio as _asyncio
+
+    zero_totals = {"processed": 0, "orgs_with_chatter": 0, "messages_emitted": 0}
+
+    async def _run() -> dict[str, int]:
+        import structlog as _slog
+        from opentelemetry import trace as _trace
+
+        _log = _slog.get_logger(__name__)
+        tracer = _trace.get_tracer(__name__)
+
+        with tracer.start_as_current_span("org_collaboration.ambient_loop") as span:
+            processed = 0
+            orgs_with_chatter = 0
+            messages_emitted = 0
+            try:
+                from app.main import app as _app
+
+                db_factory = getattr(_app.state, "db_factory", None)
+                if db_factory is None:
+                    return dict(zero_totals)
+
+                llm_provider = getattr(_app.state, "llm_provider", None)
+                if llm_provider is None:
+                    # No real LLM provider wired into this worker process --
+                    # fail closed rather than emit chatter with no model
+                    # behind it.
+                    _log.info("org_collaboration.no_llm_provider_skipping")
+                    return dict(zero_totals)
+
+                from sqlalchemy import select
+
+                from app.org.models import Organization
+
+                async with db_factory() as session, session.begin():
+                    result = await session.execute(
+                        select(
+                            Organization.id,
+                            Organization.tenant_id,
+                            Organization.autonomy_level,
+                        )
+                        .where(Organization.status == "active")
+                        .limit(100)
+                    )
+                    orgs = result.all()
+
+                import redis.asyncio as _aioredis
+
+                redis = _aioredis.from_url(REDIS_URL, decode_responses=True)
+                try:
+                    for org_id, tenant_id, autonomy_level in orgs:
+                        processed += 1
+                        try:
+                            emitted = await _collaboration_tick_for_org(
+                                db_factory=db_factory,
+                                redis=redis,
+                                llm_provider=llm_provider,
+                                org_id=org_id,
+                                tenant_id=tenant_id,
+                                autonomy_level=autonomy_level,
+                            )
+                            messages_emitted += emitted
+                            if emitted:
+                                orgs_with_chatter += 1
+                        except Exception as exc:
+                            _log.warning(
+                                "org_collaboration.org_error",
+                                org_id=str(org_id),
+                                error=str(exc),
+                            )
+                finally:
+                    await redis.aclose()
+
+                span.set_attribute("orgs_processed", processed)
+                span.set_attribute("orgs_with_chatter", orgs_with_chatter)
+                span.set_attribute("messages_emitted", messages_emitted)
+                _log.info(
+                    "org_collaboration.loop_done",
+                    processed=processed,
+                    orgs_with_chatter=orgs_with_chatter,
+                    messages_emitted=messages_emitted,
+                )
+            except Exception as exc:
+                _log.error("org_collaboration.loop_failed", error=str(exc))
+        return {
+            "processed": processed,
+            "orgs_with_chatter": orgs_with_chatter,
+            "messages_emitted": messages_emitted,
+        }
+
+    loop = _asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
 # ── PART 43: Org Intelligence + Digest + Twin Sync Cron Tasks ─────────────────
 
 
