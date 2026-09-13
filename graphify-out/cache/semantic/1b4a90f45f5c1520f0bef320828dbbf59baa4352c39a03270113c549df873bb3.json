@@ -1,1 +1,0 @@
-{"nodes": [{"id": "toxicity_toxicityclassifier", "label": "ToxicityClassifier (pattern+LLM two-pass)", "file_type": "code", "source_file": "agent-verse-backend/app/guardrails_v2/toxicity.py", "source_location": "class ToxicityClassifier", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

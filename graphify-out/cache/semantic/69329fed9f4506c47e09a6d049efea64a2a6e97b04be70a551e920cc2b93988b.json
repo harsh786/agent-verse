@@ -1,1 +1,0 @@
-{"nodes": [{"id": "siem_adapters_build_siem_adapter", "label": "build_siem_adapter (Splunk/ES/Datadog/CEF/LEEF/Webhook factory)", "file_type": "code", "source_file": "agent-verse-backend/app/governance/siem_adapters.py", "source_location": "def build_siem_adapter", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

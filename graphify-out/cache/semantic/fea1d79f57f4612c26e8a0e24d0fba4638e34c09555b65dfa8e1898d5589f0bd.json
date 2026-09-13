@@ -1,1 +1,0 @@
-{"nodes": [{"id": "ocr_tool_ocrdocumenttool", "label": "OcrDocumentTool", "file_type": "code", "source_file": "agent-verse-backend/app/tools/ocr_tool.py", "source_location": "class OcrDocumentTool", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

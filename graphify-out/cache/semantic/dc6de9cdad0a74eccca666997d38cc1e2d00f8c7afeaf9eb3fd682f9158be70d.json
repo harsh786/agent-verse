@@ -1,1 +1,0 @@
-{"nodes": [{"id": "bank_reconciliation_yaml_template", "label": "Bank Reconciliation workflow template", "file_type": "document", "source_file": "agent-verse-backend/app/workflow/templates/bank-reconciliation.yaml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

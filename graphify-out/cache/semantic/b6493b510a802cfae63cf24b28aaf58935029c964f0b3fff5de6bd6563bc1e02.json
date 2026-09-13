@@ -1,1 +1,0 @@
-{"nodes": [{"id": "email_auto_response_yaml_template", "label": "Email Auto Response workflow template", "file_type": "document", "source_file": "agent-verse-backend/app/workflow/templates/email-auto-response.yaml", "source_location": null, "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

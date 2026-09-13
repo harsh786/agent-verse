@@ -1,1 +1,0 @@
-{"nodes": [{"id": "observability_logging_configure", "label": "configure_logging() (structlog)", "file_type": "code", "source_file": "agent-verse-backend/app/observability/logging.py", "source_location": "16", "source_url": null, "captured_at": null, "author": null, "contributor": null}], "edges": [], "hyperedges": []}

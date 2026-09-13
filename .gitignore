@@ -1,6 +1,11 @@
 */Archived/*
 ./Archived/*
 /Archived/*
+
+# ── Dependencies & generated artifacts (never tracked, at any depth) ──────────
+node_modules/
+graphify-out/
+
 */node_modules/*
 agent-verse-frontend/dist/*
 agent-verse-frontend/node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json
