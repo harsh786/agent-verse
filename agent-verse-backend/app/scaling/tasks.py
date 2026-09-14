@@ -5131,6 +5131,19 @@ async def _brain_tick_for_org(
     from app.org.loop_detector import OrgLoopDetector
     from app.org.service import OrgService
 
+    # Buffer dispatches raised during the tick instead of firing them inline.
+    # ``execute_org_mission.apply_async`` publishes to the Celery broker
+    # immediately; a fast worker can then run its ``SELECT ... FOR UPDATE``
+    # claim (see ``execute_org_mission`` above) before THIS tick's outer
+    # transaction (below) has committed the mission row, hit
+    # ``mission_missing``, and no-op — silently deferring the mission to the
+    # 3-minute ``resweep_stuck_missions`` fallback. Buffering here and
+    # flushing only after the ``async with`` block exits (i.e. only on a
+    # successful commit) mirrors the reference pattern in
+    # ``fire_due_org_mission_schedules``: "create + commit the mission ...
+    # then dispatch after commit".
+    _pending_dispatch: list[dict[str, Any]] = []
+
     async with (
         db_factory() as session,
         session.begin(),
@@ -5154,9 +5167,12 @@ async def _brain_tick_for_org(
             # ``execute_org_mission`` builds its own GoalService/app_state
             # inside the worker, so the mission actually runs instead of
             # sitting at "planned" until the 3-minute resweep catches it.
-            dispatcher=lambda kw: execute_org_mission.apply_async(kwargs=kw),
+            # NOTE: this only buffers the kwargs — it must NOT publish to the
+            # broker here, since we're still inside the uncommitted outer
+            # transaction. See the flush after this ``async with`` block.
+            dispatcher=lambda kw: _pending_dispatch.append(kw),
         )
-        return await brain.run_tick(
+        result = await brain.run_tick(
             org_id=str(org_id),
             tenant_id=str(tenant_id),
             autonomy_level=int(autonomy_level),
@@ -5165,6 +5181,13 @@ async def _brain_tick_for_org(
             org_goals=list(org.goals or []),
             org_mission=str(org.mission or ""),
         )
+
+    # Only reached on a clean (committed) exit of the block above — an
+    # exception propagates out of the ``async with`` and skips this flush,
+    # so a rolled-back tick never dispatches a mission that doesn't exist.
+    for _kw in _pending_dispatch:
+        execute_org_mission.apply_async(kwargs=_kw)
+    return result
 
 
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
