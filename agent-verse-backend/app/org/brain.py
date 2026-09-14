@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
+from dataclasses import asdict
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -145,7 +146,7 @@ class OrgBrain:
 
         # ── GUARD + ACT + NARRATE ────────────────────────────────────────────
         for d in decisions:
-            verdict = evaluate_guardrails(
+            verdict, checks = evaluate_guardrails(
                 d,
                 autonomy_level=int(autonomy_level),
                 settings=settings,
@@ -238,6 +239,7 @@ class OrgBrain:
                 reason=verdict.reason,
                 est_cost_usd=d.est_cost_usd,
                 mission_id=mission_id,
+                guardrail_trace=[asdict(c) for c in checks],
             )
 
         return result

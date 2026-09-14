@@ -4058,6 +4058,56 @@
         "title": "IssueCredentialRequest",
         "type": "object"
       },
+      "IssueGrantRequest": {
+        "properties": {
+          "grantee_agent_id": {
+            "title": "Grantee Agent Id",
+            "type": "string"
+          },
+          "grantor": {
+            "default": "api",
+            "title": "Grantor",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "not_before_seconds": {
+            "default": 0,
+            "title": "Not Before Seconds",
+            "type": "integer"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          },
+          "ttl_seconds": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 31536000.0,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "grantee_agent_id",
+          "scopes",
+          "ttl_seconds"
+        ],
+        "title": "IssueGrantRequest",
+        "type": "object"
+      },
       "JiraIngestRequest": {
         "properties": {
           "base_url": {
@@ -27405,6 +27455,135 @@
         "summary": "Simulate Policy For Goal",
         "tags": [
           "governance"
+        ]
+      }
+    },
+    "/grants": {
+      "get": {
+        "operationId": "list_grants_grants_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Grants Grants Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Grants",
+        "tags": [
+          "grants"
+        ]
+      },
+      "post": {
+        "operationId": "issue_grant_grants_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Grant Grants Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}/revoke": {
+      "post": {
+        "operationId": "revoke_grant_grants__grant_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Grant Grants  Grant Id  Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Grant",
+        "tags": [
+          "grants"
         ]
       }
     },

@@ -153,6 +153,41 @@ async def test_record_and_list_roundtrip(seeded_org: dict) -> None:
     assert str(rows[0]["id"]) == did
 
 
+async def test_guardrail_trace_roundtrips(seeded_org: dict) -> None:
+    """The full 8-check trace persists as JSONB and comes back via .list()."""
+    app_factory = seeded_org["app_factory"]
+    trace = [
+        {"name": "kill_switch", "passed": True, "detail": "kill switch clear",
+         "value": None, "limit": None},
+        {"name": "autonomy_level", "passed": True, "detail": "autonomy level sufficient",
+         "value": "4", "limit": "3"},
+        {"name": "daily_cap", "passed": False, "detail": "daily autonomous mission cap reached",
+         "value": "8", "limit": "8"},
+    ]
+    async with app_factory() as session, session.begin():
+        async with sqlalchemy_rls_context(session, seeded_org["tenant_a"]):
+            store = BrainDecisionStore(session)
+            did = await store.record(
+                org_id=seeded_org["org_id"],
+                tenant_id=seeded_org["tenant_a"],
+                tick_id="tick-3",
+                kind="proactive",
+                rationale="advance goal g1",
+                target_goal="g1",
+                action="blocked",
+                guardrail_verdict="block",
+                reason="daily autonomous mission cap reached",
+                est_cost_usd=2.0,
+                guardrail_trace=trace,
+            )
+            assert did
+
+            rows = await store.list(seeded_org["org_id"], seeded_org["tenant_a"], limit=10)
+
+    row = next(r for r in rows if str(r["id"]) == did)
+    assert row["guardrail_trace"] == trace
+
+
 async def test_cross_tenant_rls_isolation(seeded_org: dict) -> None:
     """A decision recorded under tenant A must not be visible under tenant B."""
     app_factory = seeded_org["app_factory"]

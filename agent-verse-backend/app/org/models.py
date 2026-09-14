@@ -481,6 +481,7 @@ class OrgBrainDecision(Base):
     reason = Column(Text, default="")
     est_cost_usd = Column(Float, default=0.0)
     mission_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    guardrail_trace = Column(JSONB, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
