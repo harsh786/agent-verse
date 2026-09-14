@@ -1,6 +1,6 @@
 # Autonomous Org Brain (AOB) — Design
 
-**Status:** Approved (design) — ready for implementation planning
+**Status:** Implemented (v1) — verified e2e 2026-09-14 (subagent-driven-development; safe defaults: autonomy_level=1, flag `org_autonomy_enabled` off, env kill switch `AV_ORG_AUTONOMY_DISABLED`)
 **Date:** 2026-09-14
 **Scope:** `agent-verse-backend/app/org/*`, `app/scaling/tasks.py` (`org_brain_loop`),
 one Alembic migration, and `agent-verse-frontend/src/features/org/*` surfacing.
