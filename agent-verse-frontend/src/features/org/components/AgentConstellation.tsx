@@ -12,14 +12,21 @@ import { TaskHandoffLine, TaskHandoffLabel } from './TaskHandoffBeam';
 import { useTaskHandoffAnimations, HANDOFF_ANIMATION_MS } from '../hooks/useTaskHandoffAnimations';
 import { cn } from '@/lib/utils';
 import type { OrgMission } from '../types';
+import type { OrgRecentMessage } from '../hooks/useOrgNeuralState';
 
 interface AgentConstellationProps {
   orgId:       string;
   missions:    OrgMission[];
   agents?:     Array<{ id: string; label: string; role?: string; status: 'active' | 'idle' | 'error'; goalCount: number }>;
   communicatingPairs?: [string, string][];
+  /** Recent collaboration messages (newest-first) — used to color/label each
+   *  comm beam by the kind of the most recent message for that pair. Pairs
+   *  with no matching message (e.g. from org.team.formed) keep the default color. */
+  recentMessages?: OrgRecentMessage[];
   onAgentSelect?:   (id: string | null) => void;
   onMissionSelect?: (id: string | null) => void;
+  /** Called with the most recent message id for a beam when it's clicked. */
+  onBeamSelect?:    (messageId: string) => void;
   selectedAgentId?: string | null;
   className?:  string;
 }
@@ -27,9 +34,28 @@ interface AgentConstellationProps {
 const CANVAS_W = 600;
 const CANVAS_H = 480;
 
+/** Design-system colors per collaboration message kind (Task 9 brief). */
+const KIND_BEAM_COLORS: Record<string, string> = {
+  update:   '#64748B',
+  proposal: '#6366F1',
+  question: '#00D4FF',
+  handoff:  '#A855F7',
+  result:   '#10B981',
+  risk:     '#F59E0B',
+  block:    '#EF4444',
+};
+const DEFAULT_BEAM_COLOR = '#A855F7';
+
+/** Most recent message (recentMessages is newest-first) between an unordered pair. */
+function latestMessageForPair(
+  recentMessages: OrgRecentMessage[], a: string, b: string,
+): OrgRecentMessage | undefined {
+  return recentMessages.find(m => (m.from === a && m.to === b) || (m.from === b && m.to === a));
+}
+
 export function AgentConstellation({
-  orgId, missions, agents = [], communicatingPairs = [],
-  onAgentSelect, onMissionSelect, selectedAgentId, className,
+  orgId, missions, agents = [], communicatingPairs = [], recentMessages = [],
+  onAgentSelect, onMissionSelect, onBeamSelect, selectedAgentId, className,
 }: AgentConstellationProps) {
   const reduce    = useReducedMotion();
   const canvasRef = useRef<ParticleCanvasRef>(null);
@@ -44,9 +70,13 @@ export function AgentConstellation({
     ...missions.filter(m => m.status === 'active').slice(0, 8).map(m => ({ id: `mission-${m.id}`, type: 'mission' as const, radius: 14 })),
   ];
 
+  // Comm beams are deliberately NOT fed into the force layout as edges: they
+  // fire on every live collaboration message, and pulling them into d3-force
+  // would restart/perturb the whole simulation on each message. Beams are
+  // rendered purely as an SVG overlay against positions the layout already
+  // computed from the stable agent/hub/mission graph below.
   const constellationEdges = [
     ...agents.map(a => ({ source: '__hub__', target: a.id, strength: 0.3 })),
-    ...communicatingPairs.map(([s, t]) => ({ source: s, target: t, strength: 0.5 })),
   ];
 
   useConstellationLayout(constellationNodes, constellationEdges, {
@@ -122,24 +152,50 @@ export function AgentConstellation({
           );
         })}
 
-        {/* Communication beams */}
-        {!reduce && communicatingPairs.map(([s, t], i) => {
+        {/* Communication beams — colored by the kind of the most recent real
+            collaboration message for that pair (default purple when the pair
+            came from org.team.formed and has no message yet). */}
+        {communicatingPairs.map(([s, t], i) => {
           const sPos = positions.get(s);
           const tPos = positions.get(t);
           if (!sPos || !tPos) return null;
+          const msg = latestMessageForPair(recentMessages, s, t);
+          const color = msg ? (KIND_BEAM_COLORS[msg.kind] ?? DEFAULT_BEAM_COLOR) : DEFAULT_BEAM_COLOR;
+          const tooltip = msg ? `${msg.from} → ${msg.to} · ${msg.kind}` : `${s} → ${t}`;
+          const clickable = !!(onBeamSelect && msg);
+          const selectMsg = () => { if (msg && onBeamSelect) onBeamSelect(msg.id); };
           return (
-            <line key={`beam-${i}`}
-              x1={sPos.x} y1={sPos.y} x2={tPos.x} y2={tPos.y}
-              stroke="#A855F7" strokeWidth={1.5} strokeOpacity={0.55}
-              strokeDasharray="3 9" strokeLinecap="round"
-              style={{ filter: 'drop-shadow(0 0 4px #A855F7)' }}
+            <g key={`beam-${s}-${t}-${i}`}
+              role={clickable ? 'button' : undefined}
+              tabIndex={clickable ? 0 : undefined}
+              aria-label={tooltip}
+              onClick={clickable ? selectMsg : undefined}
+              onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectMsg(); } } : undefined}
+              style={{ cursor: clickable ? 'pointer' : undefined, pointerEvents: 'auto' }}
             >
-              {/* Flowing dashes = an active message/handoff between two agents. */}
-              <animate
-                attributeName="stroke-dashoffset"
-                from="0" to="24" dur="1.1s" repeatCount="indefinite"
+              <title>{tooltip}</title>
+              {/* Wider, invisible hit-area so the thin dashed beam stays easy to hover/click.
+                  The parent <svg> is pointer-events-none, so this needs its own 'auto'. */}
+              <line
+                x1={sPos.x} y1={sPos.y} x2={tPos.x} y2={tPos.y}
+                stroke="transparent" strokeWidth={14} strokeLinecap="round"
+                style={{ pointerEvents: 'auto' }}
               />
-            </line>
+              <line
+                x1={sPos.x} y1={sPos.y} x2={tPos.x} y2={tPos.y}
+                stroke={color} strokeWidth={1.5} strokeOpacity={0.55}
+                strokeDasharray="3 9" strokeLinecap="round"
+                style={{ filter: `drop-shadow(0 0 4px ${color})` }}
+              >
+                {/* Flowing dashes = an active message/handoff between two agents. */}
+                {!reduce && (
+                  <animate
+                    attributeName="stroke-dashoffset"
+                    from="0" to="24" dur="1.1s" repeatCount="indefinite"
+                  />
+                )}
+              </line>
+            </g>
           );
         })}
 
