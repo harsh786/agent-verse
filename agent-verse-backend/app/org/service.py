@@ -1510,6 +1510,7 @@ class OrgService:
         *,
         event_type: str | None = None,
         severity: str | None = None,
+        entity_id: str | None = None,
         since: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -1524,11 +1525,135 @@ class OrgService:
             q = q.where(OrgEvent.event_type == event_type)
         if severity:
             q = q.where(OrgEvent.severity == severity)
+        if entity_id:
+            q = q.where(OrgEvent.entity_id == entity_id)
         if since:
             q = q.where(OrgEvent.created_at >= since)
         q = q.order_by(OrgEvent.created_at.desc()).limit(limit).offset(offset)
         result = await self._session.execute(q)
         return list(result.scalars().all())
+
+    # ── Per-agent audit trail (Situation Room "black box") ──────────────────
+
+    async def get_agent_audit(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Assemble one agent's unified, newest-first activity trail.
+
+        Unions three org-scoped, tenant-scoped sources -- ``org_events``
+        (entity_id == agent_id), ``org_decisions`` (actor_agent_id ==
+        agent_id), and ``org_tasks`` (owner_agent_id == agent_id OR
+        agent_id in assigned_agent_ids) -- into one list of dicts, sorted by
+        timestamp descending and capped at ``limit``. Every subquery filters
+        on both ``tenant_id`` and ``org_id`` so agent-id strings that
+        collide across orgs (or tenants) never leak into each other's
+        trail.
+        """
+        with _tracer.start_as_current_span("org.get_agent_audit") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("agent_id", agent_id)
+            uid = uuid.UUID(org_id)
+
+            events = await self.list_events(org_id, entity_id=agent_id, limit=limit)
+
+            decision_result = await self._session.execute(
+                select(OrgDecision)
+                .where(
+                    and_(
+                        OrgDecision.tenant_id == self._tenant_id,
+                        OrgDecision.org_id == uid,
+                        OrgDecision.actor_agent_id == agent_id,
+                    )
+                )
+                .order_by(OrgDecision.created_at.desc())
+                .limit(limit)
+            )
+            decisions = list(decision_result.scalars().all())
+
+            task_result = await self._session.execute(
+                select(OrgTask)
+                .where(
+                    and_(
+                        OrgTask.tenant_id == self._tenant_id,
+                        OrgTask.org_id == uid,
+                        or_(
+                            OrgTask.owner_agent_id == agent_id,
+                            OrgTask.assigned_agent_ids.any(agent_id),
+                        ),
+                    )
+                )
+                .order_by(OrgTask.created_at.desc())
+                .limit(limit)
+            )
+            tasks = list(task_result.scalars().all())
+
+            entries: list[dict[str, Any]] = []
+
+            for ev in events:
+                payload = ev.payload or {}
+                entries.append(
+                    {
+                        "id": str(ev.id),
+                        "kind": "message"
+                        if ev.event_type == "org.collaboration.message"
+                        else "event",
+                        "at": ev.created_at,
+                        "title": ev.title,
+                        "detail": ev.description,
+                        "cost_usd": payload.get("cost_usd"),
+                        "duration_ms": payload.get("latency_ms"),
+                        "mission_id": payload.get("mission_id"),
+                        "ref": {"table": "org_events", "id": str(ev.id)},
+                    }
+                )
+
+            for d in decisions:
+                entries.append(
+                    {
+                        "id": str(d.id),
+                        "kind": "decision",
+                        "at": d.created_at,
+                        "title": d.decision_type,
+                        "detail": d.description or d.why,
+                        "cost_usd": d.cost_estimate_usd,
+                        "duration_ms": None,
+                        "mission_id": None,
+                        "ref": {"table": "org_decisions", "id": str(d.id)},
+                    }
+                )
+
+            for t in tasks:
+                duration_ms: int | None = None
+                if t.started_at and t.completed_at:
+                    duration_ms = int((t.completed_at - t.started_at).total_seconds() * 1000)
+                cost_usd = (
+                    t.actual_cost_usd if t.actual_cost_usd is not None else t.cost_estimate_usd
+                )
+                entries.append(
+                    {
+                        "id": str(t.id),
+                        "kind": "task",
+                        "at": t.completed_at or t.created_at,
+                        "title": t.title,
+                        "detail": t.status,
+                        "cost_usd": cost_usd,
+                        "duration_ms": duration_ms,
+                        "mission_id": str(t.mission_id) if t.mission_id else None,
+                        "ref": {"table": "org_tasks", "id": str(t.id)},
+                    }
+                )
+
+            entries.sort(key=lambda e: cast(datetime, e["at"]), reverse=True)
+            trimmed = entries[:limit]
+            for e in trimmed:
+                at = e["at"]
+                e["at"] = at.isoformat() if hasattr(at, "isoformat") else at
+            return trimmed
 
     # ── Organization health summary ───────────────────────────────────────────
 

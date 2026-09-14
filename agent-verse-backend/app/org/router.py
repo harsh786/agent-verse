@@ -998,6 +998,7 @@ async def list_events(
     org_id: str,
     event_type: str | None = None,
     severity: str | None = None,
+    entity_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: OrgService = Depends(get_org_service),
@@ -1006,11 +1007,27 @@ async def list_events(
         org_id,
         event_type=event_type,
         severity=severity,
+        entity_id=entity_id,
         limit=limit,
         offset=offset,
     )
     data = [OrgEventResponse.model_validate(e) for e in events]
     return CursorPage(data=data, cursor=None, hasMore=len(events) == limit)
+
+
+@router.get(
+    "/{org_id}/agents/{agent_id}/audit",
+    operation_id="org_agent_audit",
+    summary="Per-agent activity trail (Situation Room black box)",
+)
+async def get_agent_audit(
+    org_id: str,
+    agent_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> list[dict[str, Any]]:
+    return await service.get_agent_audit(org_id, agent_id, limit=limit)
 
 
 # ── G-23: Org-level SSE stream (OrgRealtimeManager subscribes here) ──────────
