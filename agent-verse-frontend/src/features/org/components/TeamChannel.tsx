@@ -92,7 +92,13 @@ function fromLiveEvent(event: OrgEvent): CollaborationMessage {
   const num = (v: unknown): number | null => (typeof v === 'number' ? v : null);
   const fromAgent = str(payload.from_agent) || 'unknown';
   return {
-    id:         event.correlation_id ?? `${event.timestamp}-${fromAgent}`,
+    // `payload.id` is the shared id `CollaborationTick` mints once and
+    // threads through BOTH this SSE payload and the persisted `org_events`
+    // row (`row.id` in `collaborationHistory` below) -- so a message
+    // delivered live and later seen again in a history refetch dedupes to
+    // one entry. Fall back to the old synthesized id for events that predate
+    // this (or come from another source) so nothing crashes without it.
+    id:         str(payload.id) || event.correlation_id || `${event.timestamp}-${fromAgent}`,
     from_agent: fromAgent,
     to:         str(payload.to),
     kind:       str(payload.kind) || 'update',

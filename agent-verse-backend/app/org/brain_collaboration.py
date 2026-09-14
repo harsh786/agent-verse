@@ -41,6 +41,7 @@ swallowed, never doubling up on or blocking the SSE path.
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any, Protocol, runtime_checkable
 
 import structlog
@@ -169,6 +170,7 @@ class CollaborationEventRecorder(Protocol):
         kind: str,
         message: str,
         payload: dict[str, Any],
+        event_id: str | None = None,
     ) -> Any: ...
 
 
@@ -358,11 +360,18 @@ class CollaborationTick:
                     continue
 
                 kind = classify_message_kind(message)
+                # One shared id threaded through BOTH the SSE payload and the
+                # persisted row, so the frontend can dedupe a message
+                # delivered live and then seen again in a history refetch
+                # (previously each path minted its own id, so they never
+                # matched and the message duplicated).
+                msg_id = str(uuid.uuid4())
                 payload = {
                     # Kept for backward-compat with existing consumers.
                     "lead": lead,
                     "message": message,
                     # Typed enrichment for the Situation Room UX.
+                    "id": msg_id,
                     "from_agent": lead,
                     "to": "team",
                     "kind": kind,
@@ -392,6 +401,7 @@ class CollaborationTick:
                             kind=kind,
                             message=message,
                             payload=payload,
+                            event_id=msg_id,
                         )
                     except Exception as exc:
                         _log.warning(

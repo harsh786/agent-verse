@@ -1478,6 +1478,7 @@ class OrgService:
         kind: str,
         message: str,
         payload: dict[str, Any],
+        event_id: str | uuid.UUID | None = None,
     ) -> OrgEvent:
         """Persist one ambient collaboration message (Task 9's "team talks"
         chatter) as an ``org_events`` row, for the Situation Room Team
@@ -1492,6 +1493,19 @@ class OrgService:
         stream. Uses the caller's already-open session (the tick's
         RLS-scoped transaction), so this insert commits atomically with the
         rest of the tick rather than opening a second transaction.
+
+        ``event_id``, when given, becomes this row's primary key -- it
+        should be the same id ``CollaborationTick`` put in the SSE payload
+        (``payload["id"]``) so the frontend can dedupe a message delivered
+        live and then seen again in a history refetch. Falls back to the
+        column's normal uuid7 default when omitted, for back-compat with
+        any other caller.
+
+        Runs the insert+flush inside a SAVEPOINT (``begin_nested``) so a
+        failure here (e.g. a bad payload) rolls back only this row instead
+        of poisoning the caller's outer transaction -- without this, one bad
+        collaboration message could take down the entire tick's commit
+        (including messages already persisted earlier in the same tick).
         """
         ev = OrgEvent(
             tenant_id=self._tenant_id,
@@ -1506,8 +1520,11 @@ class OrgService:
             source="collaboration",
             actor_id=from_agent,
         )
-        self._session.add(ev)
-        await self._session.flush()
+        if event_id is not None:
+            ev.id = uuid.UUID(event_id) if isinstance(event_id, str) else event_id
+        async with self._session.begin_nested():
+            self._session.add(ev)
+            await self._session.flush()
         return ev
 
     async def list_events(

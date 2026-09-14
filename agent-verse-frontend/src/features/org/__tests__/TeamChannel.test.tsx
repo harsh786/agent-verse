@@ -7,7 +7,7 @@
  * capture the `onEvent` callback passed to `useOrgRealtimeManager` and push a
  * live SSE event through it directly.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -55,11 +55,12 @@ vi.mock('../OrgRealtimeManager', () => ({
 
 function wrap(ui: ReactNode) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const utils = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>{ui}</MemoryRouter>
     </QueryClientProvider>
   );
+  return { ...utils, qc };
 }
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────
@@ -192,6 +193,73 @@ describe('TeamChannel', () => {
 
     expect(await screen.findByText(/Handing final report back for review/i)).toBeInTheDocument();
     expect(screen.getByText('Handoff')).toBeInTheDocument();
+  });
+
+  it('dedupes a message delivered live and then seen again in a history refetch (same id)', async () => {
+    collaborationHistoryMock.mockResolvedValueOnce([PROPOSAL_MESSAGE]);
+
+    const { TeamChannel } = await import('../components/TeamChannel');
+    const { qc } = wrap(<TeamChannel orgId="org-005" />);
+
+    await waitFor(() => expect(collaborationHistoryMock).toHaveBeenCalled());
+    await screen.findByText(/splitting the migration/i);
+
+    expect(capturedOnEvent).not.toBeNull();
+
+    // Live event carries the shared id in payload.id (set by
+    // CollaborationTick and threaded through to the persisted org_events
+    // row's id -- see brain_collaboration.py / service.py).
+    const SHARED_ID = 'msg-shared-abc';
+    const liveEvent = {
+      event_type: 'org.collaboration.message',
+      org_id:     'org-005',
+      tenant_id:  'tenant-1',
+      payload: {
+        id:         SHARED_ID,
+        from_agent: 'ExecAgent',
+        to:         'PlannerAgent',
+        kind:       'handoff',
+        message:    'Handing final report back for review.',
+        latency_ms: 150,
+        tokens:     60,
+        cost_usd:   0.0009,
+        mission_id: 'mission-live-1',
+      },
+      timestamp:      '2026-09-14T10:10:00Z',
+      correlation_id: 'corr-live-2',
+      version:        '1',
+    };
+
+    await waitFor(() => {
+      capturedOnEvent?.(liveEvent);
+    });
+    expect(await screen.findByText(/Handing final report back for review/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/Handing final report back for review/i)).toHaveLength(1);
+
+    // A subsequent history refetch now returns the SAME message, persisted
+    // with the SAME id (row.id === payload.id). This must merge into the
+    // existing row, not duplicate it.
+    collaborationHistoryMock.mockResolvedValueOnce([
+      buildMessage({
+        id:         SHARED_ID,
+        from_agent: 'ExecAgent',
+        to:         'PlannerAgent',
+        kind:       'handoff',
+        message:    'Handing final report back for review.',
+        latency_ms: 150,
+        tokens:     60,
+        cost_usd:   0.0009,
+        mission_id: 'mission-live-1',
+        at:         '2026-09-14T10:10:00Z',
+      }),
+      PROPOSAL_MESSAGE,
+    ]);
+
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ['org-collaboration', 'org-005'] });
+    });
+
+    expect(screen.getAllByText(/Handing final report back for review/i)).toHaveLength(1);
   });
 
   it('shows an empty state when history is empty', async () => {

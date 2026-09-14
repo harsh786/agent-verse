@@ -214,3 +214,115 @@ async def test_record_collaboration_event_multiple_messages_all_queryable(
                 text("DELETE FROM organizations WHERE id = CAST(:id AS uuid)"),
                 {"id": seeded["org_id"]},
             )
+
+
+@pytest.mark.asyncio
+async def test_record_collaboration_event_uses_given_event_id(factories: tuple) -> None:
+    """``event_id`` (the id ``CollaborationTick`` already put in the SSE
+    payload) becomes the persisted row's primary key, so the frontend can
+    dedupe a message delivered live and then seen again in a history
+    refetch by matching that one shared id."""
+    admin_factory, app_factory = factories
+    seeded = await _seed_org(admin_factory, app_factory)
+    msg_id = str(uuid.uuid4())
+    try:
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, seeded["tenant_id"]):
+                svc = OrgService(session=session, tenant_id=seeded["tenant_id"])
+                ev = await svc.record_collaboration_event(
+                    seeded["org_id"],
+                    from_agent="alice",
+                    kind="update",
+                    message="Shipping today.",
+                    payload={"id": msg_id, "from_agent": "alice", "message": "Shipping today."},
+                    event_id=msg_id,
+                )
+        assert str(ev.id) == msg_id
+
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, seeded["tenant_id"]):
+                svc = OrgService(session=session, tenant_id=seeded["tenant_id"])
+                rows = await svc.list_events(
+                    seeded["org_id"], event_type="org.collaboration.message"
+                )
+        assert len(rows) == 1
+        assert str(rows[0].id) == msg_id
+    finally:
+        async with admin_factory() as s, s.begin():
+            await s.execute(
+                text("DELETE FROM org_events WHERE org_id = CAST(:id AS uuid)"),
+                {"id": seeded["org_id"]},
+            )
+            await s.execute(
+                text("DELETE FROM organizations WHERE id = CAST(:id AS uuid)"),
+                {"id": seeded["org_id"]},
+            )
+
+
+@pytest.mark.asyncio
+async def test_record_collaboration_event_failed_persist_does_not_poison_transaction(
+    factories: tuple,
+) -> None:
+    """A persist that fails (here: a primary-key collision from a reused
+    ``event_id``) must not poison the caller's outer transaction -- a
+    following, unrelated persist in the SAME transaction must still
+    succeed and both the surviving row and the final commit must go
+    through. Pins Fix 3: ``record_collaboration_event`` wraps its
+    insert+flush in a SAVEPOINT (``begin_nested``) so a single bad row
+    rolls back only itself, not the whole tick."""
+    admin_factory, app_factory = factories
+    seeded = await _seed_org(admin_factory, app_factory)
+    dup_id = str(uuid.uuid4())
+    try:
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, seeded["tenant_id"]):
+                svc = OrgService(session=session, tenant_id=seeded["tenant_id"])
+
+                await svc.record_collaboration_event(
+                    seeded["org_id"],
+                    from_agent="alice",
+                    kind="update",
+                    message="First message.",
+                    payload={"from_agent": "alice", "message": "First message."},
+                    event_id=dup_id,
+                )
+
+                # Same event_id again -> primary-key collision on flush.
+                with pytest.raises(Exception):
+                    await svc.record_collaboration_event(
+                        seeded["org_id"],
+                        from_agent="bob",
+                        kind="update",
+                        message="Colliding message.",
+                        payload={"from_agent": "bob", "message": "Colliding message."},
+                        event_id=dup_id,
+                    )
+
+                # The session must still be usable -- a later, unrelated
+                # persist in the same outer transaction succeeds and the
+                # whole thing still commits.
+                await svc.record_collaboration_event(
+                    seeded["org_id"],
+                    from_agent="carol",
+                    kind="update",
+                    message="Third message.",
+                    payload={"from_agent": "carol", "message": "Third message."},
+                )
+
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, seeded["tenant_id"]):
+                svc = OrgService(session=session, tenant_id=seeded["tenant_id"])
+                rows = await svc.list_events(
+                    seeded["org_id"], event_type="org.collaboration.message"
+                )
+        assert {row.entity_id for row in rows} == {"alice", "carol"}
+    finally:
+        async with admin_factory() as s, s.begin():
+            await s.execute(
+                text("DELETE FROM org_events WHERE org_id = CAST(:id AS uuid)"),
+                {"id": seeded["org_id"]},
+            )
+            await s.execute(
+                text("DELETE FROM organizations WHERE id = CAST(:id AS uuid)"),
+                {"id": seeded["org_id"]},
+            )

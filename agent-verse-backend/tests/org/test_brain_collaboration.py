@@ -128,6 +128,7 @@ class _FakeOrgService:
         kind: str,
         message: str,
         payload: dict,
+        event_id: str | None = None,
     ) -> None:
         if self._raise_error:
             raise RuntimeError("db unavailable")
@@ -138,6 +139,7 @@ class _FakeOrgService:
                 "kind": kind,
                 "message": message,
                 "payload": payload,
+                "event_id": event_id,
             }
         )
 
