@@ -7,11 +7,11 @@
  *   - test-coverage: ≥90% coverage target
  *   - web-guidelines: verify aria-label, role, keyboard navigation
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import React, { type ReactNode } from 'react';
 
 import { MissionCard } from '../components/MissionCard';
@@ -259,5 +259,89 @@ describe('DepartmentTree', () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     // Should render something (nav, skeleton, or empty message)
     expect(document.body).toBeInTheDocument();
+  });
+});
+
+// ─── OrgPage command-panel cohesion smoke test ──────────────────────────────
+//
+// This is the "situation room" gate: mount the WHOLE command panel — status
+// badge, narration, live agent network, team channel, brain feed, budget
+// gauges, autonomy control, and the context sections — together, exactly as
+// OrgPage assembles them, and confirm nothing crashes. No API/query mocking:
+// following the same pattern as the ActivityFeed/DepartmentTree smoke tests
+// above, every child component here already tolerates an unmocked (failing)
+// fetch by rendering its own loading/empty state via TanStack Query — this
+// test's job is only to prove the surfaces coexist without throwing, not to
+// re-assert each component's own data behaviour (covered by their own tests).
+describe('OrgPage — command panel cohesion', () => {
+  function renderOrgPage(orgId = 'org-001') {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={[`/org/${orgId}`]}>
+          <Routes>
+            <Route path="/org/:orgId" element={<OrgPageLazy />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  // Lazy-imported inside the test file (not at module scope) so the mocks
+  // above (framer-motion, reduced motion) are already in place before
+  // OrgPage and its tree of children evaluate.
+  let OrgPageLazy: React.ComponentType;
+
+  it('mounts the full Situation Room command panel without crashing', async () => {
+    ({ OrgPage: OrgPageLazy } = await import('../OrgPage'));
+    renderOrgPage();
+
+    // Reduced-motion is mocked true, so the JARVIS boot screen is skipped and
+    // the real command panel renders immediately.
+    const panel = await screen.findByLabelText('Command panel');
+    expect(panel).toBeInTheDocument();
+
+    // TOP — always-visible status + narration.
+    expect(within(panel).getByLabelText('Mission narration')).toBeInTheDocument();
+
+    // LIVE — the agent constellation / live network section.
+    expect(within(panel).getByLabelText('Live agent network')).toBeInTheDocument();
+
+    // COMMS — team channel.
+    expect(within(panel).getByLabelText('Team channel')).toBeInTheDocument();
+
+    // BRAIN — decisions feed + budget gauges.
+    expect(within(panel).getByLabelText('Autonomous decisions')).toBeInTheDocument();
+    expect(within(panel).getByLabelText('Budget burn')).toBeInTheDocument();
+
+    // CONTROL — the full autonomy level/caps panel (its own query is still
+    // loading at this point, so assert the always-rendered section heading
+    // rather than content gated behind AutonomyControl's internal isLoading).
+    expect(within(panel).getByRole('heading', { name: 'Autonomy' })).toBeInTheDocument();
+
+    // CONTEXT — department tree + activity feed still present, unchanged.
+    expect(within(panel).getByText(/Departments/)).toBeInTheDocument();
+    expect(within(panel).getByLabelText('Live activity')).toBeInTheDocument();
+  });
+
+  it('renders the sections in Situation Room order: live → comms → brain → control', async () => {
+    ({ OrgPage: OrgPageLazy } = await import('../OrgPage'));
+    renderOrgPage();
+    const panel = await screen.findByLabelText('Command panel');
+
+    const live    = within(panel).getByLabelText('Live agent network');
+    const comms   = within(panel).getByLabelText('Team channel');
+    const brain   = within(panel).getByLabelText('Autonomous decisions');
+    const budget  = within(panel).getByLabelText('Budget burn');
+    const control = within(panel).getByRole('heading', { name: 'Autonomy' });
+
+    // DOCUMENT_POSITION_FOLLOWING (4) means the second node comes after the first.
+    const isBefore = (a: Element, b: Element) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+
+    expect(isBefore(live, comms)).toBe(true);
+    expect(isBefore(comms, brain)).toBe(true);
+    expect(isBefore(brain, budget)).toBe(true);
+    expect(isBefore(budget, control)).toBe(true);
   });
 });

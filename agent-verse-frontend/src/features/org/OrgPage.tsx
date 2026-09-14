@@ -760,12 +760,39 @@ export function OrgPage() {
               </div>
             )}
 
-            {/* Morning brief panel */}
+            {/* ── COMMS: situation-room chat — cross-agent chatter, right under
+                the live network so "who's talking" reads next to "who's here". ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <TeamChannel orgId={orgId} />
+            </section>
+
+            {/* ── BRAIN: decisions + guardrail trace, paired with budget burn so
+                "what it decided" and "what it's spending" sit together. ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <BrainFeed orgId={orgId} />
+            </section>
+
+            <section className="p-4 border-b border-[#1E2535]">
+              <BudgetGauges orgId={orgId} />
+            </section>
+
+            {/* ── CONTROL: the full level/caps/collaboration panel — deliberately
+                below the always-visible status badge + BRAIN readouts, since this
+                is the "go change something" panel rather than a status readout. ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3">
+                Autonomy
+              </h2>
+              <AutonomyControl orgId={orgId} />
+            </section>
+
+            {/* ── CONTEXT: broader org framing — brief, priorities, org chart,
+                and the raw event log — grouped last since these are reference
+                material rather than live signal. ── */}
             <div className="p-4 border-b border-[#1E2535]">
               <MorningBrief orgId={orgId} compact />
             </div>
 
-            {/* Now/Next/Why panel */}
             <div className="p-4 border-b border-[#1E2535]">
               <NowNextWhy
                 health={health as Parameters<typeof NowNextWhy>[0]['health']}
@@ -774,7 +801,6 @@ export function OrgPage() {
               />
             </div>
 
-            {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">
               <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
                 <Zap className="h-3 w-3" aria-hidden />
@@ -789,31 +815,6 @@ export function OrgPage() {
               />
             </section>
 
-            {/* Org brain autonomy control — level, pause, caps, collaboration. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3">
-                Autonomy
-              </h2>
-              <AutonomyControl orgId={orgId} />
-            </section>
-
-            {/* Brain decisions feed — directly below autonomy control. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <BrainFeed orgId={orgId} />
-            </section>
-
-            {/* Budget-burn gauges — daily / per-mission / collaboration caps. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <BudgetGauges orgId={orgId} />
-            </section>
-
-            {/* Team channel — live cross-agent collaboration chatter. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <TeamChannel orgId={orgId} />
-            </section>
-
-            {/* Live activity feed — the JARVIS event stream, now beneath the
-                department tree per the requested panel order. */}
             <section
               className="border-b border-[#1E2535] shrink-0 max-h-[24rem] overflow-y-auto p-4"
               aria-label="Live activity"
