@@ -32,6 +32,18 @@ class BrainCounters:
         await self._r.expire(self._k("count"), _TTL)
         await self._r.set(f"orgbrain:{self._org}:last_launch", str(time.time()), ex=_TTL)
 
+    async def snapshot_collab_spend(self) -> float:
+        """Today's ambient-collaboration spend, tracked separately from the
+        general mission spend counter so ``collaboration_daily_budget_usd``
+        (an operator-set cap distinct from the org's overall daily budget)
+        has real data to gate on — see ``app.org.brain_collaboration``."""
+        spend = await self._r.get(self._k("collab_spend"))
+        return float(spend or 0.0)
+
+    async def record_collab_spend(self, est_cost_usd: float) -> None:
+        await self._r.incrbyfloat(self._k("collab_spend"), float(est_cost_usd))
+        await self._r.expire(self._k("collab_spend"), _TTL)
+
     async def acquire_tick_lock(self, ttl_seconds: int = 120) -> bool:
         got = await self._r.set(f"orgbrain:{self._org}:tick_lock", "1", nx=True, ex=ttl_seconds)
         return bool(got)

@@ -38,6 +38,19 @@ _log = get_logger(__name__)
 # planner(goal, org_context) -> (rationale, est_cost_usd, risk_level) | None
 Planner = Callable[[str, dict[str, Any]], "tuple[str, float, str] | None"]
 
+# dispatcher(kwargs) -> enqueue the created mission for real execution on the
+# worker-wired path (mirrors ``execute_org_mission.apply_async(kwargs=...)`` —
+# see ``app/scaling/tasks.py``). Synchronous/fire-and-forget: it only has to
+# publish to the broker, not await anything. Injected so OrgBrain stays
+# unit-testable with a fake (no Celery/Redis needed); production wiring
+# (``app/scaling/tasks.py::_brain_tick_for_org``) binds the real task.
+Dispatcher = Callable[[dict[str, Any]], Any]
+
+# Mission statuses that mean "this autonomous mission is done and can no
+# longer collide with a new one" — everything else (draft/queued/planned/
+# active/paused/review/proposed) is still in flight for dedup purposes.
+_TERMINAL_MISSION_STATUSES = ("completed", "failed", "cancelled", "archived")
+
 
 class OrgBrain:
     """Runs one SENSE/DECIDE/GUARD/ACT/NARRATE tick for a single organization."""
@@ -51,6 +64,7 @@ class OrgBrain:
         enforcer: Any,
         loop_detector: Any,
         planner: Planner,
+        dispatcher: Dispatcher | None = None,
     ) -> None:
         self._svc = org_service
         self._store = brain_store
@@ -58,6 +72,7 @@ class OrgBrain:
         self._enforcer = enforcer
         self._loop = loop_detector
         self._planner = planner
+        self._dispatch = dispatcher
 
     async def run_tick(
         self,
@@ -78,10 +93,36 @@ class OrgBrain:
         try:
             health = await self._svc.get_org_health(str(org_id))
             spend, count, since = await self._counters.snapshot()
+            # Real in-flight autonomous missions for THIS org+tenant, so DECIDE's
+            # goal dedup and GUARD's signature dedup (#6) get actual data instead
+            # of the empty sets they used to be fed. We stamp ``target_goal`` +
+            # ``signature`` into ``trigger_event`` when we create these missions
+            # below (both execute and propose branches), so the strings compared
+            # here are exactly the ones DECIDE/GUARD compare against — no
+            # re-derivation, no format drift.
+            in_flight_missions = await self._svc.list_missions(
+                str(org_id),
+                source="autonomous",
+                exclude_statuses=list(_TERMINAL_MISSION_STATUSES),
+                limit=200,
+            )
             counters_ok = True
         except Exception as exc:  # fail-closed: no acting this tick on a sense failure
             _log.warning("org_brain_sense_failed", org_id=str(org_id), error=str(exc)[:120])
             return result
+
+        goals_in_flight: set[str] = set()
+        recent_signatures: set[str] = set()
+        for m in in_flight_missions or []:
+            trig = getattr(m, "trigger_event", None)
+            if not isinstance(trig, dict):
+                continue
+            goal = trig.get("target_goal")
+            if goal:
+                goals_in_flight.add(str(goal))
+            sig = trig.get("signature")
+            if sig:
+                recent_signatures.add(str(sig))
 
         tc = health.get("task_counts", {}) if isinstance(health, dict) else {}
         # NOTE: OrgService.get_org_health returns "active_missions" as a
@@ -95,7 +136,7 @@ class OrgBrain:
             failed=int(tc.get("failed", 0)),
             active_missions=active_missions,
             open_goals=[str(g) for g in (org_goals or [])],
-            goals_in_flight=frozenset(),
+            goals_in_flight=frozenset(goals_in_flight),
         )
         ctx = {"mission": org_mission, "monthly_budget_usd": monthly_budget_usd}
 
@@ -113,7 +154,7 @@ class OrgBrain:
                     missions_today=count,
                     active_autonomous=snapshot.active_missions,
                     seconds_since_last_launch=since,
-                    recent_signatures=frozenset(),
+                    recent_signatures=frozenset(recent_signatures),
                     counters_available=counters_ok,
                 ),
                 kill_switch=False,
@@ -123,15 +164,52 @@ class OrgBrain:
 
             action, mission_id = "blocked", None
             if verdict.action == "execute":
-                mission, _dispatch = await self._svc.create_mission_and_execute(
+                # Persist the mission as "planned" (same status the SCHEDULE
+                # and resweep paths use) and stamp target_goal/signature into
+                # trigger_event so the NEXT tick's SENSE step can dedup against
+                # it. Then dispatch it on the properly-wired worker path —
+                # ``execute_org_mission`` (same Celery task the SCHEDULE path
+                # enqueues via ``fire_due_org_mission_schedules`` and the
+                # crash-recovery resweep re-enqueues) — instead of calling
+                # ``create_mission_and_execute`` in-process, which has no
+                # wired ``app_state``/``GoalService`` here in the Celery beat
+                # loop and would strand the mission at "planned" until the
+                # 3-minute resweep happened to pick it up.
+                mission = await self._svc.create_mission(
                     org_id=str(org_id),
                     title=d.rationale[:120],
                     objective=d.rationale,
                     source="autonomous",
+                    status="planned",
+                    autonomy_level=int(autonomy_level),
                     budget_usd=d.est_cost_usd,
+                    trigger_event={"target_goal": d.target_goal, "signature": d.signature},
                 )
                 await self._counters.record_launch(d.est_cost_usd)
-                action, mission_id = "executed", getattr(mission, "id", None)
+                mission_id = getattr(mission, "id", None)
+                if self._dispatch is not None and mission_id is not None:
+                    try:
+                        self._dispatch(
+                            {
+                                "mission_id": str(mission_id),
+                                "tenant_id": str(tenant_id),
+                                "org_id": str(org_id),
+                                "objective": d.rationale,
+                                "title": d.rationale[:120],
+                                "autonomy_level": int(autonomy_level),
+                                "priority": "medium",
+                            }
+                        )
+                    except Exception as exc:
+                        # Fail safe, not fail silent-forever: the mission stays
+                        # "planned" and the 3-minute resweep still picks it up.
+                        _log.warning(
+                            "org_brain_dispatch_failed",
+                            org_id=str(org_id),
+                            mission_id=str(mission_id),
+                            error=str(exc)[:120],
+                        )
+                action = "executed"
                 result["executed"] += 1
             elif verdict.action == "propose":
                 mission = await self._svc.create_mission(
@@ -141,6 +219,7 @@ class OrgBrain:
                     source="autonomous",
                     status="proposed",
                     budget_usd=d.est_cost_usd,
+                    trigger_event={"target_goal": d.target_goal, "signature": d.signature},
                 )
                 action, mission_id = "proposed", getattr(mission, "id", None)
                 result["proposed"] += 1

@@ -5148,6 +5148,13 @@ async def _brain_tick_for_org(
             enforcer=AutonomyEnforcer(),
             loop_detector=OrgLoopDetector(),
             planner=make_planner(GoalRefinementPipeline()),
+            # Dispatch autonomous "execute" missions on the SAME worker-wired
+            # path the SCHEDULE path (``fire_due_org_mission_schedules``) and
+            # the crash-recovery resweep (``resweep_stuck_missions``) use —
+            # ``execute_org_mission`` builds its own GoalService/app_state
+            # inside the worker, so the mission actually runs instead of
+            # sitting at "planned" until the 3-minute resweep catches it.
+            dispatcher=lambda kw: execute_org_mission.apply_async(kwargs=kw),
         )
         return await brain.run_tick(
             org_id=str(org_id),

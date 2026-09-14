@@ -11,10 +11,14 @@ Guards (checked first, cheapest first — return 0 immediately without calling
 the model or publishing anything):
   * ``not settings.collaboration_enabled``
   * ``autonomy_level < 3`` (collaboration chatter is an L3+ perk)
-  * ``day_spend_usd >= settings.daily_budget_usd * 0.9`` (the org's daily
-    budget is mostly spent — collaboration chatter is the first thing to go
-    quiet, well before real work is throttled)
   * no ``leads`` to speak for
+  * today's tracked collaboration spend (``counters.snapshot_collab_spend()``)
+    is already at/over ``settings.collaboration_daily_budget_usd`` — its own
+    operator-set cap, tracked separately (``counters.record_collab_spend``)
+    from the org's general mission spend so it actually bounds something
+    instead of riding on ``daily_budget_usd`` (see Finding 2: that used to be
+    a dead setting — the tick instead gated on the org's general daily budget
+    and never tracked collaboration spend at all)
 
 Emitted messages are capped at ``settings.collab_messages_per_tick`` no
 matter how many leads are supplied. Each message asks the model for a single
@@ -42,6 +46,14 @@ _tracer = trace.get_tracer(__name__)
 # token budget small and fixed so cost per tick is bounded by
 # ``collab_messages_per_tick`` alone.
 _MAX_TOKENS_PER_MESSAGE = 40
+
+# Fixed per-message cost estimate charged against ``collaboration_daily_budget_usd``
+# (via ``counters.record_collab_spend``). Matches the ``cost_budget_usd`` already
+# asked of ``ModelGateway.select_model`` for this same chatter in
+# ``LLMProviderCollaborationGateway.complete_short`` below — a "fast" profile
+# pick at a fixed, tiny token budget, so a fixed per-message estimate (rather
+# than metering real token usage) is an accurate-enough accounting unit here.
+_EST_COST_USD_PER_MESSAGE = 0.001
 
 EVENT_TYPE_COLLABORATION_MESSAGE = "org.collaboration.message"
 
@@ -145,10 +157,9 @@ class CollaborationTick:
     ) -> None:
         self._model_gateway = model_gateway
         self._event_publisher = event_publisher
-        # Accepted for parity with the other org-brain tick components
-        # (``BrainCounters`` is threaded through ``OrgBrain`` the same way);
-        # not required by the guards below, since the caller already
-        # resolves ``day_spend_usd`` up front via ``counters.snapshot()``.
+        # Used to gate on + track ``collaboration_daily_budget_usd`` — its own
+        # counter (``snapshot_collab_spend``/``record_collab_spend``), separate
+        # from the general mission-spend counter the rest of ``OrgBrain`` uses.
         self._counters = counters
 
     async def run(
@@ -165,13 +176,32 @@ class CollaborationTick:
             return 0
         if int(autonomy_level) < 3:
             return 0
-        if day_spend_usd >= settings.daily_budget_usd * 0.9:
-            return 0
         if not leads:
             return 0
 
         cap = max(0, int(settings.collab_messages_per_tick))
         if cap == 0:
+            return 0
+
+        # Gate on the collaboration-specific budget (operator-set, defaults to
+        # $1/day — see ``brain_settings.py``), tracked by its own counter so it
+        # actually bounds something instead of being a dead setting. When no
+        # counters are wired (defensive — production always supplies one; see
+        # ``app/scaling/tasks.py::_collaboration_tick_for_org``) or the read
+        # fails, fall back to the caller's already-resolved ``day_spend_usd``
+        # (the org's general spend) as a conservative, fail-closed proxy —
+        # cutting collaboration chatter off no later than an unmetered budget
+        # would.
+        collab_spend_usd = day_spend_usd
+        if self._counters is not None:
+            try:
+                collab_spend_usd = await self._counters.snapshot_collab_spend()
+            except Exception as exc:
+                _log.warning(
+                    "collaboration_tick.spend_snapshot_failed", org_id=org_id, error=str(exc)
+                )
+                collab_spend_usd = day_spend_usd
+        if collab_spend_usd >= settings.collaboration_daily_budget_usd:
             return 0
 
         emitted = 0
@@ -214,6 +244,13 @@ class CollaborationTick:
                     payload={"lead": lead, "message": message},
                 )
                 emitted += 1
+                if self._counters is not None:
+                    try:
+                        await self._counters.record_collab_spend(_EST_COST_USD_PER_MESSAGE)
+                    except Exception as exc:
+                        _log.warning(
+                            "collaboration_tick.spend_record_failed", org_id=org_id, error=str(exc)
+                        )
 
             span.set_attribute("messages_emitted", emitted)
 

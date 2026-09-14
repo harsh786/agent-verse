@@ -1130,8 +1130,10 @@ class OrgService:
         org_id: str,
         *,
         status: str | None = None,
+        exclude_statuses: list[str] | None = None,
         priority: str | None = None,
         dept_id: str | None = None,
+        source: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[OrgMission]:
@@ -1143,6 +1145,14 @@ class OrgService:
         )
         if status:
             q = q.where(OrgMission.status == status)
+        # ``exclude_statuses`` (e.g. the org brain's non-terminal-mission scan
+        # for dedup — see app/org/brain.py) is independent of ``status`` so
+        # both can be combined; NOT IN is more robust to new statuses being
+        # added later than enumerating every non-terminal one.
+        if exclude_statuses:
+            q = q.where(OrgMission.status.notin_(exclude_statuses))
+        if source:
+            q = q.where(OrgMission.source == source)
         if priority:
             q = q.where(OrgMission.priority == priority)
         if dept_id:
