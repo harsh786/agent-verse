@@ -355,6 +355,34 @@ class ChatService:
 
         return result
 
+    def attach_engine(
+        self, goal_service: Any = None, answer_generator: Any = None
+    ) -> None:
+        """Wire real-engine dependencies AFTER construction.
+
+        The lifespan builds ``ChatService`` early (router registration) but only
+        constructs ``GoalService`` + providers later, then swaps in DB/Redis-backed
+        services. This lets the lifespan attach those dependencies onto the same
+        instance without rebuilding it. Only non-None args are applied, so partial
+        wiring (e.g. goal_service now, answer_generator later) is safe.
+        """
+        if goal_service is not None:
+            self._goal_service = goal_service
+        if answer_generator is not None:
+            self._answer_generator = answer_generator
+
+    # ── Real-engine capability flags ───────────────────────────────────────────
+
+    @property
+    def can_run_goals(self) -> bool:
+        """True when a real GoalService is wired (GOAL turns hit the real engine)."""
+        return self._goal_service is not None
+
+    @property
+    def can_generate_answers(self) -> bool:
+        """True when a real answer generator is wired (QA turns get real answers)."""
+        return self._answer_generator is not None
+
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 
     async def run_goal(

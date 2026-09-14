@@ -283,23 +283,49 @@ async def stream_session(
             ):
                 yield chunk
         elif intent == "GOAL":
-            # In prod: dispatch to GoalService via Celery and bridge Redis pub/sub
-            async for chunk in stream_goal_progress(
-                session_id,
-                message_id,
-                f"goal_{message_id}",
-                steps=[
-                    {"name": "planning", "result": "Done"},
-                    {"name": "execution", "result": "Done"},
-                ],
-                suggestions=[
-                    "You can refine this goal further",
-                    "Check the output in the artifacts panel",
-                ],
+            if svc.can_run_goals:
+                # Real engine: submit to GoalService, stream its real events.
+                goal_id = await svc.run_goal(
+                    session_id=session_id,
+                    tenant_id=tenant.tenant_id,
+                    tenant_ctx=tenant,
+                    message_id=message_id,
+                    user_message=content,
+                )
+                async for chunk in svc.stream_goal(
+                    goal_id=goal_id,
+                    tenant_ctx=tenant,
+                    session_id=session_id,
+                    message_id=message_id,
+                ):
+                    yield chunk
+            else:
+                # Legacy simulated fallback (no GoalService wired, e.g. unit tests).
+                async for chunk in stream_goal_progress(
+                    session_id,
+                    message_id,
+                    f"goal_{message_id}",
+                    steps=[
+                        {"name": "planning", "result": "Done"},
+                        {"name": "execution", "result": "Done"},
+                    ],
+                    suggestions=[
+                        "You can refine this goal further",
+                        "Check the output in the artifacts panel",
+                    ],
+                ):
+                    yield chunk
+        elif svc.can_generate_answers:
+            # Real QA answer via the LLM + ConversationContext.
+            async for chunk in svc.run_qa(
+                session_id=session_id,
+                tenant_id=tenant.tenant_id,
+                message_id=message_id,
+                user_message=content,
             ):
                 yield chunk
         else:
-            # QA streaming
+            # Legacy simulated QA fallback (no answer generator wired).
             tokens = [w + " " for w in f"Answering: {content}".split()]
             async for chunk in stream_qa_response(
                 session_id,

@@ -1190,6 +1190,9 @@ def create_app(
             app.state.tenant_service = _tenant_svc_with_db
             app.state.goal_service = _goal_svc_with_db
             app.state.goal_service._app_state = app
+            # Wire chat GOAL turns to the real engine (Phase 0.3c).
+            if getattr(app.state, "chat_service", None) is not None:
+                app.state.chat_service.attach_engine(goal_service=_goal_svc_with_db)
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
@@ -2136,6 +2139,9 @@ def create_app(
     # Core services
     app.state.tenant_service = _tenant_svc
     app.state.goal_service = _goal_svc
+    # Wire chat GOAL turns to the real engine (Phase 0.3c).
+    if getattr(app.state, "chat_service", None) is not None:
+        app.state.chat_service.attach_engine(goal_service=_goal_svc)
     from app.orchestration.graph_factory import GraphFactory
     from app.orchestration.strategy_certification import CertificationEvaluator
     from app.orchestration.strategy_context_store import StrategyGoalContextStore
