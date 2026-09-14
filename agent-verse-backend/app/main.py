@@ -1167,10 +1167,16 @@ def create_app(
             app.state.learning_experiment_service = LearningExperimentService()
 
             # Grantex tool-grant store (governance enforcement at the executor gate).
-            # In-memory for now; a Postgres-backed repo is the persistence follow-up.
-            from app.governance.grants import InMemoryGrantStore
+            # Postgres-backed so grants persist across restarts; falls back to
+            # in-memory if the DB factory is unavailable.
+            try:
+                from app.governance.grants.postgres_store import PostgresGrantStore
 
-            app.state.grant_store = InMemoryGrantStore()
+                app.state.grant_store = PostgresGrantStore(db_factory)
+            except Exception:
+                from app.governance.grants import InMemoryGrantStore
+
+                app.state.grant_store = InMemoryGrantStore()
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -2194,6 +2200,9 @@ def create_app(
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     app.state.learning_experiment_service = LearningExperimentService()
+    from app.governance.grants import InMemoryGrantStore
+
+    app.state.grant_store = InMemoryGrantStore()
     from app.coordination.auction.repository import (
         InMemoryAuctionRepository,
         InMemorySealedBidInbox,
