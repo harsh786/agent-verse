@@ -16,6 +16,7 @@ Cron Tasks (PART 43):
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import structlog
@@ -23,6 +24,17 @@ from opentelemetry import trace
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+# Env var (comma-separated tenant ids) letting ops allowlist specific tenants for
+# org_autonomy_enabled without a code change — e.g. a single-tenant prod pilot.
+# Mirrors the AV_ORG_AUTONOMY_DISABLED kill-switch pattern in app/org/brain_guardrails.py.
+_AUTONOMY_ALLOWLIST_FLAG = "org_autonomy_enabled"
+_AUTONOMY_ALLOWLIST_ENV = "AV_ORG_AUTONOMY_ENABLED_TENANTS"
+
+
+def _read_autonomy_allowlist() -> frozenset[str]:
+    raw = os.getenv(_AUTONOMY_ALLOWLIST_ENV, "")
+    return frozenset(t.strip() for t in raw.split(",") if t.strip())
 
 
 # ── PART 44: Feature Flag Infrastructure ─────────────────────────────────────
@@ -70,10 +82,24 @@ class FeatureFlagService:
 
     def __init__(self, flags: dict[str, bool] | None = None) -> None:
         self._flags: dict[str, bool] = dict(flags or ORG_FEATURE_FLAGS)
+        # flag -> {tenant_id -> bool} per-tenant overrides, checked before the global flag.
+        self._tenant_overrides: dict[str, dict[str, bool]] = {}
+        self._autonomy_allowlist: frozenset[str] = _read_autonomy_allowlist()
 
     def is_enabled(self, flag: str, tenant_id: str | None = None) -> bool:
-        """Check if a feature flag is enabled."""
-        # Tenant-specific override would be checked here in production
+        """Check if a feature flag is enabled, resolved per-tenant when possible.
+
+        Resolution order:
+          1. Per-tenant override for (flag, tenant_id), if one exists.
+          2. Env-based allowlist for org_autonomy_enabled (pilot tenants).
+          3. Global flag value.
+        """
+        if tenant_id is not None:
+            override = self._tenant_overrides.get(flag, {}).get(tenant_id)
+            if override is not None:
+                return override
+            if flag == _AUTONOMY_ALLOWLIST_FLAG and tenant_id in self._autonomy_allowlist:
+                return True
         return self._flags.get(flag, False)
 
     def enable(self, flag: str) -> None:
@@ -85,6 +111,16 @@ class FeatureFlagService:
         """Disable a feature flag."""
         self._flags[flag] = False
         _log.info("feature_flag.disabled", flag=flag)
+
+    def enable_for_tenant(self, flag: str, tenant_id: str) -> None:
+        """Enable a feature flag for a single tenant, overriding the global value."""
+        self._tenant_overrides.setdefault(flag, {})[tenant_id] = True
+        _log.info("feature_flag.enabled_for_tenant", flag=flag, tenant_id=tenant_id)
+
+    def disable_for_tenant(self, flag: str, tenant_id: str) -> None:
+        """Disable a feature flag for a single tenant, overriding the global value."""
+        self._tenant_overrides.setdefault(flag, {})[tenant_id] = False
+        _log.info("feature_flag.disabled_for_tenant", flag=flag, tenant_id=tenant_id)
 
     def get_all(self) -> dict[str, bool]:
         return dict(self._flags)
