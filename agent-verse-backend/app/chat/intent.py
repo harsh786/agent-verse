@@ -9,7 +9,7 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
@@ -192,6 +192,74 @@ class IntentRouter:
 
         # 5. Default to QA
         return Intent.QA
+
+    async def classify_async(
+        self,
+        message: str,
+        history: list[dict[str, str]] | None = None,
+        clarify_round: int = 0,
+        llm: Any = None,
+    ) -> Intent:
+        """Regex-first classification with a fast-LLM fallback for ambiguous input.
+
+        The regex ``classify`` stays the fast path. The LLM is consulted ONLY when
+        the message fell through to the default QA bucket with no positive signal
+        (and an ``llm`` is provided) — so clear QA/GOAL/SCHEDULE never pay the
+        latency. Any LLM/parse failure keeps the regex result (never crashes).
+        """
+        regex_intent = self.classify(message, history, clarify_round)
+        if llm is None or not self._is_ambiguous(message, history or [], clarify_round):
+            return regex_intent
+        llm_intent = await self._llm_disambiguate(message, llm)
+        return llm_intent or regex_intent
+
+    def _is_ambiguous(
+        self, message: str, history: list[dict[str, str]], clarify_round: int
+    ) -> bool:
+        """True when the regex path would fall through to its default QA bucket."""
+        msg = message.strip()
+        if clarify_round >= self.MAX_CLARIFY_ROUNDS:
+            return False
+        if self._is_schedule(msg) or self._is_qa(msg) or self._has_goal_verb(msg):
+            return False
+        return not (len(msg.split()) <= 4 and self._previous_was_goal(history))
+
+    async def _llm_disambiguate(self, message: str, llm: Any) -> Intent | None:
+        import json
+        import re
+
+        from app.providers.base import CompletionRequest, Message
+
+        system = (
+            "You classify a user's chat message intent for an AI assistant. "
+            'Respond ONLY with JSON: {"intent": "qa"|"goal"|"schedule"}. '
+            "qa = answer a question or chat; goal = perform a task using tools; "
+            "schedule = set up a recurring or future action. No other text."
+        )
+        try:
+            resp = await llm.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=system),
+                        Message(role="user", content=message[:2000]),
+                    ],
+                    model="",
+                    max_tokens=20,
+                    temperature=0.0,
+                )
+            )
+            content = getattr(resp, "content", "") or ""
+            match = re.search(r"\{[\s\S]*\}", content)
+            if not match:
+                return None
+            value = str(json.loads(match.group(0)).get("intent", "")).lower()
+            return {
+                "qa": Intent.QA,
+                "goal": Intent.GOAL,
+                "schedule": Intent.SCHEDULE,
+            }.get(value)
+        except Exception:
+            return None
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
