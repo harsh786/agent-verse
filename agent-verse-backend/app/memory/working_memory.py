@@ -161,11 +161,11 @@ class WorkingMemory:
 
         ``salient=True`` (with a scorer) orders by salience; otherwise newest-first.
         """
-        items = (
-            self.most_salient(len(self._items))
-            if salient and self._scorer is not None
-            else list(reversed(self._items))
-        )
+        use_salient = salient and self._scorer is not None
+        # Salient mode: lead with the most-salient item (no final reverse).
+        # FIFO mode: iterate newest-first for the char budget, then restore
+        # chronological (oldest-first) order in the output.
+        items = self.most_salient(len(self._items)) if use_salient else list(reversed(self._items))
         lines: list[str] = []
         total = 0
         for item in items:
@@ -174,7 +174,7 @@ class WorkingMemory:
             if total > max_chars:
                 break
             lines.append(line)
-        return "\n".join(reversed(lines))
+        return "\n".join(lines if use_salient else reversed(lines))
 
     def __len__(self) -> int:
         return len(self._items)

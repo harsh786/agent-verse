@@ -842,6 +842,23 @@ class ExecutorMixin:
         if step_context:
             context_parts.append(f"Relevant knowledge:\n{step_context}")
 
+        # Working memory (T1.2): bounded, salience-ranked recall across the WHOLE
+        # run (not just the last 3 steps covered by ``Recent outputs``). Volatile —
+        # lives in the checkpointed state, never the durable memory store.
+        # Best-effort context: a failure here must never fail the step.
+        try:
+            from app.agent.working_memory_wiring import (
+                sync_working_memory,
+                working_memory_block,
+            )
+
+            sync_working_memory(state.context, state.steps)
+            _wm_block = working_memory_block(state.context, focus=f"{state.goal}\n{step}")
+            if _wm_block:
+                context_parts.append(f"[Working memory]\n{_wm_block}")
+        except Exception:
+            pass
+
         # ── Search directive parsing ───────────────────────────────────────
         try:
             from app.rag.agentic.search_directive_parser import SearchDirectiveParser
