@@ -22,7 +22,6 @@ from app.chat.stream import (
     stream_clarify,
     stream_goal_progress,
     stream_qa_response,
-    stream_schedule_created,
 )
 from app.chat.templates import TemplateStore
 from app.providers.model_defaults import configured_default_model as _configured_default_model
@@ -277,11 +276,27 @@ async def stream_session(
             ):
                 yield chunk
         elif intent == "SCHEDULE":
+            from app.chat.events import ChatEventType, sse_event
+
             sc = _intent_router.generate_schedule_confirmation(content)
-            async for chunk in stream_schedule_created(
-                session_id, message_id, sc.cron_expression, sc.human_schedule
-            ):
-                yield chunk
+            schedule_ids: list[str] = []
+            if svc.can_schedule:
+                # Actually create the real trigger(s), not just a preview.
+                try:
+                    schedule_ids = await svc.create_schedule(
+                        tenant_ctx=tenant, message=content, agent_id=s.agent_id
+                    )
+                except Exception:
+                    schedule_ids = []
+            yield sse_event(
+                ChatEventType.SCHEDULE_CREATED,
+                session_id=session_id,
+                message_id=message_id,
+                schedule_ids=schedule_ids,
+                cron_expression=sc.cron_expression,
+                human_schedule=sc.human_schedule,
+            )
+            yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
         elif intent == "GOAL":
             if svc.can_run_goals:
                 # Real engine: submit to GoalService, stream its real events.
