@@ -236,3 +236,44 @@ export interface CreateDepartmentRequest {
   parent_dept_id?:     string | null;
   manager_agent_id?:   string | null;
 }
+
+// ── Autonomous Org Brain ────────────────────────────────────────────────────
+
+/** Resolved, defaulted view of Organization.settings["autonomy"] (backend
+ *  app/org/brain_settings.py: AutonomySettings). */
+export interface AutonomySettings {
+  paused:                          boolean;
+  cadence_seconds:                 number;
+  min_interval_seconds:            number;
+  max_concurrent:                  number;
+  max_missions_per_day:            number;
+  daily_budget_usd:                number;
+  per_mission_cost_ceiling_usd:    number;
+  blocked_threshold:               number;
+  failed_threshold:                number;
+  idle_threshold:                  number;
+  collaboration_enabled:           boolean;
+  collaboration_daily_budget_usd:  number;
+  collab_messages_per_tick:        number;
+}
+
+/** One recorded org-brain tick decision (backend app/org/brain_store.py). */
+export interface BrainDecision {
+  id:                 string;
+  tick_id:            string;
+  kind:               string;
+  rationale:          string | null;
+  target_goal:        string | null;
+  action:             string | null;
+  guardrail_verdict:  string | null;
+  reason:             string | null;
+  est_cost_usd:       number | null;
+  mission_id:         string | null;
+  created_at:         string;
+}
+
+/** GET/PATCH /v1/org/{id}/autonomy response shape. */
+export interface AutonomyView {
+  autonomy_level: number;
+  settings:       AutonomySettings;
+}

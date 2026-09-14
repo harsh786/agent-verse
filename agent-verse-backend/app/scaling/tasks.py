@@ -16,6 +16,7 @@ from typing import Any, cast
 from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
+from app.org.feature_flags import is_feature_enabled
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
 
@@ -2217,7 +2218,11 @@ def _scheduled_goal_kwargs(
 ) -> dict[str, Any] | None:
     goal_text = str(sched.get("goal_template") or sched.get("goal_id") or "")
     tenant_id = str(sched.get("tenant_id") or "")
-    if not goal_text or not tenant_id:
+    agent_id = str(sched.get("agent_id") or "")
+    # Fire when there is EITHER a goal template OR a referenced agent (whose own
+    # goal will be run). Previously an agent-only trigger — no goal template —
+    # was skipped entirely, so referencing an agent never fired.
+    if (not goal_text and not agent_id) or not tenant_id:
         return None
 
     payload = {
@@ -2229,7 +2234,6 @@ def _scheduled_goal_kwargs(
         "goal_template": goal_text,
         "tenant_id": tenant_id,
     }
-    agent_id = str(sched.get("agent_id") or "")
     if agent_id:
         payload["agent_id"] = agent_id
     return payload
@@ -2316,9 +2320,19 @@ async def _dispatch_scheduled_via_dispatcher(
         return None
 
     spec = _build_scheduled_trigger_spec(schedule_key, sched)
+    # plan MUST be a PlanTier enum, not a raw string: downstream goal creation
+    # reads ``tenant_ctx.plan.value`` (goal_service), so a bare string crashed every
+    # scheduled/beat fire with "'str' object has no attribute 'value'".
+    from app.tenancy.context import PlanTier
+
+    _plan_raw = str(sched.get("tenant_plan") or "free")
+    try:
+        _plan = PlanTier(_plan_raw)
+    except ValueError:
+        _plan = PlanTier.FREE
     tenant_ctx = SimpleNamespace(
         tenant_id=str(sched.get("tenant_id") or ""),
-        plan=str(sched.get("tenant_plan") or "free"),
+        plan=_plan,
     )
 
     if dispatcher is None:
@@ -5071,14 +5085,123 @@ def delta_reingest_files(
 
 # ── N8: Org Autonomous Operating Loop (runs every 5 min via Celery Beat) ─────
 
+_BRAIN_TICK_ZERO: dict[str, int] = {"proposed": 0, "executed": 0, "blocked": 0}
+
+
+async def _brain_tick_for_org(
+    *,
+    db_factory: Any,
+    redis: Any,
+    org_id: Any,
+    tenant_id: Any,
+    autonomy_level: int,
+) -> dict[str, int]:
+    """Run one ``OrgBrain`` SENSE/DECIDE/GUARD/ACT/NARRATE tick for a single org.
+
+    Short-circuits (returns ``{"proposed": 0, "executed": 0, "blocked": 0}``
+    without touching the DB or Redis beyond the lock check) when:
+      * the ``org_autonomy_enabled`` feature flag is off for this tenant, or
+      * the org's autonomy level is below 3, or
+      * the org's per-tick Redis lock (``BrainCounters.acquire_tick_lock``)
+        is already held (a concurrent beat/worker run is mid-tick).
+
+    Otherwise builds the real ``OrgBrain`` dependencies inside an RLS-scoped
+    session (mirroring the health-check block this replaces) and runs the
+    tick. ``session.begin()`` commits automatically on clean exit, so the
+    decision rows (``BrainDecisionStore``) and any created/executed missions
+    persist without an explicit ``session.commit()``.
+    """
+    from app.org.brain_counters import BrainCounters
+
+    if not is_feature_enabled("org_autonomy_enabled", str(tenant_id)):
+        return dict(_BRAIN_TICK_ZERO)
+    if int(autonomy_level) < 3:
+        return dict(_BRAIN_TICK_ZERO)
+
+    counters = BrainCounters(redis, str(org_id))
+    if not await counters.acquire_tick_lock():
+        return dict(_BRAIN_TICK_ZERO)
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.org.autonomy import AutonomyEnforcer
+    from app.org.brain import OrgBrain
+    from app.org.brain_planner import make_planner
+    from app.org.brain_store import BrainDecisionStore
+    from app.org.goal_refinement import GoalRefinementPipeline
+    from app.org.loop_detector import OrgLoopDetector
+    from app.org.service import OrgService
+
+    # Buffer dispatches raised during the tick instead of firing them inline.
+    # ``execute_org_mission.apply_async`` publishes to the Celery broker
+    # immediately; a fast worker can then run its ``SELECT ... FOR UPDATE``
+    # claim (see ``execute_org_mission`` above) before THIS tick's outer
+    # transaction (below) has committed the mission row, hit
+    # ``mission_missing``, and no-op — silently deferring the mission to the
+    # 3-minute ``resweep_stuck_missions`` fallback. Buffering here and
+    # flushing only after the ``async with`` block exits (i.e. only on a
+    # successful commit) mirrors the reference pattern in
+    # ``fire_due_org_mission_schedules``: "create + commit the mission ...
+    # then dispatch after commit".
+    _pending_dispatch: list[dict[str, Any]] = []
+
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        svc = OrgService(session, str(tenant_id))
+        org = await svc.get_organization(str(org_id))
+        if org is None:
+            return dict(_BRAIN_TICK_ZERO)
+
+        brain = OrgBrain(
+            org_service=svc,
+            brain_store=BrainDecisionStore(session),
+            counters=counters,
+            enforcer=AutonomyEnforcer(),
+            loop_detector=OrgLoopDetector(),
+            planner=make_planner(GoalRefinementPipeline()),
+            # Dispatch autonomous "execute" missions on the SAME worker-wired
+            # path the SCHEDULE path (``fire_due_org_mission_schedules``) and
+            # the crash-recovery resweep (``resweep_stuck_missions``) use —
+            # ``execute_org_mission`` builds its own GoalService/app_state
+            # inside the worker, so the mission actually runs instead of
+            # sitting at "planned" until the 3-minute resweep catches it.
+            # NOTE: this only buffers the kwargs — it must NOT publish to the
+            # broker here, since we're still inside the uncommitted outer
+            # transaction. See the flush after this ``async with`` block.
+            dispatcher=lambda kw: _pending_dispatch.append(kw),
+        )
+        result = await brain.run_tick(
+            org_id=str(org_id),
+            tenant_id=str(tenant_id),
+            autonomy_level=int(autonomy_level),
+            org_settings=dict(org.settings or {}),
+            monthly_budget_usd=float(org.monthly_budget_usd or 0.0),
+            org_goals=list(org.goals or []),
+            org_mission=str(org.mission or ""),
+        )
+
+    # Only reached on a clean (committed) exit of the block above — an
+    # exception propagates out of the ``async with`` and skips this flush,
+    # so a rolled-back tick never dispatches a mission that doesn't exist.
+    for _kw in _pending_dispatch:
+        execute_org_mission.apply_async(kwargs=_kw)
+    return result
+
 
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
 def org_brain_loop() -> dict[str, int]:
-    """N8 — Autonomous Operating Loop: OBSERVE → DISCOVER → PREDICT → PRIORITIZE.
+    """N8 — Autonomous Operating Loop: SENSE → DECIDE → GUARD → ACT → NARRATE.
 
-    Runs every 5 minutes via Celery Beat. Only triggers new work at autonomy L3+.
+    Runs every 5 minutes via Celery Beat. Drives ``OrgBrain.run_tick`` (via
+    ``_brain_tick_for_org``) for every active org, gated by the
+    ``org_autonomy_enabled`` feature flag, autonomy level (L3+), and a
+    per-org Redis tick lock.
     """
     import asyncio as _asyncio
+
+    zero_totals = {"processed": 0, "triggered": 0, **_BRAIN_TICK_ZERO}
 
     async def _run() -> dict[str, int]:
         import structlog as _slog
@@ -5089,14 +5212,16 @@ def org_brain_loop() -> dict[str, int]:
 
         with tracer.start_as_current_span("org_brain.autonomous_loop") as span:
             processed = 0
-            discovered = 0
             triggered = 0
+            proposed_total = 0
+            executed_total = 0
+            blocked_total = 0
             try:
                 from app.main import app as _app
 
                 db_factory = getattr(_app.state, "db_factory", None)
                 if db_factory is None:
-                    return {"processed": 0, "discovered": 0, "triggered": 0}
+                    return dict(zero_totals)
 
                 from sqlalchemy import select
 
@@ -5114,40 +5239,257 @@ def org_brain_loop() -> dict[str, int]:
                     )
                     orgs = result.all()
 
-                for org_id, tenant_id, autonomy_level in orgs:
-                    processed += 1
-                    try:
-                        from app.db.rls import sqlalchemy_rls_context
-                        from app.org.service import OrgService
+                import redis.asyncio as _aioredis
 
-                        async with (
-                            db_factory() as s2,
-                            s2.begin(),
-                            sqlalchemy_rls_context(s2, str(tenant_id)),
-                        ):
-                            svc = OrgService(s2, str(tenant_id))
-                            health = await svc.get_org_health(str(org_id))
-                        blocked = health.get("task_counts", {}).get("blocked", 0)
-                        failed = health.get("task_counts", {}).get("failed", 0)
-                        if blocked > 3 or failed > 0:
-                            discovered += 1
-                        if autonomy_level >= 3 and (blocked > 5 or failed > 2):
-                            triggered += 1
-                            _log.info(
-                                "org_brain.work_triggered",
-                                org_id=str(org_id),
-                                tenant_id=str(tenant_id),
+                redis = _aioredis.from_url(REDIS_URL, decode_responses=True)
+                try:
+                    for org_id, tenant_id, autonomy_level in orgs:
+                        processed += 1
+                        try:
+                            tick_result = await _brain_tick_for_org(
+                                db_factory=db_factory,
+                                redis=redis,
+                                org_id=org_id,
+                                tenant_id=tenant_id,
+                                autonomy_level=autonomy_level,
                             )
-                    except Exception as exc:
-                        _log.warning("org_brain.org_error", org_id=str(org_id), error=str(exc))
+                            proposed_total += tick_result.get("proposed", 0)
+                            executed_total += tick_result.get("executed", 0)
+                            blocked_total += tick_result.get("blocked", 0)
+                            if tick_result.get("executed", 0) or tick_result.get("proposed", 0):
+                                triggered += 1
+                                _log.info(
+                                    "org_brain.work_triggered",
+                                    org_id=str(org_id),
+                                    tenant_id=str(tenant_id),
+                                    **tick_result,
+                                )
+                        except Exception as exc:
+                            _log.warning(
+                                "org_brain.org_error", org_id=str(org_id), error=str(exc)
+                            )
+                finally:
+                    await redis.aclose()
 
                 span.set_attribute("orgs_processed", processed)
-                span.set_attribute("discovered", discovered)
                 span.set_attribute("triggered", triggered)
-                _log.info("org_brain.loop_done", processed=processed, discovered=discovered)
+                span.set_attribute("proposed", proposed_total)
+                span.set_attribute("executed", executed_total)
+                span.set_attribute("blocked", blocked_total)
+                _log.info("org_brain.loop_done", processed=processed, triggered=triggered)
             except Exception as exc:
                 _log.error("org_brain.loop_failed", error=str(exc))
-        return {"processed": processed, "discovered": discovered, "triggered": triggered}
+        return {
+            "processed": processed,
+            "triggered": triggered,
+            "proposed": proposed_total,
+            "executed": executed_total,
+            "blocked": blocked_total,
+        }
+
+    loop = _asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_run())
+    finally:
+        loop.close()
+
+
+# ── Task 9: Ambient Collaboration Tick ("the team talks") ───────────────────
+# Runs every 15 minutes via Celery Beat, independently of ``org_brain_loop``.
+# Emits capped, low-cost "status chatter" org events from department leads
+# for active L3+ orgs that opted into ``collaboration_enabled``.
+
+_COLLABORATION_LEADS_QUERY_LIMIT = 8
+
+
+async def _collaboration_tick_for_org(
+    *,
+    db_factory: Any,
+    redis: Any,
+    llm_provider: Any,
+    org_id: Any,
+    tenant_id: Any,
+    autonomy_level: int,
+) -> int:
+    """Run one ``CollaborationTick`` for a single org. Returns messages emitted.
+
+    Short-circuits to ``0`` without touching the DB when:
+      * the ``org_autonomy_enabled`` feature flag is off for this tenant,
+      * the org's autonomy level is below 3, or
+      * no real ``llm_provider`` is wired into this worker process (fail
+        closed rather than emit chatter with no model behind it — see the
+        Task 9 report for how this is resolved from ``app.state``).
+
+    Otherwise resolves the org's ``AutonomySettings`` (which also gates on
+    ``collaboration_enabled``), derives a small, cheap ``leads`` list from
+    the org's active departments (department lead agent, else department
+    name — capped at ``_COLLABORATION_LEADS_QUERY_LIMIT``), and delegates to
+    ``CollaborationTick.run``.
+    """
+    from app.org.brain_counters import BrainCounters
+
+    if not is_feature_enabled("org_autonomy_enabled", str(tenant_id)):
+        return 0
+    if int(autonomy_level) < 3:
+        return 0
+    if llm_provider is None:
+        return 0
+
+    counters = BrainCounters(redis, str(org_id))
+    day_spend_usd, _count, _since = await counters.snapshot()
+
+    from sqlalchemy import select
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.org.brain_collaboration import CollaborationTick, LLMProviderCollaborationGateway
+    from app.org.brain_settings import resolve_autonomy_settings
+    from app.org.events import OrgEventPublisher, get_org_event_publisher
+    from app.org.model_gateway import get_gateway
+    from app.org.models import OrgDepartment
+    from app.org.service import OrgService
+
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        svc = OrgService(session, str(tenant_id))
+        org = await svc.get_organization(str(org_id))
+        if org is None:
+            return 0
+
+        settings = resolve_autonomy_settings(
+            dict(org.settings or {}), float(org.monthly_budget_usd or 0.0)
+        )
+        if not settings.collaboration_enabled:
+            return 0
+
+        dept_rows = await session.execute(
+            select(OrgDepartment.name, OrgDepartment.manager_agent_id)
+            .where(OrgDepartment.org_id == org_id, OrgDepartment.status == "active")
+            .limit(_COLLABORATION_LEADS_QUERY_LIMIT)
+        )
+        leads: list[str] = []
+        for name, manager_agent_id in dept_rows.all():
+            lead = str(manager_agent_id or name or "").strip()
+            if lead and lead not in leads:
+                leads.append(lead)
+        if not leads:
+            return 0
+
+        publisher: OrgEventPublisher = get_org_event_publisher()
+        gateway = LLMProviderCollaborationGateway(llm_provider, gateway=get_gateway())
+        tick = CollaborationTick(gateway, publisher, counters)
+        return await tick.run(
+            org_id=str(org_id),
+            tenant_id=str(tenant_id),
+            settings=settings,
+            autonomy_level=int(autonomy_level),
+            leads=leads,
+            day_spend_usd=day_spend_usd,
+        )
+
+
+@celery_app.task(name="app.scaling.tasks.org_collaboration_loop", queue="maintenance")
+def org_collaboration_loop() -> dict[str, int]:
+    """Task 9 — ambient collaboration tick ("the team talks").
+
+    Runs every 15 minutes via Celery Beat. Drives ``CollaborationTick.run``
+    (via ``_collaboration_tick_for_org``) for every active org, gated by the
+    ``org_autonomy_enabled`` feature flag, autonomy level (L3+), and the
+    org's own ``collaboration_enabled`` autonomy setting. Isolated per-org
+    try/except mirrors ``org_brain_loop`` so one org's failure never blocks
+    the rest of the batch.
+    """
+    import asyncio as _asyncio
+
+    zero_totals = {"processed": 0, "orgs_with_chatter": 0, "messages_emitted": 0}
+
+    async def _run() -> dict[str, int]:
+        import structlog as _slog
+        from opentelemetry import trace as _trace
+
+        _log = _slog.get_logger(__name__)
+        tracer = _trace.get_tracer(__name__)
+
+        with tracer.start_as_current_span("org_collaboration.ambient_loop") as span:
+            processed = 0
+            orgs_with_chatter = 0
+            messages_emitted = 0
+            try:
+                from app.main import app as _app
+
+                db_factory = getattr(_app.state, "db_factory", None)
+                if db_factory is None:
+                    return dict(zero_totals)
+
+                llm_provider = getattr(_app.state, "llm_provider", None)
+                if llm_provider is None:
+                    # No real LLM provider wired into this worker process --
+                    # fail closed rather than emit chatter with no model
+                    # behind it.
+                    _log.info("org_collaboration.no_llm_provider_skipping")
+                    return dict(zero_totals)
+
+                from sqlalchemy import select
+
+                from app.org.models import Organization
+
+                async with db_factory() as session, session.begin():
+                    result = await session.execute(
+                        select(
+                            Organization.id,
+                            Organization.tenant_id,
+                            Organization.autonomy_level,
+                        )
+                        .where(Organization.status == "active")
+                        .limit(100)
+                    )
+                    orgs = result.all()
+
+                import redis.asyncio as _aioredis
+
+                redis = _aioredis.from_url(REDIS_URL, decode_responses=True)
+                try:
+                    for org_id, tenant_id, autonomy_level in orgs:
+                        processed += 1
+                        try:
+                            emitted = await _collaboration_tick_for_org(
+                                db_factory=db_factory,
+                                redis=redis,
+                                llm_provider=llm_provider,
+                                org_id=org_id,
+                                tenant_id=tenant_id,
+                                autonomy_level=autonomy_level,
+                            )
+                            messages_emitted += emitted
+                            if emitted:
+                                orgs_with_chatter += 1
+                        except Exception as exc:
+                            _log.warning(
+                                "org_collaboration.org_error",
+                                org_id=str(org_id),
+                                error=str(exc),
+                            )
+                finally:
+                    await redis.aclose()
+
+                span.set_attribute("orgs_processed", processed)
+                span.set_attribute("orgs_with_chatter", orgs_with_chatter)
+                span.set_attribute("messages_emitted", messages_emitted)
+                _log.info(
+                    "org_collaboration.loop_done",
+                    processed=processed,
+                    orgs_with_chatter=orgs_with_chatter,
+                    messages_emitted=messages_emitted,
+                )
+            except Exception as exc:
+                _log.error("org_collaboration.loop_failed", error=str(exc))
+        return {
+            "processed": processed,
+            "orgs_with_chatter": orgs_with_chatter,
+            "messages_emitted": messages_emitted,
+        }
 
     loop = _asyncio.new_event_loop()
     try:

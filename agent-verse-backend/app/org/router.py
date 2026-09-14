@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import asdict
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +34,8 @@ from fastapi import (
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.org.brain_settings import resolve_autonomy_settings
+from app.org.brain_store import BrainDecisionStore
 from app.org.rbac import OrgRole, require_org_role
 from app.org.schemas import (
     CreateDepartmentRequest,
@@ -89,6 +92,19 @@ def _not_found(resource: str, rid: str, request_id: str | None = None) -> HTTPEx
             "title": "Not Found",
             "status": 404,
             "detail": f"{resource} '{rid}' not found",
+            "request_id": request_id or _request_id(),
+        },
+    )
+
+
+def _conflict(detail: str, request_id: str | None = None) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "type": "conflict",
+            "title": "Conflict",
+            "status": 409,
+            "detail": detail,
             "request_id": request_id or _request_id(),
         },
     )
@@ -264,6 +280,80 @@ async def get_org_health(
 ) -> OrgHealthResponse:
     health = await service.get_org_health(org_id)
     return OrgHealthResponse(**health)
+
+
+# ── Autonomy Settings (Autonomous Org Brain) ─────────────────────────────────
+
+
+def _autonomy_view(org: Any) -> dict[str, Any]:
+    """Resolved ``{autonomy_level, settings}`` view shared by GET and PATCH."""
+    return {
+        "autonomy_level": org.autonomy_level,
+        "settings": asdict(resolve_autonomy_settings(org.settings, org.monthly_budget_usd)),
+    }
+
+
+class _AutonomyUpdateRequest(BaseModel):
+    autonomy_level: int | None = None
+    settings: dict[str, Any] | None = None
+
+
+@router.get(
+    "/{org_id}/autonomy",
+    operation_id="org_autonomy_get",
+    summary="Get the org's autonomy level and resolved brain settings",
+)
+async def get_org_autonomy(
+    org_id: str,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> dict[str, Any]:
+    org = await service.get_organization(org_id)
+    if not org:
+        raise _not_found("Organization", org_id, x_request_id)
+    return _autonomy_view(org)
+
+
+@router.patch(
+    "/{org_id}/autonomy",
+    operation_id="org_autonomy_update",
+    summary="Update the org's autonomy level and brain settings",
+)
+async def update_org_autonomy(
+    org_id: str,
+    body: _AutonomyUpdateRequest,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
+) -> dict[str, Any]:
+    org = await service.get_organization(org_id)
+    if not org:
+        raise _not_found("Organization", org_id, x_request_id)
+
+    updates: dict[str, Any] = {}
+    if body.autonomy_level is not None:
+        if not (0 <= body.autonomy_level <= 5):
+            raise _unprocessable(
+                f"'autonomy_level' must be between 0 and 5, got: {body.autonomy_level}",
+                x_request_id,
+            )
+        updates["autonomy_level"] = body.autonomy_level
+
+    if body.settings is not None:
+        # Shallow-merge into Organization.settings["autonomy"] so unrelated
+        # autonomy keys and other top-level settings keys are never dropped.
+        merged_settings = dict(org.settings or {})
+        autonomy_block = dict(merged_settings.get("autonomy") or {})
+        autonomy_block.update(body.settings)
+        merged_settings["autonomy"] = autonomy_block
+        updates["settings"] = merged_settings
+
+    if updates:
+        org = await service.update_organization(org_id, updates)
+        if not org:
+            raise _not_found("Organization", org_id, x_request_id)
+
+    return _autonomy_view(org)
 
 
 # ── Department Endpoints ──────────────────────────────────────────────────────
@@ -463,6 +553,89 @@ async def update_mission_status(
         mission = await service.update_mission_status(mission_id, body.status)
     except ValueError as exc:
         raise _unprocessable(str(exc), x_request_id) from None
+    if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    return MissionResponse.model_validate(mission)
+
+
+# ── Autonomous Org Brain: decisions + proposal approve/reject ───────────────
+
+
+@router.get(
+    "/{org_id}/brain/decisions",
+    operation_id="org_brain_decisions_list",
+    summary="List recent autonomous org-brain tick decisions",
+)
+async def list_brain_decisions(
+    org_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> list[dict[str, Any]]:
+    store = BrainDecisionStore(service._session)
+    return await store.list(org_id, service._tenant_id, limit=limit)
+
+
+@router.post(
+    "/{org_id}/brain/proposals/{mission_id}/approve",
+    operation_id="org_brain_proposal_approve",
+    summary="Approve a brain-proposed mission and dispatch its goal",
+)
+async def approve_brain_proposal(
+    org_id: str,
+    mission_id: str,
+    request: Request,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
+) -> dict[str, Any]:
+    mission = await service.get_mission(mission_id)
+    if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped, and the
+    # RBAC gate above authorises the URL's org — without this a dept-admin of org A
+    # could approve org B's proposed mission (same tenant) by id. 404 hides
+    # cross-org ids, same as approve_org_request/reject_org_request above.
+    if str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
+    if str(mission.status) != "proposed":
+        raise _conflict(
+            f"Mission '{mission_id}' is not in 'proposed' status (status={mission.status!r})",
+            x_request_id,
+        )
+    return await service.dispatch_mission_goal(
+        mission_id, app_state=request.app.state, tenant_ctx=None
+    )
+
+
+@router.post(
+    "/{org_id}/brain/proposals/{mission_id}/reject",
+    response_model=MissionResponse,
+    operation_id="org_brain_proposal_reject",
+    summary="Reject a brain-proposed mission",
+)
+async def reject_brain_proposal(
+    org_id: str,
+    mission_id: str,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+    _rbac: str = require_org_role(OrgRole.DEPT_ADMIN),
+) -> MissionResponse:
+    mission = await service.get_mission(mission_id)
+    if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped, and the
+    # RBAC gate above authorises the URL's org — without this a dept-admin of org A
+    # could reject org B's proposed mission (same tenant) by id. 404 hides
+    # cross-org ids, same as approve_org_request/reject_org_request above.
+    if str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
+    if str(mission.status) != "proposed":
+        raise _conflict(
+            f"Mission '{mission_id}' is not in 'proposed' status (status={mission.status!r})",
+            x_request_id,
+        )
+    mission = await service.update_mission_status(mission_id, "cancelled")
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)

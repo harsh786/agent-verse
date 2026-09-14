@@ -207,6 +207,12 @@ celery_app.conf.update(
             "schedule": 300.0,  # every 5 minutes
             "options": {"queue": "maintenance"},
         },
+        # ── Task 9: Ambient Collaboration Tick — runs every 15 minutes ─────
+        "org-collaboration-ambient-loop": {
+            "task": "app.scaling.tasks.org_collaboration_loop",
+            "schedule": 900.0,  # every 15 minutes
+            "options": {"queue": "maintenance"},
+        },
         # ── M-1: Eight new maintenance tasks ──────────────────────────────
         "warm-jwks-cache": {
             "task": "app.scaling.tasks.warm_jwks_cache",

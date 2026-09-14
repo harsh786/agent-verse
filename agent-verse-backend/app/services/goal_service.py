@@ -2823,7 +2823,10 @@ class GoalService:
                         connector_ids=_connector_ids,
                         workflow_mode=workflow_mode,
                         goal_template="",
-                        plan=tenant_ctx.plan.value,
+                        # Tolerate either a PlanTier enum or a raw plan string —
+                        # non-request callers (e.g. the scheduled/beat dispatcher)
+                        # may hand a plain string.
+                        plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
                     )
                 else:
                     tool_context = await self._build_tool_context(

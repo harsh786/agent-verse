@@ -13,16 +13,26 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
 
   return (
     <div className="space-y-4">
-      {(triggerType === 'cron' || triggerType === 'rate_limited_schedule') && (
-        <Field label="Cron Expression" hint="e.g. 0 9 * * 1-5 (weekdays at 9am)">
-          <input
-            type="text"
-            value={(value.cron_expression as string) ?? ''}
-            onChange={(e) => set('cron_expression', e.target.value)}
-            placeholder="0 * * * *"
-            className={inputCls}
-          />
-        </Field>
+      {(triggerType === 'cron') && (
+        <>
+          <Field label="Cron Expression" hint="e.g. 0 9 * * 1-5 (weekdays at 9am)">
+            <input
+              type="text"
+              value={(value.cron_expression as string) ?? ''}
+              onChange={(e) => set('cron_expression', e.target.value)}
+              placeholder="0 * * * *"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
+            <input
+              type="text"
+              value={(value.timezone as string) ?? 'UTC'}
+              onChange={(e) => set('timezone', e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+        </>
       )}
       {triggerType === 'interval' && (
         <Field label="Interval (seconds)">
@@ -35,12 +45,12 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           />
         </Field>
       )}
-      {triggerType === 'one_shot' && (
+      {triggerType === 'once' && (
         <Field label="Run At (ISO 8601)">
           <input
             type="datetime-local"
-            value={(value.run_at as string) ?? ''}
-            onChange={(e) => set('run_at', e.target.value)}
+            value={(value.fire_at_iso as string) ?? ''}
+            onChange={(e) => set('fire_at_iso', e.target.value)}
             className={inputCls}
           />
         </Field>
@@ -50,8 +60,17 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           <Field label="Deadline (ISO 8601)">
             <input
               type="datetime-local"
-              value={(value.run_at as string) ?? ''}
-              onChange={(e) => set('run_at', e.target.value)}
+              value={(value.fire_at_iso as string) ?? ''}
+              onChange={(e) => set('fire_at_iso', e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Deadline Field (optional)" hint="JSONPath to a deadline value in the goal payload, e.g. $.due_at">
+            <input
+              type="text"
+              value={(value.deadline_field as string) ?? ''}
+              onChange={(e) => set('deadline_field', e.target.value)}
+              placeholder="$.due_at"
               className={inputCls}
             />
           </Field>
@@ -59,30 +78,62 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
             <input
               type="number"
               min={0}
-              value={(value.warn_before_seconds as number) ?? 3600}
-              onChange={(e) => set('warn_before_seconds', Number(e.target.value))}
+              value={(value.deadline_warning_seconds as number) ?? 3600}
+              onChange={(e) => set('deadline_warning_seconds', Number(e.target.value))}
               className={inputCls}
             />
           </Field>
         </>
       )}
-      {triggerType === 'business_hours' && (
-        <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
-          <input
-            type="text"
-            value={(value.timezone as string) ?? 'UTC'}
-            onChange={(e) => set('timezone', e.target.value)}
-            className={inputCls}
-          />
-        </Field>
+      {triggerType === 'relative_delay' && (
+        <>
+          <Field label="Relative To Field" hint="JSONPath to the base timestamp, e.g. $.created_at">
+            <input
+              type="text"
+              value={(value.relative_to_field as string) ?? ''}
+              onChange={(e) => set('relative_to_field', e.target.value)}
+              placeholder="$.created_at"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Offset (seconds)" hint="Fire this many seconds after the base timestamp">
+            <input
+              type="number"
+              value={(value.relative_offset_seconds as number) ?? 3600}
+              onChange={(e) => set('relative_offset_seconds', Number(e.target.value))}
+              className={inputCls}
+            />
+          </Field>
+        </>
+      )}
+      {triggerType === 'business_calendar' && (
+        <>
+          <Field label="Business Calendar ID" hint="Identifier of the business calendar to follow">
+            <input
+              type="text"
+              value={(value.business_calendar_id as string) ?? ''}
+              onChange={(e) => set('business_calendar_id', e.target.value)}
+              placeholder="us-holidays"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">
+            <input
+              type="text"
+              value={(value.timezone as string) ?? 'UTC'}
+              onChange={(e) => set('timezone', e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+        </>
       )}
       {/* Shared optional field */}
       <Field label="Max Firings (0 = unlimited)">
         <input
           type="number"
           min={0}
-          value={(value.max_firings as number) ?? 0}
-          onChange={(e) => set('max_firings', Number(e.target.value))}
+          value={(value.max_firings_per_hour as number) ?? 0}
+          onChange={(e) => set('max_firings_per_hour', Number(e.target.value))}
           className={inputCls}
         />
       </Field>

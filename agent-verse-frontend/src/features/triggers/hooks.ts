@@ -6,6 +6,7 @@ import { apiFetch } from '@/lib/api/client';
 import type {
   Trigger,
   CreateTriggerRequest,
+  UpdateTriggerRequest,
   TriggerEvent,
   TriggerDLQEntry,
   SimulationResult,
@@ -67,6 +68,21 @@ export function useCreateTrigger() {
         body: JSON.stringify(data),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: TRIGGER_KEYS.list() }),
+  });
+}
+
+export function useUpdateTrigger() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ scheduleId, data }: { scheduleId: string; data: UpdateTriggerRequest }) =>
+      apiFetch<Trigger>(`/triggers/${scheduleId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: (_data, { scheduleId }) => {
+      qc.invalidateQueries({ queryKey: TRIGGER_KEYS.list() });
+      qc.invalidateQueries({ queryKey: TRIGGER_KEYS.detail(scheduleId) });
+    },
   });
 }
 

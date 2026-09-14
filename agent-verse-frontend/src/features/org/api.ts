@@ -17,6 +17,9 @@ import type {
   UpdateOrganizationRequest,
   CreateMissionRequest,
   CreateDepartmentRequest,
+  AutonomySettings,
+  AutonomyView,
+  BrainDecision,
 } from './types';
 
 const BASE = '/v1/org';
@@ -231,5 +234,54 @@ export const orgApi = {
     // Backend returns CursorPage<OrgEvent> {data:[], cursor, hasMore} — unwrap
     return apiFetch<{ data: OrgEvent[] } | OrgEvent[]>(`${BASE}/${orgId}/events?limit=${limit}`)
       .then(r => Array.isArray(r) ? r : ((r as { data: OrgEvent[] }).data ?? []));
+  },
+};
+
+// ── Autonomous Org Brain ─────────────────────────────────────────────────────
+
+export const orgAutonomyApi = {
+  /** Resolved autonomy level + defaulted brain settings for the org. */
+  get(orgId: string): Promise<AutonomyView> {
+    return apiFetch<AutonomyView>(`${BASE}/${orgId}/autonomy`);
+  },
+
+  /** Partial update — only the provided keys change; unrelated settings are
+   *  preserved (backend shallow-merges into Organization.settings.autonomy). */
+  patch(
+    orgId: string,
+    body: { autonomy_level?: number; settings?: Partial<AutonomySettings> },
+  ): Promise<AutonomyView> {
+    return apiFetch<AutonomyView>(`${BASE}/${orgId}/autonomy`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  },
+
+  /** Recent org-brain tick decisions (audit trail), newest first. */
+  decisions(orgId: string, limit?: number): Promise<BrainDecision[]> {
+    return apiFetch<BrainDecision[]>(`${BASE}/${orgId}/brain/decisions?limit=${limit ?? 50}`);
+  },
+
+  /** Approve a brain-proposed mission — dispatches its goal. No-op (with
+   *  `already_dispatched: true`) if it was already dispatched. */
+  approveProposal(
+    orgId: string,
+    missionId: string,
+  ): Promise<{
+    goal_id?: string;
+    dispatched?: boolean;
+    error?: string;
+    already_dispatched?: boolean;
+  }> {
+    return apiFetch(`${BASE}/${orgId}/brain/proposals/${missionId}/approve`, {
+      method: 'POST',
+    });
+  },
+
+  /** Reject a brain-proposed mission — returns the cancelled mission. */
+  rejectProposal(orgId: string, missionId: string): Promise<OrgMission> {
+    return apiFetch<OrgMission>(`${BASE}/${orgId}/brain/proposals/${missionId}/reject`, {
+      method: 'POST',
+    });
   },
 };

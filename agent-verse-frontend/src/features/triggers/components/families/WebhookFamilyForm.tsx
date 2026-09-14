@@ -11,14 +11,18 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
     onChange({ ...value, [key]: val });
   }
 
+  const allowedApiKeys = Array.isArray(value.allowed_api_keys)
+    ? (value.allowed_api_keys as string[])
+    : [];
+
   return (
     <div className="space-y-4">
-      {triggerType === 'custom_webhook' && (
+      {triggerType === 'webhook' && (
         <Field label="Endpoint Name" hint="Used to generate the webhook URL path">
           <input
             type="text"
-            value={(value.webhook_endpoint_name as string) ?? ''}
-            onChange={(e) => set('webhook_endpoint_name', e.target.value)}
+            value={(value.description as string) ?? ''}
+            onChange={(e) => set('description', e.target.value)}
             placeholder="my-webhook"
             className={inputCls}
           />
@@ -30,13 +34,77 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
       >
         <input
           type="password"
-          value={(value.webhook_secret as string) ?? ''}
-          onChange={(e) => set('webhook_secret', e.target.value)}
+          value={(value.webhook_signature_secret as string) ?? ''}
+          onChange={(e) => set('webhook_signature_secret', e.target.value)}
           placeholder="whsec_…"
           className={inputCls}
           autoComplete="new-password"
         />
       </Field>
+      <Field
+        label="Allowed API Keys"
+        hint="Comma-separated keys accepted on inbound requests (blank = signature only)"
+      >
+        <input
+          type="text"
+          value={allowedApiKeys.join(', ')}
+          onChange={(e) =>
+            set(
+              'allowed_api_keys',
+              e.target.value
+                .split(',')
+                .map((k) => k.trim())
+                .filter(Boolean),
+            )
+          }
+          placeholder="key_live_abc, key_live_def"
+          className={inputCls}
+        />
+      </Field>
+      {triggerType === 'jira_webhook' && (
+        <Field label="Jira Project Filter" hint="Project key to filter by, e.g. OPS (blank = all)">
+          <input
+            type="text"
+            value={(value.jira_project_filter as string) ?? ''}
+            onChange={(e) => set('jira_project_filter', e.target.value)}
+            placeholder="OPS"
+            className={inputCls}
+          />
+        </Field>
+      )}
+      {triggerType === 'salesforce_event' && (
+        <Field label="Salesforce Object" hint="SObject to watch, e.g. Opportunity, Case">
+          <input
+            type="text"
+            value={(value.salesforce_object as string) ?? ''}
+            onChange={(e) => set('salesforce_object', e.target.value)}
+            placeholder="Opportunity"
+            className={inputCls}
+          />
+        </Field>
+      )}
+      {triggerType === 'event' && (
+        <>
+          <Field label="Event Channel" hint="Internal event channel/topic name to subscribe to">
+            <input
+              type="text"
+              value={(value.event_channel as string) ?? ''}
+              onChange={(e) => set('event_channel', e.target.value)}
+              placeholder="orders.created"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Event Filter (JSONPath)" hint="Optional JSONPath filter on the event body, e.g. $.type">
+            <input
+              type="text"
+              value={(value.event_filter as string) ?? ''}
+              onChange={(e) => set('event_filter', e.target.value)}
+              placeholder="$.type"
+              className={inputCls}
+            />
+          </Field>
+        </>
+      )}
       {triggerType === 'github_webhook' && (
         <Field label="Filter Event Type" hint="e.g. push, pull_request, issues (blank = all)">
           <input
@@ -62,8 +130,8 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
       <Field label="Condition CEL" hint="Optional filter expression, e.g. payload.action == 'opened'">
         <input
           type="text"
-          value={(value.condition_cel as string) ?? ''}
-          onChange={(e) => set('condition_cel', e.target.value)}
+          value={(value.condition as string) ?? ''}
+          onChange={(e) => set('condition', e.target.value)}
           placeholder="payload.ref == 'refs/heads/main'"
           className={inputCls}
         />

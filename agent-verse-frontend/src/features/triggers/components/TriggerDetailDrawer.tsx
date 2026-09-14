@@ -1,9 +1,18 @@
-import { X, Zap, RefreshCw } from 'lucide-react';
+import { useState } from 'react';
+import { X, Zap, RefreshCw, Pencil, Save, Play, Pause } from 'lucide-react';
 import type { Trigger } from '../types';
 import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY } from '../types';
-import { useSimulateTrigger, useFireTriggerNow } from '../hooks';
+import {
+  useSimulateTrigger,
+  useFireTriggerNow,
+  useUpdateTrigger,
+  usePauseTrigger,
+  useResumeTrigger,
+} from '../hooks';
 import { TriggerStatusBadge } from './TriggerStatusBadge';
 import { TriggerHistoryPanel } from './TriggerHistoryPanel';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { AdvancedOptionsForm } from './families/AdvancedOptionsForm';
 
 interface TriggerDetailDrawerProps {
   trigger: Trigger;
@@ -14,13 +23,36 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
   const family = TRIGGER_TYPE_FAMILY[trigger.spec.trigger_type];
   const simulate = useSimulateTrigger();
   const fireNow = useFireTriggerNow();
+  const update = useUpdateTrigger();
+  const pause = usePauseTrigger();
+  const resume = useResumeTrigger();
+
+  const [editing, setEditing] = useState(false);
+  // Draft spec seeded from the current spec (drop server-managed keys).
+  const [draftSpec, setDraftSpec] = useState<Record<string, unknown>>({});
+  const [draftGoal, setDraftGoal] = useState('');
+
+  function startEdit() {
+    const { trigger_id: _tid, ...rest } = trigger.spec;
+    void _tid;
+    setDraftSpec(rest as Record<string, unknown>);
+    setDraftGoal(trigger.goal_template ?? '');
+    setEditing(true);
+  }
+
+  function saveEdit() {
+    update.mutate(
+      { scheduleId: trigger.schedule_id, data: { spec: draftSpec, goal_template: draftGoal } },
+      { onSuccess: () => setEditing(false) },
+    );
+  }
 
   return (
     <div
       className="fixed inset-0 z-50 flex"
       role="dialog"
       aria-modal="true"
-      aria-label={`Trigger detail: ${trigger.spec.name ?? trigger.spec.trigger_type}`}
+      aria-label={`Trigger detail: ${trigger.spec.description ?? trigger.spec.trigger_type}`}
     >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -39,27 +71,67 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               </span>
             </div>
             <h2 className="mt-1 text-base font-semibold">
-              {trigger.spec.name ?? 'Trigger Detail'}
+              {trigger.spec.description ?? 'Trigger Detail'}
             </h2>
             <div className="mt-1">
               <TriggerStatusBadge paused={trigger.paused} />
             </div>
           </div>
-          <button
-            onClick={onClose}
-            aria-label="Close trigger detail"
-            className="rounded-md p-2 text-muted-foreground hover:bg-muted transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            {!editing && (
+              <button
+                onClick={startEdit}
+                aria-label="Edit trigger"
+                className="inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground hover:bg-muted transition-colors"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Edit
+              </button>
+            )}
+            <button
+              onClick={onClose}
+              aria-label="Close trigger detail"
+              className="rounded-md p-2 text-muted-foreground hover:bg-muted transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {editing ? (
+            <>
+              <Section title="Goal Template">
+                <textarea
+                  value={draftGoal}
+                  onChange={(e) => setDraftGoal(e.target.value)}
+                  rows={3}
+                  placeholder="Describe the goal to run on each fire (supports {{payload.field}})…"
+                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+                />
+              </Section>
+              <Section title="Configuration">
+                <FamilyFormRouter
+                  family={family}
+                  triggerType={trigger.spec.trigger_type}
+                  value={draftSpec}
+                  onChange={setDraftSpec}
+                />
+              </Section>
+              <AdvancedOptionsForm value={draftSpec} onChange={setDraftSpec} />
+              {update.isError && (
+                <p className="text-sm text-destructive">
+                  {(update.error as Error)?.message || 'Update failed — check the fields above.'}
+                </p>
+              )}
+            </>
+          ) : (
+            <>
           {/* Goal template */}
           <Section title="Goal Template">
             <code className="block rounded-lg bg-muted p-3 text-sm whitespace-pre-wrap font-mono">
-              {trigger.goal_template}
+              {trigger.goal_template || (trigger.goal_id ? `goal: ${trigger.goal_id}` : '—')}
             </code>
           </Section>
 
@@ -113,18 +185,53 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
           <Section title="Recent Events">
             <TriggerHistoryPanel scheduleId={trigger.schedule_id} />
           </Section>
+            </>
+          )}
         </div>
 
         {/* Footer actions */}
         <div className="border-t border-border px-5 py-4 flex gap-2 justify-end">
-          <button
-            onClick={() => fireNow.mutate({ scheduleId: trigger.schedule_id })}
-            disabled={fireNow.isPending || trigger.paused}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
-          >
-            <Zap className="h-4 w-4" />
-            {fireNow.isPending ? 'Firing…' : 'Fire Now'}
-          </button>
+          {editing ? (
+            <>
+              <button
+                onClick={() => setEditing(false)}
+                className="rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={update.isPending}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                <Save className="h-4 w-4" />
+                {update.isPending ? 'Saving…' : 'Save changes'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={() =>
+                  trigger.paused
+                    ? resume.mutate(trigger.schedule_id)
+                    : pause.mutate(trigger.schedule_id)
+                }
+                disabled={pause.isPending || resume.isPending}
+                className="inline-flex items-center gap-2 rounded-lg border border-border px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                {trigger.paused ? <Play className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                {trigger.paused ? 'Resume' : 'Pause'}
+              </button>
+              <button
+                onClick={() => fireNow.mutate({ scheduleId: trigger.schedule_id })}
+                disabled={fireNow.isPending || trigger.paused}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
+              >
+                <Zap className="h-4 w-4" />
+                {fireNow.isPending ? 'Firing…' : 'Fire Now'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

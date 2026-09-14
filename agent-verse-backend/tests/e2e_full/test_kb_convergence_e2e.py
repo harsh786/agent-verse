@@ -78,6 +78,21 @@ async def test_kb_convergence_rpa_and_ocr_e2e(app: Any, client: Any, monkeypatch
     fake = FakeProvider(embed_dim=_EMBED_DIM)
     monkeypatch.setattr(app.state, "embedder", fake, raising=False)
 
+    # Force the browser-less (httpx-fallback) RPA path so the _http_fetch_text stub
+    # below actually applies. Playwright is in this repo's dev deps and may be
+    # installed in the running env; when it is, the executor navigates via a REAL
+    # browser (page.goto) instead of _http_fetch_text, scraping the live URL rather
+    # than the stubbed content — making this deterministic test depend on the env.
+    # The ingest handler caches a session-scoped app.state.rpa_executor whose
+    # _playwright_available was fixed at construction, so patch both the class
+    # (fresh construction) AND the existing instance.
+    monkeypatch.setattr(
+        "app.rpa.executor.RPAExecutor._check_playwright", staticmethod(lambda: False)
+    )
+    _existing_executor = getattr(app.state, "rpa_executor", None)
+    if _existing_executor is not None:
+        monkeypatch.setattr(_existing_executor, "_playwright_available", False, raising=False)
+
     # ── RPA→KB via the REAL RPAExecutor path (httpx socket fetch stubbed) ──
     with patch(
         "app.rpa.executor.RPAExecutor._http_fetch_text",

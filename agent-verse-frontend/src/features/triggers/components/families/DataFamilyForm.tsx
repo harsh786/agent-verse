@@ -119,6 +119,17 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
           </Field>
         </>
       )}
+      {triggerType === 'file_drop' && (
+        <Field label="File Drop Path" hint="Watched directory or glob, e.g. /inbox or s3://bucket/incoming/*.csv">
+          <input
+            type="text"
+            value={(value.file_drop_path as string) ?? ''}
+            onChange={(e) => set('file_drop_path', e.target.value)}
+            placeholder="/inbox/*.csv"
+            className={`${inputCls} font-mono`}
+          />
+        </Field>
+      )}
       {triggerType === 'rss_feed' && (
         <Field label="RSS/Atom Feed URL">
           <input

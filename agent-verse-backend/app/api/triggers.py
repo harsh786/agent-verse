@@ -6,7 +6,7 @@ import contextlib
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
@@ -66,7 +66,24 @@ class CreateTriggerRequest(BaseModel):
     spec: TriggerSpecRequest
     goal_id: str = ""
     agent_id: str = ""
-    goal_template: str = Field(..., min_length=1)
+    # Optional: a trigger may simply reference an agent (agent_id) and run that
+    # agent's own goal on fire, so an explicit goal template is not required.
+    goal_template: str = Field(default="")
+
+    @model_validator(mode="after")
+    def _require_goal_or_agent(self) -> CreateTriggerRequest:
+        """A trigger must have something concrete to run on fire, in priority order:
+        a bound ``goal_id`` (re-run a specific existing goal — avoids the noise of a
+        free-text template matching many goals), a ``goal_template`` (NL, with
+        ``{{payload.*}}`` interpolation), or a referenced ``agent_id`` (whose own
+        goal runs). None of the three → nothing to fire (422)."""
+        if (
+            not (self.goal_id or "").strip()
+            and not (self.goal_template or "").strip()
+            and not (self.agent_id or "").strip()
+        ):
+            raise ValueError("Provide a goal_id, a goal_template, or reference an agent_id")
+        return self
 
 
 class SimulateRequest(BaseModel):
@@ -131,6 +148,13 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
         "goal_template": rec.get("goal_template", ""),
         "paused": rec.get("paused", False),
     }
+    # Surface lifecycle timestamps so the UI can show when a trigger was created
+    # and when it will next / last fire. Values may be datetime (DB-hydrated) or
+    # already-ISO strings; normalise to ISO for the JSON response.
+    for _ts in ("created_at", "next_fire_at", "last_fired_at"):
+        _val = rec.get(_ts)
+        if _val is not None:
+            out[_ts] = _val.isoformat() if hasattr(_val, "isoformat") else _val
     if spec is not None:
         import dataclasses
 
@@ -140,6 +164,35 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
             if v is not None
         }
     return out
+
+
+def _spec_for_dispatch(rec: dict[str, Any]) -> TriggerSpec:
+    """Return the trigger's spec enriched with the record-level agent/goal refs.
+
+    ``agent_id`` and ``goal_template`` are persisted on the trigger *record*
+    (via ``store.create``), not on the embedded ``TriggerSpec``. The dispatcher,
+    however, resolves the goal text and the routed agent from the spec — so when
+    firing (or simulating) we must fold those record-level references onto the
+    spec. Without this, a trigger that merely references an agent (no goal
+    template) fires a generic default goal with no agent routing.
+    """
+    spec: TriggerSpec = rec["spec"]
+    # Only fill from the record when the spec doesn't already carry the value,
+    # so an explicit spec-level field still wins. Use getattr/setattr defensively
+    # so a non-dataclass stand-in (tests) or a spec missing a field is tolerated.
+    if not (getattr(spec, "goal_template", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.goal_template = rec.get("goal_template", "") or ""
+    if not (getattr(spec, "watch_agent_id", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.watch_agent_id = rec.get("agent_id", "") or ""
+    # trigger_id drives the dispatcher's per-trigger idempotency key; without the
+    # real schedule id every manual fire dedups as "unknown" against other
+    # triggers. Bind it here so the fire/simulate paths match the beat path.
+    if not (getattr(spec, "trigger_id", "") or "").strip():
+        with contextlib.suppress(Exception):
+            spec.trigger_id = rec.get("schedule_id", "") or ""
+    return spec
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -172,6 +225,15 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
 
     if not is_supported(spec.trigger_type):
         raise HTTPException(status_code=422, detail=unsupported_reason(spec.trigger_type))
+
+    # Fail fast on a misconfigured spec (missing/invalid type-specific fields) so a
+    # trigger that could never fire correctly is never persisted.
+    from app.triggers.validation import validate_spec
+
+    try:
+        validate_spec(spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     schedule_id = store.create(
         spec=spec,
@@ -298,7 +360,7 @@ async def simulate_trigger(
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
-    spec: TriggerSpec = rec["spec"]
+    spec = _spec_for_dispatch(rec)
     sample = body.payload or get_sample_payload(spec.trigger_type)
 
     dispatcher = _get_dispatcher(request)
@@ -329,7 +391,7 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
     if rec.get("paused"):
         raise HTTPException(status_code=409, detail="Trigger is paused")
 
-    spec: TriggerSpec = rec["spec"]
+    spec = _spec_for_dispatch(rec)
     sample = body.payload or get_sample_payload(spec.trigger_type)
 
     dispatcher = _get_dispatcher(request)
@@ -398,6 +460,14 @@ async def update_trigger(
         rec["paused"] = body.paused
     if body.spec is not None:
         new_spec = _build_spec(body.spec)
+        # Validate the replacement spec the same way create does — an update must
+        # not be able to persist a misconfigured trigger either.
+        from app.triggers.validation import validate_spec
+
+        try:
+            validate_spec(new_spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         rec["spec"] = new_spec
 
     return _serialize_record(rec)
@@ -523,7 +593,13 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan="free")
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     for trigger in triggers:
-        spec = trigger.get("spec", trigger)
+        # Bind the record-level goal_template / agent refs onto the spec (as the
+        # manual fire and simulate paths do) so an inbound webhook renders the
+        # tenant's goal template instead of the generic "Trigger fired: <type>".
+        if isinstance(trigger, dict) and "spec" in trigger:
+            spec = _spec_for_dispatch(trigger)
+        else:
+            spec = trigger.get("spec", trigger)
         secret = getattr(spec, "webhook_signature_secret", "") or ""
         if secret and sig_header:
             valid = await verifier.verify(body_bytes, sig_header, secret)

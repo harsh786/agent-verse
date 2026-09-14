@@ -453,6 +453,37 @@ class OrgEvent(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+# ── Brain Decision (autonomous org brain audit trail) ────────────────────────
+# One row per tick decision the org brain makes (proactive scan or reactive
+# response): what it considered, what the guardrails said, and what it did.
+# Written by BrainDecisionStore.record (Task 6's tick loop); read back by
+# BrainDecisionStore.list (Task 10's decisions endpoint/UI).
+
+
+class OrgBrainDecision(Base):
+    __tablename__ = "org_brain_decisions"
+    __table_args__ = (
+        Index("idx_obd_org_created", "org_id", "created_at"),
+        {"schema": None},
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=_uuid7)
+    org_id = Column(
+        PG_UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    tick_id = Column(String(64), nullable=False)
+    kind = Column(String(32), nullable=False)
+    rationale = Column(Text, default="")
+    target_goal = Column(String(200), default="")
+    action = Column(String(32), nullable=False)  # none|proposed|executed|blocked
+    guardrail_verdict = Column(String(32), nullable=False)  # execute|propose|block
+    reason = Column(Text, default="")
+    est_cost_usd = Column(Float, default=0.0)
+    mission_id = Column(PG_UUID(as_uuid=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 # ── Blueprint (org templates) ─────────────────────────────────────────────────
 
 
@@ -483,6 +514,7 @@ class OrgBlueprint(Base):
 
 __all__ = [
     "OrgBlueprint",
+    "OrgBrainDecision",
     "OrgCapability",
     "OrgDecision",
     "OrgDepartment",

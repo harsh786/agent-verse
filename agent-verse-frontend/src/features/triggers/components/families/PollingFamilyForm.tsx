@@ -35,7 +35,7 @@ export function PollingFamilyForm({ triggerType, value, onChange }: FamilyFormPr
           </Field>
         </>
       )}
-      {triggerType === 'kafka_message' && (
+      {triggerType === 'graphql_subscription' && (
         <Field label="Kafka Topic">
           <input
             type="text"
@@ -46,7 +46,7 @@ export function PollingFamilyForm({ triggerType, value, onChange }: FamilyFormPr
           />
         </Field>
       )}
-      {triggerType === 'price_movement' && (
+      {triggerType === 'price_threshold' && (
         <>
           <Field label="Symbol" hint="e.g. BTC, ETH, AAPL">
             <input

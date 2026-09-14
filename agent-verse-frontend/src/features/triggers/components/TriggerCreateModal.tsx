@@ -1,18 +1,12 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { X, ChevronRight } from 'lucide-react';
 import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types';
-import { TRIGGER_FAMILY_LABELS } from '../types';
+import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY, SUPPORTED_TRIGGER_TYPES } from '../types';
 import { useCreateTrigger } from '../hooks';
-import { TimeFamilyForm } from './families/TimeFamilyForm';
-import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
-import { WebhookFamilyForm } from './families/WebhookFamilyForm';
-import { ConversationalFamilyForm } from './families/ConversationalFamilyForm';
-import { ConditionFamilyForm } from './families/ConditionFamilyForm';
-import { DataFamilyForm } from './families/DataFamilyForm';
-import { MonitoringFamilyForm } from './families/MonitoringFamilyForm';
-import { IoTFamilyForm } from './families/IoTFamilyForm';
-import { PollingFamilyForm } from './families/PollingFamilyForm';
-import { GenericFamilyForm } from './families/GenericFamilyForm';
+import { agentsApi, goalsApi } from '@/lib/api/client';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
+import { AdvancedOptionsForm } from './families/AdvancedOptionsForm';
 
 type Step = 'family' | 'type' | 'config' | 'confirm';
 
@@ -20,17 +14,22 @@ interface TriggerCreateModalProps {
   onClose: () => void;
 }
 
-const FAMILY_TYPES: Record<TriggerFamily, TriggerType[]> = {
-  time: ['cron', 'interval', 'one_shot', 'calendar', 'business_hours', 'market_hours', 'solar_event', 'recurring_relative', 'rate_limited_schedule', 'deadline'],
-  goal_chain: ['goal_completed', 'goal_failed', 'goal_score_below', 'goal_score_above', 'goal_timeout', 'goal_created', 'hitl_approved', 'hitl_rejected', 'memory_created', 'goal_chain_depth'],
-  conversational: ['chat_command', 'chat_keyword', 'chat_mention', 'slack_event', 'teams_webhook', 'discord_event', 'email_intent', 'email_arrival', 'sms_inbound', 'voice_transcript', 'meeting_ended', 'form_submission'],
-  webhook: ['github_webhook', 'jira_webhook', 'stripe_webhook', 'pagerduty_webhook', 'linear_webhook', 'custom_webhook'],
-  data: ['db_row_change', 's3_event', 'api_poll', 'rss_feed', 'kafka_message', 'graphql_subscription'],
-  monitoring: ['metric_threshold', 'log_pattern', 'grafana_alert', 'cloudwatch_alarm', 'sentry_event', 'uptime_check'],
-  state_condition: ['state_transition', 'condition_true', 'flag_change', 'quota_exceeded', 'cost_threshold', 'user_segment'],
-  ml_signal: ['model_drift', 'anomaly_detected', 'prediction_confidence', 'ab_test_winner', 'price_movement'],
-  iot: ['mqtt', 'geofence', 'sensor_threshold'],
-};
+// Derived from the canonical maps so it never drifts: only backend
+// dispatch-supported types are offered, grouped by their declared family.
+const FAMILY_TYPES: Record<TriggerFamily, TriggerType[]> = (() => {
+  const out = Object.fromEntries(
+    (Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).map((f) => [f, [] as TriggerType[]]),
+  ) as Record<TriggerFamily, TriggerType[]>;
+  for (const [type, family] of Object.entries(TRIGGER_TYPE_FAMILY) as [TriggerType, TriggerFamily][]) {
+    if (SUPPORTED_TRIGGER_TYPES.has(type)) out[family].push(type);
+  }
+  return out;
+})();
+
+// Families that currently have at least one creatable type (hide empty ones).
+const CREATABLE_FAMILIES = (Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).filter(
+  (f) => FAMILY_TYPES[f].length > 0,
+);
 
 const FAMILY_DESCRIPTIONS: Record<TriggerFamily, string> = {
   time: 'Schedule goals at fixed times, intervals, or calendar events',
@@ -51,8 +50,18 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
   const [specFields, setSpecFields] = useState<Record<string, unknown>>({});
   const [goalTemplate, setGoalTemplate] = useState('');
   const [agentId, setAgentId] = useState('');
+  const [goalId, setGoalId] = useState('');
 
   const create = useCreateTrigger();
+  // Existing agents to reference — a trigger can just run an agent's own goal.
+  const { data: agents = [] } = useQuery({ queryKey: ['agents'], queryFn: agentsApi.list });
+  // Existing goals to bind to — binding a concrete goal_id avoids the noise of a
+  // free-text template matching many goals (each fire re-runs THIS goal).
+  const { data: goalsResp } = useQuery({
+    queryKey: ['goals', 'trigger-picker'],
+    queryFn: () => goalsApi.list({ page_size: 50 }),
+  });
+  const goals = goalsResp?.goals ?? [];
 
   function handleSubmit() {
     if (!selectedType) return;
@@ -61,7 +70,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
         trigger_type: selectedType,
         ...specFields,
       },
-      goal_id: '',
+      goal_id: goalId,
       agent_id: agentId || undefined,
       goal_template: goalTemplate,
     };
@@ -96,7 +105,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
             <div>
               <h2 className="text-base font-semibold mb-4">Choose a trigger family</h2>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {(Object.keys(TRIGGER_FAMILY_LABELS) as TriggerFamily[]).map((family) => (
+                {CREATABLE_FAMILIES.map((family) => (
                   <button
                     key={family}
                     onClick={() => { setSelectedFamily(family); setStep('type'); }}
@@ -140,60 +149,82 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
               </button>
               <h2 className="text-base font-semibold mb-4">Configure <code className="font-mono bg-muted rounded px-1.5 py-0.5">{selectedType}</code></h2>
 
-              {/* Family-specific form */}
-              {selectedFamily === 'time' && (
-                <TimeFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'goal_chain' && (
-                <GoalChainFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'webhook' && (
-                <WebhookFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'conversational' && (
-                <ConversationalFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'state_condition' && (
-                <ConditionFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'data' && (
-                <DataFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'monitoring' && (
-                <MonitoringFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'iot' && (
-                <IoTFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'ml_signal' && (
-                <PollingFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {!['time', 'goal_chain', 'webhook', 'conversational', 'state_condition', 'data', 'monitoring', 'iot', 'ml_signal'].includes(selectedFamily) && (
-                <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
+              {/* Family-specific form (shared router — same forms as the edit drawer) */}
+              <FamilyFormRouter
+                family={selectedFamily}
+                triggerType={selectedType}
+                value={specFields}
+                onChange={setSpecFields}
+              />
 
-              {/* Common fields */}
+              {/* Cross-cutting production controls — apply to every trigger type */}
+              <AdvancedOptionsForm value={specFields} onChange={setSpecFields} />
+
+              {/* Common fields — reference an existing agent and/or a goal.
+                  A trigger needs at least one: pick an agent to run its own
+                  configured goal, or write a goal template (or both). */}
               <div className="mt-5 space-y-4">
                 <div>
-                  <label className="text-sm font-medium" htmlFor="goal-template">Goal Template *</label>
+                  <label className="text-sm font-medium" htmlFor="goal-id">Bind to an existing goal</label>
+                  <select
+                    id="goal-id"
+                    value={goalId}
+                    onChange={(e) => setGoalId(e.target.value)}
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">None — use a template or agent below</option>
+                    {goals.map((g) => {
+                      const id = g.goal_id ?? g.id;
+                      const label = g.goal.length > 60 ? `${g.goal.slice(0, 60)}…` : g.goal;
+                      return (
+                        <option key={id} value={id}>
+                          {label} · {g.status} · {id.slice(0, 8)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Re-runs this exact goal on every fire — the precise choice when
+                    several goals share similar text (no template ambiguity).
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium" htmlFor="agent-id">Run as agent</label>
+                  <select
+                    id="agent-id"
+                    value={agentId}
+                    onChange={(e) => setAgentId(e.target.value)}
+                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                  >
+                    <option value="">Auto-route (no specific agent)</option>
+                    {agents.map((a) => (
+                      <option key={a.agent_id} value={a.agent_id}>{a.name}</option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Reference an agent you already created — the trigger runs that agent
+                    (and its own goal) on each fire.
+                  </p>
+                </div>
+                <div>
+                  <label className="text-sm font-medium" htmlFor="goal-template">
+                    Goal Template <span className="text-muted-foreground font-normal">(optional)</span>
+                  </label>
                   <textarea
                     id="goal-template"
                     value={goalTemplate}
                     onChange={(e) => setGoalTemplate(e.target.value)}
-                    placeholder="Describe the goal to create when this trigger fires…"
+                    placeholder={agentId
+                      ? "Leave blank to run the selected agent's own goal, or override it here…"
+                      : 'Describe the goal to create when this trigger fires…'}
                     rows={3}
                     className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring resize-none"
                   />
-                </div>
-                <div>
-                  <label className="text-sm font-medium" htmlFor="agent-id">Agent ID (optional)</label>
-                  <input
-                    id="agent-id"
-                    value={agentId}
-                    onChange={(e) => setAgentId(e.target.value)}
-                    placeholder="Leave blank to auto-route"
-                    className="mt-1.5 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring font-mono"
-                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {agentId
+                      ? "Optional override — blank uses the agent's goal."
+                      : 'Required unless you selected an agent above.'}
+                  </p>
                 </div>
               </div>
             </div>
@@ -208,7 +239,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
             </button>
             <button
               onClick={handleSubmit}
-              disabled={create.isPending || !goalTemplate.trim()}
+              disabled={create.isPending || (!goalId && !goalTemplate.trim() && !agentId)}
               className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
             >
               {create.isPending ? 'Creating…' : 'Create Trigger'}

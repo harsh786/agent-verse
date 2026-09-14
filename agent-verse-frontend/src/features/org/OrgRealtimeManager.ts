@@ -54,6 +54,7 @@ export const ORG_EVENTS = {
   DIGEST_READY:          'org.digest.ready',
   EMERGENCY_STOP:        'org.emergency_stop.triggered',
   EMERGENCY_RESUMED:     'org.emergency_stop.resumed',
+  COLLABORATION_MESSAGE: 'org.collaboration.message',
 } as const;
 
 export type OrgEventType = typeof ORG_EVENTS[keyof typeof ORG_EVENTS];

@@ -33,8 +33,20 @@ def client(app):
     return TestClient(app)
 
 
+_TYPE_REQUIRED_DEFAULTS = {
+    "cron": {"cron_expression": "0 9 * * *"},
+    "interval": {"interval_seconds": 3600},
+    "once": {"fire_at_iso": "2030-01-01T00:00:00Z"},
+    "api_poll": {"poll_url": "https://example.com/status"},
+    "rss_feed": {"rss_url": "https://example.com/feed.xml"},
+    "db_row_change": {"db_table": "orders"},
+}
+
+
 def create_trigger(client, trigger_type="cron", **extra):
-    spec = {"trigger_type": trigger_type}
+    # Seed the type's required fields so tests exercise real, valid specs (server
+    # validation now rejects misconfigured ones).
+    spec = {"trigger_type": trigger_type, **_TYPE_REQUIRED_DEFAULTS.get(trigger_type, {})}
     spec.update(extra)
     resp = client.post("/triggers", json={
         "spec": spec,
@@ -170,15 +182,22 @@ def test_typed_webhook_generic_fallback(client):
 # ── Extended list ─────────────────────────────────────────────────────────────
 
 def test_list_all_trigger_types(client):
-    """Create one of each major type and verify all appear in list."""
-    for trigger_type in ["cron", "goal_completed", "webhook", "mqtt", "once"]:
-        client.post("/triggers", json={
-            "spec": {"trigger_type": trigger_type},
+    """Create one of each major (supported, valid) type and verify all appear."""
+    specs = [
+        {"trigger_type": "cron", "cron_expression": "0 9 * * *"},
+        {"trigger_type": "goal_completed"},
+        {"trigger_type": "webhook"},
+        {"trigger_type": "interval", "interval_seconds": 3600},
+        {"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z"},
+    ]
+    for spec in specs:
+        r = client.post("/triggers", json={
+            "spec": spec,
             "goal_id": "",
-            "goal_template": f"Template for {trigger_type}",
+            "goal_template": f"Template for {spec['trigger_type']}",
         })
+        assert r.status_code == 201, r.text
     resp = client.get("/triggers")
     assert resp.status_code == 200
     types_in_list = {t["spec"]["trigger_type"] for t in resp.json()}
-    assert "cron" in types_in_list
-    assert "goal_completed" in types_in_list
+    assert {"cron", "goal_completed", "webhook", "interval", "once"} <= types_in_list

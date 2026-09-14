@@ -853,6 +853,7 @@ class OrgService:
         assigned_team_id: str | None = None,
         autonomy_level: int | None = None,
         source: str = "manual",
+        status: str | None = None,
         success_criteria: list[Any] | None = None,
         budget_usd: float | None = None,
         deadline: datetime | None = None,
@@ -866,26 +867,29 @@ class OrgService:
             span.set_attribute("org_id", org_id)
             span.set_attribute("mission.priority", priority)
             span.set_attribute("mission.source", source)
-            mission = OrgMission(
-                tenant_id=self._tenant_id,
-                org_id=uuid.UUID(org_id),
-                dept_id=uuid.UUID(dept_id) if dept_id else None,
-                title=title,
-                objective=objective,
-                why=why,
-                expected_outcome=expected_outcome,
-                priority=priority,
-                assigned_team_id=uuid.UUID(assigned_team_id) if assigned_team_id else None,
-                autonomy_level=autonomy_level,
-                source=source,
-                success_criteria=success_criteria or [],
-                budget_usd=budget_usd,
-                deadline=deadline,
-                tags=tags or [],
-                created_by=created_by,
-                trigger_event=trigger_event,
-                metadata=metadata or {},
-            )
+            mission_kwargs = {
+                "tenant_id": self._tenant_id,
+                "org_id": uuid.UUID(org_id),
+                "dept_id": uuid.UUID(dept_id) if dept_id else None,
+                "title": title,
+                "objective": objective,
+                "why": why,
+                "expected_outcome": expected_outcome,
+                "priority": priority,
+                "assigned_team_id": uuid.UUID(assigned_team_id) if assigned_team_id else None,
+                "autonomy_level": autonomy_level,
+                "source": source,
+                "success_criteria": success_criteria or [],
+                "budget_usd": budget_usd,
+                "deadline": deadline,
+                "tags": tags or [],
+                "created_by": created_by,
+                "trigger_event": trigger_event,
+                "metadata": metadata or {},
+            }
+            if status is not None:
+                mission_kwargs["status"] = status
+            mission = OrgMission(**mission_kwargs)
             self._session.add(mission)
             await self._session.flush()
             await self._emit_event(
@@ -1126,8 +1130,10 @@ class OrgService:
         org_id: str,
         *,
         status: str | None = None,
+        exclude_statuses: list[str] | None = None,
         priority: str | None = None,
         dept_id: str | None = None,
+        source: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[OrgMission]:
@@ -1139,6 +1145,14 @@ class OrgService:
         )
         if status:
             q = q.where(OrgMission.status == status)
+        # ``exclude_statuses`` (e.g. the org brain's non-terminal-mission scan
+        # for dedup — see app/org/brain.py) is independent of ``status`` so
+        # both can be combined; NOT IN is more robust to new statuses being
+        # added later than enumerating every non-terminal one.
+        if exclude_statuses:
+            q = q.where(OrgMission.status.notin_(exclude_statuses))
+        if source:
+            q = q.where(OrgMission.source == source)
         if priority:
             q = q.where(OrgMission.priority == priority)
         if dept_id:
