@@ -539,11 +539,7 @@ async def update_mission(
         mission = await service.update_mission_status(mission_id, body.status)
     else:
         updates = body.model_dump(exclude_none=True, exclude={"status"})
-        mission = (
-            await service.update_organization(mission_id, updates)  # type: ignore[assignment]
-            if updates
-            else existing
-        )
+        mission = await service.update_mission(mission_id, updates) if updates else existing
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)

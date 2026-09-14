@@ -1200,6 +1200,38 @@ class OrgService:
             span.set_attribute("old_status", old_status)
             return mission
 
+    async def update_mission(
+        self, mission_id: str, updates: dict[str, Any]
+    ) -> OrgMission | None:
+        """Persist non-status field edits on a mission (title/objective/priority/
+        why/expected_outcome/tags/budget_usd/deadline/assigned_team_id/etc.).
+
+        Status transitions go through ``update_mission_status`` instead, which
+        has its own validation (``MISSION_STATUSES``) and lifecycle side
+        effects (``started_at``/``completed_at``, event emission) — so status
+        and lifecycle/identity columns are excluded here even if present in
+        ``updates``.
+        """
+        mission = await self.get_mission(mission_id)
+        if not mission:
+            return None
+        protected = {
+            "id",
+            "tenant_id",
+            "org_id",
+            "created_at",
+            "updated_at",
+            "status",
+            "started_at",
+            "completed_at",
+        }
+        for key, val in updates.items():
+            if hasattr(mission, key) and key not in protected:
+                setattr(mission, key, val)
+        mission.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return mission
+
     # ── Task CRUD ─────────────────────────────────────────────────────────────
 
     async def create_task(
