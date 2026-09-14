@@ -104,7 +104,12 @@ class ChatService:
     The production lifespan swaps this for the DB-backed version.
     """
 
-    def __init__(self, goal_service: Any = None, answer_generator: Any = None) -> None:
+    def __init__(
+        self,
+        goal_service: Any = None,
+        answer_generator: Any = None,
+        memory_recall: Any = None,
+    ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
         self._folders: dict[str, _Folder] = {}
@@ -119,6 +124,9 @@ class ChatService:
         # real AgentGraph; ``answer_generator`` produces real QA answers.
         self._goal_service = goal_service
         self._answer_generator = answer_generator
+        # Optional async hook: (query, tenant_id) -> list[str] of relevant memories,
+        # recalled per QA turn and injected into the LLM context (Phase 1).
+        self._memory_recall = memory_recall
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -356,7 +364,10 @@ class ChatService:
         return result
 
     def attach_engine(
-        self, goal_service: Any = None, answer_generator: Any = None
+        self,
+        goal_service: Any = None,
+        answer_generator: Any = None,
+        memory_recall: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -370,6 +381,8 @@ class ChatService:
             self._goal_service = goal_service
         if answer_generator is not None:
             self._answer_generator = answer_generator
+        if memory_recall is not None:
+            self._memory_recall = memory_recall
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -467,6 +480,19 @@ class ChatService:
             windowed,
             session_system_prompt=session.system_prompt if session else None,
         )
+        # Phase 1: recall relevant long-term/episodic memories for the latest user
+        # message and inject them so the chat "remembers" across sessions/delays.
+        if self._memory_recall is not None:
+            query = next(
+                (m["content"] for m in reversed(history) if m.get("role") == "user"),
+                "",
+            )
+            try:
+                memories = await self._memory_recall(query, tenant_id)
+            except Exception:
+                memories = []
+            if memories:
+                turns = self._ctx.inject_long_term_memory([str(m) for m in memories], turns)
         request = CompletionRequest(
             messages=[Message(role=t["role"], content=t["content"]) for t in turns],
             model="",
