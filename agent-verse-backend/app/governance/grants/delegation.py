@@ -8,7 +8,9 @@ down a multi-agent chain (the Grantex delegation-chain guarantee).
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
+from typing import Any
 
 from app.governance.grants.models import Grant, scope_matches
 
@@ -67,4 +69,41 @@ def mint_delegation(
     )
 
 
-__all__ = ["DelegationError", "mint_delegation"]
+async def delegate_active_grants(
+    store: Any,
+    *,
+    tenant_id: str,
+    parent_agent_id: str,
+    child_agent_id: str,
+    now: datetime,
+) -> list[Grant]:
+    """Auto-mint narrowed delegations of a parent's active grants to a child agent.
+
+    Called when a sub-agent is spawned so authority flows down the chain without
+    widening: each child grant inherits the parent's scopes, window, and cost cap
+    (never exceeding them) and records ``parent_grant_id``. Issued into ``store``
+    so the child's tool calls are enforced against real, narrowed authority.
+    Returns the minted child grants (empty if the parent has none active).
+    """
+    if store is None or not parent_agent_id or not child_agent_id:
+        return []
+    parent_grants = await store.list_for_agent(tenant_id, parent_agent_id)
+    minted: list[Grant] = []
+    for parent in parent_grants:
+        if not parent.is_active(now):
+            continue
+        child = mint_delegation(
+            parent,
+            grant_id=uuid.uuid4().hex,
+            grantee_agent_id=child_agent_id,
+            scopes=parent.scopes,
+            expires_at=parent.expires_at,
+            max_cost_usd=parent.max_cost_usd,
+            now=now,
+        )
+        await store.issue(child)
+        minted.append(child)
+    return minted
+
+
+__all__ = ["DelegationError", "delegate_active_grants", "mint_delegation"]

@@ -1451,6 +1451,25 @@ class ExecutorMixin:
                                 }
                             )
                             raw_output_sanitized = True
+                            # Grantex delegation: mint narrowed grants for the child
+                            # so its tool calls are enforced against authority that
+                            # can only be <= the parent's (never widen). Best-effort:
+                            # on failure the child simply holds no grant (fail-closed
+                            # under enforcement), never over-permitted.
+                            if self._enforce_grants and self._grant_store:
+                                _child_aid = str(spawn_result.get("agent_id") or "")
+                                with contextlib.suppress(Exception):
+                                    from datetime import UTC, datetime
+
+                                    from app.governance.grants import delegate_active_grants
+
+                                    await delegate_active_grants(
+                                        self._grant_store,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                        parent_agent_id=str(getattr(state, "agent_id", "") or ""),
+                                        child_agent_id=_child_aid,
+                                        now=datetime.now(UTC),
+                                    )
                             record_tool_call(
                                 tool_call.tool,
                                 "civilization",

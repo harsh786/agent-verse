@@ -99,3 +99,36 @@ def test_cannot_delegate_from_inactive_parent() -> None:
             expires_at=_NOW + timedelta(hours=1),
             now=_NOW,
         )
+
+
+async def test_delegate_active_grants_narrows_and_issues_to_child() -> None:
+    from app.governance.grants import InMemoryGrantStore, delegate_active_grants
+
+    store = InMemoryGrantStore()
+    await store.issue(_parent())
+    minted = await delegate_active_grants(
+        store,
+        tenant_id="t1",
+        parent_agent_id="supervisor",
+        child_agent_id="sub-1",
+        now=_NOW,
+    )
+    assert len(minted) == 1
+    child = minted[0]
+    assert child.grantee_agent_id == "sub-1"
+    assert child.parent_grant_id == "parent"
+    assert child.expires_at <= _parent().expires_at
+    # child is enforceable from the store
+    got = await store.list_for_agent("t1", "sub-1")
+    assert len(got) == 1 and got[0].covers("jira.search", _NOW)
+
+
+async def test_delegate_skips_when_parent_has_no_active_grant() -> None:
+    from app.governance.grants import InMemoryGrantStore, delegate_active_grants
+
+    store = InMemoryGrantStore()
+    await store.issue(_parent(revoked=True))
+    minted = await delegate_active_grants(
+        store, tenant_id="t1", parent_agent_id="supervisor", child_agent_id="sub-1", now=_NOW
+    )
+    assert minted == []
