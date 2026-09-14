@@ -2320,9 +2320,19 @@ async def _dispatch_scheduled_via_dispatcher(
         return None
 
     spec = _build_scheduled_trigger_spec(schedule_key, sched)
+    # plan MUST be a PlanTier enum, not a raw string: downstream goal creation
+    # reads ``tenant_ctx.plan.value`` (goal_service), so a bare string crashed every
+    # scheduled/beat fire with "'str' object has no attribute 'value'".
+    from app.tenancy.context import PlanTier
+
+    _plan_raw = str(sched.get("tenant_plan") or "free")
+    try:
+        _plan = PlanTier(_plan_raw)
+    except ValueError:
+        _plan = PlanTier.FREE
     tenant_ctx = SimpleNamespace(
         tenant_id=str(sched.get("tenant_id") or ""),
-        plan=str(sched.get("tenant_plan") or "free"),
+        plan=_plan,
     )
 
     if dispatcher is None:
