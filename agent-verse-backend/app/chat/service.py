@@ -474,9 +474,17 @@ class ChatService:
 
         yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
         parts: list[str] = []
-        async for chunk in self._answer_generator.stream_complete(request):
-            parts.append(chunk)
-            yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
+        streamer = getattr(self._answer_generator, "stream_complete", None)
+        if callable(streamer):
+            async for chunk in streamer(request):
+                parts.append(chunk)
+                yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
+        else:
+            # Provider without a streaming API — one-shot complete().
+            resp = await self._answer_generator.complete(request)
+            text = getattr(resp, "content", "") or ""
+            parts.append(text)
+            yield sse_event(ChatEventType.TOKEN, token=text, message_id=message_id)
         answer = "".join(parts).strip()
         self.save_message(
             session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer

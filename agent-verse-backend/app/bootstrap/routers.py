@@ -94,9 +94,13 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # If the goal engine is already on app.state (constructed before routers in
     # some paths), wire chat GOAL turns to it now; the lifespan re-attaches the
     # DB-backed goal_service when it swaps services in (Phase 0.3c).
+    from app.org.service import resolve_llm_provider
+
     _existing_goal_svc = getattr(app.state, "goal_service", None)
-    if _existing_goal_svc is not None:
-        app.state.chat_service.attach_engine(goal_service=_existing_goal_svc)
+    app.state.chat_service.attach_engine(
+        goal_service=_existing_goal_svc,
+        answer_generator=resolve_llm_provider(app.state),
+    )
     app.include_router(chat_router)
     # Core
     app.include_router(system_router)

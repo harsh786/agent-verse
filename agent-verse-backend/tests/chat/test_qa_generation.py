@@ -69,3 +69,22 @@ async def test_run_qa_without_generator_is_explicit_error() -> None:
         await _collect(
             svc.run_qa(session_id=session.id, tenant_id="t1", message_id="m", user_message="hi")
         )
+
+
+async def test_run_qa_works_with_complete_only_provider() -> None:
+    """A provider without stream_complete (only complete()) still works."""
+    class _CompleteOnly:
+        async def complete(self, request):  # type: ignore[no-untyped-def]
+            class _R:
+                content = "The answer is 42"
+            return _R()
+
+    svc = ChatService(answer_generator=_CompleteOnly())
+    session = svc.create_session("t1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="q?")
+    events = await _collect(
+        svc.run_qa(session_id=session.id, tenant_id="t1", message_id="m", user_message="q?")
+    )
+    assert any(e["type"] == "token" and "42" in e["token"] for e in events)
+    msgs = svc.list_messages(session.id, "t1")
+    assert any(m.role == "assistant" and "42" in m.content for m in msgs)
