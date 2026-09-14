@@ -476,15 +476,28 @@ class ChatService:
         from app.providers.base import CompletionRequest, Message
 
         session = self.get_session(session_id, tenant_id)
+        # Fetch a generous window so long sessions trigger summarization (the
+        # default list_messages limit is small); ConversationContext then windows
+        # and compresses it down to what actually enters the prompt.
         history = [
             {"role": m.role, "content": m.content}
-            for m in self.list_messages(session_id, tenant_id)
+            for m in self.list_messages(session_id, tenant_id, limit=1000)
         ]
-        windowed = self._ctx.compress_long_session(history)
-        turns = self._ctx.build_for_qa(
-            windowed,
-            session_system_prompt=session.system_prompt if session else None,
-        )
+        system_prompt = session.system_prompt if session else None
+        if len(history) > self._ctx.COMPRESS_THRESHOLD:
+            # Long session: summarize the older portion with a real LLM call and
+            # keep only the recent window verbatim (replaces the static placeholder).
+            old = history[: -self._ctx.MAX_TURNS]
+            recent = history[-self._ctx.MAX_TURNS :]
+            summary = await self._summarize_history(old)
+            turns = self._ctx.build_for_qa(recent, session_system_prompt=system_prompt)
+            if summary:
+                turns = [
+                    {"role": "system", "content": f"[Earlier conversation summary]\n{summary}"},
+                    *turns,
+                ]
+        else:
+            turns = self._ctx.build_for_qa(history, session_system_prompt=system_prompt)
         # Phase 1: recall relevant long-term/episodic memories for the latest user
         # message and inject them so the chat "remembers" across sessions/delays.
         if self._memory_recall is not None:
@@ -521,6 +534,34 @@ class ChatService:
             session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
         )
         yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
+
+    async def _summarize_history(self, messages: list[dict[str, Any]]) -> str:
+        """LLM-summarize an older slice of a long conversation (Phase 1)."""
+        if not messages or self._answer_generator is None:
+            return ""
+        from app.providers.base import CompletionRequest, Message
+
+        convo = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        request = CompletionRequest(
+            messages=[
+                Message(
+                    role="system",
+                    content=(
+                        "Summarize this earlier part of a conversation in 3-5 sentences. "
+                        "Preserve key facts, decisions, names, numbers and open threads."
+                    ),
+                ),
+                Message(role="user", content=convo[:8000]),
+            ],
+            model="",
+            max_tokens=300,
+            temperature=0.0,
+        )
+        try:
+            resp = await self._answer_generator.complete(request)
+            return (getattr(resp, "content", "") or "").strip()
+        except Exception:
+            return ""
 
     # ── Folder CRUD ───────────────────────────────────────────────────────────
 
