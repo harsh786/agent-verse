@@ -49,9 +49,10 @@ def mint_delegation(
     # Cost cap may only tighten. If the parent is capped, the child must be capped
     # at or below it; an uncapped child under a capped parent is a widening.
     child_cap = max_cost_usd
-    if parent.max_cost_usd is not None:
-        if child_cap is None or child_cap > parent.max_cost_usd:
-            raise DelegationError("delegated cost cap exceeds parent")
+    if parent.max_cost_usd is not None and (
+        child_cap is None or child_cap > parent.max_cost_usd
+    ):
+        raise DelegationError("delegated cost cap exceeds parent")
 
     return Grant(
         grant_id=grant_id,
