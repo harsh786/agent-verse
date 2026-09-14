@@ -19,8 +19,15 @@ interface BudgetGaugesProps {
   className?: string;
 }
 
+const DECISIONS_LIMIT = 100;
+
 const AUTONOMY_KEY  = (orgId: string) => ['org-autonomy', orgId] as const;
-const DECISIONS_KEY = (orgId: string) => ['org-brain-decisions', orgId] as const;
+// Distinct from BrainFeed's `['org-brain-decisions', orgId]` key (which fetches
+// 50 rows for the feed): this gauge needs a wider window to aggregate spend, so
+// the limit is part of the key — otherwise both components would race to share
+// one TanStack Query cache entry keyed only by orgId, with whichever queryFn
+// last ran silently overwriting the other's data (see task-11 review finding).
+const DECISIONS_KEY = (orgId: string) => ['org-brain-decisions', orgId, DECISIONS_LIMIT] as const;
 
 const CYAN  = '#00D4FF';
 const AMBER = '#F59E0B';
@@ -127,7 +134,7 @@ export function BudgetGauges({ orgId, className }: BudgetGaugesProps) {
     data: decisions, isLoading: decisionsLoading, isError: decisionsError, error: decisionsErr,
   } = useQuery({
     queryKey: DECISIONS_KEY(orgId),
-    queryFn:  () => orgAutonomyApi.decisions(orgId, 100),
+    queryFn:  () => orgAutonomyApi.decisions(orgId, DECISIONS_LIMIT),
   });
 
   const isLoading = autonomyLoading || decisionsLoading;
