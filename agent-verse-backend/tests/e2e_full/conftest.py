@@ -155,17 +155,24 @@ async def client(app: Any) -> AsyncIterator[Any]:
 # ── Tenant / API-key seeding ──────────────────────────────────────────────────
 
 
-@pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def tenant_client(app: Any, client: Any) -> AsyncIterator[Any]:
-    """A client whose ``X-API-Key`` header authenticates a seeded tenant.
+@pytest_asyncio.fixture(loop_scope="session")
+async def tenant_client(
+    app: Any, client: Any, _reset_signup_rate_limit: None
+) -> AsyncIterator[Any]:
+    """A client whose ``X-API-Key`` header authenticates a FRESH per-test tenant.
 
-    Mirrors the seeding used elsewhere (``tests/conftest.py::signed_up_client``):
-    POST /tenants/signup returns an ``api_key`` we attach to every request.
+    Function-scoped (was session-scoped): each test gets its own tenant, so a test
+    that leaves state on its tenant — a stuck HITL approval, a goal in
+    ``waiting_human``, a consumed concurrent-goal budget — cannot make a later
+    test fail depending on run order. That order-dependence was the root cause of
+    the flaky ``e2e_full`` failures; a real deployment gives each caller their own
+    tenant, so per-test isolation matches production more closely too.
 
-    Session-scoped: ``/tenants/signup`` is IP-rate-limited (a real protection),
-    so seeding one tenant per test trips a 429 once the suite grows. All e2e
-    tests share this tenant and use unique per-test resource names (uuid), so
-    isolation assertions (separate collections/triggers/agents) still hold.
+    ``POST /tenants/signup`` is IP-rate-limited, and the in-process ASGI transport
+    reports one constant client IP — but ``_reset_signup_rate_limit`` (depended on
+    here so it runs first) clears that counter before each test, so per-test signup
+    never trips the 429. The app/pools stay session-scoped; only the tenant is
+    per-test.
     """
     import uuid
 
@@ -212,6 +219,37 @@ async def _reset_signup_rate_limit(app: Any) -> AsyncIterator[None]:
                 await redis.delete(*keys)
         except Exception:
             pass  # fail open — the limit fails open too
+    yield
+
+
+# ── Concurrent-goal budget reset (tenant isolation) ───────────────────────────
+
+
+@pytest_asyncio.fixture(autouse=True, loop_scope="session")
+async def _reset_goal_concurrency_budget(app: Any) -> AsyncIterator[None]:
+    """Reset every tenant's concurrent-goal counter before each test.
+
+    The concurrent-goal limit is a Redis counter (``concurrent_goals:{tenant_id}``,
+    3600s TTL) incremented when a goal is submitted and decremented only when the
+    goal reaches a terminal state. The e2e_full env runs NO celery worker, so goals
+    a test fires never complete and never decrement the counter — it accumulates
+    across the shared session tenant and eventually trips "Concurrent goal limit
+    reached", making later tests fail depending on run order (an order-dependent,
+    non-isolated failure).
+
+    Clearing the counter before each test gives every test a clean budget — the
+    isolation a real worker's decrements would provide — without changing tenant
+    scoping or touching tenant data (per-test resource names still keep data
+    isolated). Fail-open: a Redis hiccup must not block the suite.
+    """
+    redis = getattr(app.state, "_redis", None)
+    if redis is not None:
+        try:
+            keys = await redis.keys("concurrent_goals:*")
+            if keys:
+                await redis.delete(*keys)
+        except Exception:
+            pass  # fail open — the limit check itself fails open on Redis errors
     yield
 
 
