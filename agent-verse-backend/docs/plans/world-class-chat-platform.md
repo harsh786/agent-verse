@@ -136,6 +136,14 @@ Backend:
 - [ ] Delivery-back: on goal/trigger completion (`scaling/tasks.py`), post the result to the
   originating chat session SSE **and** the origin channel via `NotificationRouter`.
 - [ ] Follow-up message injection into the conversation history (so it's part of memory).
+- [ ] **Acknowledge-now / deliver-later for ANY request** (not just schedules): when a request
+  is long-running (or the user/agent chooses async), the agent replies immediately
+  ("On it — I'll send it here when ready"), runs the work as a background Celery job bound to
+  the conversation, and delivers the result back into the *same* thread as text **or** a
+  multi-format artifact (PDF/doc/xlsx/…). Covers the "give me the recipe → I'll process and
+  send it back" pattern for QA/generation turns, not only triggers. A `chat_async_jobs` record
+  tracks {conversation_id, message_id, status, result_ref} so the follow-up lands in the right
+  place even hours later or after the user goes offline (then it also pushes to the channel).
 
 Tests:
 - [ ] unit: SCHEDULE intent creates a TriggerSpec; recurring cron parsed.
@@ -157,6 +165,13 @@ Backend:
   shared `GATEWAY_INGRESS_SECRET`+header binding for tenant resolution.
 - [ ] Generic inbound webhook + outbound reply already exist — ensure both use the unified path.
 - [ ] Map channel user → durable session so memory persists per channel user.
+- [ ] **Cross-channel conversation continuity / unified identity:** link a human's identities
+  across interfaces (web login ↔ WhatsApp number ↔ Telegram id ↔ API key actor) to one
+  `principal`, so a conversation started on the web can continue on WhatsApp — or two months
+  later on any channel — as the *same* thread with the same memory. An `identity_links` table
+  maps (channel, channel_user_id) → principal → tenant; session resolution prefers the
+  principal's existing open thread over creating a new one. This is what makes "continue from
+  where he left, from any interface" true regardless of where the last message was sent.
 
 Tests:
 - [ ] unit: WhatsApp inbound → ChatService.dispatch → reply; history persisted via ConversationManager.
@@ -198,6 +213,9 @@ Backend — a `app/chat/skills/` registry, each skill = {name, description, arg 
 - [ ] **Workflows:** run/inspect a workflow by name; author a workflow from NL (workflow_planner).
 - [ ] **Connectors:** list connected services; connect/authorize (hand off OAuth safely — never
   handle secrets in chat); run a connector tool.
+- [ ] **Models:** list available models/providers; switch the model for this conversation or
+  turn ("use the cheap/fast model", "answer with Opus"); show which model answered — all via
+  the existing provider registry + `ModelRouter` (no new provider logic).
 - [ ] **Knowledge bases:** ingest a source, search a collection, cite results in the answer.
 - [ ] **AI org team:** launch an org-team mission (org-brain), report mission status, approvals.
 - [ ] **Governance/trust/security:** show pending approvals, approve/reject in chat, view audit
@@ -221,8 +239,14 @@ Tests:
 - [ ] Guardrail/policy blocks surface as explained messages (`guardrail_blocked`).
 - [ ] Every chat-initiated action writes to the audit trail with `source=chat`, conversation id.
 - [ ] Cost/budget shown inline (`cost` events → token/$ badge — `ChatTokenCostBadge` exists).
-- [ ] Trust: chat-initiated actions carry the agent identity / (future) Grantex-style scoped
-  grant; cross-channel actions verify channel-user → tenant binding.
+- [ ] Trust: every chat-initiated action carries the acting principal + agent identity and is
+  authorized against tenant permissions before it runs; cross-channel actions verify the
+  channel-user → principal → tenant binding (from Phase 3). **Grantex-style scoped, revocable,
+  time-limited grants + tamper-evident audit + delegation chains** are a *separate tracked
+  program* (`docs/plans/grantex-governance.md`, TBD); this phase makes chat a first-class
+  consumer of it — the same three gate points (`_execute_step`) check a grant when the grant
+  layer lands, and until then enforce via the existing tool-risk → HITL → policy → audit stack.
+  No chat action bypasses governance.
 
 Tests:
 - [ ] e2e: a high-risk step ("delete prod index") pauses → in-chat approval → resumes/rejects;
@@ -296,6 +320,13 @@ Tests:
 9. **Channel parity:** run scenario 2 from a Telegram message → identical result, reply on Telegram.
 10. **Resilience:** kill the stream mid-execution → FE reconnects, no lost/dup messages; restart
     backend → session + history intact.
+11. **Acknowledge-now / deliver-later:** "research the best espresso machines under $500 and send
+    me a comparison" → agent replies "On it — I'll send it here when ready", runs async, then a
+    follow-up message with a PDF/table lands in the same thread (and to WhatsApp if that's the
+    origin) minutes later — even if the user closed the tab.
+12. **Cross-channel continuity:** start a thread on the web ("plan my product launch"), then send
+    a WhatsApp message from the linked number the next day ("add a press release step") → it
+    continues the *same* conversation with full context, not a new one.
 
 ---
 
@@ -306,3 +337,42 @@ Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 9-transparency → Phase 7
 
 Each phase: TDD (red→green), commit working increments, run scoped tests before moving on;
 run the relevant §11 scenario as the phase's e2e gate.
+
+---
+
+## 13. Requirements traceability (every stated requirement → where it's covered)
+
+| # | Requirement (as stated) | Covered in |
+|---|---|---|
+| R1 | World-class chat UI/UX (frontend is "pathetic") | Phase 7 (§9); principle 0.6 |
+| R2 | Everything via natural language; it's conversation, not just task-creation | Principle 0.2; Phase 0 (§2); Phase 5 (§7) |
+| R3 | Utilize whole ecosystem — connectors + core pattern execution | 0.2; Phase 0 (full AgentGraph); Phase 5 connectors |
+| R4 | Maintain chat context | Phase 1 (§3) |
+| R5 | Cross different conversations | Phase 1 cross-conversation recall; §11.6 |
+| R6 | Long conversations | Phase 1 `compress_long_session` |
+| R7 | Long-delayed (2-months-later) conversation | Phase 1; §11.6 |
+| R8 | Continue "from where he left", any time, any interface | Phase 1 + Phase 3 cross-channel continuity; §11.12 |
+| R9 | Do anything / execute anything | Phase 0 GOAL→AgentGraph (catch-all) + Phase 5 skills |
+| R10 | Multi-format OUTPUT (text/PDF/doc/any) via existing platform+connectors | Phase 4 (§6) output; §11.3 |
+| R11 | Multi-format INPUT (image/PDF/doc/audio) | Phase 4 (§6) input; §11.4 |
+| R12 | Remember the conversation | Phase 1 |
+| R13 | Recurring / scheduling / delayed answer, processed + returned | Phase 2 (§4); §11.5 |
+| R14 | Acknowledge-now → async → deliver back (the "recipe" pattern) | Phase 2 async-follow-up; §11.11 |
+| R15 | Chat exposed as API to WhatsApp / Telegram / anything (interfaces over our APIs) | Phase 3 (§5); §11.9 |
+| R16 | Goals / agents via chat | Phase 5 |
+| R17 | Triggers via chat | Phase 5 |
+| R18 | Workflows via chat | Phase 5 |
+| R19 | Governance via chat | Phase 5 + Phase 6 (§8) |
+| R20 | Trust via chat (Grantex-style, first-class) | Phase 6; full grant layer = separate program (noted) |
+| R21 | Security via chat | Phase 6; §10 security |
+| R22 | AI org team via chat | Phase 5 org-team; §11.8 |
+| R23 | Knowledge bases via chat | Phase 5 KB; §11.4 |
+| R24 | Command from outside (API/Telegram/WhatsApp/…) | Phase 3 |
+| R25 | Work with existing connectors AND models | Phase 5 connectors + models |
+| R26 | Use the existing whole platform (no reimplementation) | Principle 0.2 (thin orchestrator) |
+| R27 | Flawless BACKEND | Phases 0–5 + §10 |
+| R28 | Flawless FRONTEND with motions/animations, stylish, best UX | Phase 7 (§9) design & motion |
+| R29 | E2E testing done autonomously | Per-phase e2e + §11 battery (12 scenarios) |
+| R30 | Extend the earlier phases | This plan supersedes/extends the 6-phase analysis |
+
+No stated requirement is unmapped. Anything discovered later appends a row here.
