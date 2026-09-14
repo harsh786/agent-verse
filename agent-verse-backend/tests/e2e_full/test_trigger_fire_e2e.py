@@ -66,12 +66,13 @@ async def test_fire_creates_real_goal_and_dedups_second_fire(tenant_client: Any)
     assert got.status_code == 200, f"goal {goal_id} not found: {got.status_code} {got.text}"
     goal = got.json()
     assert goal["goal_id"] == goal_id
-    # A real goal record with rendered goal text exists (dispatcher step 9 → 11).
-    # NOTE: goal_template currently lives on the store record, not on the
-    # TriggerSpec the dispatcher renders, so the text falls back to the default
-    # "Trigger fired: <type>" rather than the tenant's template — a minor wiring
-    # gap tracked separately; it does not affect the trigger→goal proof here.
-    assert goal.get("goal_text") or goal.get("goal")
+    # The dispatcher renders the tenant's goal_template with {{payload.*}}
+    # interpolation (dispatcher step 9 → 11). bind_refs_to_spec folds the
+    # record-level template onto the spec at create/hydration, and the fire path
+    # re-binds via _spec_for_dispatch — so the fired goal carries the rendered
+    # template, not the generic "Trigger fired: <type>" fallback.
+    goal_text = goal.get("goal_text") or goal.get("goal") or ""
+    assert "octo/hello-world" in goal_text, f"goal_template not rendered: {goal_text!r}"
 
     # NOTE: reading back the persisted trigger_events audit row is intentionally
     # NOT asserted here. The tz-aware/naive _persist_event write bug is fixed

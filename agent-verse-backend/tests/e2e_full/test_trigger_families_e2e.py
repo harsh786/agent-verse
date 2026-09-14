@@ -110,3 +110,29 @@ async def test_goal_id_binding_round_trips_through_wired_app(tenant_client: Any)
     sid = resp.json()["schedule_id"]
     got = await tenant_client.get(f"/triggers/{sid}")
     assert got.json()["goal_id"] == "goal-bound-e2e"
+
+
+async def test_goal_template_is_rendered_on_fire(tenant_client: Any) -> None:
+    """DEFECT CHECK: firing a trigger must render the tenant's goal_template with
+    payload interpolation, not fall back to the generic 'Trigger fired: <type>'."""
+    resp = await tenant_client.post(
+        "/triggers",
+        json={
+            "spec": {"trigger_type": "webhook", "description": "deploy hook"},
+            "goal_template": "Deploy {{payload.service}} to {{payload.env}}",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    sid = resp.json()["schedule_id"]
+
+    fired = await tenant_client.post(
+        f"/triggers/{sid}/fire",
+        json={"payload": {"service": "billing-api", "env": "prod"}},
+    )
+    assert fired.status_code == 200, fired.text
+    goal_id = fired.json()["goal_id"]
+    assert goal_id
+
+    got = await tenant_client.get(f"/goals/{goal_id}")
+    text = got.json().get("goal_text") or got.json().get("goal") or ""
+    assert "Deploy billing-api to prod" in text, f"template not rendered; got: {text!r}"

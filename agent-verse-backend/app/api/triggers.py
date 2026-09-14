@@ -593,7 +593,13 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan="free")
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     for trigger in triggers:
-        spec = trigger.get("spec", trigger)
+        # Bind the record-level goal_template / agent refs onto the spec (as the
+        # manual fire and simulate paths do) so an inbound webhook renders the
+        # tenant's goal template instead of the generic "Trigger fired: <type>".
+        if isinstance(trigger, dict) and "spec" in trigger:
+            spec = _spec_for_dispatch(trigger)
+        else:
+            spec = trigger.get("spec", trigger)
         secret = getattr(spec, "webhook_signature_secret", "") or ""
         if secret and sig_header:
             valid = await verifier.verify(body_bytes, sig_header, secret)
