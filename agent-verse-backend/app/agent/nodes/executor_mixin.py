@@ -18,6 +18,7 @@ from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubG
 from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent
+from app.governance.grants import enforce_tool_call
 from app.governance.hitl import ApprovalStatus
 from app.governance.permissions import ActionLevel
 from app.governance.policies import PolicyResult
@@ -1639,6 +1640,27 @@ class ExecutorMixin:
                             time.monotonic() - tool_call_started,
                         )
                 else:
+                    # Grantex governance gate (mandatory, opt-in): an agent may
+                    # only run a tool it holds a covering, active, unrevoked grant
+                    # for. Pass-through until enforcement is enabled for the deploy.
+                    _grant_decision = await enforce_tool_call(
+                        self._grant_store,
+                        tenant_id=tenant_ctx.tenant_id,
+                        agent_id=self._agent_id or "",
+                        tool_name=tool_ref.name,
+                        enabled=self._enforce_grants,
+                    )
+                    if not _grant_decision.allowed:
+                        await self._emit(
+                            {
+                                "type": "tool_call_blocked_by_grant",
+                                "tool": tool_ref.name,
+                                "reason": _grant_decision.reason,
+                            }
+                        )
+                        raise PermissionError(
+                            f"blocked by grant guard [{tool_ref.name}]: {_grant_decision.reason}"
+                        )
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
                     # Gate write_high bypass behind an explicit env flag (default-secure).
                     import os as _os

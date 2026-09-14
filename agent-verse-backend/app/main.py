@@ -1166,6 +1166,12 @@ def create_app(
             app.state.prospective_memory_service = ProspectiveMemoryService()
             app.state.learning_experiment_service = LearningExperimentService()
 
+            # Grantex tool-grant store (governance enforcement at the executor gate).
+            # In-memory for now; a Postgres-backed repo is the persistence follow-up.
+            from app.governance.grants import InMemoryGrantStore
+
+            app.state.grant_store = InMemoryGrantStore()
+
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
             if _usage_svc is not None:

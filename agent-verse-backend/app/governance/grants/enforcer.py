@@ -62,4 +62,35 @@ async def check_grant(
     return GrantDecision(False, reason)
 
 
-__all__ = ["GrantDecision", "check_grant"]
+async def enforce_tool_call(
+    store: Any,
+    *,
+    tenant_id: str,
+    agent_id: str,
+    tool_name: str,
+    enabled: bool,
+    cost_usd: float = 0.0,
+    now: datetime | None = None,
+) -> GrantDecision:
+    """Framework entry point: the single call every tool action routes through.
+
+    When ``enabled`` is False (default deployment posture until a tenant opts in),
+    this is a pass-through so nothing regresses. When enabled, it applies
+    :func:`check_grant` (fail-closed) so an agent may only perform an action it
+    holds a covering, active, unrevoked grant for — making governance mandatory at
+    the execution boundary rather than advisory.
+    """
+    if not enabled:
+        return GrantDecision(True, "enforcement_disabled")
+    return await check_grant(
+        store,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        tool_name=tool_name,
+        now=now,
+        cost_usd=cost_usd,
+        require_grant=True,
+    )
+
+
+__all__ = ["GrantDecision", "check_grant", "enforce_tool_call"]

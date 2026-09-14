@@ -55,6 +55,16 @@ _tracer = trace.get_tracer(__name__)
 _SENTINEL: dict[str, Any] | None = None
 _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED}
 
+
+def _agent_grants_enforced() -> bool:
+    """Whether Grantex tool-grant enforcement is on (opt-in, default off)."""
+    try:
+        from app.core.config import get_settings
+
+        return bool(getattr(get_settings(), "enforce_agent_grants", False))
+    except Exception:
+        return False
+
 # TTL for completed/failed/cancelled goals in the in-memory cache.
 # They are safe to evict because they are already persisted in the DB.
 _COMPLETED_GOAL_TTL_SECONDS = 3600  # 1 hour
@@ -1028,6 +1038,8 @@ class GoalService:
             "prospective_service": (
                 getattr(app_state, "prospective_memory_service", None) if app_state else None
             ),
+            "grant_store": getattr(app_state, "grant_store", None) if app_state else None,
+            "enforce_grants": _agent_grants_enforced(),
             "retrieval_gateway": retrieval_gateway,
             "long_term_memory": long_term_memory,
             "mcp_client": mcp_client,

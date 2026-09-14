@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     rag_low_confidence_fallback_enabled: bool = True
     rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
+    # Grantex governance: when True, every agent tool call must pass a covering,
+    # active, unrevoked grant (fail-closed). Default off so it is opt-in per
+    # deployment — enable once grants are being issued for agents.
+    enforce_agent_grants: bool = False
+
     # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
     # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
     # self-improvement decision surfaces read every weight/threshold/budget from

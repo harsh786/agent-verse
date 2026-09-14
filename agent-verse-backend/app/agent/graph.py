@@ -119,6 +119,11 @@ class AgentGraph(
         # Prospective memory (deferred intentions/reminders). Optional — Any to
         # avoid a hard dependency; recall is surfaced into the planner context.
         prospective_service: Any | None = None,
+        # Grantex governance: mandatory grant enforcement at the tool-execution
+        # choke point. ``enforce_grants`` defaults False (pass-through) until a
+        # deployment opts in; ``grant_store`` supplies an agent's grants.
+        grant_store: Any | None = None,
+        enforce_grants: bool = False,
         retrieval_gateway: Any | None = None,
         mcp_client: Any | None = None,
         # Intelligence
@@ -193,6 +198,8 @@ class AgentGraph(
         self._knowledge_store = knowledge_store
         self._knowledge_graph_store = knowledge_graph_store
         self._prospective_service = prospective_service
+        self._grant_store = grant_store
+        self._enforce_grants = enforce_grants
         self._retrieval_gateway = retrieval_gateway
         self._mcp_client = mcp_client
         self._guardrail_checker = guardrail_checker
