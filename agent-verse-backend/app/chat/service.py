@@ -9,6 +9,8 @@ This is the core orchestrator that:
 
 from __future__ import annotations
 
+import contextlib
+import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -17,6 +19,21 @@ from typing import Any
 
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
+
+# Explicit "remember this" directives → the salient fact to persist.
+_MEMORY_DIRECTIVE = re.compile(
+    r"^\s*(?:please\s+)?(?:remember|note|keep in mind|don'?t forget)\s+(?:that\s+)?(.+)",
+    re.IGNORECASE,
+)
+
+
+def _extract_memory_directive(message: str) -> str | None:
+    """Return the fact a user asked to be remembered, or None."""
+    m = _MEMORY_DIRECTIVE.match(message or "")
+    if not m:
+        return None
+    fact = m.group(1).strip().rstrip(".").strip()
+    return fact or None
 
 
 def _now() -> datetime:
@@ -109,6 +126,7 @@ class ChatService:
         goal_service: Any = None,
         answer_generator: Any = None,
         memory_recall: Any = None,
+        memory_writer: Any = None,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
@@ -127,6 +145,9 @@ class ChatService:
         # Optional async hook: (query, tenant_id) -> list[str] of relevant memories,
         # recalled per QA turn and injected into the LLM context (Phase 1).
         self._memory_recall = memory_recall
+        # Optional async hook: (fact, tenant_id) -> None, storing an explicit
+        # "remember that ..." fact so future conversations recall it (Phase 1).
+        self._memory_writer = memory_writer
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -368,6 +389,7 @@ class ChatService:
         goal_service: Any = None,
         answer_generator: Any = None,
         memory_recall: Any = None,
+        memory_writer: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -383,6 +405,8 @@ class ChatService:
             self._answer_generator = answer_generator
         if memory_recall is not None:
             self._memory_recall = memory_recall
+        if memory_writer is not None:
+            self._memory_writer = memory_writer
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -498,15 +522,21 @@ class ChatService:
                 ]
         else:
             turns = self._ctx.build_for_qa(history, session_system_prompt=system_prompt)
-        # Phase 1: recall relevant long-term/episodic memories for the latest user
-        # message and inject them so the chat "remembers" across sessions/delays.
+        latest_user = next(
+            (m["content"] for m in reversed(history) if m.get("role") == "user"), ""
+        )
+        # Phase 1 (write): persist an explicit "remember that ..." fact so future
+        # conversations recall it.
+        if self._memory_writer is not None:
+            fact = _extract_memory_directive(latest_user)
+            if fact:
+                with contextlib.suppress(Exception):
+                    await self._memory_writer(fact, tenant_id)
+        # Phase 1 (read): recall relevant long-term/episodic memories for the latest
+        # user message and inject them so the chat "remembers" across sessions/delays.
         if self._memory_recall is not None:
-            query = next(
-                (m["content"] for m in reversed(history) if m.get("role") == "user"),
-                "",
-            )
             try:
-                memories = await self._memory_recall(query, tenant_id)
+                memories = await self._memory_recall(latest_user, tenant_id)
             except Exception:
                 memories = []
             if memories:
