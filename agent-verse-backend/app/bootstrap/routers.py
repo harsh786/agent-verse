@@ -48,6 +48,7 @@ from app.api.enterprise import router as enterprise_router
 from app.api.goals import router as goals_router
 from app.api.golden_datasets import router as golden_datasets_router
 from app.api.governance import router as governance_router
+from app.api.grants import router as grants_router
 from app.api.guardrails import router as guardrails_router
 from app.api.ingestion import documents_router as ingestion_documents_router
 from app.api.ingestion import router as ingestion_sources_router  # Ingestion framework
@@ -118,6 +119,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Agents, governance, knowledge, scheduling
     app.include_router(agents_router)
     app.include_router(governance_router)
+    app.include_router(grants_router)
     app.include_router(knowledge_router)
     app.include_router(rpa_router)
     app.include_router(schedules_router)

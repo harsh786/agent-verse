@@ -267,6 +267,24 @@ class PlannerMixin:
         except Exception:
             pass
 
+        # Prospective memory recall — deferred intentions/reminders now due (T3.2).
+        # Read-only (does NOT lease items for execution) so surfacing them in the
+        # plan prompt can't collide with the scheduler's lease_due path.
+        try:
+            _prospective = getattr(self, "_prospective_service", None)
+            if _prospective is not None:
+                from datetime import UTC, datetime
+
+                from app.agent.prospective_wiring import pending_intentions_block
+
+                _now = datetime.now(UTC)
+                _pending = await _prospective.list_active(tenant_ctx.tenant_id, now=_now)
+                _pi_block = pending_intentions_block(_pending, _now)
+                if _pi_block:
+                    extra_parts.append(f"[Pending intentions]\n{_pi_block}")
+        except Exception:
+            pass
+
         # D-17: Structured reflexion recall — evidence-backed lessons from ReflexionService
         try:
             if self._reflexion_service is not None:

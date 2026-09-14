@@ -1161,10 +1161,37 @@ def create_app(
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
             from app.intelligence.learning_experiments import LearningExperimentService
-            from app.memory.prospective import ProspectiveMemoryService
 
-            app.state.prospective_memory_service = ProspectiveMemoryService()
+            # Durable prospective memory so deferred intentions survive restarts,
+            # are recalled into the planner, and can be leased/fired by the scheduler.
+            try:
+                from app.memory.prospective_postgres import PostgresProspectiveMemoryService
+
+                app.state.prospective_memory_service = PostgresProspectiveMemoryService(db_factory)
+            except Exception:
+                from app.memory.prospective import ProspectiveMemoryService
+
+                app.state.prospective_memory_service = ProspectiveMemoryService()
             app.state.learning_experiment_service = LearningExperimentService()
+
+            # Grantex tool-grant store (governance enforcement at the executor gate).
+            # Postgres-backed so grants persist across restarts; falls back to
+            # in-memory if the DB factory is unavailable.
+            try:
+                from app.governance.grants.postgres_store import PostgresGrantStore
+
+                app.state.grant_store = PostgresGrantStore(db_factory)
+            except Exception:
+                from app.governance.grants import InMemoryGrantStore
+
+                app.state.grant_store = InMemoryGrantStore()
+            # Tamper-evident audit chain for governance mutations (issue/revoke).
+            try:
+                from app.governance.audit_chain_store import PersistentAuditChain
+
+                app.state.audit_chain = PersistentAuditChain(db_factory)
+            except Exception:
+                app.state.audit_chain = None
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -2188,6 +2215,11 @@ def create_app(
 
     app.state.prospective_memory_service = ProspectiveMemoryService()
     app.state.learning_experiment_service = LearningExperimentService()
+    from app.governance.grants import InMemoryGrantStore
+
+    app.state.grant_store = InMemoryGrantStore()
+    # No DB session factory in the in-memory app → audit chain wired in lifespan only.
+    app.state.audit_chain = None
     from app.coordination.auction.repository import (
         InMemoryAuctionRepository,
         InMemorySealedBidInbox,

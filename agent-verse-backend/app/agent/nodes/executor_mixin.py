@@ -18,6 +18,7 @@ from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus, SubG
 from app.agent.tool_calls import ToolCall, extract_tool_call, repair_tool_call_arguments
 from app.agent.tool_risk import classify_tool_risk
 from app.governance.audit import AuditEvent
+from app.governance.grants import enforce_tool_call
 from app.governance.hitl import ApprovalStatus
 from app.governance.permissions import ActionLevel
 from app.governance.policies import PolicyResult
@@ -842,6 +843,39 @@ class ExecutorMixin:
         if step_context:
             context_parts.append(f"Relevant knowledge:\n{step_context}")
 
+        # Working memory (T1.2): bounded, salience-ranked recall across the WHOLE
+        # run (not just the last 3 steps covered by ``Recent outputs``). Volatile —
+        # lives in the checkpointed state, never the durable memory store.
+        # Best-effort context: a failure here must never fail the step.
+        try:
+            from app.agent.working_memory_wiring import (
+                sync_working_memory,
+                working_memory_block,
+            )
+
+            sync_working_memory(state.context, state.steps)
+            _wm_block = working_memory_block(state.context, focus=f"{state.goal}\n{step}")
+            if _wm_block:
+                context_parts.append(f"[Working memory]\n{_wm_block}")
+        except Exception:
+            pass
+
+        # Entity/knowledge-graph memory (T2.1): extract entities observed in prior
+        # step outputs into the tenant knowledge graph so later plans can recall
+        # what we already learned. Recall itself is wired in PlannerMixin via
+        # KnowledgeGraphFactsSource; here we close the population gap. Best-effort.
+        try:
+            from app.agent.entity_memory_wiring import record_entities_from_steps
+
+            record_entities_from_steps(
+                self._knowledge_graph_store,
+                tenant_ctx.tenant_id,
+                state.steps,
+                source_id=state.goal_id,
+            )
+        except Exception:
+            pass
+
         # ── Search directive parsing ───────────────────────────────────────
         try:
             from app.rag.agentic.search_directive_parser import SearchDirectiveParser
@@ -1417,6 +1451,25 @@ class ExecutorMixin:
                                 }
                             )
                             raw_output_sanitized = True
+                            # Grantex delegation: mint narrowed grants for the child
+                            # so its tool calls are enforced against authority that
+                            # can only be <= the parent's (never widen). Best-effort:
+                            # on failure the child simply holds no grant (fail-closed
+                            # under enforcement), never over-permitted.
+                            if self._enforce_grants and self._grant_store:
+                                _child_aid = str(spawn_result.get("agent_id") or "")
+                                with contextlib.suppress(Exception):
+                                    from datetime import UTC, datetime
+
+                                    from app.governance.grants import delegate_active_grants
+
+                                    await delegate_active_grants(
+                                        self._grant_store,
+                                        tenant_id=tenant_ctx.tenant_id,
+                                        parent_agent_id=str(getattr(state, "agent_id", "") or ""),
+                                        child_agent_id=_child_aid,
+                                        now=datetime.now(UTC),
+                                    )
                             record_tool_call(
                                 tool_call.tool,
                                 "civilization",
@@ -1606,6 +1659,27 @@ class ExecutorMixin:
                             time.monotonic() - tool_call_started,
                         )
                 else:
+                    # Grantex governance gate (mandatory, opt-in): an agent may
+                    # only run a tool it holds a covering, active, unrevoked grant
+                    # for. Pass-through until enforcement is enabled for the deploy.
+                    _grant_decision = await enforce_tool_call(
+                        self._grant_store,
+                        tenant_id=tenant_ctx.tenant_id,
+                        agent_id=self._agent_id or "",
+                        tool_name=tool_ref.name,
+                        enabled=self._enforce_grants,
+                    )
+                    if not _grant_decision.allowed:
+                        await self._emit(
+                            {
+                                "type": "tool_call_blocked_by_grant",
+                                "tool": tool_ref.name,
+                                "reason": _grant_decision.reason,
+                            }
+                        )
+                        raise PermissionError(
+                            f"blocked by grant guard [{tool_ref.name}]: {_grant_decision.reason}"
+                        )
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
                     # Gate write_high bypass behind an explicit env flag (default-secure).
                     import os as _os
@@ -2201,11 +2275,42 @@ class ExecutorMixin:
                     or ""
                 ).lower()
                 _ground_ratio = 0.0 if _risk_ground in ("high", "critical") else None
-                _ground_result = check_grounding(
-                    output=raw_output,
-                    tool_outputs=_tool_outputs_for_grounding,
-                    max_ungrounded_ratio=_ground_ratio,
-                )
+                _use_policy = False
+                with contextlib.suppress(Exception):
+                    from app.core.config import get_settings as _gs
+
+                    _use_policy = bool(getattr(_gs(), "grounding_policy_enabled", False))
+                if _use_policy:
+                    # Richer per-claim policy: exact tiers + optional embedding
+                    # paraphrase tier + calibrated abstention. Produces a
+                    # GroundingResult-compatible verdict so downstream is unchanged.
+                    from app.agent.grounding import GroundingResult
+                    from app.agent.grounding_policy import GroundingPolicy
+
+                    _embed_fn = None
+                    if self._embedder is not None:
+                        async def _embed_fn(texts: list[str]) -> list[list[float]]:
+                            from app.providers.base import EmbedRequest
+
+                            _resp = await self._embedder.embed(EmbedRequest(texts=texts))
+                            return list(getattr(_resp, "embeddings", []) or [])
+
+                    _min_ratio = 1.0 if _risk_ground in ("high", "critical") else 0.75
+                    _pr = await GroundingPolicy(
+                        min_grounded_ratio=_min_ratio, embed_fn=_embed_fn
+                    ).evaluate(raw_output, _tool_outputs_for_grounding)
+                    _ground_result = GroundingResult(
+                        grounded=_pr.grounded,
+                        ungrounded_claims=_pr.abstain,
+                        checked_claims=len(_pr.verdicts),
+                        evidence_length=0,
+                    )
+                else:
+                    _ground_result = check_grounding(
+                        output=raw_output,
+                        tool_outputs=_tool_outputs_for_grounding,
+                        max_ungrounded_ratio=_ground_ratio,
+                    )
                 if not _ground_result.grounded:
                     state.consecutive_ungrounded += 1
                     self._logger.info(

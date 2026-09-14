@@ -120,6 +120,27 @@ class ProspectiveMemoryService:
     async def get(self, tenant_id: str, memory_id: str) -> ProspectiveMemory | None:
         return self._items.get((tenant_id, memory_id))
 
+    async def list_active(
+        self, tenant_id: str, *, now: datetime
+    ) -> tuple[ProspectiveMemory, ...]:
+        """Read-only: non-terminal, non-expired intentions for a tenant, due-first.
+
+        Unlike ``lease_due`` this does NOT mutate state — it is safe to call for
+        surfacing "pending intentions" into an agent's planning context without
+        claiming the items for execution.
+        """
+        terminal = {"completed", "failed", "cancelled", "expired"}
+        async with self._lock:
+            items = [
+                item
+                for item in self._items.values()
+                if item.tenant_id == tenant_id
+                and item.state not in terminal
+                and item.expires_at > now
+            ]
+        items.sort(key=lambda item: item.due_at)
+        return tuple(items)
+
 
 def prospective_id(tenant_id: str, idempotency_key: str) -> str:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"{tenant_id}:{idempotency_key}").hex

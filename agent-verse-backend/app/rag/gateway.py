@@ -45,6 +45,7 @@ from app.rag.contracts import (
     UnavailableRAGStrategyError,
     resolve_rag_strategy,
 )
+from app.rag.embedding_cache import EmbeddingCache as _EmbeddingCache
 from app.rag.engine import (
     RetrievalResult as EngineRetrievalResult,
 )
@@ -221,15 +222,56 @@ class _RAGCostGuard:
         ]
 
 
+# Process-wide exact-text embedding cache: short-circuits re-embedding identical
+# query/chunk text (a win SemanticCache can't give — it needs an embedding to look
+# up). Best-effort L1; keyed by (model, whitespace-normalized text).
+_EMBED_CACHE = _EmbeddingCache()
+
+
 class _BudgetedEmbedder:
     def __init__(self, embedder: Any, guard: _RAGCostGuard) -> None:
         self._embedder = embedder
         self._guard = guard
 
+    def _model(self, request: Any) -> str:
+        return str(
+            getattr(request, "model", "")
+            or getattr(self._embedder, "_default_model", "")
+            or "embedding"
+        )
+
+    @staticmethod
+    def _cache_enabled() -> bool:
+        try:
+            from app.core.config import get_settings
+
+            return bool(getattr(get_settings(), "rag_embedding_cache_enabled", False))
+        except Exception:
+            return False
+
     async def embed(self, request: Any) -> Any:
+        texts = list(getattr(request, "texts", []) or [])
+        model = self._model(request)
+        _cache_on = self._cache_enabled()
+        # Full cache hit → return without spending an embed call or budget.
+        if texts and _cache_on:
+            hits, misses = await _EMBED_CACHE.get_batch(model, texts)
+            if not misses:
+                from app.providers.base import EmbedResponse
+
+                return EmbedResponse(
+                    embeddings=[hits[i] for i in range(len(texts))],
+                    model=model,
+                    total_tokens=0,
+                )
         event_index = await self._guard.reserve("embedding")
         response = await self._embedder.embed(request)
         self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
+        # Populate cache for next time (best-effort; only when aligned 1:1).
+        embs = getattr(response, "embeddings", None)
+        if _cache_on and texts and embs and len(embs) == len(texts):
+            for text_item, emb in zip(texts, embs, strict=False):
+                await _EMBED_CACHE.set(model, text_item, emb)
         return response
 
 
