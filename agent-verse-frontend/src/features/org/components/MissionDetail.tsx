@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { getAuthHeader } from '@/stores/auth';
 import { useMission, useOrgEvents, useUpdateMissionStatus } from '../hooks/useOrg';
 import { MissionDeliverable } from './MissionDeliverable';
+import { MissionGantt } from './MissionGantt';
 import type { OrgMission, MissionStatus } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -229,6 +230,9 @@ function MissionBody({
           {mission.priority}
         </span>
       </div>
+
+      {/* Phase-by-phase timing ribbon */}
+      <MissionGantt orgId={orgId} missionId={missionId} />
 
       {/* Objective */}
       {mission.objective && (

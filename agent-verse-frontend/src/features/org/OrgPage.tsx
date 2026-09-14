@@ -44,6 +44,7 @@ import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
 import { AutonomyControl }       from './components/AutonomyControl';
 import { BrainFeed }             from './components/BrainFeed';
+import { BudgetGauges }          from './components/BudgetGauges';
 import { TeamChannel }           from './components/TeamChannel';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
@@ -784,6 +785,11 @@ export function OrgPage() {
             {/* Brain decisions feed — directly below autonomy control. */}
             <section className="p-4 border-b border-[#1E2535]">
               <BrainFeed orgId={orgId} />
+            </section>
+
+            {/* Budget-burn gauges — daily / per-mission / collaboration caps. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <BudgetGauges orgId={orgId} />
             </section>
 
             {/* Team channel — live cross-agent collaboration chatter. */}
