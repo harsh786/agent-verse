@@ -1316,6 +1316,9 @@ def create_app(
 
             app.state.audit_log = _audit_log_db
             app.state.schedule_store = _schedule_store_db
+            # Chat SCHEDULE turns use the DB-backed schedule store (Phase 2).
+            if getattr(app.state, "chat_service", None) is not None:
+                app.state.chat_service.attach_engine(schedule_store=_schedule_store_db)
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 

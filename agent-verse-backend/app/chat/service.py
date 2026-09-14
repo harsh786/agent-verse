@@ -127,6 +127,8 @@ class ChatService:
         answer_generator: Any = None,
         memory_recall: Any = None,
         memory_writer: Any = None,
+        nl_scheduler: Any = None,
+        schedule_store: Any = None,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
@@ -148,6 +150,9 @@ class ChatService:
         # Optional async hook: (fact, tenant_id) -> None, storing an explicit
         # "remember that ..." fact so future conversations recall it (Phase 1).
         self._memory_writer = memory_writer
+        # Real scheduling engine (Phase 2): NL -> TriggerSpecs -> persisted schedules.
+        self._nl_scheduler = nl_scheduler
+        self._schedule_store = schedule_store
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -390,6 +395,8 @@ class ChatService:
         answer_generator: Any = None,
         memory_recall: Any = None,
         memory_writer: Any = None,
+        nl_scheduler: Any = None,
+        schedule_store: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -407,6 +414,10 @@ class ChatService:
             self._memory_recall = memory_recall
         if memory_writer is not None:
             self._memory_writer = memory_writer
+        if nl_scheduler is not None:
+            self._nl_scheduler = nl_scheduler
+        if schedule_store is not None:
+            self._schedule_store = schedule_store
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -424,6 +435,34 @@ class ChatService:
     def can_recall_memory(self) -> bool:
         """True when a memory-recall hook is wired (QA injects long-term memory)."""
         return self._memory_recall is not None
+
+    @property
+    def can_schedule(self) -> bool:
+        """True when the real scheduling engine is wired (SCHEDULE creates triggers)."""
+        return self._nl_scheduler is not None and self._schedule_store is not None
+
+    async def create_schedule(
+        self, *, tenant_ctx: Any, message: str, agent_id: str | None = None
+    ) -> list[str]:
+        """Parse a NL scheduling request and persist the real schedule(s).
+
+        Returns the created schedule ids. Replaces the old preview-only path where
+        a SCHEDULE-intent chat turn produced a confirmation but created nothing.
+        """
+        if not self.can_schedule:
+            raise RuntimeError("chat scheduling requires nl_scheduler + schedule_store wired")
+        specs = await self._nl_scheduler.parse(message)
+        ids: list[str] = []
+        for spec in specs:
+            schedule_id = await self._schedule_store.create_async(
+                goal_id=message,
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                agent_id=agent_id,
+                goal_template=message,
+            )
+            ids.append(str(schedule_id))
+        return ids
 
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 

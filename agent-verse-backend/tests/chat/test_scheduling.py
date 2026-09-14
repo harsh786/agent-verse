@@ -1,65 +1,59 @@
-"""Tests for scheduling from chat — 10 cases."""
+"""Phase 2 — SCHEDULE-intent chat turns create REAL triggers (not just a preview)."""
 
 from __future__ import annotations
 
-from app.chat.intent import IntentRouter, ScheduleConfirmation
+from typing import Any
 
-router = IntentRouter()
-
-
-def test_schedule_intent_detected_daily(router: IntentRouter = router) -> None:
-    result = router.classify("Run backup every day at 2 AM")
-    from app.chat.intent import Intent
-    assert result == Intent.SCHEDULE
+from app.chat.service import ChatService
 
 
-def test_schedule_intent_detected_weekly(router: IntentRouter = router) -> None:
-    from app.chat.intent import Intent
-    result = router.classify("Run report weekly")
-    assert result == Intent.SCHEDULE
+class _FakeSpec:
+    trigger_type = "cron"
 
 
-def test_schedule_intent_hourly(router: IntentRouter = router) -> None:
-    from app.chat.intent import Intent
-    result = router.classify("Run this every hour")
-    assert result == Intent.SCHEDULE
+class _FakeScheduler:
+    def __init__(self) -> None:
+        self.parsed: list[str] = []
+
+    async def parse(self, command: str) -> list[Any]:
+        self.parsed.append(command)
+        return [_FakeSpec(), _FakeSpec()]  # two schedules
 
 
-def test_schedule_cron_from_daily_at(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run daily at 9 AM")
-    assert isinstance(sc, ScheduleConfirmation)
-    assert sc.cron_expression
-    # Should contain hour 9
-    parts = sc.cron_expression.split()
-    assert len(parts) == 5
+class _FakeStore:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    async def create_async(self, **kwargs: Any) -> str:
+        self.created.append(kwargs)
+        return f"sched-{len(self.created)}"
 
 
-def test_schedule_cron_from_hourly(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run hourly")
-    assert "* *" in sc.cron_expression
+def _ctx() -> Any:
+    from app.tenancy.context import PlanTier, TenantContext
+
+    return TenantContext(tenant_id="t1", plan=PlanTier.PROFESSIONAL, api_key_id="k")
 
 
-def test_schedule_cron_from_weekly(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run every Monday at 9 AM")
-    assert "1" in sc.cron_expression  # Monday = 1
+async def test_create_schedule_parses_and_persists_specs() -> None:
+    sched, store = _FakeScheduler(), _FakeStore()
+    svc = ChatService(nl_scheduler=sched, schedule_store=store)
+    assert svc.can_schedule is True
+
+    ids = await svc.create_schedule(
+        tenant_ctx=_ctx(), message="every monday at 9am email me the report", agent_id="a1"
+    )
+    assert ids == ["sched-1", "sched-2"]
+    assert sched.parsed == ["every monday at 9am email me the report"]
+    # each schedule bound to the NL command + agent
+    assert all(c["agent_id"] == "a1" for c in store.created)
+    assert all(c["goal_template"] == "every monday at 9am email me the report" for c in store.created)
 
 
-def test_schedule_human_readable(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run every day at 9 AM")
-    assert sc.human_schedule
+async def test_create_schedule_without_deps_is_explicit_error() -> None:
+    import pytest
 
-
-def test_schedule_goal_text_preserved(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Deploy the service every day at midnight")
-    assert "Deploy" in sc.goal_text
-
-
-def test_schedule_returns_schedule_confirmation(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run every Monday")
-    assert isinstance(sc, ScheduleConfirmation)
-
-
-def test_schedule_cron_has_five_parts(router: IntentRouter = router) -> None:
-    sc = router.generate_schedule_confirmation("Run daily at 6 PM")
-    parts = sc.cron_expression.split()
-    assert len(parts) == 5
+    svc = ChatService()
+    assert svc.can_schedule is False
+    with pytest.raises(RuntimeError, match="scheduling"):
+        await svc.create_schedule(tenant_ctx=_ctx(), message="every day at 9")

@@ -110,6 +110,8 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         answer_generator=resolve_llm_provider(app.state),
         memory_recall=_memory_recall,
         memory_writer=_memory_writer,
+        nl_scheduler=getattr(app.state, "nl_scheduler", None),
+        schedule_store=getattr(app.state, "schedule_store", None),
     )
     app.include_router(chat_router)
     # Core
