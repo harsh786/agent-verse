@@ -46,9 +46,47 @@ class AnswerSynthesizer:
         self,
         llm_provider: Any | None = None,
         max_output_tokens: int = 2000,
+        *,
+        enforce_citation_gate: bool = True,
     ) -> None:
         self._llm = llm_provider
         self._max_output_tokens = max_output_tokens
+        self._enforce_gate = enforce_citation_gate
+
+    def _apply_citation_gate(self, answer: CitedAnswer, steps: list[Any]) -> CitedAnswer:
+        """T6: strip claims not supported by a cited step (anti-hallucination gate).
+
+        Best-effort: if gating would empty the answer, keep the original rather
+        than return nothing. Adjusts grounding_score to the kept/total ratio.
+        """
+        if not self._enforce_gate or not answer.answer.strip():
+            return answer
+        try:
+            from app.agent.citation_gate import enforce_citations
+
+            step_outputs = {
+                i + 1: str(getattr(s, "output", "") or "") for i, s in enumerate(steps)
+            }
+            gated = enforce_citations(answer.answer, step_outputs)
+            if gated.ok:
+                return answer
+            logger.info(
+                "citation_gate_stripped",
+                dropped=gated.dropped_sentences,
+                violations=len(gated.violations),
+            )
+            if not gated.gated_answer.strip():
+                return answer  # avoid an empty answer; leave original + low score
+            total = gated.kept_sentences + gated.dropped_sentences
+            score = (gated.kept_sentences / total) if total else answer.grounding_score
+            return CitedAnswer(
+                answer=gated.gated_answer,
+                citations=answer.citations,
+                grounding_score=round(score, 4),
+            )
+        except Exception as exc:
+            logger.debug("citation_gate_failed", error=str(exc)[:60])
+            return answer
 
     async def synthesize(
         self,
@@ -88,14 +126,15 @@ class AnswerSynthesizer:
                 }
             )
 
+        result: CitedAnswer | None = None
         if self._llm is not None:
             try:
-                return await self._synthesize_with_llm(goal, provenance, steps)
+                result = await self._synthesize_with_llm(goal, provenance, steps)
             except Exception as exc:
                 logger.warning("synthesis_llm_failed", error=str(exc)[:60])
-
-        # Deterministic fallback
-        return self._synthesize_deterministic(goal, provenance, steps)
+        if result is None:
+            result = self._synthesize_deterministic(goal, provenance, steps)
+        return self._apply_citation_gate(result, steps)
 
     async def _synthesize_with_llm(
         self, goal: str, provenance: list[dict[str, Any]], steps: list[Any]
