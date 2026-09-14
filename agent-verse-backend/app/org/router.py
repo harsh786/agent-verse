@@ -558,6 +558,23 @@ async def update_mission_status(
     return MissionResponse.model_validate(mission)
 
 
+@router.get(
+    "/{org_id}/missions/{mission_id}/timeline",
+    operation_id="org_mission_timeline",
+    summary="Mission phase timeline (Situation Room Gantt ribbon)",
+)
+async def get_mission_timeline(
+    org_id: str,
+    mission_id: str,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> dict[str, Any]:
+    timeline = await service.get_mission_timeline(org_id, mission_id)
+    if timeline is None:
+        raise _not_found("Mission", mission_id, x_request_id)
+    return timeline
+
+
 # ── Autonomous Org Brain: decisions + proposal approve/reject ───────────────
 
 

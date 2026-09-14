@@ -1655,6 +1655,153 @@ class OrgService:
                 e["at"] = at.isoformat() if hasattr(at, "isoformat") else at
             return trimmed
 
+    # ── Mission timeline (Situation Room Gantt ribbon) ───────────────────────
+
+    async def get_mission_timeline(self, org_id: str, mission_id: str) -> dict[str, Any] | None:
+        """Derive an ordered phase ribbon (Gantt data) for one mission.
+
+        ``OrgMission`` only has ``started_at``/``completed_at`` — there is no
+        phase-level timestamp table — so phases are reconstructed from the
+        mission's own columns plus its lifecycle events in ``org_events``.
+
+        The mission-lifecycle emits in this file are NOT uniform about where
+        the mission id lives:
+        - ``mission.created`` / ``mission.{planned,queued,started,paused,
+          review,completed,failed,cancelled,expired,archived}`` (the latter
+          via ``update_mission_status``, which maps status ``active`` to the
+          event action ``started``) / ``task.decomposed`` / ``mission.progress``
+          / ``mission.published`` all set ``entity_type="mission"``,
+          ``entity_id=str(mission.id)`` — these are found via
+          ``list_events(entity_id=mission_id)``.
+        - ``team.formed`` (see ``form_team_and_dispatch``) sets
+          ``entity_type="team"``, ``entity_id=<team_id>`` instead — the
+          mission id only appears in ``payload["mission_id"]``. It is looked
+          up separately with a JSONB ``payload->>'mission_id'`` filter so
+          team-formation evidence for the "planning" phase isn't silently
+          dropped.
+
+        Only phases with real evidence are emitted: ``created`` (always, from
+        ``mission.created_at``), ``planning`` (first of a "planned"/"queued"
+        status event, a matched ``team.formed``, or ``task.decomposed``),
+        ``executing`` (the ``mission.started`` event, else
+        ``mission.started_at``), and ``done`` (a terminal status event, else
+        ``mission.completed_at``). There is no mission-level "verifying"
+        event anywhere in this codebase, so that phase is never fabricated.
+        """
+        mission = await self.get_mission(mission_id)
+        if mission is None or str(mission.org_id) != org_id:
+            return None
+
+        org_uuid = cast(uuid.UUID, mission.org_id)
+
+        direct_events = await self.list_events(org_id, entity_id=mission_id, limit=500)
+
+        team_result = await self._session.execute(
+            select(OrgEvent)
+            .where(
+                and_(
+                    OrgEvent.tenant_id == self._tenant_id,
+                    OrgEvent.org_id == org_uuid,
+                    OrgEvent.event_type == "team.formed",
+                    OrgEvent.payload["mission_id"].astext == mission_id,
+                )
+            )
+            .order_by(OrgEvent.created_at.asc())
+        )
+        team_events = list(team_result.scalars().all())
+
+        all_events = sorted([*direct_events, *team_events], key=lambda e: e.created_at)
+
+        def _first(event_types: set[str]) -> OrgEvent | None:
+            for ev in all_events:
+                if ev.event_type in event_types:
+                    return ev
+            return None
+
+        anchors: list[dict[str, Any]] = [
+            {
+                "name": "created",
+                "at": mission.created_at,
+                "agent": mission.created_by,
+            }
+        ]
+
+        planning_event = _first(
+            {"mission.planned", "mission.queued", "team.formed", "task.decomposed"}
+        )
+        if planning_event is not None:
+            anchors.append(
+                {
+                    "name": "planning",
+                    "at": planning_event.created_at,
+                    "agent": planning_event.actor_id,
+                }
+            )
+
+        started_event = _first({"mission.started"})
+        executing_at = started_event.created_at if started_event else mission.started_at
+        if executing_at is not None:
+            anchors.append(
+                {
+                    "name": "executing",
+                    "at": executing_at,
+                    "agent": started_event.actor_id if started_event else None,
+                }
+            )
+
+        done_event = _first(
+            {
+                "mission.completed",
+                "mission.failed",
+                "mission.cancelled",
+                "mission.expired",
+                "mission.archived",
+            }
+        )
+        done_at = done_event.created_at if done_event else mission.completed_at
+        if done_at is not None:
+            anchors.append(
+                {
+                    "name": "done",
+                    "at": done_at,
+                    "agent": done_event.actor_id if done_event else None,
+                }
+            )
+
+        anchors.sort(key=lambda a: cast(datetime, a["at"]))
+
+        phases: list[dict[str, Any]] = []
+        for idx, anchor in enumerate(anchors):
+            at = cast(datetime, anchor["at"])
+            if idx + 1 < len(anchors):
+                until: datetime | None = anchors[idx + 1]["at"]
+            elif anchor["name"] != "done" and mission.completed_at is not None:
+                until = mission.completed_at
+            else:
+                until = None
+            duration_ms = int((until - at).total_seconds() * 1000) if until is not None else None
+            phases.append(
+                {
+                    "name": anchor["name"],
+                    "at": at.isoformat(),
+                    "until": until.isoformat() if until is not None else None,
+                    "duration_ms": duration_ms,
+                    "agent": anchor["agent"],
+                }
+            )
+
+        total_ms: int | None = None
+        start_ref = mission.started_at or mission.created_at
+        if mission.completed_at is not None and start_ref is not None:
+            total_ms = int((mission.completed_at - start_ref).total_seconds() * 1000)
+
+        return {
+            "mission_id": mission_id,
+            "status": str(mission.status),
+            "phases": phases,
+            "total_ms": total_ms,
+        }
+
     # ── Organization health summary ───────────────────────────────────────────
 
     async def get_org_health(self, org_id: str) -> dict[str, Any]:
