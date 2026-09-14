@@ -396,6 +396,11 @@ class ChatService:
         """True when a real answer generator is wired (QA turns get real answers)."""
         return self._answer_generator is not None
 
+    @property
+    def can_recall_memory(self) -> bool:
+        """True when a memory-recall hook is wired (QA injects long-term memory)."""
+        return self._memory_recall is not None
+
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 
     async def run_goal(
