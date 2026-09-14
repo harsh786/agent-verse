@@ -63,6 +63,24 @@ tamper-evident audit, multi-agent delegation chains, and offline (JWKS) verifica
 - Audit chain is tamper-evident and exportable; tokens verify offline via JWKS.
 - Composes with existing HITL/policy/cost gates (no bypass); RLS-enforced; mypy/ruff clean.
 
+## Status (implementation)
+- **G1 agent identity — ALREADY EXISTS** (`app/auth/agent_identity.py`): RS256 JWT
+  `issue_agent_token`/`verify_agent_token`, RSA-2048 `generate_agent_keypair`,
+  `agent_credentials` table, `AgentIdentityService`. No rebuild needed.
+- **G6 JWKS offline verify — ALREADY EXISTS**: `_build_jwks` → `/.well-known/jwks.json`
+  (RFC 7517, Redis-cached). No rebuild needed.
+- **G2 grants + G3 enforcement decision — DONE** (`app/governance/grants/`):
+  `Grant`/`scope_matches`/`InMemoryGrantStore`/`check_grant`, fail-closed. Tested.
+- **G4 delegation — DONE** (`delegation.py`): narrow-only `mint_delegation`. Tested.
+- **G5 tamper-evident audit — DONE** (`app/governance/audit_chain.py`): hash chain +
+  evidence pack. Tested.
+- **Remaining integration** (follow-up, needs migration/executor surgery — not stubbed):
+  (a) Postgres `grants` table + repo + issuance API so grants persist and can be
+  administered; (b) wire `check_grant` into `executor_mixin._execute_step` at the
+  same opt-in gate points as HITL (default OFF via a setting → zero regression until
+  a tenant issues grants); (c) mint delegation tokens in the supervisor sub-agent
+  spawn path; (d) feed grant/tool-call decisions into `AuditChain`.
+
 ## Sequencing
 G1→G2→G3 (identity → grants → enforcement) is the MVP that makes governance
 first-class at the tool-execution boundary. G4 (delegation), G5 (tamper-evident audit),
