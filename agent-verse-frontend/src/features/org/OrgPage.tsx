@@ -52,6 +52,7 @@ import { useVoicePrefsStore }    from '@/stores/voicePrefs';
 import { useOrgRealtimeManager, type OrgEvent } from './OrgRealtimeManager';
 import { useOrgNeuralState } from './hooks/useOrgNeuralState';
 import { AgentConstellation } from './components/AgentConstellation';
+import { AgentAuditDrawer }   from './components/AgentAuditDrawer';
 import { useOrganization, useOrgHealth, useMissions, useDepartments } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -128,6 +129,8 @@ export function OrgPage() {
   }, []);
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
+  // Clicking an agent node in the Live Agent Network opens its audit drawer.
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
   const [statusFilter, setStatusFilter]       = useState<string | undefined>();
   // Clicking a department scopes the missions pane to that department.
@@ -718,6 +721,8 @@ export function OrgPage() {
                     // Real message beams only — never fabricated when the
                     // scene is showing idle departments.
                     communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
+                    onAgentSelect={setSelectedAgentId}
+                    selectedAgentId={selectedAgentId}
                     className="max-w-full"
                   />
                 </div>
@@ -809,6 +814,15 @@ export function OrgPage() {
           />
         )}
       </AnimatePresence>
+
+      {/* ── Agent audit drawer — "black box" trail for one selected agent ─── */}
+      {selectedAgentId && (
+        <AgentAuditDrawer
+          orgId={orgId}
+          agentId={selectedAgentId}
+          onClose={() => setSelectedAgentId(null)}
+        />
+      )}
 
       {/* ── Create mission drawer ───────────────────────────────────────── */}
       <CreateMissionDrawer
