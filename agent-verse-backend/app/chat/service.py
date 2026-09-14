@@ -10,6 +10,7 @@ This is the core orchestrator that:
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -103,7 +104,7 @@ class ChatService:
     The production lifespan swaps this for the DB-backed version.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, goal_service: Any = None, answer_generator: Any = None) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
         self._folders: dict[str, _Folder] = {}
@@ -113,6 +114,11 @@ class ChatService:
         self._ctx = ConversationContext()
         # clarify round tracking per session
         self._clarify_rounds: dict[str, int] = {}
+        # Real-engine dependencies (injected in the lifespan; None on the pure
+        # in-memory/unit-test path). ``goal_service`` drives GOAL turns through the
+        # real AgentGraph; ``answer_generator`` produces real QA answers.
+        self._goal_service = goal_service
+        self._answer_generator = answer_generator
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -348,6 +354,59 @@ class ChatService:
             self._clarify_rounds.pop(session_id, None)
 
         return result
+
+    # ── Real GOAL execution (replaces the old simulated stream) ────────────────
+
+    async def run_goal(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        tenant_ctx: Any,
+        message_id: str,
+        user_message: str,
+        agent_id: str | None = None,
+    ) -> str:
+        """Submit a GOAL-intent chat turn to the real GoalService and return its
+        ``goal_id``. Binds the conversation via ``execution_context`` so async
+        completion can be delivered back into this thread (Phase 2)."""
+        if self._goal_service is None:
+            raise RuntimeError("chat GOAL execution requires a GoalService to be wired")
+        session = self.get_session(session_id, tenant_id)
+        result = await self._goal_service.submit_goal(
+            goal=user_message,
+            priority="normal",
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id or (session.agent_id if session else None),
+            execution_context={
+                "source": "chat",
+                "conversation_id": session_id,
+                "session_id": session_id,
+                "message_id": message_id,
+            },
+        )
+        return str(result.get("goal_id") or result.get("id") or "")
+
+    async def stream_goal(
+        self,
+        *,
+        goal_id: str,
+        tenant_ctx: Any,
+        session_id: str,
+        message_id: str,
+    ) -> AsyncIterator[str]:
+        """Stream a running goal's REAL events back as canonical chat SSE frames."""
+        if self._goal_service is None:
+            raise RuntimeError("chat GOAL streaming requires a GoalService to be wired")
+        from app.chat.goal_bridge import bridge_goal_events
+
+        async for frame in bridge_goal_events(
+            self._goal_service.subscribe_events(goal_id, tenant_ctx),
+            session_id=session_id,
+            message_id=message_id,
+        ):
+            yield frame
 
     # ── Folder CRUD ───────────────────────────────────────────────────────────
 
