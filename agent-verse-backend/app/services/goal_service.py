@@ -1025,6 +1025,9 @@ class GoalService:
             "hitl_gateway": hitl_gateway,
             "knowledge_store": knowledge_store,
             "knowledge_graph_store": _knowledge_graph_store,
+            "prospective_service": (
+                getattr(app_state, "prospective_memory_service", None) if app_state else None
+            ),
             "retrieval_gateway": retrieval_gateway,
             "long_term_memory": long_term_memory,
             "mcp_client": mcp_client,
