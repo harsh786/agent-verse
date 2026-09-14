@@ -1553,6 +1553,25 @@ async def org_graphify_start(
             raise _not_found("Organization", org_id, x_request_id)
 
         job_id = str(uuid4())
+
+        # Graphify jobs have no DB row/table of their own (see _run_graphify_job
+        # below) -- the job_id only ever lives in this closure and in the Redis
+        # pub/sub channel name. That means org_graphify_stream has no store to
+        # consult to find out which tenant/org a job_id belongs to. Write a
+        # short-lived ownership record now, at the one point where org_id has
+        # just been validated as belonging to this tenant, so the stream
+        # endpoint has a real (not fabricated) linkage to check against. TTL
+        # comfortably covers the job's lifetime (the polling fallback below
+        # caps a stream at 5 minutes; the real build should finish well before
+        # that) plus reconnects.
+        redis = getattr(request.app.state, "_redis", None)
+        if redis is not None:
+            await redis.set(
+                f"graphify:{job_id}:owner",
+                json.dumps({"tenant_id": tenant_id, "org_id": org_id}),
+                ex=3600,
+            )
+
         # Fire-and-forget: start the build in the background
         asyncio.get_event_loop().create_task(_run_graphify_job(org_id, tenant_id, job_id, request))
 
@@ -1571,6 +1590,7 @@ async def org_graphify_stream(
     job_id: str,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
 ) -> StreamingResponse:
     """Server-Sent Events stream for the Graphify knowledge-graph build job.
 
@@ -1581,12 +1601,32 @@ async def org_graphify_stream(
       * ``complete``   - job finished            ``{nodes, edges, communities}``
       * ``error``      - job failed              ``{message}``
     """
+    # Scope to THIS tenant + org BEFORE subscribing — same leak class already
+    # fixed for mission_stream (which checks a real DB row). Graphify jobs have
+    # no DB row: the only durable link between a job_id and its owning
+    # tenant/org is the "graphify:{job_id}:owner" Redis key written by
+    # org_graphify_start at job-creation time (see the comment there). Treat a
+    # missing or mismatched owner record -- unknown job_id, foreign tenant/org,
+    # expired TTL, or Redis unavailable -- as not-found, same as mission_stream,
+    # so we never disclose whether a job exists in another tenant/org.
+    redis = getattr(request.app.state, "_redis", None)
+    owner: dict[str, Any] | None = None
+    if redis is not None:
+        raw_owner = await redis.get(f"graphify:{job_id}:owner")
+        if raw_owner is not None:
+            text_owner = raw_owner.decode() if isinstance(raw_owner, bytes) else raw_owner
+            with contextlib.suppress(Exception):
+                owner = json.loads(text_owner)
+    owner_ok = (
+        owner is not None
+        and owner.get("tenant_id") == service._tenant_id
+        and owner.get("org_id") == org_id
+    )
+    if not owner_ok:
+        raise _not_found("Graphify job", job_id, x_request_id)
 
     async def _stream() -> AsyncGenerator[str, None]:
         try:
-
-            redis = getattr(request.app.state, "_redis", None)
-
             yield f"data: {json.dumps({'type': 'connected', 'job_id': job_id})}\n\n"
 
             if redis:

@@ -26,6 +26,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import subprocess
@@ -185,6 +186,34 @@ async def _client_for(app_factory, tenant_id: str) -> AsyncIterator[AsyncClient]
         yield client
 
 
+class _FakeRedisKV:
+    """Minimal async Redis stand-in: just enough get/set for the graphify
+    job-ownership record checked by ``org_graphify_stream`` before it
+    subscribes. No pubsub support -- these tests only exercise the ownership
+    gate, not the SSE body content (a real/foreign job would hit the pubsub
+    branch, which raises AttributeError here and is caught by the endpoint's
+    own error handling, ending the stream cleanly rather than hanging)."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self._store[key] = value
+
+    async def get(self, key: str) -> str | None:
+        return self._store.get(key)
+
+
+@asynccontextmanager
+async def _client_with_redis(app_factory, tenant_id: str, redis: _FakeRedisKV) -> AsyncIterator[AsyncClient]:
+    app = _build_test_app(app_factory, tenant_id)
+    app.state._redis = redis
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        yield client
+
+
 async def _cleanup(admin_factory, org_a: str, org_b: str) -> None:
     async with admin_factory() as s, s.begin():
         for org_id in (org_a, org_b):
@@ -327,5 +356,58 @@ async def test_mission_stream_scoped_to_tenant_and_org(factories: tuple) -> None
             # A mission id that doesn't exist at all must also 404.
             r = await client.get(f"/v1/org/{org_b}/missions/{uuid.uuid4()}/stream")
             assert r.status_code == 404, r.text
+    finally:
+        await _cleanup(admin_factory, org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_graphify_stream_scoped_to_tenant_and_org(factories: tuple) -> None:
+    """GET .../graphify/{job_id}/stream (SSE) must 404 -- before ever
+    subscribing to the Redis pub/sub channel -- for a job_id that belongs to
+    a different org (same tenant) or that was never issued at all.
+
+    Regression test for a cross-tenant/cross-org leak: org_graphify_stream
+    previously subscribed to ``graphify:{job_id}:events`` with NO ownership
+    check whatsoever, so any authenticated caller could read any org's live
+    Graphify build stream just by guessing/observing a job_id.
+
+    Graphify jobs have no DB row (see app/org/router.py::org_graphify_start),
+    so unlike mission_stream's DB-backed check, the fix records ownership in
+    a short-lived Redis key ("graphify:{job_id}:owner") written at job
+    creation and checked here. This test injects a fake Redis KV store
+    directly (rather than exercising org_graphify_start's fire-and-forget
+    background task) to pin the *check*, independent of Redis pub/sub
+    plumbing. Limitation: it does not exercise the real org_graphify_start ->
+    org_graphify_stream flow end-to-end against a real Redis; that would
+    require a running Redis (or testcontainers Redis) and is left as a
+    follow-up if broader Graphify integration coverage is added."""
+    admin_factory, app_factory = factories
+    seeded = await _seed_two_orgs_same_tenant(admin_factory)
+    tenant_id, org_a, org_b = seeded["tenant_id"], seeded["org_a"], seeded["org_b"]
+
+    job_id = str(uuid.uuid4())
+    redis = _FakeRedisKV()
+    await redis.set(
+        f"graphify:{job_id}:owner",
+        json.dumps({"tenant_id": tenant_id, "org_id": org_b}),
+    )
+
+    try:
+        async with _client_with_redis(app_factory, tenant_id, redis) as client:
+            # Cross-org (org A's URL, org B's job): must 404 before streaming.
+            r = await client.get(f"/v1/org/{org_a}/graphify/{job_id}/stream")
+            assert r.status_code == 404, r.text
+
+            # A job id with no owner record at all (never issued, expired
+            # TTL, or issued before Redis was available) must also 404 --
+            # even under the org whose URL it's requested against.
+            r = await client.get(f"/v1/org/{org_b}/graphify/{uuid.uuid4()}/stream")
+            assert r.status_code == 404, r.text
+
+            # Same-org, same-tenant (the legitimate case): the ownership
+            # check must NOT false-positive and block it.
+            r = await client.get(f"/v1/org/{org_b}/graphify/{job_id}/stream")
+            assert r.status_code == 200, r.text
+            assert '"type": "connected"' in r.text
     finally:
         await _cleanup(admin_factory, org_a, org_b)

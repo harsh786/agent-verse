@@ -43052,6 +43052,15 @@
               "title": "Job Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -43903,6 +43912,15 @@
             "required": true,
             "schema": {
               "title": "Mission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
               "type": "string"
             }
           }
