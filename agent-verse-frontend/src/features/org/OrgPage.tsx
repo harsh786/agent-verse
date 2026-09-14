@@ -43,6 +43,8 @@ import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
 import { AutonomyControl }       from './components/AutonomyControl';
+import { AutonomyStatusBadge }   from './components/AutonomyStatusBadge';
+import { NarrationTicker }       from './components/NarrationTicker';
 import { BrainFeed }             from './components/BrainFeed';
 import { BudgetGauges }          from './components/BudgetGauges';
 import { TeamChannel }           from './components/TeamChannel';
@@ -684,6 +686,19 @@ export function OrgPage() {
             className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
             aria-label="Command panel"
           >
+            {/* Always-visible autonomy status + one-click Pause — the "kill
+                switch is right here" hero control. Mounted first so it never
+                scrolls out of view, even though the full AutonomyControl
+                panel (level/caps/collaboration) still lives further down. */}
+            <div className="p-4 border-b border-[#1E2535]">
+              <AutonomyStatusBadge orgId={orgId} />
+            </div>
+
+            {/* Running plain-English narration of what the org is doing. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <NarrationTicker orgId={orgId} />
+            </section>
+
             {/* Live Agent Network — the constellation now lives in the command
                 panel; the mission orbit is the center-column hero. Resizable height. */}
             <section
