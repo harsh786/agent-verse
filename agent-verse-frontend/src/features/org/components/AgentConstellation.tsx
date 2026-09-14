@@ -53,6 +53,27 @@ function latestMessageForPair(
   return recentMessages.find(m => (m.from === a && m.to === b) || (m.from === b && m.to === a));
 }
 
+/** Dedupe communicatingPairs by unordered endpoint identity so a pair that
+ *  arrives from BOTH org.team.formed and a live collaboration message (the
+ *  reducer stores those separately, see useOrgNeuralState) renders exactly
+ *  ONE beam instead of two overlapping ones. When one of the duplicates has
+ *  a matching message, that one wins so the beam gets the real message
+ *  color/tooltip instead of the default team-pair styling. */
+function dedupeCommPairs(
+  pairs: [string, string][], recentMessages: OrgRecentMessage[],
+): [string, string][] {
+  const seen = new Map<string, { pair: [string, string]; hasMsg: boolean }>();
+  for (const pair of pairs) {
+    const key = [pair[0], pair[1]].sort().join('|');
+    const hasMsg = !!latestMessageForPair(recentMessages, pair[0], pair[1]);
+    const existing = seen.get(key);
+    if (!existing || (hasMsg && !existing.hasMsg)) {
+      seen.set(key, { pair, hasMsg });
+    }
+  }
+  return Array.from(seen.values(), v => v.pair);
+}
+
 export function AgentConstellation({
   orgId, missions, agents = [], communicatingPairs = [], recentMessages = [],
   onAgentSelect, onMissionSelect, onBeamSelect, selectedAgentId, className,
@@ -154,8 +175,9 @@ export function AgentConstellation({
 
         {/* Communication beams — colored by the kind of the most recent real
             collaboration message for that pair (default purple when the pair
-            came from org.team.formed and has no message yet). */}
-        {communicatingPairs.map(([s, t], i) => {
+            came from org.team.formed and has no message yet). Deduped so a
+            pair present in both teamPairs and messagePairs renders once. */}
+        {dedupeCommPairs(communicatingPairs, recentMessages).map(([s, t]) => {
           const sPos = positions.get(s);
           const tPos = positions.get(t);
           if (!sPos || !tPos) return null;
@@ -165,7 +187,7 @@ export function AgentConstellation({
           const clickable = !!(onBeamSelect && msg);
           const selectMsg = () => { if (msg && onBeamSelect) onBeamSelect(msg.id); };
           return (
-            <g key={`beam-${s}-${t}-${i}`}
+            <g key={`beam-${s}-${t}`}
               role={clickable ? 'button' : undefined}
               tabIndex={clickable ? 0 : undefined}
               aria-label={tooltip}
