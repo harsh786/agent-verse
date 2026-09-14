@@ -49,6 +49,69 @@ class GroundingResult:
     evidence_length: int
 
 
+# ---------------------------------------------------------------------------
+# Typed claim normalization (Hallucination hardening T1)
+# ---------------------------------------------------------------------------
+
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d)")
+_MONTHS = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+
+
+def _normalize_number(value: str) -> str:
+    """Drop thousands separators and a leading currency symbol: '$1,024' -> '1024'."""
+    return _THOUSANDS.sub("", value).lstrip("$€£").strip()
+
+
+def _number_grounded(value: str, evidence_lower: str) -> bool:
+    """Match a number as a standalone token so '10' does NOT match inside '2010'.
+
+    Both sides have thousands separators stripped so '1,024' grounds '1024'.
+    """
+    norm_val = _normalize_number(value)
+    if not norm_val:
+        return False
+    norm_ev = _THOUSANDS.sub("", evidence_lower)
+    return re.search(rf"(?<!\d){re.escape(norm_val)}(?!\d)", norm_ev) is not None
+
+
+def _date_variants(value: str) -> set[str]:
+    """Return lowercased equivalent renderings of an ISO date for drift-tolerant match."""
+    from datetime import date
+
+    try:
+        d = date.fromisoformat(value)
+    except ValueError:
+        return {value.lower()}
+    mon = _MONTHS[d.month - 1]
+    day, year = d.day, d.year
+    return {
+        value.lower(),
+        f"{mon} {day}, {year}",
+        f"{mon[:3]} {day}, {year}",
+        f"{day} {mon} {year}",
+        f"{d.month}/{d.day}/{year}",
+        f"{d.day}/{d.month}/{year}",
+    }
+
+
+def claim_grounded_in(value: str, kind: str, evidence_lower: str) -> bool:
+    """Typed, normalization-aware grounding for a single claim.
+
+    - number: standalone-token match, comma/currency-normalized (kills the
+      '10' ⊂ '2010' false-positive and the '1,024' vs '1024' false-negative);
+    - date: match any common rendering of the same calendar date;
+    - everything else: case-insensitive substring (unchanged).
+    """
+    if kind in ("number", "github_pr"):
+        return _number_grounded(value, evidence_lower)
+    if kind == "date":
+        return any(variant in evidence_lower for variant in _date_variants(value))
+    return value.lower() in evidence_lower
+
+
 def extract_claims(text: str) -> dict[str, list[str]]:
     """Extract concrete claims from LLM output text."""
     claims: dict[str, list[str]] = {}
@@ -77,6 +140,7 @@ def check_grounding(
     *,
     strict: bool = False,
     max_ungrounded_ratio: float | None = None,
+    normalize: bool = False,
 ) -> GroundingResult:
     """
     Check if claims in `output` are grounded in `tool_outputs`.
@@ -100,9 +164,11 @@ def check_grounding(
         )
 
     claims = extract_claims(output)
-    all_claims: list[str] = []
-    for claim_list in claims.values():
-        all_claims.extend(claim_list)
+    # Preserve (value, kind) so normalized matching can pick a per-type strategy.
+    typed_claims: list[tuple[str, str]] = [
+        (value, kind) for kind, values in claims.items() for value in values
+    ]
+    all_claims: list[str] = [value for value, _ in typed_claims]
 
     if not all_claims:
         # No concrete claims to verify — nothing can be ungrounded.
@@ -124,10 +190,13 @@ def check_grounding(
     evidence_lower = evidence.lower()
 
     ungrounded: list[str] = []
-    for claim in all_claims:
-        # Check if claim appears in evidence (case-insensitive substring)
-        if claim.lower() not in evidence_lower:
-            ungrounded.append(claim)
+    for value, kind in typed_claims:
+        if normalize:
+            matched = claim_grounded_in(value, kind, evidence_lower)
+        else:
+            matched = value.lower() in evidence_lower  # legacy substring
+        if not matched:
+            ungrounded.append(value)
 
     if max_ungrounded_ratio is None:
         max_ungrounded_ratio = 0.0 if strict else 0.25
@@ -240,11 +309,16 @@ class GroundingChecker:
         *,
         high_risk: bool = False,
     ) -> GroundingResult:
-        """Deterministic synchronous check. Delegates to :func:`check_grounding`."""
+        """Deterministic synchronous check. Delegates to :func:`check_grounding`.
+
+        Uses typed normalization (T1) so numeric/date format drift doesn't cause
+        false ungrounded, and '10' no longer grounds spuriously against '2010'.
+        """
         return check_grounding(
             step_output,
             tool_outputs,
             strict=self._strict or high_risk,
+            normalize=True,
         )
 
     async def check(
