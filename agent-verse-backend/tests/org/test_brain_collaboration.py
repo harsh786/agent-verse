@@ -18,8 +18,11 @@ import pytest
 from app.org.brain_collaboration import (
     EVENT_TYPE_COLLABORATION_MESSAGE,
     CollaborationTick,
+    classify_message_kind,
 )
 from app.org.brain_settings import AutonomySettings
+
+_VALID_KINDS = {"update", "proposal", "question", "handoff", "result", "risk", "block"}
 
 
 def _settings(
@@ -47,19 +50,34 @@ def _settings(
 
 
 class _FakeModelGateway:
-    """Returns a canned short line; can be told to raise on a given call
-    index (0-based) to exercise the fail-closed path."""
+    """Returns a canned short line (plus canned latency/tokens/cost); can be
+    told to raise on a given call index (0-based) to exercise the
+    fail-closed path."""
 
-    def __init__(self, *, raise_on_call: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        raise_on_call: int | None = None,
+        message: str = "Shipping the integration by end of day.",
+        latency_ms: int = 5,
+        tokens: int = 12,
+        cost_usd: float = 0.001,
+    ) -> None:
         self.calls: list[tuple[str, int]] = []
         self._raise_on_call = raise_on_call
+        self._message = message
+        self._latency_ms = latency_ms
+        self._tokens = tokens
+        self._cost_usd = cost_usd
 
-    async def complete_short(self, prompt: str, *, max_tokens: int) -> str:
+    async def complete_short(
+        self, prompt: str, *, max_tokens: int
+    ) -> tuple[str, int, int, float]:
         idx = len(self.calls)
         self.calls.append((prompt, max_tokens))
         if self._raise_on_call is not None and idx == self._raise_on_call:
             raise RuntimeError("model provider unavailable")
-        return "Shipping the integration by end of day."
+        return self._message, self._latency_ms, self._tokens, self._cost_usd
 
 
 class _FakeEventPublisher:
@@ -91,6 +109,39 @@ class _FakeEventPublisher:
             }
         )
         return "corr-id"
+
+
+class _FakeOrgService:
+    """Fake ``OrgService``-shaped collaboration-event recorder — mirrors
+    ``OrgService.record_collaboration_event``'s signature so
+    ``CollaborationTick`` can persist without a real DB/session."""
+
+    def __init__(self, *, raise_error: bool = False) -> None:
+        self.recorded: list[dict] = []
+        self._raise_error = raise_error
+
+    async def record_collaboration_event(
+        self,
+        org_id: str,
+        *,
+        from_agent: str,
+        kind: str,
+        message: str,
+        payload: dict,
+        event_id: str | None = None,
+    ) -> None:
+        if self._raise_error:
+            raise RuntimeError("db unavailable")
+        self.recorded.append(
+            {
+                "org_id": org_id,
+                "from_agent": from_agent,
+                "kind": kind,
+                "message": message,
+                "payload": payload,
+                "event_id": event_id,
+            }
+        )
 
 
 class _FakeCounters:
@@ -276,8 +327,18 @@ async def test_enabled_l4_emits_at_most_cap_messages_as_collaboration_event():
         # (not scrambled by the dead module's positional order).
         assert event["org_id"] == "org1"
         assert event["tenant_id"] == "t1"
-        assert event["payload"]["lead"] in leads[:3]
-        assert event["payload"]["message"] == "Shipping the integration by end of day."
+        payload = event["payload"]
+        # Backward-compat: existing consumers still see lead/message.
+        assert payload["lead"] in leads[:3]
+        assert payload["message"] == "Shipping the integration by end of day."
+        # Typed enrichment for the Situation Room UX.
+        assert payload["from_agent"] == payload["lead"]
+        assert payload["to"] == "team"
+        assert payload["kind"] in _VALID_KINDS
+        assert payload["latency_ms"] >= 0
+        assert payload["tokens"] >= 0
+        assert payload["cost_usd"] >= 0
+        assert payload["mission_id"] is None
     for _prompt, max_tokens in gateway.calls:
         assert max_tokens <= 40
 
@@ -311,3 +372,231 @@ async def test_model_error_mid_tick_stops_fail_closed():
     # The gateway was called twice: once succeeding, once raising -- and the
     # tick stopped there rather than trying "carol"/"dave".
     assert len(gateway.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_kind"),
+    [
+        ("What is the status of the migration?", "question"),
+        ("I propose we cut over to the new schema tonight.", "proposal"),
+        ("There's a risk the rollback window slips.", "risk"),
+        ("We are blocked on the vendor's API key.", "block"),
+        ("Migration completed, all rows verified.", "result"),
+        ("Handoff of the on-call rotation to Bob now.", "handoff"),
+        ("Continuing to monitor the deploy.", "update"),
+    ],
+)
+def test_classify_message_kind_maps_representative_strings(text, expected_kind):
+    assert classify_message_kind(text) == expected_kind
+
+
+class _FakeLLMProvider:
+    """Minimal fake satisfying the ``complete_short`` -> ``complete`` call
+    path in ``LLMProviderCollaborationGateway``, without a real provider or
+    network call."""
+
+    def __init__(self, response) -> None:
+        self._response = response
+        self._default_model = "fast-fake-model"
+        self.requests = []
+
+    async def complete(self, request):
+        self.requests.append(request)
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_complete_short_returns_four_tuple_with_real_usage():
+    """The gateway's ``complete_short`` returns
+    ``(text, latency_ms, tokens, cost_usd)``, deriving tokens/cost from the
+    provider response's real usage fields when present."""
+    from app.org.brain_collaboration import LLMProviderCollaborationGateway
+    from app.providers.base import CompletionResponse, TokenUsage
+
+    response = CompletionResponse(
+        content="Shipping the integration by end of day.",
+        model="claude-haiku",
+        input_tokens=30,
+        output_tokens=10,
+        usage=TokenUsage(prompt_tokens=30, completion_tokens=10, total_tokens=40),
+    )
+    provider = _FakeLLMProvider(response)
+    gateway = LLMProviderCollaborationGateway(provider, gateway=None)
+
+    text, latency_ms, tokens, cost_usd = await gateway.complete_short(
+        "prompt", max_tokens=40
+    )
+
+    assert text == "Shipping the integration by end of day."
+    assert latency_ms >= 0
+    assert tokens == 40
+    assert cost_usd > 0.0
+
+
+@pytest.mark.asyncio
+async def test_complete_short_falls_back_when_no_real_usage_reported():
+    """When the provider response carries no usage info at all, ``complete_short``
+    falls back to a rough length-based token estimate and the fixed
+    per-message cost estimate rather than reporting a bogus real cost."""
+    from app.org.brain_collaboration import (
+        _EST_COST_USD_PER_MESSAGE,
+        LLMProviderCollaborationGateway,
+    )
+    from app.providers.base import CompletionResponse
+
+    response = CompletionResponse(
+        content="Shipping the integration by end of day.",
+        model="claude-haiku",
+    )
+    provider = _FakeLLMProvider(response)
+    gateway = LLMProviderCollaborationGateway(provider, gateway=None)
+
+    text, latency_ms, tokens, cost_usd = await gateway.complete_short(
+        "prompt", max_tokens=40
+    )
+
+    assert text == "Shipping the integration by end of day."
+    assert latency_ms >= 0
+    assert tokens >= 0
+    assert cost_usd == _EST_COST_USD_PER_MESSAGE
+
+
+@pytest.mark.asyncio
+async def test_run_publishes_enriched_payload_with_backward_compat_fields():
+    gateway = _FakeModelGateway(latency_ms=42, tokens=17, cost_usd=0.0025)
+    publisher = _FakeEventPublisher()
+    tick = CollaborationTick(gateway, publisher, _FakeCounters())
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=_settings(),
+        autonomy_level=4,
+        leads=["alice"],
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 1
+    payload = publisher.events[0]["payload"]
+    # Backward-compat.
+    assert payload["lead"] == "alice"
+    assert payload["message"] == "Shipping the integration by end of day."
+    # Enrichment.
+    assert payload["from_agent"] == "alice"
+    assert payload["to"] == "team"
+    assert payload["kind"] in _VALID_KINDS
+    assert payload["latency_ms"] == 42
+    assert payload["tokens"] == 17
+    assert payload["cost_usd"] == 0.0025
+    assert payload["mission_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_real_gateway_cost_feeds_record_collab_spend():
+    """When the fake gateway reports a real (non-default) cost, that exact
+    real cost -- not the fixed ``_EST_COST_USD_PER_MESSAGE`` estimate -- is
+    what gets recorded via ``counters.record_collab_spend``."""
+    real_cost = 0.0042
+    gateway = _FakeModelGateway(cost_usd=real_cost)
+    publisher = _FakeEventPublisher()
+    counters = _FakeCounters()
+    tick = CollaborationTick(gateway, publisher, counters)
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=_settings(),
+        autonomy_level=4,
+        leads=["alice"],
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 1
+    assert counters.recorded == [real_cost]
+    assert publisher.events[0]["payload"]["cost_usd"] == real_cost
+
+
+@pytest.mark.asyncio
+async def test_org_service_records_one_persist_call_per_message_with_enriched_payload():
+    """Task 2 — when an ``org_service`` is injected, each emitted message is
+    persisted once via ``record_collaboration_event`` with the correct
+    ``from_agent``/entity id and the same enriched payload SSE received --
+    and the SSE publish still happens exactly once per message too (no
+    double-SSE, no persistence substituting for it)."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    org_service = _FakeOrgService()
+    tick = CollaborationTick(gateway, publisher, _FakeCounters(), org_service=org_service)
+
+    settings = _settings(collab_messages_per_tick=3)
+    leads = ["alice", "bob", "carol"]
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=settings,
+        autonomy_level=4,
+        leads=leads,
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 3
+    # SSE unaffected: still exactly one publish per message (Task 1 behavior).
+    assert len(publisher.events) == 3
+    # Persistence: exactly one record call per message.
+    assert len(org_service.recorded) == 3
+    for lead, recorded, published in zip(leads, org_service.recorded, publisher.events, strict=True):
+        assert recorded["org_id"] == "org1"
+        assert recorded["from_agent"] == lead
+        assert recorded["kind"] in _VALID_KINDS
+        assert recorded["message"] == "Shipping the integration by end of day."
+        # Same enriched payload as what went to SSE.
+        assert recorded["payload"] == published["payload"]
+        assert recorded["payload"]["from_agent"] == lead
+
+
+@pytest.mark.asyncio
+async def test_org_service_not_injected_skips_persistence_without_error():
+    """Default (``org_service=None``, what every pre-Task-2 caller/test
+    passes) skips persistence entirely -- fully backward compatible."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    tick = CollaborationTick(gateway, publisher, _FakeCounters())
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=_settings(),
+        autonomy_level=4,
+        leads=["alice"],
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 1
+    assert len(publisher.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_does_not_break_tick_or_sse():
+    """A persist failure is logged and swallowed -- it must never crash the
+    tick or prevent the (already-sent) SSE publish, and later messages in
+    the same tick still get a persistence attempt."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    org_service = _FakeOrgService(raise_error=True)
+    tick = CollaborationTick(gateway, publisher, _FakeCounters(), org_service=org_service)
+
+    settings = _settings(collab_messages_per_tick=2)
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=settings,
+        autonomy_level=4,
+        leads=["alice", "bob"],
+        day_spend_usd=0.0,
+    )
+
+    # SSE still happened for both messages despite persistence raising.
+    assert emitted == 2
+    assert len(publisher.events) == 2
+    assert org_service.recorded == []

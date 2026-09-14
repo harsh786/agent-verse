@@ -1200,6 +1200,38 @@ class OrgService:
             span.set_attribute("old_status", old_status)
             return mission
 
+    async def update_mission(
+        self, mission_id: str, updates: dict[str, Any]
+    ) -> OrgMission | None:
+        """Persist non-status field edits on a mission (title/objective/priority/
+        why/expected_outcome/tags/budget_usd/deadline/assigned_team_id/etc.).
+
+        Status transitions go through ``update_mission_status`` instead, which
+        has its own validation (``MISSION_STATUSES``) and lifecycle side
+        effects (``started_at``/``completed_at``, event emission) — so status
+        and lifecycle/identity columns are excluded here even if present in
+        ``updates``.
+        """
+        mission = await self.get_mission(mission_id)
+        if not mission:
+            return None
+        protected = {
+            "id",
+            "tenant_id",
+            "org_id",
+            "created_at",
+            "updated_at",
+            "status",
+            "started_at",
+            "completed_at",
+        }
+        for key, val in updates.items():
+            if hasattr(mission, key) and key not in protected:
+                setattr(mission, key, val)
+        mission.updated_at = datetime.now(UTC)
+        await self._session.flush()
+        return mission
+
     # ── Task CRUD ─────────────────────────────────────────────────────────────
 
     async def create_task(
@@ -1430,7 +1462,13 @@ class OrgService:
             autonomy_level=autonomy_level,
             approval_status=approval_status,
             actor_agent_id=actor_agent_id,
-            metadata=metadata or {},
+            # NOTE: OrgDecision has no "metadata" column — that name is the
+            # SQLAlchemy declarative Base.metadata registry. The JSONB scratch
+            # field is "extra_data"; passing metadata= only set a transient
+            # shadow attribute that was NEVER persisted (so decision metadata was
+            # silently lost on reload). Write the real column. Mirrors the same
+            # fix applied to create_task's OrgTask construction above.
+            extra_data=metadata or {},
         )
         self._session.add(decision)
         await self._session.flush()
@@ -1464,12 +1502,70 @@ class OrgService:
 
     # ── Events ────────────────────────────────────────────────────────────────
 
+    async def record_collaboration_event(
+        self,
+        org_id: str | uuid.UUID,
+        *,
+        from_agent: str,
+        kind: str,
+        message: str,
+        payload: dict[str, Any],
+        event_id: str | uuid.UUID | None = None,
+    ) -> OrgEvent:
+        """Persist one ambient collaboration message (Task 9's "team talks"
+        chatter) as an ``org_events`` row, for the Situation Room Team
+        Channel history and the per-agent audit trail.
+
+        DB-only insert — deliberately does NOT go through ``_emit_event``,
+        which also bridges to the realtime SSE bus via
+        ``_publish_realtime``. ``CollaborationTick`` already publishes the
+        same enriched payload to SSE itself (``CollaborationEventPublisher
+        .publish``), so routing this persistence through ``_emit_event``
+        would double-publish the same message onto the org's live event
+        stream. Uses the caller's already-open session (the tick's
+        RLS-scoped transaction), so this insert commits atomically with the
+        rest of the tick rather than opening a second transaction.
+
+        ``event_id``, when given, becomes this row's primary key -- it
+        should be the same id ``CollaborationTick`` put in the SSE payload
+        (``payload["id"]``) so the frontend can dedupe a message delivered
+        live and then seen again in a history refetch. Falls back to the
+        column's normal uuid7 default when omitted, for back-compat with
+        any other caller.
+
+        Runs the insert+flush inside a SAVEPOINT (``begin_nested``) so a
+        failure here (e.g. a bad payload) rolls back only this row instead
+        of poisoning the caller's outer transaction -- without this, one bad
+        collaboration message could take down the entire tick's commit
+        (including messages already persisted earlier in the same tick).
+        """
+        ev = OrgEvent(
+            tenant_id=self._tenant_id,
+            org_id=uuid.UUID(org_id) if isinstance(org_id, str) else org_id,
+            event_type="org.collaboration.message",
+            title=f"{from_agent} · {kind}",
+            description=(message or "")[:500],
+            entity_type="agent",
+            entity_id=from_agent,
+            severity="info",
+            payload=payload or {},
+            source="collaboration",
+            actor_id=from_agent,
+        )
+        if event_id is not None:
+            ev.id = uuid.UUID(event_id) if isinstance(event_id, str) else event_id
+        async with self._session.begin_nested():
+            self._session.add(ev)
+            await self._session.flush()
+        return ev
+
     async def list_events(
         self,
         org_id: str,
         *,
         event_type: str | None = None,
         severity: str | None = None,
+        entity_id: str | None = None,
         since: datetime | None = None,
         limit: int = 100,
         offset: int = 0,
@@ -1484,11 +1580,282 @@ class OrgService:
             q = q.where(OrgEvent.event_type == event_type)
         if severity:
             q = q.where(OrgEvent.severity == severity)
+        if entity_id:
+            q = q.where(OrgEvent.entity_id == entity_id)
         if since:
             q = q.where(OrgEvent.created_at >= since)
         q = q.order_by(OrgEvent.created_at.desc()).limit(limit).offset(offset)
         result = await self._session.execute(q)
         return list(result.scalars().all())
+
+    # ── Per-agent audit trail (Situation Room "black box") ──────────────────
+
+    async def get_agent_audit(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Assemble one agent's unified, newest-first activity trail.
+
+        Unions three org-scoped, tenant-scoped sources -- ``org_events``
+        (entity_id == agent_id), ``org_decisions`` (actor_agent_id ==
+        agent_id), and ``org_tasks`` (owner_agent_id == agent_id OR
+        agent_id in assigned_agent_ids) -- into one list of dicts, sorted by
+        timestamp descending and capped at ``limit``. Every subquery filters
+        on both ``tenant_id`` and ``org_id`` so agent-id strings that
+        collide across orgs (or tenants) never leak into each other's
+        trail.
+        """
+        with _tracer.start_as_current_span("org.get_agent_audit") as span:
+            span.set_attribute("tenant_id", self._tenant_id)
+            span.set_attribute("org_id", org_id)
+            span.set_attribute("agent_id", agent_id)
+            uid = uuid.UUID(org_id)
+
+            events = await self.list_events(org_id, entity_id=agent_id, limit=limit)
+
+            decision_result = await self._session.execute(
+                select(OrgDecision)
+                .where(
+                    and_(
+                        OrgDecision.tenant_id == self._tenant_id,
+                        OrgDecision.org_id == uid,
+                        OrgDecision.actor_agent_id == agent_id,
+                    )
+                )
+                .order_by(OrgDecision.created_at.desc())
+                .limit(limit)
+            )
+            decisions = list(decision_result.scalars().all())
+
+            task_result = await self._session.execute(
+                select(OrgTask)
+                .where(
+                    and_(
+                        OrgTask.tenant_id == self._tenant_id,
+                        OrgTask.org_id == uid,
+                        or_(
+                            OrgTask.owner_agent_id == agent_id,
+                            OrgTask.assigned_agent_ids.any(agent_id),
+                        ),
+                    )
+                )
+                .order_by(func.coalesce(OrgTask.completed_at, OrgTask.created_at).desc())
+                .limit(limit)
+            )
+            tasks = list(task_result.scalars().all())
+
+            entries: list[dict[str, Any]] = []
+
+            for ev in events:
+                payload = ev.payload or {}
+                entries.append(
+                    {
+                        "id": str(ev.id),
+                        "kind": "message"
+                        if ev.event_type == "org.collaboration.message"
+                        else "event",
+                        "at": ev.created_at,
+                        "title": ev.title,
+                        "detail": ev.description,
+                        "cost_usd": payload.get("cost_usd"),
+                        "duration_ms": payload.get("latency_ms"),
+                        "mission_id": payload.get("mission_id"),
+                        "ref": {"table": "org_events", "id": str(ev.id)},
+                    }
+                )
+
+            for d in decisions:
+                entries.append(
+                    {
+                        "id": str(d.id),
+                        "kind": "decision",
+                        "at": d.created_at,
+                        "title": d.decision_type,
+                        "detail": d.description or d.why,
+                        "cost_usd": d.cost_estimate_usd,
+                        "duration_ms": None,
+                        "mission_id": None,
+                        "ref": {"table": "org_decisions", "id": str(d.id)},
+                    }
+                )
+
+            for t in tasks:
+                duration_ms: int | None = None
+                if t.started_at and t.completed_at:
+                    duration_ms = int((t.completed_at - t.started_at).total_seconds() * 1000)
+                cost_usd = (
+                    t.actual_cost_usd if t.actual_cost_usd is not None else t.cost_estimate_usd
+                )
+                entries.append(
+                    {
+                        "id": str(t.id),
+                        "kind": "task",
+                        "at": t.completed_at or t.created_at,
+                        "title": t.title,
+                        "detail": t.status,
+                        "cost_usd": cost_usd,
+                        "duration_ms": duration_ms,
+                        "mission_id": str(t.mission_id) if t.mission_id else None,
+                        "ref": {"table": "org_tasks", "id": str(t.id)},
+                    }
+                )
+
+            entries.sort(key=lambda e: cast(datetime, e["at"]), reverse=True)
+            trimmed = entries[:limit]
+            for e in trimmed:
+                at = e["at"]
+                e["at"] = at.isoformat() if hasattr(at, "isoformat") else at
+            return trimmed
+
+    # ── Mission timeline (Situation Room Gantt ribbon) ───────────────────────
+
+    async def get_mission_timeline(self, org_id: str, mission_id: str) -> dict[str, Any] | None:
+        """Derive an ordered phase ribbon (Gantt data) for one mission.
+
+        ``OrgMission`` only has ``started_at``/``completed_at`` — there is no
+        phase-level timestamp table — so phases are reconstructed from the
+        mission's own columns plus its lifecycle events in ``org_events``.
+
+        The mission-lifecycle emits in this file are NOT uniform about where
+        the mission id lives:
+        - ``mission.created`` / ``mission.{planned,queued,started,paused,
+          review,completed,failed,cancelled,expired,archived}`` (the latter
+          via ``update_mission_status``, which maps status ``active`` to the
+          event action ``started``) / ``task.decomposed`` / ``mission.progress``
+          / ``mission.published`` all set ``entity_type="mission"``,
+          ``entity_id=str(mission.id)`` — these are found via
+          ``list_events(entity_id=mission_id)``.
+        - ``team.formed`` (see ``form_team_and_dispatch``) sets
+          ``entity_type="team"``, ``entity_id=<team_id>`` instead — the
+          mission id only appears in ``payload["mission_id"]``. It is looked
+          up separately with a JSONB ``payload->>'mission_id'`` filter so
+          team-formation evidence for the "planning" phase isn't silently
+          dropped.
+
+        Only phases with real evidence are emitted: ``created`` (always, from
+        ``mission.created_at``), ``planning`` (first of a "planned"/"queued"
+        status event, a matched ``team.formed``, or ``task.decomposed``),
+        ``executing`` (the ``mission.started`` event, else
+        ``mission.started_at``), and ``done`` (a terminal status event, else
+        ``mission.completed_at``). There is no mission-level "verifying"
+        event anywhere in this codebase, so that phase is never fabricated.
+        """
+        mission = await self.get_mission(mission_id)
+        if mission is None or str(mission.org_id) != org_id:
+            return None
+
+        org_uuid = cast(uuid.UUID, mission.org_id)
+
+        direct_events = await self.list_events(org_id, entity_id=mission_id, limit=500)
+
+        team_result = await self._session.execute(
+            select(OrgEvent)
+            .where(
+                and_(
+                    OrgEvent.tenant_id == self._tenant_id,
+                    OrgEvent.org_id == org_uuid,
+                    OrgEvent.event_type == "team.formed",
+                    OrgEvent.payload["mission_id"].astext == mission_id,
+                )
+            )
+            .order_by(OrgEvent.created_at.asc())
+        )
+        team_events = list(team_result.scalars().all())
+
+        all_events = sorted([*direct_events, *team_events], key=lambda e: e.created_at)
+
+        def _first(event_types: set[str]) -> OrgEvent | None:
+            for ev in all_events:
+                if ev.event_type in event_types:
+                    return ev
+            return None
+
+        anchors: list[dict[str, Any]] = [
+            {
+                "name": "created",
+                "at": mission.created_at,
+                "agent": mission.created_by,
+            }
+        ]
+
+        planning_event = _first(
+            {"mission.planned", "mission.queued", "team.formed", "task.decomposed"}
+        )
+        if planning_event is not None:
+            anchors.append(
+                {
+                    "name": "planning",
+                    "at": planning_event.created_at,
+                    "agent": planning_event.actor_id,
+                }
+            )
+
+        started_event = _first({"mission.started"})
+        executing_at = started_event.created_at if started_event else mission.started_at
+        if executing_at is not None:
+            anchors.append(
+                {
+                    "name": "executing",
+                    "at": executing_at,
+                    "agent": started_event.actor_id if started_event else None,
+                }
+            )
+
+        done_event = _first(
+            {
+                "mission.completed",
+                "mission.failed",
+                "mission.cancelled",
+                "mission.expired",
+                "mission.archived",
+            }
+        )
+        done_at = done_event.created_at if done_event else mission.completed_at
+        if done_at is not None:
+            anchors.append(
+                {
+                    "name": "done",
+                    "at": done_at,
+                    "agent": done_event.actor_id if done_event else None,
+                }
+            )
+
+        anchors.sort(key=lambda a: cast(datetime, a["at"]))
+
+        phases: list[dict[str, Any]] = []
+        for idx, anchor in enumerate(anchors):
+            at = cast(datetime, anchor["at"])
+            if idx + 1 < len(anchors):
+                until: datetime | None = anchors[idx + 1]["at"]
+            elif anchor["name"] != "done" and mission.completed_at is not None:
+                until = mission.completed_at
+            else:
+                until = None
+            duration_ms = int((until - at).total_seconds() * 1000) if until is not None else None
+            phases.append(
+                {
+                    "name": anchor["name"],
+                    "at": at.isoformat(),
+                    "until": until.isoformat() if until is not None else None,
+                    "duration_ms": duration_ms,
+                    "agent": anchor["agent"],
+                }
+            )
+
+        total_ms: int | None = None
+        start_ref = mission.started_at or mission.created_at
+        if mission.completed_at is not None and start_ref is not None:
+            total_ms = int((mission.completed_at - start_ref).total_seconds() * 1000)
+
+        return {
+            "mission_id": mission_id,
+            "status": str(mission.status),
+            "phases": phases,
+            "total_ms": total_ms,
+        }
 
     # ── Organization health summary ───────────────────────────────────────────
 

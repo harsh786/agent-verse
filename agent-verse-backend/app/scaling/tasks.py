@@ -5379,7 +5379,12 @@ async def _collaboration_tick_for_org(
 
         publisher: OrgEventPublisher = get_org_event_publisher()
         gateway = LLMProviderCollaborationGateway(llm_provider, gateway=get_gateway())
-        tick = CollaborationTick(gateway, publisher, counters)
+        # ``org_service=svc`` persists each emitted message to ``org_events``
+        # using this same RLS-scoped session/transaction, so history commits
+        # atomically with the rest of the tick. SSE still goes solely through
+        # ``publisher`` above -- see ``CollaborationEventRecorder``'s
+        # docstring for why persistence is a separate injection point.
+        tick = CollaborationTick(gateway, publisher, counters, org_service=svc)
         return await tick.run(
             org_id=str(org_id),
             tenant_id=str(tenant_id),

@@ -508,6 +508,12 @@ async def get_mission(
     mission = await service.get_mission(mission_id)
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped only,
+    # so without this a caller could read org B's mission (same tenant) by id
+    # via org A's URL. 404 hides cross-org existence, same as
+    # approve_brain_proposal/reject_brain_proposal below.
+    if str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
 
 
@@ -523,14 +529,17 @@ async def update_mission(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> MissionResponse:
+    existing = await service.get_mission(mission_id)
+    if not existing:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     if body.status:
         mission = await service.update_mission_status(mission_id, body.status)
     else:
-        mission = await service.get_mission(mission_id)
-        if mission:
-            updates = body.model_dump(exclude_none=True, exclude={"status"})
-            if updates:
-                mission = await service.update_organization(mission_id, updates)  # type: ignore[assignment]
+        updates = body.model_dump(exclude_none=True, exclude={"status"})
+        mission = await service.update_mission(mission_id, updates) if updates else existing
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
@@ -549,6 +558,12 @@ async def update_mission_status(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> MissionResponse:
+    existing = await service.get_mission(mission_id)
+    if not existing:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     try:
         mission = await service.update_mission_status(mission_id, body.status)
     except ValueError as exc:
@@ -556,6 +571,23 @@ async def update_mission_status(
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
+
+
+@router.get(
+    "/{org_id}/missions/{mission_id}/timeline",
+    operation_id="org_mission_timeline",
+    summary="Mission phase timeline (Situation Room Gantt ribbon)",
+)
+async def get_mission_timeline(
+    org_id: str,
+    mission_id: str,
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> dict[str, Any]:
+    timeline = await service.get_mission_timeline(org_id, mission_id)
+    if timeline is None:
+        raise _not_found("Mission", mission_id, x_request_id)
+    return timeline
 
 
 # ── Autonomous Org Brain: decisions + proposal approve/reject ───────────────
@@ -717,6 +749,12 @@ async def get_task(
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_task is tenant-scoped only, so
+    # without this a caller could read org B's task (same tenant) by id via org
+    # A's URL. 404 hides cross-org existence, same as approve_org_request /
+    # reject_org_request above.
+    if str(task.org_id) != org_id:
+        raise _not_found("Task", task_id, x_request_id)
     return TaskResponse.model_validate(task)
 
 
@@ -732,6 +770,12 @@ async def update_task_status(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> TaskResponse:
+    existing = await service.get_task(task_id)
+    if not existing:
+        raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Task", task_id, x_request_id)
     try:
         task = await service.update_task_status(
             task_id,
@@ -777,6 +821,9 @@ async def approve_task(
     """
     task = await service.get_task(task_id)
     if not task:
+        raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(task.org_id) != org_id:
         raise _not_found("Task", task_id, x_request_id)
 
     # WS-3b: resolve the paired HITLGateway request BEFORE flipping status, so
@@ -889,6 +936,9 @@ async def reject_task(
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(task.org_id) != org_id:
+        raise _not_found("Task", task_id, x_request_id)
 
     # WS-3b: resolve the paired HITLGateway request (reject) so a blocked agent
     # is released via the ONE shared gateway.
@@ -998,6 +1048,7 @@ async def list_events(
     org_id: str,
     event_type: str | None = None,
     severity: str | None = None,
+    entity_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     service: OrgService = Depends(get_org_service),
@@ -1006,11 +1057,27 @@ async def list_events(
         org_id,
         event_type=event_type,
         severity=severity,
+        entity_id=entity_id,
         limit=limit,
         offset=offset,
     )
     data = [OrgEventResponse.model_validate(e) for e in events]
     return CursorPage(data=data, cursor=None, hasMore=len(events) == limit)
+
+
+@router.get(
+    "/{org_id}/agents/{agent_id}/audit",
+    operation_id="org_agent_audit",
+    summary="Per-agent activity trail (Situation Room black box)",
+)
+async def get_agent_audit(
+    org_id: str,
+    agent_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
+) -> list[dict[str, Any]]:
+    return await service.get_agent_audit(org_id, agent_id, limit=limit)
 
 
 # ── G-23: Org-level SSE stream (OrgRealtimeManager subscribes here) ──────────
@@ -1396,8 +1463,18 @@ async def mission_stream(
     mission_id: str,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
 ) -> StreamingResponse:
     """Server-Sent Events stream for real-time mission progress."""
+
+    # Scope to THIS tenant + org before subscribing — get_mission is tenant-scoped
+    # (via the RLS-scoped service session), and the org_id check additionally closes
+    # the cross-org gap. Without this, any authenticated caller could subscribe to
+    # ANY mission's Redis event channel by id, across tenants. Mirrors get_mission/
+    # approve_brain_proposal above.
+    mission = await service.get_mission(mission_id)
+    if mission is None or str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         import asyncio
@@ -1476,6 +1553,25 @@ async def org_graphify_start(
             raise _not_found("Organization", org_id, x_request_id)
 
         job_id = str(uuid4())
+
+        # Graphify jobs have no DB row/table of their own (see _run_graphify_job
+        # below) -- the job_id only ever lives in this closure and in the Redis
+        # pub/sub channel name. That means org_graphify_stream has no store to
+        # consult to find out which tenant/org a job_id belongs to. Write a
+        # short-lived ownership record now, at the one point where org_id has
+        # just been validated as belonging to this tenant, so the stream
+        # endpoint has a real (not fabricated) linkage to check against. TTL
+        # comfortably covers the job's lifetime (the polling fallback below
+        # caps a stream at 5 minutes; the real build should finish well before
+        # that) plus reconnects.
+        redis = getattr(request.app.state, "_redis", None)
+        if redis is not None:
+            await redis.set(
+                f"graphify:{job_id}:owner",
+                json.dumps({"tenant_id": tenant_id, "org_id": org_id}),
+                ex=3600,
+            )
+
         # Fire-and-forget: start the build in the background
         asyncio.get_event_loop().create_task(_run_graphify_job(org_id, tenant_id, job_id, request))
 
@@ -1494,6 +1590,7 @@ async def org_graphify_stream(
     job_id: str,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
 ) -> StreamingResponse:
     """Server-Sent Events stream for the Graphify knowledge-graph build job.
 
@@ -1504,12 +1601,32 @@ async def org_graphify_stream(
       * ``complete``   - job finished            ``{nodes, edges, communities}``
       * ``error``      - job failed              ``{message}``
     """
+    # Scope to THIS tenant + org BEFORE subscribing — same leak class already
+    # fixed for mission_stream (which checks a real DB row). Graphify jobs have
+    # no DB row: the only durable link between a job_id and its owning
+    # tenant/org is the "graphify:{job_id}:owner" Redis key written by
+    # org_graphify_start at job-creation time (see the comment there). Treat a
+    # missing or mismatched owner record -- unknown job_id, foreign tenant/org,
+    # expired TTL, or Redis unavailable -- as not-found, same as mission_stream,
+    # so we never disclose whether a job exists in another tenant/org.
+    redis = getattr(request.app.state, "_redis", None)
+    owner: dict[str, Any] | None = None
+    if redis is not None:
+        raw_owner = await redis.get(f"graphify:{job_id}:owner")
+        if raw_owner is not None:
+            text_owner = raw_owner.decode() if isinstance(raw_owner, bytes) else raw_owner
+            with contextlib.suppress(Exception):
+                owner = json.loads(text_owner)
+    owner_ok = (
+        owner is not None
+        and owner.get("tenant_id") == service._tenant_id
+        and owner.get("org_id") == org_id
+    )
+    if not owner_ok:
+        raise _not_found("Graphify job", job_id, x_request_id)
 
     async def _stream() -> AsyncGenerator[str, None]:
         try:
-
-            redis = getattr(request.app.state, "_redis", None)
-
             yield f"data: {json.dumps({'type': 'connected', 'job_id': job_id})}\n\n"
 
             if redis:
@@ -3552,6 +3669,9 @@ async def org_finalize_mission(
     """
     mission = await service.get_mission(mission_id)
     if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(mission.org_id) != org_id:
         raise _not_found("Mission", mission_id, x_request_id)
     ctx = _require_tenant(request)
     tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None

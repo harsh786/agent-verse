@@ -153,6 +153,7 @@ def mock_service() -> MagicMock:
     svc.list_missions = AsyncMock(return_value=[_fake_mission()])
     svc.get_mission = AsyncMock(return_value=_fake_mission())
     svc.update_mission_status = AsyncMock(return_value=_fake_mission(status="active"))
+    svc.update_mission = AsyncMock(return_value=_fake_mission(title="Updated title"))
     svc.list_events = AsyncMock(return_value=[])
     return svc
 

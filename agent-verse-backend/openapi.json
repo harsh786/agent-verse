@@ -4058,6 +4058,56 @@
         "title": "IssueCredentialRequest",
         "type": "object"
       },
+      "IssueGrantRequest": {
+        "properties": {
+          "grantee_agent_id": {
+            "title": "Grantee Agent Id",
+            "type": "string"
+          },
+          "grantor": {
+            "default": "api",
+            "title": "Grantor",
+            "type": "string"
+          },
+          "max_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Usd"
+          },
+          "not_before_seconds": {
+            "default": 0,
+            "title": "Not Before Seconds",
+            "type": "integer"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Scopes",
+            "type": "array"
+          },
+          "ttl_seconds": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 31536000.0,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "grantee_agent_id",
+          "scopes",
+          "ttl_seconds"
+        ],
+        "title": "IssueGrantRequest",
+        "type": "object"
+      },
       "JiraIngestRequest": {
         "properties": {
           "base_url": {
@@ -27408,6 +27458,135 @@
         ]
       }
     },
+    "/grants": {
+      "get": {
+        "operationId": "list_grants_grants_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Grants Grants Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Grants",
+        "tags": [
+          "grants"
+        ]
+      },
+      "post": {
+        "operationId": "issue_grant_grants_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Issue Grant Grants Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Issue Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}/revoke": {
+      "post": {
+        "operationId": "revoke_grant_grants__grant_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Grant Grants  Grant Id  Revoke Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
     "/guardrails": {
       "get": {
         "operationId": "list_guardrail_configs_guardrails_get",
@@ -41098,6 +41277,83 @@
         ]
       }
     },
+    "/v1/org/{org_id}/agents/{agent_id}/audit": {
+      "get": {
+        "operationId": "org_agent_audit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "title": "Org Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Org Agent Audit",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Per-agent activity trail (Situation Room black box)",
+        "tags": [
+          "org"
+        ]
+      }
+    },
     "/v1/org/{org_id}/approvals": {
       "get": {
         "description": "G-04: Return approval requests for goals/missions within this org.\n\nReads from the governance approval_requests table filtered by org context.\nApprovalCenter.tsx consumes this endpoint.",
@@ -42505,6 +42761,22 @@
           },
           {
             "in": "query",
+            "name": "entity_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity Id"
+            }
+          },
+          {
+            "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
@@ -42778,6 +43050,15 @@
             "required": true,
             "schema": {
               "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
               "type": "string"
             }
           }
@@ -43633,6 +43914,15 @@
               "title": "Mission Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -43651,6 +43941,68 @@
           }
         },
         "summary": "SSE stream for mission progress updates",
+        "tags": [
+          "org"
+        ]
+      }
+    },
+    "/v1/org/{org_id}/missions/{mission_id}/timeline": {
+      "get": {
+        "operationId": "org_mission_timeline",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "title": "Org Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "mission_id",
+            "required": true,
+            "schema": {
+              "title": "Mission Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-request-id",
+            "required": false,
+            "schema": {
+              "title": "X-Request-Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Org Mission Timeline",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mission phase timeline (Situation Room Gantt ribbon)",
         "tags": [
           "org"
         ]

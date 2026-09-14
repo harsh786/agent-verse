@@ -15,6 +15,7 @@ stores (e.g. ``app/workflow/run_store.py``).
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -44,17 +45,25 @@ class BrainDecisionStore:
         reason: str,
         est_cost_usd: float,
         mission_id: str | uuid.UUID | None = None,
+        guardrail_trace: list[dict[str, Any]] | None = None,
     ) -> str:
-        """Insert one decision row and return its new id (string UUID)."""
+        """Insert one decision row and return its new id (string UUID).
+
+        ``guardrail_trace`` is the ordered list of per-check results from
+        ``app.org.brain_guardrails.evaluate_guardrails`` (already plain dicts,
+        e.g. via ``dataclasses.asdict``), persisted as JSONB for the Brain
+        Feed v2 UI to render the full 8-check SENSE→DECIDE→GUARD→ACT trace.
+        """
         decision_id = str(uuid.uuid4())
         await self._session.execute(
             sa_text(
                 "INSERT INTO org_brain_decisions "
                 "(id, org_id, tenant_id, tick_id, kind, rationale, target_goal, "
-                " action, guardrail_verdict, reason, est_cost_usd, mission_id) "
+                " action, guardrail_verdict, reason, est_cost_usd, mission_id, guardrail_trace) "
                 "VALUES (CAST(:id AS uuid), CAST(:org_id AS uuid), CAST(:tenant_id AS uuid), "
                 " :tick_id, :kind, :rationale, :target_goal, :action, :guardrail_verdict, "
-                " :reason, :est_cost_usd, CAST(:mission_id AS uuid))"
+                " :reason, :est_cost_usd, CAST(:mission_id AS uuid), "
+                " CAST(:guardrail_trace AS jsonb))"
             ),
             {
                 "id": decision_id,
@@ -69,6 +78,9 @@ class BrainDecisionStore:
                 "reason": reason,
                 "est_cost_usd": float(est_cost_usd),
                 "mission_id": str(mission_id) if mission_id is not None else None,
+                "guardrail_trace": (
+                    json.dumps(guardrail_trace) if guardrail_trace is not None else None
+                ),
             },
         )
         return decision_id
@@ -83,7 +95,7 @@ class BrainDecisionStore:
         result = await self._session.execute(
             sa_text(
                 "SELECT id, tick_id, kind, rationale, target_goal, action, "
-                " guardrail_verdict, reason, est_cost_usd, mission_id, created_at "
+                " guardrail_verdict, reason, est_cost_usd, mission_id, guardrail_trace, created_at "
                 "FROM org_brain_decisions "
                 "WHERE org_id = CAST(:org_id AS uuid) "
                 " AND tenant_id = CAST(:tenant_id AS uuid) "

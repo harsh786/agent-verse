@@ -43,7 +43,10 @@ import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
 import { AutonomyControl }       from './components/AutonomyControl';
+import { AutonomyStatusBadge }   from './components/AutonomyStatusBadge';
+import { NarrationTicker }       from './components/NarrationTicker';
 import { BrainFeed }             from './components/BrainFeed';
+import { BudgetGauges }          from './components/BudgetGauges';
 import { TeamChannel }           from './components/TeamChannel';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
@@ -52,6 +55,7 @@ import { useVoicePrefsStore }    from '@/stores/voicePrefs';
 import { useOrgRealtimeManager, type OrgEvent } from './OrgRealtimeManager';
 import { useOrgNeuralState } from './hooks/useOrgNeuralState';
 import { AgentConstellation } from './components/AgentConstellation';
+import { AgentAuditDrawer }   from './components/AgentAuditDrawer';
 import { useOrganization, useOrgHealth, useMissions, useDepartments } from './hooks/useOrg';
 import type { OrgMission }       from './types';
 
@@ -128,6 +132,8 @@ export function OrgPage() {
   }, []);
 
   const [selectedMission, setSelectedMission] = useState<string | null>(null);
+  // Clicking an agent node in the Live Agent Network opens its audit drawer.
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [showCreate, setShowCreate]           = useState(false);
   const [statusFilter, setStatusFilter]       = useState<string | undefined>();
   // Clicking a department scopes the missions pane to that department.
@@ -295,6 +301,7 @@ export function OrgPage() {
   }, [navigate, orgId]);
 
   const closeMissionDetail = useCallback(() => setSelectedMission(null), []);
+  const closeAgentDrawer = useCallback(() => setSelectedAgentId(null), []);
 
   if (!orgId) {
     return (
@@ -679,6 +686,19 @@ export function OrgPage() {
             className="shrink-0 hidden lg:flex flex-col overflow-y-auto border-l border-[#1E2535] bg-[#0B0E14]"
             aria-label="Command panel"
           >
+            {/* Always-visible autonomy status + one-click Pause — the "kill
+                switch is right here" hero control. Mounted first so it never
+                scrolls out of view, even though the full AutonomyControl
+                panel (level/caps/collaboration) still lives further down. */}
+            <div className="p-4 border-b border-[#1E2535]">
+              <AutonomyStatusBadge orgId={orgId} />
+            </div>
+
+            {/* Running plain-English narration of what the org is doing. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <NarrationTicker orgId={orgId} />
+            </section>
+
             {/* Live Agent Network — the constellation now lives in the command
                 panel; the mission orbit is the center-column hero. Resizable height. */}
             <section
@@ -718,6 +738,8 @@ export function OrgPage() {
                     // Real message beams only — never fabricated when the
                     // scene is showing idle departments.
                     communicatingPairs={constellationIsLive ? neural.communicatingPairs : []}
+                    onAgentSelect={setSelectedAgentId}
+                    selectedAgentId={selectedAgentId}
                     className="max-w-full"
                   />
                 </div>
@@ -738,12 +760,39 @@ export function OrgPage() {
               </div>
             )}
 
-            {/* Morning brief panel */}
+            {/* ── COMMS: situation-room chat — cross-agent chatter, right under
+                the live network so "who's talking" reads next to "who's here". ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <TeamChannel orgId={orgId} />
+            </section>
+
+            {/* ── BRAIN: decisions + guardrail trace, paired with budget burn so
+                "what it decided" and "what it's spending" sit together. ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <BrainFeed orgId={orgId} />
+            </section>
+
+            <section className="p-4 border-b border-[#1E2535]">
+              <BudgetGauges orgId={orgId} />
+            </section>
+
+            {/* ── CONTROL: the full level/caps/collaboration panel — deliberately
+                below the always-visible status badge + BRAIN readouts, since this
+                is the "go change something" panel rather than a status readout. ── */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3">
+                Autonomy
+              </h2>
+              <AutonomyControl orgId={orgId} />
+            </section>
+
+            {/* ── CONTEXT: broader org framing — brief, priorities, org chart,
+                and the raw event log — grouped last since these are reference
+                material rather than live signal. ── */}
             <div className="p-4 border-b border-[#1E2535]">
               <MorningBrief orgId={orgId} compact />
             </div>
 
-            {/* Now/Next/Why panel */}
             <div className="p-4 border-b border-[#1E2535]">
               <NowNextWhy
                 health={health as Parameters<typeof NowNextWhy>[0]['health']}
@@ -752,7 +801,6 @@ export function OrgPage() {
               />
             </div>
 
-            {/* Department tree */}
             <section className="p-4 border-b border-[#1E2535]">
               <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3 flex items-center gap-1.5">
                 <Zap className="h-3 w-3" aria-hidden />
@@ -767,26 +815,6 @@ export function OrgPage() {
               />
             </section>
 
-            {/* Org brain autonomy control — level, pause, caps, collaboration. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3">
-                Autonomy
-              </h2>
-              <AutonomyControl orgId={orgId} />
-            </section>
-
-            {/* Brain decisions feed — directly below autonomy control. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <BrainFeed orgId={orgId} />
-            </section>
-
-            {/* Team channel — live cross-agent collaboration chatter. */}
-            <section className="p-4 border-b border-[#1E2535]">
-              <TeamChannel orgId={orgId} />
-            </section>
-
-            {/* Live activity feed — the JARVIS event stream, now beneath the
-                department tree per the requested panel order. */}
             <section
               className="border-b border-[#1E2535] shrink-0 max-h-[24rem] overflow-y-auto p-4"
               aria-label="Live activity"
@@ -806,6 +834,18 @@ export function OrgPage() {
             orgId={orgId}
             missionId={selectedMission}
             onClose={closeMissionDetail}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Agent audit drawer — "black box" trail for one selected agent ─── */}
+      <AnimatePresence>
+        {selectedAgentId && (
+          <AgentAuditDrawer
+            key={selectedAgentId}
+            orgId={orgId}
+            agentId={selectedAgentId}
+            onClose={closeAgentDrawer}
           />
         )}
       </AnimatePresence>

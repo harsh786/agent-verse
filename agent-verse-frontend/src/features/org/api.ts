@@ -20,6 +20,9 @@ import type {
   AutonomySettings,
   AutonomyView,
   BrainDecision,
+  CollaborationMessage,
+  AgentAuditEntry,
+  MissionTimeline,
 } from './types';
 
 const BASE = '/v1/org';
@@ -283,5 +286,55 @@ export const orgAutonomyApi = {
     return apiFetch<OrgMission>(`${BASE}/${orgId}/brain/proposals/${missionId}/reject`, {
       method: 'POST',
     });
+  },
+};
+
+// ── Situation Room (collaboration, agent audit, mission timeline) ──────────────
+
+export const situationApi = {
+  /** Recent inter-agent collaboration messages, newest-first as returned by the
+   *  backend. Backed by org_events rows with event_type="org.collaboration.message";
+   *  mapped from each row's `payload` (null-safe — legacy rows may lack it). */
+  collaborationHistory(orgId: string, limit = 50): Promise<CollaborationMessage[]> {
+    // Backend returns CursorPage<OrgEvent> {data:[], cursor, hasMore} — unwrap
+    // exactly like orgApi.listEvents.
+    return apiFetch<{ data: OrgEvent[] } | OrgEvent[]>(
+      `${BASE}/${orgId}/events?event_type=org.collaboration.message&limit=${limit}`,
+    )
+      .then(r => (Array.isArray(r) ? r : ((r as { data: OrgEvent[] }).data ?? [])))
+      .then(rows =>
+        rows.map((row): CollaborationMessage => {
+          const payload = (row.payload ?? {}) as Record<string, unknown>;
+          const str = (v: unknown): string | undefined =>
+            typeof v === 'string' ? v : undefined;
+          const num = (v: unknown): number | null =>
+            typeof v === 'number' ? v : null;
+          return {
+            id:         row.id,
+            from_agent: str(payload.from_agent) ?? row.entity_id ?? '',
+            to:         str(payload.to) ?? '',
+            kind:       str(payload.kind) ?? '',
+            message:    str(payload.message) ?? row.description ?? '',
+            latency_ms: num(payload.latency_ms),
+            tokens:     num(payload.tokens),
+            cost_usd:   num(payload.cost_usd),
+            mission_id: str(payload.mission_id) ?? null,
+            at:         row.created_at,
+          };
+        }),
+      );
+  },
+
+  /** One agent's activity audit trail (messages, events, decisions, tasks),
+   *  newest-first. Backend returns a bare JSON array — not a CursorPage. */
+  agentAudit(orgId: string, agentId: string, limit = 50): Promise<AgentAuditEntry[]> {
+    return apiFetch<AgentAuditEntry[]>(
+      `${BASE}/${orgId}/agents/${encodeURIComponent(agentId)}/audit?limit=${limit}`,
+    );
+  },
+
+  /** Phase-by-phase execution timeline for a mission. */
+  missionTimeline(orgId: string, missionId: string): Promise<MissionTimeline> {
+    return apiFetch<MissionTimeline>(`${BASE}/${orgId}/missions/${missionId}/timeline`);
   },
 };

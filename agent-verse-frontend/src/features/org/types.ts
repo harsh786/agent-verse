@@ -178,6 +178,8 @@ export interface OrgEvent {
   entity_type:  string | null;
   entity_id:    string | null;
   created_at:   string;
+  payload?:     Record<string, unknown>;
+  source?:      string;
 }
 
 export interface CursorPage<T> {
@@ -270,10 +272,69 @@ export interface BrainDecision {
   est_cost_usd:       number | null;
   mission_id:         string | null;
   created_at:         string;
+  /** Per-guardrail pass/fail breakdown for this decision, when the brain ran one. */
+  guardrail_trace?:   GuardrailCheck[] | null;
+}
+
+/** One guardrail evaluated as part of a brain decision (backend app/org/brain_guardrails.py).
+ *  `value`/`limit` are pre-formatted display strings (e.g. "$4.80/$5.00", "2/2"). */
+export interface GuardrailCheck {
+  name:   string;
+  passed: boolean;
+  detail: string;
+  value:  string | null;
+  limit:  string | null;
 }
 
 /** GET/PATCH /v1/org/{id}/autonomy response shape. */
 export interface AutonomyView {
   autonomy_level: number;
   settings:       AutonomySettings;
+}
+
+// ── Situation Room (collaboration, agent audit, mission timeline) ──────────────
+
+/** A collaboration message between two agents, derived from an
+ *  `org.collaboration.message` OrgEvent's payload (GET /v1/org/{id}/events). */
+export interface CollaborationMessage {
+  id:           string;
+  from_agent:   string;
+  to:           string;
+  kind:         string;
+  message:      string;
+  latency_ms:   number | null;
+  tokens:       number | null;
+  cost_usd:     number | null;
+  mission_id:   string | null;
+  at:           string;
+}
+
+/** One entry in an agent's activity audit trail (GET /v1/org/{id}/agents/{agentId}/audit). */
+export interface AgentAuditEntry {
+  id:           string;
+  kind:         'message' | 'event' | 'decision' | 'task';
+  at:           string;
+  title:        string;
+  detail:       string;
+  cost_usd:     number | null;
+  duration_ms:  number | null;
+  mission_id:   string | null;
+  ref:          Record<string, unknown>;
+}
+
+/** One phase of a mission's execution timeline. */
+export interface MissionPhase {
+  name:         string;
+  at:           string;
+  until:        string | null;
+  duration_ms:  number | null;
+  agent:        string | null;
+}
+
+/** GET /v1/org/{id}/missions/{missionId}/timeline response shape. */
+export interface MissionTimeline {
+  mission_id: string;
+  status:     string;
+  phases:     MissionPhase[];
+  total_ms:   number | null;
 }
