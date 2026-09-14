@@ -1430,7 +1430,13 @@ class OrgService:
             autonomy_level=autonomy_level,
             approval_status=approval_status,
             actor_agent_id=actor_agent_id,
-            metadata=metadata or {},
+            # NOTE: OrgDecision has no "metadata" column — that name is the
+            # SQLAlchemy declarative Base.metadata registry. The JSONB scratch
+            # field is "extra_data"; passing metadata= only set a transient
+            # shadow attribute that was NEVER persisted (so decision metadata was
+            # silently lost on reload). Write the real column. Mirrors the same
+            # fix applied to create_task's OrgTask construction above.
+            extra_data=metadata or {},
         )
         self._session.add(decision)
         await self._session.flush()
