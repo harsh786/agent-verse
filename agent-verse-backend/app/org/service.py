@@ -1587,7 +1587,7 @@ class OrgService:
                         ),
                     )
                 )
-                .order_by(OrgTask.created_at.desc())
+                .order_by(func.coalesce(OrgTask.completed_at, OrgTask.created_at).desc())
                 .limit(limit)
             )
             tasks = list(task_result.scalars().all())

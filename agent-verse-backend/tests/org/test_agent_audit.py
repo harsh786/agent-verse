@@ -22,6 +22,7 @@ import secrets
 import subprocess
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -315,3 +316,80 @@ async def test_get_agent_audit_org_isolation(factories: tuple) -> None:
     finally:
         await _cleanup(admin_factory, org_id_1)
         await _cleanup(admin_factory, org_id_2)
+
+
+@pytest.mark.asyncio
+async def test_get_agent_audit_task_ordering_survives_limit_pre_truncation(
+    factories: tuple,
+) -> None:
+    """Regression: the ``org_tasks`` per-source query must order/limit by
+    ``coalesce(completed_at, created_at)`` -- the same key the final merge
+    sorts by -- not by ``created_at`` alone.
+
+    Otherwise, when an agent has MORE than ``limit`` matching tasks, the
+    SQL-side pre-truncation (previously ``ORDER BY created_at DESC LIMIT
+    limit``) can throw away a task that belongs in the true top-``limit``
+    by the final ``at`` key: e.g. a task created long ago but completed
+    very recently.
+
+    task-0 is the OLDEST by created_at but is given the MOST RECENT
+    completed_at of all 7 tasks, so it must rank #1 in a 5-item result --
+    and must not be dropped just because it was created first.
+    """
+    admin_factory, app_factory = factories
+    seeded = await _seed_org(admin_factory, app_factory)
+    org_id = seeded["org_id"]
+    tenant_id = seeded["tenant_id"]
+    agent_id = "agent-audit-order"
+    limit = 5
+    task_count = 7
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    try:
+        task_ids: list[str] = []
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, tenant_id):
+                svc = OrgService(session=session, tenant_id=tenant_id)
+                for i in range(task_count):
+                    task = await svc.create_task(
+                        org_id=org_id,
+                        title=f"task-{i}",
+                        owner_agent_id=agent_id,
+                    )
+                    task_ids.append(str(task.id))
+
+        # Force deterministic created_at (ascending: task-0 oldest ..
+        # task-6 newest), then give task-0 -- the oldest by created_at --
+        # a completed_at far more recent than any other task's created_at.
+        async with admin_factory() as s, s.begin():
+            for i, tid in enumerate(task_ids):
+                await s.execute(
+                    text("UPDATE org_tasks SET created_at = :ts WHERE id = CAST(:id AS uuid)"),
+                    {"ts": base + timedelta(minutes=i), "id": tid},
+                )
+            await s.execute(
+                text("UPDATE org_tasks SET completed_at = :ts WHERE id = CAST(:id AS uuid)"),
+                {"ts": base + timedelta(minutes=1000), "id": task_ids[0]},
+            )
+
+        async with app_factory() as session, session.begin():
+            async with sqlalchemy_rls_context(session, tenant_id):
+                svc = OrgService(session=session, tenant_id=tenant_id)
+                audit = await svc.get_agent_audit(org_id, agent_id, limit=limit)
+
+        assert len(audit) == limit
+        titles = [e["title"] for e in audit]
+
+        # task-0's effective 'at' (its completed_at) outranks every other
+        # task's 'at' (their created_at, since none of them completed), so
+        # it must be first -- and present at all.
+        assert titles[0] == "task-0"
+
+        # True top-5 by (completed_at or created_at) desc: task-0 (via
+        # completed_at), then the 4 newest by created_at (task-6..task-3).
+        # task-1 and task-2 -- next-oldest by created_at, never completed
+        # -- must be excluded even though they exist.
+        assert set(titles) == {"task-0", "task-6", "task-5", "task-4", "task-3"}
+        assert "task-1" not in titles
+        assert "task-2" not in titles
+    finally:
+        await _cleanup(admin_factory, org_id)
