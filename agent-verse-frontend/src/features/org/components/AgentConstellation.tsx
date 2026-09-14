@@ -44,7 +44,9 @@ const KIND_BEAM_COLORS: Record<string, string> = {
   risk:     '#F59E0B',
   block:    '#EF4444',
 };
-const DEFAULT_BEAM_COLOR = '#A855F7';
+// Matches TeamChannel's DEFAULT_KIND ('update', #64748B) so an unknown/unset
+// kind renders the same color across both surfaces.
+const DEFAULT_BEAM_COLOR = '#64748B';
 
 /** Most recent message (recentMessages is newest-first) between an unordered pair. */
 function latestMessageForPair(

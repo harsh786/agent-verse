@@ -182,9 +182,10 @@ export function useOrgNeuralState(orgId: string | null): OrgNeuralState {
     agents:             state.agents,
     communicatingPairs,
     recentMessages:     state.recentMessages,
-    activeMissions:     (health as any)?.active_missions  ?? state.activeMissions,
-    pendingApprovals:   (health as any)?.pending_approvals ?? state.pendingApprovals,
-    overallHealth:      (health as any)?.overall_health    ?? state.overallHealth,
+    activeMissions:     health?.active_missions   ?? state.activeMissions,
+    pendingApprovals:   health?.pending_approvals ?? state.pendingApprovals,
+    // `OrgHealthResponse` exposes `health`, not `overall_health`.
+    overallHealth:      health?.health ?? state.overallHealth,
     applyEvent,
   };
 
