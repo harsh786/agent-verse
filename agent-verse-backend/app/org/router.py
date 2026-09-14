@@ -1467,8 +1467,18 @@ async def mission_stream(
     mission_id: str,
     request: Request,
     service: OrgService = Depends(get_org_service),
+    x_request_id: str = Header(default_factory=_request_id),
 ) -> StreamingResponse:
     """Server-Sent Events stream for real-time mission progress."""
+
+    # Scope to THIS tenant + org before subscribing — get_mission is tenant-scoped
+    # (via the RLS-scoped service session), and the org_id check additionally closes
+    # the cross-org gap. Without this, any authenticated caller could subscribe to
+    # ANY mission's Redis event channel by id, across tenants. Mirrors get_mission/
+    # approve_brain_proposal above.
+    mission = await service.get_mission(mission_id)
+    if mission is None or str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
 
     async def event_generator() -> AsyncGenerator[str, None]:
         import asyncio

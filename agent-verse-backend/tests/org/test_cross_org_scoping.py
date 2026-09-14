@@ -303,3 +303,29 @@ async def test_task_endpoints_scoped_to_org(factories: tuple) -> None:
             assert r.json()["status"] == "failed"
     finally:
         await _cleanup(admin_factory, org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_mission_stream_scoped_to_tenant_and_org(factories: tuple) -> None:
+    """GET .../missions/{mission_id}/stream (SSE) must 404 -- before ever
+    subscribing to the Redis pub/sub channel -- when the mission doesn't
+    belong to the URL's org (same tenant). Regression test for a
+    cross-tenant leak: mission_stream previously subscribed to
+    ``mission:{mission_id}:events`` with no ownership check at all, so any
+    authenticated caller could read any mission's live event stream by id."""
+    admin_factory, app_factory = factories
+    seeded = await _seed_two_orgs_same_tenant(admin_factory)
+    tenant_id, org_a, org_b = seeded["tenant_id"], seeded["org_a"], seeded["org_b"]
+    mission_id = await _create_mission_in_org_b(app_factory, tenant_id, org_b)
+
+    try:
+        async with _client_for(app_factory, tenant_id) as client:
+            # Cross-org (org A's URL, org B's mission): must 404 before streaming.
+            r = await client.get(f"/v1/org/{org_a}/missions/{mission_id}/stream")
+            assert r.status_code == 404, r.text
+
+            # A mission id that doesn't exist at all must also 404.
+            r = await client.get(f"/v1/org/{org_b}/missions/{uuid.uuid4()}/stream")
+            assert r.status_code == 404, r.text
+    finally:
+        await _cleanup(admin_factory, org_a, org_b)
