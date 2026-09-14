@@ -7,6 +7,7 @@ ChatService.run_qa calls an async ``memory_recall(query, tenant_id) -> list[str]
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -32,3 +33,21 @@ def build_memory_recall(
         return out
 
     return _recall
+
+
+def build_memory_writer(
+    store: Any, *, memory_type: str = "domain_fact"
+) -> Callable[[str, str], Awaitable[None]]:
+    """Return a ``(fact, tenant_id) -> None`` coroutine that persists a fact via
+    ``LongTermMemoryStore.store_async``. Degrades silently on failure."""
+
+    async def _write(fact: str, tenant_id: str) -> None:
+        from app.memory.long_term import LongTermMemory
+        from app.tenancy.context import PlanTier, TenantContext
+
+        ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="chat")
+        memory = LongTermMemory(content=fact, source_goal_id="chat", memory_type=memory_type)
+        with contextlib.suppress(Exception):
+            await store.store_async(memory=memory, tenant_ctx=ctx)
+
+    return _write

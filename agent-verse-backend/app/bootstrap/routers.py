@@ -99,14 +99,17 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     _existing_goal_svc = getattr(app.state, "goal_service", None)
     _ltm = getattr(app.state, "long_term_memory", None)
     _memory_recall = None
+    _memory_writer = None
     if _ltm is not None:
-        from app.chat.memory_adapter import build_memory_recall
+        from app.chat.memory_adapter import build_memory_recall, build_memory_writer
 
         _memory_recall = build_memory_recall(_ltm)
+        _memory_writer = build_memory_writer(_ltm)
     app.state.chat_service.attach_engine(
         goal_service=_existing_goal_svc,
         answer_generator=resolve_llm_provider(app.state),
         memory_recall=_memory_recall,
+        memory_writer=_memory_writer,
     )
     app.include_router(chat_router)
     # Core
