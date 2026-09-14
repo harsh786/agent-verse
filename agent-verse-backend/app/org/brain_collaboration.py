@@ -32,6 +32,7 @@ method returns the count emitted so far and does not raise.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Protocol, runtime_checkable
 
 import structlog
@@ -58,6 +59,32 @@ _EST_COST_USD_PER_MESSAGE = 0.001
 EVENT_TYPE_COLLABORATION_MESSAGE = "org.collaboration.message"
 
 
+def classify_message_kind(text: str) -> str:
+    """Lightweight keyword classification of an ambient chatter message.
+
+    Pure and deliberately simple — this is cosmetic typing for the Situation
+    Room UX, not a decision-making pathway, so a small ordered set of
+    substring checks is enough. Order matters where keywords could overlap
+    (checked most-specific-first); falls back to ``"update"``.
+    """
+    if not text:
+        return "update"
+    lowered = text.lower()
+    if "?" in text:
+        return "question"
+    if any(kw in lowered for kw in ("propose", "suggest", "recommend")):
+        return "proposal"
+    if any(kw in lowered for kw in ("risk", "concern", "warn")):
+        return "risk"
+    if any(kw in lowered for kw in ("block", "cannot", "can't", "stuck")):
+        return "block"
+    if any(kw in lowered for kw in ("done", "completed", "result")):
+        return "result"
+    if any(kw in lowered for kw in ("hand off", "handoff", "take over")):
+        return "handoff"
+    return "update"
+
+
 @runtime_checkable
 class CollaborationModelGateway(Protocol):
     """Duck-typed interface ``CollaborationTick`` needs from ``model_gateway``.
@@ -71,9 +98,16 @@ class CollaborationModelGateway(Protocol):
     ``ModelGateway.select_model`` to pick a cheap profile and then the real
     provider's ``complete``. Tests substitute a fake that just returns a
     canned short line (or raises, to exercise the fail-closed path).
+
+    Returns ``(text, latency_ms, tokens, cost_usd)``: ``latency_ms`` is
+    wall-clock around the underlying model call; ``tokens``/``cost_usd`` are
+    read from the provider response's real usage when available, else a
+    rough estimate (see ``LLMProviderCollaborationGateway.complete_short``).
     """
 
-    async def complete_short(self, prompt: str, *, max_tokens: int) -> str: ...
+    async def complete_short(
+        self, prompt: str, *, max_tokens: int
+    ) -> tuple[str, int, int, float]: ...
 
 
 @runtime_checkable
@@ -117,7 +151,9 @@ class LLMProviderCollaborationGateway:
         self._llm = llm_provider
         self._gateway = gateway
 
-    async def complete_short(self, prompt: str, *, max_tokens: int) -> str:
+    async def complete_short(
+        self, prompt: str, *, max_tokens: int
+    ) -> tuple[str, int, int, float]:
         from app.providers.base import CompletionRequest, Message
 
         model = ""
@@ -142,8 +178,42 @@ class LLMProviderCollaborationGateway:
             max_tokens=max_tokens,
             temperature=0.7,
         )
+        start = time.perf_counter()
         resp = await self._llm.complete(req)
-        return (resp.content or "").strip()
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        text = (resp.content or "").strip()
+
+        # Prefer the response's normalised ``usage`` (``TokenUsage``); fall
+        # back to the top-level ``input_tokens``/``output_tokens`` fields
+        # (``app/providers/base.py::CompletionResponse``) when it is absent.
+        usage = getattr(resp, "usage", None)
+        input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "completion_tokens", None)
+        if input_tokens is None:
+            input_tokens = getattr(resp, "input_tokens", 0) or 0
+        if output_tokens is None:
+            output_tokens = getattr(resp, "output_tokens", 0) or 0
+        total_tokens = int(input_tokens) + int(output_tokens)
+
+        if total_tokens > 0:
+            tokens = total_tokens
+            try:
+                from app.intelligence.cost_tracker import calculate_cost
+
+                cost_usd = calculate_cost(
+                    resp.model or model, int(input_tokens), int(output_tokens)
+                )
+            except Exception as exc:  # pragma: no cover - defensive, pricing lookup is pure
+                _log.warning("collaboration_gateway.cost_calc_failed", error=str(exc))
+                cost_usd = _EST_COST_USD_PER_MESSAGE
+        else:
+            # Provider reported no real usage -- rough length-based token
+            # estimate and the fixed per-message cost estimate as a
+            # conservative fallback.
+            tokens = max(1, len(text) // 4) if text else 0
+            cost_usd = _EST_COST_USD_PER_MESSAGE
+
+        return text, latency_ms, tokens, cost_usd
 
 
 class CollaborationTick:
@@ -218,7 +288,12 @@ class CollaborationTick:
                     "No preamble, no quotation marks."
                 )
                 try:
-                    message = await self._model_gateway.complete_short(
+                    (
+                        message,
+                        latency_ms,
+                        tokens,
+                        cost_usd,
+                    ) = await self._model_gateway.complete_short(
                         prompt, max_tokens=_MAX_TOKENS_PER_MESSAGE
                     )
                 except Exception as exc:
@@ -241,12 +316,31 @@ class CollaborationTick:
                     event_type=EVENT_TYPE_COLLABORATION_MESSAGE,
                     org_id=org_id,
                     tenant_id=tenant_id,
-                    payload={"lead": lead, "message": message},
+                    payload={
+                        # Kept for backward-compat with existing consumers.
+                        "lead": lead,
+                        "message": message,
+                        # Typed enrichment for the Situation Room UX.
+                        "from_agent": lead,
+                        "to": "team",
+                        "kind": classify_message_kind(message),
+                        "latency_ms": latency_ms,
+                        "tokens": tokens,
+                        "cost_usd": cost_usd,
+                        # This ambient tick is not (currently) tied to any
+                        # specific mission -- no mission context is threaded
+                        # through here, so this is always None today.
+                        "mission_id": None,
+                    },
                 )
                 emitted += 1
                 if self._counters is not None:
                     try:
-                        await self._counters.record_collab_spend(_EST_COST_USD_PER_MESSAGE)
+                        # Record the real per-message cost when the gateway
+                        # reported real usage; ``cost_usd`` already falls
+                        # back to ``_EST_COST_USD_PER_MESSAGE`` otherwise, so
+                        # this is always the right amount to charge.
+                        await self._counters.record_collab_spend(cost_usd)
                     except Exception as exc:
                         _log.warning(
                             "collaboration_tick.spend_record_failed", org_id=org_id, error=str(exc)
