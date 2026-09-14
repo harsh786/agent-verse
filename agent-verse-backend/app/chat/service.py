@@ -36,6 +36,25 @@ def _extract_memory_directive(message: str) -> str | None:
     return fact or None
 
 
+def extract_delivery_target(execution_context: dict[str, Any] | None) -> dict[str, str] | None:
+    """Read the chat delivery binding from a goal/trigger's execution_context.
+
+    ``run_goal`` binds ``{source: "chat", session_id, message_id}`` so that when
+    the goal completes asynchronously (Phase 2) the result can be posted back into
+    the originating conversation. Returns ``None`` when there is nothing to deliver
+    to (non-chat source or no session).
+    """
+    if not execution_context or execution_context.get("source") != "chat":
+        return None
+    session_id = execution_context.get("session_id") or execution_context.get("conversation_id")
+    if not session_id:
+        return None
+    return {
+        "session_id": str(session_id),
+        "message_id": str(execution_context.get("message_id", "")),
+    }
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -463,6 +482,31 @@ class ChatService:
             )
             ids.append(str(schedule_id))
         return ids
+
+    def deliver_result(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        content: str,
+        goal_id: str | None = None,
+    ) -> _Message | None:
+        """Post an async goal/schedule result back into a conversation (Phase 2).
+
+        Called when work bound to this conversation completes out-of-band, so the
+        user sees the answer in the thread even if they weren't watching the live
+        stream. Returns None if the session no longer exists.
+        """
+        if self.get_session(session_id, tenant_id) is None:
+            return None
+        return self.save_message(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            role="assistant",
+            content=content,
+            goal_id=goal_id,
+            metadata={"delivery": "async"},
+        )
 
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 
