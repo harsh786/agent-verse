@@ -111,6 +111,9 @@ class TestRegisterBuiltinServers:
 
         mock_registry.register = _register
         mock_registry.unregister = _unregister
+        # No pre-existing user-registered connector → the stale builtin-openai must be
+        # unregistered (the else-branch preserves only connectors with their own creds).
+        mock_registry.get = AsyncMock(return_value=None)
 
         with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
             # Repurposed (non-OpenAI) key → server is NOT registered, and any stale
