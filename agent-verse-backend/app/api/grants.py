@@ -33,6 +33,17 @@ def _store(request: Request) -> Any:
     return store
 
 
+async def _audit(request: Request, tenant_id: str, event: dict[str, Any]) -> None:
+    """Best-effort append to the tamper-evident audit chain (never fails the request)."""
+    chain = getattr(request.app.state, "audit_chain", None)
+    if chain is None:
+        return
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        await chain.append(tenant_id, event)
+
+
 class IssueGrantRequest(BaseModel):
     grantee_agent_id: str
     scopes: list[str] = Field(min_length=1)
@@ -72,6 +83,17 @@ async def issue_grant(body: IssueGrantRequest, request: Request) -> dict[str, An
         max_cost_usd=body.max_cost_usd,
     )
     stored = await _store(request).issue(grant)
+    await _audit(
+        request,
+        tenant_id,
+        {
+            "event": "grant_issued",
+            "grant_id": stored.grant_id,
+            "grantee_agent_id": stored.grantee_agent_id,
+            "scopes": list(stored.scopes),
+            "grantor": stored.grantor,
+        },
+    )
     return _to_dict(stored)
 
 
@@ -88,4 +110,5 @@ async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
     revoked = await _store(request).revoke(tenant_id, grant_id)
     if revoked is None:
         raise HTTPException(status_code=404, detail="grant not found")
+    await _audit(request, tenant_id, {"event": "grant_revoked", "grant_id": grant_id})
     return _to_dict(revoked)

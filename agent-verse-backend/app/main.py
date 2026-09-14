@@ -1177,6 +1177,13 @@ def create_app(
                 from app.governance.grants import InMemoryGrantStore
 
                 app.state.grant_store = InMemoryGrantStore()
+            # Tamper-evident audit chain for governance mutations (issue/revoke).
+            try:
+                from app.governance.audit_chain_store import PersistentAuditChain
+
+                app.state.audit_chain = PersistentAuditChain(db_factory)
+            except Exception:
+                app.state.audit_chain = None
 
             # Wire DB into UsageService so buffer flushes actually reach Postgres.
             _usage_svc = getattr(app.state, "usage_service", None)
@@ -2203,6 +2210,8 @@ def create_app(
     from app.governance.grants import InMemoryGrantStore
 
     app.state.grant_store = InMemoryGrantStore()
+    # No DB session factory in the in-memory app → audit chain wired in lifespan only.
+    app.state.audit_chain = None
     from app.coordination.auction.repository import (
         InMemoryAuctionRepository,
         InMemorySealedBidInbox,
