@@ -48,6 +48,7 @@ async def write_to_dlq(
         return
 
     try:
+        import json
         import uuid
 
         from sqlalchemy import text
@@ -58,16 +59,18 @@ async def write_to_dlq(
                 "(id, tenant_id, trigger_id, failed_at, failure_type, error_message, "
                 " raw_payload, retry_count) "
                 "VALUES (:id, :tenant_id, :trigger_id, :failed_at, :failure_type, "
-                "        :error_message, :raw_payload, :retry_count)"
+                "        :error_message, CAST(:raw_payload AS json), :retry_count)"
             ),
             {
                 "id": str(uuid.uuid4()),
                 "tenant_id": tenant_id,
                 "trigger_id": trigger_id,
+                # tz-aware UTC — matches the timestamptz column (migration 0129).
                 "failed_at": datetime.now(UTC),
                 "failure_type": failure_type,
                 "error_message": error_message[:2048],
-                "raw_payload": raw_payload,
+                # asyncpg binds a JSON column from a JSON string, not a raw dict.
+                "raw_payload": json.dumps(raw_payload),
                 "retry_count": retry_count,
             },
         )
