@@ -33,3 +33,29 @@ def test_ef_search_scales_with_precision() -> None:
     assert ef_search_for("low") < ef_search_for("standard") < ef_search_for("high")
     assert ef_search_for("max") == 256
     assert ef_search_for("unknown") == ef_search_for("standard")  # safe default
+
+
+class _FakeSession:
+    def __init__(self, fail: bool = False) -> None:
+        self.statements: list[str] = []
+        self._fail = fail
+
+    async def execute(self, statement, params=None):
+        if self._fail:
+            raise RuntimeError("SET failed")
+        self.statements.append(str(statement))
+
+
+async def test_apply_ef_search_sets_local_and_returns_ef() -> None:
+    from app.rag.scale_policy import apply_ef_search
+
+    s = _FakeSession()
+    ef = await apply_ef_search(s, "high")
+    assert ef == 128
+    assert any("hnsw.ef_search = 128" in stmt for stmt in s.statements)
+
+
+async def test_apply_ef_search_degrades_on_backend_error() -> None:
+    from app.rag.scale_policy import apply_ef_search
+
+    assert await apply_ef_search(_FakeSession(fail=True), "high") == 0

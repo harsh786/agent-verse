@@ -14,7 +14,7 @@ one tested place, not scattered magic numbers.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 Precision = Literal["low", "standard", "high", "max"]
 
@@ -59,3 +59,20 @@ def shortlist_size_for(top_k: int, *, multiplier: int = 40, cap: int = 1000) -> 
 def ef_search_for(precision: Precision | str, *, minimum: int = 16) -> int:
     """HNSW ef_search for a goal's precision tier (higher recall ⇒ higher ef)."""
     return max(minimum, _EF_BY_PRECISION.get(str(precision).lower(), _EF_BY_PRECISION["standard"]))
+
+
+async def apply_ef_search(session: Any, precision: Precision | str) -> int:
+    """``SET LOCAL hnsw.ef_search`` on the current transaction for this query.
+
+    Transaction-scoped (SET LOCAL) so it only affects this retrieval, never leaks
+    to other queries on a pooled connection. Best-effort: returns the ef applied,
+    or 0 if the backend rejected it (e.g. pgvector too old) — never raises.
+    """
+    from sqlalchemy import text
+
+    ef = ef_search_for(precision)
+    try:
+        await session.execute(text(f"SET LOCAL hnsw.ef_search = {int(ef)}"))
+    except Exception:
+        return 0
+    return ef
