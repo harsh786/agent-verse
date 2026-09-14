@@ -604,24 +604,34 @@ class TestHITLExtra:
     async def test_load_pending_from_db_full_with_rows(self) -> None:
         from app.governance.hitl import HITLGateway
 
-        mock_row = MagicMock()
-        mock_row.id = "req-full-1"
-        mock_row.goal_id = "g-full-1"
-        mock_row.action = "migrate"
-        mock_row.risk_level = "medium"
-        mock_row.status = "pending"
-        mock_row.tenant_id = "tenant-full"
-
+        # load_pending_from_db_full reads the pending query via .mappings().all()
+        # (dict rows) and the terminal-goal checks via .scalars().all().
+        row = {
+            "id": "req-full-1",
+            "goal_id": "g-full-1",
+            "action": "migrate",
+            "risk_level": "medium",
+            "tenant_id": "tenant-full",
+        }
+        mock_mappings = MagicMock()
+        mock_mappings.all = MagicMock(return_value=[row])
         mock_scalars = MagicMock()
-        mock_scalars.all = MagicMock(return_value=[mock_row])
+        mock_scalars.all = MagicMock(return_value=[])  # no terminal missions/goals
 
         mock_result = MagicMock()
+        mock_result.mappings = MagicMock(return_value=mock_mappings)
         mock_result.scalars = MagicMock(return_value=mock_scalars)
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
+        # load_pending_from_db_full opens `async with db() as session, session.begin(), ...`
+        # so session.begin() must return an async context manager, not a coroutine.
+        _txn = AsyncMock()
+        _txn.__aenter__ = AsyncMock(return_value=_txn)
+        _txn.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=_txn)
 
         def _db():
             return mock_session
