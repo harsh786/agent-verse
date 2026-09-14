@@ -859,6 +859,22 @@ class ExecutorMixin:
         except Exception:
             pass
 
+        # Entity/knowledge-graph memory (T2.1): extract entities observed in prior
+        # step outputs into the tenant knowledge graph so later plans can recall
+        # what we already learned. Recall itself is wired in PlannerMixin via
+        # KnowledgeGraphFactsSource; here we close the population gap. Best-effort.
+        try:
+            from app.agent.entity_memory_wiring import record_entities_from_steps
+
+            record_entities_from_steps(
+                self._knowledge_graph_store,
+                tenant_ctx.tenant_id,
+                state.steps,
+                source_id=state.goal_id,
+            )
+        except Exception:
+            pass
+
         # ── Search directive parsing ───────────────────────────────────────
         try:
             from app.rag.agentic.search_directive_parser import SearchDirectiveParser
