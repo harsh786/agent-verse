@@ -66,8 +66,13 @@ describe('CommandBar mission preview (FE1)', () => {
     expect(screen.queryByText(/^\$\d/)).not.toBeInTheDocument();
   });
 
-  it('shows an honest "not estimated yet" placeholder instead', () => {
+  it('shows an honest placeholder instead of fabricated numbers', () => {
     goToPreviewStep();
-    expect(screen.getByText(/aren.t estimated yet/i)).toBeInTheDocument();
+    // No pre-submit estimate endpoint result is fabricated: the preview shows an
+    // honest state — either the in-flight "Estimating…" indicator or the
+    // launch-time placeholder — never invented cost/agent/risk figures.
+    expect(
+      screen.getByText(/Estimating team, cost, and risk|size and dispatch the mission when you launch/i),
+    ).toBeInTheDocument();
   });
 });

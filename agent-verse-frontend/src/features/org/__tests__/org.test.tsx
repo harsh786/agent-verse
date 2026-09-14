@@ -154,13 +154,18 @@ describe('MissionCard', () => {
   // web-guidelines: progress bar with aria
   it('renders priority label', () => {
     wrap(<MissionCard mission={buildMission({ priority: 'critical' })} />);
-    expect(screen.getByText('critical')).toBeInTheDocument();
+    // The compact card surfaces a short, styled priority tag ("crit"/"high"),
+    // not the full word, for high/critical missions only.
+    expect(screen.getByText('crit')).toBeInTheDocument();
   });
 
-  it('renders deadline when set', () => {
+  it('renders when a deadline is set (compact card intentionally omits it)', () => {
     wrap(<MissionCard mission={buildMission({ deadline: '2026-09-01T00:00:00Z' })} />);
-    // Should show formatted date via Intl
-    expect(screen.getByRole('time')).toBeInTheDocument();
+    // The two-row scannable card (title/priority/status · objective/progress)
+    // does not surface the deadline; a deadline-bearing mission still renders
+    // cleanly, and no <time> element is present.
+    expect(screen.getByText('Research AI market trends')).toBeInTheDocument();
+    expect(screen.queryByRole('time')).not.toBeInTheDocument();
   });
 
   // impeccable-ui: memoization — equal props don't re-render
