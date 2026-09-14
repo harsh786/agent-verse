@@ -61,6 +61,17 @@ not by RAG alone).
 - Partition pruning verified in `EXPLAIN` (only relevant partition scanned).
 - Ingestion meets throughput budget; existing hybrid/grounding tests unaffected.
 
+## Partitioning rollout runbook (T1) — why it is NOT a naive alembic migration
+Postgres cannot convert a populated table to partitioned in place, and a copy-based
+migration would rebuild HNSW on the very tables that are huge (the 10M-chunk case
+this targets) under heavy locks — unacceptable online. The HASH-by-tenant design is
+proven by `tests/rag/test_chunk_partitioning.py` (routing + single-partition pruning
++ RLS isolation under a non-superuser role). Production rollout is an OPS task:
+- New deployments: create `knowledge_chunks_<dim>` partitioned from the start.
+- Existing large tables: online backfill (rename → create partitioned → batched
+  `INSERT … SELECT` with `CREATE INDEX CONCURRENTLY` per partition → swap), or
+  `pg_partman`, during a maintenance window — never a single blocking migration.
+
 ## Honest note
 "Not hallucinating" is delivered by the grounding stack (see the hallucination
 plan), not by retrieval. This plan makes retrieval *scale and stay accurate*;
