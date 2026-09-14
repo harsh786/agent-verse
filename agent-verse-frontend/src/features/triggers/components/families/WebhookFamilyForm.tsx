@@ -11,6 +11,10 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
     onChange({ ...value, [key]: val });
   }
 
+  const allowedApiKeys = Array.isArray(value.allowed_api_keys)
+    ? (value.allowed_api_keys as string[])
+    : [];
+
   return (
     <div className="space-y-4">
       {triggerType === 'webhook' && (
@@ -37,6 +41,70 @@ export function WebhookFamilyForm({ triggerType, value, onChange }: FamilyFormPr
           autoComplete="new-password"
         />
       </Field>
+      <Field
+        label="Allowed API Keys"
+        hint="Comma-separated keys accepted on inbound requests (blank = signature only)"
+      >
+        <input
+          type="text"
+          value={allowedApiKeys.join(', ')}
+          onChange={(e) =>
+            set(
+              'allowed_api_keys',
+              e.target.value
+                .split(',')
+                .map((k) => k.trim())
+                .filter(Boolean),
+            )
+          }
+          placeholder="key_live_abc, key_live_def"
+          className={inputCls}
+        />
+      </Field>
+      {triggerType === 'jira_webhook' && (
+        <Field label="Jira Project Filter" hint="Project key to filter by, e.g. OPS (blank = all)">
+          <input
+            type="text"
+            value={(value.jira_project_filter as string) ?? ''}
+            onChange={(e) => set('jira_project_filter', e.target.value)}
+            placeholder="OPS"
+            className={inputCls}
+          />
+        </Field>
+      )}
+      {triggerType === 'salesforce_event' && (
+        <Field label="Salesforce Object" hint="SObject to watch, e.g. Opportunity, Case">
+          <input
+            type="text"
+            value={(value.salesforce_object as string) ?? ''}
+            onChange={(e) => set('salesforce_object', e.target.value)}
+            placeholder="Opportunity"
+            className={inputCls}
+          />
+        </Field>
+      )}
+      {triggerType === 'event' && (
+        <>
+          <Field label="Event Channel" hint="Internal event channel/topic name to subscribe to">
+            <input
+              type="text"
+              value={(value.event_channel as string) ?? ''}
+              onChange={(e) => set('event_channel', e.target.value)}
+              placeholder="orders.created"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Event Filter (JSONPath)" hint="Optional JSONPath filter on the event body, e.g. $.type">
+            <input
+              type="text"
+              value={(value.event_filter as string) ?? ''}
+              onChange={(e) => set('event_filter', e.target.value)}
+              placeholder="$.type"
+              className={inputCls}
+            />
+          </Field>
+        </>
+      )}
       {triggerType === 'github_webhook' && (
         <Field label="Filter Event Type" hint="e.g. push, pull_request, issues (blank = all)">
           <input

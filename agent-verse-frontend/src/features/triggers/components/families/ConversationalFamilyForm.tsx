@@ -35,16 +35,38 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
           />
         </Field>
       )}
-      {(triggerType === 'slack_event' || triggerType === 'chat_command' || triggerType === 'chat_keyword' || triggerType === 'chat_mention') && (
-        <Field label="Channel ID (optional)" hint="Restrict to a specific Slack channel">
+      {triggerType === 'chat_mention' && (
+        <Field label="Bot ID (optional)" hint="Only fire when this bot/user is mentioned">
           <input
             type="text"
-            value={(value.channel_id as string) ?? ''}
-            onChange={(e) => set('channel_id', e.target.value)}
-            placeholder="C1234ABCD"
+            value={(value.mention_bot_id as string) ?? ''}
+            onChange={(e) => set('mention_bot_id', e.target.value)}
+            placeholder="U0BOTID"
             className={`${inputCls} font-mono`}
           />
         </Field>
+      )}
+      {(triggerType === 'slack_event' || triggerType === 'chat_command' || triggerType === 'chat_keyword' || triggerType === 'chat_mention') && (
+        <>
+          <Field label="Channel Type (optional)" hint="Restrict by channel kind, e.g. public, private, dm">
+            <input
+              type="text"
+              value={(value.channel_type as string) ?? ''}
+              onChange={(e) => set('channel_type', e.target.value)}
+              placeholder="public"
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Channel ID (optional)" hint="Restrict to a specific Slack channel">
+            <input
+              type="text"
+              value={(value.channel_id as string) ?? ''}
+              onChange={(e) => set('channel_id', e.target.value)}
+              placeholder="C1234ABCD"
+              className={`${inputCls} font-mono`}
+            />
+          </Field>
+        </>
       )}
       {(triggerType === 'email_intent' || triggerType === 'email_arrival') && (
         <>

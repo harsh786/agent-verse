@@ -32,14 +32,47 @@ export function GoalChainFamilyForm({ triggerType, value, onChange }: FamilyForm
         />
       </Field>
       {(triggerType === 'goal_score_below') && (
-        <Field label="Score Threshold (0.0–1.0)">
+        <>
+          <Field label="Score Threshold (0.0–1.0)">
+            <input
+              type="number"
+              min={0}
+              max={1}
+              step={0.05}
+              value={(value.score_threshold as number) ?? 0.7}
+              onChange={(e) => set('score_threshold', Number(e.target.value))}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Score Dimension (optional)" hint="Which eval dimension to compare, e.g. accuracy (blank = overall)">
+            <input
+              type="text"
+              value={(value.score_dimension as string) ?? ''}
+              onChange={(e) => set('score_dimension', e.target.value)}
+              placeholder="accuracy"
+              className={inputCls}
+            />
+          </Field>
+        </>
+      )}
+      {(triggerType === 'hitl_approved' || triggerType === 'hitl_rejected') && (
+        <Field label="HITL Queue ID (optional)" hint="Restrict to approvals from a specific queue">
           <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={(value.score_threshold as number) ?? 0.7}
-            onChange={(e) => set('score_threshold', Number(e.target.value))}
+            type="text"
+            value={(value.hitl_queue_id as string) ?? ''}
+            onChange={(e) => set('hitl_queue_id', e.target.value)}
+            placeholder="queue-uuid"
+            className={inputCls}
+          />
+        </Field>
+      )}
+      {triggerType === 'memory_created' && (
+        <Field label="Memory Type (optional)" hint="Filter by memory type, e.g. learning, fact">
+          <input
+            type="text"
+            value={(value.memory_type as string) ?? ''}
+            onChange={(e) => set('memory_type', e.target.value)}
+            placeholder="learning"
             className={inputCls}
           />
         </Field>

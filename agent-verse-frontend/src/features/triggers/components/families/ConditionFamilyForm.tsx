@@ -11,6 +11,10 @@ export function ConditionFamilyForm({ triggerType, value, onChange }: FamilyForm
     onChange({ ...value, [key]: val });
   }
 
+  const compoundTriggerIds = Array.isArray(value.compound_trigger_ids)
+    ? (value.compound_trigger_ids as string[])
+    : [];
+
   return (
     <div className="space-y-4">
       {triggerType === 'condition' && (
@@ -96,16 +100,80 @@ export function ConditionFamilyForm({ triggerType, value, onChange }: FamilyForm
         </>
       )}
       {triggerType === 'window_aggregate' && (
-        <Field label="Cost Threshold (USD)">
-          <input
-            type="number"
-            min={0}
-            step={0.01}
-            value={(value.window_threshold as number) ?? 100}
-            onChange={(e) => set('window_threshold', Number(e.target.value))}
-            className={inputCls}
-          />
-        </Field>
+        <>
+          <Field label="Window Field" hint="JSONPath of the numeric field to aggregate, e.g. payload.amount">
+            <input
+              type="text"
+              value={(value.window_field as string) ?? ''}
+              onChange={(e) => set('window_field', e.target.value)}
+              placeholder="payload.amount"
+              className={`${inputCls} font-mono`}
+            />
+          </Field>
+          <Field label="Aggregation">
+            <select
+              value={(value.window_aggregation as string) ?? 'sum'}
+              onChange={(e) => set('window_aggregation', e.target.value)}
+              className={inputCls}
+            >
+              <option value="sum">sum</option>
+              <option value="avg">avg</option>
+              <option value="max">max</option>
+              <option value="min">min</option>
+              <option value="count">count</option>
+            </select>
+          </Field>
+          <Field label="Window (seconds)" hint="Rolling window over which values are aggregated">
+            <input
+              type="number"
+              min={1}
+              value={(value.window_seconds as number) ?? 3600}
+              onChange={(e) => set('window_seconds', Number(e.target.value))}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Threshold">
+            <input
+              type="number"
+              min={0}
+              step={0.01}
+              value={(value.window_threshold as number) ?? 100}
+              onChange={(e) => set('window_threshold', Number(e.target.value))}
+              className={inputCls}
+            />
+          </Field>
+        </>
+      )}
+      {triggerType === 'compound' && (
+        <>
+          <Field label="Combine Logic" hint="How the child triggers combine to fire">
+            <select
+              value={(value.compound_logic as string) ?? 'AND'}
+              onChange={(e) => set('compound_logic', e.target.value)}
+              className={inputCls}
+            >
+              <option value="AND">AND (all must fire)</option>
+              <option value="OR">OR (any may fire)</option>
+            </select>
+          </Field>
+          <Field label="Child Trigger IDs" hint="Comma-separated trigger IDs to combine">
+            <input
+              type="text"
+              value={compoundTriggerIds.join(', ')}
+              onChange={(e) =>
+                set(
+                  'compound_trigger_ids',
+                  e.target.value
+                    .split(',')
+                    .map((id) => id.trim())
+                    .filter(Boolean),
+                )
+              }
+              placeholder="trig-abc, trig-def"
+              className={`${inputCls} font-mono`}
+            />
+          </Field>
+        </>
       )}
     </div>
   );
