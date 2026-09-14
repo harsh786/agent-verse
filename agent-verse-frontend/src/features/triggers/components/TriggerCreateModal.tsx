@@ -5,16 +5,7 @@ import type { TriggerFamily, TriggerType, CreateTriggerRequest } from '../types'
 import { TRIGGER_FAMILY_LABELS, TRIGGER_TYPE_FAMILY, SUPPORTED_TRIGGER_TYPES } from '../types';
 import { useCreateTrigger } from '../hooks';
 import { agentsApi, goalsApi } from '@/lib/api/client';
-import { TimeFamilyForm } from './families/TimeFamilyForm';
-import { GoalChainFamilyForm } from './families/GoalChainFamilyForm';
-import { WebhookFamilyForm } from './families/WebhookFamilyForm';
-import { ConversationalFamilyForm } from './families/ConversationalFamilyForm';
-import { ConditionFamilyForm } from './families/ConditionFamilyForm';
-import { DataFamilyForm } from './families/DataFamilyForm';
-import { MonitoringFamilyForm } from './families/MonitoringFamilyForm';
-import { IoTFamilyForm } from './families/IoTFamilyForm';
-import { PollingFamilyForm } from './families/PollingFamilyForm';
-import { GenericFamilyForm } from './families/GenericFamilyForm';
+import { FamilyFormRouter } from './families/FamilyFormRouter';
 import { AdvancedOptionsForm } from './families/AdvancedOptionsForm';
 
 type Step = 'family' | 'type' | 'config' | 'confirm';
@@ -158,37 +149,13 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
               </button>
               <h2 className="text-base font-semibold mb-4">Configure <code className="font-mono bg-muted rounded px-1.5 py-0.5">{selectedType}</code></h2>
 
-              {/* Family-specific form */}
-              {selectedFamily === 'time' && (
-                <TimeFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'goal_chain' && (
-                <GoalChainFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'webhook' && (
-                <WebhookFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'conversational' && (
-                <ConversationalFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'state_condition' && (
-                <ConditionFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'data' && (
-                <DataFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'monitoring' && (
-                <MonitoringFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'iot' && (
-                <IoTFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {selectedFamily === 'ml_signal' && (
-                <PollingFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
-              {!['time', 'goal_chain', 'webhook', 'conversational', 'state_condition', 'data', 'monitoring', 'iot', 'ml_signal'].includes(selectedFamily) && (
-                <GenericFamilyForm triggerType={selectedType} value={specFields} onChange={setSpecFields} />
-              )}
+              {/* Family-specific form (shared router — same forms as the edit drawer) */}
+              <FamilyFormRouter
+                family={selectedFamily}
+                triggerType={selectedType}
+                value={specFields}
+                onChange={setSpecFields}
+              />
 
               {/* Cross-cutting production controls — apply to every trigger type */}
               <AdvancedOptionsForm value={specFields} onChange={setSpecFields} />
