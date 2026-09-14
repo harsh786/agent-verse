@@ -7,7 +7,7 @@
  * be mounted inline (e.g. into OrgPage) that reads/writes the full org-brain
  * AutonomySettings via `orgAutonomyApi` — level, pause, caps, and collaboration.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -49,6 +49,19 @@ function toCollabForm(s: AutonomySettings): CollabForm {
   return { collaboration_daily_budget_usd: String(s.collaboration_daily_budget_usd) };
 }
 
+/**
+ * Parses a numeric form field, guarding against the two silent-corruption
+ * cases: an emptied field (`Number('') === 0`) and non-numeric input
+ * (`Number('abc') === NaN`, which JSON-serializes to `null`). Returns
+ * `undefined` for either case so the caller can omit the field from the
+ * patch rather than committing an unintended 0/null.
+ */
+function parseNumericField(raw: string): number | undefined {
+  if (raw.trim() === '') return undefined;
+  const n = Number(raw);
+  return Number.isNaN(n) ? undefined : n;
+}
+
 export function AutonomyControl({ orgId, className }: AutonomyControlProps) {
   const queryClient = useQueryClient();
 
@@ -68,14 +81,21 @@ export function AutonomyControl({ orgId, className }: AutonomyControlProps) {
   const [caps, setCaps] = useState<CapsForm | null>(null);
   const [collab, setCollab] = useState<CollabForm | null>(null);
 
-  // Re-sync local edit buffers whenever fresh settings arrive (initial load,
-  // or after invalidation following a successful patch).
+  // Seed the local edit buffers only once per org — on initial load, or when
+  // `orgId` changes. Deliberately NOT on every `data` identity change: a
+  // refetch triggered by an unrelated mutation (Pause, level select,
+  // collaboration toggle) must not clobber in-progress, unsaved edits in the
+  // Caps/Collaboration inputs. Each section resyncs itself from the server
+  // response right after its OWN save succeeds (see handleSaveCaps /
+  // handleSaveCollabBudget), so the buffers still reflect saved values.
+  const initializedOrgIdRef = useRef<string | null>(null);
   useEffect(() => {
-    if (data?.settings) {
+    if (data?.settings && initializedOrgIdRef.current !== orgId) {
       setCaps(toCapsForm(data.settings));
       setCollab(toCollabForm(data.settings));
+      initializedOrgIdRef.current = orgId;
     }
-  }, [data]);
+  }, [data, orgId]);
 
   if (isLoading) {
     return (
@@ -113,20 +133,42 @@ export function AutonomyControl({ orgId, className }: AutonomyControlProps) {
 
   const handleSaveCaps = () => {
     if (!caps) return;
-    mutation.mutate({
-      settings: {
-        daily_budget_usd:     Number(caps.daily_budget_usd),
-        max_concurrent:       Number(caps.max_concurrent),
-        max_missions_per_day: Number(caps.max_missions_per_day),
-        cadence_seconds:      Number(caps.cadence_seconds),
+    const patch: Partial<AutonomySettings> = {};
+    const dailyBudget = parseNumericField(caps.daily_budget_usd);
+    if (dailyBudget !== undefined) patch.daily_budget_usd = dailyBudget;
+    const maxConcurrent = parseNumericField(caps.max_concurrent);
+    if (maxConcurrent !== undefined) patch.max_concurrent = maxConcurrent;
+    const maxMissionsPerDay = parseNumericField(caps.max_missions_per_day);
+    if (maxMissionsPerDay !== undefined) patch.max_missions_per_day = maxMissionsPerDay;
+    const cadenceSeconds = parseNumericField(caps.cadence_seconds);
+    if (cadenceSeconds !== undefined) patch.cadence_seconds = cadenceSeconds;
+
+    // Every field was empty/non-numeric — nothing valid to save.
+    if (Object.keys(patch).length === 0) return;
+
+    mutation.mutate({ settings: patch }, {
+      onSuccess: (result) => {
+        // Resync the Caps buffer from the just-saved server state, not from
+        // the generic query-data effect (which is intentionally skipped
+        // after the initial load — see the effect above).
+        if (result?.settings) setCaps(toCapsForm(result.settings));
       },
     });
   };
 
   const handleSaveCollabBudget = () => {
     if (!collab) return;
+    const collaborationDailyBudget = parseNumericField(collab.collaboration_daily_budget_usd);
+
+    // Empty/non-numeric — do not commit 0/null for a budget the user didn't intend.
+    if (collaborationDailyBudget === undefined) return;
+
     mutation.mutate({
-      settings: { collaboration_daily_budget_usd: Number(collab.collaboration_daily_budget_usd) },
+      settings: { collaboration_daily_budget_usd: collaborationDailyBudget },
+    }, {
+      onSuccess: (result) => {
+        if (result?.settings) setCollab(toCollabForm(result.settings));
+      },
     });
   };
 

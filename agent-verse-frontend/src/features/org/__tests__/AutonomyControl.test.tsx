@@ -120,4 +120,62 @@ describe('AutonomyControl (embeddable panel)', () => {
     wrap(<AutonomyControl orgId="org-1" />);
     await screen.findByText(/failed|error/i);
   });
+
+  it('preserves an in-progress Daily-budget edit across a refetch triggered by Pause', async () => {
+    const user = userEvent.setup();
+
+    // First GET (initial load) returns the original fixture; the second GET
+    // (triggered by invalidateQueries after the Pause mutation) reflects
+    // paused: true but the ORIGINAL daily_budget_usd — simulating a refetch
+    // that has nothing to do with the user's unsaved Caps edit.
+    getMock
+      .mockResolvedValueOnce(fixture)
+      .mockResolvedValueOnce({
+        ...fixture,
+        settings: { ...fixture.settings, paused: true },
+      });
+    patchMock.mockResolvedValue({
+      ...fixture,
+      settings: { ...fixture.settings, paused: true },
+    });
+
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(1));
+
+    const budgetInput = await screen.findByLabelText(/^Daily budget/i);
+    await user.clear(budgetInput);
+    await user.type(budgetInput, '42');
+    expect(budgetInput).toHaveValue(42);
+
+    const pauseBtn = await screen.findByRole('button', { name: /pause/i });
+    await user.click(pauseBtn);
+
+    // Wait for the mutation + the refetch it triggers to fully settle.
+    await waitFor(() => expect(patchMock).toHaveBeenCalledWith('org-1', { settings: { paused: true } }));
+    await waitFor(() => expect(getMock).toHaveBeenCalledTimes(2));
+    await screen.findByRole('button', { name: /resume/i });
+
+    // The unsaved Daily-budget edit must survive the refetch.
+    expect(budgetInput).toHaveValue(42);
+  });
+
+  it('does not send an emptied/non-numeric budget field as 0/null when saving Caps', async () => {
+    const user = userEvent.setup();
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+
+    const budgetInput = await screen.findByLabelText(/^Daily budget/i);
+    await user.clear(budgetInput);
+
+    const saveCapsBtn = await screen.findByRole('button', { name: /save caps/i });
+    await user.click(saveCapsBtn);
+
+    await waitFor(() => expect(patchMock).toHaveBeenCalled());
+    const [, body] = patchMock.mock.calls[0] as [string, { settings?: Record<string, unknown> }];
+    expect(body.settings).not.toHaveProperty('daily_budget_usd');
+    // The other, untouched cap fields are still saved as valid numbers.
+    expect(body.settings?.max_concurrent).toBe(2);
+  });
 });
