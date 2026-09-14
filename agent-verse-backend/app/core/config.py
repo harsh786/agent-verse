@@ -147,6 +147,11 @@ class Settings(BaseSettings):
     rag_low_confidence_fallback_enabled: bool = True
     rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
+    # Exact-text embedding cache in the RAG embed path. Off by default because a
+    # cache hit legitimately spends no embedding budget, which changes budget
+    # accounting; enable per deployment to cut repeat-embed latency/cost.
+    rag_embedding_cache_enabled: bool = False
+
     # Grantex governance: when True, every agent tool call must pass a covering,
     # active, unrevoked grant (fail-closed). Default off so it is opt-in per
     # deployment — enable once grants are being issued for agents.
