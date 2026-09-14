@@ -2722,61 +2722,41 @@ class OrgService:
                 }
                 workflow_mode = _topology_mode_map.get(workflow_mode, "single_agent")
 
-                if approval_gates:
-                    # ── PAUSE: a human must approve the gate before ANY work runs.
-                    # Don't dispatch the goal now; persist the dispatch params so the
-                    # approve endpoint can launch it once every gate is signed off.
-                    # The mission sits in 'review' (awaiting approval) meanwhile.
-                    new_meta = dict(mission.extra_data or {})
-                    new_meta["pending_dispatch"] = {
-                        "workflow_mode": workflow_mode,
-                        "execution_context": execution_ctx,
-                        "priority": priority,
-                    }
-                    new_meta["orchestration_plan_summary"] = {
-                        "topology": dispatch_result.get("topology"),
-                        "departments": dispatch_result.get("departments"),
-                        "autonomy_level": dispatch_result.get("autonomy_level"),
-                        "estimated_cost_usd": dispatch_result.get("estimated_cost_usd"),
-                    }
-                    mission.extra_data = new_meta
-                    mission.updated_at = datetime.now(UTC)
-                    await self._session.flush()
-                    await self.update_mission_status(str(mission.id), "review")
-                    dispatch_result["awaiting_approval"] = True
-                    dispatch_result["goal_status"] = "awaiting_approval"
-                    _log.info(
-                        "org.create_mission_and_execute.paused_for_approval",
-                        mission_id=str(mission.id),
-                        gates=len(approval_gates) if isinstance(approval_gates, list) else 1,
+                # Approval-gated missions are STILL dispatched — but in SUPERVISED
+                # autonomy (execution_ctx.autonomy_mode set above). The goal's agent
+                # blocks on the gated high-risk step via the shared HITLGateway,
+                # which the org/goal approve endpoints resolve. Previously a gated
+                # mission was paused pre-dispatch with NO goal at all, which
+                # stranded it (no goal_id to track, mission stuck in 'review') and
+                # contradicted the supervised-goal contract the HITL flow and the
+                # frontend expect: a dispatched mission must always yield a goal_id.
+                try:
+                    goal_result = await goal_service.submit_goal(
+                        goal=objective or title,
+                        priority=priority,
+                        dry_run=False,
+                        tenant_ctx=tenant_ctx,
+                        workflow_mode=workflow_mode,
+                        execution_context=execution_ctx,
                     )
-                else:
-                    try:
-                        goal_result = await goal_service.submit_goal(
-                            goal=objective or title,
-                            priority=priority,
-                            dry_run=False,
-                            tenant_ctx=tenant_ctx,
-                            workflow_mode=workflow_mode,
-                            execution_context=execution_ctx,
-                        )
-                        goal_id: str | None = goal_result.get("goal_id")
-                        dispatch_result["goal_id"] = goal_id
-                        dispatch_result["goal_status"] = goal_result.get("status", "queued")
-                        span.set_attribute("goal_id", goal_id or "")
-                        _log.info(
-                            "org.create_mission_and_execute.dispatched",
-                            mission_id=str(mission.id),
-                            goal_id=goal_id,
-                            topology=workflow_mode,
-                        )
-                    except Exception as submit_exc:
-                        _log.error(
-                            "org.create_mission_and_execute.submit_failed",
-                            mission_id=str(mission.id),
-                            error=str(submit_exc)[:200],
-                        )
-                        dispatch_result["error"] = str(submit_exc)[:200]
+                    goal_id_val: str | None = goal_result.get("goal_id")
+                    dispatch_result["goal_id"] = goal_id_val
+                    dispatch_result["goal_status"] = goal_result.get("status", "queued")
+                    span.set_attribute("goal_id", goal_id_val or "")
+                    _log.info(
+                        "org.create_mission_and_execute.dispatched",
+                        mission_id=str(mission.id),
+                        goal_id=goal_id_val,
+                        supervised=bool(approval_gates),
+                        topology=workflow_mode,
+                    )
+                except Exception as submit_exc:
+                    _log.error(
+                        "org.create_mission_and_execute.submit_failed",
+                        mission_id=str(mission.id),
+                        error=str(submit_exc)[:200],
+                    )
+                    dispatch_result["error"] = str(submit_exc)[:200]
             else:
                 _log.warning(
                     "org.create_mission_and_execute.no_goal_service",

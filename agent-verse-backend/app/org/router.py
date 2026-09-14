@@ -3218,37 +3218,99 @@ async def org_create_mission_execute(
         mission_title = mission.title
         await svc.update_mission_status(mission_id, "planned")
 
-    # Hand the slow team-formation + dispatch to the Celery worker.
-    queued = True
+    # Dispatch mode. With a real Celery worker (the goal service carries a task
+    # queue), offload the slow LLM team-formation + dispatch and return
+    # immediately as 'planning' (the worker streams the mission to 'active'). In a
+    # single-process deployment or a test with no worker, offloading would strand
+    # the mission at 'planned' forever — nothing would consume the queued task — so
+    # dispatch INLINE and return the real goal_id/team_id. Awaited inline dispatch
+    # (not the old fire-and-forget background task) does not hit the pool-contention
+    # hang that motivated the worker offload.
+    goal_svc = getattr(request.app.state, "goal_service", None)
+    worker_available = goal_svc is not None and getattr(goal_svc, "_task_queue", None) is not None
+
+    if worker_available:
+        queued = True
+        try:
+            from app.scaling.tasks import execute_org_mission
+
+            execute_org_mission.apply_async(
+                kwargs={
+                    "mission_id": mission_id,
+                    "tenant_id": tenant_id,
+                    "org_id": org_id,
+                    "objective": body.objective,
+                    "title": body.title,
+                    "expected_outcome": body.expected_outcome,
+                    "dept_id": body.dept_id,
+                    "assigned_team_id": body.assigned_team_id,
+                    "autonomy_level": body.autonomy_level,
+                    "priority": body.priority,
+                },
+            )
+        except Exception as exc:  # broker unavailable — mission stays 'planned'
+            queued = False
+            log.error("org.execute.enqueue_failed", mission_id=mission_id, error=str(exc)[:200])
+
+        return {
+            "mission_id": mission_id,
+            "title": mission_title,
+            "status": "planned",
+            "goal_id": None,
+            "team_id": None,
+            "dispatched": False,
+            "planning": True,
+            "warning": None if queued else "dispatch_queue_unavailable",
+        }
+
+    # ── No worker: form the team + dispatch the goal inline, synchronously ──
+    dispatch: dict[str, Any] = {}
     try:
-        from app.scaling.tasks import execute_org_mission
+        from sqlalchemy import text as _sa_text
 
-        execute_org_mission.apply_async(
-            kwargs={
-                "mission_id": mission_id,
-                "tenant_id": tenant_id,
-                "org_id": org_id,
-                "objective": body.objective,
-                "title": body.title,
-                "expected_outcome": body.expected_outcome,
-                "dept_id": body.dept_id,
-                "assigned_team_id": body.assigned_team_id,
-                "autonomy_level": body.autonomy_level,
-                "priority": body.priority,
-            },
-        )
-    except Exception as exc:  # broker unavailable — mission stays 'planned'
-        queued = False
-        log.error("org.execute.enqueue_failed", mission_id=mission_id, error=str(exc)[:200])
+        async with db() as sess, sess.begin(), sqlalchemy_rls_context(sess, tenant_id):
+            # This transaction spans the LLM-heavy team-formation (multi-second,
+            # idle DB meanwhile). The engine's default 30s
+            # idle_in_transaction_session_timeout would reclaim the connection
+            # mid-planning ("Can't operate on closed transaction"); disable it for
+            # THIS transaction only (SET LOCAL reverts on commit) — mirrors the
+            # worker path in scaling/tasks.execute_org_mission.
+            await sess.execute(_sa_text("SET LOCAL idle_in_transaction_session_timeout = 0"))
+            svc = OrgService(session=sess, tenant_id=tenant_id)
+            mission = await svc.get_mission(mission_id)
+            dispatch = await svc.form_team_and_dispatch(
+                mission=mission,
+                org_id=org_id,
+                objective=body.objective,
+                title=body.title,
+                expected_outcome=body.expected_outcome,
+                dept_id=body.dept_id,
+                assigned_team_id=body.assigned_team_id,
+                autonomy_level=body.autonomy_level,
+                priority=body.priority,
+                tenant_ctx=ctx,
+                app_state=request.app.state,
+            )
+    except Exception as exc:
+        log.error("org.execute.inline_dispatch_failed", mission_id=mission_id, error=str(exc)[:200])
+        dispatch = {"error": str(exc)[:200]}
 
+    dispatched_goal_id = dispatch.get("goal_id")
     return {
         "mission_id": mission_id,
         "title": mission_title,
-        "status": "planned",
-        "goal_id": None,
-        "dispatched": False,
-        "planning": True,
-        "warning": None if queued else "dispatch_queue_unavailable",
+        "status": "active" if dispatched_goal_id else "planned",
+        "goal_id": dispatched_goal_id,
+        "team_id": dispatch.get("team_id"),
+        "agent_ids": dispatch.get("agent_ids", []),
+        "topology": dispatch.get("topology"),
+        "departments": dispatch.get("departments", []),
+        "agent_count": dispatch.get("agent_count"),
+        "autonomy_level": dispatch.get("autonomy_level"),
+        "estimated_cost_usd": dispatch.get("estimated_cost_usd"),
+        "dispatched": bool(dispatched_goal_id),
+        "planning": False,
+        "warning": dispatch.get("error"),
     }
 
 
