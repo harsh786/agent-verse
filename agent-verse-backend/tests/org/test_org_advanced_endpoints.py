@@ -39,6 +39,39 @@ TEAM_ID    = str(uuid.uuid4())
 MISSION_ID = str(uuid.uuid4())
 
 
+# ── Fake DB session (the mission-execute endpoint opens one inline) ───────────
+
+
+class _FakeTx:
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *_a: Any) -> bool:
+        return False
+
+
+class _FakeSession:
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *_a: Any) -> bool:
+        return False
+
+    def begin(self) -> _FakeTx:
+        return _FakeTx()
+
+    async def execute(self, *_a: Any, **_k: Any) -> None:
+        return None
+
+    async def flush(self) -> None:
+        return None
+
+
+class _FakeSessionFactory:
+    def __call__(self) -> _FakeSession:
+        return _FakeSession()
+
+
 # ── Test app factory ──────────────────────────────────────────────────────────
 
 def _make_app(mock_service: Any) -> FastAPI:
@@ -228,6 +261,7 @@ async def test_work_discovery_with_health_issues(client: AsyncClient, mock_svc: 
 async def test_mission_execute_returns_team_and_agents(
     client: AsyncClient,
     mock_svc: MagicMock,
+    monkeypatch: Any,
 ) -> None:
     """POST /missions/execute includes materialized team + agents in response."""
     mission = MagicMock()
@@ -235,7 +269,21 @@ async def test_mission_execute_returns_team_and_agents(
     mission.title = "Launch DACH market"
     mission.status = "active"
 
-    mock_svc.create_mission_and_execute = AsyncMock(return_value=(mission, {
+    # The endpoint constructs OrgService inline against a DB session and (no
+    # worker) dispatches inline. Route that inline construction to the mock and
+    # give it a no-op session.
+    import sys
+
+    _org_router_mod = sys.modules["app.org.router"]
+    monkeypatch.setattr(_org_router_mod, "OrgService", lambda **_k: mock_svc)
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: _FakeSessionFactory())
+
+    # New endpoint flow (no worker → inline dispatch): create_mission → then
+    # form_team_and_dispatch returns the materialized team + agents.
+    mock_svc.create_mission = AsyncMock(return_value=mission)
+    mock_svc.update_mission_status = AsyncMock(return_value=None)
+    mock_svc.get_mission = AsyncMock(return_value=mission)
+    mock_svc.form_team_and_dispatch = AsyncMock(return_value={
         "goal_id": "goal-123",
         "topology": "hierarchical",
         "departments": ["executive", "engineering", "research"],
@@ -244,7 +292,7 @@ async def test_mission_execute_returns_team_and_agents(
         "estimated_cost_usd": 2.75,
         "team_id": "team-xyz",
         "agent_ids": ["a-1", "a-2", "a-3", "a-4"],
-    }))
+    })
 
     resp = await client.post(f"/v1/org/{ORG_ID}/missions/execute", json={
         "title": "Launch DACH market",
@@ -256,6 +304,7 @@ async def test_mission_execute_returns_team_and_agents(
     data = resp.json()
     assert data["team_id"] == "team-xyz"
     assert data["agent_ids"] == ["a-1", "a-2", "a-3", "a-4"]
+    assert data["goal_id"] == "goal-123"
 
 
 @pytest.mark.anyio
