@@ -1464,6 +1464,46 @@ class OrgService:
 
     # ── Events ────────────────────────────────────────────────────────────────
 
+    async def record_collaboration_event(
+        self,
+        org_id: str | uuid.UUID,
+        *,
+        from_agent: str,
+        kind: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> OrgEvent:
+        """Persist one ambient collaboration message (Task 9's "team talks"
+        chatter) as an ``org_events`` row, for the Situation Room Team
+        Channel history and the per-agent audit trail.
+
+        DB-only insert — deliberately does NOT go through ``_emit_event``,
+        which also bridges to the realtime SSE bus via
+        ``_publish_realtime``. ``CollaborationTick`` already publishes the
+        same enriched payload to SSE itself (``CollaborationEventPublisher
+        .publish``), so routing this persistence through ``_emit_event``
+        would double-publish the same message onto the org's live event
+        stream. Uses the caller's already-open session (the tick's
+        RLS-scoped transaction), so this insert commits atomically with the
+        rest of the tick rather than opening a second transaction.
+        """
+        ev = OrgEvent(
+            tenant_id=self._tenant_id,
+            org_id=uuid.UUID(org_id) if isinstance(org_id, str) else org_id,
+            event_type="org.collaboration.message",
+            title=f"{from_agent} · {kind}",
+            description=(message or "")[:500],
+            entity_type="agent",
+            entity_id=from_agent,
+            severity="info",
+            payload=payload or {},
+            source="collaboration",
+            actor_id=from_agent,
+        )
+        self._session.add(ev)
+        await self._session.flush()
+        return ev
+
     async def list_events(
         self,
         org_id: str,

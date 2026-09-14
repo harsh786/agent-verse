@@ -28,6 +28,14 @@ below) — this is ambient flavor text, not a deliverable.
 Fail-closed: any exception raised by ``model_gateway.complete_short`` stops
 the tick immediately. Whatever was already published stays published; the
 method returns the count emitted so far and does not raise.
+
+Task 2 (Situation Room UX) — persistence: when an ``org_service`` (matching
+``CollaborationEventRecorder``) is injected, each emitted message is also
+persisted to ``org_events`` via ``record_collaboration_event`` so the
+Situation Room Team Channel has history across refreshes and the per-agent
+audit trail can query it. This is additive to, and independent of, the SSE
+publish via ``event_publisher`` -- persistence failures are logged and
+swallowed, never doubling up on or blocking the SSE path.
 """
 
 from __future__ import annotations
@@ -137,6 +145,33 @@ class CollaborationEventPublisher(Protocol):
     ) -> Any: ...
 
 
+@runtime_checkable
+class CollaborationEventRecorder(Protocol):
+    """Duck-typed interface for persisting a collaboration message to
+    ``org_events`` — matches ``app.org.service.OrgService
+    .record_collaboration_event``.
+
+    Deliberately narrower than ``OrgService._emit_event``: that helper also
+    bridges to the realtime SSE bus (``_publish_realtime``), and
+    ``CollaborationTick`` already does its own SSE publish via
+    ``CollaborationEventPublisher.publish`` above. Routing persistence
+    through ``_emit_event`` instead of this recorder would double-publish
+    the same message onto the org's live event stream, so this Protocol
+    exists to keep the two paths (SSE vs. DB history) independently
+    injectable and independently failable.
+    """
+
+    async def record_collaboration_event(
+        self,
+        org_id: str,
+        *,
+        from_agent: str,
+        kind: str,
+        message: str,
+        payload: dict[str, Any],
+    ) -> Any: ...
+
+
 class LLMProviderCollaborationGateway:
     """Adapts a real ``ModelGateway`` + ``LLMProvider`` pair into the
     ``complete_short`` shape ``CollaborationTick`` needs.
@@ -224,6 +259,7 @@ class CollaborationTick:
         model_gateway: CollaborationModelGateway,
         event_publisher: CollaborationEventPublisher,
         counters: Any = None,
+        org_service: CollaborationEventRecorder | None = None,
     ) -> None:
         self._model_gateway = model_gateway
         self._event_publisher = event_publisher
@@ -231,6 +267,15 @@ class CollaborationTick:
         # counter (``snapshot_collab_spend``/``record_collab_spend``), separate
         # from the general mission-spend counter the rest of ``OrgBrain`` uses.
         self._counters = counters
+        # Optional: persists each emitted message to ``org_events`` (history
+        # + per-agent audit trail for the Situation Room). Additive to the
+        # SSE publish above, never a substitute for it -- see
+        # ``CollaborationEventRecorder``'s docstring for why this is a
+        # separate injection point rather than routing through
+        # ``OrgService._emit_event``. ``None`` (the default, and what every
+        # existing caller/test passes) skips persistence entirely, so this
+        # is fully backward-compatible.
+        self._org_service = org_service
 
     async def run(
         self,
@@ -312,27 +357,49 @@ class CollaborationTick:
                 if not message:
                     continue
 
+                kind = classify_message_kind(message)
+                payload = {
+                    # Kept for backward-compat with existing consumers.
+                    "lead": lead,
+                    "message": message,
+                    # Typed enrichment for the Situation Room UX.
+                    "from_agent": lead,
+                    "to": "team",
+                    "kind": kind,
+                    "latency_ms": latency_ms,
+                    "tokens": tokens,
+                    "cost_usd": cost_usd,
+                    # This ambient tick is not (currently) tied to any
+                    # specific mission -- no mission context is threaded
+                    # through here, so this is always None today.
+                    "mission_id": None,
+                }
                 await self._event_publisher.publish(
                     event_type=EVENT_TYPE_COLLABORATION_MESSAGE,
                     org_id=org_id,
                     tenant_id=tenant_id,
-                    payload={
-                        # Kept for backward-compat with existing consumers.
-                        "lead": lead,
-                        "message": message,
-                        # Typed enrichment for the Situation Room UX.
-                        "from_agent": lead,
-                        "to": "team",
-                        "kind": classify_message_kind(message),
-                        "latency_ms": latency_ms,
-                        "tokens": tokens,
-                        "cost_usd": cost_usd,
-                        # This ambient tick is not (currently) tied to any
-                        # specific mission -- no mission context is threaded
-                        # through here, so this is always None today.
-                        "mission_id": None,
-                    },
+                    payload=payload,
                 )
+                if self._org_service is not None:
+                    # Best-effort: history persistence must never break the
+                    # ambient tick or take down the (already-published) SSE
+                    # message -- a DB hiccup here just means this message
+                    # won't show up in later history/audit queries.
+                    try:
+                        await self._org_service.record_collaboration_event(
+                            org_id,
+                            from_agent=lead,
+                            kind=kind,
+                            message=message,
+                            payload=payload,
+                        )
+                    except Exception as exc:
+                        _log.warning(
+                            "collaboration_tick.persist_failed",
+                            org_id=org_id,
+                            lead=lead,
+                            error=str(exc),
+                        )
                 emitted += 1
                 if self._counters is not None:
                     try:

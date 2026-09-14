@@ -111,6 +111,37 @@ class _FakeEventPublisher:
         return "corr-id"
 
 
+class _FakeOrgService:
+    """Fake ``OrgService``-shaped collaboration-event recorder — mirrors
+    ``OrgService.record_collaboration_event``'s signature so
+    ``CollaborationTick`` can persist without a real DB/session."""
+
+    def __init__(self, *, raise_error: bool = False) -> None:
+        self.recorded: list[dict] = []
+        self._raise_error = raise_error
+
+    async def record_collaboration_event(
+        self,
+        org_id: str,
+        *,
+        from_agent: str,
+        kind: str,
+        message: str,
+        payload: dict,
+    ) -> None:
+        if self._raise_error:
+            raise RuntimeError("db unavailable")
+        self.recorded.append(
+            {
+                "org_id": org_id,
+                "from_agent": from_agent,
+                "kind": kind,
+                "message": message,
+                "payload": payload,
+            }
+        )
+
+
 class _FakeCounters:
     """Fake ``BrainCounters``-shaped collaboration-spend tracker.
 
@@ -481,3 +512,89 @@ async def test_real_gateway_cost_feeds_record_collab_spend():
     assert emitted == 1
     assert counters.recorded == [real_cost]
     assert publisher.events[0]["payload"]["cost_usd"] == real_cost
+
+
+@pytest.mark.asyncio
+async def test_org_service_records_one_persist_call_per_message_with_enriched_payload():
+    """Task 2 — when an ``org_service`` is injected, each emitted message is
+    persisted once via ``record_collaboration_event`` with the correct
+    ``from_agent``/entity id and the same enriched payload SSE received --
+    and the SSE publish still happens exactly once per message too (no
+    double-SSE, no persistence substituting for it)."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    org_service = _FakeOrgService()
+    tick = CollaborationTick(gateway, publisher, _FakeCounters(), org_service=org_service)
+
+    settings = _settings(collab_messages_per_tick=3)
+    leads = ["alice", "bob", "carol"]
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=settings,
+        autonomy_level=4,
+        leads=leads,
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 3
+    # SSE unaffected: still exactly one publish per message (Task 1 behavior).
+    assert len(publisher.events) == 3
+    # Persistence: exactly one record call per message.
+    assert len(org_service.recorded) == 3
+    for lead, recorded, published in zip(leads, org_service.recorded, publisher.events, strict=True):
+        assert recorded["org_id"] == "org1"
+        assert recorded["from_agent"] == lead
+        assert recorded["kind"] in _VALID_KINDS
+        assert recorded["message"] == "Shipping the integration by end of day."
+        # Same enriched payload as what went to SSE.
+        assert recorded["payload"] == published["payload"]
+        assert recorded["payload"]["from_agent"] == lead
+
+
+@pytest.mark.asyncio
+async def test_org_service_not_injected_skips_persistence_without_error():
+    """Default (``org_service=None``, what every pre-Task-2 caller/test
+    passes) skips persistence entirely -- fully backward compatible."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    tick = CollaborationTick(gateway, publisher, _FakeCounters())
+
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=_settings(),
+        autonomy_level=4,
+        leads=["alice"],
+        day_spend_usd=0.0,
+    )
+
+    assert emitted == 1
+    assert len(publisher.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_does_not_break_tick_or_sse():
+    """A persist failure is logged and swallowed -- it must never crash the
+    tick or prevent the (already-sent) SSE publish, and later messages in
+    the same tick still get a persistence attempt."""
+    gateway = _FakeModelGateway()
+    publisher = _FakeEventPublisher()
+    org_service = _FakeOrgService(raise_error=True)
+    tick = CollaborationTick(gateway, publisher, _FakeCounters(), org_service=org_service)
+
+    settings = _settings(collab_messages_per_tick=2)
+    emitted = await tick.run(
+        org_id="org1",
+        tenant_id="t1",
+        settings=settings,
+        autonomy_level=4,
+        leads=["alice", "bob"],
+        day_spend_usd=0.0,
+    )
+
+    # SSE still happened for both messages despite persistence raising.
+    assert emitted == 2
+    assert len(publisher.events) == 2
+    assert org_service.recorded == []
