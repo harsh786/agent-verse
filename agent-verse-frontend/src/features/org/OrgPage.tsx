@@ -298,6 +298,7 @@ export function OrgPage() {
   }, [navigate, orgId]);
 
   const closeMissionDetail = useCallback(() => setSelectedMission(null), []);
+  const closeAgentDrawer = useCallback(() => setSelectedAgentId(null), []);
 
   if (!orgId) {
     return (
@@ -816,13 +817,16 @@ export function OrgPage() {
       </AnimatePresence>
 
       {/* ── Agent audit drawer — "black box" trail for one selected agent ─── */}
-      {selectedAgentId && (
-        <AgentAuditDrawer
-          orgId={orgId}
-          agentId={selectedAgentId}
-          onClose={() => setSelectedAgentId(null)}
-        />
-      )}
+      <AnimatePresence>
+        {selectedAgentId && (
+          <AgentAuditDrawer
+            key={selectedAgentId}
+            orgId={orgId}
+            agentId={selectedAgentId}
+            onClose={closeAgentDrawer}
+          />
+        )}
+      </AnimatePresence>
 
       {/* ── Create mission drawer ───────────────────────────────────────── */}
       <CreateMissionDrawer

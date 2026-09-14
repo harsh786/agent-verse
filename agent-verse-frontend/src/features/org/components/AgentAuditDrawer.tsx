@@ -10,7 +10,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion } from 'framer-motion';
 import {
   X, MessageSquare, Activity, Sparkles, ListChecks, AlertTriangle, ChevronDown,
 } from 'lucide-react';
@@ -77,10 +77,21 @@ export function AgentAuditDrawer({ orgId, agentId, onClose }: AgentAuditDrawerPr
     queryFn:  () => situationApi.agentAudit(orgId, agentId),
   });
 
-  // Focus the drawer on open (minimal focus-trap-lite: keeps focus inside the
-  // dialog on mount) and let Escape close it, like the other JARVIS overlays.
+  // Focus the drawer once on open (minimal focus-trap-lite: keeps focus inside
+  // the dialog on mount). Keyed on `agentId` (not `onClose`) so switching to a
+  // different agent re-focuses the panel, but an unrelated parent re-render
+  // (e.g. SSE-driven state elsewhere in OrgPage, which passes a fresh inline
+  // handler) does NOT steal focus back from whatever the user is interacting
+  // with inside the drawer.
   useEffect(() => {
     panelRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentId]);
+
+  // Let Escape close it, like the other JARVIS overlays. Kept in its own
+  // effect (deps [onClose]) so re-subscribing on a new `onClose` identity
+  // never touches focus.
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
@@ -97,7 +108,7 @@ export function AgentAuditDrawer({ orgId, agentId, onClose }: AgentAuditDrawerPr
   };
 
   return (
-    <AnimatePresence>
+    <>
       <motion.div
         key="backdrop"
         initial={{ opacity: 0 }}
@@ -236,7 +247,7 @@ export function AgentAuditDrawer({ orgId, agentId, onClose }: AgentAuditDrawerPr
           )}
         </div>
       </motion.aside>
-    </AnimatePresence>
+    </>
   );
 }
 

@@ -5,7 +5,7 @@
  * QueryClientProvider + MemoryRouter wrapper, framer-motion stubbed to avoid
  * animation timing, situationApi mocked at the module boundary.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
@@ -16,9 +16,21 @@ import type { AgentAuditEntry } from '../types';
 // ─── Mock framer-motion to avoid animation timing issues in tests ─────────────
 vi.mock('framer-motion', async (importOriginal) => {
   const actual = await importOriginal<typeof import('framer-motion')>();
-  const makeStub = (tag: string) =>
-    ({ children, ...props }: { children?: ReactNode; [k: string]: unknown }) =>
-      React.createElement(tag, props as Record<string, unknown>, children);
+  // Cache one stub component per tag: a Proxy `get` trap fires on every
+  // property access (e.g. `motion.div` is re-evaluated on every render of the
+  // component under test), so an uncached factory would hand back a brand-new
+  // function identity each render — React would then see a different `type`
+  // for the same JSX position and remount the whole stubbed subtree on every
+  // re-render, silently destroying DOM/focus state between renders.
+  const stubCache = new Map<string, (props: { children?: ReactNode; [k: string]: unknown }) => React.ReactElement>();
+  const makeStub = (tag: string) => {
+    let stub = stubCache.get(tag);
+    if (!stub) {
+      stub = ({ children, ...props }) => React.createElement(tag, props as Record<string, unknown>, children);
+      stubCache.set(tag, stub);
+    }
+    return stub;
+  };
   return {
     ...actual,
     useReducedMotion: () => true,
@@ -179,5 +191,47 @@ describe('AgentAuditDrawer', () => {
     await screen.findByText(/no recorded activity/i);
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('does not steal focus back to the panel on an unrelated parent re-render', async () => {
+    agentAuditMock.mockResolvedValueOnce([DECISION_ENTRY]);
+    const onClose = vi.fn();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    const { AgentAuditDrawer } = await import('../components/AgentAuditDrawer');
+    const { rerender } = render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <AgentAuditDrawer orgId="org-1" agentId="agent-1" onClose={onClose} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    await screen.findByText('Chose search over browse');
+
+    // Move focus to an interactive element inside the drawer, away from the
+    // panel container that the mount-time focus-trap-lite effect focuses.
+    const explainButton = screen.getByRole('button', { name: /explain decision/i });
+    explainButton.focus();
+    expect(explainButton).toHaveFocus();
+
+    // Simulate a parent re-render that passes a brand-new `onClose` identity
+    // (mirrors OrgPage's old inline `() => setSelectedAgentId(null)` before
+    // the fix, and any other unrelated re-render in between, e.g. SSE state
+    // updates). The mount-focus effect is keyed on `agentId`, not `onClose`,
+    // so it must NOT re-run and must NOT pull focus back to the panel.
+    const newOnClose = vi.fn();
+    act(() => {
+      rerender(
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            <AgentAuditDrawer orgId="org-1" agentId="agent-1" onClose={newOnClose} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+    });
+
+    expect(explainButton.isConnected).toBe(true);
+    expect(explainButton).toHaveFocus();
   });
 });
