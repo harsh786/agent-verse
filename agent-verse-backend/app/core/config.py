@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     # deployment — enable once grants are being issued for agents.
     enforce_agent_grants: bool = False
 
+    # Use the richer GroundingPolicy (per-claim scoring + embedding paraphrase tier
+    # + calibrated abstention) at the executor grounding checkpoint instead of the
+    # baseline substring/typed check. Off by default (behaviour-changing); the
+    # baseline already uses T1 typed normalization.
+    grounding_policy_enabled: bool = False
+
     # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
     # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
     # self-improvement decision surfaces read every weight/threshold/budget from

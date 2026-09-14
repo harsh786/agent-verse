@@ -2275,11 +2275,42 @@ class ExecutorMixin:
                     or ""
                 ).lower()
                 _ground_ratio = 0.0 if _risk_ground in ("high", "critical") else None
-                _ground_result = check_grounding(
-                    output=raw_output,
-                    tool_outputs=_tool_outputs_for_grounding,
-                    max_ungrounded_ratio=_ground_ratio,
-                )
+                _use_policy = False
+                with contextlib.suppress(Exception):
+                    from app.core.config import get_settings as _gs
+
+                    _use_policy = bool(getattr(_gs(), "grounding_policy_enabled", False))
+                if _use_policy:
+                    # Richer per-claim policy: exact tiers + optional embedding
+                    # paraphrase tier + calibrated abstention. Produces a
+                    # GroundingResult-compatible verdict so downstream is unchanged.
+                    from app.agent.grounding import GroundingResult
+                    from app.agent.grounding_policy import GroundingPolicy
+
+                    _embed_fn = None
+                    if self._embedder is not None:
+                        async def _embed_fn(texts: list[str]) -> list[list[float]]:
+                            from app.providers.base import EmbedRequest
+
+                            _resp = await self._embedder.embed(EmbedRequest(texts=texts))
+                            return list(getattr(_resp, "embeddings", []) or [])
+
+                    _min_ratio = 1.0 if _risk_ground in ("high", "critical") else 0.75
+                    _pr = await GroundingPolicy(
+                        min_grounded_ratio=_min_ratio, embed_fn=_embed_fn
+                    ).evaluate(raw_output, _tool_outputs_for_grounding)
+                    _ground_result = GroundingResult(
+                        grounded=_pr.grounded,
+                        ungrounded_claims=_pr.abstain,
+                        checked_claims=len(_pr.verdicts),
+                        evidence_length=0,
+                    )
+                else:
+                    _ground_result = check_grounding(
+                        output=raw_output,
+                        tool_outputs=_tool_outputs_for_grounding,
+                        max_ungrounded_ratio=_ground_ratio,
+                    )
                 if not _ground_result.grounded:
                     state.consecutive_ungrounded += 1
                     self._logger.info(
