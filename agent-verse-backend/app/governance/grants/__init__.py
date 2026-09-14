@@ -11,15 +11,18 @@ Primitives that make governance first-class at the tool-execution boundary:
   tool call must pass, composing with tool-risk, policy, and HITL gates.
 """
 
+from app.governance.grants.delegation import DelegationError, mint_delegation
 from app.governance.grants.enforcer import GrantDecision, check_grant
 from app.governance.grants.models import Grant, scope_matches
 from app.governance.grants.store import GrantStore, InMemoryGrantStore
 
 __all__ = [
+    "DelegationError",
     "Grant",
     "GrantDecision",
     "GrantStore",
     "InMemoryGrantStore",
     "check_grant",
+    "mint_delegation",
     "scope_matches",
 ]
