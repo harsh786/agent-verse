@@ -508,6 +508,12 @@ async def get_mission(
     mission = await service.get_mission(mission_id)
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_mission is tenant-scoped only,
+    # so without this a caller could read org B's mission (same tenant) by id
+    # via org A's URL. 404 hides cross-org existence, same as
+    # approve_brain_proposal/reject_brain_proposal below.
+    if str(mission.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
 
 
@@ -523,14 +529,21 @@ async def update_mission(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> MissionResponse:
+    existing = await service.get_mission(mission_id)
+    if not existing:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     if body.status:
         mission = await service.update_mission_status(mission_id, body.status)
     else:
-        mission = await service.get_mission(mission_id)
-        if mission:
-            updates = body.model_dump(exclude_none=True, exclude={"status"})
-            if updates:
-                mission = await service.update_organization(mission_id, updates)  # type: ignore[assignment]
+        updates = body.model_dump(exclude_none=True, exclude={"status"})
+        mission = (
+            await service.update_organization(mission_id, updates)  # type: ignore[assignment]
+            if updates
+            else existing
+        )
     if not mission:
         raise _not_found("Mission", mission_id, x_request_id)
     return MissionResponse.model_validate(mission)
@@ -549,6 +562,12 @@ async def update_mission_status(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> MissionResponse:
+    existing = await service.get_mission(mission_id)
+    if not existing:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Mission", mission_id, x_request_id)
     try:
         mission = await service.update_mission_status(mission_id, body.status)
     except ValueError as exc:
@@ -734,6 +753,12 @@ async def get_task(
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant: get_task is tenant-scoped only, so
+    # without this a caller could read org B's task (same tenant) by id via org
+    # A's URL. 404 hides cross-org existence, same as approve_org_request /
+    # reject_org_request above.
+    if str(task.org_id) != org_id:
+        raise _not_found("Task", task_id, x_request_id)
     return TaskResponse.model_validate(task)
 
 
@@ -749,6 +774,12 @@ async def update_task_status(
     service: OrgService = Depends(get_org_service),
     x_request_id: str = Header(default_factory=_request_id),
 ) -> TaskResponse:
+    existing = await service.get_task(task_id)
+    if not existing:
+        raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(existing.org_id) != org_id:
+        raise _not_found("Task", task_id, x_request_id)
     try:
         task = await service.update_task_status(
             task_id,
@@ -794,6 +825,9 @@ async def approve_task(
     """
     task = await service.get_task(task_id)
     if not task:
+        raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(task.org_id) != org_id:
         raise _not_found("Task", task_id, x_request_id)
 
     # WS-3b: resolve the paired HITLGateway request BEFORE flipping status, so
@@ -905,6 +939,9 @@ async def reject_task(
     """
     task = await service.get_task(task_id)
     if not task:
+        raise _not_found("Task", task_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_task above.
+    if str(task.org_id) != org_id:
         raise _not_found("Task", task_id, x_request_id)
 
     # WS-3b: resolve the paired HITLGateway request (reject) so a blocked agent
@@ -3586,6 +3623,9 @@ async def org_finalize_mission(
     """
     mission = await service.get_mission(mission_id)
     if not mission:
+        raise _not_found("Mission", mission_id, x_request_id)
+    # Scope to THIS org, not just the tenant — see get_mission above.
+    if str(mission.org_id) != org_id:
         raise _not_found("Mission", mission_id, x_request_id)
     ctx = _require_tenant(request)
     tenant_ctx = ctx if hasattr(ctx, "tenant_id") else None
