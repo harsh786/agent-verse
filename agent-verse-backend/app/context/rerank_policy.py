@@ -118,7 +118,12 @@ def predict_chunk_value(chunk: dict[str, Any]) -> float:
     relevance = 0.5 if relevance is None else float(relevance)
     usefulness = chunk.get("historical_usefulness")
     usefulness = 1.0 if usefulness is None else float(usefulness)
-    value = relevance * source_trust(chunk) * recency_weight(chunk) * usefulness
+    # Optional salience multiplier (Phase 4): SalienceScorer output enriched onto
+    # the chunk by ``app.context.salience_enrichment``. 1.0 default keeps existing
+    # value packing unchanged when no salience signal is present.
+    salience = chunk.get("salience")
+    salience = 1.0 if salience is None else float(salience)
+    value = relevance * source_trust(chunk) * recency_weight(chunk) * usefulness * salience
     return max(value, 1e-6)
 
 
