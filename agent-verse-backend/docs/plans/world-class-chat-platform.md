@@ -31,6 +31,12 @@ point of this effort is to remove the current facade.
    themable, accessible — reusing the ~16 already-built-but-unmounted components.
 7. **Tested against real-world scenarios.** Each phase ships unit tests; the platform ships
    an e2e suite covering the concrete user journeys in §11.
+8. **Dual-mode: one platform, two audiences.** The same engine serves **enterprise tenants**
+   (teams, org-team, governance, budgets) *and* **standalone individuals** (an Instinct-class
+   personal assistant). A `principal` is either an org member or an individual account;
+   governance/budgets/onboarding scale down gracefully for a person and up for an org. Part B
+   (§Phases 8–11) adds the Instinct-defining pieces — voice/phone, proactive outreach, personal
+   connectors, personalization — on the *same* chat spine, not a fork.
 
 ---
 
@@ -290,6 +296,74 @@ Tests:
 
 ---
 
+## 9b. Part B — Instinct-class personal assistant (dual-mode extension)
+
+> Turns the chat spine into an autonomous **personal assistant** you reach on any channel
+> (incl. phone), that plugs into your everyday apps, remembers you, proactively acts on your
+> behalf, and executes real-world tasks — while the *same* platform still serves enterprises.
+> Built entirely on Parts A phases (chat spine, memory, async, channels, skills, governance).
+
+### Phase 8 — Voice / phone channel (the big new channel)
+**Goal:** talk to the assistant by phone; it can also place outbound calls to get things done.
+- [ ] Telephony adapter (`app/gateway/channels/voice_phone.py`) — Twilio/Vonage-style inbound
+  + outbound call webhooks; a call session = a chat conversation (reuse Phase 3 continuity).
+- [ ] Realtime loop: streaming STT (existing `app/voice/*` STT providers) → `ChatService`
+  pipeline → TTS reply; barge-in / turn-taking; partial-result handling; DTMF fallback.
+- [ ] Persist call transcripts as chat messages; recording consent + retention per policy.
+- [ ] **Outbound task calls:** the agent places a call to execute a task (e.g. call a vendor),
+  runs a guided dialog with a goal, and reports the outcome back into the conversation.
+- [ ] Standalone-individual onboarding is **phone-first** (verify number → personal workspace).
+
+Tests: unit (STT→dispatch→TTS round-trip, mocked telephony); e2e — inbound call "book a ride
+to the airport" drives a goal + connector, spoken confirmation; transcript persisted.
+
+### Phase 9 — Proactive-outreach engine (the agent initiates)
+**Goal:** the assistant acts without being asked — reminders, follow-ups, "I noticed X, want me
+to handle it?" — safely, consented, rate-limited.
+- [ ] `app/proactive/` — a signal bus (calendar events, inbound email, stalled threads,
+  memory-derived follow-ups, trigger fires) → a proactive planner that proposes an action.
+- [ ] Consent & control: per-principal proactivity preferences (channels, quiet hours, topics,
+  autonomy level), hard rate limits, and a kill switch (reuse org-brain's guardrail gate).
+- [ ] Every proactive message routes through the multi-channel delivery path (Phase 2/3) and is
+  logged to audit as `source=proactive`. High-impact proactive actions require confirmation (HITL).
+- [ ] Learns cadence from feedback (thumbs up/down on proactive messages → salience/reflexion).
+
+Tests: unit (signal → proposal → consent gate → delivery); e2e — a simulated "flight delayed"
+signal produces a proactive "want me to rebook?" message, respecting quiet hours + rate limit.
+
+### Phase 10 — Personal (everyday-life) connectors
+**Goal:** the integrations a personal assistant needs, via the existing connector/MCP + OAuth.
+- [ ] Email (Gmail/Graph/IMAP), Calendar (Google/Outlook), SMS, Contacts, Maps/Location, and
+  booking/ride connectors — as MCP connectors with safe OAuth handoff (never secrets in chat).
+- [ ] Personal-scope permissions: fine-grained, revocable per-connector grants (feeds the trust
+  layer); a clear "what can the assistant access" consent surface.
+- [ ] These are just connectors — the agent loop + skills (Phase 5) use them with no new logic.
+
+Tests: unit per connector (OAuth handoff, tool call, permission check); e2e — "reschedule my 3pm
+and email them the new time" chains calendar + email connectors.
+
+### Phase 11 — Personalization / custom-model layer
+**Goal:** the assistant "understands your nuances" — tone, preferences, standing instructions.
+- [ ] Personal profile + style memory per principal (preferences, standing instructions, tone),
+  injected into every turn via the context pipeline (Part A Phase 1).
+- [ ] Retrieval-based personalization first (personal long-term/episodic memory + style profile
+  shaping prompts) — zero training cost, immediate. Path to optional per-principal fine-tune/
+  LoRA over the provider models via the model router when volume justifies it.
+- [ ] Preference learning: implicit (from corrections/feedback) + explicit ("always book aisle
+  seats") → durable personal memory + reflexion.
+
+Tests: unit (profile injected; a stated preference changes a later decision); e2e — "always CC my
+assistant" respected across sessions and channels.
+
+### Dual-mode identity, onboarding & consent (spans Part B)
+- [ ] `principal` supports both org-member and **standalone individual** accounts; phone-first
+  signup for individuals; personal workspace with its own connectors/memory/budget.
+- [ ] Consent center: since the assistant touches email/location/audio and acts on your behalf,
+  scoped **revocable grants** + a tamper-evident "what it did on my behalf" audit are first-class
+  (Grantex-style; §Phase 6 + the separate grant program). Individual privacy defaults are strict.
+
+---
+
 ## 10. Cross-cutting
 
 - **Feature flags & rollout:** `chat_v2_enabled` per-tenant (reuse org-brain's per-tenant flag
@@ -327,13 +401,23 @@ Tests:
 12. **Cross-channel continuity:** start a thread on the web ("plan my product launch"), then send
     a WhatsApp message from the linked number the next day ("add a press release step") → it
     continues the *same* conversation with full context, not a new one.
+13. **Phone (personal assistant):** call the assistant → "book me a ride to SFO at 5pm and text
+    me the driver details" → spoken confirmation, ride connector invoked, SMS follow-up.
+14. **Proactive outreach:** an inbound-email signal ("your 3pm is cancelled") → the assistant
+    proactively messages "Want me to rebook or free up the slot?" within quiet-hours/rate limits.
+15. **Personalization:** after "always book aisle seats and CC my partner", a later "book my
+    flight to NYC" applies both preferences without being reminded — across web and phone.
 
 ---
 
 ## 12. Execution order (dependency-aware)
 
-Contract (§1) → Phase 0 → {Phase 1, Phase 9-frontend-static parts in parallel} → Phase 2 →
-Phase 3 → Phase 4 → Phase 5 → Phase 6 → Phase 9-transparency → Phase 7-hardening → §11 battery.
+Part A (chat spine) first — it is the foundation Part B builds on:
+Contract (§1) → Phase 0 → {Phase 1, Phase 7-frontend-static parts in parallel} → Phase 2 →
+Phase 3 (incl. dual-mode identity) → Phase 4 → Phase 5 → Phase 6 → Phase 7-transparency/hardening.
+Then Part B (Instinct extension): Phase 10 (personal connectors) → Phase 11 (personalization) →
+Phase 9 (proactive) → Phase 8 (voice/phone — largest) . Run the §11 battery (1–15) as gates;
+Part B unlocks scenarios 13–15.
 
 Each phase: TDD (red→green), commit working increments, run scoped tests before moving on;
 run the relevant §11 scenario as the phase's e2e gate.
@@ -374,5 +458,10 @@ run the relevant §11 scenario as the phase's e2e gate.
 | R28 | Flawless FRONTEND with motions/animations, stylish, best UX | Phase 7 (§9) design & motion |
 | R29 | E2E testing done autonomously | Per-phase e2e + §11 battery (12 scenarios) |
 | R30 | Extend the earlier phases | This plan supersedes/extends the 6-phase analysis |
+| R31 | Instinct-class personal assistant, dual-mode (enterprise + standalone individuals) | Principle 0.8; Part B; dual-mode identity |
+| R32 | Voice / phone calls (talk to it, it calls out) | Phase 8 |
+| R33 | Proactive outreach (agent initiates) | Phase 9 |
+| R34 | Personal everyday-life connectors (email/calendar/SMS/contacts/maps) | Phase 10 |
+| R35 | Custom / personalized model ("understands your nuances") | Phase 11 |
 
 No stated requirement is unmapped. Anything discovered later appends a row here.
