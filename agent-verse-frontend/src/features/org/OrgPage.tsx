@@ -42,6 +42,9 @@ import { MissionSchedules }       from './components/MissionSchedules';
 import { ObsidianVaultExplorer } from './components/ObsidianVaultExplorer';
 import { MissionOrbit }           from './components/MissionOrbit';
 import { ApprovalCenter }         from './ApprovalCenter';
+import { AutonomyControl }       from './components/AutonomyControl';
+import { BrainFeed }             from './components/BrainFeed';
+import { TeamChannel }           from './components/TeamChannel';
 import { LoginGreetingPlayer }   from '@/components/voice/LoginGreetingPlayer';
 import { useVoiceAlerts }        from '@/lib/voice/useVoiceAlerts';
 import { useJarvisSpeech }       from '@/lib/voice/useJarvisSpeech';
@@ -762,6 +765,24 @@ export function OrgPage() {
                   setDeptFilter((prev) => (prev?.id === d.id ? null : { id: d.id, name: d.name }))
                 }
               />
+            </section>
+
+            {/* Org brain autonomy control — level, pause, caps, collaboration. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <h2 className="text-[11px] font-medium uppercase tracking-[0.08em] text-[#475569] mb-3">
+                Autonomy
+              </h2>
+              <AutonomyControl orgId={orgId} />
+            </section>
+
+            {/* Brain decisions feed — directly below autonomy control. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <BrainFeed orgId={orgId} />
+            </section>
+
+            {/* Team channel — live cross-agent collaboration chatter. */}
+            <section className="p-4 border-b border-[#1E2535]">
+              <TeamChannel orgId={orgId} />
             </section>
 
             {/* Live activity feed — the JARVIS event stream, now beneath the
