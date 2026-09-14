@@ -408,6 +408,53 @@ class ChatService:
         ):
             yield frame
 
+    async def run_qa(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        message_id: str,
+        user_message: str,
+    ) -> AsyncIterator[str]:
+        """Stream a REAL LLM answer for a QA-intent turn and persist it.
+
+        Builds context from stored history via ``ConversationContext`` (windowing
+        + long-session compression) — replacing the old ``"Answering: <msg>"``
+        echo. ``user_message`` is already saved by ``dispatch``; it is present in
+        the history this reads.
+        """
+        del user_message  # already persisted; read from history
+        if self._answer_generator is None:
+            raise RuntimeError("chat QA requires an answer generator (LLM provider) to be wired")
+        from app.chat.events import ChatEventType, sse_event
+        from app.providers.base import CompletionRequest, Message
+
+        session = self.get_session(session_id, tenant_id)
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in self.list_messages(session_id, tenant_id)
+        ]
+        windowed = self._ctx.compress_long_session(history)
+        turns = self._ctx.build_for_qa(
+            windowed,
+            session_system_prompt=session.system_prompt if session else None,
+        )
+        request = CompletionRequest(
+            messages=[Message(role=t["role"], content=t["content"]) for t in turns],
+            model="",
+        )
+
+        yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
+        parts: list[str] = []
+        async for chunk in self._answer_generator.stream_complete(request):
+            parts.append(chunk)
+            yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
+        answer = "".join(parts).strip()
+        self.save_message(
+            session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
+        )
+        yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
+
     # ── Folder CRUD ───────────────────────────────────────────────────────────
 
     def create_folder(self, tenant_id: str, name: str, color: str = "#6366f1") -> _Folder:
