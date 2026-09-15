@@ -14,6 +14,7 @@ export interface StreamState {
   tokens: string;           // accumulated QA tokens
   reasoning: string;        // accumulated reasoning tokens
   currentEvent: SSEEvent | null;
+  events: SSEEvent[];       // full ordered sequence of structural events
   error: string | null;
 }
 
@@ -22,6 +23,7 @@ const INITIAL: StreamState = {
   tokens: '',
   reasoning: '',
   currentEvent: null,
+  events: [],
   error: null,
 };
 
@@ -33,6 +35,7 @@ export function useChatStream(
   const esRef = useRef<EventSource | null>(null);
   const tokensRef = useRef('');
   const reasoningRef = useRef('');
+  const eventsRef = useRef<SSEEvent[]>([]);
 
   const startStream = useCallback(
     (messageId: string) => {
@@ -42,8 +45,16 @@ export function useChatStream(
       esRef.current?.close();
       tokensRef.current = '';
       reasoningRef.current = '';
+      eventsRef.current = [];
 
-      setState({ isStreaming: true, tokens: '', reasoning: '', currentEvent: null, error: null });
+      setState({
+        isStreaming: true,
+        tokens: '',
+        reasoning: '',
+        currentEvent: null,
+        events: [],
+        error: null,
+      });
 
       const url = chatApi.streamUrl(sessionId, messageId);
       const es = new EventSource(url);
@@ -52,6 +63,14 @@ export function useChatStream(
       es.onmessage = (e: MessageEvent) => {
         try {
           const event: SSEEvent = JSON.parse(e.data as string);
+
+          // Accumulate the ordered sequence of STRUCTURAL events (plan/step/tool/
+          // knowledge/hitl/…) for the execution timeline; skip high-frequency
+          // token/reasoning deltas which are already folded into tokens/reasoning.
+          if (event.type !== 'token' && event.type !== 'reasoning') {
+            eventsRef.current = [...eventsRef.current, event];
+          }
+          const events = eventsRef.current;
 
           if (event.type === 'token') {
             tokensRef.current += (event.token as string) ?? '';
@@ -62,11 +81,8 @@ export function useChatStream(
           } else if (event.type === 'done') {
             es.close();
             esRef.current = null;
-            setState((prev) => ({ ...prev, isStreaming: false, currentEvent: event }));
+            setState((prev) => ({ ...prev, isStreaming: false, currentEvent: event, events }));
             onDone?.(tokensRef.current);
-          } else if (event.type === 'hitl_required') {
-            // G-02: HITL required — surface to ChatPage via currentEvent
-            setState((prev) => ({ ...prev, currentEvent: event }));
           } else if (event.type === 'error') {
             es.close();
             setState((prev) => ({
@@ -74,9 +90,11 @@ export function useChatStream(
               isStreaming: false,
               error: (event.message as string) ?? 'Stream error',
               currentEvent: event,
+              events,
             }));
           } else {
-            setState((prev) => ({ ...prev, currentEvent: event }));
+            // step_started/step_complete/tool_call/knowledge_retrieved/hitl_required/…
+            setState((prev) => ({ ...prev, currentEvent: event, events }));
           }
         } catch {
           // ignore parse errors

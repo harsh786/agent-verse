@@ -83,7 +83,7 @@ export default function ChatPage() {
     [sessionId, invalidate],
   );
 
-  const { isStreaming, tokens, currentEvent, startStream, stopStream, error: streamError } = useChatStream(
+  const { isStreaming, tokens, currentEvent, events: streamEvents, startStream, stopStream, error: streamError } = useChatStream(
     sessionId,
     onDone,
   );
@@ -238,7 +238,7 @@ export default function ChatPage() {
         {/* Agentic Execution Panel — slides in when streaming (spec §6) */}
         {isStreaming && (
           <AgenticExecutionPanel
-            events={(currentEvent ? [currentEvent] : []) as any[]}
+            events={streamEvents as unknown[] as never}
             isActive={isStreaming}
             className="w-64 shrink-0 border-r border-white/[0.06] rounded-none"
           />
