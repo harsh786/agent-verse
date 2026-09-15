@@ -14,6 +14,7 @@ a crashed goal can be resumed by re-invoking with the same thread_id.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import re
 import uuid
@@ -567,6 +568,7 @@ class AgentGraph(
 
         # Attach parent trace context if this is a sub-agent
         ctx_token = None
+        _run_bag_token = None
         if self._parent_trace_context is not None:
             ctx_token = otel_context.attach(self._parent_trace_context)
 
@@ -575,6 +577,32 @@ class AgentGraph(
             with _tracer.start_as_current_span("agentverse.goal.run") as span:
                 span.set_attribute("goal.text", goal[:200])
                 span.set_attribute("tenant.id", tenant_ctx.tenant_id)
+
+                # Set run-correlation baggage so every child span (LangGraph nodes,
+                # gen_ai generations, tool calls) is stamped with goal/conversation/
+                # tenant — traces group per goal and Langfuse groups a conversation's
+                # calls into a session. Detached in the finally below.
+                with contextlib.suppress(Exception):
+                    from opentelemetry import baggage as _otel_baggage
+
+                    from app.observability.trace_propagation import (
+                        BAGGAGE_CONVERSATION_ID,
+                        BAGGAGE_GOAL_ID,
+                        BAGGAGE_TENANT_ID,
+                    )
+
+                    _init = initial_context or {}
+                    _conv = _init.get("conversation_id") or _init.get("session_id")
+                    _bctx = _otel_baggage.set_baggage(BAGGAGE_TENANT_ID, tenant_ctx.tenant_id)
+                    if goal_id:
+                        _bctx = _otel_baggage.set_baggage(
+                            BAGGAGE_GOAL_ID, str(goal_id), context=_bctx
+                        )
+                    if _conv:
+                        _bctx = _otel_baggage.set_baggage(
+                            BAGGAGE_CONVERSATION_ID, str(_conv), context=_bctx
+                        )
+                    _run_bag_token = otel_context.attach(_bctx)
 
                 # ── Org context injection ─────────────────────────────────────
                 # When dispatched from an OrgMission, enrich initial_context with
@@ -767,6 +795,9 @@ class AgentGraph(
                         await self._emit({"type": "goal_failed", "reason": err_state.error_message})
                     return err_state
         finally:
+            if _run_bag_token is not None:
+                with contextlib.suppress(Exception):
+                    otel_context.detach(_run_bag_token)
             if ctx_token is not None:
                 otel_context.detach(ctx_token)
 

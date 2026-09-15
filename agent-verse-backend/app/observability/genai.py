@@ -125,6 +125,21 @@ async def record_generation(
             span.set_attribute("gen_ai.request.max_tokens", int(request.max_tokens))
             if role:
                 span.set_attribute("agentverse.role", role)
+            # Correlate to the goal/conversation/tenant from run baggage so traces
+            # group per goal, and Langfuse groups a conversation's calls into a
+            # session (langfuse.session.id) under the tenant (langfuse.user.id).
+            with contextlib.suppress(Exception):
+                from app.observability.trace_propagation import current_run_baggage
+
+                bag = current_run_baggage()
+                if bag.get("goal_id"):
+                    span.set_attribute("agentverse.goal_id", bag["goal_id"])
+                if bag.get("tenant_id"):
+                    span.set_attribute("agentverse.tenant_id", bag["tenant_id"])
+                    span.set_attribute("langfuse.user.id", bag["tenant_id"])
+                session = bag.get("conversation_id") or bag.get("goal_id")
+                if session:
+                    span.set_attribute("langfuse.session.id", session)
             if capture:
                 span.add_event(
                     "gen_ai.content.prompt",

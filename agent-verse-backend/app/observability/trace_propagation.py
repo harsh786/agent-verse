@@ -16,9 +16,16 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterator, Mapping
 
+from opentelemetry import baggage as otel_baggage
 from opentelemetry import context as otel_context
 from opentelemetry import propagate
 from opentelemetry.context import Context
+
+# Baggage keys for the run correlation context. Baggage propagates across the W3C
+# `baggage` header too, so these also flow into Celery workers automatically.
+BAGGAGE_GOAL_ID = "agentverse.goal_id"
+BAGGAGE_CONVERSATION_ID = "agentverse.conversation_id"
+BAGGAGE_TENANT_ID = "agentverse.tenant_id"
 
 
 def inject_trace_headers(carrier: dict[str, str] | None = None) -> dict[str, str]:
@@ -47,3 +54,46 @@ def use_trace_context(headers: Mapping[str, str] | None) -> Iterator[None]:
     finally:
         with contextlib.suppress(Exception):
             otel_context.detach(token)
+
+
+@contextlib.contextmanager
+def run_context(
+    *,
+    goal_id: str | None = None,
+    conversation_id: str | None = None,
+    tenant_id: str | None = None,
+) -> Iterator[None]:
+    """Attach goal/conversation/tenant correlation as OTel baggage for the block.
+
+    Every span created inside (LangGraph nodes, gen_ai generations, tool calls)
+    can read this to stamp goal/conversation/tenant, so traces group per goal and
+    Langfuse groups a conversation's goals into a session. Set once at goal start.
+    """
+    ctx = otel_context.get_current()
+    if goal_id:
+        ctx = otel_baggage.set_baggage(BAGGAGE_GOAL_ID, goal_id, context=ctx)
+    if conversation_id:
+        ctx = otel_baggage.set_baggage(BAGGAGE_CONVERSATION_ID, conversation_id, context=ctx)
+    if tenant_id:
+        ctx = otel_baggage.set_baggage(BAGGAGE_TENANT_ID, tenant_id, context=ctx)
+    token = otel_context.attach(ctx)
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            otel_context.detach(token)
+
+
+def current_run_baggage() -> dict[str, str]:
+    """Read the run correlation baggage currently in scope (empty when unset)."""
+    out: dict[str, str] = {}
+    for attr, key in (
+        ("goal_id", BAGGAGE_GOAL_ID),
+        ("conversation_id", BAGGAGE_CONVERSATION_ID),
+        ("tenant_id", BAGGAGE_TENANT_ID),
+    ):
+        with contextlib.suppress(Exception):
+            val = otel_baggage.get_baggage(key)
+            if val:
+                out[attr] = str(val)
+    return out
