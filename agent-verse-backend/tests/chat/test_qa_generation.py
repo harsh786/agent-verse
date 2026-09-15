@@ -56,8 +56,8 @@ async def test_run_qa_includes_history_context() -> None:
     await _collect(
         svc.run_qa(session_id=session.id, tenant_id="t1", message_id="m2", user_message="how are you?")
     )
-    # system prompt + 3 history turns
-    assert _CountingProvider.seen == 4
+    # no-think system instruction + session system prompt + 3 history turns
+    assert _CountingProvider.seen == 5
 
 
 async def test_run_qa_without_generator_is_explicit_error() -> None:

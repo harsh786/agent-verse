@@ -76,6 +76,33 @@ def _humanize_value(value: Any) -> str | None:
     return str(value)
 
 
+_THINK_TAG = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN = re.compile(r"<think>.*", re.IGNORECASE | re.DOTALL)
+_THINK_PROSE = re.compile(
+    r"^\s*(?:thinking\s+process|reasoning|let me think|chain[- ]of[- ]thought)\s*:.*?"
+    r"(?:\n\s*\n|\bfinal answer\s*:|\banswer\s*:)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Remove a reasoning-model's chain-of-thought so only the answer shows.
+
+    Strips ``<think>…</think>`` blocks and a leading "Thinking Process:"/"Reasoning:"
+    preamble up to the first blank line or an explicit "Answer:" marker. Best-effort
+    and safe: if nothing matches, the text is returned trimmed and unchanged.
+    """
+    if not text:
+        return ""
+    out = _THINK_TAG.sub("", text)
+    out = _THINK_OPEN.sub("", out)  # unclosed <think> (truncated stream)
+    stripped = _THINK_PROSE.sub("", out)
+    # Only accept the prose-strip if it left a real answer behind.
+    out = stripped if stripped.strip() else out
+    out = re.sub(r"^\s*(?:final answer|answer)\s*:\s*", "", out.strip(), flags=re.IGNORECASE)
+    return out.strip()
+
+
 def humanize_goal_result(goal_text: str, event: dict[str, Any]) -> str:
     """Produce a human-readable assistant message for a completed goal.
 
@@ -1187,10 +1214,22 @@ class ChatService:
                 memories = []
             if memories:
                 turns = self._ctx.inject_long_term_memory([str(m) for m in memories], turns)
-        request = CompletionRequest(
-            messages=[Message(role=t["role"], content=t["content"]) for t in turns],
-            model="",
+        # Reasoning models (Qwen3 / kimi) otherwise dump a long "Thinking Process"
+        # into the chat — slow and noisy. Steer them to a direct final answer
+        # (Qwen3 honours the "/no_think" hint) and cap the length.
+        chat_msgs = [Message(role=t["role"], content=t["content"]) for t in turns]
+        chat_msgs.insert(
+            0,
+            Message(
+                role="system",
+                content=(
+                    "You are a helpful chat assistant. Reply with a direct, concise final "
+                    "answer only. Do NOT include chain-of-thought, analysis, or a "
+                    "'Thinking Process' section. /no_think"
+                ),
+            ),
         )
+        request = CompletionRequest(messages=chat_msgs, model="", max_tokens=1024)
 
         yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
         parts: list[str] = []
@@ -1205,7 +1244,7 @@ class ChatService:
             text = getattr(resp, "content", "") or ""
             parts.append(text)
             yield sse_event(ChatEventType.TOKEN, token=text, message_id=message_id)
-        answer = "".join(parts).strip()
+        answer = _strip_reasoning("".join(parts))
         await self.asave_message(
             session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
         )
@@ -1600,7 +1639,7 @@ class ChatService:
                     ev = _json.loads(s)
                     if ev.get("type") == "token":
                         parts.append(str(ev.get("token") or ""))
-        answer = "".join(parts).strip()
+        answer = _strip_reasoning("".join(parts))
         if not answer:
             return "I've received your message."
         # Never send a raw JSON blob to a channel — humanize it.
