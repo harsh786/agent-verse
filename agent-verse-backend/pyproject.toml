@@ -65,6 +65,12 @@ dependencies = [
     "kokoro-onnx>=0.3.4",
     "misaki[en]>=0.7.0",
     "fpdf2>=2.7",
+    "opentelemetry-instrumentation-httpx>=0.63b1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.63b1",
+    "opentelemetry-instrumentation-celery>=0.63b1",
+    "opentelemetry-instrumentation-asyncpg>=0.63b1",
+    "opentelemetry-instrumentation-redis>=0.63b1",
+    "opentelemetry-instrumentation-logging>=0.63b1",
 ]
 
 [project.scripts]

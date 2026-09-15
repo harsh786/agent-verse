@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, Histogram
 from prometheus_client import generate_latest as _generate_latest
@@ -290,9 +291,57 @@ PATTERN_SAFETY_TOTAL = Counter(
 )
 
 
-def render_metrics() -> tuple[bytes, str]:
-    """Return (body, content_type) for the metrics endpoint."""
+def render_metrics(accept: str = "") -> tuple[bytes, str]:
+    """Return (body, content_type) for the metrics endpoint, negotiating format.
+
+    When the caller Accepts OpenMetrics (Prometheus does), render OpenMetrics so
+    trace **exemplars** on latency histograms are exposed — Grafana can then jump
+    from a latency bucket straight to the exact trace. Otherwise (and by default)
+    keep the legacy Prometheus text format so existing consumers are unaffected.
+    """
+    if "openmetrics" in (accept or "").lower():
+        try:
+            from prometheus_client.openmetrics.exposition import (
+                CONTENT_TYPE_LATEST as _OM_CT,
+            )
+            from prometheus_client.openmetrics.exposition import (
+                generate_latest as _om_generate,
+            )
+
+            return _om_generate(REGISTRY), _OM_CT
+        except Exception:
+            pass
     return _generate_latest(REGISTRY), CONTENT_TYPE_LATEST
+
+
+def trace_exemplar() -> dict[str, str] | None:
+    """Return an OpenMetrics exemplar {"trace_id": ...} for the active span, or None.
+
+    Lets a latency observation carry the trace that produced it, so a spike in
+    Grafana links to the exact Jaeger/Langfuse trace. Never raises.
+    """
+    try:
+        from opentelemetry import trace as _trace
+
+        ctx = _trace.get_current_span().get_span_context()
+        if ctx.is_valid:
+            return {"trace_id": format(ctx.trace_id, "032x")}
+    except Exception:
+        pass
+    return None
+
+
+def observe_with_exemplar(metric: Any, amount: float) -> None:
+    """Observe ``amount`` on a histogram child, attaching the active-trace exemplar
+    when one exists. Falls back to a plain observe (older client / no span)."""
+    ex = trace_exemplar()
+    try:
+        if ex is not None:
+            metric.observe(amount, exemplar=ex)
+            return
+    except (TypeError, ValueError):
+        pass  # exemplars unsupported here — fall through to a plain observe
+    metric.observe(amount)
 
 
 def record_strategy_execution(
@@ -406,8 +455,9 @@ def record_goal_duration(status: str, duration_seconds: float, priority: str = "
     priority_label = _normalize_priority_label(priority)
     status_label = _normalize_status_label(status)
     GOAL_TOTAL.labels(status=status_label, priority=priority_label).inc()
-    GOAL_DURATION.labels(status=status_label, priority=priority_label).observe(
-        _non_negative(duration_seconds)
+    observe_with_exemplar(
+        GOAL_DURATION.labels(status=status_label, priority=priority_label),
+        _non_negative(duration_seconds),
     )
 
 
@@ -423,9 +473,12 @@ def record_tool_call(
         connector=connector_label,
         status=status_label,
     ).inc()
-    TOOL_CALL_DURATION.labels(
-        tool=tool_label, connector=connector_label, status=status_label
-    ).observe(_non_negative(duration_seconds))
+    observe_with_exemplar(
+        TOOL_CALL_DURATION.labels(
+            tool=tool_label, connector=connector_label, status=status_label
+        ),
+        _non_negative(duration_seconds),
+    )
 
 
 def record_queue_depth(queue: str, depth: float) -> None:

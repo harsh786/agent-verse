@@ -31,15 +31,31 @@ exporters:
   prometheus:
     endpoint: 0.0.0.0:8889
     namespace: agentverse
+  # LLM-native observability: fan the SAME spans out to Langfuse over OTLP/HTTP.
+  # Langfuse authenticates OTLP with Basic base64(public_key:secret_key); the value
+  # is supplied via env so no keys live in the repo. Disabled automatically when the
+  # env var is unset (the exporter still loads; the pipeline simply has no auth and
+  # Langfuse rejects — so we keep it in a dedicated pipeline the compose can omit).
+  otlphttp/langfuse:
+    endpoint: ${env:LANGFUSE_OTEL_ENDPOINT}
+    headers:
+      Authorization: ${env:LANGFUSE_OTEL_BASIC_AUTH}
   logging:
     verbosity: normal
 
 service:
   pipelines:
+    # Engineering trace view (full span tree incl. DB/HTTP/Celery).
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [otlp/jaeger, logging]
+    # LLM-native view: gen_ai spans + the whole tree land in Langfuse as
+    # traces/generations/sessions with token/cost/latency analytics.
+    traces/langfuse:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/langfuse]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]

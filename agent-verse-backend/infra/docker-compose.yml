@@ -431,6 +431,11 @@ services:
     image: otel/opentelemetry-collector-contrib:0.103.0
     restart: unless-stopped
     command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      # Langfuse OTLP fan-out target + Basic auth (base64 of public:secret).
+      # Defaults match the langfuse-web init keys below; override in real deploys.
+      LANGFUSE_OTEL_ENDPOINT: ${LANGFUSE_OTEL_ENDPOINT:-http://langfuse-web:3000/api/public/otel}
+      LANGFUSE_OTEL_BASIC_AUTH: ${LANGFUSE_OTEL_BASIC_AUTH:-Basic cGstbGYtZGV2OnNrLWxmLWRldg==}
     volumes:
       - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     ports:
@@ -625,10 +630,123 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Langfuse — LLM-native observability plane (traces/generations/sessions) ──
+  # Fed by the OTel collector's traces/langfuse pipeline. Self-hosted v3 stack:
+  # its own Postgres + ClickHouse (analytics) + reuses this compose's redis + minio.
+  # One-shot: create the S3 bucket Langfuse uploads events/media to (v3 does NOT
+  # auto-create it — the worker/web 500 with NoSuchBucket without this).
+  minio-init:
+    image: quay.io/minio/mc:latest
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        mc alias set m http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing m/${LANGFUSE_S3_BUCKET:-langfuse}
+
+  langfuse-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment: &langfuse-env
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:-devsalt-change-me}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-devsecret-change-me}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: minioadmin
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    restart: unless-stopped
+    depends_on:
+      langfuse-worker:
+        condition: service_started
+      langfuse-postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "3100:3000"
+    environment:
+      <<: *langfuse-env
+      # Auto-provision a dev org/project + API keys so the collector's Basic-auth
+      # default works out of the box. NEVER use these values outside dev.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-agentverse-dev}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-agentverse}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-sk-lf-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@agentverse.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:-agentverse-dev}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-AgentVerse Admin}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
 volumes:
   # driver_opts driver=local with no options = named volume (data persists across
   # `docker-compose down` but is removed only by `docker-compose down -v`).
   # Using explicit driver: local makes the intent clear and prevents accidental loss.
+  langfuse_pgdata:
+    driver: local
+  clickhouse_data:
+    driver: local
   pgdata:
     driver: local
   redisdata:
