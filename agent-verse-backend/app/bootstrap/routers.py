@@ -107,11 +107,18 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         _memory_writer = build_memory_writer(_ltm)
     from app.chat.artifact_store import ChatArtifactStore
     from app.chat.skills.builtin import build_registry_from_app_state
+    from app.identity import IdentityService
 
     # Binary store for chat-generated documents (Phase 4); registered before the
     # registry so the generate_document skill is wired.
     if getattr(app.state, "chat_artifact_store", None) is None:
         app.state.chat_artifact_store = ChatArtifactStore()
+
+    # Dual-mode identity (Phase 3): unifies channel identities to principals so a
+    # conversation continues across channels. In-memory now; a Postgres-backed
+    # store swaps in with the identity_links migration.
+    if getattr(app.state, "identity_service", None) is None:
+        app.state.identity_service = IdentityService()
 
     app.state.chat_service.attach_engine(
         goal_service=_existing_goal_svc,
@@ -121,6 +128,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         nl_scheduler=getattr(app.state, "nl_scheduler", None),
         schedule_store=getattr(app.state, "schedule_store", None),
         skill_registry=build_registry_from_app_state(app.state),
+        identity_service=app.state.identity_service,
     )
     app.include_router(chat_router)
     # Core

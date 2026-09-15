@@ -64,9 +64,28 @@ Open backend: dual-mode identity/principal (P3 core), P2 verify async/deliver-la
 P8 voice→ChatService+telephony, P5 remaining (models/org-team/connect-oauth skills), durability
 migrations for personalization+identity. Frontend P7: agent in flight.
 
+## Phase progress snapshot (updated)
+P0 ✅ | P1 ✅ | P3 ✅ (identity foundation + cross-channel continuity; durable migration pending)
+P5 ✅ (workflows+KB; models/org-team/oauth still open) | P7 🟡 (rich-output slice done; composer/
+streaming-robustness/design-tokens/more-orphans pending) | P9 ✅ (+security hardening) | P10 ✅
+P11 ✅ (durable migration pending).
+Open: P2 verify async deliver-later; P6 polish; P8 voice→ChatService+telephony; wire new services
+into boot (identity/proactive); durability migrations (personalization, identity).
+
 ## Next action
-Build dual-mode identity: app/identity/ (Principal + IdentityLink + IdentityService,
-in-memory now / repo-ready), tests. Then wire into channel-session resolution + migration.
+Wire IdentityService into register_routers so cross-channel continuity is live in prod
+(personalization already defaults in-memory). Then continue P7 composer / P2 / P8.
+
+## Increment log (newest first)
+- P7-fe: rich output rendering + reasoning + artifacts + code highlight. committed 55019f6f (68 vitest).
+- proactive hardening (security review): sanitize signals + durable counter. committed 6bf8a54a.
+- P3 cross-channel continuity wiring. committed 98595922. 232 passed.
+- identity foundation (app/identity/). committed bb794a37. 20 passed.
+- P9 proactive engine (app/proactive/). committed 8269125a. 8 passed.
+- P10 maps+ride connectors. committed 43a0414b (+ servers in 2d8b118d). 13 passed.
+- P11 personalization. committed cd50c91a. 229 passed.
+- P5 workflows+KB skills. committed 2d8b118d. 223 passed.
+- P1 memory rolling cache + learnings. committed f56ee003. 219 passed.
 
 ## Background agents in flight
 - Frontend rich-output rendering (agent-verse-frontend) — mount output components + code highlight/copy + reasoning block.
