@@ -66,12 +66,44 @@ def build_list_schedules_skill(schedule_store: Any) -> ChatSkill:
     )
 
 
+def build_generate_document_skill(artifact_store: Any) -> ChatSkill:
+    async def handler(
+        tenant_id: str, content: str, fmt: str = "pdf", filename: str | None = None
+    ) -> dict[str, Any]:
+        from app.chat.documents import generate_document, mime_for
+
+        data = generate_document(content, fmt)
+        name = filename or f"document.{fmt.lower()}"
+        artifact_id = artifact_store.put(
+            tenant_id=tenant_id, content=data, mime=mime_for(fmt), filename=name
+        )
+        return {
+            "artifact_id": artifact_id,
+            "filename": name,
+            "mime": mime_for(fmt),
+            "download_url": f"/chat/artifacts/{artifact_id}/download",
+        }
+
+    return ChatSkill(
+        name="generate_document",
+        description="Generate a downloadable document (pdf/md/csv/txt/json) from content.",
+        handler=handler,
+        args={
+            "content": "the document body",
+            "fmt": "pdf|md|csv|txt|json",
+            "filename": "optional filename",
+        },
+        scope="documents:write",
+    )
+
+
 def register_builtin_skills(
     registry: SkillRegistry,
     *,
     services_api: Any | None = None,
     goal_service: Any | None = None,
     schedule_store: Any | None = None,
+    artifact_store: Any | None = None,
 ) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
@@ -80,6 +112,8 @@ def register_builtin_skills(
         registry.register(build_submit_goal_skill(goal_service))
     if schedule_store is not None:
         registry.register(build_list_schedules_skill(schedule_store))
+    if artifact_store is not None:
+        registry.register(build_generate_document_skill(artifact_store))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
@@ -102,5 +136,6 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
         services_api=getattr(aps, "services_api", None),
         goal_service=getattr(aps, "goal_service", None),
         schedule_store=getattr(aps, "schedule_store", None),
+        artifact_store=getattr(aps, "chat_artifact_store", None),
     )
     return registry

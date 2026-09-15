@@ -112,3 +112,17 @@ def test_build_registry_from_app_state_empty_is_safe() -> None:
 
     reg = build_registry_from_app_state(SimpleNamespace())
     assert reg.list() == []
+
+
+async def test_generate_document_skill_stores_and_returns_ref() -> None:
+    from app.chat.artifact_store import ChatArtifactStore
+    from app.chat.skills.builtin import build_generate_document_skill
+
+    store = ChatArtifactStore()
+    skill = build_generate_document_skill(store)
+    out = await skill.handler(tenant_id="t1", content="Hello report", fmt="pdf", filename="r.pdf")
+    assert out["filename"] == "r.pdf" and out["mime"] == "application/pdf"
+    assert out["download_url"].endswith("/download")
+    stored = store.get(out["artifact_id"], "t1")
+    assert stored is not None and stored.content[:4] == b"%PDF"
+    assert skill.scope == "documents:write"
