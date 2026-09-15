@@ -246,7 +246,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 async def pin_session(session_id: str, request: Request, pinned: bool = True) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.pin_session(session_id, tenant.tenant_id, pinned)
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, pinned=pinned)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -266,7 +266,7 @@ async def list_messages(
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msgs = svc.list_messages(session_id, tenant.tenant_id, limit=limit)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit)
     return {"messages": [_message_to_dict(m) for m in msgs]}
 
 
@@ -302,7 +302,7 @@ async def stream_session(
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Find the message to determine intent
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     msg = next((m for m in msgs if m.id == message_id), None)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -614,7 +614,7 @@ async def within_session_search(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    msgs = svc.list_messages(session_id, tenant.tenant_id, limit=500)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=500)
     raw = [
         {
             "id": m.id,
@@ -806,7 +806,7 @@ async def submit_feedback(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     msg = next((m for m in msgs if m.id == message_id), None)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -826,7 +826,7 @@ async def export_session(session_id: str, request: Request) -> dict[str, Any]:
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     lines = [f"# {s.title}\n"]
     for m in msgs:
         prefix = "**User**" if m.role == "user" else "**Assistant**"
