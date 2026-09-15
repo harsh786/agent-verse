@@ -159,6 +159,9 @@ class ChatService:
         self._ctx = ConversationContext()
         # clarify round tracking per session
         self._clarify_rounds: dict[str, int] = {}
+        # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
+        # user's messages continue one conversation across turns/channels.
+        self._channel_sessions: dict[tuple[str, str, str], str] = {}
         # Real-engine dependencies (injected in the lifespan; None on the pure
         # in-memory/unit-test path). ``goal_service`` drives GOAL turns through the
         # real AgentGraph; ``answer_generator`` produces real QA answers.
@@ -196,6 +199,30 @@ class ChatService:
             folder_id=folder_id,
         )
         self._sessions[sid] = session
+        return session
+
+    def get_or_create_channel_session(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        title: str | None = None,
+    ) -> _Session:
+        """Resolve the durable session for a channel user (Phase 3).
+
+        Returns the existing conversation for (channel, channel_user_id) so an
+        inbound WhatsApp/Telegram message continues the same thread, creating one
+        on first contact. This is what lets a conversation span channels/time.
+        """
+        key = (tenant_id, channel, channel_user_id)
+        existing_id = self._channel_sessions.get(key)
+        if existing_id is not None:
+            existing = self.get_session(existing_id, tenant_id)
+            if existing is not None:
+                return existing
+        session = self.create_session(tenant_id, title=title or f"{channel}:{channel_user_id}")
+        self._channel_sessions[key] = session.id
         return session
 
     def get_session(self, session_id: str, tenant_id: str) -> _Session | None:
