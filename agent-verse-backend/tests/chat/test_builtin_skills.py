@@ -274,3 +274,23 @@ async def test_register_wires_workflow_and_knowledge_skills() -> None:
     )
     names = {s.name for s in reg.list()}
     assert {"list_workflows", "run_workflow", "search_knowledge", "ingest_knowledge"} <= names
+
+
+class _FakeChatServiceForModel:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    async def aupdate_session(self, session_id: str, tenant_id: str, **fields: Any) -> Any:
+        self.calls.append((session_id, tenant_id, fields))
+        return SimpleNamespace(preferred_model=fields.get("preferred_model"))
+
+
+async def test_set_conversation_model_skill_updates_session() -> None:
+    from app.chat.skills.builtin import build_set_conversation_model_skill
+
+    chat = _FakeChatServiceForModel()
+    skill = build_set_conversation_model_skill(chat)
+    out = await skill.handler(session_id="s1", tenant_id="t1", model="claude-opus-5")
+    assert out == {"session_id": "s1", "preferred_model": "claude-opus-5", "ok": True}
+    assert chat.calls == [("s1", "t1", {"preferred_model": "claude-opus-5"})]
+    assert skill.scope == "models:write"

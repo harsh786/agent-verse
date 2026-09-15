@@ -242,6 +242,30 @@ def build_ingest_knowledge_skill(knowledge_store: Any) -> ChatSkill:
     )
 
 
+def build_set_conversation_model_skill(chat_service: Any) -> ChatSkill:
+    async def handler(session_id: str, tenant_id: str, model: str) -> dict[str, Any]:
+        updated = await chat_service.aupdate_session(
+            session_id, tenant_id, preferred_model=model
+        )
+        return {
+            "session_id": session_id,
+            "preferred_model": getattr(updated, "preferred_model", model) if updated else None,
+            "ok": updated is not None,
+        }
+
+    return ChatSkill(
+        name="set_conversation_model",
+        description="Switch the model for THIS conversation ('use the fast/cheap model', "
+        "'answer with Opus'); persists on the session.",
+        handler=handler,
+        args={
+            "session_id": "the conversation to change",
+            "model": "the model id to use for this conversation",
+        },
+        scope="models:write",
+    )
+
+
 def register_builtin_skills(
     registry: SkillRegistry,
     *,
@@ -253,6 +277,7 @@ def register_builtin_skills(
     workflow_service: Any | None = None,
     workflow_runner: Any | None = None,
     knowledge_store: Any | None = None,
+    chat_service: Any | None = None,
 ) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
@@ -273,6 +298,8 @@ def register_builtin_skills(
     if knowledge_store is not None:
         registry.register(build_search_knowledge_skill(knowledge_store))
         registry.register(build_ingest_knowledge_skill(knowledge_store))
+    if chat_service is not None:
+        registry.register(build_set_conversation_model_skill(chat_service))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
@@ -300,5 +327,6 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
         workflow_service=getattr(aps, "workflow_service", None),
         workflow_runner=getattr(aps, "workflow_runner", None),
         knowledge_store=getattr(aps, "knowledge_store", None),
+        chat_service=getattr(aps, "chat_service", None),
     )
     return registry
