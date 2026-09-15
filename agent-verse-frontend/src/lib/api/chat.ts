@@ -3,6 +3,7 @@
  */
 
 import { API_BASE } from './client';
+import { useAuthStore } from '@/stores/auth';
 import type {
   ChatSession,
   ChatMessage,
@@ -15,7 +16,16 @@ import type {
 } from '@/features/chat/types/chat.types';
 
 function getApiKey(): string {
-  return sessionStorage.getItem('agentverse_api_key') ?? '';
+  // Canonical source is the auth store; fall back to the same session/local keys
+  // the shared client uses. (Previously read a stale 'agentverse_api_key' that
+  // nothing writes → empty X-API-Key → every chat call 401'd and "New Chat"
+  // silently did nothing.)
+  return (
+    useAuthStore.getState().apiKey ||
+    sessionStorage.getItem('av_api_key') ||
+    localStorage.getItem('av_api_key') ||
+    ''
+  );
 }
 
 function headers(): HeadersInit {

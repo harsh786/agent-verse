@@ -18,7 +18,7 @@ interface Props {
   onClose?: () => void;
 }
 
-const API_KEY = () => sessionStorage.getItem('agentverse_api_key') ?? '';
+const API_KEY = () => (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '');
 const H = () => ({ 'Content-Type': 'application/json', 'X-API-Key': API_KEY() });
 
 export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {

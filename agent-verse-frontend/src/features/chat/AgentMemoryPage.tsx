@@ -25,7 +25,7 @@ export default function AgentMemoryPage(): JSX.Element {
   const load = useCallback(async () => {
     try {
       const r = await fetch('/chat/memories', {
-        headers: { 'X-API-Key': sessionStorage.getItem('agentverse_api_key') ?? '' },
+        headers: { 'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '') },
       });
       if (r.ok) {
         const data = await r.json();
@@ -41,7 +41,7 @@ export default function AgentMemoryPage(): JSX.Element {
   const handleDelete = async (id: string) => {
     await fetch(`/chat/memories/${id}`, {
       method: 'DELETE',
-      headers: { 'X-API-Key': sessionStorage.getItem('agentverse_api_key') ?? '' },
+      headers: { 'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '') },
     });
     setMemories((prev) => prev.filter((m) => m.id !== id));
   };
@@ -51,7 +51,7 @@ export default function AgentMemoryPage(): JSX.Element {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': sessionStorage.getItem('agentverse_api_key') ?? '',
+        'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? ''),
       },
       body: JSON.stringify({ content: editContent }),
     });
@@ -68,7 +68,7 @@ export default function AgentMemoryPage(): JSX.Element {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': sessionStorage.getItem('agentverse_api_key') ?? '',
+        'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? ''),
       },
       body: JSON.stringify({ content: newContent }),
     });
