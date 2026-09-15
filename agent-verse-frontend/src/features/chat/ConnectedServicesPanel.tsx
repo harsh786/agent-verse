@@ -4,6 +4,8 @@
 
 import { useEffect, useState, type JSX } from 'react';
 import { Plug, PlugZap, Trash2, Plus } from 'lucide-react';
+import { getAuthHeader } from '@/stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
 interface Service {
   id: string;
@@ -18,8 +20,7 @@ interface Props {
   onClose?: () => void;
 }
 
-const API_KEY = () => (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '');
-const H = () => ({ 'Content-Type': 'application/json', 'X-API-Key': API_KEY() });
+const H = () => ({ 'Content-Type': 'application/json', ...getAuthHeader() });
 
 export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
   const [services, setServices] = useState<Service[]>([]);
@@ -29,20 +30,20 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
   const [newUrl, setNewUrl] = useState('');
 
   useEffect(() => {
-    fetch('/chat/services', { headers: H() })
+    fetch(`${API_BASE}/chat/services`, { headers: H() })
       .then((r) => r.json())
       .then((d) => setServices(d.services ?? []))
       .finally(() => setLoading(false));
   }, []);
 
   const disconnect = async (id: string) => {
-    await fetch(`/chat/services/${id}`, { method: 'DELETE', headers: H() });
+    await fetch(`${API_BASE}/chat/services/${id}`, { method: 'DELETE', headers: H() });
     setServices((prev) => prev.filter((s) => s.id !== id));
   };
 
   const connect = async () => {
     if (!newName || !newUrl) return;
-    const r = await fetch('/chat/services', {
+    const r = await fetch(`${API_BASE}/chat/services`, {
       method: 'POST',
       headers: H(),
       body: JSON.stringify({ name: newName, url: newUrl }),

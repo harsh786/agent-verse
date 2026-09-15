@@ -6,6 +6,8 @@ import { useCallback, useEffect, useState, type JSX } from 'react';
 import { Brain, Trash2, Edit2, Plus, Check, X } from 'lucide-react';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { getAuthHeader } from '@/stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
 interface Memory {
   id: string;
@@ -24,8 +26,8 @@ export default function AgentMemoryPage(): JSX.Element {
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/chat/memories', {
-        headers: { 'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '') },
+      const r = await fetch(`${API_BASE}/chat/memories`, {
+        headers: getAuthHeader(),
       });
       if (r.ok) {
         const data = await r.json();
@@ -39,19 +41,19 @@ export default function AgentMemoryPage(): JSX.Element {
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (id: string) => {
-    await fetch(`/chat/memories/${id}`, {
+    await fetch(`${API_BASE}/chat/memories/${id}`, {
       method: 'DELETE',
-      headers: { 'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? '') },
+      headers: getAuthHeader(),
     });
     setMemories((prev) => prev.filter((m) => m.id !== id));
   };
 
   const handleEdit = async (id: string) => {
-    const r = await fetch(`/chat/memories/${id}`, {
+    const r = await fetch(`${API_BASE}/chat/memories/${id}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? ''),
+        ...getAuthHeader(),
       },
       body: JSON.stringify({ content: editContent }),
     });
@@ -64,11 +66,11 @@ export default function AgentMemoryPage(): JSX.Element {
 
   const handleAdd = async () => {
     if (!newContent.trim()) return;
-    const r = await fetch('/chat/memories', {
+    const r = await fetch(`${API_BASE}/chat/memories`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-API-Key': (sessionStorage.getItem('av_api_key') ?? localStorage.getItem('av_api_key') ?? ''),
+        ...getAuthHeader(),
       },
       body: JSON.stringify({ content: newContent }),
     });
