@@ -168,6 +168,14 @@ async def list_sessions(request: Request) -> dict[str, Any]:
     return {"sessions": [_session_to_dict(s) for s in sessions]}
 
 
+@router.get("/skills")
+async def list_skills(request: Request) -> dict[str, Any]:
+    """Discover the chat command-surface skills available to this tenant (Phase 5)."""
+    _tenant(request)
+    svc = _svc(request)
+    return {"skills": svc.list_skills()}
+
+
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)

@@ -105,6 +105,8 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
 
         _memory_recall = build_memory_recall(_ltm)
         _memory_writer = build_memory_writer(_ltm)
+    from app.chat.skills.builtin import build_registry_from_app_state
+
     app.state.chat_service.attach_engine(
         goal_service=_existing_goal_svc,
         answer_generator=resolve_llm_provider(app.state),
@@ -112,6 +114,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         memory_writer=_memory_writer,
         nl_scheduler=getattr(app.state, "nl_scheduler", None),
         schedule_store=getattr(app.state, "schedule_store", None),
+        skill_registry=build_registry_from_app_state(app.state),
     )
     app.include_router(chat_router)
     # Core

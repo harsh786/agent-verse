@@ -148,6 +148,7 @@ class ChatService:
         memory_writer: Any = None,
         nl_scheduler: Any = None,
         schedule_store: Any = None,
+        skill_registry: Any = None,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
@@ -172,6 +173,8 @@ class ChatService:
         # Real scheduling engine (Phase 2): NL -> TriggerSpecs -> persisted schedules.
         self._nl_scheduler = nl_scheduler
         self._schedule_store = schedule_store
+        # Command-surface skill registry (Phase 5): "anything via chat".
+        self._skill_registry = skill_registry
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -416,6 +419,7 @@ class ChatService:
         memory_writer: Any = None,
         nl_scheduler: Any = None,
         schedule_store: Any = None,
+        skill_registry: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -437,6 +441,8 @@ class ChatService:
             self._nl_scheduler = nl_scheduler
         if schedule_store is not None:
             self._schedule_store = schedule_store
+        if skill_registry is not None:
+            self._skill_registry = skill_registry
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -454,6 +460,24 @@ class ChatService:
     def can_recall_memory(self) -> bool:
         """True when a memory-recall hook is wired (QA injects long-term memory)."""
         return self._memory_recall is not None
+
+    def list_skills(self, scopes: frozenset[str] | None = None) -> list[dict[str, Any]]:
+        """Discover the chat command-surface skills (Phase 5), scope-filtered."""
+        if self._skill_registry is None:
+            return []
+        out: list[dict[str, Any]] = []
+        for skill in self._skill_registry.list():
+            if scopes is not None and skill.scope is not None and skill.scope not in scopes:
+                continue
+            out.append(
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "args": skill.args,
+                    "scope": skill.scope,
+                }
+            )
+        return out
 
     @property
     def can_schedule(self) -> bool:
