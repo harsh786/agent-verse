@@ -30,6 +30,20 @@ _SAFE_PATTERN_ATTRIBUTE_KEYS = frozenset(
 # Module-level in-memory exporter; populated by _add_console_span_processor
 _in_memory_exporter: Any = None
 
+# Process-wide per-goal step-timeline store, fed by the RunTimelineSpanProcessor and
+# read by the Run Inspector API. Swappable for a Redis-backed store in prod wiring.
+_run_timeline_store: Any = None
+
+
+def get_run_timeline_store() -> Any:
+    """Return the process-wide run-timeline store (created lazily)."""
+    global _run_timeline_store
+    if _run_timeline_store is None:
+        from app.observability.run_timeline import InMemoryRunTimelineStore
+
+        _run_timeline_store = InMemoryRunTimelineStore()
+    return _run_timeline_store
+
 
 def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> None:
     """Configure OpenTelemetry tracing.
@@ -58,6 +72,13 @@ def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> No
         # Always have in-process span tracking (useful in dev for replay/debugging)
         _add_console_span_processor(provider, service_name)
         get_logger(__name__).info("in_process_tracing_enabled_no_otlp")
+
+    # Per-goal step timeline: capture goal-scoped spans into a queryable store so
+    # the Run Inspector can render how a goal ran without depending on Jaeger/
+    # Langfuse retention. Independent of whether OTLP export is on.
+    from app.observability.run_timeline import RunTimelineSpanProcessor
+
+    provider.add_span_processor(RunTimelineSpanProcessor(get_run_timeline_store()))
 
     trace.set_tracer_provider(provider)
 
