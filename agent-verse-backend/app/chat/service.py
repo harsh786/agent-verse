@@ -755,6 +755,28 @@ class ChatService:
         except Exception:
             return ""
 
+    def handle_channel_message(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """Unified entry point for an inbound channel message (Phase 3).
+
+        Resolves the channel user's durable session and runs the SAME dispatch
+        (save + intent classification + history) as web chat, so WhatsApp/Telegram/
+        API and the web UI share one pipeline. Returns the dispatch metadata plus
+        the resolved ``session_id`` and ``channel``.
+        """
+        session = self.get_or_create_channel_session(
+            tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+        )
+        result = self.dispatch(session.id, tenant_id, text)
+        result["channel"] = channel
+        return result
+
     # ── Folder CRUD ───────────────────────────────────────────────────────────
 
     def create_folder(self, tenant_id: str, name: str, color: str = "#6366f1") -> _Folder:
