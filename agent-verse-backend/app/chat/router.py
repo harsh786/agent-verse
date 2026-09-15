@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from app.chat.execution import ChatCodeExecutor
 from app.chat.intent import IntentRouter
@@ -174,6 +174,21 @@ async def list_skills(request: Request) -> dict[str, Any]:
     _tenant(request)
     svc = _svc(request)
     return {"skills": svc.list_skills()}
+
+
+@router.get("/artifacts/{artifact_id}/download")
+async def download_artifact(artifact_id: str, request: Request) -> Response:
+    """Download a chat-generated document (Phase 4), tenant-scoped."""
+    tenant = _tenant(request)
+    store = getattr(request.app.state, "chat_artifact_store", None)
+    art = store.get(artifact_id, tenant.tenant_id) if store is not None else None
+    if art is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return Response(
+        content=art.content,
+        media_type=art.mime,
+        headers={"Content-Disposition": f'attachment; filename="{art.filename}"'},
+    )
 
 
 @router.get("/sessions/{session_id}")
