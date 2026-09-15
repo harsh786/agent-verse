@@ -120,6 +120,15 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     if getattr(app.state, "identity_service", None) is None:
         app.state.identity_service = IdentityService()
 
+    # Voice/phone (Phase 8): registry maps a provisioned number → tenant so an
+    # inbound Twilio call resolves to the right tenant before any tenant work.
+    if getattr(app.state, "voice_phone_registry", None) is None:
+        from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
+        from app.gateway.voice_registry import VoicePhoneRegistry
+
+        app.state.voice_phone_registry = VoicePhoneRegistry.from_env()
+        app.state.voice_phone_adapter = VoicePhoneChannelAdapter()
+
     app.state.chat_service.attach_engine(
         goal_service=_existing_goal_svc,
         answer_generator=resolve_llm_provider(app.state),

@@ -20,12 +20,14 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from fastapi.responses import Response
 from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.gateway.channels.slack import SlackChannelAdapter
 from app.gateway.channels.teams import MicrosoftTeamsAdapter
 from app.gateway.channels.telegram import TelegramChannelAdapter
+from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
 from app.gateway.channels.webhook import WebhookChannelAdapter
 from app.gateway.channels.whatsapp import WhatsAppChannelAdapter
 from app.gateway.command import OrgCommand, OrgResponse
@@ -41,6 +43,7 @@ _slack = SlackChannelAdapter()
 _whatsapp = WhatsAppChannelAdapter()
 _teams = MicrosoftTeamsAdapter()
 _webhook = WebhookChannelAdapter()
+_voice_phone = VoicePhoneChannelAdapter()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -444,6 +447,76 @@ async def teams_messages(
         background_tasks.add_task(_process_command, command)
 
     return {"type": "message", "text": ""}
+
+
+# ── Voice / phone (Twilio-style call webhook) ─────────────────────────────────
+
+
+@router.post(
+    "/voice/incoming",
+    operation_id="gateway_voice_incoming",
+    summary="Inbound phone-call webhook (Twilio/Vonage) → ChatService, returns TwiML",
+)
+async def voice_incoming(request: Request) -> Response:
+    """Handle one inbound call turn and speak a reply.
+
+    Twilio posts form params (``From`` / ``To`` / ``CallSid`` / ``SpeechResult``).
+    The tenant is resolved from the *called* number (``To``) via the voice registry
+    (the webhook carries no API key). The caller's speech is routed through the
+    SAME unified pipeline as web/WhatsApp (``ChatService.ahandle_channel_message``,
+    channel ``voice_phone``, caller number as the channel user) so a call is a
+    durable, identity-aware conversation. The reply is returned as TwiML the
+    provider speaks, with a ``<Gather>`` that loops the next turn back here.
+    """
+    from app.voice.chat_bridge import handle_voice_turn
+
+    state = request.app.state
+    adapter = getattr(state, "voice_phone_adapter", None) or _voice_phone
+    registry = getattr(state, "voice_phone_registry", None)
+    chat_service = getattr(state, "chat_service", None)
+
+    form = dict((await request.form()).items())
+    payload: dict[str, Any] = {**form, "_request_url": str(request.url)}
+
+    # Provider signature verification (open in dev when no auth token configured).
+    if not await adapter.verify_auth(dict(request.headers), payload):
+        raise HTTPException(status_code=403, detail="Invalid voice signature")
+
+    to_number = str(form.get("To", "") or "")
+    from_number = str(form.get("From", "") or "")
+    transcript = str(form.get("SpeechResult") or form.get("transcript") or "").strip()
+
+    binding = registry.resolve(to_number) if registry is not None else None
+    if binding is None or chat_service is None:
+        # Unknown number / chat not wired — answer politely, do no tenant work.
+        twiml = adapter.format_reply(
+            "Sorry, this number isn't set up for the assistant yet. Goodbye.",
+            gather=False,
+        )["twiml"]
+        return Response(content=twiml, media_type="application/xml")
+
+    if not transcript:
+        # Call connected but nothing said yet — greet and gather the first turn.
+        twiml = adapter.format_reply("Hi, you're connected to your assistant. How can I help?")[
+            "twiml"
+        ]
+        return Response(content=twiml, media_type="application/xml")
+
+    try:
+        result = await handle_voice_turn(
+            chat_service=chat_service,
+            tenant_id=binding.tenant_id,
+            caller_id=from_number,
+            transcript=transcript,
+            consent_policy=getattr(state, "voice_consent_policy", None),
+        )
+        reply = str(result.get("reply_text") or "Okay.")
+    except Exception as exc:  # never drop the call — speak a safe fallback
+        _log.warning("gateway.voice_turn_failed", error=str(exc)[:160])
+        reply = "Sorry, I hit a problem handling that. Please try again."
+
+    twiml = adapter.format_reply(reply)["twiml"]
+    return Response(content=twiml, media_type="application/xml")
 
 
 # ── Generic webhook ───────────────────────────────────────────────────────────
