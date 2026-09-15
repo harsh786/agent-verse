@@ -43,6 +43,7 @@ import type { GoalEvent as StreamGoalEvent } from "@/lib/sse/useGoalStream";
 
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import { GoalExecutionGraph } from './components/GoalExecutionGraph';
+import { GoalRunInspector } from '../observability/GoalRunInspector';
 import { GoalNeuralStats }   from './components/GoalNeuralStats';
 import { HITLGateNode } from '@/components/neural/HITLGateNode';
 import { GuardrailShield } from '@/components/neural/GuardrailShield';
@@ -1144,6 +1145,14 @@ export function GoalDetailPage() {
           {/* Neural execution graph */}
           {events.length > 0 && (
             <GoalExecutionGraph events={events} className="mb-3" />
+          )}
+          {/* Run Inspector — per-step timeline (LLM calls/tools) with tokens, cost,
+              latency and trace deep-links, from the observability span timeline. */}
+          {goalId && (
+            <div className="mb-3">
+              <h3 className="mb-2 text-sm font-semibold text-foreground">Run trace</h3>
+              <GoalRunInspector goalId={goalId} />
+            </div>
           )}
           {/* Terminal log (existing) */}
           <TerminalPanel
