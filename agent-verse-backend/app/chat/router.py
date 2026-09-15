@@ -150,7 +150,7 @@ def _message_to_dict(m: Any) -> dict[str, Any]:
 async def create_session(body: CreateSessionRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.create_session(
+    s = await svc.acreate_session(
         tenant.tenant_id,
         title=body.title,
         system_prompt=body.system_prompt,
@@ -164,7 +164,7 @@ async def create_session(body: CreateSessionRequest, request: Request) -> dict[s
 async def list_sessions(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    sessions = svc.list_sessions(tenant.tenant_id)
+    sessions = await svc.alist_sessions(tenant.tenant_id)
     return {"sessions": [_session_to_dict(s) for s in sessions]}
 
 
@@ -214,7 +214,7 @@ async def download_artifact(artifact_id: str, request: Request) -> Response:
 async def get_session(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -227,7 +227,7 @@ async def update_session(
     tenant = _tenant(request)
     svc = _svc(request)
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    s = svc.update_session(session_id, tenant.tenant_id, **updates)
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, **updates)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -237,7 +237,7 @@ async def update_session(
 async def delete_session(session_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
-    ok = svc.delete_session(session_id, tenant.tenant_id)
+    ok = await svc.adelete_session(session_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -263,7 +263,7 @@ async def list_messages(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     msgs = svc.list_messages(session_id, tenant.tenant_id, limit=limit)
@@ -280,7 +280,7 @@ async def send_message(
     """
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -297,7 +297,7 @@ async def stream_session(
     """SSE endpoint — streams the response for a dispatched message."""
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -407,7 +407,7 @@ async def edit_message(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     msg, pruned = svc.edit_message(message_id, tenant.tenant_id, body.content)
@@ -434,7 +434,7 @@ async def delete_message(session_id: str, message_id: str, request: Request) -> 
 async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return svc.session_usage_summary(session_id, tenant.tenant_id)
@@ -447,7 +447,7 @@ async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
 async def summarize_session(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     summary = svc.summarize_session(session_id, tenant.tenant_id)
@@ -518,7 +518,7 @@ async def create_artifact(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     a = svc.create_artifact(
@@ -587,7 +587,7 @@ async def execute_code(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     result = _executor.execute(body.code, body.language, session_id)
@@ -823,7 +823,7 @@ async def export_session(session_id: str, request: Request) -> dict[str, Any]:
     """Export session as clean Markdown."""
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     msgs = svc.list_messages(session_id, tenant.tenant_id)
