@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useAuthStore } from '../../stores/auth';
+import { getAuthHeader } from '../../stores/auth';
+import { API_BASE } from '../../lib/api/client';
 
 // Mirrors the backend GET /observability/goals/{id}/trace (RunTimelineSpanProcessor).
 interface TraceEntry {
@@ -102,12 +103,13 @@ function TimelineRow({ entry, maxMs }: { entry: TraceEntry; maxMs: number }) {
  * span timeline the RunTimelineSpanProcessor captures.
  */
 export function GoalRunInspector({ goalId }: { goalId: string }) {
-  const apiKey = useAuthStore(s => s.apiKey) || '';
   const { data, isLoading, isError } = useQuery<GoalTrace>({
     queryKey: ['goal-trace', goalId],
     queryFn: async () => {
-      const res = await fetch(`/api/observability/goals/${goalId}/trace`, {
-        headers: { 'X-API-Key': apiKey },
+      // Absolute URL to the backend (relative /api/observability is NOT proxied →
+      // 404 in dev) + SSO-safe auth header.
+      const res = await fetch(`${API_BASE}/observability/goals/${goalId}/trace`, {
+        headers: getAuthHeader(),
       });
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();

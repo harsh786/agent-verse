@@ -21,7 +21,7 @@ import {
   Clock, FlaskConical, Wrench,
 } from "lucide-react";
 import { simulationApi, type SimulationSummary } from "@/lib/api/client";
-import { useAuthStore } from "@/stores/auth";
+import { useAuthStore, getAuthHeader } from "@/stores/auth";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -353,7 +353,7 @@ export function SimulationPage() {
         headers: {
           "Content-Type": "application/json",
           "Accept": "text/event-stream",
-          "X-API-Key": sessionStorage.getItem("av_api_key") ?? localStorage.getItem("av_api_key") ?? apiKey ?? "",
+          ...getAuthHeader(),
         },
         body: JSON.stringify({
           goal: goal.trim(),

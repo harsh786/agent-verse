@@ -52,7 +52,7 @@ describe('GoalRunInspector', () => {
     expect(screen.getByText('820 ms')).toBeInTheDocument();
     // fetch hit the trace endpoint
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledWith(
-      '/api/observability/goals/g-123/trace',
+      expect.stringMatching(/\/observability\/goals\/g-123\/trace$/),
       expect.objectContaining({ headers: expect.any(Object) })
     );
   });

@@ -1,6 +1,7 @@
 
 import { useQuery } from '@tanstack/react-query';
-import { useAuthStore } from '../../stores/auth';
+import { getAuthHeader } from '../../stores/auth';
+import { API_BASE } from '../../lib/api/client';
 
 interface RoleCost {
   role: string;
@@ -44,18 +45,18 @@ function RoleRow({ role }: { role: RoleCost }) {
 }
 
 export function CostBreakdown({ goalId }: { goalId: string }) {
-  const apiKey = useAuthStore(s => s.apiKey) || '';
-
   const { data, isLoading } = useQuery<CostMetrics>({
     queryKey: ['cost-metrics', goalId],
     queryFn: async () => {
-      const res = await fetch(`/api/goals/${goalId}/cost-metrics`, {
-        headers: { 'X-API-Key': apiKey },
+      // Absolute backend URL (relative /api/goals is NOT proxied → 404 in dev)
+      // + SSO-safe auth header.
+      const res = await fetch(`${API_BASE}/goals/${goalId}/cost-metrics`, {
+        headers: getAuthHeader(),
       });
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },
-    enabled: !!goalId && !!apiKey,
+    enabled: !!goalId,
     staleTime: 30000,
   });
 
