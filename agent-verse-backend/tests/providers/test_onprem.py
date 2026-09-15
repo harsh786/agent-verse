@@ -112,7 +112,9 @@ def test_hybrid_cluster_puts_nvidia_on_top_with_onprem() -> None:
     p = build_onprem_provider(s)
     assert p is not None
     assert p._agentverse_provider_type == "hybrid"
-    assert p._default_model == "nvidia/llama-3.1-nemotron-70b-instruct"  # NVIDIA top/fallback
+    # Fast local Qwen fronts interactive chat; NVIDIA stays top via the router
+    # (planning + fallback) and is present as an endpoint.
+    assert p._default_model == "Qwen/Qwen3.5-4B"
     assert set(p._endpoints) == {
         "nvidia/llama-3.1-nemotron-70b-instruct", "Qwen/Qwen3.5-4B", "google/gemma-4-E2B",
     }

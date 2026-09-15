@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     # Keep fast interactive chat/execution on the local Qwen while NVIDIA handles
     # planning + fallback (top-tier reasoning). Off → NVIDIA is also the chat default.
     onprem_qwen_is_chat_default: bool = True
+    # Suppress the on-prem vLLM reasoning models' chain-of-thought at the server via
+    # chat_template_kwargs.enable_thinking=false (Qwen3), so chat gets a clean, fast
+    # final answer instead of a long "Thinking Process" dump.
+    onprem_disable_thinking: bool = True
 
     # --- Ollama local inference -----------------------------------------------
     ollama_base_url: str = ""  # e.g. http://localhost:11434

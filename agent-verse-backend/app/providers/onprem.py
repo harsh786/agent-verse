@@ -108,10 +108,17 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
         default_model = settings.nvidia_model
 
     api_key = settings.onprem_api_key or "EMPTY"
+    # Suppress vLLM reasoning models' chain-of-thought at the server (clean/fast chat).
+    vllm_extra = (
+        {"chat_template_kwargs": {"enable_thinking": False}}
+        if settings.onprem_disable_thinking
+        else None
+    )
     embed_provider: OpenAICompatibleProvider | None = None
     if onprem_on:
         endpoints[settings.onprem_qwen_model] = OpenAICompatibleProvider(
-            api_key=api_key, base_url=qwen_url, default_model=settings.onprem_qwen_model
+            api_key=api_key, base_url=qwen_url, default_model=settings.onprem_qwen_model,
+            extra_body=vllm_extra,
         )
         # Fast local Qwen fronts interactive chat by default (NVIDIA stays top-tier
         # for planning/fallback via the router), unless explicitly disabled.
@@ -120,7 +127,8 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
         gemma_url = settings.onprem_gemma_base_url.strip()
         if gemma_url:
             endpoints[settings.onprem_gemma_model] = OpenAICompatibleProvider(
-                api_key=api_key, base_url=gemma_url, default_model=settings.onprem_gemma_model
+                api_key=api_key, base_url=gemma_url, default_model=settings.onprem_gemma_model,
+                extra_body=vllm_extra,
             )
 
     # Embeddings: prefer the NVIDIA embedding model when configured (dim must match

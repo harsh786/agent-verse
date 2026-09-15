@@ -136,6 +136,7 @@ class OpenAICompatibleProvider:
         default_model: str = "gpt-5.2",
         embed_model: str | None = None,
         supports_vision_flag: bool = True,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         try:
             import openai
@@ -143,6 +144,10 @@ class OpenAICompatibleProvider:
             raise ImportError("Install 'openai' to use OpenAICompatibleProvider") from exc
 
         self._client = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # Vendor-specific chat body extensions (e.g. vLLM
+        # {"chat_template_kwargs": {"enable_thinking": false}} to suppress a
+        # reasoning model's chain-of-thought). Passed verbatim to chat completions.
+        self._extra_body = extra_body or {}
         self._base_url = base_url or ""
         # Strict ``json_schema`` guided decoding is only reliable on the canonical
         # OpenAI API. Third-party OpenAI-compatible endpoints (NVIDIA, Groq, vLLM,
@@ -207,6 +212,9 @@ class OpenAICompatibleProvider:
             _token_key: request.max_tokens,
             "temperature": request.temperature,
         }
+        _eb = getattr(self, "_extra_body", None)
+        if _eb:
+            kwargs["extra_body"] = _eb
         if request.tools:
             kwargs["tools"] = [
                 {
@@ -405,6 +413,9 @@ class OpenAICompatibleProvider:
             token_key: request.max_tokens,
             "temperature": request.temperature,
         }
+        _eb = getattr(self, "_extra_body", None)
+        if _eb:
+            kwargs["extra_body"] = _eb
         response = await self._client.chat.completions.create(**kwargs)
         choice = response.choices[0]
         content = choice.message.content or ""
@@ -444,6 +455,7 @@ class OpenAICompatibleProvider:
                 messages=messages,
                 **{_token_key: request.max_tokens},
                 stream=True,
+                **({"extra_body": _sb} if (_sb := getattr(self, "_extra_body", None)) else {}),
             )
             async for chunk in stream:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
@@ -486,6 +498,7 @@ class OpenAICompatibleProvider:
             "max_completion_tokens" if _use_ct else "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": True,
+            **({"extra_body": _sb} if (_sb := getattr(self, "_extra_body", None)) else {}),
         }
 
         full_text = ""
