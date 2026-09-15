@@ -1025,10 +1025,16 @@ class GoalService:
         # (non-dynamic-orchestration) path. Thread them through like the others.
         _enable_supervisor = bool(_agent_config.get("enable_supervisor", False))
         _enable_debate = bool(_agent_config.get("enable_debate", False))
+        # Wrap the resolved provider as role-tagged traced providers so every
+        # planner/executor/verifier LLM call emits a GenAI span (tokens/cost/
+        # latency/role) under the goal's trace — the Langfuse-style generations.
+        from app.observability.traced_provider import traced_role_providers
+
+        _traced_roles = traced_role_providers(provider)
         graph_services = {
-            "planner": provider,
-            "executor": provider,
-            "verifier": provider,
+            "planner": _traced_roles["planner"],
+            "executor": _traced_roles["executor"],
+            "verifier": _traced_roles["verifier"],
             "max_iterations": _max_iterations,
             "audit_log": audit_log,
             "cost_controller": cost_controller,

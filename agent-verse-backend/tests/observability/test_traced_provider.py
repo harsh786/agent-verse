@@ -14,7 +14,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import app.observability.genai as genai_mod
-from app.observability.traced_provider import TracedProvider
+from app.observability.traced_provider import (
+    TracedProvider,
+    provider_system_of,
+    traced_role_providers,
+)
 from app.providers.base import CompletionRequest, Message
 from app.providers.fake import FakeProvider
 
@@ -61,6 +65,39 @@ async def test_delegates_capability_methods(spans: InMemorySpanExporter) -> None
     # Non-wrapped methods delegate straight through to the inner provider.
     assert traced.supports_vision() is True
     assert traced.supports_tool_use() == inner.supports_tool_use()
+
+
+def test_provider_system_inference() -> None:
+    class AnthropicProvider:
+        pass
+
+    class OpenAICompatibleProvider:
+        def __init__(self, base_url: str) -> None:
+            self._base_url = base_url
+
+    assert provider_system_of(AnthropicProvider()) == "anthropic"
+    assert provider_system_of(FakeProvider()) == "fake"
+    assert provider_system_of(
+        OpenAICompatibleProvider("https://integrate.api.nvidia.com/v1")
+    ) == "nvidia"
+    assert provider_system_of(OpenAICompatibleProvider("https://api.openai.com/v1")) == "openai"
+    assert provider_system_of(OpenAICompatibleProvider("http://vllm.local:8000/v1")) == "vllm"
+
+
+async def test_default_role_used_when_metadata_absent(spans: InMemorySpanExporter) -> None:
+    traced = TracedProvider(FakeProvider(responses=["x"]), provider_system="fake",
+                            default_role="verifier")
+    await traced.complete(CompletionRequest(messages=[Message(role="user", content="q")],
+                                             model="m"))
+    assert dict(spans.get_finished_spans()[0].attributes or {})["agentverse.role"] == "verifier"
+
+
+def test_traced_role_providers_tags_three_roles() -> None:
+    wrapped = traced_role_providers(FakeProvider())
+    assert set(wrapped) == {"planner", "executor", "verifier"}
+    assert all(isinstance(p, TracedProvider) for p in wrapped.values())
+    assert wrapped["planner"]._default_role == "planner"
+    assert wrapped["executor"]._system == "fake"
 
 
 async def test_provider_error_is_recorded_and_reraised(spans: InMemorySpanExporter) -> None:
