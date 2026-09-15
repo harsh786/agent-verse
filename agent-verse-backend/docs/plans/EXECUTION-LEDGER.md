@@ -101,8 +101,13 @@ Broader regression: 6533 passed, 1 pre-existing unrelated fail (openai key gatin
 - connect-oauth skill (safe OAuth handoff) — needs the connector OAuth flow surface.
 
 ## Next action
-Await streaming/orphans/badges frontend agent → verify+commit. Then dispatch design-tokens
-(final P7 chunk). Then comprehensive status to user.
+Await design-token frontend agent (final P7 chunk) → verify+commit. Backend phase work
+COMPLETE except documented live-wiring follow-ups. Consolidated backend green: 368 passed
+(chat/identity/proactive/voice), main imports OK.
+
+## P5 command surface — COMPLETE
+goals, schedules, connectors(list+connect-oauth), docs, approvals, workflows, knowledge,
+model-switch, org-team. (connect_service returns only an OAuth URL — no secrets in chat.)
 
 ## Increment log (newest first)
 - P5 org-team skill. committed d396a6cb.
