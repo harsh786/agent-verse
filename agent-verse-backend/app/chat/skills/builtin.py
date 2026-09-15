@@ -32,6 +32,34 @@ def build_list_connected_services_skill(services_api: Any) -> ChatSkill:
     )
 
 
+def build_connect_service_skill(services_api: Any) -> ChatSkill:
+    async def handler(
+        tenant_id: str, name: str, url: str = "", scopes: list[str] | None = None
+    ) -> dict[str, Any]:
+        result = services_api.initiate_connection(tenant_id, name, url, scopes)
+        # Safety: only ever hand back the authorization URL for the user to open —
+        # never request, accept, or store credentials/secrets in chat.
+        return {
+            "service_id": result.get("service_id"),
+            "authorization_url": result.get("oauth_url"),
+            "next_step": "Open the authorization URL to grant access — do not share "
+            "any password or token in chat.",
+        }
+
+    return ChatSkill(
+        name="connect_service",
+        description="Start connecting an external service/connector; returns an OAuth "
+        "authorization URL for the user to open (never handles secrets in chat).",
+        handler=handler,
+        args={
+            "name": "the service to connect (e.g. Slack, Gmail)",
+            "url": "optional connector/base URL",
+            "scopes": "optional list of scopes to request",
+        },
+        scope="connectors:write",
+    )
+
+
 def build_submit_goal_skill(goal_service: Any) -> ChatSkill:
     async def handler(
         tenant_ctx: Any, goal: str, agent_id: str | None = None
@@ -319,6 +347,7 @@ def register_builtin_skills(
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
         registry.register(build_list_connected_services_skill(services_api))
+        registry.register(build_connect_service_skill(services_api))
     if goal_service is not None:
         registry.register(build_submit_goal_skill(goal_service))
     if schedule_store is not None:

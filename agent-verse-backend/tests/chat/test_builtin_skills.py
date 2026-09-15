@@ -91,7 +91,9 @@ async def test_register_wires_all_available() -> None:
         schedule_store=_FakeScheduleStore(),
     )
     names = {s.name for s in reg.list()}
-    assert names == {"list_connected_services", "submit_goal", "list_schedules"}
+    assert names == {
+        "list_connected_services", "connect_service", "submit_goal", "list_schedules"
+    }
 
 
 def test_build_registry_from_app_state_wires_present_services() -> None:
@@ -330,3 +332,21 @@ def test_build_org_mission_callables_none_without_factory() -> None:
     from app.chat.skills.builtin import _build_org_mission_callables
 
     assert _build_org_mission_callables(None) == (None, None)
+
+
+async def test_connect_service_skill_returns_oauth_url_not_secrets() -> None:
+    from app.chat.skills.builtin import build_connect_service_skill
+
+    class _API:
+        def initiate_connection(self, tenant_id, name, url, scopes):  # type: ignore[no-untyped-def]
+            return {"service_id": "svc1", "oauth_url": "https://x/oauth?id=svc1",
+                    "service": object()}
+
+    skill = build_connect_service_skill(_API())
+    out = await skill.handler(tenant_id="t1", name="Slack")
+    assert out["service_id"] == "svc1"
+    assert out["authorization_url"] == "https://x/oauth?id=svc1"
+    assert "password" in out["next_step"].lower()  # explicit no-secrets guidance
+    assert skill.scope == "connectors:write"
+    # No secret/credential field is ever returned.
+    assert not any(k in out for k in ("password", "token", "secret", "credential"))
