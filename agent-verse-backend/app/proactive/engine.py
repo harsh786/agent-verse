@@ -25,8 +25,9 @@ from app.proactive.signals import ProactiveSignal
 
 # principal_id -> preferences
 PreferencesProvider = Callable[[str], ProactivePreferences]
-# (principal_id, channel, message, proposal) -> awaitable
-DeliverFn = Callable[[str, str, str, ProactiveProposal], Awaitable[Any]]
+# (signal, proposal) -> awaitable — the callback has the full signal (tenant_id,
+# principal_id, channel, payload) so it can deliver into the right chat/channel.
+DeliverFn = Callable[[ProactiveSignal, ProactiveProposal], Awaitable[Any]]
 # audit sink: (event: dict) -> awaitable | None
 AuditFn = Callable[[dict[str, Any]], Any]
 Clock = Callable[[], datetime]
@@ -113,7 +114,7 @@ class ProactiveEngine:
         if not decision.allow:
             return ProactiveOutcome(False, decision.reason, proposal)
 
-        await self._deliver(signal.principal_id, signal.channel, proposal.message, proposal)
+        await self._deliver(signal, proposal)
         await self._record_sent(signal.principal_id, day)
         await self._write_audit(signal, proposal)
         return ProactiveOutcome(

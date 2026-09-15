@@ -783,6 +783,41 @@ class ChatService:
         job.updated_at = _now()
         return msg
 
+    async def deliver_proactive(
+        self,
+        *,
+        principal_id: str,
+        tenant_id: str,
+        message: str,
+        channel: str | None = None,
+        channel_user_id: str | None = None,
+    ) -> _Message | None:
+        """Deliver a proactive (agent-initiated) message into a principal's thread.
+
+        Posts an assistant message into the principal's existing conversation
+        (creating one if none is open yet) so a proactive nudge lands in the same
+        place the user already talks to the assistant, and pushes to the origin
+        channel when one is bound. Metadata marks it ``delivery=proactive`` so the UI
+        can badge it distinctly. Returns the delivered message (or None on failure).
+        """
+        session_id = self._principal_sessions.get(principal_id)
+        if session_id is None or await self.aget_session(session_id, tenant_id) is None:
+            title = f"Proactive · {channel or 'assistant'}"
+            session = await self.acreate_session(tenant_id, title=title)
+            session_id = session.id
+            self._principal_sessions[principal_id] = session_id
+        msg = await self.asave_message(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            role="assistant",
+            content=message,
+            metadata={"delivery": "proactive"},
+        )
+        if channel and self._channel_deliver is not None:
+            with contextlib.suppress(Exception):
+                await self._channel_deliver(channel, channel_user_id, message)
+        return msg
+
     async def fail_async_job(self, *, job_id: str, tenant_id: str, error: str) -> None:
         job = self._async_jobs.get(job_id)
         if job is None or job.tenant_id != tenant_id:

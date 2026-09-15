@@ -20,11 +20,10 @@ class _Recorder:
         self.delivered: list[dict[str, Any]] = []
         self.audited: list[dict[str, Any]] = []
 
-    async def deliver(self, principal_id: str, channel: str, message: str,
-                      proposal: ProactiveProposal) -> None:
+    async def deliver(self, signal: ProactiveSignal, proposal: ProactiveProposal) -> None:
         self.delivered.append(
-            {"principal_id": principal_id, "channel": channel, "message": message,
-             "action": proposal.action}
+            {"principal_id": signal.principal_id, "channel": signal.channel,
+             "message": proposal.message, "action": proposal.action}
         )
 
     async def audit(self, event: dict[str, Any]) -> None:

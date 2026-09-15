@@ -6,6 +6,7 @@ factory function stays slim.  Import paths mirror the originals exactly.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from fastapi import FastAPI
@@ -84,6 +85,35 @@ from app.chat.router import router as chat_router
 from app.chat.service import ChatService as _ChatService
 from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.org.router import router as org_router  # AI Organization OS
+from app.proactive.router import router as _proactive_router
+
+
+def _wire_proactive_engine(app: FastAPI) -> None:
+    """Construct the ProactiveEngine on app.state with chat-backed delivery + audit."""
+    from app.proactive.engine import ProactiveEngine
+
+    chat_service = app.state.chat_service
+
+    async def _deliver(signal: Any, proposal: Any) -> None:
+        await chat_service.deliver_proactive(
+            principal_id=signal.principal_id,
+            tenant_id=signal.tenant_id,
+            message=proposal.message,
+            channel=signal.channel,
+            channel_user_id=signal.payload.get("_channel_user_id"),
+        )
+
+    audit_log = getattr(app.state, "audit_log", None)
+
+    def _audit(event: dict[str, Any]) -> None:
+        if audit_log is None:
+            return
+        recorder = getattr(audit_log, "record", None) or getattr(audit_log, "log", None)
+        if callable(recorder):
+            with contextlib.suppress(Exception):
+                recorder(event)
+
+    app.state.proactive_engine = ProactiveEngine(deliver=_deliver, audit=_audit)
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
@@ -140,6 +170,11 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         identity_service=app.state.identity_service,
     )
     app.include_router(chat_router)
+
+    # Proactive-outreach engine (Phase 9): deliver approved outreach into the
+    # principal's chat thread (+ origin channel) and audit it as source=proactive.
+    _wire_proactive_engine(app)
+    app.include_router(_proactive_router)
     # Core
     app.include_router(system_router)
     app.include_router(tenants_router)
