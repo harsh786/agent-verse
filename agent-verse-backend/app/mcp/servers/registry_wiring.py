@@ -168,11 +168,11 @@ def get_builtin_server_configs() -> list[dict]:
         google_chat_server,
         google_cloud_storage_server,
         google_contacts_server,
-        google_maps_server,
         google_docs_server,
         # ── Google Workspace & Cloud (new) ────────────────────────────────────
         google_drive_server,
         google_forms_server,
+        google_maps_server,
         google_meet_server,
         google_my_business_server,
         google_photos_server,
@@ -1383,7 +1383,7 @@ def get_builtin_server_configs() -> list[dict]:
         {
             "server_id": "builtin-google-maps",
             "name": "Google Maps",
-            "description": "Google Maps — geocoding, directions, place search, and distance matrix",  # noqa: E501
+            "description": "Google Maps — geocoding, directions, places, distance matrix",
             "tool_definitions": google_maps_server.TOOL_DEFINITIONS,
             "handler": google_maps_server.call_tool,
             "requires_env": ["GOOGLE_MAPS_API_KEY"],
