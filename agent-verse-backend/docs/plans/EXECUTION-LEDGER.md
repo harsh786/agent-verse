@@ -59,9 +59,16 @@ P6 fill (cost event + audit) → P3 identity_links/principal → P11 personaliza
 P10 maps/ride → P8 voice→ChatService+telephony → P4 audio verify → P7 frontend (subagents, parallel).
 
 ## Next action
-Finish P1: rolling incremental summarization (exact-hit cache + delta merge) unit-tested on
-_summarize_history; extract_learnings_on_close. Then commit.
+Build Phase 11 personalization: PersonalProfile + store (in-memory now, durable later),
+standing-instruction extraction, context injection into run_qa, chat skill. Then commit.
+
+## Background agents in flight
+- Frontend rich-output rendering (agent-verse-frontend) — mount output components + code highlight/copy + reasoning block.
+- Maps/location + ride/booking MCP connectors (Phase 10).
 
 ## Increment log (newest first)
+- P5 skills: workflows + knowledge-base adapters. committed 2d8b118d. 223 passed.
+- P1 memory: rolling summarization cache + extract_learnings_on_close. committed f56ee003. 219 passed.
+- dispatched background agents: frontend rich-output, maps/ride connectors.
 - assessment agents returned full gap map (recorded above).
 - baseline green 215/3; ledger created; assessment agents dispatched for P7 + Part B.

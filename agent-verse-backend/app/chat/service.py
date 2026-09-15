@@ -167,6 +167,11 @@ class ChatService:
         #    summary with zero LLM calls when the older prefix is unchanged.
         self._summary_cache: dict[str, str] = {}
         self._rolling_summary: dict[str, tuple[int, str]] = {}
+        # Phase 11: per-principal personalization (tone / standing instructions /
+        # preferences), injected into every QA turn. In-memory now; durable later.
+        from app.chat.personalization import InMemoryPersonalizationStore
+
+        self._personalization: Any = InMemoryPersonalizationStore()
         # clarify round tracking per session
         self._clarify_rounds: dict[str, int] = {}
         # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
@@ -509,6 +514,7 @@ class ChatService:
         schedule_store: Any = None,
         skill_registry: Any = None,
         repository: Any = None,
+        personalization_store: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -534,6 +540,18 @@ class ChatService:
             self._skill_registry = skill_registry
         if repository is not None:
             self._repository = repository
+        if personalization_store is not None:
+            self._personalization = personalization_store
+
+    @staticmethod
+    def _principal_id(tenant_id: str, user_id: str | None = None) -> str:
+        """Resolve the personalization principal.
+
+        Defaults to the tenant; once the dual-mode identity layer lands, a
+        standalone individual's ``user_id`` scopes their personal profile within
+        the tenant (``tenant:user``).
+        """
+        return f"{tenant_id}:{user_id}" if user_id else tenant_id
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -920,6 +938,24 @@ class ChatService:
         latest_user = next(
             (m["content"] for m in reversed(history) if m.get("role") == "user"), ""
         )
+        # Phase 11 (learn): capture a durable standing instruction ("always ...",
+        # "from now on ...") stated in passing, into the principal's profile.
+        principal_id = self._principal_id(tenant_id)
+        with contextlib.suppress(Exception):
+            from app.chat.personalization import extract_standing_instruction
+
+            instruction = extract_standing_instruction(latest_user)
+            if instruction:
+                await self._personalization.add_standing_instruction(principal_id, instruction)
+        # Phase 11 (apply): inject the principal's personalization first so tone +
+        # standing instructions + preferences govern the whole reply.
+        with contextlib.suppress(Exception):
+            from app.chat.personalization import render_personalization_block
+
+            profile = await self._personalization.get(principal_id)
+            block = render_personalization_block(profile)
+            if block:
+                turns = self._ctx.inject_personalization(block, turns)
         # Phase 1 (write): persist an explicit "remember that ..." fact so future
         # conversations recall it.
         if self._memory_writer is not None:
