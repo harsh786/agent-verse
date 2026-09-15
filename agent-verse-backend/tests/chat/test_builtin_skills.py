@@ -92,3 +92,23 @@ async def test_register_wires_all_available() -> None:
     )
     names = {s.name for s in reg.list()}
     assert names == {"list_connected_services", "submit_goal", "list_schedules"}
+
+
+def test_build_registry_from_app_state_wires_present_services() -> None:
+    from app.chat.skills.builtin import build_registry_from_app_state
+
+    app_state = SimpleNamespace(
+        goal_service=_FakeGoalService(),
+        schedule_store=_FakeScheduleStore(),
+        # no services_api on app.state -> that skill is skipped
+    )
+    reg = build_registry_from_app_state(app_state)
+    names = {s.name for s in reg.list()}
+    assert names == {"submit_goal", "list_schedules"}
+
+
+def test_build_registry_from_app_state_empty_is_safe() -> None:
+    from app.chat.skills.builtin import build_registry_from_app_state
+
+    reg = build_registry_from_app_state(SimpleNamespace())
+    assert reg.list() == []

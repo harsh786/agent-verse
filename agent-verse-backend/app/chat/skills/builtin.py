@@ -80,3 +80,27 @@ def register_builtin_skills(
         registry.register(build_submit_goal_skill(goal_service))
     if schedule_store is not None:
         registry.register(build_list_schedules_skill(schedule_store))
+
+
+def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
+    """Assemble a SkillRegistry from whatever services are wired on app.state.
+
+    Unwraps a Starlette app to its .state, then registers each built-in skill
+    whose backing service is present. Missing services are simply skipped.
+    """
+    aps: Any = app_state
+    try:
+        from starlette.applications import Starlette
+
+        if isinstance(aps, Starlette):
+            aps = aps.state
+    except Exception:
+        pass
+    registry = SkillRegistry()
+    register_builtin_skills(
+        registry,
+        services_api=getattr(aps, "services_api", None),
+        goal_service=getattr(aps, "goal_service", None),
+        schedule_store=getattr(aps, "schedule_store", None),
+    )
+    return registry
