@@ -150,3 +150,39 @@ async def test_list_pending_approvals_skill() -> None:
          "risk": "high", "status": "pending"}
     ]
     assert skill.scope == "governance:read"
+
+
+async def test_resolve_approval_skill_approve_and_reject() -> None:
+    from app.chat.skills.builtin import build_resolve_approval_skill
+
+    class _Gateway:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        async def approve(self, request_id: str, *, approver: str, note: str, tenant_ctx: Any) -> bool:
+            self.calls.append(("approve", request_id))
+            return True
+
+        async def reject(self, request_id: str, *, approver: str, note: str, tenant_ctx: Any) -> bool:
+            self.calls.append(("reject", request_id))
+            return True
+
+    gw = _Gateway()
+    skill = build_resolve_approval_skill(gw)
+    ctx = SimpleNamespace(tenant_id="t1")
+    a = await skill.handler(tenant_ctx=ctx, request_id="r1", decision="approve")
+    r = await skill.handler(tenant_ctx=ctx, request_id="r2", decision="Reject", note="unsafe")
+    assert a == {"request_id": "r1", "decision": "approve", "ok": True}
+    assert r["decision"] == "reject" and r["ok"] is True
+    assert gw.calls == [("approve", "r1"), ("reject", "r2")]
+    assert skill.scope == "governance:write"
+
+
+async def test_resolve_approval_rejects_bad_decision() -> None:
+    import pytest
+
+    from app.chat.skills.builtin import build_resolve_approval_skill
+
+    skill = build_resolve_approval_skill(object())
+    with pytest.raises(ValueError, match="approve or reject"):
+        await skill.handler(tenant_ctx=SimpleNamespace(tenant_id="t"), request_id="r", decision="maybe")

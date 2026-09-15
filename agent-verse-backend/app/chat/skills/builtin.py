@@ -120,6 +120,36 @@ def build_list_pending_approvals_skill(hitl_gateway: Any) -> ChatSkill:
     )
 
 
+def build_resolve_approval_skill(hitl_gateway: Any) -> ChatSkill:
+    async def handler(
+        tenant_ctx: Any, request_id: str, decision: str, note: str = ""
+    ) -> dict[str, Any]:
+        d = decision.strip().lower()
+        if d in ("approve", "approved", "yes"):
+            ok = await hitl_gateway.approve(
+                request_id, approver="chat", note=note, tenant_ctx=tenant_ctx
+            )
+        elif d in ("reject", "rejected", "no", "deny", "denied"):
+            ok = await hitl_gateway.reject(
+                request_id, approver="chat", note=note, tenant_ctx=tenant_ctx
+            )
+        else:
+            raise ValueError(f"decision must be approve or reject, got {decision!r}")
+        return {"request_id": request_id, "decision": d, "ok": bool(ok)}
+
+    return ChatSkill(
+        name="resolve_approval",
+        description="Approve or reject a pending human-approval (HITL) request from chat.",
+        handler=handler,
+        args={
+            "request_id": "the approval request id",
+            "decision": "approve or reject",
+            "note": "optional note",
+        },
+        scope="governance:write",
+    )
+
+
 def register_builtin_skills(
     registry: SkillRegistry,
     *,
@@ -140,6 +170,7 @@ def register_builtin_skills(
         registry.register(build_generate_document_skill(artifact_store))
     if hitl_gateway is not None:
         registry.register(build_list_pending_approvals_skill(hitl_gateway))
+        registry.register(build_resolve_approval_skill(hitl_gateway))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
