@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     onprem_reranker_url: str = ""  # e.g. http://…:30083/v1/rerank
     onprem_reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
 
+    # --- NVIDIA NIM (cloud or self-hosted) -----------------------------------
+    # When an NVIDIA key is set, NVIDIA is the TOP model: it serves planning and is
+    # the fallback for every role. Combined with the on-prem cluster it joins the
+    # same model→endpoint router so NVIDIA + Qwen + Gemma are all selectable per task.
+    nvidia_api_key: str = ""
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "nvidia/llama-3.1-nemotron-70b-instruct"
+
     # --- Ollama local inference -----------------------------------------------
     ollama_base_url: str = ""  # e.g. http://localhost:11434
     ollama_default_model: str = "qwen3.8:latest"

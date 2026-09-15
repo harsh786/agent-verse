@@ -98,3 +98,42 @@ def test_disabled_onprem_is_a_noop() -> None:
     _apply_onprem_settings(s)
     assert s.default_llm_provider == "anthropic"  # unchanged
     assert build_onprem_provider(s) is None
+
+
+def test_hybrid_cluster_puts_nvidia_on_top_with_onprem() -> None:
+    from app.core.config import Settings
+    from app.providers.onprem import build_onprem_provider
+
+    s = Settings(
+        onprem_enabled=True, onprem_qwen_base_url="http://host:30080/v1",
+        onprem_gemma_base_url="http://host:30081/v1",
+        nvidia_api_key="nvapi-x", nvidia_model="nvidia/llama-3.1-nemotron-70b-instruct",
+    )
+    p = build_onprem_provider(s)
+    assert p is not None
+    assert p._agentverse_provider_type == "hybrid"
+    assert p._default_model == "nvidia/llama-3.1-nemotron-70b-instruct"  # NVIDIA top/fallback
+    assert set(p._endpoints) == {
+        "nvidia/llama-3.1-nemotron-70b-instruct", "Qwen/Qwen3.5-4B", "google/gemma-4-E2B",
+    }
+
+
+def test_nvidia_only_cluster_when_no_onprem() -> None:
+    from app.core.config import Settings
+    from app.providers.onprem import build_onprem_provider
+
+    s = Settings(nvidia_api_key="nvapi-x")
+    p = build_onprem_provider(s)
+    assert p is not None and p._agentverse_provider_type == "nvidia"
+
+
+def test_explicit_per_role_overrides_win_over_registry(monkeypatch) -> None:
+    from app.agent.model_router import ModelRouter
+
+    monkeypatch.setenv("DEFAULT_PLANNING_MODEL", "nvidia/nemotron")
+    monkeypatch.setenv("DEFAULT_EXECUTION_MODEL", "Qwen/Qwen3.5-4B")
+    monkeypatch.setenv("DEFAULT_VERIFICATION_MODEL", "google/gemma-4-E2B")
+    r = ModelRouter(provider_name="hybrid")
+    assert r.model_for("planning") == "nvidia/nemotron"
+    assert r.model_for("execution") == "Qwen/Qwen3.5-4B"
+    assert r.model_for("verification") == "google/gemma-4-E2B"

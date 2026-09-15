@@ -69,6 +69,23 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
         embedding_model="Qwen/Qwen3-Embedding-0.6B",
         fallback_model="Qwen/Qwen3.5-4B",
     ),
+    # NVIDIA cloud as the top model for every reasoning role + fallback.
+    "nvidia": ModelRouterConfig(
+        planning_model="nvidia/llama-3.1-nemotron-70b-instruct",
+        execution_model="nvidia/llama-3.1-nemotron-70b-instruct",
+        verification_model="nvidia/llama-3.1-nemotron-70b-instruct",
+        fallback_model="nvidia/llama-3.1-nemotron-70b-instruct",
+    ),
+    # Hybrid: NVIDIA (top) for planning + fallback, on-prem Qwen for execution,
+    # fast on-prem Gemma for verification, on-prem Qwen for embeddings. Per-role
+    # env overrides (DEFAULT_*_MODEL) refine this at boot for the exact model ids.
+    "hybrid": ModelRouterConfig(
+        planning_model="nvidia/llama-3.1-nemotron-70b-instruct",
+        execution_model="Qwen/Qwen3.5-4B",
+        verification_model="google/gemma-4-E2B",
+        embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        fallback_model="nvidia/llama-3.1-nemotron-70b-instruct",
+    ),
 }
 
 
@@ -143,6 +160,19 @@ class ModelRouter:
         configured candidate it falls back to the env/provider-profile resolution
         below — so behavior is unchanged until models are registered.
         """
+        # Explicit per-role operator intent wins over the cost-aware registry — so a
+        # hybrid deployment can pin NVIDIA to planning, Qwen to execution, Gemma to
+        # verification (the registry would otherwise pick the cheapest for every role).
+        _explicit_env = {
+            "planning": "DEFAULT_PLANNING_MODEL",
+            "execution": "DEFAULT_EXECUTION_MODEL",
+            "verification": "DEFAULT_VERIFICATION_MODEL",
+        }.get(task_type)
+        if _explicit_env:
+            _pinned = (os.getenv(_explicit_env) or "").strip()
+            if _pinned:
+                return _pinned
+
         if task_type in self._REGISTRY_TASKS:
             try:
                 from app.ai_router.selection import select_configured_model_id
