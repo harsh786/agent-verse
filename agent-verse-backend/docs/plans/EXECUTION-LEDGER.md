@@ -100,6 +100,8 @@ Broader regression: 6533 passed, 1 pre-existing unrelated fail (openai key gatin
 - proactive engine → a real signal source (calendar/email webhooks) + principal→session delivery.
 - connect-oauth skill (safe OAuth handoff) — needs the connector OAuth flow surface.
 
+## Status: Phase 7 COMPLETE (design tokens done). Backend phases complete except documented live-wiring follow-ups.
+
 ## Next action
 Await design-token frontend agent (final P7 chunk) → verify+commit. Backend phase work
 COMPLETE except documented live-wiring follow-ups. Consolidated backend green: 368 passed
