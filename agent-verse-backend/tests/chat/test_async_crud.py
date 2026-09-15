@@ -73,7 +73,8 @@ class _FakeRepoWithMessages(_FakeRepo):
         self._msgs: list[dict[str, Any]] = []
 
     async def save_message(self, *, message_id: str, session_id: str, tenant_id: str,
-                           role: str, content: str, intent: Any = None, goal_id: Any = None) -> None:
+                           role: str, content: str, intent: Any = None, goal_id: Any = None,
+                           metadata: Any = None) -> None:
         from datetime import UTC, datetime
         self._msgs.append({
             "id": message_id, "session_id": session_id, "tenant_id": tenant_id,

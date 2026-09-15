@@ -664,27 +664,31 @@ class ChatService:
         content: str,
         goal_id: str | None = None,
         intent: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> _Message:
         if self._repository is None:
             return self.save_message(
                 session_id=session_id, tenant_id=tenant_id, role=role,
-                content=content, goal_id=goal_id, intent=intent,
+                content=content, goal_id=goal_id, intent=intent, metadata=metadata,
             )
         message_id = _hex()
         await self._repository.save_message(
             message_id=message_id, session_id=session_id, tenant_id=tenant_id,
-            role=role, content=content, intent=intent, goal_id=goal_id,
+            role=role, content=content, intent=intent, goal_id=goal_id, metadata=metadata,
         )
         return _Message(
             id=message_id, session_id=session_id, tenant_id=tenant_id, role=role,
-            content=content, goal_id=goal_id, intent=intent,
+            content=content, goal_id=goal_id, intent=intent, metadata=metadata or {},
         )
 
-    async def alist_messages(self, session_id: str, tenant_id: str) -> list[_Message]:
+    async def alist_messages(
+        self, session_id: str, tenant_id: str, limit: int = 100
+    ) -> list[_Message]:
         if self._repository is None:
-            return self.list_messages(session_id, tenant_id)
+            return self.list_messages(session_id, tenant_id, limit=limit)
         rows = await self._repository.list_messages(session_id, tenant_id)
-        return [self._message_from_row(r) for r in rows]
+        msgs = [self._message_from_row(r) for r in rows]
+        return msgs[-limit:] if limit else msgs
 
     async def attach_file(
         self,
@@ -700,13 +704,13 @@ class ChatService:
         in the next turn's history (no run_qa/run_goal change needed). Returns None
         if the session doesn't exist.
         """
-        if self.get_session(session_id, tenant_id) is None:
+        if await self.aget_session(session_id, tenant_id) is None:
             return None
         from app.chat.attachments import format_attachment_context, parse_attachment
 
         parsed = await parse_attachment(content_bytes, filename)
         context = format_attachment_context(parsed)
-        return self.save_message(
+        return await self.asave_message(
             session_id=session_id,
             tenant_id=tenant_id,
             role="user",
@@ -788,13 +792,13 @@ class ChatService:
         from app.chat.events import ChatEventType, sse_event
         from app.providers.base import CompletionRequest, Message
 
-        session = self.get_session(session_id, tenant_id)
+        session = await self.aget_session(session_id, tenant_id)
         # Fetch a generous window so long sessions trigger summarization (the
         # default list_messages limit is small); ConversationContext then windows
         # and compresses it down to what actually enters the prompt.
         history = [
             {"role": m.role, "content": m.content}
-            for m in self.list_messages(session_id, tenant_id, limit=1000)
+            for m in await self.alist_messages(session_id, tenant_id, limit=1000)
         ]
         system_prompt = session.system_prompt if session else None
         if len(history) > self._ctx.COMPRESS_THRESHOLD:
@@ -849,7 +853,7 @@ class ChatService:
             parts.append(text)
             yield sse_event(ChatEventType.TOKEN, token=text, message_id=message_id)
         answer = "".join(parts).strip()
-        self.save_message(
+        await self.asave_message(
             session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
         )
         yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)

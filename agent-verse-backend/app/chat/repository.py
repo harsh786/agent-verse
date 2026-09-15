@@ -123,13 +123,17 @@ class PostgresChatRepository:
         content: str,
         intent: str | None = None,
         goal_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
+        import json
+
         async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             await s.execute(
                 text(
                     "INSERT INTO chat_messages "
-                    "(id, session_id, tenant_id, role, content, intent, goal_id) "
-                    "VALUES (:id, :sid, :t, :role, :content, :intent, :gid)"
+                    "(id, session_id, tenant_id, role, content, intent, goal_id, metadata) "
+                    "VALUES (:id, :sid, :t, :role, :content, :intent, :gid, "
+                    "CAST(:meta AS jsonb))"
                 ),
                 {
                     "id": message_id,
@@ -139,6 +143,7 @@ class PostgresChatRepository:
                     "content": content,
                     "intent": intent,
                     "gid": goal_id,
+                    "meta": json.dumps(metadata or {}),
                 },
             )
             # Touch the parent session so list ordering reflects recent activity.
