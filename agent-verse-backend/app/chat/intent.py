@@ -400,7 +400,9 @@ class IntentRouter:
             if not m:
                 return 9, 0
             hour, minute, ampm = int(m.group(1)), 0, m.group(2)
-        if ampm:
+        # Only apply am/pm to a 12-hour clock value; a 24-hour hour (>12) already
+        # encodes the period, so ignore a contradictory suffix ("18.02pm" → 18:02).
+        if ampm and 1 <= hour <= 12:
             ampm = ampm.lower()
             if ampm == "pm" and hour != 12:
                 hour += 12
