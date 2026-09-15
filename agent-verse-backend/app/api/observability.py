@@ -671,3 +671,33 @@ async def get_timeseries(
         pass  # Return empty arrays on any error
 
     return result
+
+
+@router.get("/goals/{goal_id}/trace")
+async def get_goal_trace(goal_id: str, request: Request) -> dict[str, Any]:
+    """Per-goal execution timeline for the Run Inspector.
+
+    Returns the goal's captured steps — LangGraph nodes, LLM generations
+    (model/tokens/cost/latency/role) and tool calls — each carrying its
+    trace_id/span_id for deep-linking into Jaeger/Langfuse, plus a cost/token
+    summary. Tenant-scoped (a tenant only sees its own goals' traces).
+    """
+    tenant = _require_tenant(request)
+    from app.observability.tracing import get_run_timeline_store
+
+    entries = get_run_timeline_store().get(tenant.tenant_id, goal_id)
+    total_cost = sum(float(e.get("cost_usd") or 0.0) for e in entries)
+    total_in = sum(int(e.get("input_tokens") or 0) for e in entries)
+    total_out = sum(int(e.get("output_tokens") or 0) for e in entries)
+    generations = sum(1 for e in entries if str(e.get("name", "")).startswith("gen_ai"))
+    return {
+        "goal_id": goal_id,
+        "entries": entries,
+        "summary": {
+            "steps": len(entries),
+            "generations": generations,
+            "total_cost_usd": round(total_cost, 6),
+            "total_input_tokens": total_in,
+            "total_output_tokens": total_out,
+        },
+    }
