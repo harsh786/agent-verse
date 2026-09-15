@@ -380,6 +380,53 @@ class ChatService:
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
+    async def adispatch(
+        self,
+        session_id: str,
+        tenant_id: str,
+        user_message: str,
+    ) -> dict[str, Any]:
+        """Async, repository-backed dispatch (persistence swap stage 3c).
+
+        Mirrors ``dispatch`` but reads history and persists the user message via
+        the async a* methods, so a chat turn is durable. Intent is classified
+        before the save, so the stored message carries it.
+        """
+        if await self.aget_session(session_id, tenant_id) is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in await self.alist_messages(session_id, tenant_id, limit=1000)
+        ]
+        clarify_round = self._clarify_rounds.get(session_id, 0)
+        intent = self._router.classify(
+            user_message, history=history, clarify_round=clarify_round
+        )
+        user_msg = await self.asave_message(
+            session_id=session_id, tenant_id=tenant_id, role="user",
+            content=user_message, intent=intent.value,
+        )
+        result: dict[str, Any] = {
+            "intent": intent.value,
+            "message_id": user_msg.id,
+            "session_id": session_id,
+            "clarify_request": None,
+            "schedule_confirmation": None,
+        }
+        if intent == Intent.CLARIFY:
+            self._clarify_rounds[session_id] = clarify_round + 1
+            result["clarify_request"] = self._router.generate_clarifying_question(
+                user_message, history=history, round=clarify_round + 1
+            )
+        elif intent == Intent.SCHEDULE:
+            result["schedule_confirmation"] = self._router.generate_schedule_confirmation(
+                user_message, history=history
+            )
+        else:
+            self._clarify_rounds.pop(session_id, None)
+        return result
+
     def dispatch(
         self,
         session_id: str,

@@ -284,7 +284,7 @@ async def send_message(
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    result = svc.dispatch(session_id, tenant.tenant_id, body.content)
+    result = await svc.adispatch(session_id, tenant.tenant_id, body.content)
     return result
 
 
