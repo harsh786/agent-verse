@@ -70,6 +70,28 @@ def test_processor_captures_goal_scoped_gen_ai_span() -> None:
     assert len(e["trace_id"]) == 32 and len(e["span_id"]) == 16
 
 
+def test_on_start_stamps_goal_scope_from_baggage() -> None:
+    # A node/tool span that doesn't self-carry goal_id gets stamped from the run
+    # baggage at start, so it is captured on end (nodes + tools, not just gen_ai).
+    from app.observability.run_timeline import RunTimelineSpanProcessor as _P
+    from app.observability.trace_propagation import run_context
+
+    class _Writable:
+        def __init__(self) -> None:
+            self.attributes: dict = {}
+
+        def set_attribute(self, k: str, v: object) -> None:
+            self.attributes[k] = v
+
+    store = InMemoryRunTimelineStore()
+    proc = _P(store)
+    span = _Writable()
+    with run_context(goal_id="g9", tenant_id="acme"):
+        proc.on_start(span)  # reads current baggage
+    assert span.attributes["agentverse.goal_id"] == "g9"
+    assert span.attributes["agentverse.tenant_id"] == "acme"
+
+
 def test_processor_ignores_spans_without_goal_id() -> None:
     store = InMemoryRunTimelineStore()
     proc = RunTimelineSpanProcessor(store)

@@ -65,7 +65,25 @@ class RunTimelineSpanProcessor(SpanProcessor):
     # -- SpanProcessor interface ----------------------------------------------
 
     def on_start(self, span: Any, parent_context: Any = None) -> None:
-        return None
+        # Stamp goal/tenant from the run baggage at START (synchronous, in the
+        # creating task's context) so EVERY goal-scoped span — LangGraph nodes and
+        # tool calls, not just gen_ai generations that self-stamp — is captured on
+        # end. Doing this here (not on_end) keeps it correct under BatchSpanProcessor,
+        # whose on_end runs on a background thread without the goal's baggage.
+        with contextlib.suppress(Exception):
+            from opentelemetry import baggage as _bag
+
+            from app.observability.trace_propagation import (
+                BAGGAGE_GOAL_ID,
+                BAGGAGE_TENANT_ID,
+            )
+
+            gid = _bag.get_baggage(BAGGAGE_GOAL_ID, parent_context)
+            if gid and not (getattr(span, "attributes", None) or {}).get("agentverse.goal_id"):
+                span.set_attribute("agentverse.goal_id", str(gid))
+                tid = _bag.get_baggage(BAGGAGE_TENANT_ID, parent_context)
+                if tid:
+                    span.set_attribute("agentverse.tenant_id", str(tid))
 
     def on_end(self, span: Any) -> None:
         with contextlib.suppress(Exception):
