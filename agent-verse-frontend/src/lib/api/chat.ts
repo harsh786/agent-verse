@@ -29,6 +29,11 @@ function getApiKey(): string {
 }
 
 function headers(): HeadersInit {
+  // SSO parity: send a Bearer token under Keycloak SSO, else the API key.
+  const { ssoMode, accessToken } = useAuthStore.getState();
+  if (ssoMode && accessToken) {
+    return { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
+  }
   return {
     'Content-Type': 'application/json',
     'X-API-Key': getApiKey(),
