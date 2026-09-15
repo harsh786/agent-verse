@@ -126,3 +126,27 @@ async def test_generate_document_skill_stores_and_returns_ref() -> None:
     stored = store.get(out["artifact_id"], "t1")
     assert stored is not None and stored.content[:4] == b"%PDF"
     assert skill.scope == "documents:write"
+
+
+async def test_list_pending_approvals_skill() -> None:
+    from app.chat.skills.builtin import build_list_pending_approvals_skill
+
+    class _Req:
+        def __init__(self, rid: str) -> None:
+            self.request_id = rid
+            self.goal_id = "g1"
+            self.action = "delete prod index"
+            self.risk_level = "high"
+            self.status = "pending"
+
+    class _Gateway:
+        def list_pending(self, *, tenant_ctx: Any, goal_id: Any = None) -> list[Any]:
+            return [_Req("req-1")]
+
+    skill = build_list_pending_approvals_skill(_Gateway())
+    out = await skill.handler(tenant_ctx=SimpleNamespace(tenant_id="t1"))
+    assert out == [
+        {"request_id": "req-1", "goal_id": "g1", "action": "delete prod index",
+         "risk": "high", "status": "pending"}
+    ]
+    assert skill.scope == "governance:read"

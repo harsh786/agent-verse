@@ -97,6 +97,29 @@ def build_generate_document_skill(artifact_store: Any) -> ChatSkill:
     )
 
 
+def build_list_pending_approvals_skill(hitl_gateway: Any) -> ChatSkill:
+    async def handler(tenant_ctx: Any, goal_id: str | None = None) -> list[dict[str, Any]]:
+        reqs = hitl_gateway.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
+        return [
+            {
+                "request_id": getattr(r, "request_id", None) or getattr(r, "id", None),
+                "goal_id": getattr(r, "goal_id", None),
+                "action": getattr(r, "action", None) or getattr(r, "step", None),
+                "risk": getattr(r, "risk_level", None),
+                "status": str(getattr(r, "status", "")),
+            }
+            for r in reqs
+        ]
+
+    return ChatSkill(
+        name="list_pending_approvals",
+        description="List pending human-approval (HITL) requests awaiting a decision.",
+        handler=handler,
+        args={"goal_id": "optional goal id to filter by"},
+        scope="governance:read",
+    )
+
+
 def register_builtin_skills(
     registry: SkillRegistry,
     *,
@@ -104,6 +127,7 @@ def register_builtin_skills(
     goal_service: Any | None = None,
     schedule_store: Any | None = None,
     artifact_store: Any | None = None,
+    hitl_gateway: Any | None = None,
 ) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
@@ -114,6 +138,8 @@ def register_builtin_skills(
         registry.register(build_list_schedules_skill(schedule_store))
     if artifact_store is not None:
         registry.register(build_generate_document_skill(artifact_store))
+    if hitl_gateway is not None:
+        registry.register(build_list_pending_approvals_skill(hitl_gateway))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
@@ -137,5 +163,6 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
         goal_service=getattr(aps, "goal_service", None),
         schedule_store=getattr(aps, "schedule_store", None),
         artifact_store=getattr(aps, "chat_artifact_store", None),
+        hitl_gateway=getattr(aps, "hitl_gateway", None),
     )
     return registry
