@@ -3,7 +3,7 @@
  */
 
 import { useState, type JSX } from 'react';
-import { Plus, Pin, Folder, Trash2, Search, MessageSquare } from 'lucide-react';
+import { Plus, Pin, Folder, Trash2, Search, MessageSquare, Pencil } from 'lucide-react';
 import type { ChatSession, ChatFolder } from './types/chat.types';
 
 interface Props {
@@ -14,6 +14,7 @@ interface Props {
   onNewSession: () => void;
   onDeleteSession: (id: string) => void;
   onPinSession: (id: string, pinned: boolean) => void;
+  onRenameSession?: (id: string, title: string) => void;
   isLoading?: boolean;
 }
 
@@ -25,6 +26,7 @@ export function ChatSidebar({
   onNewSession,
   onDeleteSession,
   onPinSession,
+  onRenameSession,
   isLoading,
 }: Props): JSX.Element {
   const [search, setSearch] = useState('');
@@ -39,6 +41,14 @@ export function ChatSidebar({
   function SessionItem({ session }: { session: ChatSession }) {
     const isActive = session.id === activeSessionId;
     const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState(session.title);
+    const commitRename = () => {
+      const title = draft.trim();
+      setEditing(false);
+      if (title && title !== session.title) onRenameSession?.(session.id, title);
+      else setDraft(session.title);
+    };
     return (
       <div
         className={[
@@ -55,9 +65,42 @@ export function ChatSidebar({
         data-testid={`session-${session.id}`}
       >
         <MessageSquare className="w-4 h-4 shrink-0 opacity-60" />
-        <span className="flex-1 text-sm truncate">{session.title}</span>
+        {editing ? (
+          <input
+            className="flex-1 min-w-0 text-sm bg-transparent border-b border-indigo-500 outline-none text-[#F0F6FF]"
+            value={draft}
+            autoFocus
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === 'Enter') commitRename();
+              else if (e.key === 'Escape') {
+                setDraft(session.title);
+                setEditing(false);
+              }
+            }}
+            aria-label="Rename session"
+          />
+        ) : (
+          <span className="flex-1 text-sm truncate">{session.title}</span>
+        )}
 
         <div className="hidden group-hover:flex items-center gap-1">
+          {onRenameSession && !editing && (
+            <button
+              className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+              onClick={(e) => {
+                e.stopPropagation();
+                setDraft(session.title);
+                setEditing(true);
+              }}
+              aria-label="Rename session"
+            >
+              <Pencil className="w-3 h-3 text-[#A0B4CC]" />
+            </button>
+          )}
           <button
             className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
             onClick={(e) => {

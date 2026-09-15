@@ -17,7 +17,7 @@ import { ChatThread } from './ChatThread';
 import { ChatInput } from './ChatInput';
 import { ChatHITLCard } from './ChatHITLCard';
 import { ChatErrorBanner } from './ChatErrorBanner';
-import { useSessions, useCreateSession, useDeleteSession, usePinSession, useFolders } from './hooks/useChatSession';
+import { useSessions, useCreateSession, useDeleteSession, usePinSession, useRenameSession, useFolders } from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
@@ -38,6 +38,7 @@ export default function ChatPage() {
   const createSession = useCreateSession();
   const deleteSession = useDeleteSession();
   const pinSession = usePinSession();
+  const renameSession = useRenameSession();
 
   // Messages
   const { data: dbMessages = [] } = useChatHistory(sessionId);
@@ -231,6 +232,7 @@ export default function ChatPage() {
         onNewSession={handleNewSession}
         onDeleteSession={handleDeleteSession}
         onPinSession={handlePinSession}
+        onRenameSession={(id, title) => void renameSession.mutateAsync({ sessionId: id, title })}
         isLoading={sessionsLoading}
       />
 

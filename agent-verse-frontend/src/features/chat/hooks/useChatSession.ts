@@ -64,6 +64,15 @@ export function usePinSession() {
   });
 }
 
+export function useRenameSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
+      chatApi.updateSession(sessionId, { title }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: SESSION_KEYS.list }),
+  });
+}
+
 export function useFolders() {
   return useQuery({
     queryKey: ['chat', 'folders'],
