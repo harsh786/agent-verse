@@ -150,8 +150,14 @@ def _apply_onprem_settings(settings: Settings) -> None:
         _os.environ.setdefault("DEFAULT_EXECUTION_MODEL", settings.onprem_qwen_model)
         _os.environ.setdefault("DEFAULT_VERIFICATION_MODEL", settings.onprem_gemma_model)
 
-    # Embedding + reranker come from the on-prem cluster (only where not already set).
-    if onprem_on and settings.onprem_embedding_base_url and not settings.embedding_base_url:
+    # Embeddings: NVIDIA embedding model wins when set (dim must match the DB),
+    # else the on-prem embedding endpoint. Only fill when not already configured.
+    if nvidia_on and settings.nvidia_embed_model.strip() and not settings.embedding_base_url:
+        settings.embedding_base_url = settings.nvidia_base_url
+        settings.embedding_model = settings.nvidia_embed_model
+        settings.embedding_api_key = settings.nvidia_api_key
+        settings.embedding_dim = settings.nvidia_embed_dim
+    elif onprem_on and settings.onprem_embedding_base_url and not settings.embedding_base_url:
         settings.embedding_base_url = settings.onprem_embedding_base_url
         settings.embedding_model = settings.embedding_model or settings.onprem_embedding_model
         settings.embedding_api_key = settings.embedding_api_key or settings.onprem_api_key

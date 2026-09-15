@@ -97,7 +97,8 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
     endpoints: dict[str, OpenAICompatibleProvider] = {}
     default_model = ""
 
-    # NVIDIA first → the top/default model + fallback.
+    # NVIDIA is the top model (planning + fallback). It is the chat *default* only
+    # when there is no local Qwen to keep interactive chat fast.
     if nvidia_on:
         endpoints[settings.nvidia_model] = OpenAICompatibleProvider(
             api_key=settings.nvidia_api_key,
@@ -112,19 +113,29 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
         endpoints[settings.onprem_qwen_model] = OpenAICompatibleProvider(
             api_key=api_key, base_url=qwen_url, default_model=settings.onprem_qwen_model
         )
-        default_model = default_model or settings.onprem_qwen_model
+        # Fast local Qwen fronts interactive chat by default (NVIDIA stays top-tier
+        # for planning/fallback via the router), unless explicitly disabled.
+        if settings.onprem_qwen_is_chat_default or not default_model:
+            default_model = settings.onprem_qwen_model
         gemma_url = settings.onprem_gemma_base_url.strip()
         if gemma_url:
             endpoints[settings.onprem_gemma_model] = OpenAICompatibleProvider(
                 api_key=api_key, base_url=gemma_url, default_model=settings.onprem_gemma_model
             )
-        embed_url = settings.onprem_embedding_base_url.strip()
-        if embed_url:
-            embed_provider = OpenAICompatibleProvider(
-                api_key=api_key, base_url=embed_url,
-                default_model=settings.onprem_embedding_model,
-                embed_model=settings.onprem_embedding_model,
-            )
+
+    # Embeddings: prefer the NVIDIA embedding model when configured (dim must match
+    # the DB), else the on-prem embedding endpoint.
+    if nvidia_on and settings.nvidia_embed_model.strip():
+        embed_provider = OpenAICompatibleProvider(
+            api_key=settings.nvidia_api_key, base_url=settings.nvidia_base_url,
+            default_model=settings.nvidia_embed_model, embed_model=settings.nvidia_embed_model,
+        )
+    elif onprem_on and settings.onprem_embedding_base_url.strip():
+        embed_provider = OpenAICompatibleProvider(
+            api_key=api_key, base_url=settings.onprem_embedding_base_url.strip(),
+            default_model=settings.onprem_embedding_model,
+            embed_model=settings.onprem_embedding_model,
+        )
 
     provider_type = "hybrid" if (nvidia_on and onprem_on) else ("nvidia" if nvidia_on else "onprem")
     return MultiEndpointLLMProvider(

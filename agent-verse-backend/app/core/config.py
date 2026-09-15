@@ -118,6 +118,13 @@ class Settings(BaseSettings):
     nvidia_api_key: str = ""
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "nvidia/llama-3.1-nemotron-70b-instruct"
+    # Optional NVIDIA embedding model (used as the embedder when set); dim must
+    # match the pgvector column dim (nvidia/nemotron-3-embed-1b → 2048).
+    nvidia_embed_model: str = ""
+    nvidia_embed_dim: int = 2048
+    # Keep fast interactive chat/execution on the local Qwen while NVIDIA handles
+    # planning + fallback (top-tier reasoning). Off → NVIDIA is also the chat default.
+    onprem_qwen_is_chat_default: bool = True
 
     # --- Ollama local inference -----------------------------------------------
     ollama_base_url: str = ""  # e.g. http://localhost:11434
