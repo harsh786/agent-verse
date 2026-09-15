@@ -633,6 +633,18 @@ services:
   # ── Langfuse — LLM-native observability plane (traces/generations/sessions) ──
   # Fed by the OTel collector's traces/langfuse pipeline. Self-hosted v3 stack:
   # its own Postgres + ClickHouse (analytics) + reuses this compose's redis + minio.
+  # One-shot: create the S3 bucket Langfuse uploads events/media to (v3 does NOT
+  # auto-create it — the worker/web 500 with NoSuchBucket without this).
+  minio-init:
+    image: quay.io/minio/mc:latest
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        mc alias set m http://minio:9000 minioadmin minioadmin &&
+        mc mb --ignore-existing m/${LANGFUSE_S3_BUCKET:-langfuse}
+
   langfuse-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -674,6 +686,8 @@ services:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     environment: &langfuse-env
       DATABASE_URL: postgresql://langfuse:langfuse@langfuse-postgres:5432/langfuse
       SALT: ${LANGFUSE_SALT:-devsalt-change-me}
