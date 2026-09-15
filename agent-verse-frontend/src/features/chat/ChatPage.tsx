@@ -16,6 +16,7 @@ import { ChatSidebar } from './ChatSidebar';
 import { ChatThread } from './ChatThread';
 import { ChatInput } from './ChatInput';
 import { ChatHITLCard } from './ChatHITLCard';
+import { ChatErrorBanner } from './ChatErrorBanner';
 import { useSessions, useCreateSession, useDeleteSession, usePinSession, useFolders } from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
@@ -82,7 +83,7 @@ export default function ChatPage() {
     [sessionId, invalidate],
   );
 
-  const { isStreaming, tokens, currentEvent, startStream, stopStream } = useChatStream(
+  const { isStreaming, tokens, currentEvent, startStream, stopStream, error: streamError } = useChatStream(
     sessionId,
     onDone,
   );
@@ -271,6 +272,15 @@ export default function ChatPage() {
                 approvalToken={hitlEvent.approval_token}
                 onApprove={handleHITLApprove}
                 onReject={handleHITLReject}
+              />
+            )}
+            {streamError && !isStreaming && (
+              <ChatErrorBanner
+                message={streamError}
+                onRetry={() => {
+                  const lastUser = [...allMessages].reverse().find((m) => m.role === 'user');
+                  if (lastUser) void handleSend(lastUser.content);
+                }}
               />
             )}
             <ChatInput
