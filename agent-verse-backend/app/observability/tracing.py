@@ -136,18 +136,32 @@ def instrument_libraries() -> None:
 
 
 def instrument_app(app: Any) -> None:
-    """Instrument a FastAPI app for server-side request spans, then the libraries.
+    """Instrument the app's libraries, and (opt-in) FastAPI server spans.
 
-    Fixes the long-standing gap where tracing.py claimed to instrument FastAPI but
-    never did. Fail-safe: a bad app or missing dep must not break app startup.
+    FastAPI ASGI instrumentation is OPT-IN via ``otel_instrument_fastapi``
+    (default False): opentelemetry-instrumentation-fastapi's per-request
+    span-detail resolver crashes on this app's nested/included router structure
+    (``'_IncludedRouter' object has no attribute 'path'``), which 500s EVERY
+    request — including the CORS preflight, breaking the browser with a "network
+    error". The library instrumentors (HTTPX/DB/Redis/Celery) and our own manual
+    spans (goal.run, gen_ai, …) are unaffected and always on, so the trace tree
+    stays rich without the fragile server-span layer. Fail-safe throughout.
     """
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from app.core.config import get_settings
 
-        if not getattr(app, "_is_instrumented_by_opentelemetry", False):
-            FastAPIInstrumentor.instrument_app(app)
-    except Exception as exc:
-        get_logger(__name__).warning("fastapi_instrumentation_failed", error=str(exc)[:120])
+        fastapi_enabled = bool(getattr(get_settings(), "otel_instrument_fastapi", False))
+    except Exception:
+        fastapi_enabled = False
+
+    if fastapi_enabled:
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            if not getattr(app, "_is_instrumented_by_opentelemetry", False):
+                FastAPIInstrumentor.instrument_app(app)
+        except Exception as exc:
+            get_logger(__name__).warning("fastapi_instrumentation_failed", error=str(exc)[:120])
     instrument_libraries()
 
 

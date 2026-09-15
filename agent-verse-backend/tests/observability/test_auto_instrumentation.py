@@ -6,15 +6,31 @@ now actually applied, idempotently and fail-safe.
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 
 from app.observability import tracing
 
 
-def test_instrument_app_marks_fastapi_instrumented() -> None:
+def test_fastapi_instrumentation_is_off_by_default() -> None:
+    # OPT-IN: the FastAPI ASGI instrumentation is fragile on this app's routers
+    # (crashes the CORS preflight), so instrument_app must NOT wire it by default.
     app = FastAPI()
     tracing.instrument_app(app)
-    # FastAPIInstrumentor stamps this attribute when it wires the ASGI middleware.
+    assert getattr(app, "_is_instrumented_by_opentelemetry", False) is False
+
+
+def test_instrument_app_wires_fastapi_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.core.config as config_mod
+
+    original = config_mod.get_settings
+    monkeypatch.setattr(
+        config_mod,
+        "get_settings",
+        lambda: original().model_copy(update={"otel_instrument_fastapi": True}),
+    )
+    app = FastAPI()
+    tracing.instrument_app(app)
     assert getattr(app, "_is_instrumented_by_opentelemetry", False) is True
 
 

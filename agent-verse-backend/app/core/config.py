@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # --- observability ---
     service_name: str = "agentverse-backend"
     otel_exporter_otlp_endpoint: str | None = None
+    # Opt-in: FastAPI ASGI server-span instrumentation. Off by default because
+    # opentelemetry-instrumentation-fastapi crashes per-request on this app's
+    # nested/included router structure (500s the CORS preflight). Library
+    # instrumentors + manual spans stay on regardless.
+    otel_instrument_fastapi: bool = False
+    # Attach LLM prompt/completion content to gen_ai spans (redacted). Off by default.
+    otel_capture_llm_content: bool = False
     metrics_enabled: bool = True
 
     # --- LLM (default provider) ---
