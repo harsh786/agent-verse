@@ -242,6 +242,41 @@ def build_ingest_knowledge_skill(knowledge_store: Any) -> ChatSkill:
     )
 
 
+def build_launch_org_mission_skill(mission_launcher: Any) -> ChatSkill:
+    async def handler(
+        tenant_id: str, objective: str, title: str | None = None, org_id: str | None = None
+    ) -> dict[str, Any]:
+        return await mission_launcher(
+            tenant_id=tenant_id, objective=objective, title=title, org_id=org_id
+        )
+
+    return ChatSkill(
+        name="launch_org_mission",
+        description="Launch an AI org-team mission (e.g. 'have the growth team draft a Q3 "
+        "launch plan'); returns the mission id + status.",
+        handler=handler,
+        args={
+            "objective": "what the org team should accomplish",
+            "title": "optional short mission title",
+            "org_id": "optional org id (defaults to the tenant's org)",
+        },
+        scope="org:write",
+    )
+
+
+def build_org_mission_status_skill(mission_reader: Any) -> ChatSkill:
+    async def handler(tenant_id: str, mission_id: str) -> dict[str, Any]:
+        return await mission_reader(tenant_id=tenant_id, mission_id=mission_id)
+
+    return ChatSkill(
+        name="org_mission_status",
+        description="Report an org-team mission's current status.",
+        handler=handler,
+        args={"mission_id": "the mission id to check"},
+        scope="org:read",
+    )
+
+
 def build_set_conversation_model_skill(chat_service: Any) -> ChatSkill:
     async def handler(session_id: str, tenant_id: str, model: str) -> dict[str, Any]:
         updated = await chat_service.aupdate_session(
@@ -278,6 +313,8 @@ def register_builtin_skills(
     workflow_runner: Any | None = None,
     knowledge_store: Any | None = None,
     chat_service: Any | None = None,
+    org_mission_launcher: Any | None = None,
+    org_mission_reader: Any | None = None,
 ) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
@@ -300,6 +337,10 @@ def register_builtin_skills(
         registry.register(build_ingest_knowledge_skill(knowledge_store))
     if chat_service is not None:
         registry.register(build_set_conversation_model_skill(chat_service))
+    if org_mission_launcher is not None:
+        registry.register(build_launch_org_mission_skill(org_mission_launcher))
+    if org_mission_reader is not None:
+        registry.register(build_org_mission_status_skill(org_mission_reader))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
@@ -316,6 +357,9 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
             aps = aps.state
     except Exception:
         pass
+    org_mission_launcher, org_mission_reader = _build_org_mission_callables(
+        getattr(aps, "db_session_factory", None)
+    )
     registry = SkillRegistry()
     register_builtin_skills(
         registry,
@@ -328,5 +372,69 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
         workflow_runner=getattr(aps, "workflow_runner", None),
         knowledge_store=getattr(aps, "knowledge_store", None),
         chat_service=getattr(aps, "chat_service", None),
+        org_mission_launcher=org_mission_launcher,
+        org_mission_reader=org_mission_reader,
     )
     return registry
+
+
+def _build_org_mission_callables(session_factory: Any) -> tuple[Any, Any]:
+    """Build DB-backed org-mission launcher/reader from the app's session factory.
+
+    Mirrors the org router's ``get_org_service`` pattern (session + RLS +
+    ``OrgService``). Returns (launcher, reader), or (None, None) when no DB session
+    factory is available so the skills are simply not registered.
+    """
+    if session_factory is None:
+        return None, None
+
+    async def launcher(
+        *, tenant_id: str, objective: str, title: str | None = None, org_id: str | None = None
+    ) -> dict[str, Any]:
+        from app.db.rls import sqlalchemy_rls_context
+        from app.org.service import OrgService
+
+        async with (
+            session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session=session, tenant_id=tenant_id)
+            resolved_org = org_id
+            if not resolved_org:
+                orgs = await svc.list_organizations(limit=1)
+                if not orgs:
+                    raise ValueError("no organization exists for this tenant")
+                resolved_org = str(orgs[0].id)
+            mission = await svc.create_mission(
+                org_id=resolved_org,
+                title=title or objective[:60],
+                objective=objective,
+                source="chat",
+            )
+            return {
+                "mission_id": str(mission.id),
+                "status": str(mission.status),
+                "org_id": resolved_org,
+            }
+
+    async def reader(*, tenant_id: str, mission_id: str) -> dict[str, Any]:
+        from app.db.rls import sqlalchemy_rls_context
+        from app.org.service import OrgService
+
+        async with (
+            session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            svc = OrgService(session=session, tenant_id=tenant_id)
+            mission = await svc.get_mission(mission_id)
+            if mission is None:
+                return {"mission_id": mission_id, "status": "not_found"}
+            return {
+                "mission_id": str(mission.id),
+                "status": str(mission.status),
+                "title": getattr(mission, "title", None),
+            }
+
+    return launcher, reader

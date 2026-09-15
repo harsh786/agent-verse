@@ -294,3 +294,39 @@ async def test_set_conversation_model_skill_updates_session() -> None:
     assert out == {"session_id": "s1", "preferred_model": "claude-opus-5", "ok": True}
     assert chat.calls == [("s1", "t1", {"preferred_model": "claude-opus-5"})]
     assert skill.scope == "models:write"
+
+
+async def test_launch_org_mission_skill_calls_launcher() -> None:
+    from app.chat.skills.builtin import build_launch_org_mission_skill
+
+    calls: list[dict[str, Any]] = []
+
+    async def _launcher(*, tenant_id: str, objective: str, title: Any, org_id: Any) -> dict:
+        calls.append({"tenant_id": tenant_id, "objective": objective,
+                      "title": title, "org_id": org_id})
+        return {"mission_id": "m1", "status": "active", "org_id": "o1"}
+
+    skill = build_launch_org_mission_skill(_launcher)
+    out = await skill.handler(tenant_id="t1", objective="draft Q3 plan")
+    assert out == {"mission_id": "m1", "status": "active", "org_id": "o1"}
+    assert calls == [{"tenant_id": "t1", "objective": "draft Q3 plan",
+                      "title": None, "org_id": None}]
+    assert skill.scope == "org:write"
+
+
+async def test_org_mission_status_skill_calls_reader() -> None:
+    from app.chat.skills.builtin import build_org_mission_status_skill
+
+    async def _reader(*, tenant_id: str, mission_id: str) -> dict:
+        return {"mission_id": mission_id, "status": "completed", "title": "Q3"}
+
+    skill = build_org_mission_status_skill(_reader)
+    out = await skill.handler(tenant_id="t1", mission_id="m1")
+    assert out["status"] == "completed" and out["title"] == "Q3"
+    assert skill.scope == "org:read"
+
+
+def test_build_org_mission_callables_none_without_factory() -> None:
+    from app.chat.skills.builtin import _build_org_mission_callables
+
+    assert _build_org_mission_callables(None) == (None, None)
