@@ -14,6 +14,36 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     pass
 
+
+def _re_search(pattern: str, text: str) -> re.Match[str] | None:
+    """Case-insensitive search helper."""
+    return re.search(pattern, text, re.I)
+
+
+# Month name/abbrev → number (includes the common "sept" abbreviation).
+_MONTHS: dict[str, int] = {}
+_MONTH_NAMES: dict[int, str] = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
+for _i, (_full, _abbr) in enumerate(
+    [
+        ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+        ("may", "may"), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+        ("september", "sep"), ("october", "oct"), ("november", "nov"), ("december", "dec"),
+    ],
+    start=1,
+):
+    _MONTHS[_full] = _i
+    _MONTHS[_abbr] = _i
+_MONTHS["sept"] = 9  # common alt abbreviation
+
+_DOW: dict[str, int] = {
+    "sunday": 0, "monday": 1, "tuesday": 2, "wednesday": 3,
+    "thursday": 4, "friday": 5, "saturday": 6,
+}
+_DOW_NAMES: dict[int, str] = {v: k.capitalize() for k, v in _DOW.items()}
+
 # ── Intent enum ───────────────────────────────────────────────────────────────
 
 
@@ -328,49 +358,75 @@ class IntentRouter:
         message: str,
         history: list[dict[str, str]] | None = None,
     ) -> ScheduleConfirmation:
-        """Parse a natural-language schedule expression and return a confirmation."""
-        import re as _re
+        """Parse a natural-language schedule expression and return a confirmation.
 
-        cron = "0 9 * * *"  # sensible default: daily at 9 AM
-        human = "every day at 9 AM"
+        Handles time with ``:`` or ``.`` minutes and am/pm ("6.11pm" → 18:11),
+        a specific date ("15 sept", "September 20th" → a one-time run on that date),
+        a day-of-week ("every Monday"), and hourly/weekly shortcuts.
+        """
+        hour, minute = self._extract_time(message)
+        day, month = self._extract_date(message)
+        dow = self._extract_dow(message)
 
-        m = _re.search(r"every\s+(\w+)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", message, _re.I)
-        if m:
-            day_word, hour_str, minute_str, ampm = m.groups()
-            hour = int(hour_str)
-            minute = int(minute_str or "0")
-            if ampm and ampm.lower() == "pm" and hour != 12:
-                hour += 12
-            day_map = {
-                "monday": 1,
-                "tuesday": 2,
-                "wednesday": 3,
-                "thursday": 4,
-                "friday": 5,
-                "saturday": 6,
-                "sunday": 0,
-                "day": "*",
-                "morning": "*",
-            }
-            dow = day_map.get(day_word.lower(), "*")
+        if _re_search(r"\bhourly\b", message):
+            return ScheduleConfirmation(message, "0 * * * *", "every hour")
+        if day and month:
+            cron = f"{minute} {hour} {day} {month} *"
+            human = f"on {_MONTH_NAMES[month]} {day} at {hour:02d}:{minute:02d}"
+        elif dow is not None:
             cron = f"{minute} {hour} * * {dow}"
-            human = f"every {day_word} at {hour:02d}:{minute:02d}"
-
-        # Hourly shortcut
-        if _re.search(r"\bhourly\b", message, _re.I):
-            cron = "0 * * * *"
-            human = "every hour"
-
-        # Weekly
-        if _re.search(r"\bweekly\b", message, _re.I):
-            cron = "0 9 * * 1"
-            human = "every Monday at 9 AM"
+            human = f"every {_DOW_NAMES[dow]} at {hour:02d}:{minute:02d}"
+        elif _re_search(r"\bweekly\b", message):
+            cron = f"{minute} {hour} * * 1"
+            human = f"every Monday at {hour:02d}:{minute:02d}"
+        else:
+            cron = f"{minute} {hour} * * *"
+            human = f"every day at {hour:02d}:{minute:02d}"
 
         return ScheduleConfirmation(
-            goal_text=message,
-            cron_expression=cron,
-            human_schedule=human,
+            goal_text=message, cron_expression=cron, human_schedule=human
         )
+
+    @staticmethod
+    def _extract_time(message: str) -> tuple[int, int]:
+        """Return (hour_24, minute); defaults to 09:00 when no time is present."""
+        # H:MM or H.MM with optional am/pm  (6.11pm, 09:30, 6:11 pm)
+        m = _re_search(r"\b(\d{1,2})[:.](\d{2})\s*([ap]m)?\b", message)
+        if m:
+            hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
+        else:
+            # bare hour with am/pm  (6pm, 9 am)
+            m = _re_search(r"\b(\d{1,2})\s*([ap]m)\b", message)
+            if not m:
+                return 9, 0
+            hour, minute, ampm = int(m.group(1)), 0, m.group(2)
+        if ampm:
+            ampm = ampm.lower()
+            if ampm == "pm" and hour != 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+        return (hour % 24), (minute % 60)
+
+    @staticmethod
+    def _extract_date(message: str) -> tuple[int | None, int | None]:
+        """Return (day, month) for a specific date like '15 sept' / 'September 20th'."""
+        month_alt = "|".join(_MONTHS)
+        m = _re_search(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({month_alt})\b", message)
+        if m:
+            return int(m.group(1)), _MONTHS[m.group(2).lower()]
+        m = _re_search(rf"\b({month_alt})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", message)
+        if m:
+            return int(m.group(2)), _MONTHS[m.group(1).lower()]
+        return None, None
+
+    @staticmethod
+    def _extract_dow(message: str) -> int | None:
+        """Return cron day-of-week (0=Sun..6=Sat) for 'every Monday', else None."""
+        m = _re_search(
+            r"\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b", message
+        )
+        return _DOW.get(m.group(1).lower()) if m else None
 
     # ── Model availability ────────────────────────────────────────────────────
 

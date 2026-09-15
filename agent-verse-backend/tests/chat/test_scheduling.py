@@ -57,3 +57,30 @@ async def test_create_schedule_without_deps_is_explicit_error() -> None:
     assert svc.can_schedule is False
     with pytest.raises(RuntimeError, match="scheduling"):
         await svc.create_schedule(tenant_ctx=_ctx(), message="every day at 9")
+
+
+def test_schedule_parses_dot_minutes_and_specific_date() -> None:
+    from app.chat.intent import IntentRouter
+
+    r = IntentRouter()
+    c = r.generate_schedule_confirmation("remind me at 6.11pm on 15 sept to call")
+    assert c.cron_expression == "11 18 15 9 *"
+    assert c.human_schedule == "on Sep 15 at 18:11"
+
+
+def test_schedule_parses_pm_minutes_and_month_first_date() -> None:
+    from app.chat.intent import IntentRouter
+
+    r = IntentRouter()
+    c = r.generate_schedule_confirmation("send a report at 6:11 pm on September 20th")
+    assert c.cron_expression == "11 18 20 9 *"
+    assert c.human_schedule == "on Sep 20 at 18:11"
+
+
+def test_schedule_day_of_week_keeps_minutes() -> None:
+    from app.chat.intent import IntentRouter
+
+    r = IntentRouter()
+    c = r.generate_schedule_confirmation("every Tuesday at 14:30 summarize")
+    assert c.cron_expression == "30 14 * * 2"
+    assert c.human_schedule == "every Tuesday at 14:30"
