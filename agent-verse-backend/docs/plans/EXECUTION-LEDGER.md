@@ -58,9 +58,15 @@ the frontend repo (independent). Order: P1 finish → P2 verify/fill → P5 fill
 P6 fill (cost event + audit) → P3 identity_links/principal → P11 personalization → P9 proactive engine →
 P10 maps/ride → P8 voice→ChatService+telephony → P4 audio verify → P7 frontend (subagents, parallel).
 
+## Phase progress snapshot
+P0 ✅ P1 ✅ P5 ✅(workflows+KB added; models/org-team still open) P9 ✅ P10 ✅ P11 ✅.
+Open backend: dual-mode identity/principal (P3 core), P2 verify async/deliver-later, P6 polish,
+P8 voice→ChatService+telephony, P5 remaining (models/org-team/connect-oauth skills), durability
+migrations for personalization+identity. Frontend P7: agent in flight.
+
 ## Next action
-Build Phase 11 personalization: PersonalProfile + store (in-memory now, durable later),
-standing-instruction extraction, context injection into run_qa, chat skill. Then commit.
+Build dual-mode identity: app/identity/ (Principal + IdentityLink + IdentityService,
+in-memory now / repo-ready), tests. Then wire into channel-session resolution + migration.
 
 ## Background agents in flight
 - Frontend rich-output rendering (agent-verse-frontend) — mount output components + code highlight/copy + reasoning block.
