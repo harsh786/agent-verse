@@ -21,18 +21,19 @@ point of this effort is to remove the current facade.
 | 2 — Async & delivery-back | ✅ done | SCHEDULE→triggers, goal delivery-back, acknowledge-now/deliver-later jobs + origin-channel push |
 | 3 — Channel unification & identity | ✅ done | unified `principal` + `identity_links` (durable), cross-channel session continuity |
 | 4 — Multi-format media I/O | ✅ done | doc gen (pdf/docx/xlsx/…)+artifact store+attachment parse; audio in/out via voice bridge |
-| 5 — Anything-via-chat skills | ✅ done | goals/schedules/connectors/docs/approvals/workflows/knowledge/model-switch/org-team; connect-OAuth = follow-up |
+| 5 — Anything-via-chat skills | ✅ done | goals/schedules/connectors + connect-OAuth (URL handoff, no secrets)/docs/approvals/workflows/knowledge/model-switch/org-team |
 | 6 — Governance in chat | ✅ mostly | canonical HITL/guardrail events + in-chat approve/reject + source=chat binding; dedicated cost-event polish = follow-up |
 | 7 — World-class frontend | ✅ done | rich output, transparency+reasoning, composer (regen/edit/attach/slash/@/voice), streaming reconnect+dedupe, all 16 orphans mounted, schedule+channel badges, design-token light/dark pass (semantic HSL tokens) |
-| 8 — Voice / phone | ✅ core | STT→ChatService→TTS bridge + telephony adapter (inbound normalize, TwiML turn-taking, outbound place_call); live webhook+Twilio client = follow-up |
-| 9 — Proactive outreach | ✅ done | signal bus→planner→consent/quiet-hours/rate gate→multi-channel delivery + audit source=proactive; sanitized+durable-counter hardened; live signal source = follow-up |
+| 8 — Voice / phone | ✅ done | STT→ChatService→TTS bridge + telephony adapter + **live inbound webhook** `POST /v1/gateway/voice/incoming` (tenant-by-called-number registry, TwiML turn-taking); outbound place_call is tested (needs a configured Twilio client to dial for real) |
+| 9 — Proactive outreach | ✅ done | signal bus→planner→consent/quiet-hours/rate gate→delivery + audit source=proactive; sanitized+durable-counter hardened; **live signal API** `POST /v1/proactive/signals` delivers approved outreach into the principal's chat thread |
 | 10 — Personal connectors | ✅ done | email/calendar/SMS/contacts (pre-existing) + maps/location + ride/booking MCP servers |
 | 11 — Personalization | ✅ done | per-principal tone/standing-instructions/preferences, learned+injected each turn, durable |
 
-**Explicit remaining follow-ups** (tested units, not yet reachable from a live entrypoint): live voice
-telephony webhook + real Twilio client; proactive engine bound to a real signal producer; connect-OAuth
-skill; the Phase-7 design-token pass (in progress). Everything else above ships with unit tests (and
-real-Postgres integration tests for the durable stores).
+**All 11 phases are implemented, tested, and wired to live entrypoints.** The only remaining
+pieces are operational configuration, not code: provisioning a real Twilio account + client so
+outbound `place_call` dials for real (inbound calls are live), and pointing real signal producers
+(calendar/email webhooks) at `POST /v1/proactive/signals`. Everything ships with unit tests, plus
+e2e tests for the live webhooks and real-Postgres integration tests for the durable stores.
 
 ---
 
