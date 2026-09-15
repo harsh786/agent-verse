@@ -10,6 +10,7 @@ This is the core orchestrator that:
 from __future__ import annotations
 
 import contextlib
+import hashlib as _hashlib
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -158,6 +159,14 @@ class ChatService:
         self._usage: dict[str, _Usage] = {}
         self._router = IntentRouter()
         self._ctx = ConversationContext()
+        # Phase 1: summarization caches.
+        #  - _summary_cache: one-shot summaries keyed by a content hash (whole-session
+        #    distillation / no rolling context).
+        #  - _rolling_summary: per-session (covered_message_count, summary_text) so a
+        #    long session summarizes only the *delta* each turn and returns the stored
+        #    summary with zero LLM calls when the older prefix is unchanged.
+        self._summary_cache: dict[str, str] = {}
+        self._rolling_summary: dict[str, tuple[int, str]] = {}
         # clarify round tracking per session
         self._clarify_rounds: dict[str, int] = {}
         # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
@@ -899,7 +908,7 @@ class ChatService:
             # keep only the recent window verbatim (replaces the static placeholder).
             old = history[: -self._ctx.MAX_TURNS]
             recent = history[-self._ctx.MAX_TURNS :]
-            summary = await self._summarize_history(old)
+            summary = await self._summarize_history(old, session_id=session_id)
             turns = self._ctx.build_for_qa(recent, session_system_prompt=system_prompt)
             if summary:
                 turns = [
@@ -951,10 +960,52 @@ class ChatService:
         )
         yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
 
-    async def _summarize_history(self, messages: list[dict[str, Any]]) -> str:
-        """LLM-summarize an older slice of a long conversation (Phase 1)."""
+    async def _summarize_history(
+        self, messages: list[dict[str, Any]], *, session_id: str | None = None
+    ) -> str:
+        """LLM-summarize an older slice of a long conversation (Phase 1), cached.
+
+        When ``session_id`` is given, summarization is **rolling/incremental**: the
+        per-session ``(covered_count, summary)`` is kept, so an unchanged older
+        prefix returns the stored summary with **zero** LLM calls, and a grown
+        prefix summarizes only the *delta* and merges it into the running summary
+        (bounded per-turn cost instead of re-summarizing everything each turn).
+        Without a session it falls back to a content-hash one-shot cache.
+        """
         if not messages or self._answer_generator is None:
             return ""
+
+        if session_id is not None:
+            prev = self._rolling_summary.get(session_id)
+            if prev is not None:
+                prev_count, prev_summary = prev
+                if prev_count == len(messages):
+                    return prev_summary  # exact cache hit — nothing new to summarize
+                if 0 < prev_count < len(messages):
+                    merged = await self._merge_summary(prev_summary, messages[prev_count:])
+                    if merged:
+                        self._rolling_summary[session_id] = (len(messages), merged)
+                    return merged or prev_summary
+            summary = await self._llm_summarize(messages)
+            if summary:
+                self._rolling_summary[session_id] = (len(messages), summary)
+            return summary
+
+        # One-shot (whole-session distillation): content-hash cache.
+        convo = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+        cache_key = _hashlib.sha256(convo.encode("utf-8")).hexdigest()
+        cached = self._summary_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        summary = await self._llm_summarize(messages)
+        if summary:
+            if len(self._summary_cache) >= 512:
+                self._summary_cache.pop(next(iter(self._summary_cache)), None)
+            self._summary_cache[cache_key] = summary
+        return summary
+
+    async def _llm_summarize(self, messages: list[dict[str, Any]]) -> str:
+        """Raw LLM summarization of a message slice (no caching)."""
         from app.providers.base import CompletionRequest, Message
 
         convo = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
@@ -978,6 +1029,60 @@ class ChatService:
             return (getattr(resp, "content", "") or "").strip()
         except Exception:
             return ""
+
+    async def _merge_summary(self, prior: str, new_messages: list[dict[str, Any]]) -> str:
+        """Update a running summary with only the newer messages (incremental)."""
+        from app.providers.base import CompletionRequest, Message
+
+        delta = "\n".join(f"{m['role']}: {m['content']}" for m in new_messages)
+        request = CompletionRequest(
+            messages=[
+                Message(
+                    role="system",
+                    content=(
+                        "You maintain a running summary of an earlier conversation. Update it "
+                        "to incorporate the NEW messages, staying 3-6 sentences. Preserve key "
+                        "facts, decisions, names, numbers and open threads."
+                    ),
+                ),
+                Message(
+                    role="user",
+                    content=f"Running summary so far:\n{prior}\n\nNew messages:\n{delta[:8000]}",
+                ),
+            ],
+            model="",
+            max_tokens=300,
+            temperature=0.0,
+        )
+        try:
+            resp = await self._answer_generator.complete(request)
+            return (getattr(resp, "content", "") or "").strip()
+        except Exception:
+            return ""
+
+    async def extract_learnings_on_close(self, session_id: str, tenant_id: str) -> int:
+        """On session close / idle, distill the conversation into durable memory.
+
+        Summarizes the whole session and writes it as a long-term learning via the
+        wired ``memory_writer`` so a future conversation recalls what happened here.
+        No-op (returns 0) when no writer is wired or there is nothing to learn.
+        Returns the number of learnings written.
+        """
+        if self._memory_writer is None:
+            return 0
+        history = [
+            {"role": m.role, "content": m.content}
+            for m in await self.alist_messages(session_id, tenant_id, limit=1000)
+        ]
+        if not history:
+            return 0
+        summary = await self._summarize_history(history)
+        if not summary:
+            return 0
+        with contextlib.suppress(Exception):
+            await self._memory_writer(summary, tenant_id)
+            return 1
+        return 0
 
     def handle_channel_message(
         self,

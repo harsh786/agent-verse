@@ -61,3 +61,57 @@ async def test_short_session_is_not_summarized() -> None:
     await _collect(svc.run_qa(session_id=session.id, tenant_id="t1", message_id="m", user_message="hi"))
     # Only the answer call — no summarization.
     assert len(provider.requests) == 1
+
+
+async def test_rolling_summary_exact_hit_avoids_llm_call() -> None:
+    # Same slice summarized twice for one session → exactly one LLM call (cache hit).
+    provider = _Provider()
+    svc = ChatService(answer_generator=provider)
+    old = [{"role": "user", "content": f"m{i}"} for i in range(60)]
+    s1 = await svc._summarize_history(old, session_id="sess")
+    s2 = await svc._summarize_history(old, session_id="sess")
+    assert s1 == s2
+    assert len(provider.requests) == 1  # second call served from the rolling cache
+
+
+async def test_rolling_summary_incremental_only_summarizes_delta() -> None:
+    # Growing the slice by a few messages summarizes only the DELTA (a merge call),
+    # never re-feeding the whole prefix again.
+    provider = _Provider()
+    svc = ChatService(answer_generator=provider)
+    old = [{"role": "user", "content": f"old-{i}"} for i in range(60)]
+    await svc._summarize_history(old, session_id="sess")
+    grown = [*old, {"role": "user", "content": "brand-new-delta-msg"}]
+    await svc._summarize_history(grown, session_id="sess")
+    assert len(provider.requests) == 2  # one initial + one incremental merge
+    merge_req = provider.requests[-1]
+    joined = " ".join(str(m.content) for m in merge_req.messages)
+    assert "brand-new-delta-msg" in joined  # the new message is in the merge input
+    assert "old-3" not in joined  # the old prefix is NOT re-sent
+
+
+async def test_extract_learnings_on_close_writes_durable_memory() -> None:
+    written: list[str] = []
+
+    async def _writer(fact: str, tenant_id: str) -> None:
+        written.append(fact)
+
+    provider = _Provider()
+    svc = ChatService(answer_generator=provider, memory_writer=_writer)
+    session = svc.create_session("t1")
+    for i in range(6):
+        svc.save_message(
+            session_id=session.id, tenant_id="t1",
+            role="user" if i % 2 == 0 else "assistant", content=f"we decided thing {i}",
+        )
+    n = await svc.extract_learnings_on_close(session.id, "t1")
+    assert n == 1
+    assert written and "SUMMARY" in written[0].upper()
+
+
+async def test_extract_learnings_noop_without_writer_or_history() -> None:
+    provider = _Provider()
+    svc = ChatService(answer_generator=provider)  # no memory_writer
+    session = svc.create_session("t1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="hi")
+    assert await svc.extract_learnings_on_close(session.id, "t1") == 0
