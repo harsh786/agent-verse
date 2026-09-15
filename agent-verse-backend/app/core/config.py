@@ -93,6 +93,24 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     voyage_api_key: str = ""
 
+    # --- On-prem model cluster (self-hosted vLLM, OpenAI-compatible) ----------
+    # A LAN cluster serving several models on separate ports, routed per purpose by
+    # the model router: a capable model for planning/execution and a small/fast one
+    # for verification, plus dedicated embedding + rerank services. When enabled the
+    # app resolves a model→endpoint dispatching provider and auto-wires the embedder
+    # and hosted reranker to the cluster (unless those are explicitly set elsewhere).
+    onprem_enabled: bool = False
+    onprem_api_key: str = "EMPTY"  # vLLM ignores auth; the OpenAI client needs non-empty
+    onprem_qwen_base_url: str = ""  # reasoning/planning, e.g. http://192.168.63.104:30080/v1
+    onprem_qwen_model: str = "Qwen/Qwen3.5-4B"
+    onprem_gemma_base_url: str = ""  # fast/cheap verification, e.g. http://…:30081/v1
+    onprem_gemma_model: str = "google/gemma-4-E2B"
+    onprem_embedding_base_url: str = ""  # e.g. http://…:30082/v1
+    onprem_embedding_model: str = "Qwen/Qwen3-Embedding-0.6B"
+    onprem_embedding_dim: int = 1024  # Qwen3-Embedding-0.6B → 1024-d
+    onprem_reranker_url: str = ""  # e.g. http://…:30083/v1/rerank
+    onprem_reranker_model: str = "Qwen/Qwen3-Reranker-0.6B"
+
     # --- Ollama local inference -----------------------------------------------
     ollama_base_url: str = ""  # e.g. http://localhost:11434
     ollama_default_model: str = "qwen3.8:latest"

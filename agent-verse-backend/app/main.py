@@ -116,6 +116,30 @@ from app.triggers.store import ScheduleStore
 logger = get_logger(__name__)
 
 
+def _apply_onprem_settings(settings: Settings) -> None:
+    """Backfill embedding + hosted-reranker settings from the on-prem cluster.
+
+    When the on-prem cluster is enabled, its embedding endpoint and reranker feed
+    the *existing* embedder + hosted-reranker wiring (only where not already set),
+    and the default model provider is switched to it — so enabling on-prem is a
+    single flag, no duplicate wiring.
+    """
+    if not (settings.onprem_enabled and settings.onprem_qwen_base_url.strip()):
+        return
+    settings.default_llm_provider = "onprem"
+    if not settings.default_model:
+        settings.default_model = settings.onprem_qwen_model
+    if settings.onprem_embedding_base_url and not settings.embedding_base_url:
+        settings.embedding_base_url = settings.onprem_embedding_base_url
+        settings.embedding_model = settings.embedding_model or settings.onprem_embedding_model
+        settings.embedding_api_key = settings.embedding_api_key or settings.onprem_api_key
+        settings.embedding_dim = settings.onprem_embedding_dim
+    if settings.onprem_reranker_url and not settings.rag_hosted_reranker_url:
+        settings.rag_hosted_reranker_url = settings.onprem_reranker_url
+        settings.rag_hosted_reranker_model = settings.onprem_reranker_model
+        settings.rag_hosted_reranker_allow_internal = True  # trusted LAN endpoint
+
+
 def _resolve_provider_for_app(settings: Settings) -> Any:
     """Resolve a real LLM provider from environment, or FakeProvider as last resort.
 
@@ -125,7 +149,20 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
     """
     import os
 
+    # On-prem vLLM cluster takes precedence when enabled: a model→endpoint
+    # dispatching provider (Qwen for reasoning, Gemma for fast, Qwen embeddings).
+    from app.providers.onprem import build_onprem_provider
     from app.providers.registry import resolve_provider
+
+    _onprem = build_onprem_provider(settings)
+    if _onprem is not None:
+        logger.info(
+            "onprem_provider_active",
+            qwen=settings.onprem_qwen_base_url,
+            gemma=settings.onprem_gemma_base_url,
+            embedding=settings.onprem_embedding_base_url,
+        )
+        return _onprem
 
     _app_provider = resolve_provider()
 
@@ -461,6 +498,7 @@ def create_app(
     mcp_registry: MCPRegistry | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    _apply_onprem_settings(settings)
     configure_logging(level=settings.log_level, json_logs=settings.is_production)
 
     # Allow env var to enable manage_pools when uvicorn calls create_app() with no args
@@ -483,11 +521,22 @@ def create_app(
 
     _permission_matrix = build_default_permission_matrix()
     _agent_store = AgentStore()
+    # On-prem vLLM cluster wins when enabled (model→endpoint dispatching provider).
+    from app.providers.onprem import build_onprem_provider
+
+    _onprem_provider = build_onprem_provider(settings)
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
         from app.providers.registry import resolve_provider as _resolve_provider_registry
 
-        _app_provider = _resolve_provider_registry()
+        _app_provider = _onprem_provider or _resolve_provider_registry()
+        if _onprem_provider is not None:
+            logger.info(
+                "onprem_provider_active",
+                qwen=settings.onprem_qwen_base_url,
+                gemma=settings.onprem_gemma_base_url,
+                embedding=settings.onprem_embedding_base_url,
+            )
         # Production safety guard: refuse FakeProvider in production
         if isinstance(_app_provider, FakeProvider):
             import os as _os

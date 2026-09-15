@@ -59,6 +59,16 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
         verification_model="llama3.2",
         fallback_model="llama3.2",
     ),
+    # Self-hosted vLLM cluster: capable Qwen for planning/execution, small/fast
+    # Gemma for verification, dedicated Qwen embedding. (Model names match the
+    # config defaults; override via the env model overrides if you serve others.)
+    "onprem": ModelRouterConfig(
+        planning_model="Qwen/Qwen3.5-4B",
+        execution_model="Qwen/Qwen3.5-4B",
+        verification_model="google/gemma-4-E2B",
+        embedding_model="Qwen/Qwen3-Embedding-0.6B",
+        fallback_model="Qwen/Qwen3.5-4B",
+    ),
 }
 
 
