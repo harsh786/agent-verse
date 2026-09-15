@@ -72,9 +72,38 @@ P11 ✅ (durable migration pending).
 Open: P2 verify async deliver-later; P6 polish; P8 voice→ChatService+telephony; wire new services
 into boot (identity/proactive); durability migrations (personalization, identity).
 
+## Phase progress snapshot (v3)
+P0 ✅ | P1 ✅ | P2 ✅ (acknowledge-now/deliver-later + channel push) | P3 ✅ (+durable identity_links)
+P4 ✅ (docs/artifacts/attachments pre-existing; audio verify pending) | P5 ✅ (goals/schedules/
+connectors/docs/approvals/workflows/KB/model-switch; org-team + connect-oauth deferred — need
+per-request DB session/org resolution, not a thin adapter) | P6 🟡 (events+HITL+mapping done;
+cost-event/source=chat-audit polish deferred, low value — nothing emits a goal-bus cost event) |
+P7 🟡 (rich-output ✅; composer agent in flight; streaming-robustness/design-tokens/remaining-
+orphans/badges pending) | P8 🟡 (agent in flight) | P9 ✅ (+hardening) | P10 ✅ | P11 ✅ (+durable).
+Durability: migration 0131 (personalization+identity) ✅ verified on real Postgres; wired at boot.
+
+## Background agents in flight
+- Composer (frontend): regenerate/inline-edit/attach/slash/@/voice.
+- Voice→ChatService + telephony (Phase 8 backend).
+
 ## Next action
-Wire IdentityService into register_routers so cross-channel continuity is live in prod
-(personalization already defaults in-memory). Then continue P7 composer / P2 / P8.
+Broader regression run (services/chat/identity/proactive/mcp). Then integrate the two
+agents' output when they land. Remaining: P7 streaming/tokens/orphans, P8 finish, org-team skill.
+
+## Increment log (newest first)
+- P5 model-switch skill. committed b91db246.
+- durable personalization+identity (mig 0131 + repos + boot). committed 0d04db22. 3 pg integration pass.
+- P2 acknowledge-now/deliver-later. committed feed7216. 237 passed.
+- identity boot wiring. committed 92b3f29e. 262 passed.
+- P7-fe rich output. committed 55019f6f (68 vitest).
+- proactive security hardening. committed 6bf8a54a.
+- P3 cross-channel continuity. committed 98595922.
+- identity foundation. committed bb794a37.
+- P9 proactive engine. committed 8269125a.
+- P10 maps+ride. committed 43a0414b.
+- P11 personalization. committed cd50c91a.
+- P5 workflows+KB. committed 2d8b118d.
+- P1 memory. committed f56ee003.
 
 ## Increment log (newest first)
 - P7-fe: rich output rendering + reasoning + artifacts + code highlight. committed 55019f6f (68 vitest).
