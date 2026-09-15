@@ -85,6 +85,79 @@ _THINK_PROSE = re.compile(
 )
 
 
+_REASON_START = re.compile(
+    r"^\s*(<think>|thinking\s+process\s*:|reasoning\s*:|let me think|chain[- ]of[- ]thought\s*:)",
+    re.IGNORECASE,
+)
+_ANSWER_DELIM = re.compile(r"\n\s*\n|final answer\s*:|(?:^|\n)\s*answer\s*:", re.IGNORECASE)
+
+
+async def _split_reasoning_stream(source: Any) -> Any:
+    """Split a model stream into ('reasoning', chunk) and ('answer', chunk) parts.
+
+    Detects a leading ``<think>…</think>`` block or a "Thinking Process:"/"Reasoning:"
+    prose preamble and routes it to the reasoning channel; everything after (the real
+    answer) goes to the answer channel. Buffers only the small head needed to decide,
+    then streams the rest — so the clean answer still streams live.
+    """
+    buffer = ""
+    mode = "detect"  # detect | think_tag | think_prose | answer
+    decided = False
+    async for chunk in source:
+        buffer += chunk
+        while buffer:
+            if mode == "detect":
+                if not decided and len(buffer.strip()) < 20 and "\n" not in buffer:
+                    break  # need more to decide
+                m = _REASON_START.match(buffer)
+                if m:
+                    tok = m.group(1).lower()
+                    if tok == "<think>":
+                        buffer = buffer[m.end():]
+                        mode = "think_tag"
+                    else:
+                        buffer = buffer[m.end():]
+                        mode = "think_prose"
+                else:
+                    mode = "answer"
+                decided = True
+                continue
+            if mode == "think_tag":
+                end = buffer.lower().find("</think>")
+                if end == -1:
+                    emit, buffer = (buffer[:-8], buffer[-8:]) if len(buffer) > 8 else ("", buffer)
+                    if emit:
+                        yield ("reasoning", emit)
+                    break
+                if buffer[:end]:
+                    yield ("reasoning", buffer[:end])
+                buffer = buffer[end + len("</think>"):]
+                mode = "answer"
+                continue
+            if mode == "think_prose":
+                m = _ANSWER_DELIM.search(buffer)
+                if not m:
+                    keep = 16
+                    if len(buffer) > keep:
+                        emit, buffer = buffer[:-keep], buffer[-keep:]
+                    else:
+                        emit = ""
+                    if emit:
+                        yield ("reasoning", emit)
+                    break
+                if buffer[: m.start()]:
+                    yield ("reasoning", buffer[: m.start()])
+                buffer = buffer[m.end():]
+                mode = "answer"
+                continue
+            # mode == "answer"
+            yield ("answer", buffer)
+            buffer = ""
+            break
+    if buffer:
+        yield (("reasoning" if mode in ("think_tag", "think_prose") else "answer"), buffer)
+
+
 def _strip_reasoning(text: str) -> str:
     """Remove a reasoning-model's chain-of-thought so only the answer shows.
 
@@ -1235,15 +1308,23 @@ class ChatService:
         parts: list[str] = []
         streamer = getattr(self._answer_generator, "stream_complete", None)
         if callable(streamer):
-            async for chunk in streamer(request):
-                parts.append(chunk)
-                yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
+            # Split reasoning-model output: chain-of-thought → collapsible reasoning
+            # panel; only the clean answer streams as the message.
+            async for kind, chunk in _split_reasoning_stream(streamer(request)):
+                if kind == "reasoning":
+                    yield sse_event(
+                        ChatEventType.REASONING, token=chunk, message_id=message_id
+                    )
+                else:
+                    parts.append(chunk)
+                    yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
         else:
             # Provider without a streaming API — one-shot complete().
             resp = await self._answer_generator.complete(request)
             text = getattr(resp, "content", "") or ""
-            parts.append(text)
-            yield sse_event(ChatEventType.TOKEN, token=text, message_id=message_id)
+            clean = _strip_reasoning(text)
+            parts.append(clean)
+            yield sse_event(ChatEventType.TOKEN, token=clean, message_id=message_id)
         answer = _strip_reasoning("".join(parts))
         await self.asave_message(
             session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
