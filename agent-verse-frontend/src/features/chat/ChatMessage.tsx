@@ -6,6 +6,7 @@
  */
 
 import { type JSX } from 'react';
+import { RichMarkdown } from '@/components/ui/RichMarkdown';
 import type { ChatMessage as ChatMessageType } from './types/chat.types';
 
 interface Props {
@@ -53,15 +54,26 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
         {/* Bubble */}
         <div
           className={[
-            'px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-words',
+            'px-4 py-3 rounded-2xl text-sm leading-relaxed break-words',
+            // Plain whitespace handling only for the non-markdown (user / streaming)
+            // path; RichMarkdown renders its own block elements.
+            isUser || isStreaming ? 'whitespace-pre-wrap' : '',
             isUser
               ? 'bg-indigo-600 text-white rounded-br-sm'
               : 'bg-[#0F1826] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-100 rounded-bl-sm',
           ].join(' ')}
         >
-          {displayContent || (isStreaming ? '\u00a0' : '\u00a0')}
-          {isStreaming && (
-            <span className="inline-block w-1 h-4 bg-current ml-0.5 animate-pulse" />
+          {!isUser && !isStreaming && displayContent ? (
+            // Assistant output renders as rich markdown (tables, code, lists\u2026)
+            // once streaming completes.
+            <RichMarkdown>{displayContent}</RichMarkdown>
+          ) : (
+            <>
+              {displayContent || '\u00a0'}
+              {isStreaming && (
+                <span className="inline-block w-1 h-4 bg-current ml-0.5 animate-pulse" />
+              )}
+            </>
           )}
         </div>
 

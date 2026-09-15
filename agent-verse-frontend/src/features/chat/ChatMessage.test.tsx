@@ -34,6 +34,43 @@ describe('ChatMessage', () => {
     expect(screen.getByText('I am an assistant.')).toBeDefined();
   });
 
+  it('renders assistant markdown as rich HTML (bold, code, tables)', () => {
+    const { container } = render(
+      <ChatMessage
+        message={makeMsg({
+          role: 'assistant',
+          content: 'Here is **bold** and `code`.\n\n```js\nconst x = 1;\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |',
+        })}
+      />,
+    );
+    // Markdown became real elements, not raw asterisks/backticks.
+    expect(container.querySelector('strong')).not.toBeNull();
+    expect(container.querySelector('code')).not.toBeNull();
+    expect(container.querySelector('table')).not.toBeNull();
+    expect(container.textContent).not.toContain('**bold**');
+  });
+
+  it('keeps assistant content plain (with cursor) while streaming', () => {
+    const { container } = render(
+      <ChatMessage
+        message={makeMsg({ role: 'assistant', content: '' })}
+        isStreaming
+        streamingTokens={'**not yet parsed**'}
+      />,
+    );
+    // While streaming we show raw tokens (no markdown parse) + a cursor.
+    expect(container.textContent).toContain('**not yet parsed**');
+    expect(container.querySelector('.animate-pulse')).not.toBeNull();
+  });
+
+  it('does not markdown-render user messages', () => {
+    const { container } = render(
+      <ChatMessage message={makeMsg({ role: 'user', content: 'send **raw** to me' })} />,
+    );
+    expect(container.querySelector('strong')).toBeNull();
+    expect(container.textContent).toContain('**raw**');
+  });
+
   it('shows intent badge for QA messages', () => {
     render(<ChatMessage message={makeMsg({ intent: 'QA' })} />);
     expect(screen.getByText('Q&A')).toBeDefined();
