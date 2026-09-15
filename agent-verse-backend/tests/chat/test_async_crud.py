@@ -65,3 +65,42 @@ async def test_async_crud_falls_back_to_memory_without_repo() -> None:
     assert got is not None and got.title == "Ephemeral"
     # same underlying in-memory store as the sync path
     assert svc.get_session(s.id, "t1") is not None
+
+
+class _FakeRepoWithMessages(_FakeRepo):
+    def __init__(self) -> None:
+        super().__init__()
+        self._msgs: list[dict[str, Any]] = []
+
+    async def save_message(self, *, message_id: str, session_id: str, tenant_id: str,
+                           role: str, content: str, intent: Any = None, goal_id: Any = None) -> None:
+        from datetime import UTC, datetime
+        self._msgs.append({
+            "id": message_id, "session_id": session_id, "tenant_id": tenant_id,
+            "role": role, "content": content, "intent": intent, "goal_id": goal_id,
+            "metadata": {}, "created_at": datetime.now(UTC),
+        })
+
+    async def list_messages(self, session_id: str, tenant_id: str) -> list[dict[str, Any]]:
+        return [m for m in self._msgs if m["session_id"] == session_id and m["tenant_id"] == tenant_id]
+
+
+async def test_async_message_crud_uses_repository() -> None:
+    repo = _FakeRepoWithMessages()
+    svc = ChatService(repository=repo)
+    await svc.asave_message(session_id="s1", tenant_id="t1", role="user", content="hi", intent="QA")
+    await svc.asave_message(session_id="s1", tenant_id="t1", role="assistant", content="hello")
+    msgs = await svc.alist_messages("s1", "t1")
+    assert [m.role for m in msgs] == ["user", "assistant"]
+    assert msgs[0].content == "hi" and msgs[0].intent == "QA"
+    # durable across a fresh service on the same repo
+    svc2 = ChatService(repository=repo)
+    assert len(await svc2.alist_messages("s1", "t1")) == 2
+
+
+async def test_async_message_crud_falls_back_to_memory() -> None:
+    svc = ChatService()
+    session = svc.create_session("t1")
+    await svc.asave_message(session_id=session.id, tenant_id="t1", role="user", content="hey")
+    assert any(m.content == "hey" for m in await svc.alist_messages(session.id, "t1"))
+    assert any(m.content == "hey" for m in svc.list_messages(session.id, "t1"))  # same store

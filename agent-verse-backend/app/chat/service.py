@@ -639,6 +639,53 @@ class ChatService:
             return self.delete_session(session_id, tenant_id)
         return bool(await self._repository.delete_session(session_id, tenant_id))
 
+    @staticmethod
+    def _message_from_row(row: dict[str, Any]) -> _Message:
+        return _Message(
+            id=str(row["id"]),
+            session_id=str(row["session_id"]),
+            tenant_id=str(row["tenant_id"]),
+            role=str(row.get("role", "user")),
+            content=row.get("content") or "",
+            metadata=row.get("metadata") or {},
+            branch_id=row.get("branch_id"),
+            parent_message_id=row.get("parent_message_id"),
+            goal_id=row.get("goal_id"),
+            intent=row.get("intent"),
+            created_at=row.get("created_at") or _now(),
+        )
+
+    async def asave_message(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        role: str,
+        content: str,
+        goal_id: str | None = None,
+        intent: str | None = None,
+    ) -> _Message:
+        if self._repository is None:
+            return self.save_message(
+                session_id=session_id, tenant_id=tenant_id, role=role,
+                content=content, goal_id=goal_id, intent=intent,
+            )
+        message_id = _hex()
+        await self._repository.save_message(
+            message_id=message_id, session_id=session_id, tenant_id=tenant_id,
+            role=role, content=content, intent=intent, goal_id=goal_id,
+        )
+        return _Message(
+            id=message_id, session_id=session_id, tenant_id=tenant_id, role=role,
+            content=content, goal_id=goal_id, intent=intent,
+        )
+
+    async def alist_messages(self, session_id: str, tenant_id: str) -> list[_Message]:
+        if self._repository is None:
+            return self.list_messages(session_id, tenant_id)
+        rows = await self._repository.list_messages(session_id, tenant_id)
+        return [self._message_from_row(r) for r in rows]
+
     async def attach_file(
         self,
         *,
