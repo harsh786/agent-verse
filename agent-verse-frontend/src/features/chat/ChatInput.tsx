@@ -4,7 +4,7 @@
  */
 
 import { useRef, useState, type KeyboardEvent } from 'react';
-import { Send, Loader2 } from 'lucide-react';
+import { Send, Loader2, Square } from 'lucide-react';
 
 interface Props {
   onSend: (content: string, model?: string) => void;
@@ -13,6 +13,8 @@ interface Props {
   selectedModel?: string;
   onModelChange?: (model: string) => void;
   disabled?: boolean;
+  /** When streaming, surfaces a Stop button that calls this to cancel. */
+  onStop?: () => void;
 }
 
 export function ChatInput({
@@ -22,6 +24,7 @@ export function ChatInput({
   selectedModel,
   onModelChange,
   disabled,
+  onStop,
 }: Props) {
   const [value, setValue] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -88,19 +91,30 @@ export function ChatInput({
           aria-multiline="true"
         />
 
-        <button
-          className="shrink-0 w-11 h-11 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white transition-colors"
-          onClick={handleSend}
-          disabled={!value.trim() || isLoading || disabled}
-          aria-label="Send message"
-          data-testid="send-button"
-        >
-          {isLoading ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
-          ) : (
-            <Send className="w-5 h-5" />
-          )}
-        </button>
+        {isLoading && onStop ? (
+          <button
+            className="shrink-0 w-11 h-11 rounded-xl bg-red-600 hover:bg-red-700 flex items-center justify-center text-white transition-colors"
+            onClick={onStop}
+            aria-label="Stop generating"
+            data-testid="stop-button"
+          >
+            <Square className="w-4 h-4" fill="currentColor" />
+          </button>
+        ) : (
+          <button
+            className="shrink-0 w-11 h-11 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-white transition-colors"
+            onClick={handleSend}
+            disabled={!value.trim() || isLoading || disabled}
+            aria-label="Send message"
+            data-testid="send-button"
+          >
+            {isLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Send className="w-5 h-5" />
+            )}
+          </button>
+        )}
       </div>
 
       <p className="mt-1 text-xs text-[#A0B4CC]">

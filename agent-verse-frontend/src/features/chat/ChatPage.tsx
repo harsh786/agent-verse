@@ -82,7 +82,7 @@ export default function ChatPage() {
     [sessionId, invalidate],
   );
 
-  const { isStreaming, tokens, currentEvent, startStream } = useChatStream(
+  const { isStreaming, tokens, currentEvent, startStream, stopStream } = useChatStream(
     sessionId,
     onDone,
   );
@@ -279,6 +279,7 @@ export default function ChatPage() {
               availableModels={availableModels}
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
+              onStop={isStreaming ? stopStream : undefined}
             />
           </>
         ) : (
