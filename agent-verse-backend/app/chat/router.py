@@ -21,10 +21,8 @@ from app.chat.services_api import ServicesAPI
 from app.chat.stream import (
     stream_clarify,
     stream_goal_progress,
-    stream_qa_response,
 )
 from app.chat.templates import TemplateStore
-from app.providers.model_defaults import configured_default_model as _configured_default_model
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -322,22 +320,33 @@ async def stream_session(
 
             sc = _intent_router.generate_schedule_confirmation(content)
             schedule_ids: list[str] = []
-            if svc.can_schedule:
-                # Actually create the real trigger(s), not just a preview.
+            error: str | None = None
+            if not svc.can_schedule:
+                error = "Scheduling is not enabled for this workspace."
+            else:
                 try:
                     schedule_ids = await svc.create_schedule(
                         tenant_ctx=tenant, message=content, agent_id=s.agent_id
                     )
-                except Exception:
-                    schedule_ids = []
-            yield sse_event(
-                ChatEventType.SCHEDULE_CREATED,
-                session_id=session_id,
-                message_id=message_id,
-                schedule_ids=schedule_ids,
-                cron_expression=sc.cron_expression,
-                human_schedule=sc.human_schedule,
-            )
+                except Exception as exc:
+                    error = f"Could not create the schedule: {str(exc)[:200]}"
+            if error:
+                # Do NOT claim the schedule was created when it wasn't — surface it.
+                yield sse_event(
+                    ChatEventType.ERROR,
+                    session_id=session_id,
+                    message_id=message_id,
+                    message=error,
+                )
+            else:
+                yield sse_event(
+                    ChatEventType.SCHEDULE_CREATED,
+                    session_id=session_id,
+                    message_id=message_id,
+                    schedule_ids=schedule_ids,
+                    cron_expression=sc.cron_expression,
+                    human_schedule=sc.human_schedule,
+                )
             yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
         elif intent == "GOAL":
             if svc.can_run_goals:
@@ -382,21 +391,21 @@ async def stream_session(
             ):
                 yield chunk
         else:
-            # Legacy simulated QA fallback (no answer generator wired).
-            tokens = [w + " " for w in f"Answering: {content}".split()]
-            async for chunk in stream_qa_response(
-                session_id,
-                message_id,
-                tokens,
-                usage={
-                    "tokens_in": len(content),
-                    "tokens_out": len(tokens) * 3,
-                    "cost_usd": 0.0001,
-                    "model": _configured_default_model("gpt-4o"),
-                },
-                show_reasoning=s.show_reasoning,
-            ):
-                yield chunk
+            # No LLM answer generator is wired. Be honest instead of echoing the
+            # question back with a fabricated cost — that misleads the operator into
+            # thinking chat works when no provider is configured.
+            from app.chat.events import ChatEventType, sse_event
+
+            yield sse_event(
+                ChatEventType.ERROR,
+                session_id=session_id,
+                message_id=message_id,
+                message=(
+                    "No language model is configured for this workspace, so I can't "
+                    "answer yet. Configure an LLM provider/API key to enable chat answers."
+                ),
+            )
+            yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
 
     return StreamingResponse(_event_gen(), media_type="text/event-stream")
 
