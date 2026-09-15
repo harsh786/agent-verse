@@ -1194,15 +1194,24 @@ def create_app(
             # and swap the chat store to durable Postgres persistence so sessions
             # and messages survive restarts / span workers (Phase 0.3d).
             if getattr(app.state, "chat_service", None) is not None:
+                from app.chat.personalization_repo import PostgresPersonalizationStore
                 from app.chat.repository import PostgresChatRepository
+                from app.identity.repository import PostgresIdentityStore
+                from app.identity.service import IdentityService
                 from app.org.service import resolve_llm_provider
 
                 _chat_repo = PostgresChatRepository(db_factory)
                 app.state.chat_repository = _chat_repo
+                # Durable personalization + identity stores (Phase 11 / Phase 3),
+                # swapping the in-memory defaults for Postgres-backed ones.
+                _identity_svc = IdentityService(PostgresIdentityStore(db_factory))
+                app.state.identity_service = _identity_svc
                 app.state.chat_service.attach_engine(
                     goal_service=_goal_svc_with_db,
                     answer_generator=resolve_llm_provider(app.state),
                     repository=_chat_repo,
+                    personalization_store=PostgresPersonalizationStore(db_factory),
+                    identity_service=_identity_svc,
                 )
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
