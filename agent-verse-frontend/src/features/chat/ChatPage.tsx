@@ -262,6 +262,7 @@ export default function ChatPage() {
               streamingTokens={tokens}
               currentEvent={currentEvent}
               onEditMessage={handleEditMessage}
+              onSuggestionSelect={(prompt) => void handleSend(prompt)}
             />
             {hitlEvent && (
               <ChatHITLCard
