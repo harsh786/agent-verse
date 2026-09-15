@@ -211,6 +211,20 @@ otel:
   enabled: true
   image: otel/opentelemetry-collector-contrib:0.103.0
 
+# Langfuse — LLM-native observability (traces/generations/sessions/cost). The otel
+# collector fans the SAME spans out to Langfuse over OTLP/HTTP when enabled. Langfuse
+# itself is NOT deployed by this chart (it is a heavy 4-service stack); run it either
+# via the official langfuse-k8s Helm chart in-cluster, or use Langfuse Cloud — then
+# point otlp.endpoint/basicAuth here. Off by default.
+langfuse:
+  enabled: false
+  otlp:
+    # e.g. https://cloud.langfuse.com/api/public/otel (Cloud) or
+    # http://langfuse-web.langfuse.svc:3000/api/public/otel (self-hosted in-cluster).
+    endpoint: ""
+    # "Basic <base64(publicKey:secretKey)>". Prefer sourcing from a Secret in prod.
+    basicAuth: ""
+
 mailpit:
   enabled: true
   image: axllent/mailpit:latest

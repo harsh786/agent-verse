@@ -40,8 +40,8 @@ x-common-env: &common-env
   # Vault encryption
   AGENTVERSE_VAULT_KEY: ${AGENTVERSE_VAULT_KEY:-}
 
-  # Observability
-  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  # Observability — export traces/metrics to the in-stack otel-collector.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
 
 services:
   postgres:
@@ -276,11 +276,165 @@ services:
     networks:
       - agentverse
 
+  # ── Tracing backbone (always on) ─────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      # Langfuse OTLP fan-out target + Basic auth. Points at the in-stack
+      # langfuse-web (only up under the `langfuse` profile) by default; set to
+      # Langfuse Cloud to send there instead. The langfuse exporter fails open —
+      # the jaeger + prometheus pipelines are unaffected when Langfuse is down.
+      LANGFUSE_OTEL_ENDPOINT: ${LANGFUSE_OTEL_ENDPOINT:-http://langfuse-web:3000/api/public/otel}
+      LANGFUSE_OTEL_BASIC_AUTH: ${LANGFUSE_OTEL_BASIC_AUTH:-Basic cGstbGYtZGV2OnNrLWxmLWRldg==}
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    networks:
+      - agentverse
+    depends_on:
+      - jaeger
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"  # Jaeger UI
+    networks:
+      - agentverse
+
+  # ── Langfuse — LLM-native observability (opt-in: --profile langfuse) ──────────
+  # Heavy self-hosted stack; omit and point LANGFUSE_OTEL_ENDPOINT at Langfuse
+  # Cloud for a managed setup. Reuses the app's redis; brings its own pg + object
+  # store + clickhouse.
+  langfuse-minio:
+    image: minio/minio:latest
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${LANGFUSE_MINIO_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:-minioadmin}
+    volumes:
+      - langfuse_minio:/data
+    networks:
+      - agentverse
+
+  langfuse-minio-init:
+    image: quay.io/minio/mc:latest
+    profiles: ["langfuse"]
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        mc alias set m http://langfuse-minio:9000
+        ${LANGFUSE_MINIO_USER:-minioadmin} ${LANGFUSE_MINIO_PASSWORD:-minioadmin} &&
+        mc mb --ignore-existing m/${LANGFUSE_S3_BUCKET:-langfuse}
+    depends_on:
+      - langfuse-minio
+    networks:
+      - agentverse
+
+  langfuse-postgres:
+    image: postgres:16-alpine
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD:-langfuse}
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agentverse
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - agentverse
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+      langfuse-minio-init: {condition: service_completed_successfully}
+    environment: &langfuse-prod-env
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-postgres:5432/langfuse
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?set LANGFUSE_ENCRYPTION_KEY (64 hex)}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: ${LANGFUSE_S3_BUCKET:-langfuse}
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${LANGFUSE_MINIO_USER:-minioadmin}
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:-minioadmin}
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+    networks:
+      - agentverse
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    profiles: ["langfuse"]
+    restart: unless-stopped
+    depends_on:
+      langfuse-worker: {condition: service_started}
+      langfuse-postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+    environment:
+      <<: *langfuse-prod-env
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-agentverse}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-agentverse}
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:-pk-lf-dev}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:-sk-lf-dev}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@agentverse.local}
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set LANGFUSE_INIT_USER_PASSWORD}
+    ports:
+      - "3100:3000"
+    networks:
+      - agentverse
+
 volumes:
   pgdata:
   redisdata:
   promdata:
   grafanadata:
+  langfuse_pgdata:
+  clickhouse_data:
+  langfuse_minio:
 
 networks:
   agentverse:

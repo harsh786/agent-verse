@@ -210,10 +210,24 @@ data:
         endpoint: 0.0.0.0:8889
       logging:
         verbosity: basic
+      {{- if and .Values.langfuse.enabled .Values.langfuse.otlp.endpoint }}
+      otlphttp/langfuse:
+        endpoint: {{ .Values.langfuse.otlp.endpoint | quote }}
+        headers:
+          Authorization: {{ .Values.langfuse.otlp.basicAuth | quote }}
+      {{- end }}
     service:
       pipelines:
         metrics:
           receivers: [otlp]
           processors: [memory_limiter, batch]
           exporters: [prometheus, logging]
+        {{- if and .Values.langfuse.enabled .Values.langfuse.otlp.endpoint }}
+        # LLM-native view: the same spans (incl. gen_ai generations) land in
+        # Langfuse as traces/generations/sessions with token/cost/latency.
+        traces/langfuse:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlphttp/langfuse]
+        {{- end }}
 {{- end }}
