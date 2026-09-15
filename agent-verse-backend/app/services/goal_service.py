@@ -1656,7 +1656,7 @@ class GoalService:
         post its result back into that conversation. Fail-safe — never disrupts
         goal completion, no-op when there is no chat binding / no chat service."""
         with suppress(Exception):
-            from app.chat.service import extract_delivery_target
+            from app.chat.service import extract_delivery_target, humanize_goal_result
 
             target = extract_delivery_target(record.execution_context)
             if not target:
@@ -1670,17 +1670,12 @@ class GoalService:
             chat = getattr(aps, "chat_service", None)
             if chat is None:
                 return
-            content = (
-                event.get("result")
-                or event.get("answer")
-                or event.get("summary")
-                or event.get("cited_answer")
-                or f"✅ Completed: {record.goal_text}"
-            )
+            # Always deliver human-readable prose — never a raw JSON result blob.
+            content = humanize_goal_result(record.goal_text, event)
             await chat.adeliver_result(
                 session_id=target["session_id"],
                 tenant_id=record.tenant_id,
-                content=str(content),
+                content=content,
                 goal_id=record.goal_id,
             )
 

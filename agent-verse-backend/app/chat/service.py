@@ -37,6 +37,61 @@ def _extract_memory_directive(message: str) -> str | None:
     return fact or None
 
 
+def _humanize_value(value: Any) -> str | None:
+    """Turn a structured goal result into readable prose, never raw JSON.
+
+    Returns None when there is no sensible human string to extract (so the caller
+    falls back to a clean completion line rather than dumping a JSON blob).
+    """
+    import json as _json
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if s[:1] in ("{", "["):  # looks like JSON — parse and humanize
+            with contextlib.suppress(Exception):
+                return _humanize_value(_json.loads(s))
+        return s or None
+    if isinstance(value, dict):
+        # A success/reason verifier shape → a friendly one-liner.
+        if "success" in value and isinstance(value.get("reason"), str):
+            ok = bool(value.get("success"))
+            return f"{'✅' if ok else '⚠️'} {value['reason'].strip()}"
+        # Common prose-bearing keys.
+        for k in ("answer", "summary", "message", "text", "output", "content", "reason"):
+            v = value.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # A plan/steps list → a readable checklist.
+        steps = value.get("steps")
+        if isinstance(steps, list) and steps:
+            lines = [str(s).strip() for s in steps if str(s).strip()]
+            if lines:
+                return "Here's the plan:\n" + "\n".join(f"- {ln}" for ln in lines)
+        return None  # unknown shape — do NOT surface raw JSON
+    if isinstance(value, list):
+        parts = [p for p in (_humanize_value(x) for x in value) if p]
+        return "\n".join(parts) if parts else None
+    return str(value)
+
+
+def humanize_goal_result(goal_text: str, event: dict[str, Any]) -> str:
+    """Produce a human-readable assistant message for a completed goal.
+
+    Prefers prose fields, humanizes a structured ``result`` (so the user never sees
+    a raw ``{"success": true, ...}`` blob), and falls back to a clean completion line.
+    """
+    for k in ("answer", "cited_answer", "summary", "message"):
+        v = event.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    humanized = _humanize_value(event.get("result"))
+    if humanized:
+        return humanized
+    return f"✅ Completed: {goal_text}"
+
+
 def extract_delivery_target(execution_context: dict[str, Any] | None) -> dict[str, str] | None:
     """Read the chat delivery binding from a goal/trigger's execution_context.
 
