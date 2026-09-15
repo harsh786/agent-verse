@@ -167,3 +167,50 @@ class PostgresChatRepository:
                 )
             ).mappings().all()
             return [dict(r) for r in rows]
+
+    async def get_message(self, message_id: str, tenant_id: str) -> dict[str, Any] | None:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text("SELECT * FROM chat_messages WHERE id = :id AND tenant_id = :t"),
+                    {"id": message_id, "t": tenant_id},
+                )
+            ).mappings().one_or_none()
+            return dict(row) if row is not None else None
+
+    async def update_message_content(
+        self, message_id: str, tenant_id: str, content: str
+    ) -> bool:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            result = await s.execute(
+                text("UPDATE chat_messages SET content = :c WHERE id = :id AND tenant_id = :t"),
+                {"c": content, "id": message_id, "t": tenant_id},
+            )
+            return (result.rowcount or 0) > 0
+
+    async def delete_messages_after(
+        self, session_id: str, tenant_id: str, after_created_at: Any
+    ) -> list[str]:
+        """Delete (branch-prune) messages created strictly after a timestamp; return their ids."""
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            ids = [
+                str(r["id"])
+                for r in (
+                    await s.execute(
+                        text(
+                            "SELECT id FROM chat_messages "
+                            "WHERE session_id = :sid AND tenant_id = :t AND created_at > :ts"
+                        ),
+                        {"sid": session_id, "t": tenant_id, "ts": after_created_at},
+                    )
+                ).mappings().all()
+            ]
+            if ids:
+                await s.execute(
+                    text(
+                        "DELETE FROM chat_messages "
+                        "WHERE session_id = :sid AND tenant_id = :t AND created_at > :ts"
+                    ),
+                    {"sid": session_id, "t": tenant_id, "ts": after_created_at},
+                )
+            return ids

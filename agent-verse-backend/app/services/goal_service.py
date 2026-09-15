@@ -1649,7 +1649,9 @@ class GoalService:
         events = await self._events_for_replay(goal_id, record, tenant_ctx)
         return len(events)
 
-    def _deliver_completion_to_chat(self, record: GoalRecord, event: dict[str, Any]) -> None:
+    async def _deliver_completion_to_chat(
+        self, record: GoalRecord, event: dict[str, Any]
+    ) -> None:
         """Phase 2 delivery-back: if a goal was launched from a chat conversation,
         post its result back into that conversation. Fail-safe — never disrupts
         goal completion, no-op when there is no chat binding / no chat service."""
@@ -1675,7 +1677,7 @@ class GoalService:
                 or event.get("cited_answer")
                 or f"✅ Completed: {record.goal_text}"
             )
-            chat.deliver_result(
+            await chat.adeliver_result(
                 session_id=target["session_id"],
                 tenant_id=record.tenant_id,
                 content=str(content),
@@ -1711,7 +1713,7 @@ class GoalService:
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "completed")
             # Phase 2: post the result back into the originating chat conversation.
-            self._deliver_completion_to_chat(record, sanitized_event)
+            await self._deliver_completion_to_chat(record, sanitized_event)
             # Agent Runtime: mark trace success
             try:
                 from app.api.agent_runtime import _traces

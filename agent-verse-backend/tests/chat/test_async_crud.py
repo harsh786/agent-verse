@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.chat.service import ChatService
@@ -75,15 +75,39 @@ class _FakeRepoWithMessages(_FakeRepo):
     async def save_message(self, *, message_id: str, session_id: str, tenant_id: str,
                            role: str, content: str, intent: Any = None, goal_id: Any = None,
                            metadata: Any = None) -> None:
-        from datetime import UTC, datetime
+        # Monotonic timestamps so branch-prune's strict > ordering is deterministic.
+        ts = datetime.now(UTC) + timedelta(microseconds=len(self._msgs))
         self._msgs.append({
             "id": message_id, "session_id": session_id, "tenant_id": tenant_id,
             "role": role, "content": content, "intent": intent, "goal_id": goal_id,
-            "metadata": {}, "created_at": datetime.now(UTC),
+            "metadata": {}, "created_at": ts,
         })
 
     async def list_messages(self, session_id: str, tenant_id: str) -> list[dict[str, Any]]:
         return [m for m in self._msgs if m["session_id"] == session_id and m["tenant_id"] == tenant_id]
+
+    async def get_message(self, message_id: str, tenant_id: str) -> dict[str, Any] | None:
+        for m in self._msgs:
+            if m["id"] == message_id and m["tenant_id"] == tenant_id:
+                return m
+        return None
+
+    async def update_message_content(self, message_id: str, tenant_id: str, content: str) -> bool:
+        for m in self._msgs:
+            if m["id"] == message_id and m["tenant_id"] == tenant_id:
+                m["content"] = content
+                return True
+        return False
+
+    async def delete_messages_after(self, session_id: str, tenant_id: str,
+                                    after_created_at: Any) -> list[str]:
+        doomed = [
+            m for m in self._msgs
+            if m["session_id"] == session_id and m["tenant_id"] == tenant_id
+            and m["created_at"] > after_created_at
+        ]
+        self._msgs = [m for m in self._msgs if m not in doomed]
+        return [m["id"] for m in doomed]
 
 
 async def test_async_message_crud_uses_repository() -> None:
@@ -105,3 +129,40 @@ async def test_async_message_crud_falls_back_to_memory() -> None:
     await svc.asave_message(session_id=session.id, tenant_id="t1", role="user", content="hey")
     assert any(m.content == "hey" for m in await svc.alist_messages(session.id, "t1"))
     assert any(m.content == "hey" for m in svc.list_messages(session.id, "t1"))  # same store
+
+
+async def test_aedit_message_edits_and_branch_prunes_via_repository() -> None:
+    repo = _FakeRepoWithMessages()
+    svc = ChatService(repository=repo)
+    u1 = await svc.asave_message(session_id="s1", tenant_id="t1", role="user", content="q1")
+    await svc.asave_message(session_id="s1", tenant_id="t1", role="assistant", content="a1")
+    await svc.asave_message(session_id="s1", tenant_id="t1", role="user", content="q2")
+    # Editing the first user message prunes everything after it.
+    edited, pruned = await svc.aedit_message(u1.id, "t1", "q1-edited")
+    assert edited is not None and edited.content == "q1-edited"
+    assert len(pruned) == 2
+    remaining = await svc.alist_messages("s1", "t1")
+    assert [m.content for m in remaining] == ["q1-edited"]
+    # Durable across a fresh service on the same repo.
+    svc2 = ChatService(repository=repo)
+    assert [m.content for m in await svc2.alist_messages("s1", "t1")] == ["q1-edited"]
+
+
+async def test_aedit_message_rejects_non_user_and_missing() -> None:
+    repo = _FakeRepoWithMessages()
+    svc = ChatService(repository=repo)
+    a1 = await svc.asave_message(session_id="s1", tenant_id="t1", role="assistant", content="a1")
+    # assistant message is not editable
+    assert await svc.aedit_message(a1.id, "t1", "x") == (None, [])
+    # unknown id
+    assert await svc.aedit_message("nope", "t1", "x") == (None, [])
+
+
+async def test_aedit_message_falls_back_to_memory() -> None:
+    svc = ChatService()
+    session = svc.create_session("t1")
+    u1 = svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="q1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="assistant", content="a1")
+    edited, pruned = await svc.aedit_message(u1.id, "t1", "q1-edited")
+    assert edited is not None and edited.content == "q1-edited"
+    assert len(pruned) == 1

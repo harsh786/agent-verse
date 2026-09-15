@@ -1190,13 +1190,19 @@ def create_app(
             app.state.tenant_service = _tenant_svc_with_db
             app.state.goal_service = _goal_svc_with_db
             app.state.goal_service._app_state = app
-            # Wire chat GOAL turns to the real engine + QA to the real provider.
+            # Wire chat GOAL turns to the real engine + QA to the real provider,
+            # and swap the chat store to durable Postgres persistence so sessions
+            # and messages survive restarts / span workers (Phase 0.3d).
             if getattr(app.state, "chat_service", None) is not None:
+                from app.chat.repository import PostgresChatRepository
                 from app.org.service import resolve_llm_provider
 
+                _chat_repo = PostgresChatRepository(db_factory)
+                app.state.chat_repository = _chat_repo
                 app.state.chat_service.attach_engine(
                     goal_service=_goal_svc_with_db,
                     answer_generator=resolve_llm_provider(app.state),
+                    repository=_chat_repo,
                 )
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db

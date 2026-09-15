@@ -410,7 +410,7 @@ async def edit_message(
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msg, pruned = svc.edit_message(message_id, tenant.tenant_id, body.content)
+    msg, pruned = await svc.aedit_message(message_id, tenant.tenant_id, body.content)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found or not editable")
     return {"message": _message_to_dict(msg), "pruned_message_ids": pruned}

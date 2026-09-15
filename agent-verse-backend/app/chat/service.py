@@ -614,6 +614,31 @@ class ChatService:
             metadata={"delivery": "async"},
         )
 
+    async def adeliver_result(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        content: str,
+        goal_id: str | None = None,
+    ) -> _Message | None:
+        """Durable variant of :meth:`deliver_result`.
+
+        Writes through the repository when wired so an out-of-band goal/schedule
+        result lands in the *same* persisted thread the web/API UI reads back;
+        falls back to the in-memory path otherwise.
+        """
+        if await self.aget_session(session_id, tenant_id) is None:
+            return None
+        return await self.asave_message(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            role="assistant",
+            content=content,
+            goal_id=goal_id,
+            metadata={"delivery": "async"},
+        )
+
     # ── Async, repository-backed CRUD (Phase 0.3d durable persistence) ─────────
     # When a repository is wired these read/write Postgres; otherwise they fall
     # back to the in-memory sync methods so unit tests keep working. The router
@@ -736,6 +761,27 @@ class ChatService:
         rows = await self._repository.list_messages(session_id, tenant_id)
         msgs = [self._message_from_row(r) for r in rows]
         return msgs[-limit:] if limit else msgs
+
+    async def aedit_message(
+        self, message_id: str, tenant_id: str, new_content: str
+    ) -> tuple[_Message | None, list[str]]:
+        """Durable edit of a user message returning (updated_message, pruned_ids).
+
+        All messages created after the edited one in the same session are pruned
+        (branch pruning). Falls back to the in-memory path when no repository is
+        wired.
+        """
+        if self._repository is None:
+            return self.edit_message(message_id, tenant_id, new_content)
+        row = await self._repository.get_message(message_id, tenant_id)
+        if row is None or str(row.get("role")) != "user":
+            return None, []
+        await self._repository.update_message_content(message_id, tenant_id, new_content)
+        pruned = await self._repository.delete_messages_after(
+            str(row["session_id"]), tenant_id, row["created_at"]
+        )
+        row["content"] = new_content
+        return self._message_from_row(row), pruned
 
     async def attach_file(
         self,
@@ -947,6 +993,13 @@ class ChatService:
         (save + intent classification + history) as web chat, so WhatsApp/Telegram/
         API and the web UI share one pipeline. Returns the dispatch metadata plus
         the resolved ``session_id`` and ``channel``.
+
+        NOTE (persistence): this path is still the sync/in-memory pipeline and is
+        currently dormant (no inbound webhook wires it). Before exposing it on a
+        live endpoint it MUST move to the async ``adispatch`` path AND gain a
+        durable channel->session mapping (the in-memory ``_channel_sessions`` map
+        does not survive restarts), otherwise channel writes would diverge from
+        the Postgres-backed web/API reads.
         """
         session = self.get_or_create_channel_session(
             tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id

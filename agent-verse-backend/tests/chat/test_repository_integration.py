@@ -72,6 +72,41 @@ async def test_session_and_message_round_trip(repo: PostgresChatRepository) -> N
     assert await repo.list_messages(sid, tenant) == []
 
 
+async def test_edit_and_branch_prune_round_trip(repo: PostgresChatRepository) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    sid = uuid.uuid4().hex
+    await repo.create_session(session_id=sid, tenant_id=tenant, title="Editing")
+
+    u1 = uuid.uuid4().hex
+    await repo.save_message(
+        message_id=u1, session_id=sid, tenant_id=tenant, role="user", content="q1"
+    )
+    await repo.save_message(
+        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant,
+        role="assistant", content="a1",
+    )
+    await repo.save_message(
+        message_id=uuid.uuid4().hex, session_id=sid, tenant_id=tenant, role="user", content="q2"
+    )
+
+    row = await repo.get_message(u1, tenant)
+    assert row is not None and row["role"] == "user"
+
+    assert await repo.update_message_content(u1, tenant, "q1-edited") is True
+    pruned = await repo.delete_messages_after(sid, tenant, row["created_at"])
+    assert len(pruned) == 2
+
+    msgs = await repo.list_messages(sid, tenant)
+    assert [m["content"] for m in msgs] == ["q1-edited"]
+
+    # Cross-tenant: another tenant cannot read or mutate this message.
+    other = f"t-{uuid.uuid4().hex[:8]}"
+    assert await repo.get_message(u1, other) is None
+    assert await repo.update_message_content(u1, other, "hacked") is False
+
+    await repo.delete_session(sid, tenant)
+
+
 async def test_sessions_are_tenant_scoped(repo: PostgresChatRepository) -> None:
     t1, t2 = f"t-{uuid.uuid4().hex[:8]}", f"t-{uuid.uuid4().hex[:8]}"
     s1 = uuid.uuid4().hex
