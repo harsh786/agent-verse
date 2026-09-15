@@ -76,7 +76,7 @@ from app.memory.execution import ExecutionMemory
 from app.memory.long_term import LongTermMemoryStore
 from app.observability.health import HealthCheck, HealthRegistry
 from app.observability.logging import configure_logging, get_logger
-from app.observability.tracing import configure_tracing
+from app.observability.tracing import configure_tracing, instrument_app
 from app.providers.fake import FakeProvider
 from app.providers.vault import (
     RedisConnectorSecretStore,
@@ -2617,6 +2617,9 @@ def create_app(
     register_routers(app, settings, logger)
 
     configure_tracing(settings.service_name, settings.otel_exporter_otlp_endpoint)
+    # Real auto-instrumentation (FastAPI server spans + HTTPX/DB/Redis/Celery) so a
+    # goal's trace tree is complete end-to-end. Fail-safe: never breaks startup.
+    instrument_app(app)
 
     return app
 

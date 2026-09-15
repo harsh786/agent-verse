@@ -62,6 +62,74 @@ def configure_tracing(service_name: str, otlp_endpoint: str | None = None) -> No
     trace.set_tracer_provider(provider)
 
 
+_libraries_instrumented = False
+
+
+def instrument_libraries() -> None:
+    """Idempotently apply process-global OTel instrumentors (HTTPX/SQLAlchemy/
+    AsyncPG/Redis/Celery). Each is isolated so one failure can't block the rest,
+    and never raises into startup. Gives outbound-HTTP, DB, cache and Celery spans
+    so a goal's trace tree is complete end-to-end."""
+    global _libraries_instrumented
+    if _libraries_instrumented:
+        return
+    _libraries_instrumented = True
+    log = get_logger(__name__)
+
+    def _try(name: str, fn: Any) -> None:
+        try:
+            fn()
+        except Exception as exc:  # already-instrumented or missing dep — non-fatal
+            log.debug("instrumentor_skipped", instrumentor=name, error=str(exc)[:120])
+
+    def _httpx() -> None:
+        from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+        HTTPXClientInstrumentor().instrument()
+
+    def _sqlalchemy() -> None:
+        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+        SQLAlchemyInstrumentor().instrument(enable_commenter=True)
+
+    def _asyncpg() -> None:
+        from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
+
+        AsyncPGInstrumentor().instrument()
+
+    def _redis() -> None:
+        from opentelemetry.instrumentation.redis import RedisInstrumentor
+
+        RedisInstrumentor().instrument()
+
+    def _celery() -> None:
+        from opentelemetry.instrumentation.celery import CeleryInstrumentor
+
+        CeleryInstrumentor().instrument()
+
+    _try("httpx", _httpx)
+    _try("sqlalchemy", _sqlalchemy)
+    _try("asyncpg", _asyncpg)
+    _try("redis", _redis)
+    _try("celery", _celery)
+
+
+def instrument_app(app: Any) -> None:
+    """Instrument a FastAPI app for server-side request spans, then the libraries.
+
+    Fixes the long-standing gap where tracing.py claimed to instrument FastAPI but
+    never did. Fail-safe: a bad app or missing dep must not break app startup.
+    """
+    try:
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        if not getattr(app, "_is_instrumented_by_opentelemetry", False):
+            FastAPIInstrumentor.instrument_app(app)
+    except Exception as exc:
+        get_logger(__name__).warning("fastapi_instrumentation_failed", error=str(exc)[:120])
+    instrument_libraries()
+
+
 def _add_console_span_processor(provider: Any, service_name: str) -> None:
     """Add an in-memory span store for local tracing without OTLP."""
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
