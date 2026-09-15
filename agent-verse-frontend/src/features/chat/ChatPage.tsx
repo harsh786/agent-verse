@@ -14,7 +14,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChatSidebar } from './ChatSidebar';
 import { ChatThread } from './ChatThread';
-import { ChatInput } from './ChatInput';
+import { ChatInput, type AttachmentChip } from './ChatInput';
 import { ChatHITLCard } from './ChatHITLCard';
 import { ChatErrorBanner } from './ChatErrorBanner';
 import { ChatReasoningPanel } from './ChatReasoningPanel';
@@ -246,16 +246,44 @@ export default function ChatPage() {
     }
   };
 
-  const handleEditMessage = async (messageId: string, currentContent: string) => {
-    const newContent = window.prompt('Edit message:', currentContent);
-    if (!newContent || newContent === currentContent || !sessionId) return;
+  // Inline edit-and-rerun: ChatMessage submits the edited content directly (no
+  // window.prompt). PATCH the message, then re-run the turn via the send path.
+  const handleEditMessage = async (messageId: string, newContent: string) => {
+    if (!sessionId) return;
     try {
       await chatApi.editMessage(sessionId, messageId, newContent);
       invalidate();
+      await handleSend(newContent);
     } catch {
       // ignore
     }
   };
+
+  // Regenerate: re-run the last user turn through the existing send path.
+  const handleRegenerate = () => {
+    const lastUser = [...allMessages].reverse().find((m) => m.role === 'user');
+    if (lastUser) void handleSend(lastUser.content);
+  };
+
+  const handleUploadAttachment = useCallback(
+    async (file: File): Promise<AttachmentChip> => {
+      if (!sessionId) throw new Error('No active session');
+      const res = await chatApi.uploadAttachment(sessionId, file);
+      return {
+        attachment_id: res.attachment_id,
+        filename: res.filename,
+        content_type: res.content_type,
+        size: res.size,
+      };
+    },
+    [sessionId],
+  );
+
+  const handleSlashCommand = (command: string) => {
+    if (command === '/clear') void handleNewSession();
+  };
+
+  const canRegenerate = allMessages.some((m) => m.role === 'user');
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -341,6 +369,10 @@ export default function ChatPage() {
               selectedModel={selectedModel}
               onModelChange={setSelectedModel}
               onStop={isStreaming ? stopStream : undefined}
+              onRegenerate={handleRegenerate}
+              canRegenerate={canRegenerate && !isSending && !isStreaming}
+              onUploadAttachment={handleUploadAttachment}
+              onSlashCommand={handleSlashCommand}
             />
           </>
         ) : (

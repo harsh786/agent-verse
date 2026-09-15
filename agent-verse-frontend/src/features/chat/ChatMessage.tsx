@@ -5,7 +5,7 @@
  * Shows intent badge, goal steps, clarification cards, and token count.
  */
 
-import { type JSX } from 'react';
+import { useState, type JSX } from 'react';
 import { RichOutputRenderer } from './RichOutputRenderer';
 import type { ChatMessage as ChatMessageType } from './types/chat.types';
 
@@ -13,7 +13,8 @@ interface Props {
   message: ChatMessageType;
   isStreaming?: boolean;
   streamingTokens?: string;
-  onEdit?: (messageId: string, currentContent: string) => void;
+  /** Called with the edited content when an inline edit is submitted. */
+  onEdit?: (messageId: string, newContent: string) => void;
 }
 
 const INTENT_BADGE: Record<string, { label: string; className: string }> = {
@@ -25,10 +26,25 @@ const INTENT_BADGE: Record<string, { label: string; className: string }> = {
 
 export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: Props): JSX.Element {
   const isUser = message.role === 'user';
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
 
   const displayContent = isStreaming && streamingTokens !== undefined
     ? streamingTokens
     : message.content;
+
+  const beginEdit = () => {
+    setDraft(message.content);
+    setIsEditing(true);
+  };
+
+  const submitEdit = () => {
+    const trimmed = draft.trim();
+    setIsEditing(false);
+    if (trimmed && trimmed !== message.content) {
+      onEdit?.(message.id, trimmed);
+    }
+  };
 
   return (
     <div
@@ -51,42 +67,83 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
           </span>
         )}
 
-        {/* Bubble */}
-        <div
-          className={[
-            'px-4 py-3 rounded-2xl text-sm leading-relaxed break-words',
-            // Plain whitespace handling only for the non-markdown (user / streaming)
-            // path; RichMarkdown renders its own block elements.
-            isUser || isStreaming ? 'whitespace-pre-wrap' : '',
-            isUser
-              ? 'bg-indigo-600 text-white rounded-br-sm'
-              : 'bg-[#0F1826] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-100 rounded-bl-sm',
-          ].join(' ')}
-        >
-          {!isUser && !isStreaming && displayContent ? (
-            // Assistant output renders richly once streaming completes: tabular,
-            // chart and image blocks are promoted to interactive components, the
-            // rest stays as markdown (tables, code, lists\u2026).
-            <RichOutputRenderer content={displayContent} />
-          ) : (
-            <>
-              {displayContent || '\u00a0'}
-              {isStreaming && (
-                <span className="inline-block w-1 h-4 bg-current ml-0.5 animate-pulse" />
+        {/* Inline edit-and-rerun textarea (replaces window.prompt) */}
+        {isUser && isEditing ? (
+          <div className="w-full min-w-[240px] flex flex-col items-end gap-2">
+            <textarea
+              className="w-full resize-none rounded-2xl border border-white/[0.08] bg-[#0A0F1A] px-4 py-3 text-sm text-[#F0F6FF] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              value={draft}
+              rows={Math.min(6, draft.split('\n').length + 1)}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  submitEdit();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setIsEditing(false);
+                }
+              }}
+              aria-label="Edit message"
+              data-testid={`edit-textarea-${message.id}`}
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <button
+                className="text-xs px-3 py-1 rounded-lg text-[#A0B4CC] hover:text-[#F0F6FF] transition-colors"
+                onClick={() => setIsEditing(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="text-xs px-3 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors"
+                onClick={submitEdit}
+                data-testid={`edit-save-${message.id}`}
+              >
+                Save &amp; rerun
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Bubble */}
+            <div
+              className={[
+                'px-4 py-3 rounded-2xl text-sm leading-relaxed break-words',
+                // Plain whitespace handling only for the non-markdown (user / streaming)
+                // path; RichMarkdown renders its own block elements.
+                isUser || isStreaming ? 'whitespace-pre-wrap' : '',
+                isUser
+                  ? 'bg-indigo-600 text-white rounded-br-sm'
+                  : 'bg-[#0F1826] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-100 rounded-bl-sm',
+              ].join(' ')}
+            >
+              {!isUser && !isStreaming && displayContent ? (
+                // Assistant output renders richly once streaming completes: tabular,
+                // chart and image blocks are promoted to interactive components, the
+                // rest stays as markdown (tables, code, lists\u2026).
+                <RichOutputRenderer content={displayContent} />
+              ) : (
+                <>
+                  {displayContent || '\u00a0'}
+                  {isStreaming && (
+                    <span className="inline-block w-1 h-4 bg-current ml-0.5 animate-pulse" />
+                  )}
+                </>
               )}
-            </>
-          )}
-        </div>
+            </div>
 
-        {/* Edit button for user messages */}
-        {isUser && onEdit && !isStreaming && (
-          <button
-            className="mt-1 text-xs text-[#A0B4CC] hover:text-indigo-500 transition-colors"
-            onClick={() => onEdit(message.id, message.content)}
-            aria-label="Edit message"
-          >
-            Edit
-          </button>
+            {/* Edit button for user messages */}
+            {isUser && onEdit && !isStreaming && (
+              <button
+                className="mt-1 text-xs text-[#A0B4CC] hover:text-indigo-500 transition-colors"
+                onClick={beginEdit}
+                aria-label="Edit message"
+              >
+                Edit
+              </button>
+            )}
+          </>
         )}
 
         <time

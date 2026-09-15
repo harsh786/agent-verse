@@ -208,6 +208,36 @@ export const chatApi = {
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
     }),
 
+  // Attachments — upload a file the agent can OCR/vision-process at run time.
+  // Multipart form-data: only the API key header is set so the browser can add
+  // the multipart boundary itself (mirrors org/api.ts uploadAttachment).
+  uploadAttachment: (
+    sessionId: string,
+    file: File,
+  ): Promise<{
+    attachment_id: string;
+    filename: string;
+    content_type: string;
+    size: number;
+    url?: string;
+  }> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    return fetch(`${API_BASE}/chat/sessions/${sessionId}/attachments`, {
+      method: 'POST',
+      headers: { 'X-API-Key': getApiKey() },
+      body: fd,
+    }).then((r) =>
+      _json<{
+        attachment_id: string;
+        filename: string;
+        content_type: string;
+        size: number;
+        url?: string;
+      }>(r),
+    );
+  },
+
   // Models
   listModels: (): Promise<{ models: string[] }> =>
     fetch(`${API_BASE}/chat/models`, { headers: headers() }).then((r) =>
