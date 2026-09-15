@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from app.providers.openai_compatible import OpenAICompatibleProvider
+
+_log = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from app.core.config import Settings
@@ -39,6 +43,7 @@ class MultiEndpointLLMProvider:
         default_model: str,
         embed_provider: OpenAICompatibleProvider | None = None,
         provider_type: str = "onprem",
+        fallback_model: str = "",
     ) -> None:
         if not endpoints:
             raise ValueError("MultiEndpointLLMProvider needs at least one endpoint")
@@ -46,6 +51,9 @@ class MultiEndpointLLMProvider:
         self._default_model = default_model
         self._embed = embed_provider
         self._agentverse_provider_type = provider_type
+        # Runtime failover target (e.g. NVIDIA cloud) used when the chosen endpoint
+        # is unreachable/errors — so an on-prem outage degrades to the cloud model.
+        self._fallback_model = fallback_model
 
     def _for(self, model: str | None) -> OpenAICompatibleProvider:
         """Pick the endpoint serving *model* (falls back to the default endpoint)."""
@@ -53,14 +61,55 @@ class MultiEndpointLLMProvider:
             return self._endpoints[model]
         return self._endpoints.get(self._default_model) or next(iter(self._endpoints.values()))
 
-    async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        return await self._for(request.model).complete(request)
+    def _fallback(self, primary: OpenAICompatibleProvider) -> OpenAICompatibleProvider | None:
+        """The failover endpoint, if configured and different from *primary*."""
+        if not self._fallback_model:
+            return None
+        fb = self._endpoints.get(self._fallback_model)
+        return fb if fb is not None and fb is not primary else None
 
-    def stream_complete(self, request: CompletionRequest) -> Any:
-        return self._for(request.model).stream_complete(request)
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        primary = self._for(request.model)
+        try:
+            return await primary.complete(request)
+        except Exception:
+            fb = self._fallback(primary)
+            if fb is None:
+                raise
+            _log.warning("onprem.complete.failover", to=self._fallback_model)
+            return await fb.complete(request)
+
+    async def stream_complete(self, request: CompletionRequest) -> Any:
+        primary = self._for(request.model)
+        # Iterate the primary stream; if it fails BEFORE any token (endpoint
+        # unreachable/timeout), fail over to the cloud model. A mid-stream failure
+        # after tokens were emitted is not retried (would duplicate output).
+        started = False
+        try:
+            async for chunk in primary.stream_complete(request):
+                started = True
+                yield chunk
+            return
+        except Exception:
+            if started:
+                raise
+            fb = self._fallback(primary)
+            if fb is None:
+                raise
+            _log.warning("onprem.stream.failover", to=self._fallback_model)
+        async for chunk in fb.stream_complete(request):
+            yield chunk
 
     async def stream_tokens(self, request: CompletionRequest, on_token: Any) -> Any:
-        return await self._for(request.model).stream_tokens(request, on_token)
+        primary = self._for(request.model)
+        try:
+            return await primary.stream_tokens(request, on_token)
+        except Exception:
+            fb = self._fallback(primary)
+            if fb is None:
+                raise
+            _log.warning("onprem.stream_tokens.failover", to=self._fallback_model)
+            return await fb.stream_tokens(request, on_token)
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         target = self._embed or self._for(None)
@@ -146,9 +195,18 @@ def build_onprem_provider(settings: Settings) -> MultiEndpointLLMProvider | None
         )
 
     provider_type = "hybrid" if (nvidia_on and onprem_on) else ("nvidia" if nvidia_on else "onprem")
+    # Failover to NVIDIA cloud when a chosen (on-prem) endpoint is unreachable; if
+    # NVIDIA is the only cluster, fall back to Gemma; else no failover.
+    if nvidia_on:
+        fallback_model = settings.nvidia_model
+    elif onprem_on and settings.onprem_gemma_base_url.strip():
+        fallback_model = settings.onprem_gemma_model
+    else:
+        fallback_model = ""
     return MultiEndpointLLMProvider(
         endpoints=endpoints,
         default_model=default_model,
         embed_provider=embed_provider,
         provider_type=provider_type,
+        fallback_model=fallback_model,
     )

@@ -139,3 +139,51 @@ def test_explicit_per_role_overrides_win_over_registry(monkeypatch) -> None:
     assert r.model_for("planning") == "nvidia/nemotron"
     assert r.model_for("execution") == "Qwen/Qwen3.5-4B"
     assert r.model_for("verification") == "google/gemma-4-E2B"
+
+
+async def test_runtime_failover_to_nvidia_when_primary_down() -> None:
+    from app.providers.onprem import MultiEndpointLLMProvider
+
+    class _Down:
+        async def complete(self, r):  # type: ignore[no-untyped-def]
+            raise ConnectionError("endpoint down")
+
+        async def stream_complete(self, r):  # type: ignore[no-untyped-def]
+            raise ConnectionError("endpoint down")
+            yield  # pragma: no cover
+
+    class _Up:
+        async def complete(self, r):  # type: ignore[no-untyped-def]
+            class _R:
+                content = "cloud answer"
+            return _R()
+
+        async def stream_complete(self, r):  # type: ignore[no-untyped-def]
+            for t in ["cloud", " ok"]:
+                yield t
+
+    prov = MultiEndpointLLMProvider(
+        endpoints={"qwen": _Down(), "nvidia": _Up()},  # type: ignore[dict-item]
+        default_model="qwen", fallback_model="nvidia",
+    )
+    r = await prov.complete(_Req("qwen"))
+    assert r.content == "cloud answer"
+    out = "".join([c async for c in prov.stream_complete(_Req("qwen"))])
+    assert out == "cloud ok"
+
+
+async def test_no_failover_reraises_when_no_fallback() -> None:
+    import pytest as _pytest
+
+    from app.providers.onprem import MultiEndpointLLMProvider
+
+    class _Down:
+        async def complete(self, r):  # type: ignore[no-untyped-def]
+            raise ConnectionError("down")
+
+    prov = MultiEndpointLLMProvider(
+        endpoints={"qwen": _Down()},  # type: ignore[dict-item]
+        default_model="qwen",  # no fallback_model
+    )
+    with _pytest.raises(ConnectionError):
+        await prov.complete(_Req("qwen"))
