@@ -6,7 +6,7 @@
  */
 
 import { type JSX } from 'react';
-import { RichMarkdown } from '@/components/ui/RichMarkdown';
+import { RichOutputRenderer } from './RichOutputRenderer';
 import type { ChatMessage as ChatMessageType } from './types/chat.types';
 
 interface Props {
@@ -64,9 +64,10 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
           ].join(' ')}
         >
           {!isUser && !isStreaming && displayContent ? (
-            // Assistant output renders as rich markdown (tables, code, lists\u2026)
-            // once streaming completes.
-            <RichMarkdown>{displayContent}</RichMarkdown>
+            // Assistant output renders richly once streaming completes: tabular,
+            // chart and image blocks are promoted to interactive components, the
+            // rest stays as markdown (tables, code, lists\u2026).
+            <RichOutputRenderer content={displayContent} />
           ) : (
             <>
               {displayContent || '\u00a0'}

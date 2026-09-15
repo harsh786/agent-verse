@@ -131,6 +131,12 @@ export const chatApi = {
   streamUrl: (sessionId: string, messageId: string): string =>
     `${API_BASE}/chat/sessions/${sessionId}/stream?message_id=${messageId}&api_key=${encodeURIComponent(getApiKey())}`,
 
+  // Download URL for a chat-generated artifact/document. The api_key is passed
+  // as a query param (the tenant middleware accepts it) because a plain browser
+  // navigation cannot set the X-API-Key header.
+  artifactDownloadUrl: (artifactId: string): string =>
+    `${API_BASE}/chat/artifacts/${artifactId}/download?api_key=${encodeURIComponent(getApiKey())}`,
+
   // Search
   search: (
     query: string,

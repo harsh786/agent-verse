@@ -17,13 +17,16 @@ import { ChatThread } from './ChatThread';
 import { ChatInput } from './ChatInput';
 import { ChatHITLCard } from './ChatHITLCard';
 import { ChatErrorBanner } from './ChatErrorBanner';
+import { ChatReasoningPanel } from './ChatReasoningPanel';
+import { ChatArtifactCard, type ArtifactCardData } from './ChatArtifactCard';
+import { ChatArtifactPanel } from './ChatArtifactPanel';
 import { useSessions, useCreateSession, useDeleteSession, usePinSession, useRenameSession, useFolders } from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
 import { governanceApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-import type { ChatMessage } from './types/chat.types';
+import type { ChatMessage, ChatArtifact, SSEEvent } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { AgenticExecutionPanel } from './components/AgenticExecutionPanel';
@@ -84,15 +87,50 @@ export default function ChatPage() {
     [sessionId, invalidate],
   );
 
-  const { isStreaming, tokens, currentEvent, events: streamEvents, startStream, stopStream, error: streamError } = useChatStream(
+  const { isStreaming, tokens, reasoning, currentEvent, events: streamEvents, startStream, stopStream, error: streamError } = useChatStream(
     sessionId,
     onDone,
   );
 
-  // Reset local messages when session changes
+  // Downloadable artifacts produced during the session. streamEvents reset on
+  // each new stream, so accumulate artifact_created events into session state.
+  const [artifacts, setArtifacts] = useState<ArtifactCardData[]>([]);
+  const [openArtifact, setOpenArtifact] = useState<ChatArtifact | null>(null);
+
+  useEffect(() => {
+    const created = (streamEvents as SSEEvent[]).filter((e) => e.type === 'artifact_created');
+    if (created.length === 0) return;
+    setArtifacts((prev) => {
+      const next = [...prev];
+      for (const e of created) {
+        const id = String(e.artifact_id ?? '');
+        if (!id || next.some((a) => a.artifactId === id)) continue;
+        next.push({ artifactId: id, title: String(e.title ?? 'Artifact'), language: e.language ? String(e.language) : undefined });
+      }
+      return next;
+    });
+  }, [streamEvents]);
+
+  const handleOpenArtifact = useCallback(
+    async (artifactId: string) => {
+      if (!sessionId) return;
+      try {
+        const { artifacts: list } = await chatApi.listArtifacts(sessionId);
+        const full = list.find((a) => a.id === artifactId);
+        if (full) setOpenArtifact(full);
+      } catch {
+        /* ignore — download still available from the card */
+      }
+    },
+    [sessionId],
+  );
+
+  // Reset local + session state when session changes
   useEffect(() => {
     setLocalMessages([]);
     setIsSending(false);
+    setArtifacts([]);
+    setOpenArtifact(null);
   }, [sessionId]);
 
   // Load models once
@@ -266,6 +304,16 @@ export default function ChatPage() {
               onEditMessage={handleEditMessage}
               onSuggestionSelect={(prompt) => void handleSend(prompt)}
             />
+            {/* Agent transparency: collapsible reasoning stream */}
+            <ChatReasoningPanel reasoning={reasoning} isStreaming={isStreaming} />
+            {/* Downloadable artifact cards from artifact_created events */}
+            {artifacts.length > 0 && (
+              <div className="mx-4 mb-2 flex flex-col gap-2" aria-label="Generated artifacts">
+                {artifacts.map((a) => (
+                  <ChatArtifactCard key={a.artifactId} artifact={a} onOpen={handleOpenArtifact} />
+                ))}
+              </div>
+            )}
             {hitlEvent && (
               <ChatHITLCard
                 stepName={String(hitlEvent.action ?? hitlEvent.step_name ?? 'Pending action')}
@@ -324,6 +372,10 @@ export default function ChatPage() {
           </div>
         )}
         </div>{/* end flex-1 flex-col overflow-hidden */}
+        {/* Artifact side panel (opened from an artifact card) */}
+        {openArtifact && (
+          <ChatArtifactPanel artifact={openArtifact} onClose={() => setOpenArtifact(null)} />
+        )}
       </main>
     </JARVISStagger>
     </JARVISPageShell>

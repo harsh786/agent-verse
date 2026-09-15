@@ -7,15 +7,48 @@
  * bulleted list, fenced code, or prose all render richly instead of as raw
  * text. Raw HTML is sanitized (rehype-sanitize) to prevent XSS.
  */
+import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import rehypeSanitize from 'rehype-sanitize';
+import { Check, Copy } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { highlightCode } from './codeHighlight';
 
 interface RichMarkdownProps {
   children: string;
   className?: string;
+}
+
+function CodeBlock({ code, language }: { code: string; language?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard?.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable — no-op */
+    }
+  };
+  return (
+    <div className="group relative my-3">
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label={copied ? 'Copied' : 'Copy code'}
+        className="absolute right-2 top-2 z-10 rounded-md border border-border bg-background/80 p-1.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+      >
+        {copied ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      <pre className="overflow-x-auto rounded-lg border border-border bg-muted/40 p-3 pr-12 text-xs leading-relaxed">
+        <code className={cn('block font-mono', language && `language-${language}`)}>
+          {highlightCode(code)}
+        </code>
+      </pre>
+    </div>
+  );
 }
 
 export function RichMarkdown({ children, className }: RichMarkdownProps) {
@@ -64,13 +97,11 @@ export function RichMarkdown({ children, className }: RichMarkdownProps) {
           ),
           hr: ({ node: _n, ...props }) => <hr className="my-4 border-border" {...props} />,
           code: ({ node: _n, className: cls, children: c, ...props }) => {
-            const isBlock = /language-/.test(cls || '');
+            const text = Array.isArray(c) ? c.join('') : String(c ?? '');
+            const isBlock = /language-/.test(cls || '') || text.includes('\n');
             if (isBlock) {
-              return (
-                <code className={cn('block font-mono text-xs', cls)} {...props}>
-                  {c}
-                </code>
-              );
+              const language = /language-(\w+)/.exec(cls || '')?.[1];
+              return <CodeBlock code={text.replace(/\n$/, '')} language={language} />;
             }
             return (
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[0.85em]" {...props}>
@@ -78,12 +109,9 @@ export function RichMarkdown({ children, className }: RichMarkdownProps) {
               </code>
             );
           },
-          pre: ({ node: _n, ...props }) => (
-            <pre
-              className="my-3 overflow-x-auto rounded-lg border border-border bg-muted/40 p-3 text-xs leading-relaxed"
-              {...props}
-            />
-          ),
+          // CodeBlock renders its own <pre>; unwrap markdown's wrapper to avoid
+          // a nested/doubled <pre>.
+          pre: ({ node: _n, ...props }) => <>{props.children}</>,
           img: ({ node: _n, ...props }) => (
             <img className="my-3 max-w-full rounded-lg border border-border" {...props} />
           ),

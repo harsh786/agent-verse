@@ -177,6 +177,11 @@ class ChatService:
         # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
         # user's messages continue one conversation across turns/channels.
         self._channel_sessions: dict[tuple[str, str, str], str] = {}
+        # Phase 3 (cross-channel continuity): principal_id -> session_id, so a thread
+        # started on one channel continues on another as the SAME conversation once
+        # identities are linked. Populated when an IdentityService is wired.
+        self._principal_sessions: dict[str, str] = {}
+        self._identity: Any = None
         # Real-engine dependencies (injected in the lifespan; None on the pure
         # in-memory/unit-test path). ``goal_service`` drives GOAL turns through the
         # real AgentGraph; ``answer_generator`` produces real QA answers.
@@ -515,6 +520,7 @@ class ChatService:
         skill_registry: Any = None,
         repository: Any = None,
         personalization_store: Any = None,
+        identity_service: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -542,6 +548,8 @@ class ChatService:
             self._repository = repository
         if personalization_store is not None:
             self._personalization = personalization_store
+        if identity_service is not None:
+            self._identity = identity_service
 
     @staticmethod
     def _principal_id(tenant_id: str, user_id: str | None = None) -> str:
@@ -1146,6 +1154,71 @@ class ChatService:
             tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
         )
         result = self.dispatch(session.id, tenant_id, text)
+        result["channel"] = channel
+        return result
+
+    async def aget_or_create_channel_session(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        title: str | None = None,
+    ) -> _Session:
+        """Durable, identity-aware channel session resolution (Phase 3).
+
+        When an IdentityService is wired, the (channel, channel_user_id) is resolved
+        to a *principal* and the principal's existing open thread is preferred — so a
+        conversation started on the web continues on WhatsApp (or months later on any
+        channel) as the SAME session once identities are linked (R8). Falls back to
+        the per-(tenant,channel,user) map when no identity service is present.
+        """
+        principal_id: str | None = None
+        if self._identity is not None:
+            with contextlib.suppress(Exception):
+                principal = await self._identity.resolve_principal(
+                    tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+                )
+                principal_id = principal.id
+                existing_id = self._principal_sessions.get(principal_id)
+                if existing_id is not None:
+                    existing = await self.aget_session(existing_id, tenant_id)
+                    if existing is not None:
+                        return existing
+
+        key = (tenant_id, channel, channel_user_id)
+        existing_id = self._channel_sessions.get(key)
+        if existing_id is not None:
+            existing = await self.aget_session(existing_id, tenant_id)
+            if existing is not None:
+                return existing
+
+        session = await self.acreate_session(
+            tenant_id, title=title or f"{channel}:{channel_user_id}"
+        )
+        self._channel_sessions[key] = session.id
+        if principal_id is not None:
+            self._principal_sessions[principal_id] = session.id
+        return session
+
+    async def ahandle_channel_message(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """Durable unified entry point for an inbound channel message (Phase 3).
+
+        Resolves the identity-aware durable session and runs the SAME async dispatch
+        as web chat, so WhatsApp/Telegram/API and the web UI share one persisted
+        pipeline with cross-channel continuity.
+        """
+        session = await self.aget_or_create_channel_session(
+            tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+        )
+        result = await self.adispatch(session.id, tenant_id, text)
         result["channel"] = channel
         return result
 
