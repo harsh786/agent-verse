@@ -30,6 +30,12 @@ DeliverFn = Callable[[str, str, str, ProactiveProposal], Awaitable[Any]]
 # audit sink: (event: dict) -> awaitable | None
 AuditFn = Callable[[dict[str, Any]], Any]
 Clock = Callable[[], datetime]
+# Durable rate-limit counter hooks (principal_id, iso-day). When omitted the
+# engine uses an in-memory counter — which resets on restart and is NOT shared
+# across replicas, so the daily rate limit (a consent control) is only advisory.
+# Production MUST inject a shared/durable counter (Redis/DB) to make it robust.
+CountProvider = Callable[[str, str], Any]  # -> int | Awaitable[int]
+CountRecorder = Callable[[str, str], Any]  # -> None | Awaitable[None]
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,8 @@ class ProactiveEngine:
         audit: AuditFn | None = None,
         clock: Clock | None = None,
         kill_switch: bool = False,
+        count_provider: CountProvider | None = None,
+        count_recorder: CountRecorder | None = None,
     ) -> None:
         self._planner = planner or ProactivePlanner()
         self._prefs = preferences_provider or (lambda _pid: ProactivePreferences())
@@ -57,11 +65,26 @@ class ProactiveEngine:
         self._audit = audit
         self._clock = clock or (lambda: datetime.now(UTC))
         self.kill_switch = kill_switch
-        # (principal_id, iso-date) -> count sent today
+        self._count_provider = count_provider
+        self._count_recorder = count_recorder
+        # In-memory fallback counter (principal_id, iso-date) -> count sent today.
         self._sent: dict[tuple[str, str], int] = {}
 
-    def _sent_today(self, principal_id: str, day: str) -> int:
+    async def _sent_today(self, principal_id: str, day: str) -> int:
+        if self._count_provider is not None:
+            result = self._count_provider(principal_id, day)
+            if hasattr(result, "__await__"):
+                return int(await result)
+            return int(result)
         return self._sent.get((principal_id, day), 0)
+
+    async def _record_sent(self, principal_id: str, day: str) -> None:
+        if self._count_recorder is not None:
+            result = self._count_recorder(principal_id, day)
+            if hasattr(result, "__await__"):
+                await result
+            return
+        self._sent[(principal_id, day)] = self._sent.get((principal_id, day), 0) + 1
 
     async def _propose(self, signal: ProactiveSignal) -> ProactiveProposal | None:
         apropose = getattr(self._planner, "apropose", None)
@@ -84,16 +107,14 @@ class ProactiveEngine:
         decision = evaluate_proactive(
             prefs,
             now_hour=now.hour,
-            sent_today=self._sent_today(signal.principal_id, day),
+            sent_today=await self._sent_today(signal.principal_id, day),
             channel=signal.channel,
         )
         if not decision.allow:
             return ProactiveOutcome(False, decision.reason, proposal)
 
         await self._deliver(signal.principal_id, signal.channel, proposal.message, proposal)
-        self._sent[(signal.principal_id, day)] = (
-            self._sent_today(signal.principal_id, day) + 1
-        )
+        await self._record_sent(signal.principal_id, day)
         await self._write_audit(signal, proposal)
         return ProactiveOutcome(
             True, "delivered", proposal, requires_confirmation=proposal.requires_confirmation
