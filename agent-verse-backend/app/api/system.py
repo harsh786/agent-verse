@@ -28,8 +28,10 @@ async def health(request: Request) -> JSONResponse:
 
 
 @router.get("/metrics")
-async def metrics() -> Response:
-    body, content_type = render_metrics()
+async def metrics(request: Request) -> Response:
+    # Negotiate: Prometheus sends Accept: application/openmetrics-text → we return
+    # OpenMetrics (with trace exemplars); everything else gets legacy text/plain.
+    body, content_type = render_metrics(request.headers.get("accept", ""))
     return Response(content=body, media_type=content_type)
 
 
