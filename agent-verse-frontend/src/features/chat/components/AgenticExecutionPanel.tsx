@@ -49,20 +49,22 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
       const next = [...prev];
       for (const evt of newEvts) {
         const id = `${evt.type}-${Date.now()}-${Math.random()}`;
-        if (evt.type === 'tool_call_complete' || evt.type === 'tool_call_failed') {
-          next.push({ id, type: 'tool', label: String(evt.tool_name ?? evt.tool ?? 'Tool'),
-            success: evt.type === 'tool_call_complete', timestamp: Date.now() });
+        // Accept the canonical chat-event vocabulary (app/chat/events.py) plus the
+        // legacy GoalEvent names, so cards render from the real chat stream.
+        if (evt.type === 'tool_call' || evt.type === 'tool_call_complete' || evt.type === 'tool_call_failed') {
+          next.push({ id, type: 'tool', label: String(evt.tool ?? evt.tool_name ?? 'Tool'),
+            success: evt.type !== 'tool_call_failed' && evt.success !== false, timestamp: Date.now() });
         } else if (evt.type === 'step_started') {
-          next.push({ id, type: 'step', label: String(evt.step ?? 'Step').slice(0, 60), timestamp: Date.now() });
+          next.push({ id, type: 'step', label: String(evt.description ?? evt.step ?? 'Step').slice(0, 60), timestamp: Date.now() });
         } else if (evt.type === 'knowledge_retrieved') {
           next.push({ id, type: 'knowledge', label: 'Knowledge retrieved', timestamp: Date.now() });
-        } else if (evt.type === 'guardrail_rejected' || evt.type === 'tool_call_denied') {
+        } else if (evt.type === 'guardrail_blocked' || evt.type === 'guardrail_rejected' || evt.type === 'tool_call_denied') {
           next.push({ id, type: 'guardrail', label: `Blocked: ${String(evt.rule ?? evt.reason ?? 'policy').slice(0, 40)}`, timestamp: Date.now() });
-        } else if (evt.type === 'waiting_approval') {
+        } else if (evt.type === 'hitl_required' || evt.type === 'waiting_approval') {
           next.push({ id, type: 'hitl', label: 'Awaiting approval', detail: String(evt.action ?? ''), timestamp: Date.now() });
         } else if (evt.type === 'goal_complete') {
           next.push({ id, type: 'complete', label: 'Goal complete', timestamp: Date.now() });
-        } else if (evt.type === 'goal_failed') {
+        } else if (evt.type === 'goal_failed' || evt.type === 'error') {
           next.push({ id, type: 'failed', label: 'Goal failed', timestamp: Date.now() });
         }
       }
