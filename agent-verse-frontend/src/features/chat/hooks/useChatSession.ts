@@ -4,12 +4,21 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { chatApi } from '@/lib/api/chat';
+import { toast } from '@/stores/toast';
 import type { CreateSessionPayload, UpdateSessionPayload } from '../types/chat.types';
 
 export const SESSION_KEYS = {
   list: ['chat', 'sessions'] as const,
   detail: (id: string) => ['chat', 'sessions', id] as const,
 };
+
+// Surface mutation failures instead of letting a control silently do nothing
+// (a failed request used to make "New Chat" appear dead).
+const onMutationError = (action: string) => (err: unknown) =>
+  toast({
+    kind: 'error',
+    message: `${action} failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+  });
 
 export function useSessions() {
   return useQuery({
@@ -33,6 +42,7 @@ export function useCreateSession() {
   return useMutation({
     mutationFn: (payload: CreateSessionPayload = {}) => chatApi.createSession(payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: SESSION_KEYS.list }),
+    onError: onMutationError('Create chat'),
   });
 }
 
@@ -44,6 +54,7 @@ export function useUpdateSession(sessionId: string) {
       qc.invalidateQueries({ queryKey: SESSION_KEYS.list });
       qc.invalidateQueries({ queryKey: SESSION_KEYS.detail(sessionId) });
     },
+    onError: onMutationError('Update chat'),
   });
 }
 
@@ -52,6 +63,7 @@ export function useDeleteSession() {
   return useMutation({
     mutationFn: (sessionId: string) => chatApi.deleteSession(sessionId),
     onSuccess: () => qc.invalidateQueries({ queryKey: SESSION_KEYS.list }),
+    onError: onMutationError('Delete chat'),
   });
 }
 
@@ -61,6 +73,7 @@ export function usePinSession() {
     mutationFn: ({ sessionId, pinned }: { sessionId: string; pinned: boolean }) =>
       chatApi.pinSession(sessionId, pinned),
     onSuccess: () => qc.invalidateQueries({ queryKey: SESSION_KEYS.list }),
+    onError: onMutationError('Pin chat'),
   });
 }
 
@@ -70,6 +83,7 @@ export function useRenameSession() {
     mutationFn: ({ sessionId, title }: { sessionId: string; title: string }) =>
       chatApi.updateSession(sessionId, { title }),
     onSuccess: () => qc.invalidateQueries({ queryKey: SESSION_KEYS.list }),
+    onError: onMutationError('Rename chat'),
   });
 }
 
