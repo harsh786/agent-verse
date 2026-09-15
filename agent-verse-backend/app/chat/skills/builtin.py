@@ -150,6 +150,98 @@ def build_resolve_approval_skill(hitl_gateway: Any) -> ChatSkill:
     )
 
 
+def build_list_workflows_skill(workflow_service: Any) -> ChatSkill:
+    async def handler(tenant_id: str) -> list[dict[str, Any]]:
+        rows = await workflow_service.list(tenant_id)
+        return [
+            {
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "status": r.get("status"),
+                "description": r.get("description"),
+            }
+            for r in (rows or [])
+        ]
+
+    return ChatSkill(
+        name="list_workflows",
+        description="List the tenant's workflows (name, status).",
+        handler=handler,
+        args={},
+        scope="workflows:read",
+    )
+
+
+def build_run_workflow_skill(workflow_runner: Any) -> ChatSkill:
+    async def handler(
+        tenant_id: str, workflow_id: str, inputs: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return await workflow_runner.trigger(
+            workflow_id=workflow_id, tenant_id=tenant_id, inputs=inputs or {}
+        )
+
+    return ChatSkill(
+        name="run_workflow",
+        description="Run a workflow by id with optional inputs; returns the run record.",
+        handler=handler,
+        args={"workflow_id": "the workflow id to run", "inputs": "optional input mapping"},
+        scope="workflows:write",
+    )
+
+
+def build_search_knowledge_skill(knowledge_store: Any) -> ChatSkill:
+    async def handler(
+        tenant_ctx: Any, query: str, collection_id: str, top_k: int = 5
+    ) -> list[dict[str, Any]]:
+        results = await knowledge_store.search(
+            query, collection_id, top_k=top_k, tenant_ctx=tenant_ctx
+        )
+        return list(results or [])
+
+    return ChatSkill(
+        name="search_knowledge",
+        description="Search a knowledge-base collection and return matching passages with sources.",
+        handler=handler,
+        args={
+            "query": "what to search for",
+            "collection_id": "the collection to search",
+            "top_k": "max results (default 5)",
+        },
+        scope="knowledge:read",
+    )
+
+
+def build_ingest_knowledge_skill(knowledge_store: Any) -> ChatSkill:
+    async def handler(
+        tenant_ctx: Any,
+        collection_id: str,
+        content: str,
+        source_url: str = "",
+        source_type: str = "text",
+    ) -> dict[str, Any]:
+        doc_id = await knowledge_store.ingest_document(
+            collection_id=collection_id,
+            content=content,
+            tenant_ctx=tenant_ctx,
+            source_url=source_url,
+            source_type=source_type,
+        )
+        return {"ingested": True, "collection_id": collection_id, "doc_id": str(doc_id)}
+
+    return ChatSkill(
+        name="ingest_knowledge",
+        description="Ingest text into a knowledge-base collection so it's searchable later.",
+        handler=handler,
+        args={
+            "collection_id": "the target collection",
+            "content": "the text to ingest",
+            "source_url": "optional origin URL",
+            "source_type": "optional source type (default text)",
+        },
+        scope="knowledge:write",
+    )
+
+
 def register_builtin_skills(
     registry: SkillRegistry,
     *,
@@ -158,6 +250,9 @@ def register_builtin_skills(
     schedule_store: Any | None = None,
     artifact_store: Any | None = None,
     hitl_gateway: Any | None = None,
+    workflow_service: Any | None = None,
+    workflow_runner: Any | None = None,
+    knowledge_store: Any | None = None,
 ) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
@@ -171,6 +266,13 @@ def register_builtin_skills(
     if hitl_gateway is not None:
         registry.register(build_list_pending_approvals_skill(hitl_gateway))
         registry.register(build_resolve_approval_skill(hitl_gateway))
+    if workflow_service is not None:
+        registry.register(build_list_workflows_skill(workflow_service))
+    if workflow_runner is not None:
+        registry.register(build_run_workflow_skill(workflow_runner))
+    if knowledge_store is not None:
+        registry.register(build_search_knowledge_skill(knowledge_store))
+        registry.register(build_ingest_knowledge_skill(knowledge_store))
 
 
 def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
@@ -195,5 +297,8 @@ def build_registry_from_app_state(app_state: Any) -> SkillRegistry:
         schedule_store=getattr(aps, "schedule_store", None),
         artifact_store=getattr(aps, "chat_artifact_store", None),
         hitl_gateway=getattr(aps, "hitl_gateway", None),
+        workflow_service=getattr(aps, "workflow_service", None),
+        workflow_runner=getattr(aps, "workflow_runner", None),
+        knowledge_store=getattr(aps, "knowledge_store", None),
     )
     return registry

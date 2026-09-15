@@ -186,3 +186,91 @@ async def test_resolve_approval_rejects_bad_decision() -> None:
     skill = build_resolve_approval_skill(object())
     with pytest.raises(ValueError, match="approve or reject"):
         await skill.handler(tenant_ctx=SimpleNamespace(tenant_id="t"), request_id="r", decision="maybe")
+
+
+# ── Phase 5 additions: workflows + knowledge-base skills ──────────────────────
+
+
+class _FakeWorkflowService:
+    async def list(self, tenant_id: str) -> list[dict[str, Any]]:
+        return [{"id": "wf1", "name": "Weekly Report", "status": "published",
+                 "description": "d", "extra": "ignored"}]
+
+
+class _FakeWorkflowRunner:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def trigger(self, *, workflow_id: str, tenant_id: str,
+                      inputs: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append({"workflow_id": workflow_id, "tenant_id": tenant_id, "inputs": inputs})
+        return {"run_id": "r1", "workflow_id": workflow_id, "status": "pending"}
+
+
+class _FakeKnowledgeStore:
+    def __init__(self) -> None:
+        self.searched: list[Any] = []
+        self.ingested: list[Any] = []
+
+    async def search(self, query: str, collection_id: str, *, top_k: int,
+                     tenant_ctx: Any) -> list[dict[str, Any]]:
+        self.searched.append((query, collection_id, top_k, tenant_ctx))
+        return [{"source": "doc1", "score": 0.9, "content": "hit"}]
+
+    async def ingest_document(self, *, collection_id: str, content: str, tenant_ctx: Any,
+                              source_url: str = "", source_type: str = "text") -> str:
+        self.ingested.append((collection_id, content, source_url, source_type))
+        return "doc-123"
+
+
+async def test_list_workflows_skill_maps_rows() -> None:
+    from app.chat.skills.builtin import build_list_workflows_skill
+
+    skill = build_list_workflows_skill(_FakeWorkflowService())
+    out = await skill.handler(tenant_id="t1")
+    assert out == [{"id": "wf1", "name": "Weekly Report", "status": "published", "description": "d"}]
+    assert skill.scope == "workflows:read"
+
+
+async def test_run_workflow_skill_triggers_runner() -> None:
+    from app.chat.skills.builtin import build_run_workflow_skill
+
+    runner = _FakeWorkflowRunner()
+    skill = build_run_workflow_skill(runner)
+    out = await skill.handler(tenant_id="t1", workflow_id="wf1", inputs={"k": "v"})
+    assert out["run_id"] == "r1"
+    assert runner.calls == [{"workflow_id": "wf1", "tenant_id": "t1", "inputs": {"k": "v"}}]
+    assert skill.scope == "workflows:write"
+
+
+async def test_search_and_ingest_knowledge_skills() -> None:
+    from app.chat.skills.builtin import (
+        build_ingest_knowledge_skill,
+        build_search_knowledge_skill,
+    )
+
+    store = _FakeKnowledgeStore()
+    ctx = SimpleNamespace(tenant_id="t1")
+    search = build_search_knowledge_skill(store)
+    hits = await search.handler(tenant_ctx=ctx, query="q", collection_id="c1", top_k=3)
+    assert hits == [{"source": "doc1", "score": 0.9, "content": "hit"}]
+    assert store.searched == [("q", "c1", 3, ctx)]
+    assert search.scope == "knowledge:read"
+
+    ingest = build_ingest_knowledge_skill(store)
+    res = await ingest.handler(tenant_ctx=ctx, collection_id="c1", content="text")
+    assert res == {"ingested": True, "collection_id": "c1", "doc_id": "doc-123"}
+    assert store.ingested == [("c1", "text", "", "text")]
+    assert ingest.scope == "knowledge:write"
+
+
+async def test_register_wires_workflow_and_knowledge_skills() -> None:
+    reg = SkillRegistry()
+    register_builtin_skills(
+        reg,
+        workflow_service=_FakeWorkflowService(),
+        workflow_runner=_FakeWorkflowRunner(),
+        knowledge_store=_FakeKnowledgeStore(),
+    )
+    names = {s.name for s in reg.list()}
+    assert {"list_workflows", "run_workflow", "search_knowledge", "ingest_knowledge"} <= names

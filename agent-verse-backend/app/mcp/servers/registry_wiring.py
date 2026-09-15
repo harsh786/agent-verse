@@ -168,6 +168,7 @@ def get_builtin_server_configs() -> list[dict]:
         google_chat_server,
         google_cloud_storage_server,
         google_contacts_server,
+        google_maps_server,
         google_docs_server,
         # ── Google Workspace & Cloud (new) ────────────────────────────────────
         google_drive_server,
@@ -354,6 +355,7 @@ def get_builtin_server_configs() -> list[dict]:
         twitch_server,
         # ── Forms & Surveys ──────────────────────────────────────────────────────
         typeform_server,
+        uber_server,
         unbounce_server,
         upkeep_server,
         upwork_server,
@@ -1377,6 +1379,22 @@ def get_builtin_server_configs() -> list[dict]:
             "tool_definitions": twilio_server.TOOL_DEFINITIONS,
             "handler": twilio_server.call_tool,
             "requires_env": ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"],
+        },
+        {
+            "server_id": "builtin-google-maps",
+            "name": "Google Maps",
+            "description": "Google Maps — geocoding, directions, place search, and distance matrix",  # noqa: E501
+            "tool_definitions": google_maps_server.TOOL_DEFINITIONS,
+            "handler": google_maps_server.call_tool,
+            "requires_env": ["GOOGLE_MAPS_API_KEY"],
+        },
+        {
+            "server_id": "builtin-uber",
+            "name": "Uber",
+            "description": "Uber Rides — fare/ETA estimates, ride requests, and ride status",
+            "tool_definitions": uber_server.TOOL_DEFINITIONS,
+            "handler": uber_server.call_tool,
+            "requires_env": ["UBER_ACCESS_TOKEN"],
         },
         {
             "server_id": "builtin-mandrill",
