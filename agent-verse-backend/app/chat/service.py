@@ -1429,6 +1429,82 @@ class ChatService:
         result["channel"] = channel
         return result
 
+    async def achannel_turn(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        """Handle an inbound channel message AND produce a reply to send back.
+
+        Routes through the unified pipeline (same as web/voice), then derives the
+        reply the channel should speak/send: a clarifying question, a schedule
+        confirmation, a generated QA answer, or a goal acknowledgement — never a raw
+        JSON blob. Returns ``{session_id, intent, reply, channel}``.
+        """
+        session = await self.aget_or_create_channel_session(
+            tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+        )
+        dispatch = await self.adispatch(session.id, tenant_id, text)
+        intent = str(dispatch.get("intent") or "")
+        reply = self._derive_channel_reply(dispatch)
+        if reply is None:  # QA — generate a real answer through the same run_qa path
+            reply = await self._collect_qa_reply(
+                session_id=session.id, tenant_id=tenant_id,
+                message_id=str(dispatch.get("message_id") or ""), text=text,
+            )
+        return {
+            "session_id": session.id, "intent": intent, "reply": reply, "channel": channel,
+        }
+
+    @staticmethod
+    def _derive_channel_reply(dispatch: dict[str, Any]) -> str | None:
+        """Reply string for a dispatch, or None when a QA answer must be generated."""
+        clarify = dispatch.get("clarify_request")
+        if clarify is not None:
+            q = getattr(clarify, "question", None) or (
+                clarify.get("question") if isinstance(clarify, dict) else None
+            )
+            return str(q or "Could you clarify that?")
+        sched = dispatch.get("schedule_confirmation")
+        if sched is not None:
+            hs = getattr(sched, "human_schedule", None) or (
+                sched.get("human_schedule") if isinstance(sched, dict) else None
+            )
+            return f"✅ Scheduled — I'll run that {hs or 'as requested'}."
+        if str(dispatch.get("intent") or "").upper() == "GOAL":
+            return "On it — I'm working on that and will follow up here."
+        return None  # QA
+
+    async def _collect_qa_reply(
+        self, *, session_id: str, tenant_id: str, message_id: str, text: str
+    ) -> str:
+        """Run the real QA path and collect its streamed answer as a single string."""
+        if self._answer_generator is None:
+            return "I've received your message."
+        import json as _json
+
+        parts: list[str] = []
+        with contextlib.suppress(Exception):
+            async for frame in self.run_qa(
+                session_id=session_id, tenant_id=tenant_id,
+                message_id=message_id, user_message=text,
+            ):
+                s = frame[6:].strip() if frame.startswith("data: ") else frame.strip()
+                with contextlib.suppress(Exception):
+                    ev = _json.loads(s)
+                    if ev.get("type") == "token":
+                        parts.append(str(ev.get("token") or ""))
+        answer = "".join(parts).strip()
+        if not answer:
+            return "I've received your message."
+        # Never send a raw JSON blob to a channel — humanize it.
+        if answer[:1] in ("{", "["):
+            return _humanize_value(answer) or answer
+        return answer
+
     # ── Folder CRUD ───────────────────────────────────────────────────────────
 
     def create_folder(self, tenant_id: str, name: str, color: str = "#6366f1") -> _Folder:

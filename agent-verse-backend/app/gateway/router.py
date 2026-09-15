@@ -16,6 +16,7 @@ New endpoints:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 import structlog
@@ -517,6 +518,76 @@ async def voice_incoming(request: Request) -> Response:
 
     twiml = adapter.format_reply(reply)["twiml"]
     return Response(content=twiml, media_type="application/xml")
+
+
+# ── Unified messaging chat (Telegram / WhatsApp → ChatService) ────────────────
+
+_CHAT_ADAPTERS: dict[str, Any] = {
+    "telegram": _telegram,
+    "whatsapp": _whatsapp,
+    "webhook": _webhook,
+}
+
+
+@router.post(
+    "/{channel}/chat",
+    operation_id="gateway_channel_chat",
+    summary="Inbound Telegram/WhatsApp message → unified ChatService, replies back",
+)
+async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
+    """Route an inbound messaging webhook through the SAME ChatService as web chat.
+
+    The tenant is resolved from the *addressee* (the bot/number that received the
+    message) via the channel registry, so Telegram/WhatsApp share the durable,
+    identity-aware chat brain (sessions, memory, cross-channel continuity). The
+    reply is sent back over the channel's outbound API when a token is configured,
+    and always returned in the response (so it is testable without live creds).
+    """
+    channel = channel.strip().lower()
+    adapter = _CHAT_ADAPTERS.get(channel)
+    chat_service = getattr(request.app.state, "chat_service", None)
+    registry = getattr(request.app.state, "channel_registry", None)
+    if adapter is None or chat_service is None:
+        raise HTTPException(status_code=404, detail=f"channel {channel!r} not available")
+
+    raw = await request.json()
+    headers = dict(request.headers)
+    if not await adapter.verify_auth(headers, raw):
+        raise HTTPException(status_code=403, detail=f"invalid {channel} signature")
+
+    # Resolve tenant from the addressee (bot id / number) or the trusted relay header.
+    addressee = str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
+    binding = registry.resolve(channel, addressee) if registry is not None else None
+    tenant_id = binding.tenant_id if binding else trusted_gateway_tenant(headers)
+    if not tenant_id:
+        # No tenant mapping — acknowledge without doing tenant-scoped work.
+        return {"status": "ignored", "reason": "no tenant mapping for addressee"}
+
+    _org = binding.org_id if binding else ""
+    command = await adapter.normalize(raw, tenant_id=tenant_id, org_id=_org)
+    if not command.text:
+        return {"status": "ok", "reason": "no text in message"}
+
+    turn = await chat_service.achannel_turn(
+        tenant_id=tenant_id, channel=channel,
+        channel_user_id=command.conversation_id or command.actor_id, text=command.text,
+    )
+
+    # Send the reply back over the channel when an outbound sender is available.
+    sent = False
+    sender = getattr(adapter, "send_message", None) or getattr(adapter, "send", None)
+    if callable(sender) and (binding and binding.outbound_token):
+        with suppress(Exception):
+            await sender(
+                chat_id=command.conversation_id or command.actor_id,
+                text=turn["reply"], token=binding.outbound_token,
+            )
+            sent = True
+
+    return {
+        "status": "ok", "channel": channel, "session_id": turn["session_id"],
+        "intent": turn["intent"], "reply": turn["reply"], "reply_sent": sent,
+    }
 
 
 # ── Generic webhook ───────────────────────────────────────────────────────────

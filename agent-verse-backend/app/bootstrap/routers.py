@@ -159,6 +159,12 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         app.state.voice_phone_registry = VoicePhoneRegistry.from_env()
         app.state.voice_phone_adapter = VoicePhoneChannelAdapter()
 
+    # Messaging channels (Telegram/WhatsApp) → unified ChatService: addressee→tenant.
+    if getattr(app.state, "channel_registry", None) is None:
+        from app.gateway.channel_registry import ChannelRegistry
+
+        app.state.channel_registry = ChannelRegistry.from_env()
+
     app.state.chat_service.attach_engine(
         goal_service=_existing_goal_svc,
         answer_generator=resolve_llm_provider(app.state),
