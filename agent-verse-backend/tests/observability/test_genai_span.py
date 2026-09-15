@@ -95,6 +95,22 @@ async def test_content_capture_redacts_when_enabled(spans: InMemorySpanExporter)
     assert "sk-ABC123SECRET" not in body  # but redacted
 
 
+async def test_non_text_content_never_serialized_even_when_capture_on(
+    spans: InMemorySpanExporter,
+) -> None:
+    # Vision/tool payloads (base64 images) must never be dumped into a span.
+    req = CompletionRequest(
+        messages=[Message(role="user", content=[{"image": "data:image/png;base64,SECRETPIXELS"}])],
+        model="m",
+    )
+    async with record_generation(req, provider_system="openai", capture_content=True) as rec:
+        rec.set_response(CompletionResponse(content="ok", model="m"))
+    span = spans.get_finished_spans()[0]
+    dumped = str([(e.name, dict(e.attributes or {})) for e in span.events])
+    assert "SECRETPIXELS" not in dumped
+    assert "non-text content omitted" in dumped
+
+
 async def test_generation_span_records_exception(spans: InMemorySpanExporter) -> None:
     req = CompletionRequest(messages=[Message(role="user", content="x")], model="m")
     with pytest.raises(RuntimeError):

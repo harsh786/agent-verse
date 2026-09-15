@@ -56,8 +56,13 @@ def _prompt_text(request: CompletionRequest) -> str:
     if getattr(request, "system", None):
         parts.append(f"[system] {request.system}")
     for m in request.messages:
-        content = m.content if isinstance(m.content, str) else str(m.content)
-        parts.append(f"[{m.role}] {content}")
+        # Only ever serialise TEXT content into a span. Non-text message content
+        # is vision/tool payloads (e.g. base64 images) — never dump those into a
+        # trace: they are large and may be sensitive. Redaction below still runs.
+        if isinstance(m.content, str):
+            parts.append(f"[{m.role}] {m.content}")
+        else:
+            parts.append(f"[{m.role}] [non-text content omitted]")
     return "\n".join(parts)
 
 
