@@ -12,6 +12,30 @@ point of this effort is to remove the current facade.
 
 ---
 
+## Implementation status (as built) — see `docs/plans/EXECUTION-LEDGER.md` for commit-level detail
+
+| Phase | Status | Evidence / notes |
+|---|---|---|
+| 0 — Spine & persistence | ✅ done | durable Postgres chat (sessions/messages/edit) verified on real PG |
+| 1 — Memory & continuity | ✅ done | build_for_qa + rolling LLM summarization (cached) + cross-session recall + session-close learnings |
+| 2 — Async & delivery-back | ✅ done | SCHEDULE→triggers, goal delivery-back, acknowledge-now/deliver-later jobs + origin-channel push |
+| 3 — Channel unification & identity | ✅ done | unified `principal` + `identity_links` (durable), cross-channel session continuity |
+| 4 — Multi-format media I/O | ✅ done | doc gen (pdf/docx/xlsx/…)+artifact store+attachment parse; audio in/out via voice bridge |
+| 5 — Anything-via-chat skills | ✅ done | goals/schedules/connectors/docs/approvals/workflows/knowledge/model-switch/org-team; connect-OAuth = follow-up |
+| 6 — Governance in chat | ✅ mostly | canonical HITL/guardrail events + in-chat approve/reject + source=chat binding; dedicated cost-event polish = follow-up |
+| 7 — World-class frontend | 🟡 near-done | rich output, transparency+reasoning, composer (regen/edit/attach/slash/@/voice), streaming reconnect+dedupe, all 16 orphans mounted, schedule+channel badges; design-token light/dark pass in progress |
+| 8 — Voice / phone | ✅ core | STT→ChatService→TTS bridge + telephony adapter (inbound normalize, TwiML turn-taking, outbound place_call); live webhook+Twilio client = follow-up |
+| 9 — Proactive outreach | ✅ done | signal bus→planner→consent/quiet-hours/rate gate→multi-channel delivery + audit source=proactive; sanitized+durable-counter hardened; live signal source = follow-up |
+| 10 — Personal connectors | ✅ done | email/calendar/SMS/contacts (pre-existing) + maps/location + ride/booking MCP servers |
+| 11 — Personalization | ✅ done | per-principal tone/standing-instructions/preferences, learned+injected each turn, durable |
+
+**Explicit remaining follow-ups** (tested units, not yet reachable from a live entrypoint): live voice
+telephony webhook + real Twilio client; proactive engine bound to a real signal producer; connect-OAuth
+skill; the Phase-7 design-token pass (in progress). Everything else above ships with unit tests (and
+real-Postgres integration tests for the durable stores).
+
+---
+
 ## 0. Guiding principles
 
 1. **One pipeline.** Web chat and every external channel converge on a single
