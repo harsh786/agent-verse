@@ -86,9 +86,32 @@ Durability: migration 0131 (personalization+identity) ✅ verified on real Postg
 - Composer (frontend): regenerate/inline-edit/attach/slash/@/voice.
 - Voice→ChatService + telephony (Phase 8 backend).
 
+## Phase progress snapshot (v4)
+P0 ✅ P1 ✅ P2 ✅ P3 ✅(+durable) P4 ✅(audio via voice bridge; live webhook follow-up)
+P5 ✅ (full surface: goals/schedules/connectors/docs/approvals/workflows/KB/model-switch/org-team;
+connect-oauth deferred) P6 🟡(events+HITL done; cost-event/audit polish deferred) P7 🟡(rich-output
+✅ + composer ✅; streaming/orphans/badges agent in flight; design-tokens pending) P8 ✅(voice→ChatService
+bridge + telephony adapter; live FastAPI webhook + real Twilio client = follow-up) P9 ✅(+hardening)
+P10 ✅ P11 ✅(+durable).
+Broader regression: 6533 passed, 1 pre-existing unrelated fail (openai key gating), 6 skipped.
+
+## Live-wiring follow-ups (tested units, not yet reachable from a live entrypoint)
+- voice_phone adapter/bridge → a FastAPI webhook route + real Twilio client.
+- proactive engine → a real signal source (calendar/email webhooks) + principal→session delivery.
+- connect-oauth skill (safe OAuth handoff) — needs the connector OAuth flow surface.
+
 ## Next action
-Broader regression run (services/chat/identity/proactive/mcp). Then integrate the two
-agents' output when they land. Remaining: P7 streaming/tokens/orphans, P8 finish, org-team skill.
+Await streaming/orphans/badges frontend agent → verify+commit. Then dispatch design-tokens
+(final P7 chunk). Then comprehensive status to user.
+
+## Increment log (newest first)
+- P5 org-team skill. committed d396a6cb.
+- Phase 8 voice bridge + telephony. committed 39aa9c4b (22 tests).
+- P7-fe composer. committed 2b487138 (77 vitest).
+- P5 model-switch skill. committed b91db246.
+- durable personalization+identity (mig 0131). committed 0d04db22 (3 pg integration).
+- P2 acknowledge-now/deliver-later. committed feed7216.
+- (earlier increments above)
 
 ## Increment log (newest first)
 - P5 model-switch skill. committed b91db246.
