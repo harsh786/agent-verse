@@ -50,10 +50,19 @@ def extract_delivery_target(execution_context: dict[str, Any] | None) -> dict[st
     session_id = execution_context.get("session_id") or execution_context.get("conversation_id")
     if not session_id:
         return None
-    return {
+    target = {
         "session_id": str(session_id),
         "message_id": str(execution_context.get("message_id", "")),
     }
+    # Carry the origin channel so an async result can also be pushed there (e.g.
+    # WhatsApp) when the user isn't watching the web stream (Phase 2, scenario 11).
+    channel = execution_context.get("channel")
+    if channel:
+        target["channel"] = str(channel)
+        cuid = execution_context.get("channel_user_id")
+        if cuid:
+            target["channel_user_id"] = str(cuid)
+    return target
 
 
 def _now() -> datetime:
@@ -135,6 +144,26 @@ class _Usage:
     created_at: datetime = field(default_factory=_now)
 
 
+@dataclass
+class _ChatAsyncJob:
+    """Tracks an acknowledge-now / deliver-later request (Phase 2, R14).
+
+    So a follow-up lands in the right conversation (and origin channel) even hours
+    later or after the user goes offline. Durable store swaps in later.
+    """
+
+    id: str
+    session_id: str
+    tenant_id: str
+    status: str = "running"  # running | done | error
+    origin_message_id: str | None = None
+    channel: str | None = None
+    channel_user_id: str | None = None
+    result_ref: str | None = None  # message id or artifact id of the delivered result
+    created_at: datetime = field(default_factory=_now)
+    updated_at: datetime = field(default_factory=_now)
+
+
 class ChatService:
     """In-memory ChatService — suitable for unit tests and the in-memory app path.
 
@@ -182,6 +211,11 @@ class ChatService:
         # identities are linked. Populated when an IdentityService is wired.
         self._principal_sessions: dict[str, str] = {}
         self._identity: Any = None
+        # Phase 2: acknowledge-now / deliver-later jobs (in-memory; durable later).
+        self._async_jobs: dict[str, _ChatAsyncJob] = {}
+        # Optional async hook to push a delivered result to the origin channel
+        # (WhatsApp/Telegram/…): (channel, channel_user_id, text) -> awaitable.
+        self._channel_deliver: Any = None
         # Real-engine dependencies (injected in the lifespan; None on the pure
         # in-memory/unit-test path). ``goal_service`` drives GOAL turns through the
         # real AgentGraph; ``answer_generator`` produces real QA answers.
@@ -521,6 +555,7 @@ class ChatService:
         repository: Any = None,
         personalization_store: Any = None,
         identity_service: Any = None,
+        channel_deliver: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -550,6 +585,8 @@ class ChatService:
             self._personalization = personalization_store
         if identity_service is not None:
             self._identity = identity_service
+        if channel_deliver is not None:
+            self._channel_deliver = channel_deliver
 
     @staticmethod
     def _principal_id(tenant_id: str, user_id: str | None = None) -> str:
@@ -665,7 +702,7 @@ class ChatService:
         """
         if await self.aget_session(session_id, tenant_id) is None:
             return None
-        return await self.asave_message(
+        msg = await self.asave_message(
             session_id=session_id,
             tenant_id=tenant_id,
             role="assistant",
@@ -673,6 +710,86 @@ class ChatService:
             goal_id=goal_id,
             metadata={"delivery": "async"},
         )
+        return msg
+
+    # ── Acknowledge-now / deliver-later (Phase 2, R14 — the "recipe" pattern) ───
+
+    _DEFAULT_ACK = "On it — I'll send it here when it's ready."
+
+    async def acknowledge_async(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        ack_text: str | None = None,
+        origin_message_id: str | None = None,
+        channel: str | None = None,
+        channel_user_id: str | None = None,
+    ) -> tuple[_ChatAsyncJob, _Message | None]:
+        """Reply immediately and open a tracked async job.
+
+        Posts an "On it — I'll send it when ready" assistant message now, and returns
+        a job record so the eventual result can be delivered back into this same
+        thread (and origin channel) even hours later or after the user goes offline.
+        """
+        ack_msg = await self.asave_message(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            role="assistant",
+            content=ack_text or self._DEFAULT_ACK,
+            metadata={"delivery": "ack"},
+        )
+        job = _ChatAsyncJob(
+            id=_hex(),
+            session_id=session_id,
+            tenant_id=tenant_id,
+            origin_message_id=origin_message_id,
+            channel=channel,
+            channel_user_id=channel_user_id,
+        )
+        self._async_jobs[job.id] = job
+        return job, ack_msg
+
+    def get_async_job(self, job_id: str, tenant_id: str) -> _ChatAsyncJob | None:
+        job = self._async_jobs.get(job_id)
+        return job if job and job.tenant_id == tenant_id else None
+
+    async def complete_async_job(
+        self,
+        *,
+        job_id: str,
+        tenant_id: str,
+        content: str,
+        goal_id: str | None = None,
+        artifact_id: str | None = None,
+    ) -> _Message | None:
+        """Deliver an async job's result back into its thread (and origin channel).
+
+        Posts the result to the originating conversation and, when the job was bound
+        to an external channel, pushes it there too (so an offline user still gets it
+        on WhatsApp/Telegram). Marks the job done.
+        """
+        job = self._async_jobs.get(job_id)
+        if job is None or job.tenant_id != tenant_id:
+            return None
+        msg = await self.adeliver_result(
+            session_id=job.session_id, tenant_id=tenant_id, content=content, goal_id=goal_id
+        )
+        if job.channel and self._channel_deliver is not None:
+            with contextlib.suppress(Exception):
+                await self._channel_deliver(job.channel, job.channel_user_id, content)
+        job.status = "done"
+        job.result_ref = artifact_id or (msg.id if msg else None)
+        job.updated_at = _now()
+        return msg
+
+    async def fail_async_job(self, *, job_id: str, tenant_id: str, error: str) -> None:
+        job = self._async_jobs.get(job_id)
+        if job is None or job.tenant_id != tenant_id:
+            return
+        job.status = "error"
+        job.result_ref = error[:500]
+        job.updated_at = _now()
 
     # ── Async, repository-backed CRUD (Phase 0.3d durable persistence) ─────────
     # When a repository is wired these read/write Postgres; otherwise they fall
