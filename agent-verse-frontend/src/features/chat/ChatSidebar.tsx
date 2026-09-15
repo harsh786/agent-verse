@@ -38,6 +38,7 @@ export function ChatSidebar({
 
   function SessionItem({ session }: { session: ChatSession }) {
     const isActive = session.id === activeSessionId;
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
     return (
       <div
         className={[
@@ -70,14 +71,29 @@ export function ChatSidebar({
             />
           </button>
           <button
-            className="p-1 rounded hover:bg-red-100 dark:hover:bg-red-950"
+            className={[
+              'p-1 rounded',
+              confirmingDelete
+                ? 'bg-red-500/20 ring-1 ring-red-500'
+                : 'hover:bg-red-100 dark:hover:bg-red-950',
+            ].join(' ')}
             onClick={(e) => {
               e.stopPropagation();
-              onDeleteSession(session.id);
+              // Two-click confirm — first click arms, second click deletes.
+              if (confirmingDelete) {
+                onDeleteSession(session.id);
+                setConfirmingDelete(false);
+              } else {
+                setConfirmingDelete(true);
+              }
             }}
-            aria-label="Delete session"
+            onBlur={() => setConfirmingDelete(false)}
+            aria-label={confirmingDelete ? 'Confirm delete session' : 'Delete session'}
+            title={confirmingDelete ? 'Click again to confirm' : 'Delete'}
           >
-            <Trash2 className="w-3 h-3 text-red-500" />
+            <Trash2
+              className={`w-3 h-3 ${confirmingDelete ? 'text-red-600' : 'text-red-500'}`}
+            />
           </button>
         </div>
       </div>
