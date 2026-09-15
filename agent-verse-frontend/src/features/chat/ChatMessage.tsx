@@ -7,6 +7,7 @@
 
 import { useState, type JSX } from 'react';
 import { RichOutputRenderer } from './RichOutputRenderer';
+import { ChatChannelBadge } from './ChatChannelBadge';
 import type { ChatMessage as ChatMessageType } from './types/chat.types';
 
 interface Props {
@@ -33,6 +34,12 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
     ? streamingTokens
     : message.content;
 
+  // Channel origin/continuation (e.g. "via WhatsApp") when metadata carries it.
+  const channel =
+    typeof message.metadata?.channel === 'string' && message.metadata.channel
+      ? message.metadata.channel
+      : null;
+
   const beginEdit = () => {
     setDraft(message.content);
     setIsEditing(true);
@@ -58,13 +65,18 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
       )}
 
       <div className={`max-w-[80%] flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-        {/* Intent badge */}
-        {isUser && message.intent && INTENT_BADGE[message.intent] && (
-          <span
-            className={`text-xs px-2 py-0.5 rounded-full mb-1 font-medium ${INTENT_BADGE[message.intent].className}`}
-          >
-            {INTENT_BADGE[message.intent].label}
-          </span>
+        {/* Intent + channel-origin badges */}
+        {((isUser && message.intent && INTENT_BADGE[message.intent]) || channel) && (
+          <div className={`flex items-center gap-1.5 mb-1 ${isUser ? 'justify-end' : ''}`}>
+            {isUser && message.intent && INTENT_BADGE[message.intent] && (
+              <span
+                className={`text-xs px-2 py-0.5 rounded-full font-medium ${INTENT_BADGE[message.intent].className}`}
+              >
+                {INTENT_BADGE[message.intent].label}
+              </span>
+            )}
+            {channel && <ChatChannelBadge channel={channel} />}
+          </div>
         )}
 
         {/* Inline edit-and-rerun textarea (replaces window.prompt) */}

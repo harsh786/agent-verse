@@ -110,7 +110,8 @@ describe('useChatStream', () => {
     expect(result.current.reasoning).toBe('thinking...');
   });
 
-  it('sets error on onerror', () => {
+  it('reconnects (not a hard error) on the first onerror', () => {
+    vi.useFakeTimers();
     const { result } = renderHook(() => useChatStream('s1'));
     act(() => {
       result.current.startStream('m1');
@@ -118,8 +119,11 @@ describe('useChatStream', () => {
     act(() => {
       mockEs?.onerror?.();
     });
-    expect(result.current.error).toBeTruthy();
-    expect(result.current.isStreaming).toBe(false);
+    // First drop schedules a reconnect: still streaming, no hard error yet.
+    expect(result.current.error).toBeNull();
+    expect(result.current.isStreaming).toBe(true);
+    expect(result.current.reconnecting).toBe(true);
+    vi.useRealTimers();
   });
 
   it('stopStream halts streaming', () => {

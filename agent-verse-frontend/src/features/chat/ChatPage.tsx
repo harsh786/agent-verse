@@ -12,6 +12,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { Settings, Plug, FileText, BarChart3 } from 'lucide-react';
 import { ChatSidebar } from './ChatSidebar';
 import { ChatThread } from './ChatThread';
 import { ChatInput, type AttachmentChip } from './ChatInput';
@@ -20,16 +21,79 @@ import { ChatErrorBanner } from './ChatErrorBanner';
 import { ChatReasoningPanel } from './ChatReasoningPanel';
 import { ChatArtifactCard, type ArtifactCardData } from './ChatArtifactCard';
 import { ChatArtifactPanel } from './ChatArtifactPanel';
-import { useSessions, useCreateSession, useDeleteSession, usePinSession, useRenameSession, useFolders } from './hooks/useChatSession';
+import { ChatModelSelector } from './ChatModelSelector';
+import { ChatTokenCostBadge } from './ChatTokenCostBadge';
+import { ChatSessionSettingsModal } from './ChatSessionSettingsModal';
+import { ChatClarifyCard } from './ChatClarifyCard';
+import { ChatGoalFailureCard } from './ChatGoalFailureCard';
+import { ChatGoalSummary } from './ChatGoalSummary';
+import { ChatConversationSummary } from './ChatConversationSummary';
+import { ConnectedServicesPanel } from './ConnectedServicesPanel';
+import { ChatUsageModal } from './ChatUsageModal';
+import { ChatScheduleCard } from './ChatScheduleCard';
+import { mergeChatMessages } from './mergeMessages';
+import { useSessions, useCreateSession, useDeleteSession, usePinSession, useRenameSession, useUpdateSession, useFolders } from './hooks/useChatSession';
 import { useChatHistory, useInvalidateHistory } from './hooks/useChatHistory';
 import { useChatStream } from './hooks/useChatStream';
 import { chatApi } from '@/lib/api/chat';
 import { governanceApi } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-import type { ChatMessage, ChatArtifact, SSEEvent } from './types/chat.types';
+import type { ChatMessage, ChatArtifact, ChatUsageSummary, SSEEvent, UpdateSessionPayload } from './types/chat.types';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 import { AgenticExecutionPanel } from './components/AgenticExecutionPanel';
+
+// ── SSE event → card-data helpers ────────────────────────────────────────────
+
+interface ScheduleCardData {
+  key: string;
+  humanSchedule?: string;
+  cronExpression?: string;
+  nextRunIso?: string | null;
+  goalText?: string;
+}
+
+interface CostInfo {
+  tokensIn: number;
+  tokensOut: number;
+  costUsd: number;
+  model?: string;
+}
+
+function num(...vals: unknown[]): number {
+  for (const v of vals) {
+    if (typeof v === 'number' && !Number.isNaN(v)) return v;
+  }
+  return 0;
+}
+
+function suggestionsOf(e: SSEEvent | undefined): string[] {
+  if (!e) return [];
+  const raw = (e.suggestions ?? e.next_steps ?? e.follow_ups) as unknown;
+  return Array.isArray(raw) ? raw.map((s) => String(s)) : [];
+}
+
+function toScheduleCard(e: SSEEvent): ScheduleCardData {
+  const cron = e.cron_expression ? String(e.cron_expression) : undefined;
+  const human = e.human_schedule ? String(e.human_schedule) : undefined;
+  const nextRun = (e.next_run_iso ?? e.next_run) as string | null | undefined;
+  return {
+    key: cron ?? human ?? JSON.stringify(e),
+    cronExpression: cron,
+    humanSchedule: human,
+    nextRunIso: nextRun ?? null,
+    goalText: e.goal_text ? String(e.goal_text) : undefined,
+  };
+}
+
+function toCostInfo(e: SSEEvent): CostInfo {
+  return {
+    tokensIn: num(e.tokens_in, e.input_tokens, e.prompt_tokens),
+    tokensOut: num(e.tokens_out, e.output_tokens, e.completion_tokens),
+    costUsd: num(e.cost_usd, e.cost),
+    model: e.model ? String(e.model) : undefined,
+  };
+}
 
 export default function ChatPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -42,14 +106,16 @@ export default function ChatPage() {
   const deleteSession = useDeleteSession();
   const pinSession = usePinSession();
   const renameSession = useRenameSession();
+  const updateSession = useUpdateSession(sessionId ?? '');
 
   // Messages
   const { data: dbMessages = [] } = useChatHistory(sessionId);
   const invalidate = useInvalidateHistory(sessionId ?? '');
 
-  // Local optimistic messages
+  // Local optimistic messages, de-duplicated against the persisted DB copies so
+  // a streamed reply (or optimistic user turn) is not shown twice after refetch.
   const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
-  const allMessages = [...dbMessages, ...localMessages];
+  const allMessages = mergeChatMessages(dbMessages, localMessages);
 
   // Model selector
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -111,6 +177,72 @@ export default function ChatPage() {
     });
   }, [streamEvents]);
 
+  // Phase 7 — schedule/channel awareness + orphan-card state, derived from the
+  // structural SSE event stream (and the send-dispatch result).
+  const [scheduleCards, setScheduleCards] = useState<ScheduleCardData[]>([]);
+  const [costInfo, setCostInfo] = useState<CostInfo | null>(null);
+  const [goalSummary, setGoalSummary] = useState<{ summary: string; suggestions: string[] } | null>(null);
+  const [failure, setFailure] = useState<{ reason: string; suggestions: string[] } | null>(null);
+  const [clarify, setClarify] = useState<{ question: string; options: string[]; round: number } | null>(null);
+
+  // Header-driven panels/modals.
+  const [showSettings, setShowSettings] = useState(false);
+  const [showServices, setShowServices] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const [usageSummary, setUsageSummary] = useState<ChatUsageSummary | null>(null);
+  const [conversationSummary, setConversationSummary] = useState<string | null>(null);
+
+  // Derive the Phase-7 cards from the streamed structural events. Values are
+  // only SET when a matching event is present; they are cleared explicitly when
+  // a new turn is sent (below) so dispatch-provided data survives the stream.
+  useEffect(() => {
+    const evs = streamEvents as SSEEvent[];
+    const scheds = evs.filter((e) => e.type === 'schedule_created');
+    if (scheds.length > 0) {
+      setScheduleCards((prev) => {
+        const next = [...prev];
+        for (const e of scheds) {
+          const card = toScheduleCard(e);
+          if (!next.some((c) => c.key === card.key)) next.push(card);
+        }
+        return next;
+      });
+    }
+
+    const lastCost = [...evs].reverse().find((e) => e.type === 'usage' || e.type === 'cost');
+    if (lastCost) setCostInfo(toCostInfo(lastCost));
+
+    const goal = [...evs].reverse().find((e) => e.type === 'goal_complete');
+    if (goal) {
+      const proactive = [...evs].reverse().find((e) => e.type === 'proactive_suggestions');
+      const suggestions = suggestionsOf(goal).length ? suggestionsOf(goal) : suggestionsOf(proactive);
+      setGoalSummary({
+        summary: String(goal.summary ?? goal.result ?? 'Goal completed successfully.'),
+        suggestions,
+      });
+    }
+
+    const fail = [...evs].reverse().find(
+      (e) => e.type === 'failure_analysis' || (e.type === 'error' && (e.reason || e.analysis)),
+    );
+    if (fail) {
+      setFailure({
+        reason: String(fail.reason ?? fail.analysis ?? fail.message ?? 'The goal could not be completed.'),
+        suggestions: suggestionsOf(fail),
+      });
+    }
+
+    const clar = [...evs].reverse().find((e) => e.type === 'clarify_needed');
+    if (clar) {
+      setClarify({
+        question: String(clar.question ?? ''),
+        options: Array.isArray(clar.options) ? (clar.options as string[]) : [],
+        round: Number(clar.round ?? 1),
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamEvents]);
+
   const handleOpenArtifact = useCallback(
     async (artifactId: string) => {
       if (!sessionId) return;
@@ -131,15 +263,72 @@ export default function ChatPage() {
     setIsSending(false);
     setArtifacts([]);
     setOpenArtifact(null);
+    setScheduleCards([]);
+    setCostInfo(null);
+    setGoalSummary(null);
+    setFailure(null);
+    setClarify(null);
+    setConversationSummary(null);
+    setShowSettings(false);
+    setShowServices(false);
+    setShowUsage(false);
+    setUsageSummary(null);
   }, [sessionId]);
 
-  // Load models once
+  // Load models once; prefer the session's saved model when present.
+  const activeSession = sessions.find((s) => s.id === sessionId) ?? null;
   useEffect(() => {
     chatApi.listModels().then((r) => {
       setAvailableModels(r.models);
-      if (r.models.length > 0) setSelectedModel(r.models[0]);
+      setSelectedModel((cur) => cur || activeSession?.preferred_model || r.models[0] || '');
     }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Adopt the session's preferred model when switching sessions.
+  useEffect(() => {
+    if (activeSession?.preferred_model) setSelectedModel(activeSession.preferred_model);
+  }, [activeSession?.preferred_model]);
+
+  // Persist a model change to the session (reuses the session-update path).
+  const handleModelChange = useCallback(
+    (model: string) => {
+      setSelectedModel(model);
+      if (sessionId) updateSession.mutate({ preferred_model: model });
+    },
+    [sessionId, updateSession],
+  );
+
+  // Session settings modal → persist rename + settings via the update path.
+  const handleSaveSettings = useCallback(
+    (updates: UpdateSessionPayload) => {
+      if (!sessionId) return;
+      updateSession.mutate(updates);
+    },
+    [sessionId, updateSession],
+  );
+
+  // Usage modal — fetch the session usage summary on open.
+  const handleOpenUsage = useCallback(async () => {
+    if (!sessionId) return;
+    setShowUsage(true);
+    try {
+      setUsageSummary(await chatApi.getUsage(sessionId));
+    } catch {
+      /* ignore — modal shows nothing until data loads */
+    }
+  }, [sessionId]);
+
+  // Conversation summary card (from /summarize).
+  const handleSummarize = useCallback(async () => {
+    if (!sessionId) return;
+    try {
+      const { summary } = await chatApi.summarizeSession(sessionId);
+      setConversationSummary(summary);
+    } catch {
+      /* ignore */
+    }
+  }, [sessionId]);
 
   // G-02: Surface hitl_required events from the chat stream as an inline
   // approval card. When the backend emits hitl_required we capture the
@@ -204,6 +393,11 @@ export default function ChatPage() {
     if (!sessionId || isSending || isStreaming) return;
 
     setIsSending(true);
+    // Clear the previous turn's transient outcome cards (they re-derive from the
+    // new stream). Schedules stay for the whole session.
+    setClarify(null);
+    setFailure(null);
+    setGoalSummary(null);
 
     // Optimistically add user message
     const userMsg: ChatMessage = {
@@ -237,6 +431,27 @@ export default function ChatPage() {
         created_at: new Date().toISOString(),
       };
       setLocalMessages((prev) => [...prev, assistantMsg]);
+
+      // Non-streaming dispatch outcomes (clarify / schedule) come back on the
+      // POST itself; surface them immediately so they survive the stream reset.
+      if (dispatch.clarify_request) {
+        setClarify({
+          question: dispatch.clarify_request.question,
+          options: dispatch.clarify_request.options ?? [],
+          round: dispatch.clarify_request.round ?? 1,
+        });
+      }
+      if (dispatch.schedule_confirmation) {
+        const sc = dispatch.schedule_confirmation;
+        const card: ScheduleCardData = {
+          key: sc.cron_expression || sc.human_schedule || sc.goal_text,
+          cronExpression: sc.cron_expression || undefined,
+          humanSchedule: sc.human_schedule || undefined,
+          nextRunIso: sc.next_run_iso,
+          goalText: sc.goal_text || undefined,
+        };
+        setScheduleCards((prev) => (prev.some((c) => c.key === card.key) ? prev : [...prev, card]));
+      }
 
       // Start SSE stream
       startStream(dispatch.message_id);
@@ -315,13 +530,62 @@ export default function ChatPage() {
         {sessionId ? (
           <>
             {/* Thread header */}
-            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-[#1E2535] flex items-center justify-between bg-[#0F1826] dark:bg-[#0F1117]">
-              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-[#E2E8F0] truncate">
-                {sessions.find((s) => s.id === sessionId)?.title ?? 'Chat'}
+            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-[#1E2535] flex items-center justify-between gap-3 bg-[#0F1826] dark:bg-[#0F1117]">
+              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-[#E2E8F0] truncate min-w-0">
+                {activeSession?.title ?? 'Chat'}
               </h1>
-              <span className="text-xs text-[#A0B4CC]">
-                {allMessages.length} messages
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                {costInfo && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Open session usage"
+                    className="cursor-pointer"
+                    onClick={() => void handleOpenUsage()}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') void handleOpenUsage(); }}
+                  >
+                    <ChatTokenCostBadge
+                      tokensIn={costInfo.tokensIn}
+                      tokensOut={costInfo.tokensOut}
+                      costUsd={costInfo.costUsd}
+                      model={costInfo.model}
+                    />
+                  </span>
+                )}
+                {availableModels.length > 0 && (
+                  <ChatModelSelector models={availableModels} selected={selectedModel} onChange={handleModelChange} />
+                )}
+                <button
+                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  aria-label="Session usage"
+                  onClick={() => void handleOpenUsage()}
+                >
+                  <BarChart3 className="w-4 h-4" />
+                </button>
+                <button
+                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  aria-label="Summarize conversation"
+                  onClick={() => void handleSummarize()}
+                >
+                  <FileText className="w-4 h-4" />
+                </button>
+                <button
+                  className={`p-1.5 rounded-lg transition-colors ${showServices ? 'text-indigo-400 bg-white/[0.06]' : 'text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05]'}`}
+                  aria-label="Connected services"
+                  aria-pressed={showServices}
+                  onClick={() => setShowServices((v) => !v)}
+                >
+                  <Plug className="w-4 h-4" />
+                </button>
+                <button
+                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  aria-label="Session settings"
+                  onClick={() => setShowSettings(true)}
+                >
+                  <Settings className="w-4 h-4" />
+                </button>
+                <span className="text-xs text-[#A0B4CC] ml-1">{allMessages.length} messages</span>
+              </div>
             </header>
 
             <ChatThread
@@ -342,6 +606,47 @@ export default function ChatPage() {
                 ))}
               </div>
             )}
+            {/* Schedule-confirmation cards (schedule_created / dispatch) */}
+            {scheduleCards.length > 0 && (
+              <div className="mx-4 mb-2 flex flex-col gap-2" aria-label="Created schedules">
+                {scheduleCards.map((s) => (
+                  <ChatScheduleCard
+                    key={s.key}
+                    humanSchedule={s.humanSchedule}
+                    cronExpression={s.cronExpression}
+                    nextRunIso={s.nextRunIso}
+                    goalText={s.goalText}
+                  />
+                ))}
+              </div>
+            )}
+            {/* Clarification request (clarify_needed / dispatch clarify_request) */}
+            {clarify && (
+              <div className="mx-4">
+                <ChatClarifyCard
+                  question={clarify.question}
+                  options={clarify.options}
+                  round={clarify.round}
+                  onAnswer={(answer) => { setClarify(null); void handleSend(answer); }}
+                />
+              </div>
+            )}
+            {/* Goal completion summary (goal_complete) */}
+            {goalSummary && (
+              <div className="mx-4">
+                <ChatGoalSummary
+                  summary={goalSummary.summary}
+                  suggestions={goalSummary.suggestions}
+                  onSuggestionClick={(text) => void handleSend(text)}
+                />
+              </div>
+            )}
+            {/* Conversation summary card (/summarize) */}
+            {conversationSummary && (
+              <div className="mx-4">
+                <ChatConversationSummary summary={conversationSummary} />
+              </div>
+            )}
             {hitlEvent && (
               <ChatHITLCard
                 stepName={String(hitlEvent.action ?? hitlEvent.step_name ?? 'Pending action')}
@@ -353,14 +658,25 @@ export default function ChatPage() {
                 onReject={handleHITLReject}
               />
             )}
-            {streamError && !isStreaming && (
-              <ChatErrorBanner
-                message={streamError}
-                onRetry={() => {
-                  const lastUser = [...allMessages].reverse().find((m) => m.role === 'user');
-                  if (lastUser) void handleSend(lastUser.content);
-                }}
-              />
+            {/* Goal failure analysis card takes precedence over the raw error banner. */}
+            {failure && !isStreaming ? (
+              <div className="mx-4">
+                <ChatGoalFailureCard
+                  reason={failure.reason}
+                  suggestions={failure.suggestions}
+                  onRetry={(s) => void handleSend(s)}
+                />
+              </div>
+            ) : (
+              streamError && !isStreaming && (
+                <ChatErrorBanner
+                  message={streamError}
+                  onRetry={() => {
+                    const lastUser = [...allMessages].reverse().find((m) => m.role === 'user');
+                    if (lastUser) void handleSend(lastUser.content);
+                  }}
+                />
+              )
             )}
             <ChatInput
               onSend={handleSend}
@@ -408,7 +724,27 @@ export default function ChatPage() {
         {openArtifact && (
           <ChatArtifactPanel artifact={openArtifact} onClose={() => setOpenArtifact(null)} />
         )}
+        {/* Connected MCP services side panel (header toggle) */}
+        {showServices && (
+          <aside className="w-80 shrink-0 border-l border-white/[0.08] dark:border-gray-700 bg-[#0F1826] dark:bg-[#0F1117]">
+            <ConnectedServicesPanel onClose={() => setShowServices(false)} />
+          </aside>
+        )}
       </main>
+
+      {/* Session settings modal (header cog) */}
+      {showSettings && (
+        <ChatSessionSettingsModal
+          session={activeSession}
+          onClose={() => setShowSettings(false)}
+          onSave={handleSaveSettings}
+        />
+      )}
+
+      {/* Session usage modal (token badge / usage button) */}
+      {showUsage && (
+        <ChatUsageModal summary={usageSummary} onClose={() => { setShowUsage(false); setUsageSummary(null); }} />
+      )}
     </JARVISStagger>
     </JARVISPageShell>
   );
