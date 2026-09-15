@@ -307,10 +307,11 @@ class GoalAnalyticsAggregator:
     async def cost_trends_db(
         self, tenant_id: str, days: int = 30, bucket: str = "day"
     ) -> list[dict[str, Any]]:
-        """Query cost trends from goals.cost_usd via DATE_TRUNC in PostgreSQL.
+        """Query cost trends from the cost_ledger via DATE_TRUNC in PostgreSQL.
 
-        Returns list of {period, cost_usd} dicts, falling back to in-memory
-        cost_trends() when DB is unavailable.
+        Costs live in ``cost_ledger`` (per-tool spend rows), not on ``goals`` —
+        the goals table has no cost column. Returns list of {period, cost_usd}
+        dicts, falling back to in-memory cost_trends() when DB is unavailable.
         """
         if self._db is None or not tenant_id:
             return self.cost_trends(days=days, bucket=bucket)
@@ -324,7 +325,7 @@ class GoalAnalyticsAggregator:
                         SELECT
                             DATE_TRUNC('{trunc}', created_at)::date AS period,
                             SUM(COALESCE(cost_usd, 0)) AS cost_usd
-                        FROM goals
+                        FROM cost_ledger
                         WHERE tenant_id = :tid
                           AND created_at > NOW() - (:days * INTERVAL '1 day')
                         GROUP BY period
