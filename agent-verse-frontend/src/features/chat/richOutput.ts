@@ -109,6 +109,28 @@ function normalizeChart(value: unknown): { data: ChartPoint[]; title?: string } 
   return { data, title: title != null ? String(title) : undefined };
 }
 
+/**
+ * Turn a bare JSON *object* answer into readable prose so the user never sees a
+ * raw `{"success": true, ...}` blob (mirrors the backend's humanize_goal_result).
+ * Returns null when the object has no sensible human string (caller then shows a
+ * pretty-printed code block rather than an inline blob).
+ */
+export function humanizeJsonObject(obj: Record<string, unknown>): string | null {
+  if ('success' in obj && typeof obj.reason === 'string' && obj.reason.trim()) {
+    const ok = Boolean(obj.success);
+    return `${ok ? '✅' : '⚠️'} ${obj.reason.trim()}`;
+  }
+  for (const k of ['answer', 'summary', 'message', 'text', 'output', 'content', 'reason']) {
+    const v = obj[k];
+    if (typeof v === 'string' && v.trim()) return v.trim();
+  }
+  if (Array.isArray(obj.steps)) {
+    const steps = (obj.steps as unknown[]).map((s) => String(s).trim()).filter(Boolean);
+    if (steps.length) return `Here's the plan:\n${steps.map((s) => `- ${s}`).join('\n')}`;
+  }
+  return null;
+}
+
 function classifyText(text: string): RichSegment[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
@@ -125,6 +147,17 @@ function classifyText(text: string): RichSegment[] {
   if (trimmed.startsWith('[')) {
     const rows = asObjectArray(tryJson(trimmed));
     if (rows) return [{ kind: 'table', rows }];
+  }
+
+  // A whole-message bare JSON object → humanize to prose (never show raw JSON).
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    const parsed = tryJson(trimmed);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const prose = humanizeJsonObject(parsed as Record<string, unknown>);
+      if (prose) return [{ kind: 'markdown', content: prose }];
+      // Structured but no prose field — present it readably, not as a raw line.
+      return [{ kind: 'markdown', content: '```json\n' + JSON.stringify(parsed, null, 2) + '\n```' }];
+    }
   }
 
   return [{ kind: 'markdown', content: text }];

@@ -79,3 +79,23 @@ describe('markdown table helpers', () => {
     expect(parseMarkdownTable('| x | y |\n|---|---|\n| 5 | 6 |')).toEqual([{ x: '5', y: '6' }]);
   });
 });
+
+describe('humanizeJsonObject / bare-JSON rendering', () => {
+  it('renders {success,reason} as a friendly line, not raw JSON', () => {
+    const segs = parseRichSegments('{"success": true, "reason": "Goal achieved"}');
+    expect(segs).toEqual([{ kind: 'markdown', content: '✅ Goal achieved' }]);
+  });
+  it('renders {steps:[...]} as a checklist', () => {
+    const segs = parseRichSegments('{"steps": ["Complete the requested task"]}');
+    expect(segs[0]).toEqual({ kind: 'markdown', content: "Here's the plan:\n- Complete the requested task" });
+  });
+  it('pretty-prints an unknown JSON object instead of an inline blob', () => {
+    const segs = parseRichSegments('{"weird": 1}');
+    expect(segs[0].kind).toBe('markdown');
+    expect((segs[0] as { content: string }).content).toContain('```json');
+  });
+  it('leaves normal prose untouched', () => {
+    const segs = parseRichSegments('Here is a normal answer.');
+    expect(segs).toEqual([{ kind: 'markdown', content: 'Here is a normal answer.' }]);
+  });
+});
