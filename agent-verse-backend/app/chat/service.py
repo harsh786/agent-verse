@@ -149,6 +149,7 @@ class ChatService:
         nl_scheduler: Any = None,
         schedule_store: Any = None,
         skill_registry: Any = None,
+        repository: Any = None,
     ) -> None:
         self._sessions: dict[str, _Session] = {}
         self._messages: dict[str, _Message] = {}
@@ -178,6 +179,10 @@ class ChatService:
         self._schedule_store = schedule_store
         # Command-surface skill registry (Phase 5): "anything via chat".
         self._skill_registry = skill_registry
+        # Durable persistence (Phase 0.3d swap): a PostgresChatRepository. When set,
+        # the async a* methods read/write the DB; otherwise they fall back to the
+        # in-memory dicts. Migration proceeds by moving the router to the a* methods.
+        self._repository = repository
 
     # ── Session CRUD ──────────────────────────────────────────────────────────
 
@@ -447,6 +452,7 @@ class ChatService:
         nl_scheduler: Any = None,
         schedule_store: Any = None,
         skill_registry: Any = None,
+        repository: Any = None,
     ) -> None:
         """Wire real-engine dependencies AFTER construction.
 
@@ -470,6 +476,8 @@ class ChatService:
             self._schedule_store = schedule_store
         if skill_registry is not None:
             self._skill_registry = skill_registry
+        if repository is not None:
+            self._repository = repository
 
     # ── Real-engine capability flags ───────────────────────────────────────────
 
@@ -558,6 +566,78 @@ class ChatService:
             goal_id=goal_id,
             metadata={"delivery": "async"},
         )
+
+    # ── Async, repository-backed CRUD (Phase 0.3d durable persistence) ─────────
+    # When a repository is wired these read/write Postgres; otherwise they fall
+    # back to the in-memory sync methods so unit tests keep working. The router
+    # migrates to these a* methods to make chat durable across restarts.
+
+    @staticmethod
+    def _session_from_row(row: dict[str, Any]) -> _Session:
+        return _Session(
+            id=str(row["id"]),
+            tenant_id=str(row["tenant_id"]),
+            title=row.get("title") or "New Chat",
+            pinned=bool(row.get("pinned", False)),
+            ttl_days=row.get("ttl_days"),
+            system_prompt=row.get("system_prompt"),
+            agent_id=row.get("agent_id"),
+            folder_id=row.get("folder_id"),
+            show_reasoning=bool(row.get("show_reasoning", False)),
+            proactive_suggestions=bool(row.get("proactive_suggestions", True)),
+            preferred_model=row.get("preferred_model"),
+            created_at=row.get("created_at") or _now(),
+            updated_at=row.get("updated_at") or _now(),
+        )
+
+    async def acreate_session(
+        self,
+        tenant_id: str,
+        title: str = "New Chat",
+        system_prompt: str | None = None,
+        agent_id: str | None = None,
+        folder_id: str | None = None,
+    ) -> _Session:
+        if self._repository is None:
+            return self.create_session(
+                tenant_id, title=title, system_prompt=system_prompt,
+                agent_id=agent_id, folder_id=folder_id,
+            )
+        sid = _hex()
+        await self._repository.create_session(
+            session_id=sid, tenant_id=tenant_id, title=title,
+            system_prompt=system_prompt, agent_id=agent_id, folder_id=folder_id,
+        )
+        row = await self._repository.get_session(sid, tenant_id)
+        return self._session_from_row(row) if row else _Session(
+            id=sid, tenant_id=tenant_id, title=title, system_prompt=system_prompt,
+            agent_id=agent_id, folder_id=folder_id,
+        )
+
+    async def aget_session(self, session_id: str, tenant_id: str) -> _Session | None:
+        if self._repository is None:
+            return self.get_session(session_id, tenant_id)
+        row = await self._repository.get_session(session_id, tenant_id)
+        return self._session_from_row(row) if row else None
+
+    async def alist_sessions(self, tenant_id: str) -> list[_Session]:
+        if self._repository is None:
+            return self.list_sessions(tenant_id)
+        rows = await self._repository.list_sessions(tenant_id)
+        return [self._session_from_row(r) for r in rows]
+
+    async def aupdate_session(
+        self, session_id: str, tenant_id: str, **kwargs: Any
+    ) -> _Session | None:
+        if self._repository is None:
+            return self.update_session(session_id, tenant_id, **kwargs)
+        await self._repository.update_session(session_id, tenant_id, **kwargs)
+        return await self.aget_session(session_id, tenant_id)
+
+    async def adelete_session(self, session_id: str, tenant_id: str) -> bool:
+        if self._repository is None:
+            return self.delete_session(session_id, tenant_id)
+        return bool(await self._repository.delete_session(session_id, tenant_id))
 
     async def attach_file(
         self,
