@@ -532,6 +532,34 @@ class ChatService:
             metadata={"delivery": "async"},
         )
 
+    async def attach_file(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        content_bytes: bytes,
+        filename: str = "document",
+    ) -> _Message | None:
+        """Parse an uploaded file and store it as conversation context (Phase 4).
+
+        The extracted text is saved as a user message so it's naturally included
+        in the next turn's history (no run_qa/run_goal change needed). Returns None
+        if the session doesn't exist.
+        """
+        if self.get_session(session_id, tenant_id) is None:
+            return None
+        from app.chat.attachments import format_attachment_context, parse_attachment
+
+        parsed = await parse_attachment(content_bytes, filename)
+        context = format_attachment_context(parsed)
+        return self.save_message(
+            session_id=session_id,
+            tenant_id=tenant_id,
+            role="user",
+            content=context,
+            metadata={"attachment": filename, "kind": "attachment"},
+        )
+
     # ── Real GOAL execution (replaces the old simulated stream) ────────────────
 
     async def run_goal(

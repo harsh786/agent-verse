@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from starlette.responses import Response, StreamingResponse
 
@@ -174,6 +174,25 @@ async def list_skills(request: Request) -> dict[str, Any]:
     _tenant(request)
     svc = _svc(request)
     return {"skills": svc.list_skills()}
+
+
+@router.post("/sessions/{session_id}/attachments", status_code=status.HTTP_201_CREATED)
+async def upload_attachment(
+    session_id: str, request: Request, file: UploadFile = File(...)
+) -> dict[str, Any]:
+    """Upload a file; it's parsed and added to the conversation as context (Phase 4)."""
+    tenant = _tenant(request)
+    svc = _svc(request)
+    data = await file.read()
+    msg = await svc.attach_file(
+        session_id=session_id,
+        tenant_id=tenant.tenant_id,
+        content_bytes=data,
+        filename=file.filename or "document",
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _message_to_dict(msg)
 
 
 @router.get("/artifacts/{artifact_id}/download")
