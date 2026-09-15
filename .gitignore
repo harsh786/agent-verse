@@ -45,3 +45,10 @@ githooks1/*
 .githooks/commit-msg
 agent-verse-frontend/node_modules/*/*.js
 agent-verse-frontend/node_modules/.vite/deps/react-dom_client.js
+
+# e2e run artifacts
+agent-verse-frontend/test-results/
+agent-verse-frontend/e2e/real-e2e/__screens__/
+agent-verse-frontend/e2e/chat/__screens__/
+agent-verse-frontend/playwright-report/
+agent-verse-frontend/playwright-real-e2e-report/
