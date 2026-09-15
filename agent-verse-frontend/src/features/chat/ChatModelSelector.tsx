@@ -17,7 +17,7 @@ export function ChatModelSelector({ models, selected, onChange }: Props): JSX.El
   return (
     <div className="relative">
       <button
-        className="flex items-center gap-1.5 text-xs text-[#5A7494] hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 transition-colors px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+        className="flex items-center gap-1.5 text-xs text-muted-foreground/70 hover:text-muted-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -30,7 +30,7 @@ export function ChatModelSelector({ models, selected, onChange }: Props): JSX.El
 
       {open && (
         <div
-          className="absolute bottom-full left-0 mb-1 z-50 w-52 bg-[#0F1826] dark:bg-gray-800 border border-white/[0.08] dark:border-gray-700 rounded-xl shadow-xl overflow-hidden"
+          className="absolute bottom-full left-0 mb-1 z-50 w-52 bg-card border border-border rounded-xl shadow-xl overflow-hidden"
           role="listbox"
         >
           {models.map((m) => (
@@ -42,7 +42,7 @@ export function ChatModelSelector({ models, selected, onChange }: Props): JSX.El
                 'flex items-center w-full px-3 py-2 text-xs text-left transition-colors',
                 m === selected
                   ? 'bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 font-medium'
-                  : 'text-[#A0B4CC] dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700',
+                  : 'text-muted-foreground hover:bg-muted',
               ].join(' ')}
               onClick={() => { onChange(m); setOpen(false); }}
             >

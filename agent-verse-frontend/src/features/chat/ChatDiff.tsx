@@ -13,15 +13,15 @@ export function ChatDiff({ content, title }: Props): JSX.Element {
   const lines = content.split('\n');
 
   return (
-    <div className="rounded-xl border border-white/[0.08] dark:border-gray-700 overflow-hidden" role="region" aria-label={title ?? 'Diff'}>
+    <div className="rounded-xl border border-border overflow-hidden" role="region" aria-label={title ?? 'Diff'}>
       {title && (
-        <div className="px-3 py-2 bg-[#0A0F1A] dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 text-xs font-medium text-[#5A7494] dark:text-gray-300">
+        <div className="px-3 py-2 bg-background border-b border-border text-xs font-medium text-muted-foreground/70">
           {title}
         </div>
       )}
-      <pre className="text-xs overflow-x-auto p-0 bg-[#0F1826] dark:bg-gray-900 m-0">
+      <pre className="text-xs overflow-x-auto p-0 bg-card m-0">
         {lines.map((line, i) => {
-          let cls = 'block px-4 py-0.5 text-[#5A7494] dark:text-gray-400';
+          let cls = 'block px-4 py-0.5 text-muted-foreground/70';
           if (line.startsWith('+') && !line.startsWith('+++')) {
             cls = 'block px-4 py-0.5 bg-green-50 dark:bg-green-950 text-green-700 dark:text-green-300';
           } else if (line.startsWith('-') && !line.startsWith('---')) {

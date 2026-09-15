@@ -16,7 +16,7 @@ export function ChatDataTable({ data, title }: Props): JSX.Element {
   const [sortAsc, setSortAsc] = useState(true);
 
   if (!data || data.length === 0) {
-    return <p className="text-xs text-[#A0B4CC]">No data to display</p>;
+    return <p className="text-xs text-muted-foreground">No data to display</p>;
   }
 
   const keys = Object.keys(data[0]);
@@ -41,12 +41,12 @@ export function ChatDataTable({ data, title }: Props): JSX.Element {
   };
 
   return (
-    <div className="rounded-xl border border-white/[0.08] dark:border-gray-700 overflow-hidden">
+    <div className="rounded-xl border border-border overflow-hidden">
       {title && (
-        <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
-          <span className="text-xs font-medium text-[#5A7494] dark:text-gray-300">{title}</span>
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground/70">{title}</span>
           <input
-            className="text-xs border border-white/[0.08] dark:border-gray-700 rounded-lg px-2 py-1 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+            className="text-xs border border-border rounded-lg px-2 py-1 w-40 focus:outline-none focus:ring-1 focus:ring-indigo-400"
             placeholder="Filter…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -56,12 +56,12 @@ export function ChatDataTable({ data, title }: Props): JSX.Element {
       )}
       <div className="overflow-x-auto">
         <table className="min-w-full text-xs" role="table">
-          <thead className="bg-[#0A0F1A] dark:bg-gray-800">
+          <thead className="bg-background">
             <tr>
               {keys.map((k) => (
                 <th
                   key={k}
-                  className="px-3 py-2 text-left font-medium text-[#5A7494] uppercase tracking-wide cursor-pointer hover:text-indigo-600 select-none"
+                  className="px-3 py-2 text-left font-medium text-muted-foreground/70 uppercase tracking-wide cursor-pointer hover:text-indigo-600 select-none"
                   scope="col"
                   onClick={() => toggleSort(k)}
                 >
@@ -75,9 +75,9 @@ export function ChatDataTable({ data, title }: Props): JSX.Element {
           </thead>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
             {filtered.map((row, i) => (
-              <tr key={i} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+              <tr key={i} className="hover:bg-muted">
                 {keys.map((k) => (
-                  <td key={k} className="px-3 py-2 text-[#A0B4CC] dark:text-gray-300">
+                  <td key={k} className="px-3 py-2 text-muted-foreground">
                     {String(row[k] ?? '')}
                   </td>
                 ))}
@@ -86,7 +86,7 @@ export function ChatDataTable({ data, title }: Props): JSX.Element {
           </tbody>
         </table>
       </div>
-      <div className="px-3 py-1.5 border-t border-gray-100 dark:border-gray-800 text-xs text-[#A0B4CC]">
+      <div className="px-3 py-1.5 border-t border-border text-xs text-muted-foreground">
         {filtered.length} of {data.length} rows
       </div>
     </div>

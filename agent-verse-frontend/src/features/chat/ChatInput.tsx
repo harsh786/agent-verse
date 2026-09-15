@@ -228,7 +228,7 @@ export function ChatInput({
 
   return (
     <div
-      className={`relative border-t border-white/[0.08] dark:border-gray-700 bg-[#0F1826] dark:bg-gray-900 px-4 py-3 ${
+      className={`relative border-t border-border bg-card px-4 py-3 ${
         isDragging ? 'ring-2 ring-indigo-500 ring-inset' : ''
       }`}
       onDragOver={(e) => {
@@ -241,7 +241,7 @@ export function ChatInput({
       data-testid="chat-composer"
     >
       {isDragging && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-[#0A0F1A]/80 text-sm text-indigo-300">
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/80 text-sm text-indigo-300">
           Drop files to attach
         </div>
       )}
@@ -249,7 +249,7 @@ export function ChatInput({
       {/* Slash / mention menu */}
       {menu?.kind === 'slash' && filteredCommands.length > 0 && (
         <div
-          className="absolute bottom-full left-4 mb-2 w-64 rounded-xl border border-white/[0.08] bg-[#0A0F1A] py-1 shadow-lg z-20"
+          className="absolute bottom-full left-4 mb-2 w-64 rounded-xl border border-border bg-background py-1 shadow-lg z-20"
           data-testid="slash-menu"
           role="listbox"
           aria-label="Slash commands"
@@ -263,15 +263,15 @@ export function ChatInput({
               className="flex w-full flex-col items-start px-3 py-1.5 text-left hover:bg-white/[0.06]"
               onClick={() => selectCommand(c)}
             >
-              <span className="text-sm text-[#F0F6FF]">{c.name}</span>
-              <span className="text-xs text-[#5A7494]">{c.description}</span>
+              <span className="text-sm text-foreground">{c.name}</span>
+              <span className="text-xs text-muted-foreground/70">{c.description}</span>
             </button>
           ))}
         </div>
       )}
       {menu?.kind === 'mention' && filteredMentions.length > 0 && (
         <div
-          className="absolute bottom-full left-4 mb-2 w-56 rounded-xl border border-white/[0.08] bg-[#0A0F1A] py-1 shadow-lg z-20"
+          className="absolute bottom-full left-4 mb-2 w-56 rounded-xl border border-border bg-background py-1 shadow-lg z-20"
           data-testid="mention-menu"
           role="listbox"
           aria-label="Mentions"
@@ -282,7 +282,7 @@ export function ChatInput({
               type="button"
               role="option"
               aria-selected={false}
-              className="flex w-full items-center px-3 py-1.5 text-left text-sm text-[#F0F6FF] hover:bg-white/[0.06]"
+              className="flex w-full items-center px-3 py-1.5 text-left text-sm text-foreground hover:bg-white/[0.06]"
               onClick={() => selectMention(m)}
             >
               @{m}
@@ -295,12 +295,12 @@ export function ChatInput({
       <div className="mb-2 flex items-center gap-2">
         {availableModels.length > 0 && onModelChange && (
           <>
-            <label htmlFor="model-selector" className="text-xs text-[#5A7494]">
+            <label htmlFor="model-selector" className="text-xs text-muted-foreground/70">
               Model:
             </label>
             <select
               id="model-selector"
-              className="text-xs border border-white/[0.08] dark:border-gray-700 rounded-lg px-2 py-1 bg-[#0F1826] dark:bg-gray-800 text-[#A0B4CC] dark:text-gray-300"
+              className="text-xs border border-border rounded-lg px-2 py-1 bg-card text-muted-foreground"
               value={selectedModel ?? ''}
               onChange={(e) => onModelChange(e.target.value)}
               aria-label="Select LLM model"
@@ -317,7 +317,7 @@ export function ChatInput({
         {onRegenerate && canRegenerate && (
           <button
             type="button"
-            className="ml-auto flex items-center gap-1 text-xs text-[#A0B4CC] hover:text-indigo-400 disabled:opacity-50 transition-colors"
+            className="ml-auto flex items-center gap-1 text-xs text-muted-foreground hover:text-indigo-400 disabled:opacity-50 transition-colors"
             onClick={onRegenerate}
             disabled={isLoading || disabled}
             aria-label="Regenerate response"
@@ -336,7 +336,7 @@ export function ChatInput({
           {attachments.map((a) => (
             <span
               key={a.attachment_id}
-              className="inline-flex items-center gap-1 rounded-lg bg-[#1E2C4A] px-2 py-1 text-xs text-[#A0B4CC]"
+              className="inline-flex items-center gap-1 rounded-lg bg-secondary px-2 py-1 text-xs text-muted-foreground"
             >
               <Paperclip className="w-3 h-3" />
               {a.filename}
@@ -377,7 +377,7 @@ export function ChatInput({
             />
             <button
               type="button"
-              className="shrink-0 w-11 h-11 rounded-xl bg-[#0A0F1A] hover:bg-[#1E2C4A] border border-white/[0.08] flex items-center justify-center text-[#A0B4CC] transition-colors"
+              className="shrink-0 w-11 h-11 rounded-xl bg-background hover:bg-secondary border border-border flex items-center justify-center text-muted-foreground transition-colors"
               onClick={() => fileInputRef.current?.click()}
               disabled={isLoading || disabled}
               aria-label="Attach file"
@@ -391,7 +391,7 @@ export function ChatInput({
         <textarea
           ref={textareaRef}
           rows={1}
-          className="flex-1 resize-none rounded-xl border border-white/[0.08] dark:border-gray-700 bg-[#0A0F1A] dark:bg-gray-800 px-4 py-3 text-sm text-[#F0F6FF] dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[44px] max-h-[200px]"
+          className="flex-1 resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500 min-h-[44px] max-h-[200px]"
           placeholder="Ask a question or describe a goal… (Enter to send, Shift+Enter for newline)"
           value={value}
           onChange={(e) => setInput(e.target.value)}
@@ -405,10 +405,10 @@ export function ChatInput({
         {voiceSupported && (
           <button
             type="button"
-            className={`shrink-0 w-11 h-11 rounded-xl border border-white/[0.08] flex items-center justify-center transition-colors ${
+            className={`shrink-0 w-11 h-11 rounded-xl border border-border flex items-center justify-center transition-colors ${
               isRecording
                 ? 'bg-red-600 text-white'
-                : 'bg-[#0A0F1A] hover:bg-[#1E2C4A] text-[#A0B4CC]'
+                : 'bg-background hover:bg-secondary text-muted-foreground'
             }`}
             onClick={toggleRecording}
             disabled={isLoading || disabled}
@@ -445,7 +445,7 @@ export function ChatInput({
         )}
       </div>
 
-      <p className="mt-1 text-xs text-[#A0B4CC]">
+      <p className="mt-1 text-xs text-muted-foreground">
         Enter to send · Shift+Enter for new line · / for commands · @ to mention
       </p>
     </div>

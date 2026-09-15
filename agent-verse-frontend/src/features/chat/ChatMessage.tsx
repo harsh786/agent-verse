@@ -83,7 +83,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
         {isUser && isEditing ? (
           <div className="w-full min-w-[240px] flex flex-col items-end gap-2">
             <textarea
-              className="w-full resize-none rounded-2xl border border-white/[0.08] bg-[#0A0F1A] px-4 py-3 text-sm text-[#F0F6FF] focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full resize-none rounded-2xl border border-border bg-background px-4 py-3 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-indigo-500"
               value={draft}
               rows={Math.min(6, draft.split('\n').length + 1)}
               onChange={(e) => setDraft(e.target.value)}
@@ -102,7 +102,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
             />
             <div className="flex gap-2">
               <button
-                className="text-xs px-3 py-1 rounded-lg text-[#A0B4CC] hover:text-[#F0F6FF] transition-colors"
+                className="text-xs px-3 py-1 rounded-lg text-muted-foreground hover:text-foreground transition-colors"
                 onClick={() => setIsEditing(false)}
               >
                 Cancel
@@ -127,7 +127,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
                 isUser || isStreaming ? 'whitespace-pre-wrap' : '',
                 isUser
                   ? 'bg-indigo-600 text-white rounded-br-sm'
-                  : 'bg-[#0F1826] dark:bg-gray-800 text-[#F0F6FF] dark:text-gray-100 rounded-bl-sm',
+                  : 'bg-card text-foreground rounded-bl-sm',
               ].join(' ')}
             >
               {!isUser && !isStreaming && displayContent ? (
@@ -148,7 +148,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
             {/* Edit button for user messages */}
             {isUser && onEdit && !isStreaming && (
               <button
-                className="mt-1 text-xs text-[#A0B4CC] hover:text-indigo-500 transition-colors"
+                className="mt-1 text-xs text-muted-foreground hover:text-indigo-500 transition-colors"
                 onClick={beginEdit}
                 aria-label="Edit message"
               >
@@ -159,7 +159,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
         )}
 
         <time
-          className="text-xs text-[#A0B4CC] mt-1 px-1"
+          className="text-xs text-muted-foreground mt-1 px-1"
           dateTime={message.created_at}
           aria-label={`Sent at ${new Date(message.created_at).toLocaleTimeString()}`}
         >
@@ -168,7 +168,7 @@ export function ChatMessage({ message, isStreaming, streamingTokens, onEdit }: P
       </div>
 
       {isUser && (
-        <div className="w-8 h-8 rounded-full bg-[#1E2C4A] dark:bg-gray-600 flex items-center justify-center text-[#A0B4CC] dark:text-gray-200 text-sm font-bold ml-3 mt-1 shrink-0">
+        <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center text-muted-foreground text-sm font-bold ml-3 mt-1 shrink-0">
           U
         </div>
       )}

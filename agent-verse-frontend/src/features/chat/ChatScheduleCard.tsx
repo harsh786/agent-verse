@@ -49,26 +49,26 @@ export function ChatScheduleCard({
       </div>
 
       {goalText && (
-        <p className="text-sm font-medium text-[#F0F6FF] dark:text-gray-200 mb-2">{goalText}</p>
+        <p className="text-sm font-medium text-foreground mb-2">{goalText}</p>
       )}
 
       <dl className="space-y-1 text-xs">
         {humanSchedule && (
           <div className="flex gap-2">
-            <dt className="text-[#5A7494] w-20 shrink-0">Runs</dt>
-            <dd className="text-[#A0B4CC] dark:text-gray-300">{humanSchedule}</dd>
+            <dt className="text-muted-foreground/70 w-20 shrink-0">Runs</dt>
+            <dd className="text-muted-foreground">{humanSchedule}</dd>
           </div>
         )}
         {cronExpression && (
           <div className="flex gap-2">
-            <dt className="text-[#5A7494] w-20 shrink-0">Cron</dt>
-            <dd className="font-mono text-[#A0B4CC] dark:text-gray-300">{cronExpression}</dd>
+            <dt className="text-muted-foreground/70 w-20 shrink-0">Cron</dt>
+            <dd className="font-mono text-muted-foreground">{cronExpression}</dd>
           </div>
         )}
         {nextRun && (
           <div className="flex gap-2">
-            <dt className="text-[#5A7494] w-20 shrink-0">Next run</dt>
-            <dd className="text-[#A0B4CC] dark:text-gray-300">{nextRun}</dd>
+            <dt className="text-muted-foreground/70 w-20 shrink-0">Next run</dt>
+            <dd className="text-muted-foreground">{nextRun}</dd>
           </div>
         )}
       </dl>

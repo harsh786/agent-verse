@@ -504,7 +504,7 @@ export default function ChatPage() {
 
   return (
     <JARVISPageShell>
-    <JARVISStagger className="flex h-full w-full overflow-hidden bg-[#0F1826] dark:bg-[#060810]">
+    <JARVISStagger className="flex h-full w-full overflow-hidden bg-card">
       <ChatSidebar
         sessions={sessions}
         folders={folders}
@@ -523,15 +523,15 @@ export default function ChatPage() {
           <AgenticExecutionPanel
             events={streamEvents as unknown[] as never}
             isActive={isStreaming}
-            className="w-64 shrink-0 border-r border-white/[0.06] rounded-none"
+            className="w-64 shrink-0 border-r border-border rounded-none"
           />
         )}
         <div className="flex-1 flex flex-col overflow-hidden">
         {sessionId ? (
           <>
             {/* Thread header */}
-            <header className="px-6 py-3 border-b border-white/[0.08] dark:border-[#1E2535] flex items-center justify-between gap-3 bg-[#0F1826] dark:bg-[#0F1117]">
-              <h1 className="text-sm font-semibold text-[#A0B4CC] dark:text-[#E2E8F0] truncate min-w-0">
+            <header className="px-6 py-3 border-b border-border flex items-center justify-between gap-3 bg-card">
+              <h1 className="text-sm font-semibold text-muted-foreground truncate min-w-0">
                 {activeSession?.title ?? 'Chat'}
               </h1>
               <div className="flex items-center gap-2 shrink-0">
@@ -556,21 +556,21 @@ export default function ChatPage() {
                   <ChatModelSelector models={availableModels} selected={selectedModel} onChange={handleModelChange} />
                 )}
                 <button
-                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  className="p-1.5 rounded-lg text-muted-foreground/70 hover:text-muted-foreground hover:bg-white/[0.05] transition-colors"
                   aria-label="Session usage"
                   onClick={() => void handleOpenUsage()}
                 >
                   <BarChart3 className="w-4 h-4" />
                 </button>
                 <button
-                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  className="p-1.5 rounded-lg text-muted-foreground/70 hover:text-muted-foreground hover:bg-white/[0.05] transition-colors"
                   aria-label="Summarize conversation"
                   onClick={() => void handleSummarize()}
                 >
                   <FileText className="w-4 h-4" />
                 </button>
                 <button
-                  className={`p-1.5 rounded-lg transition-colors ${showServices ? 'text-indigo-400 bg-white/[0.06]' : 'text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05]'}`}
+                  className={`p-1.5 rounded-lg transition-colors ${showServices ? 'text-indigo-400 bg-white/[0.06]' : 'text-muted-foreground/70 hover:text-muted-foreground hover:bg-white/[0.05]'}`}
                   aria-label="Connected services"
                   aria-pressed={showServices}
                   onClick={() => setShowServices((v) => !v)}
@@ -578,13 +578,13 @@ export default function ChatPage() {
                   <Plug className="w-4 h-4" />
                 </button>
                 <button
-                  className="p-1.5 rounded-lg text-[#5A7494] hover:text-[#A0B4CC] hover:bg-white/[0.05] transition-colors"
+                  className="p-1.5 rounded-lg text-muted-foreground/70 hover:text-muted-foreground hover:bg-white/[0.05] transition-colors"
                   aria-label="Session settings"
                   onClick={() => setShowSettings(true)}
                 >
                   <Settings className="w-4 h-4" />
                 </button>
-                <span className="text-xs text-[#A0B4CC] ml-1">{allMessages.length} messages</span>
+                <span className="text-xs text-muted-foreground ml-1">{allMessages.length} messages</span>
               </div>
             </header>
 
@@ -698,22 +698,22 @@ export default function ChatPage() {
               💬
             </div>
             <div>
-              <h2 className="text-xl font-semibold text-[#F0F6FF] dark:text-[#E2E8F0]">
+              <h2 className="text-xl font-semibold text-foreground">
                 AgentVerse Chat
               </h2>
-              <p className="mt-2 text-sm text-[#5A7494] max-w-sm">
+              <p className="mt-2 text-sm text-muted-foreground/70 max-w-sm">
                 Ask questions, execute goals, schedule tasks — all in one
                 conversational interface powered by AI agents.
               </p>
             </div>
             <button
-              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-[#F1F5F9] rounded-xl font-medium transition-colors"
+              className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-foreground rounded-xl font-medium transition-colors"
               onClick={handleNewSession}
             >
               Start a New Chat
             </button>
             {sessions.length > 0 && (
-              <p className="text-xs text-[#A0B4CC]">
+              <p className="text-xs text-muted-foreground">
                 Or select a session from the sidebar
               </p>
             )}
@@ -726,7 +726,7 @@ export default function ChatPage() {
         )}
         {/* Connected MCP services side panel (header toggle) */}
         {showServices && (
-          <aside className="w-80 shrink-0 border-l border-white/[0.08] dark:border-gray-700 bg-[#0F1826] dark:bg-[#0F1117]">
+          <aside className="w-80 shrink-0 border-l border-border bg-card">
             <ConnectedServicesPanel onClose={() => setShowServices(false)} />
           </aside>
         )}

@@ -23,7 +23,7 @@ export function ChatReasoningPanel({ reasoning, isStreaming, defaultOpen = false
   if (!reasoning.trim()) return null;
 
   return (
-    <div className="mx-4 my-2 rounded-xl border border-white/[0.08] bg-[#0A0F1A] dark:bg-gray-900 overflow-hidden">
+    <div className="mx-4 my-2 rounded-xl border border-border bg-background overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -31,15 +31,15 @@ export function ChatReasoningPanel({ reasoning, isStreaming, defaultOpen = false
         aria-controls="chat-reasoning-body"
         className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.03] transition-colors"
       >
-        <Brain className="h-3.5 w-3.5 text-[#8B9CB8] shrink-0" aria-hidden />
-        <span className="text-[11px] font-medium uppercase tracking-wide text-[#A0B4CC]">
+        <Brain className="h-3.5 w-3.5 text-muted-foreground/70 shrink-0" aria-hidden />
+        <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
           Reasoning
         </span>
         {isStreaming && !reduce && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[#00D4FF] animate-pulse" aria-hidden />
+          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" aria-hidden />
         )}
         <ChevronDown
-          className={`ml-auto h-3.5 w-3.5 text-[#5A7494] transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`ml-auto h-3.5 w-3.5 text-muted-foreground/70 transition-transform ${open ? 'rotate-180' : ''}`}
           aria-hidden
         />
       </button>
@@ -54,7 +54,7 @@ export function ChatReasoningPanel({ reasoning, isStreaming, defaultOpen = false
             transition={reduce ? { duration: 0 } : { duration: 0.2 }}
             className="overflow-hidden"
           >
-            <pre className="px-3 pb-3 pt-1 text-[11px] leading-relaxed text-[#8B9CB8] whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">
+            <pre className="px-3 pb-3 pt-1 text-[11px] leading-relaxed text-muted-foreground/70 whitespace-pre-wrap break-words font-mono max-h-64 overflow-y-auto">
               {reasoning}
             </pre>
           </motion.div>

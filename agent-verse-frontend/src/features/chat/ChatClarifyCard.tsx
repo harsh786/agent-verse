@@ -21,13 +21,13 @@ export function ChatClarifyCard({ question, options = [], round = 1, onAnswer }:
           Clarification needed (round {round}/3)
         </span>
       </div>
-      <p className="text-sm font-medium text-[#F0F6FF] dark:text-gray-200 mb-3">{question}</p>
+      <p className="text-sm font-medium text-foreground mb-3">{question}</p>
       {options.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {options.map((opt, i) => (
             <button
               key={i}
-              className="text-xs px-3 py-1.5 bg-[#0F1826] dark:bg-gray-800 border border-yellow-300 dark:border-yellow-700 rounded-full text-[#A0B4CC] dark:text-gray-200 hover:bg-yellow-100 dark:hover:bg-yellow-900 transition-colors"
+              className="text-xs px-3 py-1.5 bg-card border border-yellow-300 dark:border-yellow-700 rounded-full text-muted-foreground hover:bg-yellow-100 dark:hover:bg-yellow-900 transition-colors"
               onClick={() => onAnswer?.(opt)}
             >
               {opt}

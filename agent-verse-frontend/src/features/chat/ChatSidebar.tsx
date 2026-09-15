@@ -55,7 +55,7 @@ export function ChatSidebar({
           'group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors',
           isActive
             ? 'bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300'
-            : 'hover:bg-gray-100 dark:hover:bg-gray-800 text-[#A0B4CC] dark:text-gray-300',
+            : 'hover:bg-muted text-muted-foreground',
         ].join(' ')}
         onClick={() => onSelectSession(session.id)}
         role="button"
@@ -67,7 +67,7 @@ export function ChatSidebar({
         <MessageSquare className="w-4 h-4 shrink-0 opacity-60" />
         {editing ? (
           <input
-            className="flex-1 min-w-0 text-sm bg-transparent border-b border-indigo-500 outline-none text-[#F0F6FF]"
+            className="flex-1 min-w-0 text-sm bg-transparent border-b border-indigo-500 outline-none text-foreground"
             value={draft}
             autoFocus
             onClick={(e) => e.stopPropagation()}
@@ -90,7 +90,7 @@ export function ChatSidebar({
         <div className="hidden group-hover:flex items-center gap-1">
           {onRenameSession && !editing && (
             <button
-              className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+              className="p-1 rounded hover:bg-muted"
               onClick={(e) => {
                 e.stopPropagation();
                 setDraft(session.title);
@@ -98,11 +98,11 @@ export function ChatSidebar({
               }}
               aria-label="Rename session"
             >
-              <Pencil className="w-3 h-3 text-[#A0B4CC]" />
+              <Pencil className="w-3 h-3 text-muted-foreground" />
             </button>
           )}
           <button
-            className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+            className="p-1 rounded hover:bg-muted"
             onClick={(e) => {
               e.stopPropagation();
               onPinSession(session.id, !session.pinned);
@@ -110,7 +110,7 @@ export function ChatSidebar({
             aria-label={session.pinned ? 'Unpin session' : 'Pin session'}
           >
             <Pin
-              className={`w-3 h-3 ${session.pinned ? 'text-indigo-500' : 'text-[#A0B4CC]'}`}
+              className={`w-3 h-3 ${session.pinned ? 'text-indigo-500' : 'text-muted-foreground'}`}
             />
           </button>
           <button
@@ -145,13 +145,13 @@ export function ChatSidebar({
 
   return (
     <aside
-      className="w-64 shrink-0 flex flex-col border-r border-white/[0.08] dark:border-gray-700 bg-[#0A0F1A] dark:bg-gray-900 h-full"
+      className="w-64 shrink-0 flex flex-col border-r border-border bg-background h-full"
       aria-label="Chat sessions"
     >
       {/* Header */}
-      <div className="p-3 border-b border-white/[0.08] dark:border-gray-700">
+      <div className="p-3 border-b border-border">
         <button
-          className="w-full flex items-center gap-2 justify-center py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition-colors"
+          className="w-full flex items-center gap-2 justify-center py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-foreground rounded-lg text-sm font-medium transition-colors"
           onClick={onNewSession}
           aria-label="New chat session"
           data-testid="new-chat-button"
@@ -163,10 +163,10 @@ export function ChatSidebar({
 
       {/* Search */}
       <div className="px-3 py-2">
-        <div className="flex items-center gap-2 bg-[#0F1826] dark:bg-gray-800 border border-white/[0.08] dark:border-gray-700 rounded-lg px-3 py-1.5">
-          <Search className="w-3.5 h-3.5 text-[#A0B4CC] shrink-0" />
+        <div className="flex items-center gap-2 bg-card border border-border rounded-lg px-3 py-1.5">
+          <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
           <input
-            className="flex-1 text-sm bg-transparent outline-none text-[#A0B4CC] dark:text-gray-300 placeholder-gray-400"
+            className="flex-1 text-sm bg-transparent outline-none text-muted-foreground placeholder-gray-400"
             placeholder="Search chats…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -178,12 +178,12 @@ export function ChatSidebar({
       {/* Sessions list */}
       <nav className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5">
         {isLoading && (
-          <p className="text-xs text-[#A0B4CC] px-3 py-2">Loading…</p>
+          <p className="text-xs text-muted-foreground px-3 py-2">Loading…</p>
         )}
 
         {pinned.length > 0 && (
           <div>
-            <p className="text-xs font-medium text-[#A0B4CC] px-3 py-1 uppercase tracking-wide">
+            <p className="text-xs font-medium text-muted-foreground px-3 py-1 uppercase tracking-wide">
               Pinned
             </p>
             {pinned.map((s) => (
@@ -198,7 +198,7 @@ export function ChatSidebar({
             if (folderSessions.length === 0) return null;
             return (
               <div key={folder.id}>
-                <p className="flex items-center gap-1 text-xs font-medium text-[#A0B4CC] px-3 py-1 uppercase tracking-wide">
+                <p className="flex items-center gap-1 text-xs font-medium text-muted-foreground px-3 py-1 uppercase tracking-wide">
                   <Folder
                     className="w-3 h-3"
                     style={{ color: folder.color }}
@@ -215,7 +215,7 @@ export function ChatSidebar({
         {unpinned.filter((s) => !s.folder_id).length > 0 && (
           <div>
             {(pinned.length > 0 || folders.length > 0) && (
-              <p className="text-xs font-medium text-[#A0B4CC] px-3 py-1 uppercase tracking-wide">
+              <p className="text-xs font-medium text-muted-foreground px-3 py-1 uppercase tracking-wide">
                 Recent
               </p>
             )}
@@ -228,7 +228,7 @@ export function ChatSidebar({
         )}
 
         {filtered.length === 0 && !isLoading && (
-          <p className="text-xs text-[#A0B4CC] px-3 py-4 text-center">
+          <p className="text-xs text-muted-foreground px-3 py-4 text-center">
             {search ? 'No matching sessions' : 'No sessions yet. Start a new chat!'}
           </p>
         )}
