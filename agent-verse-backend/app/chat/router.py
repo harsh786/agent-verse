@@ -8,9 +8,9 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from app.chat.execution import ChatCodeExecutor
 from app.chat.intent import IntentRouter
@@ -22,7 +22,6 @@ from app.chat.stream import (
     stream_clarify,
     stream_goal_progress,
     stream_qa_response,
-    stream_schedule_created,
 )
 from app.chat.templates import TemplateStore
 from app.providers.model_defaults import configured_default_model as _configured_default_model
@@ -151,7 +150,7 @@ def _message_to_dict(m: Any) -> dict[str, Any]:
 async def create_session(body: CreateSessionRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.create_session(
+    s = await svc.acreate_session(
         tenant.tenant_id,
         title=body.title,
         system_prompt=body.system_prompt,
@@ -165,15 +164,57 @@ async def create_session(body: CreateSessionRequest, request: Request) -> dict[s
 async def list_sessions(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    sessions = svc.list_sessions(tenant.tenant_id)
+    sessions = await svc.alist_sessions(tenant.tenant_id)
     return {"sessions": [_session_to_dict(s) for s in sessions]}
+
+
+@router.get("/skills")
+async def list_skills(request: Request) -> dict[str, Any]:
+    """Discover the chat command-surface skills available to this tenant (Phase 5)."""
+    _tenant(request)
+    svc = _svc(request)
+    return {"skills": svc.list_skills()}
+
+
+@router.post("/sessions/{session_id}/attachments", status_code=status.HTTP_201_CREATED)
+async def upload_attachment(
+    session_id: str, request: Request, file: UploadFile = File(...)
+) -> dict[str, Any]:
+    """Upload a file; it's parsed and added to the conversation as context (Phase 4)."""
+    tenant = _tenant(request)
+    svc = _svc(request)
+    data = await file.read()
+    msg = await svc.attach_file(
+        session_id=session_id,
+        tenant_id=tenant.tenant_id,
+        content_bytes=data,
+        filename=file.filename or "document",
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return _message_to_dict(msg)
+
+
+@router.get("/artifacts/{artifact_id}/download")
+async def download_artifact(artifact_id: str, request: Request) -> Response:
+    """Download a chat-generated document (Phase 4), tenant-scoped."""
+    tenant = _tenant(request)
+    store = getattr(request.app.state, "chat_artifact_store", None)
+    art = store.get(artifact_id, tenant.tenant_id) if store is not None else None
+    if art is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return Response(
+        content=art.content,
+        media_type=art.mime,
+        headers={"Content-Disposition": f'attachment; filename="{art.filename}"'},
+    )
 
 
 @router.get("/sessions/{session_id}")
 async def get_session(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -186,7 +227,7 @@ async def update_session(
     tenant = _tenant(request)
     svc = _svc(request)
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
-    s = svc.update_session(session_id, tenant.tenant_id, **updates)
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, **updates)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -196,7 +237,7 @@ async def update_session(
 async def delete_session(session_id: str, request: Request) -> None:
     tenant = _tenant(request)
     svc = _svc(request)
-    ok = svc.delete_session(session_id, tenant.tenant_id)
+    ok = await svc.adelete_session(session_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -205,7 +246,7 @@ async def delete_session(session_id: str, request: Request) -> None:
 async def pin_session(session_id: str, request: Request, pinned: bool = True) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.pin_session(session_id, tenant.tenant_id, pinned)
+    s = await svc.aupdate_session(session_id, tenant.tenant_id, pinned=pinned)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(s)
@@ -222,10 +263,10 @@ async def list_messages(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msgs = svc.list_messages(session_id, tenant.tenant_id, limit=limit)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=limit)
     return {"messages": [_message_to_dict(m) for m in msgs]}
 
 
@@ -239,11 +280,11 @@ async def send_message(
     """
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    result = svc.dispatch(session_id, tenant.tenant_id, body.content)
+    result = await svc.adispatch(session_id, tenant.tenant_id, body.content)
     return result
 
 
@@ -256,12 +297,12 @@ async def stream_session(
     """SSE endpoint — streams the response for a dispatched message."""
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Find the message to determine intent
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     msg = next((m for m in msgs if m.id == message_id), None)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -277,29 +318,71 @@ async def stream_session(
             ):
                 yield chunk
         elif intent == "SCHEDULE":
+            from app.chat.events import ChatEventType, sse_event
+
             sc = _intent_router.generate_schedule_confirmation(content)
-            async for chunk in stream_schedule_created(
-                session_id, message_id, sc.cron_expression, sc.human_schedule
-            ):
-                yield chunk
+            schedule_ids: list[str] = []
+            if svc.can_schedule:
+                # Actually create the real trigger(s), not just a preview.
+                try:
+                    schedule_ids = await svc.create_schedule(
+                        tenant_ctx=tenant, message=content, agent_id=s.agent_id
+                    )
+                except Exception:
+                    schedule_ids = []
+            yield sse_event(
+                ChatEventType.SCHEDULE_CREATED,
+                session_id=session_id,
+                message_id=message_id,
+                schedule_ids=schedule_ids,
+                cron_expression=sc.cron_expression,
+                human_schedule=sc.human_schedule,
+            )
+            yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
         elif intent == "GOAL":
-            # In prod: dispatch to GoalService via Celery and bridge Redis pub/sub
-            async for chunk in stream_goal_progress(
-                session_id,
-                message_id,
-                f"goal_{message_id}",
-                steps=[
-                    {"name": "planning", "result": "Done"},
-                    {"name": "execution", "result": "Done"},
-                ],
-                suggestions=[
-                    "You can refine this goal further",
-                    "Check the output in the artifacts panel",
-                ],
+            if svc.can_run_goals:
+                # Real engine: submit to GoalService, stream its real events.
+                goal_id = await svc.run_goal(
+                    session_id=session_id,
+                    tenant_id=tenant.tenant_id,
+                    tenant_ctx=tenant,
+                    message_id=message_id,
+                    user_message=content,
+                )
+                async for chunk in svc.stream_goal(
+                    goal_id=goal_id,
+                    tenant_ctx=tenant,
+                    session_id=session_id,
+                    message_id=message_id,
+                ):
+                    yield chunk
+            else:
+                # Legacy simulated fallback (no GoalService wired, e.g. unit tests).
+                async for chunk in stream_goal_progress(
+                    session_id,
+                    message_id,
+                    f"goal_{message_id}",
+                    steps=[
+                        {"name": "planning", "result": "Done"},
+                        {"name": "execution", "result": "Done"},
+                    ],
+                    suggestions=[
+                        "You can refine this goal further",
+                        "Check the output in the artifacts panel",
+                    ],
+                ):
+                    yield chunk
+        elif svc.can_generate_answers:
+            # Real QA answer via the LLM + ConversationContext.
+            async for chunk in svc.run_qa(
+                session_id=session_id,
+                tenant_id=tenant.tenant_id,
+                message_id=message_id,
+                user_message=content,
             ):
                 yield chunk
         else:
-            # QA streaming
+            # Legacy simulated QA fallback (no answer generator wired).
             tokens = [w + " " for w in f"Answering: {content}".split()]
             async for chunk in stream_qa_response(
                 session_id,
@@ -324,10 +407,10 @@ async def edit_message(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msg, pruned = svc.edit_message(message_id, tenant.tenant_id, body.content)
+    msg, pruned = await svc.aedit_message(message_id, tenant.tenant_id, body.content)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found or not editable")
     return {"message": _message_to_dict(msg), "pruned_message_ids": pruned}
@@ -351,7 +434,7 @@ async def delete_message(session_id: str, message_id: str, request: Request) -> 
 async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return svc.session_usage_summary(session_id, tenant.tenant_id)
@@ -364,7 +447,7 @@ async def session_usage(session_id: str, request: Request) -> dict[str, Any]:
 async def summarize_session(session_id: str, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     summary = svc.summarize_session(session_id, tenant.tenant_id)
@@ -435,7 +518,7 @@ async def create_artifact(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     a = svc.create_artifact(
@@ -504,7 +587,7 @@ async def execute_code(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     result = _executor.execute(body.code, body.language, session_id)
@@ -531,7 +614,7 @@ async def within_session_search(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    msgs = svc.list_messages(session_id, tenant.tenant_id, limit=500)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id, limit=500)
     raw = [
         {
             "id": m.id,
@@ -723,7 +806,7 @@ async def submit_feedback(
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     msg = next((m for m in msgs if m.id == message_id), None)
     if not msg:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -740,10 +823,10 @@ async def export_session(session_id: str, request: Request) -> dict[str, Any]:
     """Export session as clean Markdown."""
     tenant = _tenant(request)
     svc = _svc(request)
-    s = svc.get_session(session_id, tenant.tenant_id)
+    s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    msgs = svc.list_messages(session_id, tenant.tenant_id)
+    msgs = await svc.alist_messages(session_id, tenant.tenant_id)
     lines = [f"# {s.title}\n"]
     for m in msgs:
         prefix = "**User**" if m.role == "user" else "**Assistant**"

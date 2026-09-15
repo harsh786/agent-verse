@@ -36,14 +36,14 @@ export function ChatArtifactPanel({ artifact, onClose, onSave }: Props): JSX.Ele
 
   return (
     <aside
-      className="flex flex-col w-[480px] border-l border-white/[0.08] dark:border-gray-700 bg-[#0F1826] dark:bg-gray-900 h-full"
+      className="flex flex-col w-[480px] border-l border-border bg-card h-full"
       aria-label="Artifact panel"
     >
       {/* Header */}
-      <div className="flex items-center px-4 py-3 border-b border-white/[0.08] dark:border-gray-700">
+      <div className="flex items-center px-4 py-3 border-b border-border">
         <div className="flex-1">
-          <p className="text-sm font-medium text-[#F0F6FF] dark:text-gray-200 truncate">{artifact.title}</p>
-          <p className="text-xs text-[#A0B4CC]">{artifact.language}</p>
+          <p className="text-sm font-medium text-foreground truncate">{artifact.title}</p>
+          <p className="text-xs text-muted-foreground">{artifact.language}</p>
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -51,28 +51,28 @@ export function ChatArtifactPanel({ artifact, onClose, onSave }: Props): JSX.Ele
             onClick={handleCopy}
             aria-label="Copy artifact content"
           >
-            {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-[#A0B4CC]" />}
+            {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
           </button>
           <button
             className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
             onClick={handleDownload}
             aria-label="Download artifact"
           >
-            <Download className="w-4 h-4 text-[#A0B4CC]" />
+            <Download className="w-4 h-4 text-muted-foreground" />
           </button>
           <button
             className="p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800"
             onClick={onClose}
             aria-label="Close artifact panel"
           >
-            <X className="w-4 h-4 text-[#A0B4CC]" />
+            <X className="w-4 h-4 text-muted-foreground" />
           </button>
         </div>
       </div>
 
       {/* Editor */}
       <textarea
-        className="flex-1 font-mono text-xs p-4 bg-[#0A0F1A] dark:bg-gray-950 text-[#F0F6FF] dark:text-gray-200 resize-none outline-none border-0"
+        className="flex-1 font-mono text-xs p-4 bg-background text-foreground resize-none outline-none border-0"
         value={content}
         onChange={(e) => setContent(e.target.value)}
         aria-label="Artifact editor"
@@ -81,7 +81,7 @@ export function ChatArtifactPanel({ artifact, onClose, onSave }: Props): JSX.Ele
 
       {/* Footer */}
       {onSave && (
-        <div className="px-4 py-2 border-t border-white/[0.08] dark:border-gray-700">
+        <div className="px-4 py-2 border-t border-border">
           <button
             className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs rounded-lg font-medium transition-colors"
             onClick={() => onSave(content)}

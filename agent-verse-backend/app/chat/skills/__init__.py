@@ -1,0 +1,1 @@
+"""Chat skill registry package."""

@@ -116,6 +116,58 @@ from app.triggers.store import ScheduleStore
 logger = get_logger(__name__)
 
 
+def _apply_onprem_settings(settings: Settings) -> None:
+    """Wire the model cluster (NVIDIA + on-prem) into the provider/router/embedder.
+
+    NVIDIA is the top model when keyed (planning + fallback); the on-prem cluster
+    feeds the embedder + hosted-reranker wiring and contributes Qwen (execution) and
+    Gemma (fast verification). Per-role router overrides are set so every model is
+    selectable per task. Enabling is a single flag / key — no duplicate wiring.
+    """
+    import os as _os
+
+    onprem_on = bool(settings.onprem_enabled and settings.onprem_qwen_base_url.strip())
+    nvidia_on = bool(settings.nvidia_api_key.strip())
+    if not (onprem_on or nvidia_on):
+        return
+
+    # NVIDIA is the top provider when configured; else on-prem.
+    settings.default_llm_provider = "nvidia" if nvidia_on else "onprem"
+    if nvidia_on:
+        settings.default_model = settings.default_model or settings.nvidia_model
+        # Registry + router read NVIDIA_* from env — mirror settings so a key set via
+        # config (not env) still lights up NVIDIA as the top/fallback model.
+        _os.environ.setdefault("NVIDIA_API_KEY", settings.nvidia_api_key)
+        _os.environ.setdefault("NVIDIA_MODEL", settings.nvidia_model)
+        _os.environ.setdefault("NVIDIA_BASE_URL", settings.nvidia_base_url)
+    elif not settings.default_model:
+        settings.default_model = settings.onprem_qwen_model
+
+    # Hybrid per-role routing: NVIDIA plans + is fallback, Qwen executes, Gemma verifies.
+    if nvidia_on and onprem_on:
+        settings.default_llm_provider = "hybrid"
+        _os.environ.setdefault("DEFAULT_PLANNING_MODEL", settings.nvidia_model)
+        _os.environ.setdefault("DEFAULT_EXECUTION_MODEL", settings.onprem_qwen_model)
+        _os.environ.setdefault("DEFAULT_VERIFICATION_MODEL", settings.onprem_gemma_model)
+
+    # Embeddings: NVIDIA embedding model wins when set (dim must match the DB),
+    # else the on-prem embedding endpoint. Only fill when not already configured.
+    if nvidia_on and settings.nvidia_embed_model.strip() and not settings.embedding_base_url:
+        settings.embedding_base_url = settings.nvidia_base_url
+        settings.embedding_model = settings.nvidia_embed_model
+        settings.embedding_api_key = settings.nvidia_api_key
+        settings.embedding_dim = settings.nvidia_embed_dim
+    elif onprem_on and settings.onprem_embedding_base_url and not settings.embedding_base_url:
+        settings.embedding_base_url = settings.onprem_embedding_base_url
+        settings.embedding_model = settings.embedding_model or settings.onprem_embedding_model
+        settings.embedding_api_key = settings.embedding_api_key or settings.onprem_api_key
+        settings.embedding_dim = settings.onprem_embedding_dim
+    if onprem_on and settings.onprem_reranker_url and not settings.rag_hosted_reranker_url:
+        settings.rag_hosted_reranker_url = settings.onprem_reranker_url
+        settings.rag_hosted_reranker_model = settings.onprem_reranker_model
+        settings.rag_hosted_reranker_allow_internal = True  # trusted LAN endpoint
+
+
 def _resolve_provider_for_app(settings: Settings) -> Any:
     """Resolve a real LLM provider from environment, or FakeProvider as last resort.
 
@@ -125,7 +177,20 @@ def _resolve_provider_for_app(settings: Settings) -> Any:
     """
     import os
 
+    # On-prem vLLM cluster takes precedence when enabled: a model→endpoint
+    # dispatching provider (Qwen for reasoning, Gemma for fast, Qwen embeddings).
+    from app.providers.onprem import build_onprem_provider
     from app.providers.registry import resolve_provider
+
+    _onprem = build_onprem_provider(settings)
+    if _onprem is not None:
+        logger.info(
+            "onprem_provider_active",
+            qwen=settings.onprem_qwen_base_url,
+            gemma=settings.onprem_gemma_base_url,
+            embedding=settings.onprem_embedding_base_url,
+        )
+        return _onprem
 
     _app_provider = resolve_provider()
 
@@ -461,6 +526,7 @@ def create_app(
     mcp_registry: MCPRegistry | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
+    _apply_onprem_settings(settings)
     configure_logging(level=settings.log_level, json_logs=settings.is_production)
 
     # Allow env var to enable manage_pools when uvicorn calls create_app() with no args
@@ -483,11 +549,22 @@ def create_app(
 
     _permission_matrix = build_default_permission_matrix()
     _agent_store = AgentStore()
+    # On-prem vLLM cluster wins when enabled (model→endpoint dispatching provider).
+    from app.providers.onprem import build_onprem_provider
+
+    _onprem_provider = build_onprem_provider(settings)
     # C6: Use the declarative provider registry directly; fall back to wrapper on error
     try:
         from app.providers.registry import resolve_provider as _resolve_provider_registry
 
-        _app_provider = _resolve_provider_registry()
+        _app_provider = _onprem_provider or _resolve_provider_registry()
+        if _onprem_provider is not None:
+            logger.info(
+                "onprem_provider_active",
+                qwen=settings.onprem_qwen_base_url,
+                gemma=settings.onprem_gemma_base_url,
+                embedding=settings.onprem_embedding_base_url,
+            )
         # Production safety guard: refuse FakeProvider in production
         if isinstance(_app_provider, FakeProvider):
             import os as _os
@@ -1217,6 +1294,29 @@ def create_app(
             app.state.tenant_service = _tenant_svc_with_db
             app.state.goal_service = _goal_svc_with_db
             app.state.goal_service._app_state = app
+            # Wire chat GOAL turns to the real engine + QA to the real provider,
+            # and swap the chat store to durable Postgres persistence so sessions
+            # and messages survive restarts / span workers (Phase 0.3d).
+            if getattr(app.state, "chat_service", None) is not None:
+                from app.chat.personalization_repo import PostgresPersonalizationStore
+                from app.chat.repository import PostgresChatRepository
+                from app.identity.repository import PostgresIdentityStore
+                from app.identity.service import IdentityService
+                from app.org.service import resolve_llm_provider
+
+                _chat_repo = PostgresChatRepository(db_factory)
+                app.state.chat_repository = _chat_repo
+                # Durable personalization + identity stores (Phase 11 / Phase 3),
+                # swapping the in-memory defaults for Postgres-backed ones.
+                _identity_svc = IdentityService(PostgresIdentityStore(db_factory))
+                app.state.identity_service = _identity_svc
+                app.state.chat_service.attach_engine(
+                    goal_service=_goal_svc_with_db,
+                    answer_generator=resolve_llm_provider(app.state),
+                    repository=_chat_repo,
+                    personalization_store=PostgresPersonalizationStore(db_factory),
+                    identity_service=_identity_svc,
+                )
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
@@ -1335,6 +1435,9 @@ def create_app(
 
             app.state.audit_log = _audit_log_db
             app.state.schedule_store = _schedule_store_db
+            # Chat SCHEDULE turns use the DB-backed schedule store (Phase 2).
+            if getattr(app.state, "chat_service", None) is not None:
+                app.state.chat_service.attach_engine(schedule_store=_schedule_store_db)
             app.state.knowledge_store = _knowledge_store_db
             app.state.collab_store = _collab_store_db
 
@@ -2163,6 +2266,14 @@ def create_app(
     # Core services
     app.state.tenant_service = _tenant_svc
     app.state.goal_service = _goal_svc
+    # Wire chat GOAL turns to the real engine + QA to the real provider.
+    if getattr(app.state, "chat_service", None) is not None:
+        from app.org.service import resolve_llm_provider
+
+        app.state.chat_service.attach_engine(
+            goal_service=_goal_svc,
+            answer_generator=resolve_llm_provider(app.state),
+        )
     from app.orchestration.graph_factory import GraphFactory
     from app.orchestration.strategy_certification import CertificationEvaluator
     from app.orchestration.strategy_context_store import StrategyGoalContextStore

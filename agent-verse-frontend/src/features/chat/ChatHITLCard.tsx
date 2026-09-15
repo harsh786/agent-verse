@@ -69,13 +69,13 @@ export function ChatHITLCard({
           {riskLevel} risk
         </span>
       </div>
-      <p className="text-sm text-[#F0F6FF] dark:text-gray-200 mb-1">
+      <p className="text-sm text-foreground mb-1">
         <strong>Step:</strong> {stepName}
       </p>
       {requestId && (
-        <p className="text-xs text-[#5A7494] mb-1">ID: {requestId}</p>
+        <p className="text-xs text-muted-foreground/70 mb-1">ID: {requestId}</p>
       )}
-      <p className={`text-xs mb-3 font-mono tabular-nums ${isUrgent ? 'text-red-500 font-semibold' : 'text-[#5A7494]'}`}>
+      <p className={`text-xs mb-3 font-mono tabular-nums ${isUrgent ? 'text-red-500 font-semibold' : 'text-muted-foreground/70'}`}>
         {remaining === 0 ? 'Timed out' : `Expires in ${timeLabel}`}
       </p>
       <div className="flex gap-2">

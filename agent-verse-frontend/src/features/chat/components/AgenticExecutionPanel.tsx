@@ -25,13 +25,13 @@ interface AgenticExecutionPanelProps {
 }
 
 const TYPE_META: Record<ExecutionItem['type'], { color: string; Icon: React.ElementType }> = {
-  tool:       { color: '#FFB300', Icon: Zap },
-  step:       { color: '#6366F1', Icon: Loader2 },
-  knowledge:  { color: '#34D399', Icon: BookOpen },
-  guardrail:  { color: '#FF3366', Icon: Shield },
-  hitl:       { color: '#FFB300', Icon: Clock },
-  complete:   { color: '#00E676', Icon: CheckCircle2 },
-  failed:     { color: '#FF3366', Icon: XCircle },
+  tool:       { color: 'var(--accent-amber)', Icon: Zap },
+  step:       { color: 'var(--accent-violet)', Icon: Loader2 },
+  knowledge:  { color: 'var(--accent-emerald)', Icon: BookOpen },
+  guardrail:  { color: 'var(--accent-rose)', Icon: Shield },
+  hitl:       { color: 'var(--accent-amber)', Icon: Clock },
+  complete:   { color: 'var(--accent-emerald)', Icon: CheckCircle2 },
+  failed:     { color: 'var(--accent-rose)', Icon: XCircle },
 };
 
 export function AgenticExecutionPanel({ events, isActive, className }: AgenticExecutionPanelProps) {
@@ -49,20 +49,22 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
       const next = [...prev];
       for (const evt of newEvts) {
         const id = `${evt.type}-${Date.now()}-${Math.random()}`;
-        if (evt.type === 'tool_call_complete' || evt.type === 'tool_call_failed') {
-          next.push({ id, type: 'tool', label: String(evt.tool_name ?? evt.tool ?? 'Tool'),
-            success: evt.type === 'tool_call_complete', timestamp: Date.now() });
+        // Accept the canonical chat-event vocabulary (app/chat/events.py) plus the
+        // legacy GoalEvent names, so cards render from the real chat stream.
+        if (evt.type === 'tool_call' || evt.type === 'tool_call_complete' || evt.type === 'tool_call_failed') {
+          next.push({ id, type: 'tool', label: String(evt.tool ?? evt.tool_name ?? 'Tool'),
+            success: evt.type !== 'tool_call_failed' && evt.success !== false, timestamp: Date.now() });
         } else if (evt.type === 'step_started') {
-          next.push({ id, type: 'step', label: String(evt.step ?? 'Step').slice(0, 60), timestamp: Date.now() });
+          next.push({ id, type: 'step', label: String(evt.description ?? evt.step ?? 'Step').slice(0, 60), timestamp: Date.now() });
         } else if (evt.type === 'knowledge_retrieved') {
           next.push({ id, type: 'knowledge', label: 'Knowledge retrieved', timestamp: Date.now() });
-        } else if (evt.type === 'guardrail_rejected' || evt.type === 'tool_call_denied') {
+        } else if (evt.type === 'guardrail_blocked' || evt.type === 'guardrail_rejected' || evt.type === 'tool_call_denied') {
           next.push({ id, type: 'guardrail', label: `Blocked: ${String(evt.rule ?? evt.reason ?? 'policy').slice(0, 40)}`, timestamp: Date.now() });
-        } else if (evt.type === 'waiting_approval') {
+        } else if (evt.type === 'hitl_required' || evt.type === 'waiting_approval') {
           next.push({ id, type: 'hitl', label: 'Awaiting approval', detail: String(evt.action ?? ''), timestamp: Date.now() });
         } else if (evt.type === 'goal_complete') {
           next.push({ id, type: 'complete', label: 'Goal complete', timestamp: Date.now() });
-        } else if (evt.type === 'goal_failed') {
+        } else if (evt.type === 'goal_failed' || evt.type === 'error') {
           next.push({ id, type: 'failed', label: 'Goal failed', timestamp: Date.now() });
         }
       }
@@ -82,18 +84,18 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 16 }}
       transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-      className={cn('flex flex-col bg-[#0A0F1A] rounded-xl border border-white/[0.07] overflow-hidden', className)}
+      className={cn('flex flex-col bg-background rounded-xl border border-border overflow-hidden', className)}
     >
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-white/[0.06] shrink-0">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
         {isActive && !reduce && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[#00D4FF] animate-pulse" aria-hidden />
+          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" aria-hidden />
         )}
-        <span className="text-[11px] font-medium text-[#A0B4CC] uppercase tracking-wide">Execution</span>
+        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Execution</span>
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-2 py-1 space-y-0.5 max-h-64" role="log" aria-live="polite">
         {items.length === 0 && (
-          <p className="text-center text-[11px] text-[#334155] py-4">Waiting…</p>
+          <p className="text-center text-[11px] text-muted-foreground/70 py-4">Waiting…</p>
         )}
         <AnimatePresence mode="popLayout">
           {items.map(item => {
@@ -111,8 +113,8 @@ export function AgenticExecutionPanel({ events, isActive, className }: AgenticEx
                 <div className="w-0.5 self-stretch rounded-full shrink-0" style={{ background: color, minHeight: 12 }} aria-hidden />
                 <Icon className={cn('h-3 w-3 shrink-0 mt-0.5', item.type === 'step' && 'animate-spin')} style={{ color }} aria-hidden />
                 <div className="flex-1 min-w-0">
-                  <p className="text-[10px] font-medium text-[#F0F6FF] truncate">{item.label}</p>
-                  {item.detail && <p className="text-[9px] text-[#5A7494] font-mono mt-0.5 truncate">{item.detail}</p>}
+                  <p className="text-[10px] font-medium text-foreground truncate">{item.label}</p>
+                  {item.detail && <p className="text-[9px] text-muted-foreground/70 font-mono mt-0.5 truncate">{item.detail}</p>}
                 </div>
               </motion.div>
             );

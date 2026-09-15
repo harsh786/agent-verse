@@ -6,6 +6,7 @@ factory function stays slim.  Import paths mirror the originals exactly.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from fastapi import FastAPI
@@ -85,6 +86,35 @@ from app.chat.router import router as chat_router
 from app.chat.service import ChatService as _ChatService
 from app.observability.cost_breakdown_api import router as cost_breakdown_api_router
 from app.org.router import router as org_router  # AI Organization OS
+from app.proactive.router import router as _proactive_router
+
+
+def _wire_proactive_engine(app: FastAPI) -> None:
+    """Construct the ProactiveEngine on app.state with chat-backed delivery + audit."""
+    from app.proactive.engine import ProactiveEngine
+
+    chat_service = app.state.chat_service
+
+    async def _deliver(signal: Any, proposal: Any) -> None:
+        await chat_service.deliver_proactive(
+            principal_id=signal.principal_id,
+            tenant_id=signal.tenant_id,
+            message=proposal.message,
+            channel=signal.channel,
+            channel_user_id=signal.payload.get("_channel_user_id"),
+        )
+
+    audit_log = getattr(app.state, "audit_log", None)
+
+    def _audit(event: dict[str, Any]) -> None:
+        if audit_log is None:
+            return
+        recorder = getattr(audit_log, "record", None) or getattr(audit_log, "log", None)
+        if callable(recorder):
+            with contextlib.suppress(Exception):
+                recorder(event)
+
+    app.state.proactive_engine = ProactiveEngine(deliver=_deliver, audit=_audit)
 
 
 def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
@@ -92,7 +122,66 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # ── Routers ───────────────────────────────────────────────────────────────
     # Chat (conversational agent interface)
     app.state.chat_service = _ChatService()
+    # If the goal engine is already on app.state (constructed before routers in
+    # some paths), wire chat GOAL turns to it now; the lifespan re-attaches the
+    # DB-backed goal_service when it swaps services in (Phase 0.3c).
+    from app.org.service import resolve_llm_provider
+
+    _existing_goal_svc = getattr(app.state, "goal_service", None)
+    _ltm = getattr(app.state, "long_term_memory", None)
+    _memory_recall = None
+    _memory_writer = None
+    if _ltm is not None:
+        from app.chat.memory_adapter import build_memory_recall, build_memory_writer
+
+        _memory_recall = build_memory_recall(_ltm)
+        _memory_writer = build_memory_writer(_ltm)
+    from app.chat.artifact_store import ChatArtifactStore
+    from app.chat.skills.builtin import build_registry_from_app_state
+    from app.identity import IdentityService
+
+    # Binary store for chat-generated documents (Phase 4); registered before the
+    # registry so the generate_document skill is wired.
+    if getattr(app.state, "chat_artifact_store", None) is None:
+        app.state.chat_artifact_store = ChatArtifactStore()
+
+    # Dual-mode identity (Phase 3): unifies channel identities to principals so a
+    # conversation continues across channels. In-memory now; a Postgres-backed
+    # store swaps in with the identity_links migration.
+    if getattr(app.state, "identity_service", None) is None:
+        app.state.identity_service = IdentityService()
+
+    # Voice/phone (Phase 8): registry maps a provisioned number → tenant so an
+    # inbound Twilio call resolves to the right tenant before any tenant work.
+    if getattr(app.state, "voice_phone_registry", None) is None:
+        from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
+        from app.gateway.voice_registry import VoicePhoneRegistry
+
+        app.state.voice_phone_registry = VoicePhoneRegistry.from_env()
+        app.state.voice_phone_adapter = VoicePhoneChannelAdapter()
+
+    # Messaging channels (Telegram/WhatsApp) → unified ChatService: addressee→tenant.
+    if getattr(app.state, "channel_registry", None) is None:
+        from app.gateway.channel_registry import ChannelRegistry
+
+        app.state.channel_registry = ChannelRegistry.from_env()
+
+    app.state.chat_service.attach_engine(
+        goal_service=_existing_goal_svc,
+        answer_generator=resolve_llm_provider(app.state),
+        memory_recall=_memory_recall,
+        memory_writer=_memory_writer,
+        nl_scheduler=getattr(app.state, "nl_scheduler", None),
+        schedule_store=getattr(app.state, "schedule_store", None),
+        skill_registry=build_registry_from_app_state(app.state),
+        identity_service=app.state.identity_service,
+    )
     app.include_router(chat_router)
+
+    # Proactive-outreach engine (Phase 9): deliver approved outreach into the
+    # principal's chat thread (+ origin channel) and audit it as source=proactive.
+    _wire_proactive_engine(app)
+    app.include_router(_proactive_router)
     # Core
     app.include_router(system_router)
     app.include_router(tenants_router)

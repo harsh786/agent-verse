@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, type JSX } from 'react';
 import { ChatMessage } from './ChatMessage';
+import { ChatEmptyState } from './ChatEmptyState';
 import { TypingIndicator } from './TypingIndicator';
 import type { ChatMessage as ChatMessageType, SSEEvent } from './types/chat.types';
 
@@ -16,6 +17,8 @@ interface Props {
   streamingTokens: string;
   currentEvent: SSEEvent | null;
   onEditMessage?: (messageId: string, currentContent: string) => void;
+  /** When provided, an empty thread shows suggestion prompts that send on click. */
+  onSuggestionSelect?: (prompt: string) => void;
 }
 
 export function ChatThread({
@@ -24,6 +27,7 @@ export function ChatThread({
   streamingTokens,
   currentEvent,
   onEditMessage,
+  onSuggestionSelect,
 }: Props): JSX.Element {
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -47,19 +51,23 @@ export function ChatThread({
       aria-live="polite"
     >
       {messages.length === 0 && !isStreaming && (
-        <div className="flex flex-col items-center justify-center h-full text-center text-[#A0B4CC] gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center text-3xl">
-            💬
+        onSuggestionSelect ? (
+          <ChatEmptyState onSelect={onSuggestionSelect} />
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full text-center text-muted-foreground gap-4">
+            <div className="w-16 h-16 rounded-2xl bg-indigo-100 dark:bg-indigo-900 flex items-center justify-center text-3xl">
+              💬
+            </div>
+            <div>
+              <p className="text-lg font-medium text-muted-foreground/70">
+                Start a conversation
+              </p>
+              <p className="text-sm mt-1">
+                Ask a question, describe a goal, or schedule a task.
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-lg font-medium text-[#5A7494] dark:text-gray-300">
-              Start a conversation
-            </p>
-            <p className="text-sm mt-1">
-              Ask a question, describe a goal, or schedule a task.
-            </p>
-          </div>
-        </div>
+        )
       )}
 
       {messages.map((msg, idx) => {

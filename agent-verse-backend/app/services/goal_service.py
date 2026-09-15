@@ -1664,6 +1664,36 @@ class GoalService:
         events = await self._events_for_replay(goal_id, record, tenant_ctx)
         return len(events)
 
+    async def _deliver_completion_to_chat(
+        self, record: GoalRecord, event: dict[str, Any]
+    ) -> None:
+        """Phase 2 delivery-back: if a goal was launched from a chat conversation,
+        post its result back into that conversation. Fail-safe — never disrupts
+        goal completion, no-op when there is no chat binding / no chat service."""
+        with suppress(Exception):
+            from app.chat.service import extract_delivery_target, humanize_goal_result
+
+            target = extract_delivery_target(record.execution_context)
+            if not target:
+                return
+            aps: Any = self._app_state
+            with suppress(Exception):
+                from starlette.applications import Starlette
+
+                if isinstance(aps, Starlette):
+                    aps = aps.state
+            chat = getattr(aps, "chat_service", None)
+            if chat is None:
+                return
+            # Always deliver human-readable prose — never a raw JSON result blob.
+            content = humanize_goal_result(record.goal_text, event)
+            await chat.adeliver_result(
+                session_id=target["session_id"],
+                tenant_id=record.tenant_id,
+                content=content,
+                goal_id=record.goal_id,
+            )
+
     async def _dispatch_event(
         self,
         goal_id: str,
@@ -1692,6 +1722,8 @@ class GoalService:
             record.status = GoalStatus.COMPLETE
             record.completed_at = datetime.now(UTC).isoformat()
             self._record_terminal_goal_metrics(record, "completed")
+            # Phase 2: post the result back into the originating chat conversation.
+            await self._deliver_completion_to_chat(record, sanitized_event)
             # Agent Runtime: mark trace success
             try:
                 from app.api.agent_runtime import _traces

@@ -69,24 +69,42 @@ export interface DispatchResult {
   } | null;
 }
 
-// SSE event types
+// SSE event types — canonical wire vocabulary. Keep in lock-step with the
+// backend contract in `agent-verse-backend/app/chat/events.py` (ChatEventType).
 export type SSEEventType =
-  | 'typing_started'
-  | 'routing'
+  // Lifecycle
+  | 'message_started'
+  | 'typing_started'          // back-compat alias for message_started
+  | 'routing'                 // back-compat; superseded by intent_classified
+  | 'intent_classified'
+  | 'done'
+  | 'error'
+  // Generation
   | 'token'
+  | 'reasoning'
+  // Plan / execute / verify
+  | 'plan_ready'
   | 'step_started'
   | 'step_complete'
   | 'tool_call'
-  | 'clarify_needed'
+  | 'tool_result'
+  | 'knowledge_retrieved'
+  | 'goal_complete'
+  // Governance / safety
   | 'hitl_required'
-  | 'failure_analysis'
-  | 'proactive_suggestions'
-  | 'reasoning'
+  | 'hitl_resolved'
+  | 'guardrail_blocked'
+  | 'clarify_needed'
+  // Async / platform
   | 'artifact_created'
   | 'schedule_created'
+  | 'mission_started'
+  // Telemetry
   | 'usage'
-  | 'done'
-  | 'error';
+  | 'cost'
+  // Diagnostics (back-compat)
+  | 'failure_analysis'
+  | 'proactive_suggestions';
 
 export interface SSEEvent {
   type: SSEEventType;

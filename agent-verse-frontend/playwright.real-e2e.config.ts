@@ -46,7 +46,13 @@ export default defineConfig({
   projects: [
     {
       name: 'chromium-real-e2e',
-      use: { ...devices['Desktop Chrome'] },
+      use: {
+        ...devices['Desktop Chrome'],
+        // Use the already-installed chromium build (no extra download).
+        launchOptions: process.env.PW_CHROMIUM_EXE
+          ? { executablePath: process.env.PW_CHROMIUM_EXE }
+          : {},
+      },
     },
   ],
 

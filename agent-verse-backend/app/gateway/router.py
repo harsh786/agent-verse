@@ -16,16 +16,19 @@ New endpoints:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
+from fastapi.responses import Response
 from opentelemetry import trace
 from pydantic import BaseModel
 
 from app.gateway.channels.slack import SlackChannelAdapter
 from app.gateway.channels.teams import MicrosoftTeamsAdapter
 from app.gateway.channels.telegram import TelegramChannelAdapter
+from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
 from app.gateway.channels.webhook import WebhookChannelAdapter
 from app.gateway.channels.whatsapp import WhatsAppChannelAdapter
 from app.gateway.command import OrgCommand, OrgResponse
@@ -41,6 +44,7 @@ _slack = SlackChannelAdapter()
 _whatsapp = WhatsAppChannelAdapter()
 _teams = MicrosoftTeamsAdapter()
 _webhook = WebhookChannelAdapter()
+_voice_phone = VoicePhoneChannelAdapter()
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -444,6 +448,146 @@ async def teams_messages(
         background_tasks.add_task(_process_command, command)
 
     return {"type": "message", "text": ""}
+
+
+# ── Voice / phone (Twilio-style call webhook) ─────────────────────────────────
+
+
+@router.post(
+    "/voice/incoming",
+    operation_id="gateway_voice_incoming",
+    summary="Inbound phone-call webhook (Twilio/Vonage) → ChatService, returns TwiML",
+)
+async def voice_incoming(request: Request) -> Response:
+    """Handle one inbound call turn and speak a reply.
+
+    Twilio posts form params (``From`` / ``To`` / ``CallSid`` / ``SpeechResult``).
+    The tenant is resolved from the *called* number (``To``) via the voice registry
+    (the webhook carries no API key). The caller's speech is routed through the
+    SAME unified pipeline as web/WhatsApp (``ChatService.ahandle_channel_message``,
+    channel ``voice_phone``, caller number as the channel user) so a call is a
+    durable, identity-aware conversation. The reply is returned as TwiML the
+    provider speaks, with a ``<Gather>`` that loops the next turn back here.
+    """
+    from app.voice.chat_bridge import handle_voice_turn
+
+    state = request.app.state
+    adapter = getattr(state, "voice_phone_adapter", None) or _voice_phone
+    registry = getattr(state, "voice_phone_registry", None)
+    chat_service = getattr(state, "chat_service", None)
+
+    form = dict((await request.form()).items())
+    payload: dict[str, Any] = {**form, "_request_url": str(request.url)}
+
+    # Provider signature verification (open in dev when no auth token configured).
+    if not await adapter.verify_auth(dict(request.headers), payload):
+        raise HTTPException(status_code=403, detail="Invalid voice signature")
+
+    to_number = str(form.get("To", "") or "")
+    from_number = str(form.get("From", "") or "")
+    transcript = str(form.get("SpeechResult") or form.get("transcript") or "").strip()
+
+    binding = registry.resolve(to_number) if registry is not None else None
+    if binding is None or chat_service is None:
+        # Unknown number / chat not wired — answer politely, do no tenant work.
+        twiml = adapter.format_reply(
+            "Sorry, this number isn't set up for the assistant yet. Goodbye.",
+            gather=False,
+        )["twiml"]
+        return Response(content=twiml, media_type="application/xml")
+
+    if not transcript:
+        # Call connected but nothing said yet — greet and gather the first turn.
+        twiml = adapter.format_reply("Hi, you're connected to your assistant. How can I help?")[
+            "twiml"
+        ]
+        return Response(content=twiml, media_type="application/xml")
+
+    try:
+        result = await handle_voice_turn(
+            chat_service=chat_service,
+            tenant_id=binding.tenant_id,
+            caller_id=from_number,
+            transcript=transcript,
+            consent_policy=getattr(state, "voice_consent_policy", None),
+        )
+        reply = str(result.get("reply_text") or "Okay.")
+    except Exception as exc:  # never drop the call — speak a safe fallback
+        _log.warning("gateway.voice_turn_failed", error=str(exc)[:160])
+        reply = "Sorry, I hit a problem handling that. Please try again."
+
+    twiml = adapter.format_reply(reply)["twiml"]
+    return Response(content=twiml, media_type="application/xml")
+
+
+# ── Unified messaging chat (Telegram / WhatsApp → ChatService) ────────────────
+
+_CHAT_ADAPTERS: dict[str, Any] = {
+    "telegram": _telegram,
+    "whatsapp": _whatsapp,
+    "webhook": _webhook,
+}
+
+
+@router.post(
+    "/{channel}/chat",
+    operation_id="gateway_channel_chat",
+    summary="Inbound Telegram/WhatsApp message → unified ChatService, replies back",
+)
+async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
+    """Route an inbound messaging webhook through the SAME ChatService as web chat.
+
+    The tenant is resolved from the *addressee* (the bot/number that received the
+    message) via the channel registry, so Telegram/WhatsApp share the durable,
+    identity-aware chat brain (sessions, memory, cross-channel continuity). The
+    reply is sent back over the channel's outbound API when a token is configured,
+    and always returned in the response (so it is testable without live creds).
+    """
+    channel = channel.strip().lower()
+    adapter = _CHAT_ADAPTERS.get(channel)
+    chat_service = getattr(request.app.state, "chat_service", None)
+    registry = getattr(request.app.state, "channel_registry", None)
+    if adapter is None or chat_service is None:
+        raise HTTPException(status_code=404, detail=f"channel {channel!r} not available")
+
+    raw = await request.json()
+    headers = dict(request.headers)
+    if not await adapter.verify_auth(headers, raw):
+        raise HTTPException(status_code=403, detail=f"invalid {channel} signature")
+
+    # Resolve tenant from the addressee (bot id / number) or the trusted relay header.
+    addressee = str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
+    binding = registry.resolve(channel, addressee) if registry is not None else None
+    tenant_id = binding.tenant_id if binding else trusted_gateway_tenant(headers)
+    if not tenant_id:
+        # No tenant mapping — acknowledge without doing tenant-scoped work.
+        return {"status": "ignored", "reason": "no tenant mapping for addressee"}
+
+    _org = binding.org_id if binding else ""
+    command = await adapter.normalize(raw, tenant_id=tenant_id, org_id=_org)
+    if not command.text:
+        return {"status": "ok", "reason": "no text in message"}
+
+    turn = await chat_service.achannel_turn(
+        tenant_id=tenant_id, channel=channel,
+        channel_user_id=command.conversation_id or command.actor_id, text=command.text,
+    )
+
+    # Send the reply back over the channel when an outbound sender is available.
+    sent = False
+    sender = getattr(adapter, "send_message", None) or getattr(adapter, "send", None)
+    if callable(sender) and (binding and binding.outbound_token):
+        with suppress(Exception):
+            await sender(
+                chat_id=command.conversation_id or command.actor_id,
+                text=turn["reply"], token=binding.outbound_token,
+            )
+            sent = True
+
+    return {
+        "status": "ok", "channel": channel, "session_id": turn["session_id"],
+        "actions": turn.get("actions", []), "reply": turn["reply"], "reply_sent": sent,
+    }
 
 
 # ── Generic webhook ───────────────────────────────────────────────────────────

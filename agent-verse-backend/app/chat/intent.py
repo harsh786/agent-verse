@@ -9,10 +9,40 @@ from __future__ import annotations
 import enum
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     pass
+
+
+def _re_search(pattern: str, text: str) -> re.Match[str] | None:
+    """Case-insensitive search helper."""
+    return re.search(pattern, text, re.I)
+
+
+# Month name/abbrev → number (includes the common "sept" abbreviation).
+_MONTHS: dict[str, int] = {}
+_MONTH_NAMES: dict[int, str] = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+    7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
+for _i, (_full, _abbr) in enumerate(
+    [
+        ("january", "jan"), ("february", "feb"), ("march", "mar"), ("april", "apr"),
+        ("may", "may"), ("june", "jun"), ("july", "jul"), ("august", "aug"),
+        ("september", "sep"), ("october", "oct"), ("november", "nov"), ("december", "dec"),
+    ],
+    start=1,
+):
+    _MONTHS[_full] = _i
+    _MONTHS[_abbr] = _i
+_MONTHS["sept"] = 9  # common alt abbreviation
+
+_DOW: dict[str, int] = {
+    "sunday": 0, "monday": 1, "tuesday": 2, "wednesday": 3,
+    "thursday": 4, "friday": 5, "saturday": 6,
+}
+_DOW_NAMES: dict[int, str] = {v: k.capitalize() for k, v in _DOW.items()}
 
 # ── Intent enum ───────────────────────────────────────────────────────────────
 
@@ -193,6 +223,74 @@ class IntentRouter:
         # 5. Default to QA
         return Intent.QA
 
+    async def classify_async(
+        self,
+        message: str,
+        history: list[dict[str, str]] | None = None,
+        clarify_round: int = 0,
+        llm: Any = None,
+    ) -> Intent:
+        """Regex-first classification with a fast-LLM fallback for ambiguous input.
+
+        The regex ``classify`` stays the fast path. The LLM is consulted ONLY when
+        the message fell through to the default QA bucket with no positive signal
+        (and an ``llm`` is provided) — so clear QA/GOAL/SCHEDULE never pay the
+        latency. Any LLM/parse failure keeps the regex result (never crashes).
+        """
+        regex_intent = self.classify(message, history, clarify_round)
+        if llm is None or not self._is_ambiguous(message, history or [], clarify_round):
+            return regex_intent
+        llm_intent = await self._llm_disambiguate(message, llm)
+        return llm_intent or regex_intent
+
+    def _is_ambiguous(
+        self, message: str, history: list[dict[str, str]], clarify_round: int
+    ) -> bool:
+        """True when the regex path would fall through to its default QA bucket."""
+        msg = message.strip()
+        if clarify_round >= self.MAX_CLARIFY_ROUNDS:
+            return False
+        if self._is_schedule(msg) or self._is_qa(msg) or self._has_goal_verb(msg):
+            return False
+        return not (len(msg.split()) <= 4 and self._previous_was_goal(history))
+
+    async def _llm_disambiguate(self, message: str, llm: Any) -> Intent | None:
+        import json
+        import re
+
+        from app.providers.base import CompletionRequest, Message
+
+        system = (
+            "You classify a user's chat message intent for an AI assistant. "
+            'Respond ONLY with JSON: {"intent": "qa"|"goal"|"schedule"}. '
+            "qa = answer a question or chat; goal = perform a task using tools; "
+            "schedule = set up a recurring or future action. No other text."
+        )
+        try:
+            resp = await llm.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=system),
+                        Message(role="user", content=message[:2000]),
+                    ],
+                    model="",
+                    max_tokens=20,
+                    temperature=0.0,
+                )
+            )
+            content = getattr(resp, "content", "") or ""
+            match = re.search(r"\{[\s\S]*\}", content)
+            if not match:
+                return None
+            value = str(json.loads(match.group(0)).get("intent", "")).lower()
+            return {
+                "qa": Intent.QA,
+                "goal": Intent.GOAL,
+                "schedule": Intent.SCHEDULE,
+            }.get(value)
+        except Exception:
+            return None
+
     # ── Private helpers ───────────────────────────────────────────────────────
 
     def _is_schedule(self, msg: str) -> bool:
@@ -260,49 +358,59 @@ class IntentRouter:
         message: str,
         history: list[dict[str, str]] | None = None,
     ) -> ScheduleConfirmation:
-        """Parse a natural-language schedule expression and return a confirmation."""
-        import re as _re
+        """Parse a natural-language schedule expression and return a confirmation.
 
-        cron = "0 9 * * *"  # sensible default: daily at 9 AM
-        human = "every day at 9 AM"
-
-        m = _re.search(r"every\s+(\w+)\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", message, _re.I)
-        if m:
-            day_word, hour_str, minute_str, ampm = m.groups()
-            hour = int(hour_str)
-            minute = int(minute_str or "0")
-            if ampm and ampm.lower() == "pm" and hour != 12:
-                hour += 12
-            day_map = {
-                "monday": 1,
-                "tuesday": 2,
-                "wednesday": 3,
-                "thursday": 4,
-                "friday": 5,
-                "saturday": 6,
-                "sunday": 0,
-                "day": "*",
-                "morning": "*",
-            }
-            dow = day_map.get(day_word.lower(), "*")
-            cron = f"{minute} {hour} * * {dow}"
-            human = f"every {day_word} at {hour:02d}:{minute:02d}"
-
-        # Hourly shortcut
-        if _re.search(r"\bhourly\b", message, _re.I):
-            cron = "0 * * * *"
-            human = "every hour"
-
-        # Weekly
-        if _re.search(r"\bweekly\b", message, _re.I):
-            cron = "0 9 * * 1"
-            human = "every Monday at 9 AM"
-
+        Delegates to :func:`parse_schedule`, which handles ``:``/``.`` minutes with
+        am/pm ("6.11pm" → 18:11), specific dates ("15 sept" → one-time run),
+        day-of-week, and hourly/weekly/daily shortcuts.
+        """
+        p = parse_schedule(message)
         return ScheduleConfirmation(
-            goal_text=message,
-            cron_expression=cron,
-            human_schedule=human,
+            goal_text=message, cron_expression=p.cron, human_schedule=p.human
         )
+
+    @staticmethod
+    def _extract_time(message: str) -> tuple[int, int]:
+        """Return (hour_24, minute); defaults to 09:00 when no time is present."""
+        # H:MM or H.MM with optional am/pm  (6.11pm, 09:30, 6:11 pm)
+        m = _re_search(r"\b(\d{1,2})[:.](\d{2})\s*([ap]m)?\b", message)
+        if m:
+            hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
+        else:
+            # bare hour with am/pm  (6pm, 9 am)
+            m = _re_search(r"\b(\d{1,2})\s*([ap]m)\b", message)
+            if not m:
+                return 9, 0
+            hour, minute, ampm = int(m.group(1)), 0, m.group(2)
+        # Only apply am/pm to a 12-hour clock value; a 24-hour hour (>12) already
+        # encodes the period, so ignore a contradictory suffix ("18.02pm" → 18:02).
+        if ampm and 1 <= hour <= 12:
+            ampm = ampm.lower()
+            if ampm == "pm" and hour != 12:
+                hour += 12
+            elif ampm == "am" and hour == 12:
+                hour = 0
+        return (hour % 24), (minute % 60)
+
+    @staticmethod
+    def _extract_date(message: str) -> tuple[int | None, int | None]:
+        """Return (day, month) for a specific date like '15 sept' / 'September 20th'."""
+        month_alt = "|".join(_MONTHS)
+        m = _re_search(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({month_alt})\b", message)
+        if m:
+            return int(m.group(1)), _MONTHS[m.group(2).lower()]
+        m = _re_search(rf"\b({month_alt})\.?\s+(\d{{1,2}})(?:st|nd|rd|th)?\b", message)
+        if m:
+            return int(m.group(2)), _MONTHS[m.group(1).lower()]
+        return None, None
+
+    @staticmethod
+    def _extract_dow(message: str) -> int | None:
+        """Return cron day-of-week (0=Sun..6=Sat) for 'every Monday', else None."""
+        m = _re_search(
+            r"\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b", message
+        )
+        return _DOW.get(m.group(1).lower()) if m else None
 
     # ── Model availability ────────────────────────────────────────────────────
 
@@ -326,3 +434,56 @@ class IntentRouter:
         if configured and configured not in base:
             return [configured, *base]
         return base
+
+
+# ── Shared NL schedule parser (used by chat confirmation + durable creation) ──
+
+
+@dataclass
+class ScheduleParse:
+    """Parsed schedule: a cron plus, for a dated request, a one-time ``fire_at_iso``."""
+
+    cron: str
+    human: str
+    once: bool = False
+    fire_at_iso: str = ""
+
+
+def parse_schedule(message: str) -> ScheduleParse:
+    """Parse a natural-language schedule into cron / one-time fields (world-class).
+
+    Handles ``:``/``.`` minutes with am/pm, specific dates → a one-time run on the
+    next future occurrence, day-of-week, and hourly/weekly/daily shortcuts.
+    """
+    hour, minute = IntentRouter._extract_time(message)
+    day, month = IntentRouter._extract_date(message)
+    dow = IntentRouter._extract_dow(message)
+
+    if _re_search(r"\bhourly\b", message):
+        return ScheduleParse("0 * * * *", "every hour")
+    if day and month:
+        cron = f"{minute} {hour} {day} {month} *"
+        human = f"on {_MONTH_NAMES[month]} {day} at {hour:02d}:{minute:02d}"
+        fire = _next_occurrence(month, day, hour, minute)
+        return ScheduleParse(cron, human, once=True, fire_at_iso=fire)
+    if dow is not None:
+        human = f"every {_DOW_NAMES[dow]} at {hour:02d}:{minute:02d}"
+        return ScheduleParse(f"{minute} {hour} * * {dow}", human)
+    if _re_search(r"\bweekly\b", message):
+        return ScheduleParse(f"{minute} {hour} * * 1", f"every Monday at {hour:02d}:{minute:02d}")
+    return ScheduleParse(f"{minute} {hour} * * *", f"every day at {hour:02d}:{minute:02d}")
+
+
+def _next_occurrence(month: int, day: int, hour: int, minute: int) -> str:
+    """ISO timestamp (UTC) of the next future occurrence of month/day at hour:minute."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    for year in (now.year, now.year + 1):
+        try:
+            cand = datetime(year, month, day, hour, minute, tzinfo=UTC)
+        except ValueError:
+            return ""  # e.g. Feb 30 — no valid one-time date
+        if cand > now:
+            return cand.isoformat()
+    return ""

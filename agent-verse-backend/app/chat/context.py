@@ -106,6 +106,21 @@ class ConversationContext:
         """Prepend session system_prompt before all other turns."""
         return [{"role": "system", "content": system_prompt}, *turns]
 
+    def inject_personalization(
+        self,
+        personalization_block: str,
+        turns: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        """Prepend the principal's personalization (tone + standing instructions +
+        preferences) as a high-priority system turn (Phase 11).
+
+        Placed first so the model treats standing instructions as governing the
+        whole reply, ahead of memories/history.
+        """
+        if not personalization_block.strip():
+            return turns
+        return [{"role": "system", "content": personalization_block}, *turns]
+
     def inject_file_context(
         self,
         file_contents: list[str],
