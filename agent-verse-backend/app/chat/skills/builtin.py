@@ -32,7 +32,51 @@ def build_list_connected_services_skill(services_api: Any) -> ChatSkill:
     )
 
 
-def register_builtin_skills(registry: SkillRegistry, *, services_api: Any | None = None) -> None:
+def build_submit_goal_skill(goal_service: Any) -> ChatSkill:
+    async def handler(
+        tenant_ctx: Any, goal: str, agent_id: str | None = None
+    ) -> dict[str, Any]:
+        return await goal_service.submit_goal(
+            goal=goal,
+            priority="normal",
+            dry_run=False,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+        )
+
+    return ChatSkill(
+        name="submit_goal",
+        description="Run an autonomous goal (plan→execute→verify with tools/connectors).",
+        handler=handler,
+        args={"goal": "what to accomplish", "agent_id": "optional agent to route to"},
+        scope="goals:write",
+    )
+
+
+def build_list_schedules_skill(schedule_store: Any) -> ChatSkill:
+    async def handler(tenant_ctx: Any) -> list[dict[str, Any]]:
+        return list(schedule_store.list_all(tenant_ctx=tenant_ctx))
+
+    return ChatSkill(
+        name="list_schedules",
+        description="List the tenant's recurring/scheduled triggers.",
+        handler=handler,
+        args={},
+        scope="triggers:read",
+    )
+
+
+def register_builtin_skills(
+    registry: SkillRegistry,
+    *,
+    services_api: Any | None = None,
+    goal_service: Any | None = None,
+    schedule_store: Any | None = None,
+) -> None:
     """Register the built-in skills whose backing services are available."""
     if services_api is not None:
         registry.register(build_list_connected_services_skill(services_api))
+    if goal_service is not None:
+        registry.register(build_submit_goal_skill(goal_service))
+    if schedule_store is not None:
+        registry.register(build_list_schedules_skill(schedule_store))
