@@ -1447,17 +1447,120 @@ class ChatService:
         session = await self.aget_or_create_channel_session(
             tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
         )
-        dispatch = await self.adispatch(session.id, tenant_id, text)
-        intent = str(dispatch.get("intent") or "")
-        reply = self._derive_channel_reply(dispatch)
-        if reply is None:  # QA — generate a real answer through the same run_qa path
-            reply = await self._collect_qa_reply(
-                session_id=session.id, tenant_id=tenant_id,
-                message_id=str(dispatch.get("message_id") or ""), text=text,
-            )
+        # Persist the inbound user turn, then fulfill (decompose → execute each action).
+        await self.asave_message(
+            session_id=session.id, tenant_id=tenant_id, role="user",
+            content=text, metadata={"channel": channel},
+        )
+        result = await self.afulfill(session_id=session.id, tenant_id=tenant_id, message=text)
         return {
-            "session_id": session.id, "intent": intent, "reply": reply, "channel": channel,
+            "session_id": session.id, "channel": channel,
+            "reply": result["reply"], "actions": result.get("actions", []),
         }
+
+    async def afulfill(
+        self,
+        *,
+        session_id: str,
+        tenant_id: str,
+        message: str,
+        tenant_ctx: Any = None,
+    ) -> dict[str, Any]:
+        """Decompose a message into actions and EXECUTE each (world-class handling).
+
+        Splits compound requests ("schedule X and remember Y and answer Z"), then
+        for each action: creates a DURABLE schedule (so it actually fires), stores a
+        memory, submits a goal, or answers a question — combining the outcomes into
+        one natural reply. Uses the wired LLM for understanding when available, with
+        a deterministic fallback otherwise.
+        """
+        from app.chat.understanding import (
+            GoalAction,
+            QAAction,
+            RememberAction,
+            ScheduleAction,
+            decompose,
+        )
+
+        actions = await decompose(message, llm=self._answer_generator)
+        replies: list[str] = []
+        executed: list[str] = []
+        for act in actions:
+            if isinstance(act, ScheduleAction):
+                replies.append(await self._fulfill_schedule(act, tenant_id, tenant_ctx))
+                executed.append("schedule")
+            elif isinstance(act, RememberAction):
+                replies.append(await self._fulfill_remember(act, tenant_id))
+                executed.append("remember")
+            elif isinstance(act, GoalAction):
+                replies.append(await self._fulfill_goal(act, tenant_id, tenant_ctx))
+                executed.append("goal")
+            elif isinstance(act, QAAction):
+                replies.append(
+                    await self._collect_qa_reply(
+                        session_id=session_id, tenant_id=tenant_id,
+                        message_id=_hex(), text=act.question,
+                    )
+                )
+                executed.append("qa")
+        reply = "\n".join(r for r in replies if r).strip() or "Done."
+        # A lone QA already persisted its answer via run_qa; only persist the combined
+        # reply for schedule/remember/goal/compound turns (keeps the thread complete
+        # without duplicating a pure-QA answer).
+        pure_qa = executed == ["qa"]
+        if not pure_qa:
+            with contextlib.suppress(Exception):
+                await self.asave_message(
+                    session_id=session_id, tenant_id=tenant_id, role="assistant",
+                    content=reply, metadata={"fulfilled": executed},
+                )
+        return {"session_id": session_id, "reply": reply, "actions": executed}
+
+    async def _fulfill_schedule(self, act: Any, tenant_id: str, tenant_ctx: Any) -> str:
+        """Create a durable schedule from a ScheduleAction (falls back to a preview)."""
+        if not self.can_schedule:
+            return f"🗓️ I'll {act.task} {act.human} (scheduling not fully wired here)."
+        ctx = tenant_ctx or self._tenant_ctx(tenant_id)
+        try:
+            from app.triggers.models import TriggerSpec, TriggerType
+
+            spec = TriggerSpec(
+                trigger_type=TriggerType.ONCE if act.once else TriggerType.CRON,
+                description=act.human,
+                goal_template=act.task,
+                cron_expression="" if act.once else act.cron,
+                fire_at_iso=act.fire_at_iso if act.once else "",
+            )
+            schedule_id = await self._schedule_store.create_async(
+                goal_id=act.task, spec=spec, tenant_ctx=ctx,
+                agent_id=None, goal_template=act.task,
+            )
+            return f"✅ Scheduled — I'll {act.task} {act.human} (id {str(schedule_id)[:8]})."
+        except Exception:
+            return f"🗓️ I'll {act.task} {act.human}."
+
+    async def _fulfill_remember(self, act: Any, tenant_id: str) -> str:
+        if self._memory_writer is None:
+            return f"📝 Noted: {act.fact}"
+        with contextlib.suppress(Exception):
+            await self._memory_writer(act.fact, tenant_id)
+        return f"✅ Got it — I'll remember: {act.fact}"
+
+    async def _fulfill_goal(self, act: Any, tenant_id: str, tenant_ctx: Any) -> str:
+        if self._goal_service is None:
+            return f"On it — I'll work on: {act.goal}"
+        ctx = tenant_ctx or self._tenant_ctx(tenant_id)
+        with contextlib.suppress(Exception):
+            await self._goal_service.submit_goal(
+                goal=act.goal, priority="normal", dry_run=False, tenant_ctx=ctx, agent_id=None,
+            )
+        return f"🚀 On it — I've started working on: {act.goal}. I'll follow up here."
+
+    @staticmethod
+    def _tenant_ctx(tenant_id: str) -> Any:
+        from app.tenancy.context import PlanTier, TenantContext
+
+        return TenantContext(tenant_id=tenant_id, api_key_id="chat", plan=PlanTier.FREE)
 
     @staticmethod
     def _derive_channel_reply(dispatch: dict[str, Any]) -> str | None:

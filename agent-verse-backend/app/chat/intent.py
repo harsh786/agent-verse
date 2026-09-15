@@ -360,31 +360,13 @@ class IntentRouter:
     ) -> ScheduleConfirmation:
         """Parse a natural-language schedule expression and return a confirmation.
 
-        Handles time with ``:`` or ``.`` minutes and am/pm ("6.11pm" → 18:11),
-        a specific date ("15 sept", "September 20th" → a one-time run on that date),
-        a day-of-week ("every Monday"), and hourly/weekly shortcuts.
+        Delegates to :func:`parse_schedule`, which handles ``:``/``.`` minutes with
+        am/pm ("6.11pm" → 18:11), specific dates ("15 sept" → one-time run),
+        day-of-week, and hourly/weekly/daily shortcuts.
         """
-        hour, minute = self._extract_time(message)
-        day, month = self._extract_date(message)
-        dow = self._extract_dow(message)
-
-        if _re_search(r"\bhourly\b", message):
-            return ScheduleConfirmation(message, "0 * * * *", "every hour")
-        if day and month:
-            cron = f"{minute} {hour} {day} {month} *"
-            human = f"on {_MONTH_NAMES[month]} {day} at {hour:02d}:{minute:02d}"
-        elif dow is not None:
-            cron = f"{minute} {hour} * * {dow}"
-            human = f"every {_DOW_NAMES[dow]} at {hour:02d}:{minute:02d}"
-        elif _re_search(r"\bweekly\b", message):
-            cron = f"{minute} {hour} * * 1"
-            human = f"every Monday at {hour:02d}:{minute:02d}"
-        else:
-            cron = f"{minute} {hour} * * *"
-            human = f"every day at {hour:02d}:{minute:02d}"
-
+        p = parse_schedule(message)
         return ScheduleConfirmation(
-            goal_text=message, cron_expression=cron, human_schedule=human
+            goal_text=message, cron_expression=p.cron, human_schedule=p.human
         )
 
     @staticmethod
@@ -452,3 +434,56 @@ class IntentRouter:
         if configured and configured not in base:
             return [configured, *base]
         return base
+
+
+# ── Shared NL schedule parser (used by chat confirmation + durable creation) ──
+
+
+@dataclass
+class ScheduleParse:
+    """Parsed schedule: a cron plus, for a dated request, a one-time ``fire_at_iso``."""
+
+    cron: str
+    human: str
+    once: bool = False
+    fire_at_iso: str = ""
+
+
+def parse_schedule(message: str) -> ScheduleParse:
+    """Parse a natural-language schedule into cron / one-time fields (world-class).
+
+    Handles ``:``/``.`` minutes with am/pm, specific dates → a one-time run on the
+    next future occurrence, day-of-week, and hourly/weekly/daily shortcuts.
+    """
+    hour, minute = IntentRouter._extract_time(message)
+    day, month = IntentRouter._extract_date(message)
+    dow = IntentRouter._extract_dow(message)
+
+    if _re_search(r"\bhourly\b", message):
+        return ScheduleParse("0 * * * *", "every hour")
+    if day and month:
+        cron = f"{minute} {hour} {day} {month} *"
+        human = f"on {_MONTH_NAMES[month]} {day} at {hour:02d}:{minute:02d}"
+        fire = _next_occurrence(month, day, hour, minute)
+        return ScheduleParse(cron, human, once=True, fire_at_iso=fire)
+    if dow is not None:
+        human = f"every {_DOW_NAMES[dow]} at {hour:02d}:{minute:02d}"
+        return ScheduleParse(f"{minute} {hour} * * {dow}", human)
+    if _re_search(r"\bweekly\b", message):
+        return ScheduleParse(f"{minute} {hour} * * 1", f"every Monday at {hour:02d}:{minute:02d}")
+    return ScheduleParse(f"{minute} {hour} * * *", f"every day at {hour:02d}:{minute:02d}")
+
+
+def _next_occurrence(month: int, day: int, hour: int, minute: int) -> str:
+    """ISO timestamp (UTC) of the next future occurrence of month/day at hour:minute."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    for year in (now.year, now.year + 1):
+        try:
+            cand = datetime(year, month, day, hour, minute, tzinfo=UTC)
+        except ValueError:
+            return ""  # e.g. Feb 30 — no valid one-time date
+        if cand > now:
+            return cand.isoformat()
+    return ""

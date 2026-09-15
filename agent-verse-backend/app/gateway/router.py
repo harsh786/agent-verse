@@ -586,7 +586,7 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
 
     return {
         "status": "ok", "channel": channel, "session_id": turn["session_id"],
-        "intent": turn["intent"], "reply": turn["reply"], "reply_sent": sent,
+        "actions": turn.get("actions", []), "reply": turn["reply"], "reply_sent": sent,
     }
 
 
