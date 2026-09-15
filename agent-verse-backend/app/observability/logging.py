@@ -7,10 +7,28 @@ goal_id) flows through every log line for distributed tracing correlation.
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from typing import cast
+from typing import Any, cast
 
 import structlog
+from opentelemetry import trace
+
+
+def add_trace_correlation(
+    _logger: Any, _method: str, event_dict: dict[str, Any]
+) -> dict[str, Any]:
+    """structlog processor: stamp the active OTel trace/span id onto every log line.
+
+    This is what makes logs jump to their trace (and vice-versa) in Grafana/Loki/
+    Jaeger. No-op when there is no active recording span. Never raises.
+    """
+    with contextlib.suppress(Exception):
+        ctx = trace.get_current_span().get_span_context()
+        if ctx.is_valid:
+            event_dict["trace_id"] = format(ctx.trace_id, "032x")
+            event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
 
 
 def configure_logging(*, level: str = "INFO", json_logs: bool = True) -> None:
@@ -19,6 +37,7 @@ def configure_logging(*, level: str = "INFO", json_logs: bool = True) -> None:
 
     processors: list[structlog.types.Processor] = [
         structlog.contextvars.merge_contextvars,
+        add_trace_correlation,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         structlog.processors.StackInfoRenderer(),
