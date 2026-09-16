@@ -420,49 +420,57 @@ class DigestGenerator:
             try:
                 insights: list[DigestItem] = []
 
-                # Bottleneck: 3+ tasks blocked in one dept
-                rows = await self._s.execute(
-                    select(
-                        OrgTask.department_id,  # type: ignore[attr-defined]
-                        func.count(OrgTask.id).label("cnt"),
-                    )
-                    .where(
-                        and_(
-                            OrgTask.tenant_id == tenant_id,
-                            OrgTask.org_id == org_id,
-                            OrgTask.status == "blocked",
-                            OrgTask.department_id.is_not(None),  # type: ignore[union-attr]
+                # Bottleneck: 3+ tasks blocked in one dept.
+                # Isolated in its own try/except: OrgTask has no `department_id`
+                # column in the current schema (only `workstream_id`), so this
+                # section reliably raises AttributeError. Without isolation that
+                # exception used to propagate to the outer handler and silently
+                # suppress the unrelated "high velocity" insight below as well.
+                try:
+                    rows = await self._s.execute(
+                        select(
+                            OrgTask.department_id,  # type: ignore[attr-defined]
+                            func.count(OrgTask.id).label("cnt"),
                         )
-                    )
-                    .group_by(OrgTask.department_id)  # type: ignore[attr-defined]
-                    .having(func.count(OrgTask.id) >= 3)
-                )
-                for row in rows.all():
-                    dept_id = str(row[0])
-                    cnt = int(row[1])
-                    name_row = await self._s.execute(
-                        select(OrgDepartment.name).where(
+                        .where(
                             and_(
-                                OrgDepartment.tenant_id == tenant_id,
-                                OrgDepartment.id == dept_id,
+                                OrgTask.tenant_id == tenant_id,
+                                OrgTask.org_id == org_id,
+                                OrgTask.status == "blocked",
+                                OrgTask.department_id.is_not(None),  # type: ignore[union-attr]
                             )
                         )
+                        .group_by(OrgTask.department_id)  # type: ignore[attr-defined]
+                        .having(func.count(OrgTask.id) >= 3)
                     )
-                    dept_name = name_row.scalar_one_or_none() or f"Dept {dept_id[:8]}"
-                    insights.append(
-                        DigestItem(
-                            category="insight",
-                            title=f"Bottleneck in {dept_name}",
-                            summary=f"{cnt} tasks blocked in {dept_name}. Review dependencies.",
-                            icon="⚠️",
-                            priority=2,
-                            action_required=True,
-                            action_type="review",
-                            related_id=dept_id,
-                            cost_usd=None,
-                            duration_str=None,
+                    for row in rows.all():
+                        dept_id = str(row[0])
+                        cnt = int(row[1])
+                        name_row = await self._s.execute(
+                            select(OrgDepartment.name).where(
+                                and_(
+                                    OrgDepartment.tenant_id == tenant_id,
+                                    OrgDepartment.id == dept_id,
+                                )
+                            )
                         )
-                    )
+                        dept_name = name_row.scalar_one_or_none() or f"Dept {dept_id[:8]}"
+                        insights.append(
+                            DigestItem(
+                                category="insight",
+                                title=f"Bottleneck in {dept_name}",
+                                summary=f"{cnt} tasks blocked in {dept_name}. Review dependencies.",
+                                icon="⚠️",
+                                priority=2,
+                                action_required=True,
+                                action_type="review",
+                                related_id=dept_id,
+                                cost_usd=None,
+                                duration_str=None,
+                            )
+                        )
+                except Exception as exc:
+                    _log.warning("digest._insights.bottleneck_failed", error=str(exc))
 
                 # High velocity
                 cnt_row = await self._s.execute(
