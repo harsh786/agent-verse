@@ -405,10 +405,16 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_goals(request: Request) -> dict[str, list[dict[str, Any]]]:
+async def list_goals(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, list[dict[str, Any]]]:
     tenant = _require_tenant(request)
     svc = _goal_service(request)
-    result: dict[str, list[dict[str, Any]]] = await svc.list_goals(tenant_ctx=tenant)
+    result: dict[str, list[dict[str, Any]]] = await svc.list_goals(
+        tenant_ctx=tenant, limit=limit, offset=offset
+    )
     return result
 
 

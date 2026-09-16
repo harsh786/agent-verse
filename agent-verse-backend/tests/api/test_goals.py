@@ -95,7 +95,7 @@ def test_list_goals_returns_goals_for_tenant() -> None:
 
     assert resp.status_code == 200
     assert resp.json()["goals"][0]["id"] == "gid-1"
-    svc.list_goals.assert_called_once_with(tenant_ctx=_CTX)
+    svc.list_goals.assert_called_once_with(tenant_ctx=_CTX, limit=50, offset=0)
 
 
 def test_submit_goal_requires_auth() -> None:

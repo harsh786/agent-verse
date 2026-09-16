@@ -3028,24 +3028,80 @@ class GoalService:
             )
         return {"goal_id": goal_id, "status": record.status.value, **selection}
 
-    async def list_goals(self, tenant_ctx: TenantContext) -> dict[str, list[dict[str, Any]]]:
-        """Return all goals visible to the tenant, newest first."""
-        tenant_records = []
-        for record in self._goals.values():
-            if record.tenant_id != tenant_ctx.tenant_id:
-                continue
-            tenant_records.append(await self._refresh_goal_from_db_if_needed(record, tenant_ctx))
-        tenant_records.sort(key=lambda record: record.created_at, reverse=True)
+    async def list_goals(
+        self, tenant_ctx: TenantContext, *, limit: int = 50, offset: int = 0
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return the tenant's goals, newest first, PAGINATED.
 
-        # Single batch query for DB event counts — replaces the previous per-goal
-        # call to _event_count_for_response() which caused N+1 DB round-trips.
+        DB-backed with ``ORDER BY created_at DESC LIMIT/OFFSET`` (served by
+        ``ix_goals_tenant_created``) when a database is wired — instead of scanning
+        an in-memory mirror of the whole ``goals`` table, which grows unbounded and
+        OOMs at millions of rows (distributed-scale audit X5). Falls back to the
+        in-memory dict only for the no-DB test/dev build.
+        """
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+
+        if self._db is not None:
+            from sqlalchemy import select
+
+            from app.db.models.goal import Goal
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        select(Goal)
+                        .where(Goal.tenant_id == tenant_ctx.tenant_id)
+                        .order_by(Goal.created_at.desc())
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                ).scalars().all()
+            batch_counts = await self._batch_event_counts(
+                [r.id for r in rows], tenant_ctx.tenant_id
+            )
+            responses: list[dict[str, Any]] = []
+            for r in rows:
+                try:
+                    status = GoalStatus(r.status).value
+                except ValueError:
+                    status = GoalStatus.PLANNING.value
+                # Prefer the fresher in-memory event count if this pod holds the run.
+                mem = self._goals.get(r.id)
+                event_count = max(
+                    batch_counts.get(r.id, 0), len(mem.events) if mem is not None else 0
+                )
+                responses.append(
+                    {
+                        "id": r.id,
+                        "goal_id": r.id,
+                        "status": status,
+                        "goal": r.goal_text,
+                        "priority": r.priority,
+                        "dry_run": r.dry_run,
+                        "agent_id": r.agent_id,
+                        "workflow_mode": r.workflow_mode,
+                        "created_at": r.created_at.isoformat() if r.created_at else "",
+                        "event_count": event_count,
+                    }
+                )
+            return {"goals": responses}
+
+        # ── In-memory fallback (no DB configured: tests / dev) ──────────────
+        tenant_records = [
+            rec for rec in self._goals.values() if rec.tenant_id == tenant_ctx.tenant_id
+        ]
+        tenant_records.sort(key=lambda record: record.created_at, reverse=True)
+        tenant_records = tenant_records[offset : offset + limit]
         goal_ids = [r.goal_id for r in tenant_records]
         batch_counts = await self._batch_event_counts(goal_ids, tenant_ctx.tenant_id)
-
-        responses: list[dict[str, Any]] = []
+        responses = []
         for record in tenant_records:
-            # Use the larger of DB count and in-memory count to stay correct
-            # when some events have not yet been flushed to the DB.
             event_count = max(batch_counts.get(record.goal_id, 0), len(record.events))
             responses.append(
                 {
@@ -3947,18 +4003,27 @@ class GoalService:
                 )
                 tenants = tenant_result.scalars().all()
 
-                # Load recent goals (last 24h). Recovery/requeue is intentionally
-                # not implemented in this phase; loaded records only make metadata
-                # and persisted event replay addressable after restart.
+                # Warm a BOUNDED set of recent goals into memory. list_goals and
+                # get_goal are DB-backed (get_goal falls back to _db_get_goal_record),
+                # so this mirror is only a warm cache — never load the whole table,
+                # which OOMs at millions of goals (distributed-scale audit X5). Cap
+                # per tenant (most-recent first) and globally.
+                per_tenant_warm = 500
+                global_warm_cap = 50_000
                 cutoff = datetime.now(UTC) - timedelta(hours=24)
                 for tenant in tenants:
+                    if loaded >= global_warm_cap:
+                        break
                     tenant_id = str(tenant.id)
                     async with sqlalchemy_rls_context(session, tenant_id):
                         result = await session.execute(
-                            select(Goal).where(
+                            select(Goal)
+                            .where(
                                 Goal.tenant_id == tenant_id,
                                 Goal.created_at >= cutoff,
                             )
+                            .order_by(Goal.created_at.desc())
+                            .limit(per_tenant_warm)
                         )
                     goals = result.scalars().all()
                     for g in goals:

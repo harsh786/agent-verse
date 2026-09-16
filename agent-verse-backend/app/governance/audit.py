@@ -268,10 +268,13 @@ class AuditLog:
             )
 
     async def sync_from_db(self, *, tenant_id: str | None = None) -> int:
-        """Load audit entries from PostgreSQL into memory.
+        """Warm a BOUNDED set of recent audit entries into memory.
 
-        Returns the number of new entries loaded (deduplicates by event_id).
-        Returns 0 immediately when no ``db_session_factory`` is configured.
+        The audit log is append-only and unbounded; loading all of it OOMs at
+        scale (distributed-scale audit X5). Reads are served from the DB by
+        ``query_db``, so this in-memory ``_log`` is only a warm cache — cap the
+        load to the most-recent rows and dedup in O(N). Returns rows loaded; 0 when
+        no ``db_session_factory`` is configured.
         """
         if self._db is None:
             return 0
@@ -282,16 +285,20 @@ class AuditLog:
 
             loaded = 0
             async with self._db() as session:
-                q = select(AuditLogModel)
+                q = select(AuditLogModel).order_by(AuditLogModel.created_at.desc()).limit(10_000)
                 if tenant_id:
                     q = q.where(AuditLogModel.tenant_id == tenant_id)
                 result = await session.execute(q)
                 rows = result.scalars().all()
+                # Build the per-tenant dedup sets once (was O(N^2) per-row rebuild).
+                existing_by_tenant: dict[str, set[str]] = {
+                    t: {e.event_id for e in evs} for t, evs in self._log.items()
+                }
                 for row in rows:
                     events = self._log.setdefault(row.tenant_id, [])
-                    # Avoid duplicates
-                    existing_ids = {e.event_id for e in events}
+                    existing_ids = existing_by_tenant.setdefault(row.tenant_id, set())
                     if row.id not in existing_ids:
+                        existing_ids.add(row.id)
                         try:
                             level = ActionLevel(row.action_level)
                         except ValueError:
