@@ -25,27 +25,16 @@ def _env_set(name: str) -> frozenset[str]:
 
 @dataclass
 class RuntimeFlags:
-    # P0 flags
+    # Core orchestration + RAG (first-class)
     dynamic_orchestration: bool = True
     agentic_rag: bool = True
-    plan_verification: bool = True
     data_classification: bool = True
-    capability_registry: bool = True
-    policy_compiler: bool = True
-    # P1 flags
-    ingestion_orchestrator: bool = True
-    embedding_orchestrator: bool = True
-    runtime_scorecard: bool = True
-    tool_trust: bool = True
-    provenance_ledger: bool = True
-    recovery_classifier: bool = True
-    qos_scheduler: bool = True
     # Safety
     guardrail_profile: bool = True
     readiness_gate: bool = True
     # Granular flags — each can be enabled independently
     # OR set via the master dynamic_orchestration=True
-    enable_runtime_scorecard: bool = True  # RuntimeScorecard 9-dim scoring
+    enable_runtime_scorecard: bool = False  # RuntimeScorecard 9-dim scoring
     # ON by default: gates the SelfImprovementEngine action dispatch in the verify
     # node. Turning it on (together with the self-improvement services now wired
     # onto the Celery worker graph) is half of closing the self-tuning loop for
@@ -60,8 +49,7 @@ class RuntimeFlags:
     # in app/scaling/tasks.py sources the same flag, so this default finishes
     # closing the self-tuning loop on the worker.
     enable_self_improvement_auto_apply: bool = True
-    enable_rag_strategy_routing: bool = True  # Profile-based RAG strategy selection
-    enable_pattern_sse_events: bool = True  # pattern_assembled, eval_score_recorded SSEs
+    enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
     enable_guardrail_profile: bool = True  # Profile-based GuardrailEnforcer
 
     # --- Isolated Agent Execution Environment ---
@@ -81,26 +69,15 @@ class RuntimeFlags:
         return cls(
             dynamic_orchestration=_bool_env("DYNAMIC_ORCHESTRATION", True),
             agentic_rag=_bool_env("AGENTIC_RAG", True),
-            plan_verification=_bool_env("PLAN_VERIFICATION", True),
             data_classification=_bool_env("DATA_CLASSIFICATION", True),
-            capability_registry=_bool_env("CAPABILITY_REGISTRY", True),
-            policy_compiler=_bool_env("POLICY_COMPILER", True),
-            ingestion_orchestrator=_bool_env("INGESTION_ORCHESTRATOR", True),
-            embedding_orchestrator=_bool_env("EMBEDDING_ORCHESTRATOR", True),
-            runtime_scorecard=_bool_env("RUNTIME_SCORECARD", True),
-            tool_trust=_bool_env("TOOL_TRUST", True),
-            provenance_ledger=_bool_env("PROVENANCE_LEDGER", True),
-            recovery_classifier=_bool_env("RECOVERY_CLASSIFIER", True),
-            qos_scheduler=_bool_env("QOS_SCHEDULER", True),
             guardrail_profile=_bool_env("GUARDRAIL_PROFILE", True),
             readiness_gate=_bool_env("READINESS_GATE", True),
-            enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD", True),
+            enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
             enable_self_improvement=_bool_env("ENABLE_SELF_IMPROVEMENT", True),
             enable_self_improvement_auto_apply=_bool_env(
                 "ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True
             ),
-            enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING", True),
-            enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS", True),
+            enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
             enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE", True),
             isolated_agent_execution=_bool_env("ISOLATED_AGENT_EXECUTION"),
             isolated_execution_required=_bool_env("ISOLATED_EXECUTION_REQUIRED"),
@@ -118,24 +95,13 @@ def get_runtime_flags() -> RuntimeFlags:
     flags = RuntimeFlags(
         dynamic_orchestration=_env_bool("DYNAMIC_ORCHESTRATION", True),
         agentic_rag=_env_bool("AGENTIC_RAG", True),
-        plan_verification=_env_bool("PLAN_VERIFICATION", True),
         data_classification=_env_bool("DATA_CLASSIFICATION", True),
-        capability_registry=_env_bool("CAPABILITY_REGISTRY", True),
-        policy_compiler=_env_bool("POLICY_COMPILER", True),
-        ingestion_orchestrator=_env_bool("INGESTION_ORCHESTRATOR", True),
-        embedding_orchestrator=_env_bool("EMBEDDING_ORCHESTRATOR", True),
-        runtime_scorecard=_env_bool("RUNTIME_SCORECARD", True),
-        tool_trust=_env_bool("TOOL_TRUST", True),
-        provenance_ledger=_env_bool("PROVENANCE_LEDGER", True),
-        recovery_classifier=_env_bool("RECOVERY_CLASSIFIER", True),
-        qos_scheduler=_env_bool("QOS_SCHEDULER", True),
         guardrail_profile=_env_bool("GUARDRAIL_PROFILE", True),
         readiness_gate=_env_bool("READINESS_GATE", True),
-        enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD", True),
+        enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),
         enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT", True),
         enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True),
-        enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING", True),
-        enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS", True),
+        enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
         enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE", True),
         isolated_agent_execution=_env_bool("ISOLATED_AGENT_EXECUTION"),
         isolated_execution_required=_env_bool("ISOLATED_EXECUTION_REQUIRED"),
@@ -149,7 +115,6 @@ def get_runtime_flags() -> RuntimeFlags:
     if flags.dynamic_orchestration:
         flags.enable_runtime_scorecard = True
         flags.enable_self_improvement = True
-        flags.enable_rag_strategy_routing = True
         flags.enable_pattern_sse_events = True
         flags.enable_guardrail_profile = True
     return flags
