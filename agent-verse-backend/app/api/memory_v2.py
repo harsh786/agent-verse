@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import uuid
@@ -40,15 +41,38 @@ def _get_db(request: Request) -> Any:
 
 # ── In-memory write-through cache ──────────────────────────────────────────────
 # Written to DB on every mutating operation.  On first access per tenant the
-# cache is hydrated from DB so that data survives process restarts.
+# cache is hydrated (bounded) from DB so recent data survives process restarts.
 _memories: dict[str, dict] = {}
 _conflicts: dict[str, list] = {}
 # Tracks which tenant IDs have already been loaded from DB in this process.
 _db_loaded_tenants: set[str] = set()
 
+# Scalability bounds: never pull an unbounded table into the module dict. The
+# hydration only warms the most-recent slice into cache; anything older is fetched
+# on demand by memory_id (``_load_one_from_db``), and list/export query the DB
+# directly with filters + keyset paging so they scale past millions of rows.
+_V2_HYDRATE_LIMIT = 2000
+_V2_PAGE_SIZE = 500
+# JSON field extraction on the ``content`` column (memory_v2 rows store the whole
+# memory as a JSON document there; the row's ``memory_type`` column is the literal
+# ``'memory_v2'``, so logical fields must be read out of the JSON).
+_LIFECYCLE_EXPR = "(content::jsonb ->> 'lifecycle_state')"
 
-async def _ensure_loaded_from_db(tenant_id: str, db: Any) -> None:
-    """Lazy-load v2 memories from DB into the module-level cache on first access."""
+
+def _v2_key(tenant_id: str, memory_id: str) -> str:
+    return f"{tenant_id}:{memory_id}"
+
+
+async def _ensure_loaded_from_db(
+    tenant_id: str, db: Any, *, limit: int = _V2_HYDRATE_LIMIT
+) -> None:
+    """Warm the module cache with the most-recent ``limit`` v2 memories.
+
+    Bounded so first access for a tenant with millions of memories does not
+    hydrate the entire table into the process. Older memories are still reachable:
+    per-id reads fall back to :func:`_load_one_from_db`, and list/export query the
+    DB directly rather than relying on a full in-memory copy.
+    """
     if tenant_id in _db_loaded_tenants or db is None:
         return
     _db_loaded_tenants.add(tenant_id)
@@ -60,9 +84,9 @@ async def _ensure_loaded_from_db(tenant_id: str, db: Any) -> None:
                 text(
                     "SELECT content FROM long_term_memory "
                     "WHERE tenant_id = :tid AND memory_type = 'memory_v2' "
-                    "ORDER BY created_at DESC"
+                    "ORDER BY created_at DESC LIMIT :limit"
                 ),
-                {"tid": tenant_id},
+                {"tid": tenant_id, "limit": limit},
             )
             for row in result.fetchall():
                 try:
@@ -76,6 +100,76 @@ async def _ensure_loaded_from_db(tenant_id: str, db: Any) -> None:
                     pass
     except Exception as exc:
         logger.warning("memory_v2_db_load_failed", error=str(exc))
+
+
+async def _load_one_from_db(tenant_id: str, memory_id: str, db: Any) -> dict | None:
+    """Fetch a single v2 memory by id (cache-miss fallback under bounded hydration)."""
+    if db is None:
+        return None
+    try:
+        from sqlalchemy import text
+
+        async with db() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT content FROM long_term_memory "
+                        "WHERE tenant_id = :tid AND id = :mid AND memory_type = 'memory_v2' "
+                        "LIMIT 1"
+                    ),
+                    {"tid": tenant_id, "mid": memory_id},
+                )
+            ).fetchone()
+        if row is not None:
+            m = json.loads(row[0])
+            _memories[_v2_key(tenant_id, memory_id)] = m
+            return m  # type: ignore[no-any-return]
+    except Exception as exc:
+        logger.warning("memory_v2_db_load_one_failed", error=str(exc))
+    return None
+
+
+async def _query_memories_page_from_db(
+    tenant_id: str,
+    db: Any,
+    *,
+    lifecycle_state: str | None,
+    memory_type: str | None,
+    privacy_class: str | None,
+    limit: int,
+) -> list[dict]:
+    """List a bounded, filtered page of v2 memories directly from the DB.
+
+    Filters are pushed into SQL (JSON extraction on ``content``) so the DB does the
+    work and only ``limit`` rows come back — no full-table hydrate-then-filter.
+    """
+    from sqlalchemy import text
+
+    clauses = ["tenant_id = :tid", "memory_type = 'memory_v2'"]
+    params: dict[str, Any] = {"tid": tenant_id, "limit": limit}
+    if lifecycle_state:
+        clauses.append(f"{_LIFECYCLE_EXPR} = :ls")
+        params["ls"] = lifecycle_state
+    else:
+        clauses.append(f"{_LIFECYCLE_EXPR} IS DISTINCT FROM 'deleted'")
+    if memory_type:
+        clauses.append("(content::jsonb ->> 'memory_type') = :mt")
+        params["mt"] = memory_type
+    if privacy_class:
+        clauses.append("(content::jsonb ->> 'privacy_class') = :pc")
+        params["pc"] = privacy_class
+    sql = (
+        "SELECT content FROM long_term_memory "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY created_at DESC LIMIT :limit"
+    )
+    async with db() as session:
+        rows = (await session.execute(text(sql), params)).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        with contextlib.suppress(Exception):
+            out.append(json.loads(r[0]))
+    return out
 
 
 async def _db_upsert_memory(db: Any, memory: dict) -> None:
@@ -178,24 +272,47 @@ async def list_memories(
     privacy_class: str | None = Query(default=None),
     limit: int = Query(default=50, le=200),
 ) -> dict[str, Any]:
-    """List memories with lifecycle filtering."""
+    """List memories with lifecycle filtering.
+
+    Filters and the ``limit`` are pushed into SQL (bounded, keyset-friendly) so the
+    query scales past millions of rows instead of hydrating the whole table and
+    filtering in Python. Results are merged with the write-through cache (which is
+    authoritative for writes made in this process), deduped by ``memory_id``.
+    """
     tenant = _require_tenant(request)
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
-    memories = [
-        v
-        for k, v in _memories.items()
-        if k.startswith(f"{tenant.tenant_id}:") and v.get("lifecycle_state") != "deleted"
-    ]
+    prefix = f"{tenant.tenant_id}:"
+    by_id: dict[str, dict] = {}
 
-    if lifecycle_state:
-        memories = [m for m in memories if m["lifecycle_state"] == lifecycle_state]
-    if memory_type:
-        memories = [m for m in memories if m["memory_type"] == memory_type]
-    if privacy_class:
-        memories = [m for m in memories if m["privacy_class"] == privacy_class]
+    # DB page first (bounded + filtered in SQL); cache entries override below.
+    if db is not None:
+        try:
+            for m in await _query_memories_page_from_db(
+                tenant.tenant_id,
+                db,
+                lifecycle_state=lifecycle_state,
+                memory_type=memory_type,
+                privacy_class=privacy_class,
+                limit=limit,
+            ):
+                by_id[str(m.get("memory_id"))] = m
+        except Exception as exc:
+            logger.warning("memory_v2_list_db_failed", error=str(exc))
 
+    for k, v in _memories.items():
+        if not k.startswith(prefix) or v.get("lifecycle_state") == "deleted":
+            continue
+        if lifecycle_state and v.get("lifecycle_state") != lifecycle_state:
+            continue
+        if memory_type and v.get("memory_type") != memory_type:
+            continue
+        if privacy_class and v.get("privacy_class") != privacy_class:
+            continue
+        by_id[str(v.get("memory_id"))] = v
+
+    memories = list(by_id.values())
     memories.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
     return {"memories": memories[:limit], "total": len(memories)}
 
@@ -260,18 +377,73 @@ async def mark_stale_memories(request: Request) -> dict[str, Any]:
     return {"marked_stale": marked, "days_threshold": days_threshold}
 
 
+async def _stream_all_v2_from_db(tenant_id: str, db: Any) -> list[dict]:
+    """Fetch every v2 memory for a tenant via bounded keyset pages.
+
+    Reads in ``_V2_PAGE_SIZE`` chunks keyed on (created_at, id) rather than issuing
+    one unbounded SELECT, so a GDPR export never materialises the whole table in a
+    single query. A hard page cap guards against pathological pagination.
+    """
+    from sqlalchemy import text
+
+    out: list[dict] = []
+    after_created: Any = None
+    after_id: str | None = None
+    max_pages = 10_000  # safety cap: max_pages * _V2_PAGE_SIZE rows
+    async with db() as session:
+        for _ in range(max_pages):
+            clause = ""
+            params: dict[str, Any] = {"tid": tenant_id, "limit": _V2_PAGE_SIZE}
+            if after_created is not None:
+                clause = " AND (created_at, id) < (CAST(:ac AS timestamptz), :ai)"
+                params["ac"] = after_created
+                params["ai"] = after_id
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, created_at, content FROM long_term_memory "
+                        "WHERE tenant_id = :tid AND memory_type = 'memory_v2'"
+                        f"{clause} "
+                        "ORDER BY created_at DESC, id DESC LIMIT :limit"
+                    ),
+                    params,
+                )
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                with contextlib.suppress(Exception):
+                    out.append(json.loads(row[2]))
+            after_created, after_id = rows[-1][1], rows[-1][0]
+            if len(rows) < _V2_PAGE_SIZE:
+                break
+    return out
+
+
 @router.get("/export/gdpr")
 async def export_gdpr(request: Request) -> dict[str, Any]:
-    """Export all memories for GDPR data subject request."""
+    """Export all memories for GDPR data subject request.
+
+    Pulls durable rows via bounded keyset pages (``_stream_all_v2_from_db``) rather
+    than hydrating the whole table at once, merged with the write-through cache and
+    deduped by ``memory_id`` so nothing is missed or double-counted.
+    """
     tenant = _require_tenant(request)
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
-    memories = [
-        {k: v for k, v in m.items() if k != "tenant_id"}
-        for key, m in _memories.items()
-        if key.startswith(f"{tenant.tenant_id}:")
-    ]
+    by_id: dict[str, dict] = {}
+    if db is not None:
+        try:
+            for m in await _stream_all_v2_from_db(tenant.tenant_id, db):
+                by_id[str(m.get("memory_id"))] = m
+        except Exception as exc:
+            logger.warning("memory_v2_export_db_failed", error=str(exc))
+    for key, m in _memories.items():
+        if key.startswith(f"{tenant.tenant_id}:"):
+            by_id[str(m.get("memory_id"))] = m
+
+    memories = [{k: v for k, v in m.items() if k != "tenant_id"} for m in by_id.values()]
     return {
         "tenant_id": tenant.tenant_id,
         "exported_at": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -288,7 +460,9 @@ async def get_memory(request: Request, memory_id: str) -> dict[str, Any]:
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
-    memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
+    memory = _memories.get(_v2_key(tenant.tenant_id, memory_id)) or await _load_one_from_db(
+        tenant.tenant_id, memory_id, db
+    )
     if not memory or memory.get("lifecycle_state") == "deleted":
         raise HTTPException(404, "Memory not found")
     return memory
@@ -303,7 +477,9 @@ async def update_memory(
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
-    memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
+    memory = _memories.get(_v2_key(tenant.tenant_id, memory_id)) or await _load_one_from_db(
+        tenant.tenant_id, memory_id, db
+    )
     if not memory or memory.get("lifecycle_state") == "deleted":
         raise HTTPException(404, "Memory not found")
 
@@ -337,7 +513,9 @@ async def delete_memory(request: Request, memory_id: str) -> dict[str, Any]:
     db = _get_db(request)
     await _ensure_loaded_from_db(tenant.tenant_id, db)
 
-    memory = _memories.get(f"{tenant.tenant_id}:{memory_id}")
+    memory = _memories.get(_v2_key(tenant.tenant_id, memory_id)) or await _load_one_from_db(
+        tenant.tenant_id, memory_id, db
+    )
     if not memory:
         raise HTTPException(404, "Memory not found")
 

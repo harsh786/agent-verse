@@ -107,6 +107,37 @@ async def test_edit_and_branch_prune_round_trip(repo: PostgresChatRepository) ->
     await repo.delete_session(sid, tenant)
 
 
+async def test_messages_are_limit_bounded_and_keyset_pageable(
+    repo: PostgresChatRepository,
+) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    sid = uuid.uuid4().hex
+    await repo.create_session(session_id=sid, tenant_id=tenant, title="Paging")
+    for i in range(5):
+        await repo.save_message(
+            message_id=uuid.uuid4().hex,
+            session_id=sid,
+            tenant_id=tenant,
+            role="user",
+            content=f"m{i}",
+        )
+
+    # Newest page, bounded: last 2 messages, returned oldest-first.
+    page1 = await repo.list_messages(sid, tenant, limit=2)
+    assert [m["content"] for m in page1] == ["m3", "m4"]
+
+    # Keyset back into history using the oldest row of the page as the cursor.
+    oldest = page1[0]
+    cursor = f"{oldest['created_at'].isoformat()}|{oldest['id']}"
+    page2 = await repo.list_messages(sid, tenant, limit=2, before=cursor)
+    assert [m["content"] for m in page2] == ["m1", "m2"]
+
+    # A malformed cursor falls back to the newest page (no error).
+    assert await repo.list_messages(sid, tenant, limit=2, before="garbage") == page1
+
+    await repo.delete_session(sid, tenant)
+
+
 async def test_sessions_are_tenant_scoped(repo: PostgresChatRepository) -> None:
     t1, t2 = f"t-{uuid.uuid4().hex[:8]}", f"t-{uuid.uuid4().hex[:8]}"
     s1 = uuid.uuid4().hex

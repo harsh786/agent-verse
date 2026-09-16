@@ -124,9 +124,48 @@ class UsageService:
         *,
         period_days: int = 30,
     ) -> dict[str, Any]:
-        """Return usage summary for the last N days."""
+        """Return usage summary for the last N days.
+
+        Rolls up the durable ``usage_records`` table (RLS-scoped) so the summary
+        reflects all persisted usage, not just whatever happens to still be in the
+        in-memory buffer (which is drained on every flush). The un-flushed buffer is
+        merged on top: a record lives in exactly one place — buffer or DB — so this
+        never double-counts. With no DB factory (unit-test / in-memory path) the
+        rollup is skipped and only the buffer is summarised.
+        """
         summary: dict[str, float] = defaultdict(float)
         costs: dict[str, float] = defaultdict(float)
+
+        if self._db is not None:
+            try:
+                from sqlalchemy import text
+
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    rows = (
+                        await session.execute(
+                            text(
+                                "SELECT metric,"
+                                " COALESCE(SUM(quantity), 0) AS quantity,"
+                                " COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd"
+                                " FROM usage_records"
+                                " WHERE tenant_id = :tenant_id"
+                                " AND period_start > now() - make_interval(days => :days)"
+                                " GROUP BY metric"
+                            ),
+                            {"tenant_id": tenant_id, "days": period_days},
+                        )
+                    ).all()
+                for metric, quantity, total_cost in rows:
+                    summary[str(metric)] += float(quantity)
+                    costs[str(metric)] += float(total_cost)
+            except Exception as exc:
+                logger.warning("usage_summary_db_failed", error=str(exc)[:80])
 
         for record in self._buffer:
             if record["tenant_id"] == tenant_id:

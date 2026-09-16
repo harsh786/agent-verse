@@ -69,6 +69,7 @@ def _make_mock_aggregator() -> Any:
     agent.avg_eval_score = 0.9
     agent.avg_cost_usd = 0.4
     agg.agent_metrics = MagicMock(return_value=[agent])
+    agg.agent_metrics_db = AsyncMock(return_value=[agent])
 
     return agg
 

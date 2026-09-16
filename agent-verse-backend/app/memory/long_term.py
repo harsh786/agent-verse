@@ -76,17 +76,46 @@ class LongTermMemoryStore:
                 return True
         return False
 
-    def list_all(self, *, tenant_ctx: TenantContext) -> list[LongTermMemory]:
-        return list(self._memories.get(tenant_ctx.tenant_id, []))
+    def list_all(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[LongTermMemory]:
+        """Return this tenant's cached memories, optionally windowed.
+
+        ``limit``/``offset`` let callers page instead of materialising the whole
+        list; ``limit=None`` preserves the original unbounded behaviour for
+        internal callers.
+        """
+        items = self._memories.get(tenant_ctx.tenant_id, [])
+        if offset:
+            items = items[offset:]
+        if limit is not None:
+            items = items[:limit]
+        return list(items)
 
     # ── DB-backed CRUD (durable; used by the chat /memories API) ──────────────
     # Mirrors store_async's persistence pattern; falls back to the in-memory
     # cache when no DB factory is wired (tests / no-DB dev).
 
-    async def list_all_async(self, *, tenant_ctx: TenantContext) -> list[LongTermMemory]:
+    async def list_all_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[LongTermMemory]:
+        """Return durable memories for a tenant, newest first.
+
+        Bounded by ``limit`` (default 500) and offset-pageable so the query never
+        walks an unbounded ``long_term_memory`` table. Falls back to the bounded
+        in-memory cache when no DB factory is wired.
+        """
         db = self._db_factory
         if db is None:
-            return self.list_all(tenant_ctx=tenant_ctx)
+            return self.list_all(tenant_ctx=tenant_ctx, limit=limit, offset=offset)
         try:
             from sqlalchemy import text
 
@@ -96,9 +125,9 @@ class LongTermMemoryStore:
                         text(
                             "SELECT id, content, memory_type, confidence, source_goal_id, tags "
                             "FROM long_term_memory WHERE tenant_id = :tid "
-                            "ORDER BY created_at DESC"
+                            "ORDER BY created_at DESC LIMIT :limit OFFSET :offset"
                         ),
-                        {"tid": tenant_ctx.tenant_id},
+                        {"tid": tenant_ctx.tenant_id, "limit": limit, "offset": offset},
                     )
                 ).mappings().all()
             return [
@@ -114,7 +143,7 @@ class LongTermMemoryStore:
             ]
         except Exception as exc:
             get_logger(__name__).warning("ltm_list_db_failed", error=str(exc))
-            return self.list_all(tenant_ctx=tenant_ctx)
+            return self.list_all(tenant_ctx=tenant_ctx, limit=limit, offset=offset)
 
     async def delete_async(self, *, memory_id: str, tenant_ctx: TenantContext) -> bool:
         self.delete(memory_id=memory_id, tenant_ctx=tenant_ctx)  # keep cache in sync

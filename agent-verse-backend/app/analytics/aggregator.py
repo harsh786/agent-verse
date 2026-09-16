@@ -407,3 +407,65 @@ class GoalAnalyticsAggregator:
                 )
             )
         return sorted(results, key=lambda x: x.goal_count, reverse=True)
+
+    async def agent_metrics_db(self, tenant_id: str, days: int = 30) -> list[AgentMetrics]:
+        """Per-agent goal performance via a single SQL GROUP BY.
+
+        Aggregates ``goals`` (count + success rate) per agent in the database and
+        LEFT JOINs a per-goal ``cost_ledger`` rollup for average cost, instead of
+        pulling every goal into Python. Eval scores are not persisted as a goals
+        column, so ``avg_eval_score`` is reported as 0.0 on the DB path. Falls back
+        to the in-memory :meth:`agent_metrics` when no DB/tenant is available.
+        """
+        if self._db is None or not tenant_id:
+            return self.agent_metrics(days=days)
+        try:
+            from sqlalchemy import text
+
+            async with self._db() as session:
+                result = await session.execute(
+                    text("""
+                        SELECT
+                            COALESCE(g.agent_id, 'default') AS agent_id,
+                            COUNT(*) AS goal_count,
+                            SUM(CASE WHEN lower(g.status) IN ('complete', 'completed')
+                                     THEN 1 ELSE 0 END) AS completed,
+                            COALESCE(SUM(c.goal_cost), 0) AS total_cost
+                        FROM goals g
+                        LEFT JOIN (
+                            SELECT goal_id, SUM(COALESCE(cost_usd, 0)) AS goal_cost
+                            FROM cost_ledger
+                            WHERE tenant_id = :tid
+                              AND created_at > NOW() - (:days * INTERVAL '1 day')
+                            GROUP BY goal_id
+                        ) c ON c.goal_id = g.id
+                        WHERE g.tenant_id = :tid
+                          AND g.created_at > NOW() - (:days * INTERVAL '1 day')
+                        GROUP BY COALESCE(g.agent_id, 'default')
+                        ORDER BY goal_count DESC
+                        LIMIT 200
+                    """),
+                    {"tid": tenant_id, "days": days},
+                )
+                rows = result.fetchall()
+
+            results: list[AgentMetrics] = []
+            for row in rows:
+                agent_id = str(row[0] or "default")
+                goal_count = int(row[1] or 0)
+                completed = int(row[2] or 0)
+                total_cost = float(row[3] or 0.0)
+                results.append(
+                    AgentMetrics(
+                        agent_id=agent_id,
+                        goal_count=goal_count,
+                        success_rate=round(completed / goal_count, 4) if goal_count else 0.0,
+                        avg_eval_score=0.0,
+                        avg_cost_usd=round(total_cost / goal_count, 6) if goal_count else 0.0,
+                    )
+                )
+            if results:
+                return results
+        except Exception as exc:
+            logger.warning("agent_metrics_db_failed", error=str(exc))
+        return self.agent_metrics(days=days)

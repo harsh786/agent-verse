@@ -17,9 +17,76 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
+logger = get_logger(__name__)
+
 router = APIRouter(prefix="/insights", tags=["insights"])
+
+# Platform benchmark window: bound the cross-tenant PERCENTILE_CONT scan to recent
+# goals instead of the entire (unbounded) goals table.
+_BENCHMARK_WINDOW_DAYS = 90
+
+
+async def _query_goals_filtered_from_db(
+    db_factory: Any,
+    *,
+    tenant_id: str,
+    days: int,
+    status_filter: str | None,
+    cost_min: float | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fetch a tenant's goals with time/status/cost filters + LIMIT pushed into SQL.
+
+    Cost is not a ``goals`` column, so a per-goal ``cost_ledger`` rollup is LEFT
+    JOINed and exposed as ``cost_usd`` (additive to the response). This replaces the
+    previous ``list_goals()``-then-Python-filter path, which only ever inspected the
+    newest page and does not scale.
+    """
+    from sqlalchemy import text
+
+    clauses = ["g.tenant_id = :tid", "g.created_at > NOW() - (:days * INTERVAL '1 day')"]
+    params: dict[str, Any] = {"tid": tenant_id, "days": days, "limit": limit}
+    if status_filter:
+        clauses.append("lower(g.status) = :status")
+        params["status"] = status_filter.lower()
+    cost_join = ""
+    if cost_min is not None:
+        cost_join = (
+            " LEFT JOIN (SELECT goal_id, SUM(COALESCE(cost_usd, 0)) AS goal_cost "
+            "FROM cost_ledger WHERE tenant_id = :tid GROUP BY goal_id) c ON c.goal_id = g.id"
+        )
+        clauses.append("COALESCE(c.goal_cost, 0) >= :cost_min")
+        params["cost_min"] = cost_min
+    cost_select = "COALESCE(c.goal_cost, 0)" if cost_min is not None else "0"
+    sql = (
+        f"SELECT g.id, g.status, g.goal_text, g.priority, g.dry_run, g.agent_id, "
+        f"g.workflow_mode, g.created_at, {cost_select} AS cost_usd "
+        f"FROM goals g{cost_join} "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY g.created_at DESC LIMIT :limit"
+    )
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
+        rows = (await session.execute(text(sql), params)).fetchall()
+    return [
+        {
+            "id": r[0],
+            "goal_id": r[0],
+            "status": r[1],
+            "goal": r[2],
+            "priority": r[3],
+            "dry_run": r[4],
+            "agent_id": r[5],
+            "workflow_mode": r[6],
+            "created_at": r[7].isoformat() if r[7] else "",
+            "cost_usd": round(float(r[8] or 0), 6),
+        }
+        for r in rows
+    ]
 
 
 def _require_tenant(request: Request) -> TenantContext:
@@ -524,6 +591,30 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
     if goal_svc is None:
         return {"results": [], "total": 0, "query_parsed": {}}
 
+    query_parsed = {
+        "days": days,
+        "status_filter": status_filter,
+        "cost_min": cost_min,
+        "entity": body.entity,
+    }
+
+    # DB path: push time/status/cost filters + LIMIT into SQL (bounded, scalable).
+    db_factory = getattr(goal_svc, "_db", None)
+    if db_factory is not None:
+        try:
+            results = await _query_goals_filtered_from_db(
+                db_factory,
+                tenant_id=tenant.tenant_id,
+                days=days,
+                status_filter=status_filter,
+                cost_min=cost_min,
+                limit=body.limit,
+            )
+            return {"results": results, "total": len(results), "query_parsed": query_parsed}
+        except Exception as exc:
+            logger.warning("insights_query_db_failed", error=str(exc)[:120])
+
+    # In-memory fallback (no DB / on error): bounded list_goals then Python filter.
     try:
         resp = await goal_svc.list_goals(tenant_ctx=tenant)
         all_goals = resp.get("goals", []) if isinstance(resp, dict) else (resp or [])
@@ -560,12 +651,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
     return {
         "results": results,
         "total": len(results),
-        "query_parsed": {
-            "days": days,
-            "status_filter": status_filter,
-            "cost_min": cost_min,
-            "entity": body.entity,
-        },
+        "query_parsed": query_parsed,
     }
 
 
@@ -758,8 +844,9 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                             FROM goals
                             WHERE status IN ('complete', 'failed')
                               AND cost_usd IS NOT NULL
+                              AND created_at > NOW() - (:days * INTERVAL '1 day')
                         """),
-                            {},
+                            {"days": _BENCHMARK_WINDOW_DAYS},
                         )
                     ).fetchone()
 

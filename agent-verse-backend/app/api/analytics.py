@@ -142,7 +142,11 @@ async def agent_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    agents = agg.agent_metrics(days=days)
+    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
+    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    # Use the DB-backed GROUP BY path when a tenant is available (falls back to
+    # the in-memory aggregation otherwise).
+    agents = await agg.agent_metrics_db(tenant_id=tenant_id, days=days)
     return {
         "period_days": days,
         "agents": [

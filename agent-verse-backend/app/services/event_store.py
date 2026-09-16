@@ -11,6 +11,12 @@ from app.db.models.goal import GoalEvent
 from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
 
+# Bounded default so a single replay never walks an unbounded event history. A goal
+# realistically emits at most hundreds of events, so this only ever caps a runaway;
+# callers needing more page via ``after_sequence`` (or use ``list_events_since``,
+# which carries ``_seq`` cursors).
+_DEFAULT_EVENT_LIMIT = 10_000
+
 
 class EventStore:
     """Append and replay goal events under tenant-scoped DB context."""
@@ -85,7 +91,23 @@ class EventStore:
                     return
                 await asyncio.sleep(0.05 * (attempt + 1))  # 50 ms, 100 ms backoff
 
-    async def list_events(self, goal_id: str, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
+    async def list_events(
+        self,
+        goal_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        limit: int = _DEFAULT_EVENT_LIMIT,
+        after_sequence: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Replay a goal's event payloads in sequence order.
+
+        Bounded by ``limit`` (default :data:`_DEFAULT_EVENT_LIMIT`) so the query
+        never walks an unbounded history. For full replay of a very long history,
+        page with ``after_sequence`` (each call returns events with
+        ``sequence > after_sequence``) — the same keyset ``list_events_since``
+        uses, whose rows additionally carry a ``_seq`` cursor. The payload shape
+        returned here is unchanged (no ``_seq`` added) for backward compatibility.
+        """
         async with (
             self._db() as session,
             session.begin(),
@@ -96,8 +118,10 @@ class EventStore:
                 .where(
                     GoalEvent.tenant_id == tenant_ctx.tenant_id,
                     GoalEvent.goal_id == goal_id,
+                    GoalEvent.sequence > after_sequence,
                 )
                 .order_by(GoalEvent.sequence)
+                .limit(limit)
             )
             return [dict(event.payload) for event in result.scalars().all()]
 

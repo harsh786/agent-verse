@@ -211,8 +211,12 @@ async def recall_memories(
 
 
 @router.get("/long-term")
-async def list_long_term_memories(request: Request) -> list[dict[str, Any]]:
-    """List all long-term memories for this tenant."""
+async def list_long_term_memories(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[dict[str, Any]]:
+    """List long-term memories for this tenant (bounded + offset-pageable)."""
     tenant = _require_tenant(request)
     mem = getattr(request.app.state, "long_term_memory", None)
     if mem is None:
@@ -226,7 +230,7 @@ async def list_long_term_memories(request: Request) -> list[dict[str, Any]]:
             "source_goal_id": getattr(m, "source_goal_id", ""),
             "tags": getattr(m, "tags", []),
         }
-        for m in mem.list_all(tenant_ctx=tenant)
+        for m in mem.list_all(tenant_ctx=tenant, limit=limit, offset=offset)
     ]
 
 

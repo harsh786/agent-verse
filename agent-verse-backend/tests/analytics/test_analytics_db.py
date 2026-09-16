@@ -173,3 +173,44 @@ def test_cost_by_model_db_exception_returns_empty():
     agg = GoalAnalyticsAggregator(db=lambda: mock_session)
     result = asyncio.run(agg.cost_by_model_db(tenant_id="tenant-1", days=30))
     assert result == {}
+
+
+# ── agent_metrics_db ──────────────────────────────────────────────────────────
+
+
+def test_agent_metrics_db_group_by_returns_results():
+    """DB-backed agent metrics parse (agent_id, goal_count, completed, total_cost) rows."""
+    rows = [
+        ("agent-1", 10, 8, 2.0),  # 80% success, avg cost 0.2
+        ("agent-2", 4, 1, 0.0),
+    ]
+    db = _make_db_factory(rows)
+    agg = GoalAnalyticsAggregator(db=db)
+    result = asyncio.run(agg.agent_metrics_db(tenant_id="tenant-1", days=30))
+    assert len(result) == 2
+    assert result[0].agent_id == "agent-1"
+    assert result[0].goal_count == 10
+    assert abs(result[0].success_rate - 0.8) < 0.001
+    assert abs(result[0].avg_cost_usd - 0.2) < 0.001
+
+
+def test_agent_metrics_db_no_db_falls_back_to_memory():
+    """No DB/tenant should fall back to the in-memory aggregation."""
+    svc = MagicMock()
+    svc._goals = {}
+    agg = GoalAnalyticsAggregator(goal_service=svc, db=None)
+    result = asyncio.run(agg.agent_metrics_db(tenant_id="tenant-1", days=30))
+    assert result == []
+
+
+def test_agent_metrics_db_exception_falls_back_to_memory():
+    """A DB error should degrade to the in-memory aggregation, not raise."""
+    svc = MagicMock()
+    svc._goals = {}
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock(side_effect=Exception("connection refused"))
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    agg = GoalAnalyticsAggregator(goal_service=svc, db=lambda: mock_session)
+    result = asyncio.run(agg.agent_metrics_db(tenant_id="tenant-1", days=30))
+    assert result == []
