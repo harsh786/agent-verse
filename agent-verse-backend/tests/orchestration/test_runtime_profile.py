@@ -43,10 +43,15 @@ def test_flags_default_values():
     # Agentic RAG is first-class (default on): the embedding cache no longer
     # bypasses budget, so the retrieval budget is enforced on every fetch.
     assert flags.agentic_rag is True
-    # Still opt-in / progressive-rollout (not part of the first-class default set).
-    assert flags.plan_verification is False
-    assert flags.capability_registry is False
-    assert flags.policy_compiler is False
+    # All orchestration flags are now first-class (default on): the flag fields
+    # either gate nothing (their subsystems run unconditionally) or are already
+    # implied by dynamic_orchestration, so their reported default is now truthful.
+    assert flags.plan_verification is True
+    assert flags.capability_registry is True
+    assert flags.policy_compiler is True
+    assert flags.runtime_scorecard is True
+    assert flags.enable_runtime_scorecard is True
+    assert flags.enable_pattern_sse_events is True
 
 
 def test_flags_from_env(monkeypatch):
