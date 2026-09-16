@@ -608,3 +608,71 @@ def test_delete_ip_allowlist_db_exception() -> None:
     client = TestClient(_make_app(db=db), raise_server_exceptions=False)
     resp = client.delete("/tenants/me/ip-allowlist/err-entry", headers=H)
     assert resp.status_code == 500
+
+
+# ── Security: invite_member authorization + input validation ──────────────────
+# Regression for the background security review of commit 964a15f6 (persisting
+# invites activated a privilege-escalation / role-injection / cross-user-tamper
+# path). Membership mutation now requires the admin role and validates inputs.
+
+
+def _make_app_with_roles(roles: tuple[str, ...], db: Any = None) -> FastAPI:
+    """Build the tenants app whose resolved key carries the given RBAC roles."""
+    ctx = TenantContext(
+        tenant_id="tid-sec", plan=PlanTier.PROFESSIONAL, api_key_id="kid-sec", roles=roles
+    )
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return ctx if key == _VALID_KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(tenants_router)
+    app.state.tenant_service = _make_svc()
+    if db is not None:
+        app.state.db_session_factory = db
+    return app
+
+
+def test_invite_member_requires_admin_role() -> None:
+    # A non-admin (operator) caller must not be able to invite/mutate members.
+    client = TestClient(_make_app_with_roles(("operator",)), raise_server_exceptions=False)
+    resp = client.post(
+        "/tenants/me/members/invite",
+        json={"email": "new@example.com", "role": "viewer"},
+        headers=H,
+    )
+    assert resp.status_code == 403
+
+
+def test_invite_member_rejects_role_injection() -> None:
+    # Admin caller, but an unknown role must be rejected (no arbitrary role grant).
+    client = TestClient(_make_app_with_roles(("admin",)), raise_server_exceptions=False)
+    resp = client.post(
+        "/tenants/me/members/invite",
+        json={"email": "new@example.com", "role": "superadmin"},
+        headers=H,
+    )
+    assert resp.status_code == 422
+
+
+def test_invite_member_rejects_bad_email() -> None:
+    client = TestClient(_make_app_with_roles(("admin",)), raise_server_exceptions=False)
+    resp = client.post(
+        "/tenants/me/members/invite",
+        json={"email": "not-an-email", "role": "viewer"},
+        headers=H,
+    )
+    assert resp.status_code == 422
+
+
+def test_invite_member_admin_no_db_is_honest_503() -> None:
+    # Valid admin request but no DB wired → honest 503, never a fabricated success.
+    client = TestClient(_make_app_with_roles(("admin",)), raise_server_exceptions=False)
+    resp = client.post(
+        "/tenants/me/members/invite",
+        json={"email": "new@example.com", "role": "viewer"},
+        headers=H,
+    )
+    assert resp.status_code == 503

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import re
 import secrets
 from datetime import datetime
 from typing import Any
@@ -15,7 +16,7 @@ from pydantic import BaseModel, EmailStr, Field, ValidationInfo, field_validator
 from app.core.errors import ConflictError, NotFoundError, PlatformError
 from app.providers.vault import get_vault
 from app.tenancy.context import TenantContext
-from app.tenancy.rbac import VALID_ROLES
+from app.tenancy.rbac import VALID_ROLES, require_role
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
 
@@ -608,9 +609,28 @@ async def create_ip_allowlist_entry(
 # ── Tenant membership ─────────────────────────────────────────────────────────
 
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
 class InviteMemberRequest(BaseModel):
     email: str
-    role: str = "viewer"  # owner | admin | operator | viewer
+    role: str = "viewer"  # one of VALID_ROLES: admin | operator | approver | viewer
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > 320 or not _EMAIL_RE.match(v):
+            raise ValueError("invalid email address")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        # Prevent role-injection: only known RBAC roles may be granted.
+        if v not in VALID_ROLES:
+            raise ValueError(f"role must be one of {sorted(VALID_ROLES)}, got {v!r}")
+        return v
 
 
 @router.get("/me/members")
@@ -656,8 +676,16 @@ async def list_members(request: Request) -> dict:
 
 
 @router.post("/me/members/invite")
-async def invite_member(body: InviteMemberRequest, request: Request) -> dict:
-    """Invite a user to the tenant — persists a pending tenant_memberships row."""
+async def invite_member(
+    body: InviteMemberRequest,
+    request: Request,
+    _: None = Depends(require_role("admin")),
+) -> dict:
+    """Invite a user to the tenant — persists a pending tenant_memberships row.
+
+    Requires the admin role (membership management is privileged): this prevents
+    privilege-escalation and cross-user role tampering by non-admin callers.
+    """
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
