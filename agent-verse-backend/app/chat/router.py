@@ -861,7 +861,7 @@ class ConnectServiceRequest(BaseModel):
 @router.get("/services")
 async def list_services(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
-    services = _services_api.list_services(tenant.tenant_id)
+    services = await _services_api.list_services_async(tenant.tenant_id)
     return {
         "services": [
             {
@@ -882,7 +882,9 @@ async def list_services(request: Request) -> dict[str, Any]:
 @router.post("/services", status_code=status.HTTP_201_CREATED)
 async def connect_service(body: ConnectServiceRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
-    result = _services_api.initiate_connection(tenant.tenant_id, body.name, body.url, body.scopes)
+    result = await _services_api.initiate_connection_async(
+        tenant.tenant_id, body.name, body.url, body.scopes
+    )
     # status is "pending" — the connector is not usable until the OAuth callback
     # hits /services/{id}/complete. Surface that so the UI can show "Authorizing…".
     return {
@@ -896,7 +898,7 @@ async def connect_service(body: ConnectServiceRequest, request: Request) -> dict
 async def complete_service(service_id: str, request: Request) -> dict[str, Any]:
     """OAuth callback landing — flips a pending connector to connected."""
     tenant = _tenant(request)
-    svc = _services_api.complete_connection(service_id, tenant.tenant_id)
+    svc = await _services_api.complete_connection_async(service_id, tenant.tenant_id)
     if svc is None:
         raise HTTPException(status_code=404, detail="Service not found")
     return {
@@ -909,7 +911,7 @@ async def complete_service(service_id: str, request: Request) -> dict[str, Any]:
 @router.delete("/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def disconnect_service(service_id: str, request: Request) -> None:
     tenant = _tenant(request)
-    ok = _services_api.disconnect_service(service_id, tenant.tenant_id)
+    ok = await _services_api.disconnect_service_async(service_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Service not found")
 

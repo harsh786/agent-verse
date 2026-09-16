@@ -1570,6 +1570,15 @@ def create_app(
             _tmpl_store_ref.set_db(db_factory)
             logger.info("template_store_db_wired")
 
+            # Wire DB into the chat connected-services store (durable + cross-pod).
+            try:
+                from app.chat.router import _services_api as _chat_services_api
+
+                _chat_services_api.set_db(db_factory)
+                logger.info("chat_services_db_wired")
+            except Exception as _svc_db_exc:
+                logger.warning("chat_services_db_wire_failed", error=str(_svc_db_exc))
+
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2
