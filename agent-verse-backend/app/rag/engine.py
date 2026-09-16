@@ -51,6 +51,10 @@ _RRF_K = 60
 # with a matching halfvec cast (see below) to use it instead of an exact scan.
 _SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 2048, 3072})
 _BM25_PAGE_SIZE = 500
+# Above this many chunks in a collection, the app-side two-pass BM25 leg (which
+# reads the whole collection twice per query) is skipped in favour of the indexed
+# GIN full-text + vector legs, so hybrid retrieval stays fast at scale.
+_BM25_MAX_CORPUS = 50_000
 _MAX_HOPS = 5
 _MAX_VARIANTS = 5
 
@@ -454,8 +458,27 @@ async def hybrid_search(
             detail={"latency_ms": trgm_latency_ms},
         )
 
-    # Leg 4: bounded application-side Okapi BM25 over the persisted corpus.
+    # Leg 4: application-side Okapi BM25 over the persisted corpus.
+    # This walks the WHOLE collection twice (corpus stats + scoring), so gate it on
+    # size: for a large collection (> _BM25_MAX_CORPUS chunks) that is ~2N row reads
+    # per query, so skip it and let the GIN full-text + vector legs carry the RRF
+    # fusion. The count itself is bounded (LIMIT cap+1), so it is cheap.
+    bm25_skipped_large_corpus = False
     if retrieval_mode == "hybrid":
+        _corpus_probe_row = (
+            await session.execute(
+                text(
+                    f"SELECT count(*) FROM (SELECT 1 FROM {table} "
+                    f"WHERE collection_id = :cid {live_chunk_clause} "
+                    f"LIMIT :cap) _probe"
+                ),
+                {"cid": collection_id, "cap": _BM25_MAX_CORPUS + 1},
+            )
+        ).fetchone()
+        _corpus_probe = _corpus_probe_row[0] if _corpus_probe_row else 0
+        bm25_skipped_large_corpus = int(_corpus_probe or 0) > _BM25_MAX_CORPUS
+
+    if retrieval_mode == "hybrid" and not bm25_skipped_large_corpus:
         bm25_started = time.perf_counter()
         try:
             bm25_hits, bm25_trace = await _bm25_search_persisted(
@@ -491,6 +514,19 @@ async def hybrid_search(
             detail={
                 **bm25_trace,
                 "latency_ms": (time.perf_counter() - bm25_started) * 1000,
+            },
+        )
+    elif retrieval_mode == "hybrid" and bm25_skipped_large_corpus:
+        # Corpus too large for the app-side BM25 walk — record the honest skip so the
+        # trace shows the leg was intentionally omitted, not silently missing.
+        _record_leg_evidence(
+            evidence,
+            "bm25",
+            {},
+            detail={
+                "corpus_size": _BM25_MAX_CORPUS,
+                "scoring_mode": "skipped_large_corpus",
+                "skipped": True,
             },
         )
 

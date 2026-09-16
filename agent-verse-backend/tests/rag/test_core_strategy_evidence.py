@@ -184,6 +184,10 @@ class _HybridSession:
         self.sql.append(sql)
         if "SELECT embedding_dim" in sql:
             return _Rows([(1536,)])
+        if "_probe" in sql:
+            # BM25 corpus-size gate probe — return a small count so the app-side
+            # BM25 leg runs (these tests exercise a tiny corpus).
+            return _Rows([(2,)])
         if "set_config" in sql:
             return _Rows([])
         if "<=>" in sql and "SELECT id" in sql:
@@ -295,7 +299,8 @@ async def test_every_persisted_leg_filters_expired_chunks_in_sql() -> None:
     )
 
     retrieval_sql = [sql for sql in session.sql if "FROM knowledge_chunks_" in sql]
-    assert len(retrieval_sql) == 5
+    # 5 retrieval legs + the BM25 corpus-size gate probe (also expired-chunk filtered).
+    assert len(retrieval_sql) == 6
     assert all(
         "expires_at IS NULL OR expires_at > now()" in sql for sql in retrieval_sql
     )
