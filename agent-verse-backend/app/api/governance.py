@@ -261,8 +261,18 @@ async def delete_policy(request: Request, policy_id: str) -> None:
     engine = _policy_engine(request)
     registry = _policy_registry(request)
 
+    # DB-authoritative lookup: the per-pod registry only holds policies THIS pod
+    # created, so looking up there 404'd a DELETE on any other pod even though the
+    # policy exists in the DB. Resolve the record from the DB first (cross-pod),
+    # falling back to the registry only in the no-DB build.
     tenant_policies = registry.get(tenant_ctx.tenant_id, {})
-    record = tenant_policies.get(policy_id)
+    record: dict[str, Any] | None = None
+    for p in await _db_list_policies(request, tenant_ctx.tenant_id):
+        if p.get("policy_id") == policy_id:
+            record = p
+            break
+    if record is None:
+        record = tenant_policies.get(policy_id)
     if record is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -271,13 +281,14 @@ async def delete_policy(request: Request, policy_id: str) -> None:
 
     # Remove from the PolicyEngine's internal list, scoped to THIS tenant only.
     # Matching only on name (without tenant check) would delete identically-named
-    # policies belonging to other tenants — the critical isolation bug.
+    # policies belonging to other tenants — the critical isolation bug. Other pods
+    # re-sync their engine from the DB via the pub/sub publish below.
     engine._policies = [  # type: ignore[attr-defined]
         p
         for p in engine._policies  # type: ignore[attr-defined]
         if not (p.name == record["name"] and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id)
     ]
-    del tenant_policies[policy_id]
+    tenant_policies.pop(policy_id, None)
     await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="deleted")
