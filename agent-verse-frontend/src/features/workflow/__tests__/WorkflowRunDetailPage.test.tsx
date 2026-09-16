@@ -151,21 +151,22 @@ describe('WorkflowRunDetailPage', () => {
     expect(runsLink).toBeDefined();
   });
 
-  it('shows cancel button for running run', async () => {
+  it('shows cancel/stop button for running run', async () => {
     vi.mocked(workflowEngineApi.getRun).mockResolvedValue({
       ...mockRun, status: 'running',
     } as any);
     wrap();
+    // The control is the Pause/Resume/Stop trio; the cancel action is "Stop run".
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /cancel run/i })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /stop run/i })).toBeInTheDocument();
     });
   });
 
-  it('does not show cancel button for completed run', async () => {
+  it('does not show cancel/stop button for completed run', async () => {
     wrap();
     await waitFor(() => screen.getAllByText('complete'));
-    // Completed run should not have a cancel button
-    expect(screen.queryByRole('button', { name: /cancel run/i })).toBeNull();
+    // Completed run should not have a stop (cancel) button
+    expect(screen.queryByRole('button', { name: /stop run/i })).toBeNull();
   });
 
   it('shows error message when run failed', async () => {
