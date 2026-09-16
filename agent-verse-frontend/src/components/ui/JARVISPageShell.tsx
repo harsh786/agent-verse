@@ -11,7 +11,7 @@
  * The spring presets remain exported for components that still tune framer
  * transitions locally.
  */
-import type { ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode } from 'react';
 
 // ── Spring presets (kept for local framer transitions elsewhere) ───────────
 export const SPRING_PAGE   = { type: 'spring', stiffness: 280, damping: 26 } as const;
@@ -49,12 +49,13 @@ export function JARVISStagger({
   children,
   className = '',
   staggerMs: _staggerMs,
+  ...rest
 }: {
   children:  ReactNode;
   className?: string;
   staggerMs?: number;
-}) {
-  return <div className={`jarvis-stagger ${className}`}>{children}</div>;
+} & HTMLAttributes<HTMLDivElement>) {
+  return <div className={`jarvis-stagger ${className}`} {...rest}>{children}</div>;
 }
 
 /** Single stagger item — a CSS rise-in, plus optional hover/press transform. */

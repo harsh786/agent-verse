@@ -10,7 +10,9 @@ interface WorkflowDef {
   description?: string;
   status: 'active' | 'paused' | 'draft';
   trigger_type: string;
-  run_count: number;
+  // Not always populated by the backend's WorkflowResponse (e.g. right after
+  // creation), so callers must not assume it's present.
+  run_count?: number;
   success_rate?: number;
   last_run_at?: string;
   created_at: string;
@@ -59,7 +61,7 @@ function WorkflowCard({ wf, onRun, onToggle }: {
             )}
             <div className="flex items-center gap-3 text-xs text-[#475569]">
               <span>{wf.trigger_type}</span>
-              <span>{wf.run_count.toLocaleString()} runs</span>
+              <span>{(wf.run_count ?? 0).toLocaleString()} runs</span>
               {wf.success_rate !== undefined && (
                 <span className={wf.success_rate > 0.8 ? 'text-emerald-400' : 'text-amber-400'}>
                   {Math.round(wf.success_rate * 100)}% success
@@ -126,7 +128,7 @@ export function WorkflowEnginePage() {
   const { data: runsData, isLoading: runsLoading, isFetching: runsFetching } = useQuery({
     queryKey: ['workflow-engine-runs', runsLimit],
     queryFn: () =>
-      apiFetch<unknown>(`/api/v1/workflows/runs?limit=${runsLimit}`).then(normalizeList<WorkflowRun>),
+      apiFetch<unknown>(`/api/v1/runs?limit=${runsLimit}`).then(normalizeList<WorkflowRun>),
     refetchInterval: 5_000,
     enabled: activeTab === 'runs',
   });

@@ -3,8 +3,11 @@
  *
  * Loads variants from GET /intelligence/prompt-variants (via apiFetch), groups
  * them by key, and supports create / promote / delete / copy plus a per-key
- * filter that re-queries GET /intelligence/prompt-variants/:key. Covers loading,
- * error, empty, list rendering and every mutation with real endpoint assertions.
+ * filter that re-queries GET /intelligence/prompt-variants?key=:key. Covers
+ * loading, error, empty, list rendering and every mutation with real endpoint
+ * assertions (field names match the real backend contract in
+ * app/api/enterprise.py: id, key, name, prompt_text, is_control, run_count,
+ * mean_score, p95_score, promoted_at).
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
@@ -16,24 +19,26 @@ import { PromptVariantsPage } from './PromptVariantsPage';
 
 const VARIANTS = [
   {
-    variant_id: 'var-a',
+    id: 'var-a',
     key: 'system_prompt',
-    label: 'Concise variant',
-    content: 'You are a concise assistant that answers briefly.',
-    is_active: true,
-    win_rate: 0.62,
-    usage_count: 1200,
-    created_at: '2026-01-01T00:00:00Z',
+    name: 'Concise variant',
+    prompt_text: 'You are a concise assistant that answers briefly.',
+    is_control: true,
+    run_count: 1200,
+    mean_score: 0.62,
+    p95_score: 0.9,
+    promoted_at: '2026-01-01T00:00:00Z',
   },
   {
-    variant_id: 'var-b',
+    id: 'var-b',
     key: 'system_prompt',
-    label: 'Verbose variant',
-    content: 'You are a thorough assistant that explains in detail.',
-    is_active: false,
-    win_rate: 0.38,
-    usage_count: 800,
-    created_at: '2026-01-02T00:00:00Z',
+    name: 'Verbose variant',
+    prompt_text: 'You are a thorough assistant that explains in detail.',
+    is_control: false,
+    run_count: 800,
+    mean_score: 0.38,
+    p95_score: 0.7,
+    promoted_at: null,
   },
 ];
 
@@ -46,7 +51,6 @@ function jsonResponse(body: unknown, status = 200) {
 
 function mockFetch(variants = VARIANTS) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-    const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method === 'GET') return jsonResponse(variants);
     return jsonResponse({ status: 'ok' });
@@ -81,14 +85,14 @@ describe('PromptVariantsPage', () => {
     expect(screen.getByRole('button', { name: /New Variant/i })).toBeInTheDocument();
   });
 
-  test('renders variant cards with key, label, content preview, and win rate', async () => {
+  test('renders variant cards with key, name, prompt preview, and win rate', async () => {
     mockFetch();
     renderPage();
     expect(await screen.findByText('Concise variant')).toBeInTheDocument();
     expect(screen.getByText('Verbose variant')).toBeInTheDocument();
     expect(screen.getByText(/You are a concise assistant/)).toBeInTheDocument();
     expect(screen.getByText(/62% win rate/)).toBeInTheDocument();
-    // Active badge shows on the active variant.
+    // Active badge shows on the control (promoted) variant.
     expect(screen.getByText('Active')).toBeInTheDocument();
   });
 
@@ -104,14 +108,14 @@ describe('PromptVariantsPage', () => {
     expect(await screen.findByText(/Failed to load prompt variants/i)).toBeInTheDocument();
   });
 
-  test('key filter chips re-query the per-key endpoint', async () => {
+  test('key filter chips re-query with the key as a query param', async () => {
     const spy = mockFetch();
     renderPage();
     await screen.findByText('Concise variant');
     // Chip renders as "system_prompt (2)".
     await userEvent.click(screen.getByRole('button', { name: /system_prompt/i }));
     await waitFor(() =>
-      expect(spy.mock.calls.some(([u]) => /\/intelligence\/prompt-variants\/system_prompt$/.test(String(u)))).toBe(true)
+      expect(spy.mock.calls.some(([u]) => /\/intelligence\/prompt-variants\?key=system_prompt$/.test(String(u)))).toBe(true)
     );
   });
 
@@ -124,14 +128,14 @@ describe('PromptVariantsPage', () => {
       expect(
         spy.mock.calls.some(
           ([u, i]) =>
-            /\/intelligence\/prompt-variants\/system_prompt\/var-b\/promote$/.test(String(u)) &&
+            /\/intelligence\/prompt-variants\/var-b\/promote$/.test(String(u)) &&
             (i as RequestInit)?.method === 'POST'
         )
       ).toBe(true)
     );
   });
 
-  test('deleting a variant fires a DELETE for its key + id', async () => {
+  test('deleting a variant fires a DELETE for its id', async () => {
     const spy = mockFetch();
     renderPage();
     await screen.findByText('Concise variant');
@@ -140,14 +144,14 @@ describe('PromptVariantsPage', () => {
       expect(
         spy.mock.calls.some(
           ([u, i]) =>
-            /\/intelligence\/prompt-variants\/system_prompt\/var-a$/.test(String(u)) &&
+            /\/intelligence\/prompt-variants\/var-a$/.test(String(u)) &&
             (i as RequestInit)?.method === 'DELETE'
         )
       ).toBe(true)
     );
   });
 
-  test('copy button writes the variant content to the clipboard', async () => {
+  test('copy button writes the variant prompt text to the clipboard', async () => {
     mockFetch();
     renderPage();
     await screen.findByText('Concise variant');
@@ -176,9 +180,13 @@ describe('PromptVariantsPage', () => {
 
     await waitFor(() =>
       expect(
-        spy.mock.calls.some(
-          ([u, i]) => /\/intelligence\/prompt-variants$/.test(String(u)) && (i as RequestInit)?.method === 'POST'
-        )
+        spy.mock.calls.some(([u, i]) => {
+          if (!/\/intelligence\/prompt-variants$/.test(String(u)) || (i as RequestInit)?.method !== 'POST') {
+            return false;
+          }
+          const body = JSON.parse(String((i as RequestInit).body));
+          return body.key === 'planner_prompt' && body.prompt_text === 'You plan carefully.';
+        })
       ).toBe(true)
     );
   });

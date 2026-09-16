@@ -32,7 +32,9 @@ export async function createE2ETenant(request: APIRequestContext, suffix = ''): 
       email: `e2e-${ts}${suffix}@agentverse.io`,
     },
   });
-  expect(resp.status(), `Tenant signup failed: ${await resp.text()}`).toBe(200);
+  // POST /tenants/signup is declared with status_code=201 (app/api/tenants.py) —
+  // accept both 200/201 so this helper doesn't regress if that ever changes.
+  expect([200, 201], `Tenant signup failed: ${await resp.text()}`).toContain(resp.status());
   const body = await resp.json();
   return {
     tenantId: body.tenant_id,
@@ -85,6 +87,7 @@ export function apiClient(request: APIRequestContext, tenant: E2ETenant) {
   return {
     get: (path: string) => request.get(`${API_BASE}${path}`, { headers }),
     post: (path: string, data?: unknown) => request.post(`${API_BASE}${path}`, { data, headers }),
+    put: (path: string, data?: unknown) => request.put(`${API_BASE}${path}`, { data, headers }),
     patch: (path: string, data?: unknown) => request.patch(`${API_BASE}${path}`, { data, headers }),
     delete: (path: string) => request.delete(`${API_BASE}${path}`, { headers }),
   };

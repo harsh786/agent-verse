@@ -43,7 +43,7 @@ function mockFetch(plan: FetchPlan = {}) {
     const ok = (body: unknown) =>
       new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
-    if (url.includes('/api/v1/workflows/runs')) return ok(plan.runs ?? []);
+    if (url.includes('/api/v1/runs')) return ok(plan.runs ?? []);
     if (/\/api\/v1\/workflows\/[^/]+\/(trigger|pause|resume)/.test(url) && method === 'POST')
       return ok({ status: 'ok' });
     if (url.includes('/api/v1/workflows')) return ok(plan.workflows ?? []);
