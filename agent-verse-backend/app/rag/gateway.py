@@ -253,12 +253,19 @@ class _BudgetedEmbedder:
         texts = list(getattr(request, "texts", []) or [])
         model = self._model(request)
         _cache_on = self._cache_enabled()
-        # Full cache hit → return without spending an embed call or budget.
+        # Full cache hit → skip the provider call, but STILL enforce budget. The
+        # cache avoids real token cost, not the fetch itself: each retrieval fetch
+        # (e.g. one per collection in a fan-out) must consume the shared budget so
+        # a runaway fan-out is denied even when its query embedding is cached.
+        # Reserving here records the attempt and may raise budget_exhausted; the
+        # cost win is preserved by recording 0 actual tokens (no provider call).
         if texts and _cache_on:
             hits, misses = await _EMBED_CACHE.get_batch(model, texts)
             if not misses:
                 from app.providers.base import EmbedResponse
 
+                cached_index = await self._guard.reserve("embedding")
+                self._guard.record_tokens(cached_index, 0)
                 return EmbedResponse(
                     embeddings=[hits[i] for i in range(len(texts))],
                     model=model,

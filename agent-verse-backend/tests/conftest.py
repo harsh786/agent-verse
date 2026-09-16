@@ -84,6 +84,24 @@ def _keep_scaling_tasks_bound():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_process_embedding_cache():
+    """Reset the process-wide RAG embedding cache between tests.
+
+    ``app.rag.gateway._EMBED_CACHE`` is a module singleton, so an embedding
+    cached by one test would otherwise be served to the next (leaking token
+    counts and budget accounting across tests). Clearing it before each test
+    keeps them deterministic regardless of whether the cache is enabled.
+    """
+    try:
+        from app.rag.gateway import _EMBED_CACHE
+
+        _EMBED_CACHE.clear()
+    except Exception:
+        pass
+    yield
+
+
 @pytest.fixture
 def app():
     from app.main import create_app

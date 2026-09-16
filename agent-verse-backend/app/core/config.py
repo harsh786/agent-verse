@@ -191,10 +191,12 @@ class Settings(BaseSettings):
     rag_low_confidence_fallback_enabled: bool = True
     rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
-    # Exact-text embedding cache in the RAG embed path. Off by default because a
-    # cache hit legitimately spends no embedding budget, which changes budget
-    # accounting; enable per deployment to cut repeat-embed latency/cost.
-    rag_embedding_cache_enabled: bool = False
+    # Exact-text embedding cache in the RAG embed path (first-class, on by
+    # default). A cache hit skips the provider call and its token cost, but STILL
+    # consumes shared budget (see _BudgetedEmbedder.embed) so a fan-out is denied
+    # even when its query embedding is cached — budget enforcement is never
+    # bypassed. Cuts repeat-embed latency/cost across collections and requests.
+    rag_embedding_cache_enabled: bool = True
 
     # Grantex governance: when True, every agent tool call must pass a covering,
     # active, unrevoked grant (fail-closed). Default off so it is opt-in per
