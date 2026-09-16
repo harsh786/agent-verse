@@ -111,6 +111,22 @@ def _serialize_source(s: SourceConfig) -> dict:
     return d
 
 
+# ── Source catalogue ──────────────────────────────────────────────────────────
+# NOTE: this static route MUST be registered before the dynamic
+# GET /sources/{source_id} route below — Starlette matches routes in
+# registration order, so if this were registered after, requests to
+# /sources/catalogue would be swallowed by /sources/{source_id} (with
+# source_id="catalogue") and 404 instead of returning the catalogue.
+
+
+@router.get("/catalogue", response_model=list[dict], include_in_schema=True)
+async def get_catalogue(request: Request) -> list[dict]:
+    """Return all registered connector types for the UI source picker."""
+    from app.ingestion.connector_registry import get_connector_metadata
+
+    return get_connector_metadata()
+
+
 # ── Sources CRUD ──────────────────────────────────────────────────────────────
 
 
@@ -277,17 +293,6 @@ async def sync_status(source_id: str, request: Request) -> dict:
     return dataclasses.asdict(latest)
 
 
-# ── Source catalogue ──────────────────────────────────────────────────────────
-
-
-@router.get("/catalogue", response_model=list[dict], include_in_schema=True)
-async def get_catalogue(request: Request) -> list[dict]:
-    """Return all registered connector types for the UI source picker."""
-    from app.ingestion.connector_registry import get_connector_metadata
-
-    return get_connector_metadata()
-
-
 # ── Preview (dry-run) ─────────────────────────────────────────────────────────
 
 
@@ -409,7 +414,12 @@ async def _run_sync(
     job = await tracker.create_job(source, job_id=job_id, triggered_by="manual")
 
     indexed = skipped = failed = chunks = 0
-    last_cursor = source.cursor_value or ""
+    # Captured before the loop runs: tracker.update_cursor() mutates
+    # source.cursor_value in place, so comparing last_cursor against
+    # source.cursor_value *after* the loop would always be equal (bug) —
+    # the durable source_store would never receive the advanced cursor.
+    original_cursor = source.cursor_value or ""
+    last_cursor = original_cursor
     try:
         from app.ingestion.connector_registry import get_connector
 
@@ -449,7 +459,7 @@ async def _run_sync(
                     source.source_id, source.tenant_id,
                     docs_indexed=indexed, chunks=chunks, failed=failed,
                 )
-                if last_cursor and last_cursor != (source.cursor_value or ""):
+                if last_cursor and last_cursor != original_cursor:
                     await source_store.update(
                         source.source_id, source.tenant_id, cursor_value=last_cursor
                     )
