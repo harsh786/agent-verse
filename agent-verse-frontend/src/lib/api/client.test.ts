@@ -1,8 +1,9 @@
 import { afterEach, expect, test, vi, beforeEach } from 'vitest';
 import {
-  analyticsApi, schedulesApi, agentsApi, goalsApi, ApiError,
+  analyticsApi, schedulesApi, agentsApi, goalsApi, ApiError, adminApi,
   memoryApi, artifactsApi, toolsApi, perceptionApi, a2aApi, integrationsApi, trainingApi,
 } from '@/lib/api/client';
+import { chatApi } from '@/lib/api/chat';
 import { useAuthStore } from '@/stores/auth';
 
 afterEach(() => vi.restoreAllMocks());
@@ -166,6 +167,38 @@ test('trainingApi.export downloads a blob + parses headers', async () => {
   expect(res.filename).toBe('agentverse_training_openai_x.jsonl');
   expect(res.count).toBe(2);
   expect(res.blob).toBeInstanceOf(Blob);
+});
+
+// ── adminApi (server-side tenant pagination) ────────────────────────────────────
+
+test('adminApi.listTenants sends limit + offset (server-side pagination)', async () => {
+  const f = mockOk({ tenants: [], total: 0 });
+  await adminApi.listTenants({ limit: 25, offset: 50 });
+  const url = String(f.mock.calls[0][0]);
+  expect(url).toContain('/admin/tenants?');
+  expect(url).toContain('limit=25');
+  expect(url).toContain('offset=50');
+});
+
+test('adminApi.listTenants defaults to a bounded page (no magic limit:200)', async () => {
+  const f = mockOk({ tenants: [], total: 0 });
+  await adminApi.listTenants();
+  const url = String(f.mock.calls[0][0]);
+  expect(url).toContain('limit=25');
+  expect(url).not.toContain('limit=200');
+  // First page: offset omitted (falsy).
+  expect(url).not.toContain('offset=');
+});
+
+// ── chatApi.listSessions (client-side cap) ──────────────────────────────────────
+
+test('chatApi.listSessions caps the rendered set to the limit', async () => {
+  const many = Array.from({ length: 250 }, (_, i) => ({ id: `s${i}`, title: `Chat ${i}`, pinned: false }));
+  mockOk({ sessions: many });
+  useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true });
+  const { sessions } = await chatApi.listSessions(100);
+  expect(sessions).toHaveLength(100);
+  expect(sessions[0].id).toBe('s0');
 });
 
 // ── guardrailsApi ─────────────────────────────────────────────────────────────

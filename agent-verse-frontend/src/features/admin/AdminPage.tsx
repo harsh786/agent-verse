@@ -18,6 +18,11 @@ import {
 } from 'lucide-react';
 import { adminApi, API_BASE } from '@/lib/api/client';
 import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
+import { Pagination } from '@/components/ui/Pagination';
+
+// Server-side page size for GET /admin/tenants (limit + offset). Replaces the
+// previous hardcoded limit:200 which silently truncated large tenant lists.
+const TENANTS_PAGE_SIZE = 25;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -101,6 +106,7 @@ export default function AdminPage() {
   const [search, setSearch]       = useState('');
   const [planFilter, setPlanFilter] = useState<Plan | 'all'>('all');
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [page, setPage]           = useState(1);
   const qc = useQueryClient();
 
   const { data: usage, isLoading: usageLoading, refetch: refetchUsage } = useQuery({
@@ -110,8 +116,11 @@ export default function AdminPage() {
   });
 
   const { data: tenantsData, isLoading: tenantsLoading, dataUpdatedAt } = useQuery({
-    queryKey: ['admin', 'tenants'],
-    queryFn: () => adminApi.listTenants({ limit: 200 }),
+    queryKey: ['admin', 'tenants', page],
+    // Server-side pagination: fetch one page at a time via limit + offset
+    // (was a hardcoded limit:200 that silently dropped tenants beyond 200).
+    queryFn: () =>
+      adminApi.listTenants({ limit: TENANTS_PAGE_SIZE, offset: (page - 1) * TENANTS_PAGE_SIZE }),
     refetchInterval: 30_000,
   });
 
@@ -131,7 +140,11 @@ export default function AdminPage() {
     onSettled:  () => { setUpdatingId(null); qc.invalidateQueries({ queryKey: ['admin'] }); },
   });
 
+  // `allTenants` is the current server page. Search + plan-filter below run over
+  // this loaded page only (GET /admin/tenants has no server search/plan param);
+  // use the pager to move across the full set. Total drives the pager.
   const allTenants: Tenant[] = tenantsData?.tenants ?? [];
+  const total: number = tenantsData?.total ?? allTenants.length;
   const filtered = allTenants.filter((t) => {
     const matchSearch = !search || t.tenant_id.toLowerCase().includes(search.toLowerCase()) || (t.name ?? '').toLowerCase().includes(search.toLowerCase());
     const matchPlan = planFilter === 'all' || t.plan === planFilter;
@@ -203,7 +216,7 @@ export default function AdminPage() {
           <h2 className="font-semibold text-[#E2E8F0] flex-1 flex items-center gap-2">
             <Database className="h-4 w-4 text-[#5A7494]" />
             Tenants
-            <span className="text-xs text-[#5A7494] font-normal">{sorted.length} / {allTenants.length}</span>
+            <span className="text-xs text-[#5A7494] font-normal">{sorted.length} shown · {total} total</span>
           </h2>
           <p className="hidden sm:block text-xs text-[#374151]">Updated {lastUpdated}</p>
           <div className="relative">
@@ -268,6 +281,18 @@ export default function AdminPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Server-side pagination — one page of tenants per fetch */}
+        {!tenantsLoading && total > TENANTS_PAGE_SIZE && (
+          <div className="border-t border-[#1E2535] px-4 py-3">
+            <Pagination
+              page={page}
+              pageSize={TENANTS_PAGE_SIZE}
+              total={total}
+              onPageChange={setPage}
+            />
           </div>
         )}
       </div>

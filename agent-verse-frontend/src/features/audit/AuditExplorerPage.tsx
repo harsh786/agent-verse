@@ -71,6 +71,11 @@ const OUTCOME_STYLES: Record<string, string> = {
 
 const BADGE_BASE = "inline-flex items-center border font-medium rounded-full px-2 py-0.5 text-xs";
 
+// Safety cap for the whole-dataset client scan used when an outcome/free-text
+// filter is active (the backend can't filter those). At the default limit of 100
+// this scans up to 5,000 events before stopping.
+const MAX_SCAN_PAGES = 50;
+
 function LevelBadge({ level }: { level: string }) {
   const cls = LEVEL_STYLES[level?.toLowerCase()] ?? "bg-muted text-muted-foreground border-border";
   return <span className={`${BADGE_BASE} ${cls}`}>{level || "—"}</span>;
@@ -120,9 +125,36 @@ export function AuditExplorerPage() {
 
   // ── Data fetching ──────────────────────────────────────────────────────────
 
+  // Correctness: `outcome` and the free-text box are filtered client-side because
+  // GET /governance/audit has no server param for either (only goal_id/tool_name/
+  // time/limit/offset — verified against the backend route). Previously they were
+  // applied over the current server page only, so matches on later pages were
+  // silently missed. When such a client-only filter is active we instead page
+  // through the whole dataset (bounded by MAX_SCAN_PAGES) using the supported
+  // base filters, so the filter covers every matching event — not just one page.
+  // The scan result is keyed only on the base filters, so typing in the free-text
+  // box re-filters the cached scan client-side without re-fetching.
+  // TODO(scale): add backend `outcome` + full-text (`q`) params to /governance/audit
+  // so this can be a single server-side query instead of a client scan.
+  const scanning = !!appliedOutcome || !!text.trim();
+
   const { data: entries = [], isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ["audit", applied, offset],
-    queryFn: () => auditApi.query({ ...applied, offset }),
+    queryKey: ["audit", applied, scanning ? "scan" : offset],
+    queryFn: async () => {
+      if (!scanning) return auditApi.query({ ...applied, offset });
+      const scanPageSize = applied.limit ?? 100;
+      const all: AuditEvent[] = [];
+      for (let p = 0; p < MAX_SCAN_PAGES; p++) {
+        const batch = await auditApi.query({
+          ...applied,
+          limit: scanPageSize,
+          offset: p * scanPageSize,
+        });
+        all.push(...batch);
+        if (batch.length < scanPageSize) break;
+      }
+      return all;
+    },
     refetchInterval: 60_000,
   });
 
@@ -498,8 +530,17 @@ export function AuditExplorerPage() {
         </div>
       )}
 
-      {/* ── Pagination ── */}
-      {!isLoading && !error && entries.length > 0 && (
+      {/* ── Scan notice ── (whole-dataset client filter active) */}
+      {!isLoading && !error && scanning && (
+        <p className="text-xs text-muted-foreground">
+          Filtering across all {entries.length.toLocaleString()} scanned event{entries.length !== 1 ? "s" : ""}
+          {" — "}{filtered.length.toLocaleString()} match{filtered.length !== 1 ? "es" : ""}
+          {entries.length >= MAX_SCAN_PAGES * (applied.limit ?? 100) && " (scan capped)"}.
+        </p>
+      )}
+
+      {/* ── Pagination ── (server offset paging; hidden while a whole-dataset scan is active) */}
+      {!isLoading && !error && !scanning && entries.length > 0 && (
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>
             Showing&nbsp;

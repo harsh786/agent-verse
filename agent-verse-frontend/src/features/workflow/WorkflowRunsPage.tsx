@@ -5,6 +5,7 @@
  * carries a prefers-reduced-motion guard so entrances are instant when the
  * user has requested reduced motion.
  */
+import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
@@ -72,12 +73,21 @@ export default function WorkflowRunsPage() {
     enabled: !!id,
   });
 
-  const { data: runs, isLoading } = useQuery({
-    queryKey: ['workflow-engine', 'runs', id],
-    queryFn: () => workflowEngineApi.listRuns({ workflow_id: id, per_page: 50 }),
+  // Server-side pagination via GET /api/v1/runs (per_page). "Load more" grows
+  // the requested window; total comes back in the response for the count + gate.
+  const RUNS_PAGE = 50;
+  const [perPage, setPerPage] = useState(RUNS_PAGE);
+
+  const { data: runs, isLoading, isFetching } = useQuery({
+    queryKey: ['workflow-engine', 'runs', id, perPage],
+    queryFn: () => workflowEngineApi.listRuns({ workflow_id: id, per_page: perPage }),
     refetchInterval: 5000,
     enabled: !!id,
   });
+
+  const loadedRuns = runs?.items ?? [];
+  const totalRuns = runs?.total ?? loadedRuns.length;
+  const hasMoreRuns = loadedRuns.length < totalRuns;
 
   return (
     <JARVISPageShell>
@@ -102,21 +112,37 @@ export default function WorkflowRunsPage() {
           <div className="flex items-center justify-center py-16">
             <Loader2 className="h-6 w-6 text-sky-400 animate-spin" />
           </div>
-        ) : (runs?.items ?? []).length === 0 ? (
+        ) : loadedRuns.length === 0 ? (
           <div className="text-center py-16 text-[#F1F5F9]/30">
             <Play className="h-12 w-12 mx-auto mb-4 opacity-20" aria-hidden />
             <p className="text-sm">No runs yet. Trigger the workflow to see runs here.</p>
           </div>
         ) : (
-          <div
-            className="space-y-2"
-            role="list"
-            aria-label="Workflow runs"
-          >
-            {(runs?.items ?? []).map((run) => (
-              <RunRow key={run.run_id} run={run} workflowId={id} />
-            ))}
-          </div>
+          <>
+            <div
+              className="space-y-2"
+              role="list"
+              aria-label="Workflow runs"
+            >
+              {loadedRuns.map((run) => (
+                <RunRow key={run.run_id} run={run} workflowId={id} />
+              ))}
+            </div>
+            {hasMoreRuns && (
+              <div className="mt-6 flex justify-center">
+                <button
+                  onClick={() => setPerPage((n) => n + RUNS_PAGE)}
+                  disabled={isFetching}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/15
+                             hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm
+                             font-medium transition-colors disabled:opacity-50"
+                >
+                  {isFetching && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+                  Load more ({loadedRuns.length} of {totalRuns})
+                </button>
+              </div>
+            )}
+          </>
         )}
       </main>
     </JARVISStagger>

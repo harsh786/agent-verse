@@ -31,6 +31,11 @@ export function ChatSidebar({
 }: Props): JSX.Element {
   const [search, setSearch] = useState('');
 
+  // NOTE(scale): this search runs over the sessions already loaded into the
+  // sidebar (capped by chatApi.listSessions' client-side limit — GET
+  // /chat/sessions has no server-side limit/search param). It will not match
+  // sessions beyond that loaded page. Needs a backend session search + cursor
+  // to search the full history server-side.
   const filtered = sessions.filter((s) =>
     s.title.toLowerCase().includes(search.toLowerCase()),
   );

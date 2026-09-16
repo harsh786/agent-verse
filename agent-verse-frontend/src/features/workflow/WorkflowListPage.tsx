@@ -324,11 +324,22 @@ export default function WorkflowListPage() {
   const [statusFilter, setStatusFilter] = useState<string>('published');
   const [showYamlCreate, setShowYamlCreate] = useState(false);
 
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ['workflow-engine', 'list', statusFilter],
-    queryFn: () => workflowEngineApi.list({ per_page: 100, status: statusFilter || undefined }),
+  // Server-side pagination via GET /api/v1/workflows (status filter + per_page).
+  // "Load more" grows the requested window; `total` gates it. The status filter
+  // is server-side; the free-text search below refines the loaded page only
+  // (the list endpoint has no text-search param).
+  const WF_PAGE = 60;
+  const [perPage, setPerPage] = useState(WF_PAGE);
+  // Reset the window whenever the server-side status filter changes.
+  const resetWindow = (next: string) => { setStatusFilter(next); setPerPage(WF_PAGE); };
+
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
+    queryKey: ['workflow-engine', 'list', statusFilter, perPage],
+    queryFn: () => workflowEngineApi.list({ per_page: perPage, status: statusFilter || undefined }),
     staleTime: 30_000,
   });
+  const totalWorkflows = data?.total ?? (data?.items?.length ?? 0);
+  const hasMoreWorkflows = (data?.items?.length ?? 0) < totalWorkflows;
 
   // Latest run per workflow (runs come back created_at DESC), polled so cards can
   // offer pause/resume/stop on whichever run is currently active.
@@ -459,7 +470,7 @@ export default function WorkflowListPage() {
             {['', 'draft', 'published', 'archived'].map((s) => (
               <button
                 key={s}
-                onClick={() => setStatusFilter(s)}
+                onClick={() => resetWindow(s)}
                 aria-pressed={statusFilter === s}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   statusFilter === s
@@ -517,10 +528,28 @@ export default function WorkflowListPage() {
           </div>
         )}
 
+        {/* Load more — grows the server-side window (per_page) */}
+        {!isLoading && !error && hasMoreWorkflows && (
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={() => setPerPage((n) => n + WF_PAGE)}
+              disabled={isFetching}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl border border-white/15
+                         hover:border-white/25 text-[#F1F5F9]/70 hover:text-[#F1F5F9] text-sm
+                         font-medium transition-colors disabled:opacity-50"
+              aria-label="Load more workflows"
+            >
+              {isFetching && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
+              Load more
+            </button>
+          </div>
+        )}
+
         {/* Count */}
         {filtered.length > 0 && (
           <p className="mt-6 text-xs text-[#F1F5F9]/30 text-right">
-            {filtered.length} workflow{filtered.length !== 1 ? 's' : ''}
+            {filtered.length} of {totalWorkflows} workflow{totalWorkflows !== 1 ? 's' : ''}
+            {search && ' (search matches loaded page)'}
           </p>
         )}
       </main>

@@ -335,6 +335,11 @@ export interface PatternSelectionResponse {
 }
 
 export const goalsApi = {
+  // TODO(scale): the current backend GET /goals returns ALL goals for the tenant
+  // and ignores status/search/page/page_size (verified against the route +
+  // OpenAPI). These params are forwarded so the client is ready the moment the
+  // backend adds pagination; until then GoalsListPage still filters/paginates
+  // client-side. Needs a backend page/limit/cursor param.
   list: (params?: { status?: string; search?: string; page?: number; page_size?: number }) => {
     const q = new URLSearchParams();
     if (params?.status && params.status !== 'all') q.set('status', params.status);
@@ -420,6 +425,10 @@ export interface AgentSnapshot {
 }
 
 export const agentsApi = {
+  // TODO(scale): GET /agents returns the full list with no server-side
+  // pagination/filter params (verified against the backend route + OpenAPI).
+  // Callers must paginate/filter/sort client-side. Needs a backend
+  // page/limit/cursor param before this can be pushed server-side.
   list: () => request<AgentResponse[]>("/agents"),
   get: (id: string) => request<AgentResponse>(`/agents/${id}`),
   create: (data: CreateAgentRequest) =>
@@ -2820,9 +2829,12 @@ export interface PlatformUsage {
 }
 
 export const adminApi = {
-  listTenants: (params?: { search?: string; limit?: number }) => {
-    const qs = new URLSearchParams({ limit: String(params?.limit ?? 100) });
-    if (params?.search) qs.set('search', params.search);
+  // GET /admin/tenants supports server-side offset pagination (limit + offset)
+  // and returns { tenants, total }. It has NO server-side search param, so
+  // AdminPage searches/filters the current page client-side (documented there).
+  listTenants: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams({ limit: String(params?.limit ?? 25) });
+    if (params?.offset) qs.set('offset', String(params.offset));
     return request<{ tenants: AdminTenant[]; total: number }>(`/admin/tenants?${qs}`);
   },
   updatePlan: (tenantId: string, plan: string) =>

@@ -95,6 +95,11 @@ export function AgentsListPage() {
     }
   };
 
+  // TODO(scale): GET /agents returns the full list (no server page/limit/filter
+  // params — see agentsApi.list), so search/mode-filter/sort/paging all run
+  // client-side below over the loaded array. Needs a backend cursor to page
+  // server-side. Until then the <Pagination> control keeps the rendered DOM
+  // bounded to PAGE_SIZE rows.
   const {
     data: agents = [],
     isLoading,

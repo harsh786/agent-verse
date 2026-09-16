@@ -99,10 +99,21 @@ export function GoalsListPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
+  // TODO(scale): GET /goals returns ALL goals for the tenant (no server
+  // pagination/filter yet — see goalsApi.list), so filtering/sorting/paging is
+  // client-side below. To avoid re-pulling the entire list every 5s, the poll is
+  // bounded: it only ticks at 5s while a goal is actively running, and backs off
+  // to 30s when everything is in a terminal state.
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["goals", tenantId],
     queryFn: () => goalsApi.list(),
-    refetchInterval: 5_000,
+    refetchInterval: (query) => {
+      const goals = query.state.data?.goals ?? [];
+      const hasActive = goals.some((g) =>
+        ["executing", "planning", "waiting_human"].includes(g.status)
+      );
+      return hasActive ? 5_000 : 30_000;
+    },
   });
 
   const cancel = useMutation({

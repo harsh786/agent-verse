@@ -17,8 +17,15 @@ import {
 import { Link } from 'react-router-dom';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { Pagination } from '@/components/ui/Pagination';
 import { toast } from '@/stores/toast';
 import { apiFetch } from '@/lib/api/client';
+
+// TODO(scale): GET /schedules returns the full list with no server-side
+// pagination (verified against the backend route). We page the loaded list
+// client-side to keep the table DOM bounded. Needs a backend limit/offset/cursor
+// param to paginate server-side.
+const SCHEDULES_PAGE_SIZE = 20;
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -143,6 +150,7 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
   const [historyScheduleId, setHistoryScheduleId] = useState<string | null>(null);
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const [form, setForm] = useState({ goal_template: '', trigger_type: 'cron', cron_expr: '0 * * * *', interval_seconds: '3600', agent_id: '', timezone: 'UTC' });
 
   // Fix 1: Auto-open create form when advisorPrefill arrives
@@ -169,6 +177,14 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
     queryKey: ['agents'],
     queryFn: () => apiFetch('/agents'),
   });
+
+  // Client-side pagination over the fully-loaded schedule list (see SCHEDULES_PAGE_SIZE note).
+  const pageCount = Math.max(1, Math.ceil(schedules.length / SCHEDULES_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const pagedSchedules = schedules.slice(
+    (safePage - 1) * SCHEDULES_PAGE_SIZE,
+    safePage * SCHEDULES_PAGE_SIZE,
+  );
 
   const createMutation = useMutation({
     mutationFn: (f: typeof form) => apiFetch('/schedules', {
@@ -376,7 +392,7 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {schedules.map((s) => {
+              {pagedSchedules.map((s) => {
                 const st = scheduleStatus(s);
                 const ttype = scheduleTrigger(s);
                 const cron = scheduleCron(s);
@@ -426,6 +442,16 @@ function SchedulesTab({ advisorPrefill, onAdvisorPrefillUsed }: SchedulesTabProp
               })}
             </tbody>
           </table>
+          {schedules.length > SCHEDULES_PAGE_SIZE && (
+            <div className="border-t border-border px-3 py-2.5">
+              <Pagination
+                page={safePage}
+                pageSize={SCHEDULES_PAGE_SIZE}
+                total={schedules.length}
+                onPageChange={setPage}
+              />
+            </div>
+          )}
         </div>
       )}
       {historyScheduleId && (

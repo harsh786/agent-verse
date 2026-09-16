@@ -92,22 +92,47 @@ function WorkflowCard({ wf, onRun, onToggle }: {
   );
 }
 
+// The workflow-engine list/runs endpoints may answer with either a bare array or
+// a paginated `{ items, total }` envelope depending on backend version — normalise
+// both to a list + total so the page and its "Load more" control work regardless.
+function normalizeList<T>(raw: unknown): { items: T[]; total: number } {
+  if (Array.isArray(raw)) return { items: raw as T[], total: raw.length };
+  const obj = raw as { items?: T[]; total?: number } | null;
+  const items = obj?.items ?? [];
+  return { items, total: obj?.total ?? items.length };
+}
+
 export function WorkflowEnginePage() {
   const qc = useQueryClient();
   const [activeTab, setActiveTab] = useState<'workflows' | 'runs'>('workflows');
 
-  const { data: workflows = [], isLoading: wfLoading } = useQuery<WorkflowDef[]>({
-    queryKey: ['workflow-engine-list'],
-    queryFn: () => apiFetch<WorkflowDef[]>('/api/v1/workflows'),
+  // Bounded server-side windows (were: no limit on workflows, fixed ?limit=20 on
+  // runs with no way to see more). "Load more" grows the requested page size.
+  const WF_PAGE = 30;
+  const RUNS_PAGE = 20;
+  const [wfLimit, setWfLimit] = useState(WF_PAGE);
+  const [runsLimit, setRunsLimit] = useState(RUNS_PAGE);
+
+  const { data: wfData, isLoading: wfLoading, isFetching: wfFetching } = useQuery({
+    queryKey: ['workflow-engine-list', wfLimit],
+    queryFn: () =>
+      apiFetch<unknown>(`/api/v1/workflows?per_page=${wfLimit}`).then(normalizeList<WorkflowDef>),
     refetchInterval: 15_000,
   });
+  const workflows = wfData?.items ?? [];
+  const totalWorkflows = wfData?.total ?? workflows.length;
+  const hasMoreWorkflows = workflows.length < totalWorkflows;
 
-  const { data: runs = [], isLoading: runsLoading } = useQuery<WorkflowRun[]>({
-    queryKey: ['workflow-engine-runs'],
-    queryFn: () => apiFetch<WorkflowRun[]>('/api/v1/workflows/runs?limit=20'),
+  const { data: runsData, isLoading: runsLoading, isFetching: runsFetching } = useQuery({
+    queryKey: ['workflow-engine-runs', runsLimit],
+    queryFn: () =>
+      apiFetch<unknown>(`/api/v1/workflows/runs?limit=${runsLimit}`).then(normalizeList<WorkflowRun>),
     refetchInterval: 5_000,
     enabled: activeTab === 'runs',
   });
+  const runs = runsData?.items ?? [];
+  const totalRuns = runsData?.total ?? runs.length;
+  const hasMoreRuns = runs.length < totalRuns;
 
   const triggerRun = useMutation({
     mutationFn: (id: string) =>
@@ -188,16 +213,30 @@ export function WorkflowEnginePage() {
               <p className="text-sm mt-1">Create workflows in the Workflow Builder.</p>
             </div>
           ) : (
-            <JARVISStagger className="space-y-3">
-              {workflows.map((wf) => (
-                <WorkflowCard
-                  key={wf.id}
-                  wf={wf}
-                  onRun={(id) => triggerRun.mutate(id)}
-                  onToggle={(id, pause) => toggleWorkflow.mutate({ id, pause })}
-                />
-              ))}
-            </JARVISStagger>
+            <>
+              <JARVISStagger className="space-y-3">
+                {workflows.map((wf) => (
+                  <WorkflowCard
+                    key={wf.id}
+                    wf={wf}
+                    onRun={(id) => triggerRun.mutate(id)}
+                    onToggle={(id, pause) => toggleWorkflow.mutate({ id, pause })}
+                  />
+                ))}
+              </JARVISStagger>
+              {hasMoreWorkflows && (
+                <div className="flex justify-center pt-2">
+                  <button
+                    onClick={() => setWfLimit((n) => n + WF_PAGE)}
+                    disabled={wfFetching}
+                    className="px-4 py-2 rounded-xl border border-[#1E2535] text-sm text-[#94A3B8]
+                               hover:text-[#E2E8F0] hover:border-[#3D4D6A] transition-colors disabled:opacity-50"
+                  >
+                    {wfFetching ? 'Loading…' : `Load more (${workflows.length} of ${totalWorkflows})`}
+                  </button>
+                </div>
+              )}
+            </>
           )
         )}
 
@@ -214,6 +253,7 @@ export function WorkflowEnginePage() {
               <p className="text-sm mt-1">Trigger a workflow to see runs here.</p>
             </div>
           ) : (
+            <>
             <JARVISStagger className="space-y-2">
               {runs.map((run) => {
                 const st = STATUS_STYLES[run.status];
@@ -248,6 +288,19 @@ export function WorkflowEnginePage() {
                 );
               })}
             </JARVISStagger>
+            {hasMoreRuns && (
+              <div className="flex justify-center pt-2">
+                <button
+                  onClick={() => setRunsLimit((n) => n + RUNS_PAGE)}
+                  disabled={runsFetching}
+                  className="px-4 py-2 rounded-xl border border-[#1E2535] text-sm text-[#94A3B8]
+                             hover:text-[#E2E8F0] hover:border-[#3D4D6A] transition-colors disabled:opacity-50"
+                >
+                  {runsFetching ? 'Loading…' : `Load more (${runs.length} of ${totalRuns})`}
+                </button>
+              </div>
+            )}
+            </>
           )
         )}
       </div>
