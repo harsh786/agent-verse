@@ -13,8 +13,18 @@ interface Service {
   url: string;
   scopes: string[];
   status: string;
-  connected_at: string;
+  connected_at: string | null;
 }
+
+// Status → badge colour. 'pending' means OAuth hasn't completed yet, so it must
+// NOT read as a healthy green "connected".
+const STATUS_STYLE: Record<string, string> = {
+  connected: 'text-green-500 bg-green-50 dark:bg-green-950',
+  pending: 'text-amber-600 bg-amber-50 dark:bg-amber-950',
+  error: 'text-red-500 bg-red-50 dark:bg-red-950',
+  disconnected: 'text-muted-foreground bg-muted',
+};
+const statusStyle = (s: string) => STATUS_STYLE[s] ?? STATUS_STYLE.disconnected;
 
 interface Props {
   onClose?: () => void;
@@ -50,7 +60,9 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
     });
     if (r.ok) {
       const data = await r.json();
-      setServices((prev) => [...prev, { id: data.service_id, name: newName, url: newUrl, scopes: [], status: 'connected', connected_at: new Date().toISOString() }]);
+      // The backend returns status "pending" — OAuth is not complete yet, so do
+      // not claim "connected". The user finishes auth via data.oauth_url.
+      setServices((prev) => [...prev, { id: data.service_id, name: newName, url: newUrl, scopes: [], status: data.status ?? 'pending', connected_at: null }]);
       setShowAdd(false);
       setNewName('');
       setNewUrl('');
@@ -77,13 +89,13 @@ export function ConnectedServicesPanel({ onClose }: Props): JSX.Element {
             key={s.id}
             className="flex items-center gap-3 p-3 bg-background border border-border rounded-xl group"
           >
-            <Plug className="w-4 h-4 text-green-500 shrink-0" />
+            <Plug className={`w-4 h-4 shrink-0 ${s.status === 'connected' ? 'text-green-500' : s.status === 'pending' ? 'text-amber-500' : 'text-muted-foreground'}`} />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-muted-foreground truncate">{s.name}</p>
               <p className="text-xs text-muted-foreground truncate">{s.url}</p>
             </div>
-            <span className="text-xs text-green-500 bg-green-50 dark:bg-green-950 px-1.5 py-0.5 rounded-full shrink-0">
-              {s.status}
+            <span className={`text-xs px-1.5 py-0.5 rounded-full shrink-0 ${statusStyle(s.status)}`}>
+              {s.status === 'pending' ? 'authorizing…' : s.status}
             </span>
             <button
               className="hidden group-hover:block p-1 hover:bg-red-50 dark:hover:bg-red-950 rounded"
