@@ -461,11 +461,13 @@ class LongTermMemoryStore:
                                 """
                                 SELECT id, content, memory_type, confidence,
                                        source_goal_id, tags, created_at,
-                                       1 - (embedding <=> CAST(:qvec AS vector)) AS similarity
+                                       1 - (embedding::halfvec(2048)
+                                            <=> CAST(:qvec AS halfvec(2048))) AS similarity
                                 FROM long_term_memory
                                 WHERE tenant_id = :tid
                                   AND embedding IS NOT NULL
-                                ORDER BY embedding <=> CAST(:qvec AS vector)
+                                ORDER BY embedding::halfvec(2048)
+                                         <=> CAST(:qvec AS halfvec(2048))
                                 LIMIT :k
                                 """
                             ),
