@@ -290,7 +290,10 @@ async def _dispatch_due_sources_async() -> dict:
         dispatched += 1
 
     _log.info("dispatch_due_sources: dispatched=%d sources", dispatched)
-    return {"dispatched": dispatched, "at": datetime.datetime.utcnow().isoformat()}
+    return {
+        "dispatched": dispatched,
+        "at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
 
 
 @shared_task(name="ingestion.retry_dlq_entries", bind=True)
@@ -301,10 +304,12 @@ def retry_dlq_entries_task(self) -> dict:
 
 async def _retry_dlq_async() -> dict:
     """Pull eligible DLQ entries and resubmit through the pipeline."""
-    from app.core.config import settings
+    from app.core.config import get_settings
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
     from app.tenancy.context import PlanTier, TenantContext
+
+    settings = get_settings()
 
     tracker = IngestionJobTracker()
     pipeline = IngestionPipeline()
