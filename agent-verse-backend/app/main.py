@@ -1606,6 +1606,16 @@ def create_app(
             except Exception as _mhr_db_exc:
                 logger.warning("magentic_human_review_db_wire_failed", error=str(_mhr_db_exc))
 
+            # Wire DB into the org digital twin (it has set_db but it was never
+            # called — so its DB-backed sync/reads never activated).
+            try:
+                from app.org.digital_twin import get_twin
+
+                get_twin().set_db(db_factory)
+                logger.info("digital_twin_db_wired")
+            except Exception as _dt_db_exc:
+                logger.warning("digital_twin_db_wire_failed", error=str(_dt_db_exc))
+
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2
