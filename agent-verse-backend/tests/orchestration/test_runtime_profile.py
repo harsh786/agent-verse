@@ -40,8 +40,10 @@ def test_flags_default_values():
     assert flags.guardrail_profile is True
     assert flags.readiness_gate is True
     assert flags.enable_guardrail_profile is True
+    # Agentic RAG is first-class (default on): the embedding cache no longer
+    # bypasses budget, so the retrieval budget is enforced on every fetch.
+    assert flags.agentic_rag is True
     # Still opt-in / progressive-rollout (not part of the first-class default set).
-    assert flags.agentic_rag is False
     assert flags.plan_verification is False
     assert flags.capability_registry is False
     assert flags.policy_compiler is False

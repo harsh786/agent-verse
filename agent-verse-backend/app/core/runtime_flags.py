@@ -27,7 +27,7 @@ def _env_set(name: str) -> frozenset[str]:
 class RuntimeFlags:
     # P0 flags
     dynamic_orchestration: bool = True
-    agentic_rag: bool = False
+    agentic_rag: bool = True
     plan_verification: bool = False
     data_classification: bool = True
     capability_registry: bool = False
@@ -80,7 +80,7 @@ class RuntimeFlags:
     def from_env(cls) -> RuntimeFlags:
         return cls(
             dynamic_orchestration=_bool_env("DYNAMIC_ORCHESTRATION", True),
-            agentic_rag=_bool_env("AGENTIC_RAG"),
+            agentic_rag=_bool_env("AGENTIC_RAG", True),
             plan_verification=_bool_env("PLAN_VERIFICATION"),
             data_classification=_bool_env("DATA_CLASSIFICATION", True),
             capability_registry=_bool_env("CAPABILITY_REGISTRY"),
@@ -117,7 +117,7 @@ def get_runtime_flags() -> RuntimeFlags:
     """Return cached RuntimeFlags loaded from env once at startup."""
     flags = RuntimeFlags(
         dynamic_orchestration=_env_bool("DYNAMIC_ORCHESTRATION", True),
-        agentic_rag=_env_bool("AGENTIC_RAG"),
+        agentic_rag=_env_bool("AGENTIC_RAG", True),
         plan_verification=_env_bool("PLAN_VERIFICATION"),
         data_classification=_env_bool("DATA_CLASSIFICATION", True),
         capability_registry=_env_bool("CAPABILITY_REGISTRY"),
