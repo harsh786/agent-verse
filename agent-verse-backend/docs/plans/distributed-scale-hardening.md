@@ -30,17 +30,26 @@ pod/restart); real per-agent tool perms live in a DB table. No fix needed.
 - Backend pagination params: /agents (+count_async, 0affb653), /schedules, /admin
   search, /governance/audit outcome+q pushed to SQL (8b9ca65b).
 
-**REMAINING (low-traffic feature stores / caches — not on the billions-of-requests
-critical path, which is complete):**
-- Persistence (full cycle each, low traffic): decision_intelligence version store,
-  learning_experiments (largely superseded by SelfOptimizerV2), marketplace v1
-  (legacy; v2 already DB-backed), KG access-control overrides, strategy_context
-  (per-goal transient), custom_roles (likely dead — roles write to user_roles),
-  sub_tenant (minimal API).
-- **X6b** app-side BM25 corpus gating (perf, not correctness — current path works).
-- **X15** per-pod caches needing pub/sub (policy-list registry read-consistency;
-  SemanticCache L1 rebuilds; feature flags have no runtime toggle) — acceptable today.
-- **X16** RPA browser sessions per-pod — mitigated (a whole goal runs in one worker).
+**3rd pass — the remaining tail, triaged + resolved:**
+- **X6b** app-side BM25 corpus gating — DONE (ccf90532): skip the two-pass full-corpus
+  walk above 50k chunks, GIN-FTS+vector carry the RRF.
+- **X15 policy list/delete** — DONE (7c621312): DELETE /policies is now DB-authoritative
+  (was 404 on any pod that didn't create the policy); pub/sub re-syncs engines.
+- **Verified NON-ISSUES (no fix needed):**
+  - `WorkflowVariableStore` — stateless (operates on per-run WorkflowState).
+  - `StrategyGoalContextStore` — intentionally process-local/ephemeral by design
+    (holds live Python refs for one in-flight goal; durable state is the checkpoint).
+  - `CustomRoleStore` — dead in prod (only a test imports it; real roles use the
+    `user_roles`/`custom_roles` DB tables).
+  - `DecisionIntelligence`, KG access-control overrides, `SubTenantManager`,
+    `learning_experiments` — **no writers in prod** → never populated → nothing lost.
+  - SemanticCache L1 (rebuilds; L2 is shared Redis), feature flags (no runtime toggle
+    endpoint → latent), RPA sessions (mitigated: a whole goal runs in one worker).
+- **Remaining (single, low-traffic, legacy):** marketplace **v1** `/publish` writes
+  community templates in-memory. Its DB-backed **v2** (`POST /templates`) is the
+  successor the frontend uses. Recommendation: deprecate v1 or route `/publish` to
+  the v2 store — persisting a legacy duplicate of an existing DB-backed feature is
+  low-value churn, so it's left documented rather than duplicated.
 
 Prod topology: **3 backend + 3 worker replicas; beat = 1 replica** (helm values). So the
 risk is *overlapping runs across the 3 workers*, not multiple beats.
