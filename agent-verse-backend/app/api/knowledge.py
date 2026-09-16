@@ -36,7 +36,7 @@ from app.rag.contracts import (
 from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
-from app.rag.store import KnowledgeStore
+from app.rag.store import EmbeddingProviderUnavailableError, KnowledgeStore
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 
@@ -2107,7 +2107,22 @@ async def ingest_document_into_collection(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Indexed content produced no indexable chunks",
         ) from exc
+    except EmbeddingProviderUnavailableError as exc:
+        # The embedding provider (not the DB) is down/misconfigured — say so
+        # accurately instead of blaming persistence, and log the cause.
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).error("ingest_embedding_provider_unavailable", error=str(exc))
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding provider is unavailable — cannot index the document.",
+        ) from exc
     except Exception as exc:
+        # Never swallow the real error silently: log type+message with a traceback
+        # so a genuine persistence failure is diagnosable, not a blank 503.
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
         raise HTTPException(
             status_code=503,
             detail="Knowledge persistence is unavailable",
