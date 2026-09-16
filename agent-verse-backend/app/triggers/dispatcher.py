@@ -264,14 +264,25 @@ class TriggerDispatcher:
         }.get(plan, 64 * 1024)
 
     async def _is_duplicate(self, idempotency_key: str, tenant_id: str) -> bool:
+        # No Redis configured at all → test/dev in-memory build: cannot dedup, allow.
         if self._redis is None:
             return False
         try:
             key = f"trigger_dedup:{tenant_id}:{idempotency_key}"
             result = await self._redis.set(key, 1, ex=60, nx=True)
-            return result is None  # None means key already existed
-        except Exception:
-            return False
+            return result is None  # None means key already existed → duplicate
+        except Exception as exc:
+            # Redis is configured but transiently unavailable. FAIL CLOSED — treat
+            # this as a duplicate so a Redis blip cannot let each of the N pods
+            # (which all receive the same broadcast pub/sub event) launch the same
+            # autonomous goal. Missing one fire during an outage is far safer than
+            # N-fold execution; schedules re-fire on the next tick. (Previously this
+            # returned False → fail-open → the N-fold double-execution the audit
+            # flagged.)
+            logging.getLogger(__name__).warning(
+                "trigger_dedup_redis_unavailable_failing_closed: %s", str(exc)[:200]
+            )
+            return True
 
     def _evaluate_condition(self, expression: str, payload: dict) -> bool:
         """Evaluate a simple CEL-like condition.
@@ -352,7 +363,10 @@ class TriggerDispatcher:
                 # Route the fired goal to the agent the trigger references. The
                 # create form sets `agent_id`; `watch_agent_id` is the legacy
                 # event-watch field — honor either so referencing an agent works.
-                agent_id=(getattr(spec, "agent_id", "") or getattr(spec, "watch_agent_id", "")) or None,
+                agent_id=(
+                    getattr(spec, "agent_id", "") or getattr(spec, "watch_agent_id", "")
+                )
+                or None,
                 idempotency_key=idempotency_key,
             )
             if hasattr(result, "goal_id"):
