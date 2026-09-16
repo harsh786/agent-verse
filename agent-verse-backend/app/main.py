@@ -1597,6 +1597,15 @@ def create_app(
             except Exception as _dm_db_exc:
                 logger.warning("dept_memory_db_wire_failed", error=str(_dm_db_exc))
 
+            # Wire DB into the Magentic human-review token store (cross-pod consume).
+            try:
+                _mhr = getattr(app.state, "magentic_human_review", None)
+                if _mhr is not None and hasattr(_mhr, "set_db"):
+                    _mhr.set_db(db_factory)
+                    logger.info("magentic_human_review_db_wired")
+            except Exception as _mhr_db_exc:
+                logger.warning("magentic_human_review_db_wire_failed", error=str(_mhr_db_exc))
+
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2
