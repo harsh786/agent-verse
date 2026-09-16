@@ -751,6 +751,7 @@ def resweep_stuck_missions(self: Any) -> dict[str, Any]:
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="app.scaling.tasks.fire_due_org_mission_schedules", bind=True, max_retries=0
 )
+@beat_task_guard(lock_ttl_seconds=120)
 def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
     """Launch org missions for every cron schedule that is now due.
 
@@ -767,7 +768,15 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
 
     async def _fire() -> int:
         db = get_session_factory()
-        # 1. Cross-tenant scan for due schedules (RLS-bypassing system session).
+        # 1. ATOMIC CLAIM (multi-pod at-most-once): select due schedules with
+        # FOR UPDATE SKIP LOCKED so no other worker can see them, and advance
+        # next_fire_at in the SAME transaction — so by the time the lock is
+        # released each row is no longer due and cannot be re-claimed. This makes
+        # firing at-most-once per slot even if the @beat_task_guard lock fails open
+        # on a Redis error. Trade-off (deliberate): advancing before creating the
+        # mission means a crash here SKIPS a fire rather than double-launching an
+        # autonomous mission — the safe direction for unattended execution.
+        claimed: list[Any] = []
         async with db() as s, s.begin(), system_session(s):
             due = (
                 await s.execute(
@@ -778,19 +787,31 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                         "FROM org_mission_schedules "
                         "WHERE enabled IS TRUE AND next_fire_at IS NOT NULL "
                         "AND next_fire_at <= now() "
-                        "ORDER BY next_fire_at LIMIT 100"
+                        "ORDER BY next_fire_at LIMIT 100 FOR UPDATE SKIP LOCKED"
                     )
                 )
             ).fetchall()
+            for r in due:
+                next_fire = _next_cron_fire(r.cron_expression, r.timezone or "UTC")
+                await s.execute(
+                    text(
+                        "UPDATE org_mission_schedules "
+                        "SET next_fire_at = :n, last_fired_at = now(), "
+                        "fire_count = fire_count + 1, updated_at = now() WHERE id = :sid"
+                    ),
+                    {"n": next_fire, "sid": r.id},
+                )
+                claimed.append(r)
 
         fired = 0
-        for r in due:
+        for r in claimed:
             tenant_id = r.tenant_id.hex
             org_id = str(r.org_id)
             dept_id = str(r.dept_id) if r.dept_id else None
             try:
-                # 2. Create + commit the mission and advance the schedule, in the
-                # schedule's own tenant context (RLS), then dispatch after commit.
+                # 2. Create the mission in the schedule's own tenant context (RLS),
+                # then dispatch after commit. The schedule row was already advanced
+                # in the claim above; here we only record last_mission_id.
                 async with (
                     db() as s2,
                     s2.begin(),
@@ -809,24 +830,18 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                     mission_id = str(mission.id)
                     # Stamp the schedule's publish target onto the mission so the
                     # finalize→publish hook knows where to send the deliverable.
-                    # We snapshot the schedule's publish_config (approval flag and
-                    # all) at fire time and record the owning schedule id, so a
-                    # later per-schedule approval can release this exact mission.
                     pub_cfg = r.publish_config if isinstance(r.publish_config, dict) else None
                     if pub_cfg and pub_cfg.get("connector_server_id") and pub_cfg.get("tool_name"):
                         stamped = {**pub_cfg, "schedule_id": str(r.id)}
                         mission.extra_data = {**(mission.extra_data or {}), "publish": stamped}
                         await s2.flush()
                     await svc.update_mission_status(mission_id, "planned")
-                    next_fire = _next_cron_fire(r.cron_expression, r.timezone or "UTC")
                     await s2.execute(
                         text(
                             "UPDATE org_mission_schedules "
-                            "SET next_fire_at = :n, last_fired_at = now(), "
-                            "last_mission_id = :m, fire_count = fire_count + 1, "
-                            "updated_at = now() WHERE id = :sid"
+                            "SET last_mission_id = :m WHERE id = :sid"
                         ),
-                        {"n": next_fire, "m": mission.id, "sid": r.id},
+                        {"m": mission.id, "sid": r.id},
                     )
                 execute_org_mission.apply_async(
                     kwargs={
@@ -839,6 +854,8 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                         "autonomy_level": r.autonomy_level,
                         "dept_id": dept_id,
                     },
+                    # Stable task id → Celery dedupes a redelivery of this exact fire.
+                    task_id=f"orgmission:{mission_id}",
                 )
                 fired += 1
             except Exception as exc:
