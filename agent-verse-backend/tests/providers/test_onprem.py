@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# Isolate ambient provider/model env so the model registry / on-prem backfill
+# start from a clean provider environment (see tests/conftest.py).
+_ISOLATE_PROVIDER_ENV = True
+
 from typing import Any
 
 import pytest
