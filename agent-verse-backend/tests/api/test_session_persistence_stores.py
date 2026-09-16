@@ -45,6 +45,40 @@ async def db_factory() -> AsyncIterator[async_sessionmaker]:
         await engine.dispose()
 
 
+# ── API-key auth: DB-authoritative, cross-pod revocation (X1) ──────────────────
+
+
+async def test_api_key_auth_cross_pod_revocation(db_factory: async_sessionmaker) -> None:
+    """A key created on pod A resolves on a fresh pod B, and after pod A revokes it,
+    pod B (which never saw the create or revoke) rejects it — proving auth is
+    DB-authoritative, not per-pod in-memory."""
+    from app.services.tenant_service import TenantService
+
+    email = f"authpod-{uuid.uuid4().hex[:8]}@example.com"
+    pod_a = TenantService(db_session_factory=db_factory)
+    pod_b = TenantService(db_session_factory=db_factory)  # fresh in-memory
+    created = await pod_a.create_tenant(name="AuthPod", email=email)
+    raw_key = created["api_key"]
+    tenant_id = created["tenant_id"]
+    try:
+        # Pod B never synced/created this key, yet resolves it from the DB.
+        ctx = await pod_b.resolve_api_key(raw_key)
+        assert ctx is not None and ctx.tenant_id == tenant_id
+        # Pod A revokes; pod B must now reject it.
+        keys = await pod_a.list_api_keys(tenant_id)
+        await pod_a.revoke_api_key(tenant_id, keys[0]["key_id"])
+        assert await pod_b.resolve_api_key(raw_key) is None
+    finally:
+        async with db_factory() as s, s.begin():
+            await s.execute(
+                text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id}
+            )
+            await s.execute(
+                text("DELETE FROM api_keys WHERE tenant_id = :t"), {"t": tenant_id}
+            )
+            await s.execute(text("DELETE FROM tenants WHERE id = :t"), {"t": tenant_id})
+
+
 async def _del(factory: async_sessionmaker, table: str, tenant_id: str) -> None:
     async with factory() as s, s.begin():
         await s.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": tenant_id})
