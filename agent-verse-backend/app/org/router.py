@@ -2928,12 +2928,25 @@ async def org_dept_memory_list(
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
     """Return the persistent knowledge stored for this department."""
-    _require_tenant(request)
+    ctx = _require_tenant(request)
+    tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
     from app.memory.dept_memory import get_dept_memory
 
     dm = get_dept_memory()
-    entries = dm.list_entries(dept_id, active_only=active_only, limit=limit)
-    summary = dm.dept_summary(dept_id)
+    entries = await dm.list_entries_async(
+        dept_id, tenant_id, active_only=active_only, limit=limit
+    )
+    active = [e for e in entries if e["is_active"]]
+    summary = {
+        "dept_id": dept_id,
+        "total_entries": len(entries),
+        "active_entries": len(active),
+        "avg_confidence": round(
+            sum(e["confidence"] for e in active) / len(active), 3
+        )
+        if active
+        else 0.0,
+    }
     return {"dept_id": dept_id, "entries": entries, "summary": summary}
 
 

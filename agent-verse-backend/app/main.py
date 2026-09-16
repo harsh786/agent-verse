@@ -1588,6 +1588,15 @@ def create_app(
             except Exception as _acs_db_exc:
                 logger.warning("agent_credentials_db_wire_failed", error=str(_acs_db_exc))
 
+            # Wire DB into department memory (durable + cross-pod).
+            try:
+                from app.memory.dept_memory import get_dept_memory
+
+                get_dept_memory().set_db(db_factory)
+                logger.info("dept_memory_db_wired")
+            except Exception as _dm_db_exc:
+                logger.warning("dept_memory_db_wire_failed", error=str(_dm_db_exc))
+
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2

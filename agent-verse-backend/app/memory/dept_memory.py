@@ -72,6 +72,50 @@ class DepartmentMemory:
     def __init__(self) -> None:
         # dept_id → [entries]
         self._store: dict[str, list[MemoryEntry]] = {}
+        # Wired by the app lifespan; when set, entries persist to Postgres
+        # (durable + cross-pod) instead of only this process's dict.
+        self._db_factory: Any = None
+
+    def set_db(self, db_factory: Any) -> None:
+        self._db_factory = db_factory
+
+    async def _db_rows(self, dept_id: str, tenant_id: str, active_only: bool) -> list[MemoryEntry]:
+        """Load a department's entries from Postgres (RLS-scoped)."""
+        import json as _json
+
+        from sqlalchemy import text as _t
+
+        clause = " AND is_active IS TRUE" if active_only else ""
+        async with self._db_factory() as s, s.begin():
+            await s.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            rows = (
+                await s.execute(
+                    _t(
+                        "SELECT entry_id, dept_id, org_id, tenant_id, content, source, "
+                        "confidence, tags, is_active, corrections, created_at, updated_at "
+                        f"FROM department_memory_entries WHERE tenant_id = :tid "
+                        f"AND dept_id = :did{clause} ORDER BY created_at DESC LIMIT 1000"
+                    ),
+                    {"tid": tenant_id, "did": dept_id},
+                )
+            ).mappings().all()
+
+        def _load(v: Any) -> Any:
+            return _json.loads(v) if isinstance(v, str) else (v or [])
+
+        return [
+            MemoryEntry(
+                entry_id=r["entry_id"], dept_id=r["dept_id"], org_id=r["org_id"],
+                tenant_id=r["tenant_id"], content=r["content"], source=r["source"],
+                confidence=r["confidence"], tags=list(_load(r["tags"])),
+                is_active=r["is_active"], corrections=list(_load(r["corrections"])),
+                created_at=r["created_at"].isoformat() if r["created_at"] else "",
+                updated_at=r["updated_at"].isoformat() if r["updated_at"] else "",
+            )
+            for r in rows
+        ]
 
     async def retrieve(
         self,
@@ -79,6 +123,7 @@ class DepartmentMemory:
         query: str,
         top_k: int = 5,
         active_only: bool = True,
+        tenant_id: str | None = None,
     ) -> list[MemoryEntry]:
         """Retrieve relevant department memories for a query.
 
@@ -90,9 +135,12 @@ class DepartmentMemory:
             span.set_attribute("query_len", len(query))
             span.set_attribute("top_k", top_k)
 
-            entries = self._store.get(dept_id, [])
-            if active_only:
-                entries = [e for e in entries if e.is_active]
+            if self._db_factory is not None and tenant_id is not None:
+                entries = await self._db_rows(dept_id, tenant_id, active_only)
+            else:
+                entries = self._store.get(dept_id, [])
+                if active_only:
+                    entries = [e for e in entries if e.is_active]
 
             if not entries:
                 return []
@@ -146,7 +194,30 @@ class DepartmentMemory:
                 confidence=confidence,
                 tags=tags or [],
             )
-            self._store.setdefault(dept_id, []).append(entry)
+            if self._db_factory is not None:
+                import json as _json
+
+                from sqlalchemy import text as _t
+
+                async with self._db_factory() as s, s.begin():
+                    await s.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
+                    await s.execute(
+                        _t(
+                            "INSERT INTO department_memory_entries (entry_id, dept_id, "
+                            "org_id, tenant_id, content, source, confidence, tags) VALUES "
+                            "(:eid, :did, :oid, :tid, :c, :src, :conf, CAST(:tags AS jsonb))"
+                        ),
+                        {
+                            "eid": entry.entry_id, "did": dept_id, "oid": org_id,
+                            "tid": tenant_id, "c": content, "src": source,
+                            "conf": confidence, "tags": _json.dumps(tags or []),
+                        },
+                    )
+            else:
+                self._store.setdefault(dept_id, []).append(entry)
             span.set_attribute("entry_id", entry.entry_id)
             _log.info(
                 "dept_memory.added",
@@ -162,6 +233,7 @@ class DepartmentMemory:
         entry_id: str,
         correction: str,
         corrector: str,
+        tenant_id: str | None = None,
     ) -> MemoryEntry | None:
         """Append a correction to an existing entry (non-destructive).
 
@@ -171,6 +243,51 @@ class DepartmentMemory:
         with _tracer.start_as_current_span("dept_memory.correct") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("entry_id", entry_id)
+
+            if self._db_factory is not None and tenant_id is not None:
+                import json as _json
+
+                from sqlalchemy import text as _t
+
+                corr = {
+                    "correction": correction,
+                    "corrector": corrector,
+                    "corrected_at": datetime.now(UTC).isoformat(),
+                }
+                async with self._db_factory() as s, s.begin():
+                    await s.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
+                    row = (
+                        await s.execute(
+                            _t(
+                                "UPDATE department_memory_entries SET "
+                                "corrections = corrections || CAST(:corr AS jsonb), "
+                                "confidence = GREATEST(0.1, confidence - 0.1), "
+                                "updated_at = now() WHERE entry_id = :eid AND tenant_id = :tid "
+                                "RETURNING entry_id, dept_id, org_id, tenant_id, content, "
+                                "source, confidence, tags, is_active, corrections, "
+                                "created_at, updated_at"
+                            ),
+                            {"corr": _json.dumps(corr), "eid": entry_id, "tid": tenant_id},
+                        )
+                    ).mappings().first()
+                if row is None:
+                    return None
+                return MemoryEntry(
+                    entry_id=row["entry_id"], dept_id=row["dept_id"], org_id=row["org_id"],
+                    tenant_id=row["tenant_id"], content=row["content"], source=row["source"],
+                    confidence=row["confidence"],
+                    tags=list(
+                        _json.loads(row["tags"])
+                        if isinstance(row["tags"], str)
+                        else row["tags"] or []
+                    ),
+                    is_active=row["is_active"],
+                    created_at=row["created_at"].isoformat() if row["created_at"] else "",
+                    updated_at=row["updated_at"].isoformat() if row["updated_at"] else "",
+                )
 
             for entry in self._store.get(dept_id, []):
                 if entry.entry_id == entry_id:
@@ -193,11 +310,33 @@ class DepartmentMemory:
         dept_id: str,
         entry_id: str,
         reason: str,
+        tenant_id: str | None = None,
     ) -> MemoryEntry | None:
         """Mark an entry as no longer valid."""
         with _tracer.start_as_current_span("dept_memory.deprecate") as span:
             span.set_attribute("dept_id", dept_id)
             span.set_attribute("entry_id", entry_id)
+
+            if self._db_factory is not None and tenant_id is not None:
+                from sqlalchemy import text as _t
+
+                async with self._db_factory() as s, s.begin():
+                    await s.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id},
+                    )
+                    res = await s.execute(
+                        _t(
+                            "UPDATE department_memory_entries SET is_active = FALSE, "
+                            "tags = tags || CAST(:tag AS jsonb), updated_at = now() "
+                            "WHERE entry_id = :eid AND tenant_id = :tid"
+                        ),
+                        {"tag": f'["deprecated:{reason}"]', "eid": entry_id, "tid": tenant_id},
+                    )
+                return None if not res.rowcount else MemoryEntry(
+                    entry_id=entry_id, dept_id=dept_id, org_id="", tenant_id=tenant_id,
+                    content="", source="", is_active=False,
+                )
 
             for entry in self._store.get(dept_id, []):
                 if entry.entry_id == entry_id:
@@ -220,6 +359,30 @@ class DepartmentMemory:
         entries = self._store.get(dept_id, [])
         if active_only:
             entries = [e for e in entries if e.is_active]
+        return [
+            {
+                "entry_id": e.entry_id,
+                "content": e.content,
+                "source": e.source,
+                "confidence": e.confidence,
+                "is_active": e.is_active,
+                "tags": e.tags,
+                "created_at": e.created_at,
+            }
+            for e in entries[:limit]
+        ]
+
+    async def list_entries_async(
+        self,
+        dept_id: str,
+        tenant_id: str,
+        active_only: bool = False,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """DB-backed list of a department's entries (falls back to in-memory)."""
+        if self._db_factory is None:
+            return self.list_entries(dept_id, active_only=active_only, limit=limit)
+        entries = await self._db_rows(dept_id, tenant_id, active_only)
         return [
             {
                 "entry_id": e.entry_id,
