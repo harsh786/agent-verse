@@ -1841,6 +1841,18 @@ def create_app(
                 except Exception as _lrc_exc:
                     logger.warning("llm_response_cache_wire_failed", error=str(_lrc_exc))
 
+                # ── TenantService: wire the shared Redis cache for API-key auth ──
+                # Without this, resolve_api_key is DB-authoritative but uncached (a
+                # keyed lookup per request); with it, resolutions are cached 300s and
+                # revocation clears the shared cache so it propagates across pods.
+                try:
+                    _tsvc = getattr(app.state, "tenant_service", None)
+                    if _tsvc is not None and hasattr(_tsvc, "set_redis"):
+                        _tsvc.set_redis(redis_for_runtime)
+                        logger.info("tenant_service_redis_wired")
+                except Exception as _tsvc_exc:
+                    logger.warning("tenant_service_redis_wire_failed", error=str(_tsvc_exc))
+
                 # ── PromptOptimizer: wire Redis for cross-replica cache invalidation ──
                 try:
                     from app.intelligence.prompt_optimizer import _default_optimizer as _opt

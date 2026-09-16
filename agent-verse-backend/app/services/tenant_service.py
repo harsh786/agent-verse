@@ -57,6 +57,12 @@ class TenantService:
         # Optional Redis client for caching (set by tests or lifespan)
         self._redis: Any = None
 
+    def set_redis(self, redis: Any) -> None:
+        """Wire the shared Redis client used to cache resolved API-key contexts
+        (``api_key:{hash}``, 300s TTL). The cache is shared across pods and cleared
+        on revoke, so revocation propagates cluster-wide."""
+        self._redis = redis
+
     # ── tenant CRUD ───────────────────────────────────────────────────────────
 
     async def create_tenant(self, name: str, email: str) -> dict[str, Any]:
@@ -195,14 +201,30 @@ class TenantService:
         }
 
     async def revoke_api_key(self, tenant_id: str, key_id: str) -> None:
-        """Deactivate *key_id*.  Raises :class:`~app.core.errors.NotFoundError` if not found."""
+        """Deactivate *key_id*.  Raises :class:`~app.core.errors.NotFoundError` if not found.
+
+        Multi-pod: the DB write is the source of truth (resolve is DB-authoritative),
+        and the shared ``api_key:{hash}`` Redis cache entry is deleted here — so the
+        revocation is honoured on every pod on the next request, not just this one.
+        """
         key = self._keys.get(key_id)
-        if key is None or key["tenant_id"] != tenant_id:
+        # Best-effort in-memory flip on this pod; the DB is authoritative for others.
+        key_hash = key.get("key_hash") if key else None
+        if key is not None:
+            if key["tenant_id"] != tenant_id:
+                raise NotFoundError(f"API key not found: {key_id}")
+            key["is_active"] = False
+        # DB persistence (transactional — await to ensure revocation is durable).
+        # Returns the key_hash even when the key isn't in this pod's memory.
+        db_hash = await self._db_revoke_api_key(key_id, tenant_id)
+        key_hash = key_hash or db_hash
+        if key is None and db_hash is None:
             raise NotFoundError(f"API key not found: {key_id}")
-        key["is_active"] = False
-        # DB persistence (transactional — await to ensure revocation is durable)
-        await self._db_revoke_api_key(key_id, tenant_id)
-        # Invalidate tenant cache so revoked key is not served from cache
+        # Delete the SHARED per-key resolution cache so no pod serves the revoked key.
+        if key_hash and self._redis is not None:
+            with suppress(Exception):
+                await self._redis.delete(f"api_key:{key_hash}")
+        # Also invalidate the tenant-level cache.
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
     async def resolve_api_key(self, raw_key: str) -> TenantContext | None:
@@ -220,7 +242,7 @@ class TenantService:
         key_hash = _hash_key(raw_key)
         cache_key = f"api_key:{key_hash}"
 
-        # ── Redis cache hit ────────────────────────────────────────────────
+        # ── Redis cache hit (shared across pods; cleared on revoke) ─────────
         if self._redis is not None:
             try:
                 cached = await self._redis.get(cache_key)
@@ -235,7 +257,39 @@ class TenantService:
             except Exception:
                 pass  # fall through on Redis errors
 
-        # ── In-memory lookup ───────────────────────────────────────────────
+        # ── DB-authoritative lookup (multi-pod correctness) ────────────────
+        # When a DB is wired, the database is the single source of truth: resolve
+        # each key against it (indexed by key_hash) rather than the per-pod
+        # in-memory dict, so a key created/revoked on ANY pod takes effect on ALL
+        # pods immediately (the Redis cache above is cleared on revoke). The
+        # in-memory path below is only for the no-DB (test/dev) build.
+        if self._db is not None:
+            rec = await self._db_resolve_by_hash(key_hash)
+            if rec is None:
+                return None
+            ctx = TenantContext(
+                tenant_id=rec["tenant_id"],
+                plan=PlanTier(rec["plan"]),
+                api_key_id=rec["api_key_id"],
+                roles=tuple(rec["roles"]),
+            )
+            if self._redis is not None:
+                with suppress(Exception):
+                    await self._redis.setex(
+                        cache_key,
+                        300,
+                        _json.dumps(
+                            {
+                                "tenant_id": ctx.tenant_id,
+                                "plan": ctx.plan.value,
+                                "api_key_id": ctx.api_key_id,
+                                "roles": list(ctx.roles),
+                            }
+                        ),
+                    )
+            return ctx
+
+        # ── In-memory lookup (no DB configured: tests / dev only) ──────────
         key_id = self._hash_to_key_id.get(key_hash)
         if key_id is None:
             return None
@@ -373,12 +427,13 @@ class TenantService:
         except Exception as exc:
             logging.getLogger(__name__).warning("DB persist api_key failed: %s", exc)
 
-    async def _db_revoke_api_key(self, key_id: str, tenant_id: str) -> None:
-        """Mark API key as inactive in PostgreSQL."""
+    async def _db_revoke_api_key(self, key_id: str, tenant_id: str) -> str | None:
+        """Mark API key as inactive in PostgreSQL; return its key_hash (for cache
+        invalidation) or None."""
         if self._db is None:
-            return
+            return None
         try:
-            from sqlalchemy import update
+            from sqlalchemy import select, update
 
             from app.db.models.tenant import ApiKey
             from app.db.rls import sqlalchemy_rls_context
@@ -388,11 +443,59 @@ class TenantService:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                key_hash = (
+                    await session.execute(select(ApiKey.key_hash).where(ApiKey.id == key_id))
+                ).scalar_one_or_none()
                 await session.execute(
                     update(ApiKey).where(ApiKey.id == key_id).values(is_active=False)
                 )
+            return key_hash
         except Exception as exc:
             logging.getLogger(__name__).warning("DB revoke api_key failed: %s", exc)
+            return None
+
+    async def _db_resolve_by_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """Authoritative single-key lookup by hash, bypassing RLS (this runs BEFORE
+        a tenant context exists — it is what establishes it). Returns the active,
+        non-expired key + tenant plan, or None. This makes auth DB-authoritative so
+        a key revoked on one pod is honoured cluster-wide (the DB is the source of
+        truth; the Redis cache in front is cleared on revoke)."""
+        if self._db is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.tenant import ApiKey, Tenant
+            from app.db.rls import system_session
+
+            async with self._db() as session, session.begin(), system_session(session):
+                row = (
+                    await session.execute(
+                        select(ApiKey, Tenant)
+                        .join(Tenant, Tenant.id == ApiKey.tenant_id)
+                        .where(ApiKey.key_hash == key_hash, ApiKey.is_active == True)  # noqa: E712
+                    )
+                ).first()
+            if row is None:
+                return None
+            key, tenant = row
+            if key.expires_at is not None:
+                expiry = key.expires_at
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=UTC)
+                if datetime.now(UTC) > expiry:
+                    return None
+            if not tenant.is_active:
+                return None
+            return {
+                "tenant_id": tenant.id,
+                "plan": tenant.plan_tier,
+                "api_key_id": key.id,
+                "roles": list(key.roles or ["operator"]) or ["operator"],
+            }
+        except Exception as exc:
+            logging.getLogger(__name__).warning("DB resolve api_key failed: %s", exc)
+            return None
 
     # ── SSO JIT provisioning ──────────────────────────────────────────────────
 
