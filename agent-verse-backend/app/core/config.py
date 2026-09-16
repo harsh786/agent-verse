@@ -249,11 +249,13 @@ class Settings(BaseSettings):
     eval_improve_regression_case_floor: float = 0.4
 
     # --- Agent multi-agent auto-selection (WS-10) -----------------------------
-    # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
+    # First-class advanced multi-agent tier (default on): a goal's
     # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
     # nodes (per-agent enable_* flags remain an explicit override that always wins).
+    # Only goals the PatternSelector deems multi-agent-worthy fan out — simple
+    # goals stay single-agent — and per-goal/tenant cost budgets bound the spend.
     # The distributed autonomous tier stays governed by ``coordination_ready``.
-    agent_auto_multi_agent_enabled: bool = False
+    agent_auto_multi_agent_enabled: bool = True
 
     # --- default model names per task type (override via env vars) ---
     # Empty = use the resolved provider's configured model (no hardcoded slug).

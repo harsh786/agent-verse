@@ -58,9 +58,11 @@ def test_available_patterns_is_registry_driven() -> None:
 
 def test_advanced_tier_gate_is_reported() -> None:
     summary = summarize_pattern_selection("say hello", goal_id="g5", tenant_id="t1")
-    # Default-off safety gate — selection still recorded, gate state surfaced.
-    assert summary["advanced_tier_gated"] is True
-    assert summary["advanced_tier_enabled"] is False
+    # Advanced multi-agent tier is first-class (default on): the gate is open and
+    # the state is surfaced. A simple goal like this still stays single-agent —
+    # the gate being open only lets the PatternSelector's decision take effect.
+    assert summary["advanced_tier_gated"] is False
+    assert summary["advanced_tier_enabled"] is True
 
 
 def test_humanize_falls_back_gracefully() -> None:
