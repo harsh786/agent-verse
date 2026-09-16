@@ -37,6 +37,54 @@ class EmbeddingModelRegistry:
 
     @classmethod
     def build_default(cls) -> EmbeddingModelRegistry:
+        import os
+
+        # When a dedicated embedding model is configured (EMBEDDING_MODEL /
+        # NVIDIA_EMBED_MODEL — e.g. an NVIDIA or on-prem OpenAI-compatible endpoint),
+        # advertise ONLY that model for text. Otherwise select() would pick the
+        # largest catalogue model (e.g. text-embedding-3-large) and the configured
+        # provider 404s on a model it does not serve, breaking all ingestion.
+        configured = (
+            os.getenv("EMBEDDING_MODEL", "").strip()
+            or os.getenv("NVIDIA_EMBED_MODEL", "").strip()
+        )
+        if configured:
+            try:
+                dim = int(os.getenv("EMBEDDING_DIM", "").strip() or 0)
+            except ValueError:
+                dim = 0
+            provider = os.getenv("EMBEDDING_PROVIDER", "").strip() or "openai"
+            return cls(
+                [
+                    # Only the TEXT models are replaced with the configured one (so a
+                    # single-model provider isn't handed a text-embedding-3-* id it
+                    # can't serve). Code/multimodal routing is left to the catalogue.
+                    EmbeddingModelSpec(
+                        configured,
+                        "text",
+                        dim or 1024,
+                        "low",
+                        provider,
+                        "Configured embedding model (EMBEDDING_MODEL)",
+                    ),
+                    # Kept only as the free-tier / no-provider fallback; never wins
+                    # over the configured model on dimension.
+                    EmbeddingModelSpec(
+                        "fake-embedding", "text", 10, "free", "fake", "Fake embedding for testing"
+                    ),
+                    EmbeddingModelSpec(
+                        "voyage-code-3", "code", 1024, "low", "voyage", "Voyage code embedding"
+                    ),
+                    EmbeddingModelSpec(
+                        "voyage-multimodal-3",
+                        "multimodal",
+                        1024,
+                        "medium",
+                        "voyage",
+                        "Voyage multimodal embedding",
+                    ),
+                ]
+            )
         return cls(
             [
                 EmbeddingModelSpec(
