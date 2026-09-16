@@ -49,33 +49,38 @@ def pytest_collection_modifyitems(config, items):
 def _keep_scaling_tasks_bound():
     """Guard against full-suite module-state pollution.
 
-    A handful of tests re-import ``app.scaling.*`` (e.g. to re-evaluate
-    module-level ``os.getenv`` in ``celery_app``) by clearing those entries from
-    ``sys.modules``. If the ``app.scaling`` *package* is re-imported fresh without
-    ``app.scaling.tasks`` being re-imported, the package object loses its
-    ``tasks`` attribute — and a later ``monkeypatch.setattr("app.scaling.tasks.X")``
-    fails with ``AttributeError: module 'app.scaling' has no attribute 'tasks'``.
-    These failures are order-dependent (the victims pass in isolation). Re-bind
-    the submodule when it has gone missing so the attribute-resolution path is
-    stable regardless of test ordering.
+    A handful of tests (e.g. ``tests/net/test_redis_factory.py``) re-import
+    ``app.scaling.*`` (to re-evaluate module-level ``os.getenv()`` in
+    ``celery_app``) by clearing those entries from ``sys.modules``, importing a
+    fresh ``app.scaling.celery_app`` under a mocked ``celery``, then restoring
+    the ORIGINAL module objects into ``sys.modules`` afterwards. That
+    ``sys.modules`` restore does not undo a side effect of the fresh import:
+    Python's import machinery rebinds the *parent* package's attribute
+    (``sys.modules["app"].scaling``) to the fresh ``app.scaling`` object as a
+    matter of course, and restoring ``sys.modules["app.scaling"]`` back to the
+    original object does not rebind that parent attribute back — so
+    ``app.scaling`` (accessed as an attribute, which is exactly how pytest's
+    ``monkeypatch.setattr("app.scaling.tasks.X", ...)`` resolves dotted paths)
+    keeps pointing at the leaked fresh package, which never had ``.tasks``
+    imported onto it. The result: ``monkeypatch.setattr("app.scaling.tasks.X")``
+    fails with ``AttributeError: module 'app.scaling' has no attribute 'tasks'``
+    even though ``sys.modules["app.scaling"].tasks`` is fine. These failures are
+    order-dependent (the victims pass in isolation). Re-bind both the parent's
+    ``scaling`` attribute and ``scaling``'s ``tasks`` attribute to the current
+    ``sys.modules`` entries before every test so attribute-resolution is stable
+    regardless of test ordering.
     """
     import contextlib
     import importlib
     import sys
 
-    # Ensure the app.scaling package exposes its `tasks` submodule as an
-    # attribute before every test. A prior test may replace the app.scaling
-    # *package* object in sys.modules (re-importing it fresh without tasks, e.g.
-    # a test that only imports app.scaling.celery_app). The fresh package then
-    # lacks a `tasks` attribute and monkeypatch.setattr("app.scaling.tasks.X")
-    # fails with AttributeError. A plain ``import app.scaling.tasks`` does NOT
-    # fix this when the submodule is already cached — CPython only binds the
-    # parent attribute during the submodule's original import, not on cached
-    # re-imports — so force-rebind the attribute explicitly.
     with contextlib.suppress(Exception):
-        # import_module recreates the app.scaling package if a prior test removed
-        # it entirely, and returns the (possibly cached) tasks submodule.
-        scaling = importlib.import_module("app.scaling")
+        # import_module recreates app/app.scaling fresh if a prior test removed
+        # them entirely, and otherwise returns the (possibly cached) module.
+        app_pkg = importlib.import_module("app")
+        scaling = sys.modules.get("app.scaling") or importlib.import_module("app.scaling")
+        if getattr(app_pkg, "scaling", None) is not scaling:
+            app_pkg.scaling = scaling  # type: ignore[attr-defined]
         tasks_mod = sys.modules.get("app.scaling.tasks") or importlib.import_module(
             "app.scaling.tasks"
         )
@@ -121,6 +126,39 @@ def _reset_dept_memory_singleton():
 
         _dept_memory._store.clear()
         _dept_memory._db_factory = None
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_db_engine_singleton():
+    """Reset the module-level DB engine/session-factory singleton after each test.
+
+    ``app.db.session._engine``/``_session_factory`` are lazily-created,
+    process-wide singletons: the first call to ``get_session_factory()`` with
+    no ``app.state.db_session_factory`` override (e.g. any endpoint's
+    ``_get_db(request)`` fallback, taken by every test whose app doesn't wire a
+    fake DB) builds a real ``AsyncEngine`` and caches it here for the rest of
+    the process. asyncpg connections are bound to the event loop that was
+    running when the pool was built, and pytest-asyncio (Mode.AUTO) gives each
+    async test — and each plain ``TestClient`` call — its own loop. So an
+    engine cached by one test leaks into a LATER test on a different loop,
+    where using it raises "Event loop is closed" / "Future attached to a
+    different loop" instead of the response the later test expects — this bit
+    ``tests/api/test_governance_extra2.py::TestAuditIntegrity::
+    test_verify_audit_integrity``, which passes in isolation but is order-
+    sensitive in the full suite for exactly this reason. Dropping the
+    references after every test forces the next one that needs a DB engine to
+    build a fresh one bound to ITS OWN loop, matching how it behaves in
+    isolation — the same hazard ``dispose_task_engine()`` exists to avoid for
+    Celery workers, just applied per-test instead of per-worker-task.
+    """
+    yield
+    try:
+        import app.db.session as _db_session_mod
+
+        _db_session_mod._engine = None
+        _db_session_mod._session_factory = None
     except Exception:
         pass
 
