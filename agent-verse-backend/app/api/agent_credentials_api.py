@@ -35,7 +35,7 @@ async def create_agent_key(
     if body.expires_in_days:
         expires_at = time.time() + body.expires_in_days * 86400
 
-    result = _agent_credential_store.create_key(
+    result = await _agent_credential_store.create_key_async(
         agent_id=agent_id,
         tenant_id=tenant_ctx.tenant_id,
         name=body.name,
@@ -55,7 +55,7 @@ async def list_agent_keys(agent_id: str, request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Auth required")
     from app.auth.agent_credentials import _agent_credential_store
 
-    keys = _agent_credential_store.list_for_agent(agent_id)
+    keys = await _agent_credential_store.list_for_agent_async(agent_id, tenant_ctx.tenant_id)
     return {"keys": keys, "agent_id": agent_id}
 
 
@@ -66,7 +66,7 @@ async def revoke_agent_key(agent_id: str, key_id: str, request: Request) -> dict
         raise HTTPException(status_code=401, detail="Auth required")
     from app.auth.agent_credentials import _agent_credential_store
 
-    revoked = _agent_credential_store.revoke(key_id, agent_id)
+    revoked = await _agent_credential_store.revoke_async(key_id, agent_id, tenant_ctx.tenant_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="Key not found")
     return {"key_id": key_id, "status": "revoked"}

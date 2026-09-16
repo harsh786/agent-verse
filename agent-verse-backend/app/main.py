@@ -1579,6 +1579,15 @@ def create_app(
             except Exception as _svc_db_exc:
                 logger.warning("chat_services_db_wire_failed", error=str(_svc_db_exc))
 
+            # Wire DB into the per-agent credential store (durable + cross-pod).
+            try:
+                from app.auth.agent_credentials import _agent_credential_store
+
+                _agent_credential_store.set_db(db_factory)
+                logger.info("agent_credentials_db_wired")
+            except Exception as _acs_db_exc:
+                logger.warning("agent_credentials_db_wire_failed", error=str(_acs_db_exc))
+
             # Wire DB into MarketplaceV2 and seed builtin templates
             _marketplace_v2._db = db_factory
             app.state.marketplace_v2 = _marketplace_v2

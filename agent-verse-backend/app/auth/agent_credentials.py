@@ -57,6 +57,12 @@ class AgentCredentialStore:
         self._keys: dict[str, dict[str, Any]] = {}
         # agent_id → list of key_hashes
         self._agent_keys: dict[str, list[str]] = {}
+        # Wired by the app lifespan; when set, keys persist to Postgres (durable +
+        # cross-pod) instead of only this process's dicts.
+        self._db_factory: Any = None
+
+    def set_db(self, db_factory: Any) -> None:
+        self._db_factory = db_factory
 
     def create_key(
         self,
@@ -137,6 +143,104 @@ class AgentCredentialStore:
         return any(
             tool_name == a or (a.endswith("*") and tool_name.startswith(a[:-1])) for a in allowed
         )
+
+
+    # ── DB-backed async CRUD (durable + cross-pod; used by the REST API) ──────
+
+    async def create_key_async(
+        self,
+        *,
+        agent_id: str,
+        tenant_id: str,
+        name: str,
+        allowed_tools: list[str] | None = None,
+        denied_tools: list[str] | None = None,
+        allowed_connectors: list[str] | None = None,
+        expires_at: float | None = None,
+        created_by: str = "",
+    ) -> dict[str, Any]:
+        if self._db_factory is None:
+            return self.create_key(
+                agent_id=agent_id, tenant_id=tenant_id, name=name,
+                allowed_tools=allowed_tools, denied_tools=denied_tools,
+                allowed_connectors=allowed_connectors, expires_at=expires_at,
+                created_by=created_by,
+            )
+        import json as _json
+
+        from sqlalchemy import text as _t
+
+        raw_key, key_hash = generate_agent_api_key(agent_id)
+        key_id = uuid.uuid4().hex
+        async with self._db_factory() as s, s.begin():
+            await s.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            await s.execute(
+                _t(
+                    "INSERT INTO agent_api_keys (key_id, tenant_id, agent_id, name, "
+                    "key_hash, allowed_tools, denied_tools, allowed_connectors, "
+                    "expires_at, created_by) VALUES (:kid, :tid, :aid, :name, :kh, "
+                    "CAST(:at AS jsonb), CAST(:dt AS jsonb), CAST(:ac AS jsonb), :exp, :cb)"
+                ),
+                {
+                    "kid": key_id, "tid": tenant_id, "aid": agent_id, "name": name,
+                    "kh": key_hash,
+                    "at": _json.dumps(allowed_tools) if allowed_tools is not None else None,
+                    "dt": _json.dumps(denied_tools or []),
+                    "ac": (
+                        _json.dumps(allowed_connectors)
+                        if allowed_connectors is not None
+                        else None
+                    ),
+                    "exp": expires_at, "cb": created_by,
+                },
+            )
+        logger.info("agent_key_created", key_id=key_id, agent_id=agent_id)
+        return {"key_id": key_id, "raw_key": raw_key, "agent_id": agent_id}
+
+    async def list_for_agent_async(self, agent_id: str, tenant_id: str) -> list[dict[str, Any]]:
+        if self._db_factory is None:
+            return self.list_for_agent(agent_id)
+        from sqlalchemy import text as _t
+
+        async with self._db_factory() as s, s.begin():
+            await s.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            rows = (
+                await s.execute(
+                    _t(
+                        "SELECT key_id, agent_id, tenant_id, name, allowed_tools, "
+                        "denied_tools, allowed_connectors, expires_at, created_by, "
+                        "created_at, last_used_at, is_active, use_count "
+                        "FROM agent_api_keys WHERE tenant_id = :tid AND agent_id = :aid "
+                        "ORDER BY created_at DESC"
+                    ),
+                    {"tid": tenant_id, "aid": agent_id},
+                )
+            ).mappings().all()
+        return [dict(r) for r in rows]
+
+    async def revoke_async(self, key_id: str, agent_id: str, tenant_id: str) -> bool:
+        if self._db_factory is None:
+            return self.revoke(key_id, agent_id)
+        from sqlalchemy import text as _t
+
+        async with self._db_factory() as s, s.begin():
+            await s.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            res = await s.execute(
+                _t(
+                    "UPDATE agent_api_keys SET is_active = FALSE WHERE key_id = :kid "
+                    "AND agent_id = :aid AND tenant_id = :tid"
+                ),
+                {"kid": key_id, "aid": agent_id, "tid": tenant_id},
+            )
+        if res.rowcount:
+            logger.info("agent_key_revoked", key_id=key_id)
+        return bool(res.rowcount)
 
 
 # Module-level singleton
