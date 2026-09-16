@@ -1,7 +1,6 @@
 """Extra coverage for governance.py — HITL email links, legal holds, batch approve, SLA stats, policy versioning."""
 from __future__ import annotations
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -207,7 +206,6 @@ class TestPolicyVersions:
 # ── Audit integrity ───────────────────────────────────────────────────────────
 
 class TestAuditIntegrity:
-    @pytest.mark.xfail(reason="Test-ordering sensitive: passes in isolation, fails when app state is polluted by prior tests", strict=False)
     def test_verify_audit_integrity(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/audit/integrity/verify", headers=_H)
