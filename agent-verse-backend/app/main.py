@@ -648,8 +648,13 @@ def create_app(
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
     _oauth_manager = OAuthFlowManager()
     _long_term_memory = LongTermMemoryStore()
-    # Single shared state-machine registry (durable; db_factory wired in lifespan).
-    from app.api.state_machines import _sm_registry as _state_machine_registry
+    # Per-app state-machine registry (durable; db_factory wired in lifespan). A fresh
+    # instance per app avoids mutating the module-level _sm_registry singleton (which
+    # the API endpoints use as a fallback) — mutating it leaks a stale db_factory
+    # across tests/apps.
+    from app.triggers.state_machine import StateMachine as _StateMachine
+
+    _state_machine_registry = _StateMachine()
 
     _eval_runner = EvalRunner()
     _eval_suite_runner = EvalSuiteRunner()
