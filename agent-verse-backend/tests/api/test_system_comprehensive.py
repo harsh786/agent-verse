@@ -81,10 +81,12 @@ def test_metrics_endpoint(monkeypatch) -> None:
 
 
 def test_metrics_returns_content() -> None:
-    # render_metrics is imported at module level in system.py, so patch it there
+    # render_metrics is imported at module level in system.py, so patch it there.
+    # The endpoint always calls render_metrics(accept_header) positionally, so
+    # the stub must accept that argument even though the real function defaults it.
     import app.api.system as system_module
     original = system_module.render_metrics
-    system_module.render_metrics = lambda: (b"process_cpu_seconds_total 1.0\n", "text/plain; version=0.0.4")
+    system_module.render_metrics = lambda accept="": (b"process_cpu_seconds_total 1.0\n", "text/plain; version=0.0.4")
     try:
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
