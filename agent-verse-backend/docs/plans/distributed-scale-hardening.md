@@ -10,10 +10,26 @@
 Legend: `[ ]` todo · `[~]` doing (delegated/in-flight) · `[x]` done. Sources:
 P=persistence, M=multi-pod, S=scale, I=self-improvement, F=frontend.
 
-**Progress:** X1 ✓(414c071f) X3 ✓(96af3275) X4 ✓(87eb68c2) X5 ✓(b788a85c)
-X12-indexes ✓(270416a6) X13 ✓(ae3fb0d9). In-flight (subagents): X6+X9+X11+X18
-(read-path scale), X7 (self-improvement worker wiring), X14 (frontend pagination).
-Remaining (mine): X2, X8, X10, X15-X17, X12-ANN.
+**DONE (committed):** X1 auth-cross-pod ✓ · X3 mission at-most-once ✓ · X4 trigger
+fail-closed ✓ · X5 goal/audit mirrors + goal pagination ✓ · X7 self-improvement
+worker wiring + auto-apply-on ✓ · X9 unbounded-query bounds ✓ · X10 connected-
+services DB ✓ · X11 usage SQL rollup ✓ · X12-indexes ✓ · X13 rate-limit
+observability ✓ · X14 frontend pagination ✓ · X18 SQL aggregation ✓.
+
+**Non-issue (verified false positive):** X8-`permission_matrix` — `set_rule` has no
+callers; `_rules` only holds deterministic code-seeded defaults (identical every
+pod/restart); real per-agent tool perms live in a DB table. No fix needed.
+
+**REMAINING (a read-path subagent failed on an account rate limit mid-task):**
+- **X6** rag/engine vector rework — REVERTED (it regressed a retrieval-widening
+  test); redo carefully: the 2048-dim halfvec cast (X6a) + BM25 corpus gating (X6b).
+- **X12-ANN** `long_term_memory` halfvec HNSW index + its query cast (pair together).
+- **X2** agent-credential store → DB (low severity: resolve isn't wired to auth, so
+  keys don't authenticate; created keys are lost on restart).
+- **X8** magentic_human_review / custom_roles / sub_tenant (minimal usage), X15-X17
+  (per-pod caches, RPA sessions, other in-memory app.state), and backend pagination
+  params (/agents, /schedules, /admin search, /governance/audit outcome+q — surfaced
+  by the frontend work).
 
 Prod topology: **3 backend + 3 worker replicas; beat = 1 replica** (helm values). So the
 risk is *overlapping runs across the 3 workers*, not multiple beats.
