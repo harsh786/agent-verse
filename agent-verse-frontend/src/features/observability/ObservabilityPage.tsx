@@ -12,14 +12,13 @@ import {
   LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { useAuthStore } from '@/stores/auth';
-import { observabilityApi, logsApi, type LogEntry } from '@/lib/api/client';
+import { useAuthStore, getAuthHeader } from '@/stores/auth';
+import { observabilityApi, logsApi, API_BASE, type LogEntry } from '@/lib/api/client';
 import { TraceExplorer } from './TraceExplorer';
 import { RuntimeDecisionPanel } from './RuntimeDecisionPanel';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const GRAFANA_URL = import.meta.env.VITE_GRAFANA_URL ?? 'http://localhost:3001';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -391,7 +390,7 @@ function MetricsTab({ since, until, rangeLabel }: {
   } = useQuery({
     queryKey: ['observability', 'metrics-raw', since, until],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/metrics`, { headers: { 'X-API-Key': apiKey } });
+      const res = await fetch(`${API_BASE}/metrics`, { headers: getAuthHeader() });
       if (!res.ok) throw new Error(`${res.status}`);
       setLastUpdated(new Date());
       return res.text();
@@ -1190,7 +1189,7 @@ export function ObservabilityPage() {
   } = useQuery({
     queryKey: ['health'],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/health`, { headers: { 'X-API-Key': apiKey } });
+      const res = await fetch(`${API_BASE}/health`, { headers: getAuthHeader() });
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json() as Promise<HealthResponse>;
     },

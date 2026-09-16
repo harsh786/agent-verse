@@ -30,7 +30,7 @@ import {
   FileDown,
 } from "lucide-react";
 import { simulationApi, apiFetch, API_BASE } from "@/lib/api/client";
-import { useAuthStore } from "@/stores/auth";
+import { useAuthStore, getAuthHeader } from "@/stores/auth";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -448,7 +448,7 @@ export function PlaygroundPage(): JSX.Element {
     try {
       const res = await fetch(`${API_BASE}/enterprise/simulation/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
         body: JSON.stringify({ goal, mock_tools: mockToolsMap }),
         signal: abort.signal,
       });

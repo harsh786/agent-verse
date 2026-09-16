@@ -2,10 +2,9 @@ import { useState, useRef } from 'react';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } from 'lucide-react';
-import { useAuthStore } from '../../stores/auth';
+import { useAuthStore, getAuthHeader } from '../../stores/auth';
+import { API_BASE } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
-
-const API = import.meta.env.VITE_API_BASE_URL || '';
 
 interface Skill {
   id: string;
@@ -229,14 +228,14 @@ export default function SkillsPage() {
   // Import file ref
   const importRef = useRef<HTMLInputElement>(null);
 
-  const headers = { 'X-API-Key': apiKey };
+  const headers = getAuthHeader();
 
   // ── Queries & mutations ──────────────────────────────────────────────────────
 
   const { data, isLoading } = useQuery<{ skills: Skill[] }>({
     queryKey: ['skills'],
     queryFn: async () => {
-      const res = await fetch(`${API}/skills`, { headers });
+      const res = await fetch(`${API_BASE}/skills`, { headers });
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },
@@ -245,7 +244,7 @@ export default function SkillsPage() {
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${API}/skills`, {
+      const res = await fetch(`${API_BASE}/skills`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(formToBody(form)),
@@ -264,7 +263,7 @@ export default function SkillsPage() {
 
   const updateMutation = useMutation({
     mutationFn: async (skill: Skill) => {
-      const res = await fetch(`${API}/skills/${skill.id}`, {
+      const res = await fetch(`${API_BASE}/skills/${skill.id}`, {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...skill, ...formToBody(editForm) }),
@@ -283,7 +282,7 @@ export default function SkillsPage() {
   const deleteMutation = useMutation({
     mutationFn: async (skillId: string) => {
       setDeletingId(skillId);
-      const res = await fetch(`${API}/skills/${skillId}`, { method: 'DELETE', headers });
+      const res = await fetch(`${API_BASE}/skills/${skillId}`, { method: 'DELETE', headers });
       if (!res.ok) throw new Error(`${res.status}`);
     },
     onSuccess: () => {
@@ -300,7 +299,7 @@ export default function SkillsPage() {
   const toggleMutation = useMutation({
     mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
       setTogglingId(id);
-      const res = await fetch(`${API}/skills/${id}`, {
+      const res = await fetch(`${API_BASE}/skills/${id}`, {
         method: 'PATCH',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
@@ -320,7 +319,7 @@ export default function SkillsPage() {
 
   const testMutation = useMutation({
     mutationFn: async ({ id, input }: { id: string; input: string }) => {
-      const res = await fetch(`${API}/skills/${id}/test`, {
+      const res = await fetch(`${API_BASE}/skills/${id}/test`, {
         method: 'POST',
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ input }),
@@ -367,7 +366,7 @@ export default function SkillsPage() {
         const imported = JSON.parse(ev.target?.result as string) as Skill[];
         const toImport = Array.isArray(imported) ? imported.filter(s => !s.is_platform) : [];
         for (const skill of toImport) {
-          await fetch(`${API}/skills`, {
+          await fetch(`${API_BASE}/skills`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify(formToBody(skillToForm(skill))),

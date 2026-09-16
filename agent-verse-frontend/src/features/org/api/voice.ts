@@ -5,7 +5,7 @@
  *   X-API-Key header via apiFetch / manual fetch with useAuthStore.
  */
 import { apiFetch, API_BASE } from '@/lib/api/client';
-import { useAuthStore } from '@/stores/auth';
+import { useAuthStore, getAuthHeader } from '@/stores/auth';
 import type {
   PersonaResponse,
   TranscribeResponse,
@@ -36,10 +36,9 @@ export const voiceApi = {
     text: string,
     opts?: { language?: string; speed?: number; org_id?: string; use_org_persona?: boolean },
   ): Promise<Blob> {
-    const apiKey = useAuthStore.getState().apiKey ?? '';
     const r = await fetch(`${API_BASE}${BASE}/speak`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+      headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
       body: JSON.stringify({ text, language: opts?.language ?? 'en', ...opts }),
     });
     if (!r.ok) {
@@ -52,11 +51,10 @@ export const voiceApi = {
   /** Spoken login greeting WAV for org (D-2/D-5/D-7). */
   async greeting(orgId: string, opts?: { user_name?: string; language?: string }): Promise<Blob> {
     const qs     = new URLSearchParams();
-    const apiKey = useAuthStore.getState().apiKey ?? '';
     if (opts?.user_name) qs.set('user_name', opts.user_name);
     if (opts?.language)  qs.set('language', opts.language);
     const r = await fetch(`${API_BASE}${BASE}/greeting/${orgId}?${qs}`, {
-      headers: { 'X-API-Key': apiKey },
+      headers: getAuthHeader(),
     });
     if (!r.ok) throw new Error('Greeting fetch failed');
     return r.blob();
@@ -80,8 +78,7 @@ export const voiceApi = {
   /** Build authenticated WebSocket URL for real-time voice stream. */
   streamUrl(orgId: string): string {
     const apiKey = useAuthStore.getState().apiKey ?? '';
-    const base   = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000')
-                     .replace(/^http/, 'ws');
+    const base   = API_BASE.replace(/^http/, 'ws');
     return `${base}/v1/voice/stream/${orgId}?api_key=${encodeURIComponent(apiKey)}`;
   },
 };

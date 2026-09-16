@@ -1,7 +1,8 @@
 import { Search, Moon, Sun, LogOut, Menu } from "lucide-react";
 import { useState, useRef, useCallback } from "react";
 import { useUiStore } from "@/stores/ui";
-import { useAuthStore } from "@/stores/auth";
+import { useAuthStore, getAuthHeader } from "@/stores/auth";
+import { API_BASE } from "@/lib/api/client";
 import { useNavigate } from "react-router-dom";
 import { PendingApprovalsBadge } from "@/components/ui/PendingApprovalsBadge";
 import { LanguageSwitcher } from "@/components/ui/LanguageSwitcher";
@@ -18,8 +19,6 @@ const TYPE_ICONS: Record<string, string> = {
   agent: "🤖",
   connector: "🔌",
 };
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export function TopBar() {
   const { theme, toggleTheme, toggleSidebar, openCommandPalette } = useUiStore();
@@ -40,9 +39,9 @@ export function TopBar() {
       if (!q.trim() || !apiKey) { setResults([]); return; }
       try {
         const [goalsRes, agentsRes, connRes] = await Promise.allSettled([
-          fetch(`${API_BASE}/goals?limit=20`, { headers: { "X-API-Key": apiKey } }).then((r) => r.ok ? r.json() : { goals: [] }),
-          fetch(`${API_BASE}/agents`, { headers: { "X-API-Key": apiKey } }).then((r) => r.ok ? r.json() : []),
-          fetch(`${API_BASE}/connectors`, { headers: { "X-API-Key": apiKey } }).then((r) => r.ok ? r.json() : []),
+          fetch(`${API_BASE}/goals?limit=20`, { headers: getAuthHeader() }).then((r) => r.ok ? r.json() : { goals: [] }),
+          fetch(`${API_BASE}/agents`, { headers: getAuthHeader() }).then((r) => r.ok ? r.json() : []),
+          fetch(`${API_BASE}/connectors`, { headers: getAuthHeader() }).then((r) => r.ok ? r.json() : []),
         ]);
 
         const lower = q.toLowerCase();

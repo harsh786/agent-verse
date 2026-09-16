@@ -8,6 +8,7 @@
  * - Error + loading state
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { getAuthHeader } from '@/stores/auth';
 
 export interface RunEvent {
   event: string;
@@ -65,7 +66,7 @@ export function useRunSSE({
         try {
           const resp = await fetch(url, {
             headers: {
-              'X-API-Key': apiKey,
+              ...getAuthHeader(),
               Accept: 'text/event-stream',
             },
             signal: controller.signal,

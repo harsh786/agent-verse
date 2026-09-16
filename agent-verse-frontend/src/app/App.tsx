@@ -1,7 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { useEffect, useState, lazy, Suspense } from "react";
 import { Loader2 } from "lucide-react";
-import { useAuthStore } from "@/stores/auth";
+import { useAuthStore, getAuthHeader } from "@/stores/auth";
+import { API_BASE } from "@/lib/api/client";
 import { AppLayout } from "@/components/ui/AppLayout";
 import { ErrorBoundary } from "@/components/ui/ErrorBoundary";
 import { RouteErrorBoundary } from "@/components/ui/RouteErrorBoundary";
@@ -122,8 +123,6 @@ import { SSOCallbackPage } from "@/features/auth/SSOCallbackPage";
 import MFAVerifyPage from "@/features/auth/MFAVerifyPage";
 import { StatusPage } from "@/features/status/StatusPage";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-
 /** Wrap an element in a per-route error boundary. Keeps route definitions concise. */
 function rb(name: string, element: React.ReactNode): React.ReactNode {
   return <RouteErrorBoundary routeName={name}>{element}</RouteErrorBoundary>;
@@ -157,7 +156,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     async function validateSession() {
       try {
         const res = await fetch(`${API_BASE}/tenants/me`, {
-          headers: { 'X-API-Key': apiKey },
+          headers: getAuthHeader(),
         });
         if (!res.ok) {
           logout();

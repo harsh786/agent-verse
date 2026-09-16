@@ -35,7 +35,7 @@ import {
   API_BASE,
   type PromptVariantItem,
 } from "@/lib/api/client";
-import { useAuthStore } from "@/stores/auth";
+import { getAuthHeader } from "@/stores/auth";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
@@ -328,7 +328,6 @@ function PreFlightTab(): JSX.Element {
 // ── Tab 2: Live Simulation ────────────────────────────────────────────────────
 
 function LiveSimTab(): JSX.Element {
-  const apiKey = useAuthStore((s) => s.apiKey);
   const [goal, setGoal] = useState("");
   const [mockTools, setMockTools] = useState<MockTool[]>([]);
   const [steps, setSteps] = useState<SimStep[]>([]);
@@ -379,7 +378,7 @@ function LiveSimTab(): JSX.Element {
     try {
       const res = await fetch(`${API_BASE}/enterprise/simulation/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-API-Key": apiKey },
+        headers: { "Content-Type": "application/json", ...getAuthHeader() },
         body: JSON.stringify({ goal, mock_tools: mockToolsMap }),
         signal: abort.signal,
       });

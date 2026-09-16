@@ -3,6 +3,8 @@ import { useMutation } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Code2, Loader2, Zap, Layout, Server, Database, Globe, Smartphone, Bot, FileCode, ChevronRight, CheckCircle, Play, Download } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { getAuthHeader } from '@/stores/auth';
+import { API_BASE } from '@/lib/api/client';
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 
 const PROJECT_TYPES = [
@@ -45,10 +47,10 @@ export default function BuilderPage() {
 
       // Try streaming build
       const response = await fetch(
-        `${import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'}/builder/projects`,
+        `${API_BASE}/builder/projects`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-API-Key': '' },
+          headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
           body: JSON.stringify(payload),
         }
       );

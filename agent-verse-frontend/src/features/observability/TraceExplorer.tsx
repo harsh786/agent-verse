@@ -1,8 +1,7 @@
 
 import { useQuery } from '@tanstack/react-query';
-import { useAuthStore } from '../../stores/auth';
-
-const API = import.meta.env.VITE_API_BASE_URL || '';
+import { useAuthStore, getAuthHeader } from '../../stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
 interface Span {
   span_id: string;
@@ -138,9 +137,9 @@ export function TraceExplorer({ goalId }: { goalId?: string }) {
     queryKey: ['traces', goalId],
     queryFn: async () => {
       const url = goalId
-        ? `${API}/analytics/observability/traces?goal_id=${goalId}`
-        : `${API}/analytics/observability/traces`;
-      const res = await fetch(url, { headers: { 'X-API-Key': apiKey } });
+        ? `${API_BASE}/analytics/observability/traces?goal_id=${goalId}`
+        : `${API_BASE}/analytics/observability/traces`;
+      const res = await fetch(url, { headers: getAuthHeader() });
       if (!res.ok) return { traces: [] };
       return res.json();
     },

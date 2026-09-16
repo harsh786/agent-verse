@@ -53,8 +53,8 @@ import {
   CartesianGrid,
 } from "recharts";
 
-import { useAuthStore } from "@/stores/auth";
-import { analyticsApi, costsApi } from "@/lib/api/client";
+import { useAuthStore, getAuthHeader } from "@/stores/auth";
+import { analyticsApi, costsApi, API_BASE } from "@/lib/api/client";
 import type { CostAnomaly, AgentCost } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { toast } from "@/stores/toast";
@@ -855,9 +855,8 @@ export function CostDashboardPage(): JSX.Element {
   const { data: kpiData, isLoading: kpiLoading } = useQuery({
     queryKey: ["cost-metrics-kpi"],
     queryFn: async () => {
-      const apiUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-      const res = await fetch(`${apiUrl}/goals/cost-metrics`, {
-        headers: { "X-API-Key": apiKey },
+      const res = await fetch(`${API_BASE}/goals/cost-metrics`, {
+        headers: getAuthHeader(),
       });
       if (!res.ok) throw new Error(String(res.status));
       return res.json() as Promise<{

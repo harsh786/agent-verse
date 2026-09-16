@@ -15,7 +15,7 @@ import {
   Database, ExternalLink, Eye, FileText, Globe, Link, Loader2, MessageSquare, Plus,
   RefreshCw, Search, Sparkles, Trash2, Upload, X, Zap, XCircle,
 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
+import { getAuthHeader } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -329,12 +329,11 @@ function AskAITab() {
       setStreamingAnswer('');
       setIsStreaming(true);
       try {
-        const apiKey = useAuthStore.getState().apiKey;
         const response = await fetch(`${API_BASE}/knowledge/collections/${collectionId}/query/stream`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+            ...getAuthHeader(),
           },
           body: JSON.stringify({ query: currentQ, top_k: 5 }),
         });

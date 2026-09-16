@@ -9,6 +9,7 @@ vi.mock('@/stores/auth', () => ({
     (selector: any) => selector({ apiKey: 'test-api-key' }),
     { getState: () => ({ apiKey: 'test-api-key' }) }
   ),
+  getAuthHeader: () => ({ 'X-API-Key': 'test-api-key' }),
 }));
 
 const createWrapper = () => {

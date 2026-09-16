@@ -1,9 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuthStore } from '../../../stores/auth';
+import { useAuthStore, getAuthHeader } from '../../../stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
-const API = import.meta.env.VITE_API_BASE_URL || '';
-function apiFetch(path: string, apiKey: string, opts?: RequestInit) {
-  return fetch(`${API}${path}`, { ...opts, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
+function apiFetch(path: string, opts?: RequestInit) {
+  return fetch(`${API_BASE}${path}`, { ...opts, headers: { ...getAuthHeader(), 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
 }
 
 const BUNDLES = [
@@ -20,19 +20,19 @@ export function GovernancePanel() {
 
   const { data: bundleData } = useQuery({
     queryKey: ['compliance-bundles'],
-    queryFn: () => apiFetch('/governance/compliance/bundles', apiKey),
+    queryFn: () => apiFetch('/governance/compliance/bundles'),
     enabled: !!apiKey,
   });
 
   const { data: pendingData } = useQuery({
     queryKey: ['pending-approvals'],
-    queryFn: () => apiFetch('/governance/approvals?status=pending', apiKey),
+    queryFn: () => apiFetch('/governance/approvals?status=pending'),
     enabled: !!apiKey,
     refetchInterval: 10000,
   });
 
   const enableMutation = useMutation({
-    mutationFn: (bundleId: string) => apiFetch(`/governance/compliance/bundles/${bundleId}/enable`, apiKey, { method: 'POST' }),
+    mutationFn: (bundleId: string) => apiFetch(`/governance/compliance/bundles/${bundleId}/enable`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['compliance-bundles'] }),
   });
 

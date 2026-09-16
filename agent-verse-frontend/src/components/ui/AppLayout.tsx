@@ -5,7 +5,7 @@ import { TopBar } from "./TopBar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
 import { SkipNav } from "@/components/ui/SkipNav";
 import { useUiStore } from "@/stores/ui";
-import { useAuthStore } from "@/stores/auth";
+import { getAuthHeader } from "@/stores/auth";
 import { useEmergencyStore } from "@/stores/emergency";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh";
 import { useAppHotkeys } from "@/hooks/useAppHotkeys";
@@ -14,7 +14,6 @@ import { API_BASE } from "@/lib/api/client";
 
 function EmergencyBanner() {
   const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
-  const { apiKey } = useAuthStore();
   const qc = useQueryClient();
 
   if (!isActive) return null;
@@ -23,7 +22,7 @@ function EmergencyBanner() {
     try {
       await fetch(`${API_BASE}/governance/emergency-stop`, {
         method: "DELETE",
-        headers: { "X-API-Key": apiKey },
+        headers: getAuthHeader(),
       });
     } catch {
       // best-effort — clear local state regardless

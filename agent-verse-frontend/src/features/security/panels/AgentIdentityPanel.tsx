@@ -1,13 +1,12 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuthStore } from '../../../stores/auth';
+import { useAuthStore, getAuthHeader } from '../../../stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
-const API = import.meta.env.VITE_API_BASE_URL || '';
-
-function apiFetch(path: string, apiKey: string, opts?: RequestInit) {
-  return fetch(`${API}${path}`, {
+function apiFetch(path: string, opts?: RequestInit) {
+  return fetch(`${API_BASE}${path}`, {
     ...opts,
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json', ...opts?.headers },
+    headers: { ...getAuthHeader(), 'Content-Type': 'application/json', ...opts?.headers },
   }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
 }
 
@@ -26,12 +25,12 @@ function AgentKeyCard({ agentId, apiKey }: { agentId: string; apiKey: string }) 
   const qc = useQueryClient();
   const { data } = useQuery({
     queryKey: ['agent-keys', agentId],
-    queryFn: () => apiFetch(`/agents/${agentId}/keys`, apiKey),
+    queryFn: () => apiFetch(`/agents/${agentId}/keys`),
     enabled: !!agentId && !!apiKey,
   });
 
   const revokeMutation = useMutation({
-    mutationFn: (keyId: string) => apiFetch(`/agents/${agentId}/keys/${keyId}`, apiKey, { method: 'DELETE' }),
+    mutationFn: (keyId: string) => apiFetch(`/agents/${agentId}/keys/${keyId}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['agent-keys', agentId] }),
   });
 
@@ -90,12 +89,12 @@ export function AgentIdentityPanel() {
 
   const { data: agentsData } = useQuery({
     queryKey: ['agents-list'],
-    queryFn: () => apiFetch('/agents?limit=50', apiKey),
+    queryFn: () => apiFetch('/agents?limit=50'),
     enabled: !!apiKey,
   });
 
   const createMutation = useMutation({
-    mutationFn: () => apiFetch(`/agents/${selectedAgent}/keys`, apiKey, {
+    mutationFn: () => apiFetch(`/agents/${selectedAgent}/keys`, {
       method: 'POST',
       body: JSON.stringify({
         name: form.name,

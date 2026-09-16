@@ -16,7 +16,7 @@ import {
   Clock, Database, Loader2, RefreshCw,
   Search, Settings2, Shield, TrendingUp, Users, Zap,
 } from 'lucide-react';
-import { adminApi } from '@/lib/api/client';
+import { adminApi, API_BASE } from '@/lib/api/client';
 import { JARVISPageShell, JARVISStagger } from '@/components/ui/JARVISPageShell';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -118,7 +118,7 @@ export default function AdminPage() {
   const { data: health } = useQuery({
     queryKey: ['admin', 'health'],
     queryFn: () =>
-      fetch(`${import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'}/health`)
+      fetch(`${API_BASE}/health`)
         .then((r) => (r.ok ? r.json() : { status: 'error' }))
         .catch(() => ({ status: 'error' })),
     refetchInterval: 30_000,

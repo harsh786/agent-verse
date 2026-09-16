@@ -6,6 +6,7 @@ import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { ThumbsUp, ThumbsDown, Check, Loader2 } from 'lucide-react';
 import { toast } from '@/stores/toast';
+import { API_BASE } from '@/lib/api/client';
 
 interface Props {
   goalId: string;
@@ -13,11 +14,10 @@ interface Props {
 }
 
 async function submitFeedback(goalId: string, rating: 1 | -1, correction?: string) {
-  const apiKey = (await import('@/stores/auth')).useAuthStore.getState().apiKey;
-  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-  const resp = await fetch(`${apiBase}/goals/${goalId}/feedback`, {
+  const { getAuthHeader } = await import('@/stores/auth');
+  const resp = await fetch(`${API_BASE}/goals/${goalId}/feedback`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
     body: JSON.stringify({ rating, correction }),
   });
   if (!resp.ok) throw new Error(`Feedback failed: ${resp.status}`);

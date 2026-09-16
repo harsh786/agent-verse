@@ -1,13 +1,13 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { useAuthStore } from '@/stores/auth';
+import { useAuthStore, getAuthHeader } from '@/stores/auth';
+import { API_BASE } from '@/lib/api/client';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import { Skeleton } from '@/components/ui/Skeleton';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
 export function AgentDashboardPage() {
   const { agentId } = useParams<{ agentId: string }>();
@@ -17,7 +17,7 @@ export function AgentDashboardPage() {
   const { data: agent, isLoading: agentLoading } = useQuery({
     queryKey: ['agent', agentId],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/agents/${agentId}`, { headers: { 'X-API-Key': apiKey } });
+      const res = await fetch(`${API_BASE}/agents/${agentId}`, { headers: getAuthHeader() });
       if (!res.ok) throw new Error(res.statusText);
       return res.json();
     },
@@ -27,7 +27,7 @@ export function AgentDashboardPage() {
   const { data: goals, isLoading: goalsLoading } = useQuery({
     queryKey: ['goals', 'byAgent', agentId],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/goals`, { headers: { 'X-API-Key': apiKey } });
+      const res = await fetch(`${API_BASE}/goals`, { headers: getAuthHeader() });
       if (!res.ok) throw new Error(res.statusText);
       const data = await res.json();
       const allGoals: Array<{ agent_id?: string; status: string; cost_usd?: number; created_at?: string; goal: string; goal_id?: string; id?: string }> = data.goals ?? data ?? [];
@@ -40,7 +40,7 @@ export function AgentDashboardPage() {
     queryKey: ['analytics-agent', agentId],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/analytics/goals?agent_id=${agentId}&days=30`, {
-        headers: { 'X-API-Key': apiKey },
+        headers: getAuthHeader(),
       });
       if (!res.ok) return null;
       return res.json();

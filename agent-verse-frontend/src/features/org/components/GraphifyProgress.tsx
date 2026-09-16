@@ -14,7 +14,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Network, Zap, CheckCircle2, AlertCircle, X, GitBranch, Brain, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useAuthStore } from '@/stores/auth';
+import { getAuthHeader } from '@/stores/auth';
 import { apiFetch } from '@/lib/api/client';
 
 export type GraphifyPhase =
@@ -75,10 +75,9 @@ export function GraphifyProgress({ orgId, onClose, onComplete, onViewGraph }: Gr
     setStats({ nodes: 0, edges: 0, communities: 0, discoveries: 0 });
     setProgress(0);
     try {
-      const apiKey = useAuthStore.getState().apiKey ?? '';
       const resp = await fetch(`/api/v1/org/${orgId}/graphify`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+        headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
         credentials: 'include',
       });
       if (!resp.ok) throw new Error(`Failed to start: ${resp.status}`);

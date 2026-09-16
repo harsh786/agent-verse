@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { useAuthStore } from '../../../stores/auth';
+import { useAuthStore, getAuthHeader } from '../../../stores/auth';
+import { API_BASE } from '@/lib/api/client';
 
-const API = import.meta.env.VITE_API_BASE_URL || '';
-function apiFetch(path: string, apiKey: string, opts?: RequestInit) {
-  return fetch(`${API}${path}`, { ...opts, headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
+function apiFetch(path: string, opts?: RequestInit) {
+  return fetch(`${API_BASE}${path}`, { ...opts, headers: { ...getAuthHeader(), 'Content-Type': 'application/json', ...opts?.headers } }).then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json(); });
 }
 
 interface VerifyResult {
@@ -19,12 +19,12 @@ export function AuditPanel() {
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
 
   const verifyMutation = useMutation({
-    mutationFn: () => apiFetch('/governance/audit/verify', apiKey, { method: 'POST' }),
+    mutationFn: () => apiFetch('/governance/audit/verify', { method: 'POST' }),
     onSuccess: (data: VerifyResult) => setVerifyResult(data),
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => apiFetch(`/governance/audit/export?format=${exportFormat}`, apiKey),
+    mutationFn: () => apiFetch(`/governance/audit/export?format=${exportFormat}`),
     onSuccess: (data: { data: string }) => {
       const blob = new Blob([data.data], { type: exportFormat === 'csv' ? 'text/csv' : 'application/json' });
       const url = URL.createObjectURL(blob);
@@ -37,7 +37,7 @@ export function AuditPanel() {
 
   const { data: recentAudit } = useQuery({
     queryKey: ['audit-recent'],
-    queryFn: () => apiFetch('/governance/audit/export?format=json', apiKey),
+    queryFn: () => apiFetch('/governance/audit/export?format=json'),
     enabled: !!apiKey,
   });
 

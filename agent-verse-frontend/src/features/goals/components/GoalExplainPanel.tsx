@@ -5,6 +5,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Brain, Database, Route, Info } from 'lucide-react';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { API_BASE } from '@/lib/api/client';
 
 interface Props { goalId: string; }
 
@@ -17,10 +18,9 @@ interface ExplainData {
 }
 
 async function fetchExplanation(goalId: string): Promise<ExplainData> {
-  const apiKey = (await import('@/stores/auth')).useAuthStore.getState().apiKey;
-  const apiBase = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-  const resp = await fetch(`${apiBase}/goals/${goalId}/explain`, {
-    headers: { 'X-API-Key': apiKey },
+  const { getAuthHeader } = await import('@/stores/auth');
+  const resp = await fetch(`${API_BASE}/goals/${goalId}/explain`, {
+    headers: getAuthHeader(),
   });
   if (!resp.ok) throw new Error(`Explain failed: ${resp.status}`);
   return resp.json();

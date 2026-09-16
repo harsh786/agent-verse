@@ -4,7 +4,7 @@ import {
   Play, Shield, FlaskConical, BarChart3, Download,
   CheckCircle2, XCircle, Plus, X, TrendingDown, Trash2,
 } from 'lucide-react';
-import { useAuthStore } from '@/stores/auth';
+import { useAuthStore, getAuthHeader } from '@/stores/auth';
 import {
   API_BASE,
   apiFetch,
@@ -485,7 +485,7 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
 
     fetch(url, {
       method: 'POST',
-      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      headers: { ...getAuthHeader(), 'Content-Type': 'application/json' },
       body,
     }).then(async (res) => {
       if (!res.ok) throw new Error(res.statusText);
@@ -652,21 +652,21 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
 
 // ── Tab: Red Team ─────────────────────────────────────────────────────────────
 
-async function runRedTeamApi(apiKey: string): Promise<RedTeamReport> {
+async function runRedTeamApi(): Promise<RedTeamReport> {
   const res = await fetch(`${API_BASE}/enterprise/red-team`, {
     method: 'POST',
-    headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+    headers: { ...getAuthHeader(), 'Content-Type': 'application/json' },
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json();
 }
 
-function RedTeamTab({ apiKey }: { apiKey: string }) {
+function RedTeamTab() {
   const [report, setReport] = useState<RedTeamReport | null>(null);
   const [progress, setProgress] = useState(0);
 
   const mutation = useMutation({
-    mutationFn: () => runRedTeamApi(apiKey),
+    mutationFn: () => runRedTeamApi(),
     onMutate: () => {
       setProgress(0);
       const id = setInterval(() => setProgress((p) => Math.min(p + 8, 90)), 400);
@@ -1112,7 +1112,7 @@ export function EvalPage() {
 
       {tab === 'scorecard' && <ScorecardTab apiKey={apiKey} />}
       {tab === 'simulation' && <SimulationTab apiKey={apiKey} />}
-      {tab === 'redteam' && <RedTeamTab apiKey={apiKey} />}
+      {tab === 'redteam' && <RedTeamTab />}
       {tab === 'suites' && <SuitesTab apiKey={apiKey} />}
     </JARVISStagger>
     </JARVISPageShell>

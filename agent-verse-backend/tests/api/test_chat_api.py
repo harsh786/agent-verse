@@ -359,8 +359,19 @@ async def test_services_list_and_connect(client_with_tenant) -> None:
     data = r.json()
     assert "service_id" in data
     assert "oauth_url" in data
+    # Honest status: a freshly initiated connection has NOT completed OAuth, so it
+    # must report "pending" — never a green "connected" for an unauthorized service.
+    assert data["status"] == "pending"
     r2 = await client_with_tenant.get("/chat/services")
-    assert len(r2.json()["services"]) >= 1
+    services = r2.json()["services"]
+    assert len(services) >= 1
+    svc = next(s for s in services if s["id"] == data["service_id"])
+    assert svc["status"] == "pending"
+    assert svc["connected_at"] is None
+    # Completing the OAuth callback flips it to connected.
+    r3 = await client_with_tenant.post(f"/chat/services/{data['service_id']}/complete")
+    assert r3.status_code == 200
+    assert r3.json()["status"] == "connected"
 
 
 @pytest.mark.asyncio

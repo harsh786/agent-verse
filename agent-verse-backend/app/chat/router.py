@@ -22,7 +22,7 @@ from app.chat.stream import (
     stream_clarify,
     stream_goal_progress,
 )
-from app.chat.templates import TemplateStore
+from app.chat.templates import BUILT_IN_TEMPLATES, TemplateStore
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -774,15 +774,59 @@ class CreateTemplateRequest(BaseModel):
     system_prompt: str = Field(..., min_length=1, max_length=10_000)
 
 
+# Chat personas are persisted in the shared DB-backed goal-template store under a
+# reserved domain so they survive restarts and stay isolated from goal templates.
+CHAT_PERSONA_DOMAIN = "chat_persona"
+
+
+def _tmpl_store(request: Request) -> Any:
+    """The DB-backed template store (app.api.templates), or None in tests w/o pools."""
+    return getattr(request.app.state, "template_store", None)
+
+
+def _persona_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Map a goal_templates row onto the chat persona shape (system_prompt<-goal_text)."""
+    created = row.get("created_at", "")
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row.get("description", ""),
+        "system_prompt": row.get("goal_text", ""),
+        "builtin": False,
+        "created_at": created.isoformat() if hasattr(created, "isoformat") else str(created),
+    }
+
+
 @router.get("/templates")
 async def list_templates(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
+    store = _tmpl_store(request)
+    if store is not None:
+        rows = await store.list(tenant.tenant_id, domain=CHAT_PERSONA_DOMAIN)
+        user = [_persona_from_row(r) for r in rows]
+        return {"templates": BUILT_IN_TEMPLATES + user}
     return {"templates": _template_store.list_templates(tenant.tenant_id)}
 
 
 @router.post("/templates", status_code=status.HTTP_201_CREATED)
 async def create_template(body: CreateTemplateRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
+    store = _tmpl_store(request)
+    if store is not None:
+        row = await store.create(
+            tenant.tenant_id,
+            name=body.name,
+            description=body.description,
+            goal_text=body.system_prompt,
+            domain=CHAT_PERSONA_DOMAIN,
+            parameters=[],
+        )
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row.get("description", ""),
+            "builtin": False,
+        }
     t = _template_store.create_template(
         tenant.tenant_id, body.name, body.description, body.system_prompt
     )
@@ -792,7 +836,15 @@ async def create_template(body: CreateTemplateRequest, request: Request) -> dict
 @router.delete("/templates/{template_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_template(template_id: str, request: Request) -> None:
     tenant = _tenant(request)
-    ok = _template_store.delete_template(template_id, tenant.tenant_id)
+    # Built-ins are constants (id "builtin_*"), never in the DB — reject them the
+    # same way regardless of backend.
+    if template_id.startswith("builtin_"):
+        raise HTTPException(status_code=404, detail="Template not found or is built-in")
+    store = _tmpl_store(request)
+    if store is not None:
+        ok = await store.delete(tenant.tenant_id, template_id)
+    else:
+        ok = _template_store.delete_template(template_id, tenant.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="Template not found or is built-in")
 
