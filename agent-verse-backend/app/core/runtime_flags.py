@@ -33,13 +33,13 @@ class RuntimeFlags:
     capability_registry: bool = False
     policy_compiler: bool = False
     # P1 flags
-    ingestion_orchestrator: bool = False
-    embedding_orchestrator: bool = False
+    ingestion_orchestrator: bool = True
+    embedding_orchestrator: bool = True
     runtime_scorecard: bool = False
-    tool_trust: bool = False
-    provenance_ledger: bool = False
-    recovery_classifier: bool = False
-    qos_scheduler: bool = False
+    tool_trust: bool = True
+    provenance_ledger: bool = True
+    recovery_classifier: bool = True
+    qos_scheduler: bool = True
     # Safety
     guardrail_profile: bool = True
     readiness_gate: bool = True
@@ -60,7 +60,7 @@ class RuntimeFlags:
     # in app/scaling/tasks.py sources the same flag, so this default finishes
     # closing the self-tuning loop on the worker.
     enable_self_improvement_auto_apply: bool = True
-    enable_rag_strategy_routing: bool = False  # Profile-based RAG strategy selection
+    enable_rag_strategy_routing: bool = True  # Profile-based RAG strategy selection
     enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
     enable_guardrail_profile: bool = True  # Profile-based GuardrailEnforcer
 
@@ -85,13 +85,13 @@ class RuntimeFlags:
             data_classification=_bool_env("DATA_CLASSIFICATION", True),
             capability_registry=_bool_env("CAPABILITY_REGISTRY"),
             policy_compiler=_bool_env("POLICY_COMPILER"),
-            ingestion_orchestrator=_bool_env("INGESTION_ORCHESTRATOR"),
-            embedding_orchestrator=_bool_env("EMBEDDING_ORCHESTRATOR"),
+            ingestion_orchestrator=_bool_env("INGESTION_ORCHESTRATOR", True),
+            embedding_orchestrator=_bool_env("EMBEDDING_ORCHESTRATOR", True),
             runtime_scorecard=_bool_env("RUNTIME_SCORECARD"),
-            tool_trust=_bool_env("TOOL_TRUST"),
-            provenance_ledger=_bool_env("PROVENANCE_LEDGER"),
-            recovery_classifier=_bool_env("RECOVERY_CLASSIFIER"),
-            qos_scheduler=_bool_env("QOS_SCHEDULER"),
+            tool_trust=_bool_env("TOOL_TRUST", True),
+            provenance_ledger=_bool_env("PROVENANCE_LEDGER", True),
+            recovery_classifier=_bool_env("RECOVERY_CLASSIFIER", True),
+            qos_scheduler=_bool_env("QOS_SCHEDULER", True),
             guardrail_profile=_bool_env("GUARDRAIL_PROFILE", True),
             readiness_gate=_bool_env("READINESS_GATE", True),
             enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
@@ -99,7 +99,7 @@ class RuntimeFlags:
             enable_self_improvement_auto_apply=_bool_env(
                 "ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True
             ),
-            enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING"),
+            enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING", True),
             enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
             enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE", True),
             isolated_agent_execution=_bool_env("ISOLATED_AGENT_EXECUTION"),
@@ -122,19 +122,19 @@ def get_runtime_flags() -> RuntimeFlags:
         data_classification=_env_bool("DATA_CLASSIFICATION", True),
         capability_registry=_env_bool("CAPABILITY_REGISTRY"),
         policy_compiler=_env_bool("POLICY_COMPILER"),
-        ingestion_orchestrator=_env_bool("INGESTION_ORCHESTRATOR"),
-        embedding_orchestrator=_env_bool("EMBEDDING_ORCHESTRATOR"),
+        ingestion_orchestrator=_env_bool("INGESTION_ORCHESTRATOR", True),
+        embedding_orchestrator=_env_bool("EMBEDDING_ORCHESTRATOR", True),
         runtime_scorecard=_env_bool("RUNTIME_SCORECARD"),
-        tool_trust=_env_bool("TOOL_TRUST"),
-        provenance_ledger=_env_bool("PROVENANCE_LEDGER"),
-        recovery_classifier=_env_bool("RECOVERY_CLASSIFIER"),
-        qos_scheduler=_env_bool("QOS_SCHEDULER"),
+        tool_trust=_env_bool("TOOL_TRUST", True),
+        provenance_ledger=_env_bool("PROVENANCE_LEDGER", True),
+        recovery_classifier=_env_bool("RECOVERY_CLASSIFIER", True),
+        qos_scheduler=_env_bool("QOS_SCHEDULER", True),
         guardrail_profile=_env_bool("GUARDRAIL_PROFILE", True),
         readiness_gate=_env_bool("READINESS_GATE", True),
         enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),
         enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT", True),
         enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True),
-        enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING"),
+        enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING", True),
         enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
         enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE", True),
         isolated_agent_execution=_env_bool("ISOLATED_AGENT_EXECUTION"),
