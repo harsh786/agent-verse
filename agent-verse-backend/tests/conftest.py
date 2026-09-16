@@ -102,6 +102,29 @@ def _reset_process_embedding_cache():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_dept_memory_singleton():
+    """Reset the process-global DepartmentMemory singleton after each test.
+
+    ``app.memory.dept_memory._dept_memory`` is a module singleton whose
+    ``_db_factory`` is wired by the app lifespan (main.py). A test that runs the
+    lifespan with a fake/recording session factory (e.g. the gateway lifespan
+    tests) leaves that fake db on the singleton — monkeypatch does not undo the
+    ``set_db`` side-effect — which then leaks into any later test that lists
+    department memory. Restoring the singleton to its pristine, unwired state
+    after every test makes each test start as it does in isolation (the next
+    test's app re-wires the real factory), without mocking anything.
+    """
+    yield
+    try:
+        from app.memory.dept_memory import _dept_memory
+
+        _dept_memory._store.clear()
+        _dept_memory._db_factory = None
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def app():
     from app.main import create_app
