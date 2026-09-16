@@ -112,7 +112,9 @@ describe('AuditExplorerPage', () => {
     });
 
     renderPage();
-    await screen.findByText('github.read');
+    // 100 rows all render 'github.read' — use findAllByText (findByText throws on
+    // multiple matches).
+    await screen.findAllByText('github.read');
 
     // Apply the outcome=denied filter (client-side, but must cover all pages).
     await userEvent.selectOptions(screen.getByLabelText('Filter by outcome'), 'denied');
