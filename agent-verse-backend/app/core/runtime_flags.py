@@ -29,7 +29,7 @@ class RuntimeFlags:
     dynamic_orchestration: bool = False
     agentic_rag: bool = False
     plan_verification: bool = False
-    data_classification: bool = False
+    data_classification: bool = True
     capability_registry: bool = False
     policy_compiler: bool = False
     # P1 flags
@@ -41,8 +41,8 @@ class RuntimeFlags:
     recovery_classifier: bool = False
     qos_scheduler: bool = False
     # Safety
-    guardrail_profile: bool = False
-    readiness_gate: bool = False
+    guardrail_profile: bool = True
+    readiness_gate: bool = True
     # Granular flags — each can be enabled independently
     # OR set via the master dynamic_orchestration=True
     enable_runtime_scorecard: bool = False  # RuntimeScorecard 9-dim scoring
@@ -62,7 +62,7 @@ class RuntimeFlags:
     enable_self_improvement_auto_apply: bool = True
     enable_rag_strategy_routing: bool = False  # Profile-based RAG strategy selection
     enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
-    enable_guardrail_profile: bool = False  # Profile-based GuardrailEnforcer
+    enable_guardrail_profile: bool = True  # Profile-based GuardrailEnforcer
 
     # --- Isolated Agent Execution Environment ---
     # Mirror of config.py Settings fields so the Celery worker (which has no
@@ -82,7 +82,7 @@ class RuntimeFlags:
             dynamic_orchestration=_bool_env("DYNAMIC_ORCHESTRATION"),
             agentic_rag=_bool_env("AGENTIC_RAG"),
             plan_verification=_bool_env("PLAN_VERIFICATION"),
-            data_classification=_bool_env("DATA_CLASSIFICATION"),
+            data_classification=_bool_env("DATA_CLASSIFICATION", True),
             capability_registry=_bool_env("CAPABILITY_REGISTRY"),
             policy_compiler=_bool_env("POLICY_COMPILER"),
             ingestion_orchestrator=_bool_env("INGESTION_ORCHESTRATOR"),
@@ -92,8 +92,8 @@ class RuntimeFlags:
             provenance_ledger=_bool_env("PROVENANCE_LEDGER"),
             recovery_classifier=_bool_env("RECOVERY_CLASSIFIER"),
             qos_scheduler=_bool_env("QOS_SCHEDULER"),
-            guardrail_profile=_bool_env("GUARDRAIL_PROFILE"),
-            readiness_gate=_bool_env("READINESS_GATE"),
+            guardrail_profile=_bool_env("GUARDRAIL_PROFILE", True),
+            readiness_gate=_bool_env("READINESS_GATE", True),
             enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
             enable_self_improvement=_bool_env("ENABLE_SELF_IMPROVEMENT", True),
             enable_self_improvement_auto_apply=_bool_env(
@@ -101,7 +101,7 @@ class RuntimeFlags:
             ),
             enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING"),
             enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
-            enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE"),
+            enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE", True),
             isolated_agent_execution=_bool_env("ISOLATED_AGENT_EXECUTION"),
             isolated_execution_required=_bool_env("ISOLATED_EXECUTION_REQUIRED"),
             isolated_execution_local_runner=_bool_env("ISOLATED_EXECUTION_LOCAL_RUNNER"),
@@ -119,7 +119,7 @@ def get_runtime_flags() -> RuntimeFlags:
         dynamic_orchestration=_env_bool("DYNAMIC_ORCHESTRATION"),
         agentic_rag=_env_bool("AGENTIC_RAG"),
         plan_verification=_env_bool("PLAN_VERIFICATION"),
-        data_classification=_env_bool("DATA_CLASSIFICATION"),
+        data_classification=_env_bool("DATA_CLASSIFICATION", True),
         capability_registry=_env_bool("CAPABILITY_REGISTRY"),
         policy_compiler=_env_bool("POLICY_COMPILER"),
         ingestion_orchestrator=_env_bool("INGESTION_ORCHESTRATOR"),
@@ -129,14 +129,14 @@ def get_runtime_flags() -> RuntimeFlags:
         provenance_ledger=_env_bool("PROVENANCE_LEDGER"),
         recovery_classifier=_env_bool("RECOVERY_CLASSIFIER"),
         qos_scheduler=_env_bool("QOS_SCHEDULER"),
-        guardrail_profile=_env_bool("GUARDRAIL_PROFILE"),
-        readiness_gate=_env_bool("READINESS_GATE"),
+        guardrail_profile=_env_bool("GUARDRAIL_PROFILE", True),
+        readiness_gate=_env_bool("READINESS_GATE", True),
         enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),
         enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT", True),
         enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True),
         enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING"),
         enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
-        enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE"),
+        enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE", True),
         isolated_agent_execution=_env_bool("ISOLATED_AGENT_EXECUTION"),
         isolated_execution_required=_env_bool("ISOLATED_EXECUTION_REQUIRED"),
         isolated_execution_local_runner=_env_bool("ISOLATED_EXECUTION_LOCAL_RUNNER"),
