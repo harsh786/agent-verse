@@ -355,9 +355,15 @@ async def source_stats(source_id: str, request: Request) -> dict:
 
 @documents_router.get("/documents", response_model=list[dict])
 async def list_documents(request: Request, source_id: str = "", limit: int = 50) -> list[dict]:
-    """List indexed documents — paginated."""
+    """List indexed documents for a source.
+
+    NOTE (honest status): there is no per-document registry table yet — the
+    ingestion pipeline writes chunks to the RAG store but does not persist a
+    queryable ``indexed_documents`` row per source. This endpoint therefore
+    always returns an empty list; it is a stub, not a populated feature. Wiring
+    it requires a real ``indexed_documents`` table (see pipeline.py CQRS note).
+    """
     _require_tenant(request)
-    # In-memory: return empty (requires DB in production)
     return []
 
 

@@ -261,3 +261,68 @@ def test_eval_analytics_requires_tenant() -> None:
     # No X-API-Key header
     resp = client.get("/analytics/evals")
     assert resp.status_code == 401
+
+
+# ── /observability/traces: real spans, never fabricated timing ────────────────
+
+
+def test_traces_use_real_timeline_spans_not_fabricated_500ms() -> None:
+    """When the run-timeline store has captured spans, list_traces returns the
+    REAL duration_ms / trace_id (regression: it used to hardcode 500ms)."""
+    from app.observability.tracing import get_run_timeline_store
+
+    store = get_run_timeline_store()
+    store.append(
+        _CTX.tenant_id,
+        "goal-real-1",
+        {
+            "name": "gen_ai.planner",
+            "start_ns": 123,
+            "duration_ms": 842.5,
+            "role": "planner",
+            "model": "qwen2.5-72b",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cost_usd": 0.0011,
+            "tool": None,
+            "status": "OK",
+            "trace_id": "a" * 32,
+            "span_id": "b" * 16,
+        },
+    )
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.get(
+        "/analytics/observability/traces?goal_id=goal-real-1",
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200
+    traces = resp.json()["traces"]
+    assert len(traces) == 1
+    assert traces[0]["source"] == "otel"
+    span = traces[0]["spans"][0]
+    assert span["duration_ms"] == 842.5  # real value, not 500
+    assert span["trace_id"] == "a" * 32
+
+
+def test_traces_fallback_never_fabricates_duration() -> None:
+    """With no captured spans, the cost-estimate fallback must not invent per-span
+    timing — duration_ms is None and the source is labelled 'cost_estimate'."""
+    from app.observability import cost_breakdown
+
+    bd = MagicMock()
+    bd.to_dict.return_value = {
+        "roles": [{"role": "planner", "model": "m", "input_tokens": 5, "output_tokens": 3}],
+        "total_cost_usd": 0.001,
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cost_breakdown, "get_breakdown", lambda _gid: bd)
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.get(
+            "/analytics/observability/traces?goal_id=goal-no-spans",
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 200
+    traces = resp.json()["traces"]
+    assert len(traces) == 1
+    assert traces[0]["source"] == "cost_estimate"
+    assert traces[0]["spans"][0]["duration_ms"] is None

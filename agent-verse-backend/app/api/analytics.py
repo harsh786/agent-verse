@@ -168,40 +168,80 @@ async def list_traces(
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
 
-    # For now: return cost breakdown data as trace-like structure
-    from app.observability.cost_breakdown import get_breakdown
-
-    traces = []
+    traces: list[dict] = []
     if goal_id:
-        bd = get_breakdown(goal_id)
-        bd_dict = bd.to_dict()
-        if bd_dict.get("roles"):
+        # Prefer REAL captured spans from the run-timeline store (actual start_ns,
+        # duration_ms, trace_id/span_id from OpenTelemetry) over any estimate.
+        from app.observability.tracing import get_run_timeline_store
+
+        entries = get_run_timeline_store().get(tenant_ctx.tenant_id, goal_id)
+        if entries:
+            spans = [
+                {
+                    "span_id": e.get("span_id"),
+                    "trace_id": e.get("trace_id"),
+                    "name": e.get("name"),
+                    "start_time": e.get("start_ns"),
+                    "duration_ms": e.get("duration_ms"),
+                    "status": (e.get("status") or "UNSET"),
+                    "attributes": {
+                        "role": e.get("role"),
+                        "model": e.get("model"),
+                        "tool": e.get("tool"),
+                        "input_tokens": e.get("input_tokens"),
+                        "output_tokens": e.get("output_tokens"),
+                        "cost_usd": e.get("cost_usd"),
+                    },
+                }
+                for e in entries
+            ]
             traces.append(
                 {
-                    "trace_id": goal_id,
+                    "trace_id": entries[0].get("trace_id") or goal_id,
                     "goal_id": goal_id,
                     "goal": "Goal execution",
-                    "spans": [
-                        {
-                            "span_id": f"{r['role']}_span",
-                            "name": f"llm.{r['role']}",
-                            "start_time": 0,
-                            "duration_ms": 500,
-                            "status": "ok",
-                            "attributes": {
-                                "model": r["model"],
-                                "tokens": str(r["input_tokens"] + r["output_tokens"]),
-                            },
-                        }
-                        for r in bd_dict["roles"]
-                    ],
-                    "total_cost_usd": bd_dict["total_cost_usd"],
+                    "source": "otel",
+                    "spans": spans,
+                    "total_cost_usd": sum(float(e.get("cost_usd") or 0.0) for e in entries),
                     "total_tokens": sum(
-                        r["input_tokens"] + r["output_tokens"] for r in bd_dict["roles"]
+                        int(e.get("input_tokens") or 0) + int(e.get("output_tokens") or 0)
+                        for e in entries
                     ),
-                    "created_at": "recent",
                 }
             )
+        else:
+            # No captured spans (tracing off, or the run predates the collector).
+            # Fall back to the cost breakdown but DO NOT fabricate per-span timing:
+            # report per-role token/cost with source="cost_estimate" and no durations.
+            from app.observability.cost_breakdown import get_breakdown
+
+            bd_dict = get_breakdown(goal_id).to_dict()
+            if bd_dict.get("roles"):
+                traces.append(
+                    {
+                        "trace_id": goal_id,
+                        "goal_id": goal_id,
+                        "goal": "Goal execution",
+                        "source": "cost_estimate",
+                        "spans": [
+                            {
+                                "span_id": f"{r['role']}_span",
+                                "name": f"llm.{r['role']}",
+                                "duration_ms": None,  # unknown — never faked
+                                "status": "ok",
+                                "attributes": {
+                                    "model": r["model"],
+                                    "tokens": str(r["input_tokens"] + r["output_tokens"]),
+                                },
+                            }
+                            for r in bd_dict["roles"]
+                        ],
+                        "total_cost_usd": bd_dict["total_cost_usd"],
+                        "total_tokens": sum(
+                            r["input_tokens"] + r["output_tokens"] for r in bd_dict["roles"]
+                        ),
+                    }
+                )
 
     return {"traces": traces, "total": len(traces)}
 
