@@ -191,21 +191,23 @@ class Settings(BaseSettings):
     rag_low_confidence_fallback_enabled: bool = True
     rag_low_confidence_widen_factor: int = 4  # widen candidate pool by this multiple
 
-    # Exact-text embedding cache in the RAG embed path. Off by default because a
-    # cache hit legitimately spends no embedding budget, which changes budget
-    # accounting; enable per deployment to cut repeat-embed latency/cost.
-    rag_embedding_cache_enabled: bool = False
+    # Exact-text embedding cache in the RAG embed path (first-class, on by
+    # default). A cache hit skips the provider call and its token cost, but STILL
+    # consumes shared budget (see _BudgetedEmbedder.embed) so a fan-out is denied
+    # even when its query embedding is cached — budget enforcement is never
+    # bypassed. Cuts repeat-embed latency/cost across collections and requests.
+    rag_embedding_cache_enabled: bool = True
 
     # Grantex governance: when True, every agent tool call must pass a covering,
     # active, unrevoked grant (fail-closed). Default off so it is opt-in per
     # deployment — enable once grants are being issued for agents.
-    enforce_agent_grants: bool = False
+    enforce_agent_grants: bool = True
 
     # Use the richer GroundingPolicy (per-claim scoring + embedding paraphrase tier
     # + calibrated abstention) at the executor grounding checkpoint instead of the
     # baseline substring/typed check. Off by default (behaviour-changing); the
     # baseline already uses T1 typed normalization.
-    grounding_policy_enabled: bool = False
+    grounding_policy_enabled: bool = True
 
     # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
     # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
@@ -247,11 +249,13 @@ class Settings(BaseSettings):
     eval_improve_regression_case_floor: float = 0.4
 
     # --- Agent multi-agent auto-selection (WS-10) -----------------------------
-    # Default-off safety gate for the advanced multi-agent tier: when on, a goal's
+    # First-class advanced multi-agent tier (default on): a goal's
     # complexity/domain/risk can auto-route it to the in-graph supervisor /debate
     # nodes (per-agent enable_* flags remain an explicit override that always wins).
+    # Only goals the PatternSelector deems multi-agent-worthy fan out — simple
+    # goals stay single-agent — and per-goal/tenant cost budgets bound the spend.
     # The distributed autonomous tier stays governed by ``coordination_ready``.
-    agent_auto_multi_agent_enabled: bool = False
+    agent_auto_multi_agent_enabled: bool = True
 
     # --- default model names per task type (override via env vars) ---
     # Empty = use the resolved provider's configured model (no hardcoded slug).

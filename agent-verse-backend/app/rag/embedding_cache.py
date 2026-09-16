@@ -51,6 +51,15 @@ class EmbeddingCache:
         self._max_size = max_size
         self._l1: OrderedDict[str, list[float]] = OrderedDict()
 
+    def clear(self) -> None:
+        """Drop the in-process L1 layer.
+
+        Used to reset the process-wide singleton between tests so cached
+        embeddings from one test do not leak into the next. Does not touch the
+        optional shared Redis layer (that is externally scoped, not per-process).
+        """
+        self._l1.clear()
+
     def _l1_get(self, key: str) -> list[float] | None:
         vec = self._l1.get(key)
         if vec is not None:

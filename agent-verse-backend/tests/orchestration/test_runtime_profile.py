@@ -34,12 +34,19 @@ from app.rag.contracts import RAGStrategy
 
 def test_flags_default_values():
     flags = RuntimeFlags()
-    assert flags.dynamic_orchestration is False
-    assert flags.agentic_rag is False
-    assert flags.plan_verification is False
-    assert flags.data_classification is False
-    assert flags.capability_registry is False
-    assert flags.policy_compiler is False
+    # Advanced orchestration + safety/compliance are now first-class (default on).
+    assert flags.dynamic_orchestration is True
+    assert flags.data_classification is True
+    assert flags.guardrail_profile is True
+    assert flags.readiness_gate is True
+    assert flags.enable_guardrail_profile is True
+    # Agentic RAG is first-class (default on): the embedding cache no longer
+    # bypasses budget, so the retrieval budget is enforced on every fetch.
+    assert flags.agentic_rag is True
+    # Granular scorecard/SSE flags default off in the dataclass; the master
+    # dynamic_orchestration cascade in get_runtime_flags() turns them on at runtime.
+    assert flags.enable_runtime_scorecard is False
+    assert flags.enable_pattern_sse_events is False
 
 
 def test_flags_from_env(monkeypatch):

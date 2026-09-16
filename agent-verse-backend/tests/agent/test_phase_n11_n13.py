@@ -45,7 +45,6 @@ def test_runtime_flags_has_granular_fields():
     flags = RuntimeFlags()
     assert hasattr(flags, "enable_runtime_scorecard")
     assert hasattr(flags, "enable_self_improvement")
-    assert hasattr(flags, "enable_rag_strategy_routing")
     assert hasattr(flags, "enable_pattern_sse_events")
     assert hasattr(flags, "enable_guardrail_profile")
 
@@ -59,12 +58,11 @@ def test_dynamic_orchestration_master_flag_enables_all():
     if flags.dynamic_orchestration:
         flags.enable_runtime_scorecard = True
         flags.enable_self_improvement = True
-        flags.enable_rag_strategy_routing = True
         flags.enable_pattern_sse_events = True
         flags.enable_guardrail_profile = True
     assert flags.enable_runtime_scorecard is True
     assert flags.enable_self_improvement is True
-    assert flags.enable_rag_strategy_routing is True
+    assert flags.enable_pattern_sse_events is True
 
 
 def test_granular_flag_independent_of_master():
