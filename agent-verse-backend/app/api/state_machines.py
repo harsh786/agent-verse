@@ -80,7 +80,7 @@ async def create_state_machine(request: Request, body: CreateStateMachineRequest
         states=[StateDefinition(**s.model_dump()) for s in body.states],
         transitions=[TransitionDefinition(**t.model_dump()) for t in body.transitions],
     )
-    registry.define(defn)
+    await registry.define_async(defn)
 
     return {
         "machine_id": machine_id,
@@ -96,7 +96,7 @@ async def list_state_machines(request: Request) -> list[dict]:
     registry = _get_registry(request)
     return [
         {"machine_id": d.machine_id, "name": d.name, "state_count": len(d.states)}
-        for d in registry.list_definitions(tenant.tenant_id)
+        for d in await registry.list_definitions_async(tenant.tenant_id)
     ]
 
 
@@ -104,7 +104,7 @@ async def list_state_machines(request: Request) -> list[dict]:
 async def get_state_machine(machine_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
     registry = _get_registry(request)
-    defn = registry.get_definition(machine_id, tenant.tenant_id)
+    defn = await registry.get_definition_async(machine_id, tenant.tenant_id)
     if defn is None:
         raise HTTPException(status_code=404, detail="State machine not found")
     return {
@@ -125,10 +125,10 @@ async def get_state_machine(machine_id: str, request: Request) -> dict:
 async def delete_state_machine(machine_id: str, request: Request) -> None:
     tenant = _require_tenant(request)
     registry = _get_registry(request)
-    defn = registry.get_definition(machine_id, tenant.tenant_id)
+    defn = await registry.get_definition_async(machine_id, tenant.tenant_id)
     if defn is None:
         raise HTTPException(status_code=404, detail="State machine not found")
-    registry._definitions.pop((tenant.tenant_id, machine_id), None)
+    await registry.delete_definition_async(machine_id, tenant.tenant_id)
 
 
 @router.post("/{machine_id}/instances", status_code=201)
@@ -138,7 +138,7 @@ async def create_instance(machine_id: str, request: Request) -> dict:
     entity_id = body.get("entity_id", uuid.uuid4().hex)
     registry = _get_registry(request)
     try:
-        instance = registry.create_instance(machine_id, entity_id, tenant.tenant_id)
+        instance = await registry.create_instance_async(machine_id, entity_id, tenant.tenant_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
@@ -156,7 +156,7 @@ async def transition_instance(
     tenant = _require_tenant(request)
     registry = _get_registry(request)
     try:
-        result = registry.transition(
+        result = await registry.transition_async(
             machine_id, entity_id, body.event, tenant.tenant_id, payload=body.payload
         )
     except ValueError as exc:
@@ -168,7 +168,7 @@ async def transition_instance(
 async def get_instance(machine_id: str, entity_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
     registry = _get_registry(request)
-    instance = registry.get_instance(entity_id, tenant.tenant_id)
+    instance = await registry.get_instance_async(entity_id, tenant.tenant_id)
     if instance is None:
         raise HTTPException(status_code=404, detail="Instance not found")
     return {

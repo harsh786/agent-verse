@@ -60,6 +60,10 @@ from app.db.models.raft import (  # noqa: E402
 from app.db.models.routing import RoutingDecisionRow, RoutingOutcomeRow  # noqa: E402
 from app.db.models.scheduling import Policy, Schedule  # noqa: E402
 from app.db.models.skill import Skill  # noqa: E402
+from app.db.models.state_machine import (  # noqa: E402
+    StateMachineDefinitionRow,
+    StateMachineInstanceRow,
+)
 from app.db.models.template import GoalTemplate  # noqa: E402
 from app.db.models.tenant import ApiKey, Tenant  # noqa: E402
 from app.db.models.workflow import Workflow  # noqa: E402
@@ -113,6 +117,9 @@ __all__ = [  # noqa: RUF022
     "Workflow",
     # templates
     "GoalTemplate",
+    # state machines (durable registry)
+    "StateMachineDefinitionRow",
+    "StateMachineInstanceRow",
     # skills (Phase 6)
     "Skill",
     # mfa

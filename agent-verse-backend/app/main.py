@@ -648,6 +648,9 @@ def create_app(
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
     _oauth_manager = OAuthFlowManager()
     _long_term_memory = LongTermMemoryStore()
+    # Single shared state-machine registry (durable; db_factory wired in lifespan).
+    from app.api.state_machines import _sm_registry as _state_machine_registry
+
     _eval_runner = EvalRunner()
     _eval_suite_runner = EvalSuiteRunner()
     _compliance_controller = ComplianceController()
@@ -1400,6 +1403,14 @@ def create_app(
                 logger.info("long_term_memory_db_wired")
             except Exception as _ltm_exc:
                 logger.warning("long_term_memory_db_wire_failed", error=str(_ltm_exc))
+
+            # Wire DB factory into the state-machine registry (durable definitions
+            # + instances; without pools it stays in-memory).
+            try:
+                _state_machine_registry._db_factory = db_factory
+                logger.info("state_machine_db_wired")
+            except Exception as _sm_exc:
+                logger.warning("state_machine_db_wire_failed", error=str(_sm_exc))
 
             # Wire DB into CostTracker for ledger persistence + historical queries
             _cost_tracker._db = db_factory
@@ -2455,6 +2466,8 @@ def create_app(
     app.state.safe_web_search_capability = _web_search_capability
     app.state.semantic_cache = _semantic_cache
     app.state.long_term_memory = _long_term_memory
+    # Durable state-machine registry (db_factory upgraded in lifespan)
+    app.state.state_machine_registry = _state_machine_registry
     # H-3: ExecutionMemory on app.state
     app.state.exec_memory = _exec_memory
     # Cost Tracker
