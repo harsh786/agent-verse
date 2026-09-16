@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -211,11 +212,20 @@ async def list_traces(
             )
         else:
             # No captured spans (tracing off, or the run predates the collector).
-            # Fall back to the cost breakdown but DO NOT fabricate per-span timing:
-            # report per-role token/cost with source="cost_estimate" and no durations.
+            # The cost breakdown is keyed by goal_id ALONE (no tenant), so returning
+            # it for an arbitrary goal_id would disclose another tenant's cost/model
+            # data. Only fall back after verifying this tenant owns the goal; if we
+            # cannot verify ownership (no goal_service), serve nothing from it.
+            goal_service = getattr(request.app.state, "goal_service", None)
+            owns_goal = False
+            if goal_service is not None:
+                with contextlib.suppress(Exception):
+                    await goal_service.get_goal(goal_id, tenant_ctx)
+                    owns_goal = True
+
             from app.observability.cost_breakdown import get_breakdown
 
-            bd_dict = get_breakdown(goal_id).to_dict()
+            bd_dict = get_breakdown(goal_id).to_dict() if owns_goal else {}
             if bd_dict.get("roles"):
                 traces.append(
                     {

@@ -304,9 +304,23 @@ def test_traces_use_real_timeline_spans_not_fabricated_500ms() -> None:
     assert span["trace_id"] == "a" * 32
 
 
+def _goal_service_owning(goal_ids: set[str]) -> Any:
+    """A goal_service mock whose get_goal succeeds only for owned goal ids."""
+    svc = MagicMock()
+
+    async def _get_goal(goal_id: str, tenant_ctx: Any) -> dict:
+        if goal_id not in goal_ids:
+            raise KeyError("not found")  # stands in for NotFoundError / cross-tenant
+        return {"goal_id": goal_id}
+
+    svc.get_goal = _get_goal
+    return svc
+
+
 def test_traces_fallback_never_fabricates_duration() -> None:
     """With no captured spans, the cost-estimate fallback must not invent per-span
-    timing — duration_ms is None and the source is labelled 'cost_estimate'."""
+    timing — duration_ms is None and the source is labelled 'cost_estimate'.
+    The fallback is only served for a goal the tenant owns."""
     from app.observability import cost_breakdown
 
     bd = MagicMock()
@@ -314,9 +328,10 @@ def test_traces_fallback_never_fabricates_duration() -> None:
         "roles": [{"role": "planner", "model": "m", "input_tokens": 5, "output_tokens": 3}],
         "total_cost_usd": 0.001,
     }
+    app = _make_app(goal_service=_goal_service_owning({"goal-no-spans"}))
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(cost_breakdown, "get_breakdown", lambda _gid: bd)
-        client = TestClient(_make_app(), raise_server_exceptions=False)
+        client = TestClient(app, raise_server_exceptions=False)
         resp = client.get(
             "/analytics/observability/traces?goal_id=goal-no-spans",
             headers={"X-API-Key": _VALID_KEY},
@@ -326,3 +341,26 @@ def test_traces_fallback_never_fabricates_duration() -> None:
     assert len(traces) == 1
     assert traces[0]["source"] == "cost_estimate"
     assert traces[0]["spans"][0]["duration_ms"] is None
+
+
+def test_traces_cost_fallback_denies_unowned_goal() -> None:
+    """Cross-tenant disclosure guard: the tenant-unaware cost breakdown must NOT be
+    returned for a goal the tenant does not own, even if a breakdown exists."""
+    from app.observability import cost_breakdown
+
+    bd = MagicMock()
+    bd.to_dict.return_value = {
+        "roles": [{"role": "planner", "model": "secret-model", "input_tokens": 9, "output_tokens": 9}],
+        "total_cost_usd": 9.99,
+    }
+    # goal_service owns nothing → get_goal raises for the requested id.
+    app = _make_app(goal_service=_goal_service_owning(set()))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(cost_breakdown, "get_breakdown", lambda _gid: bd)
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.get(
+            "/analytics/observability/traces?goal_id=other-tenant-goal",
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["traces"] == []  # nothing leaked
