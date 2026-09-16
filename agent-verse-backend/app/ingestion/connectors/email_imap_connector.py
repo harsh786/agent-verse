@@ -143,7 +143,10 @@ class EmailIMAPConnector(BaseConnector):
 
         new_cursor = cursor or "0"
         for uid, text, meta in messages:
-            new_cursor = max(new_cursor, uid)
+            # IMAP UIDs are numeric strings — compare as ints, not lexicographically,
+            # or the cursor can regress (e.g. "9" > "10" as strings) and cause
+            # already-fetched messages to be re-searched on the next sync.
+            new_cursor = str(max(int(new_cursor), int(uid)))
             doc = RawDocument(
                 doc_id=str(uuid.uuid4()),
                 source_id=config.source_id,
