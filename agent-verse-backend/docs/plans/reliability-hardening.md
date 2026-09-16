@@ -27,34 +27,34 @@ Legend: `[ ]` todo · `[~]` doing · `[x]` done (tested). Order = highest impact
 ## Phase 1 — Quick wins (do first; high impact, low risk)
 
 Frontend
-- [ ] **B1. Fix committed env files.** `.env`, `.env.example`, `.env.production`: replace the dead
+- [x] **B1. Fix committed env files.** `.env`, `.env.example`, `.env.production`: replace the dead
   `VITE_API_URL` with `VITE_API_BASE_URL` (dev `http://localhost:8001`, prod real host) + matching
   `VITE_WS_URL`. Prevents "clean checkout hits :8000 / prod UI calls localhost."
-- [ ] **C1. Chat session mutations fail loudly.** Add `onError` toasts to `useChatSession`
+- [x] **C1. Chat session mutations fail loudly.** Add `onError` toasts to `useChatSession`
   create/delete/pin/rename (or wrap the ChatPage handlers) so a failed "New Chat" surfaces an
   error instead of doing nothing. Regression-proofs the bug we just fixed. *(test)*
-- [ ] **A1. Convert the storage-only auth readers** to `getAuthHeader()` (SSO-safe): `AgentMemoryPage`,
+- [x] **A1. Convert the storage-only auth readers** to `getAuthHeader()` (SSO-safe): `AgentMemoryPage`,
   `ConnectedServicesPanel`, `SimulationPage`. Fix their unproxied/relative paths at the same time.
-- [ ] **B2. Fix 404-in-dev relative paths**: `CostBreakdown` (`/api/goals/...`), `GoalRunInspector`
+- [x] **B2. Fix 404-in-dev relative paths**: `CostBreakdown` (`/api/goals/...`), `GoalRunInspector`
   (`/api/observability/...`) → use `API_BASE` absolute URL (they only work through the un-proxied
   path today).
 
 Backend
-- [ ] **D1. QA turn fails loud when no LLM is wired.** In `chat/router.py`, when `answer_generator
+- [x] **D1. QA turn fails loud when no LLM is wired.** In `chat/router.py`, when `answer_generator
   is None`, return a clear error / health signal instead of echoing `"Answering: {msg}"` with a
   fabricated `cost_usd`. *(test)*
-- [ ] **C2/D2. Schedule turn stops lying.** In `chat/router.py:327-341`, if `create_schedule`
+- [x] **C2/D2. Schedule turn stops lying.** In `chat/router.py:327-341`, if `create_schedule`
   throws, surface the failure — do NOT emit `SCHEDULE_CREATED` with empty ids. *(test)*
 
 ## Phase 2 — Auth/base-URL standardization (the biggest correctness gap)
-- [ ] **A2. Standardize auth on `getAuthHeader()` / the shared `apiFetch`** across the ~25
+- [x] **A2. Standardize auth on `getAuthHeader()` / the shared `apiFetch`** across the ~25
   hand-rolled `X-API-Key` sites (they silently 401 under Keycloak SSO because they never send a
   Bearer). Do the high-traffic pages first (TopBar search, AppLayout emergency-stop, App session
   validation, agents/observability/security panels, goals feedback/explain, knowledge, eval,
   skills, playground, lab, builder, connectors).
-- [ ] **B3. Single source of truth for base URL** — import `API_BASE` from `client.ts` everywhere;
+- [x] **B3. Single source of truth for base URL** — import `API_BASE` from `client.ts` everywhere;
   delete duplicated `http://localhost:8000` defaults and the `|| ''` variants.
-- [ ] **A3. Chat client sends Bearer too** (`chat.ts` `headers()`), for SSO parity.
+- [x] **A3. Chat client sends Bearer too** (`chat.ts` `headers()`), for SSO parity.
 
 ## Phase 3 — Route endpoints to the real (DB-backed) stores; kill facades
 - [x] **E1. `/chat/memories` → `LongTermMemoryStore`** (Postgres+pgvector) instead of the in-memory
@@ -83,6 +83,9 @@ Backend
 - [x] `invite_member` privilege-escalation / cross-user-tamper / role-injection *(done — commit
   ecf804b0: admin-only via `require_role`, role validated against `VALID_ROLES`, email validated;
   regression tests added.)*
+- [x] analytics `/observability/traces` cross-tenant-data-disclosure *(done — commit 440cb682: the
+  tenant-unaware `get_breakdown` fallback is now gated on `goal_service.get_goal` ownership; serves
+  nothing when ownership can't be verified; regression test added.)*
 
 ## Testing
 Each `[x]` ships with a test where logic changed (vitest for FE handlers/hooks, pytest for BE
