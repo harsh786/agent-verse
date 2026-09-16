@@ -45,9 +45,10 @@ logger = get_logger(__name__)
 # RRF constant (standard: 60)
 _RRF_K = 60
 # Must match app.rag.store.SUPPORTED_EMBEDDING_DIMENSIONS and the
-# ck_knowledge_collections_embedding_dim DB constraint. 2048 (NVIDIA nemotron)
-# has its own dimension table (knowledge_chunks_2048) but no ANN index — it
-# exceeds pgvector's 2000-d index limit, so its vector leg is an exact scan.
+# ck_knowledge_collections_embedding_dim DB constraint. 2048 (NVIDIA nemotron) and
+# 3072 exceed pgvector's 2000-d cap for a plain `vector` HNSW index, so they have a
+# halfvec HNSW index (idx_knowledge_chunks_<dim>_vector_halfvec) and MUST be queried
+# with a matching halfvec cast (see below) to use it instead of an exact scan.
 _SUPPORTED_EMBEDDING_DIMENSIONS = frozenset({768, 1024, 1536, 2048, 3072})
 _BM25_PAGE_SIZE = 500
 _MAX_HOPS = 5
@@ -310,9 +311,14 @@ async def hybrid_search(
         logger.warning("unsupported_embedding_dimension", embedding_dim=embedding_dim)
         return []
     table = f"knowledge_chunks_{embedding_dim}"
-    vector_expression = "embedding::halfvec(3072)" if embedding_dim == 3072 else "embedding"
+    # Dimensions above pgvector's 2000-dim cap for a plain `vector` HNSW index are
+    # stored/queried as halfvec, which is what the idx_knowledge_chunks_<dim>_vector_halfvec
+    # HNSW index is built on. Both 2048 (NVIDIA nemotron) and 3072 need the halfvec
+    # cast so the query actually USES that index instead of a full sequential scan.
+    _use_halfvec = embedding_dim in (2048, 3072)
+    vector_expression = f"embedding::halfvec({embedding_dim})" if _use_halfvec else "embedding"
     query_vector_expression = (
-        "CAST(:emb AS halfvec(3072))" if embedding_dim == 3072 else "CAST(:emb AS vector)"
+        f"CAST(:emb AS halfvec({embedding_dim}))" if _use_halfvec else "CAST(:emb AS vector)"
     )
     metadata_clause = " AND metadata @> CAST(:metadata_filter AS jsonb)" if metadata_filter else ""
     live_chunk_clause = " AND (expires_at IS NULL OR expires_at > now())"
