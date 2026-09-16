@@ -1,10 +1,9 @@
 /**
  * Model Registry — E2E Tests
  *
- * Covers /models (ModelRegistryPage) — the reachable "models" route (a
- * duplicate route to ModelControlCenter exists further down the router and is
- * unreachable since ModelRegistryPage is registered first; that duplicate is
- * tracked separately and is out of scope here).
+ * Covers /models (ModelRegistryPage). ModelControlCenter, which used to share
+ * this same route as unreachable dead code, now has its own route at
+ * /models/control — see models-control.spec.ts.
  *
  * Behavior under test:
  *  - Renders one card per capability, listing configured models.

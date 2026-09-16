@@ -87,6 +87,7 @@ export function Sidebar() {
         { to: "/schedules",       icon: Calendar,  label: "Schedules"        },
         { to: "/skills",          icon: Sparkles,  label: "Skills"           },
         { to: "/models",          icon: Brain,     label: "Model Registry"   },
+        { to: "/models/control",  icon: Activity,  label: "Model Control Center" },
         { to: "/collaboration",   icon: Users,     label: "Collaboration"    },
         { to: "/coordination",    icon: Hash,      label: "Coordination"     },
       ],

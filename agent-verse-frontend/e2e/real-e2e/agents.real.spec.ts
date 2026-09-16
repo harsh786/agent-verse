@@ -15,7 +15,7 @@ test.describe('Agents — Real E2E', () => {
       command: 'Answer questions about the platform helpfully',
       name: `e2e-agent-${Date.now()}`,
     });
-    expect(resp.status()).toBe(200);
+    expect(resp.status()).toBe(201);
     const body = await resp.json();
     const agent = body.agent ?? body;
     expect(agent.name ?? body.name).toBeTruthy();
@@ -27,7 +27,7 @@ test.describe('Agents — Real E2E', () => {
       name: `e2e-support-${Date.now()}`,
       system_prompt: 'You are a helpful customer support agent.',
     });
-    expect(resp.status()).toBe(200);
+    expect(resp.status()).toBe(201);
   });
 
   test('agent creation with autonomy_mode bounded-autonomous succeeds', async ({ api }) => {
@@ -36,7 +36,7 @@ test.describe('Agents — Real E2E', () => {
       name: `e2e-analyst-${Date.now()}`,
       autonomy_mode: 'bounded-autonomous',
     });
-    expect(resp.status()).toBe(200);
+    expect(resp.status()).toBe(201);
   });
 
   test('agent creation without required fields returns 422', async ({ api }) => {

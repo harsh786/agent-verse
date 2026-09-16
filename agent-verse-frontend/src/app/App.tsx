@@ -288,7 +288,7 @@ export default function App() {
         <Route path="civilization"          element={lazy_rb("Civilization",  <CivilizationPage />)} />
         <Route path="civilization/:id"      element={lazy_rb("Civilization",  <CivilizationPage />)} />
         <Route path="builder"               element={lazy_rb("Builder",       <BuilderPage />)} />
-        <Route path="models"                element={lazy_rb("Model Registry", <ModelControlCenter />)} />
+        <Route path="models/control"         element={lazy_rb("Model Control Center", <ModelControlCenter />)} />
         <Route path="knowledge-graph"       element={lazy_rb("Knowledge Graph", <GraphExplorerPage />)} />
         <Route path="graphify"              element={lazy_rb("Graphify",        <GraphifyPage />)} />
         <Route path="obsidian"              element={lazy_rb("Obsidian Mode",   <ObsidianPage />)} />
