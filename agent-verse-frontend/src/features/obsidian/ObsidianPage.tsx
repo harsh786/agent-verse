@@ -4,7 +4,7 @@
  * Wraps ObsidianVaultExplorer with full JARVIS shell and org selector.
  * Renders knowledge nodes as an Obsidian-style glowing linked graph.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Moon, Sparkles, Info, BookOpen } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -31,9 +31,14 @@ export function ObsidianPage() {
     queryFn: fetchOrgs,
   });
 
-  // Auto-select the first org so users don't need to pick manually
+  // Auto-select the first org so users don't need to pick manually. Guarded by
+  // a ref so this only fires once — otherwise it fights with "Change org",
+  // which intentionally clears selectedOrg and would get immediately
+  // overwritten back to orgs[0] on the next render.
+  const autoSelectedRef = useRef(false);
   useEffect(() => {
-    if (orgs.length > 0 && !selectedOrg) {
+    if (orgs.length > 0 && !selectedOrg && !autoSelectedRef.current) {
+      autoSelectedRef.current = true;
       setSelectedOrg(orgs[0].id);
     }
   }, [orgs, selectedOrg]);

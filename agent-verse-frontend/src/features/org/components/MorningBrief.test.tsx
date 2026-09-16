@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
-import { MorningBrief } from './MorningBrief';
+import { MorningBrief, MorningBriefBadge, WhyCard } from './MorningBrief';
 
 // A representative brief payload from GET /v1/org/{id}/brief/morning.
 const BRIEF = {
@@ -119,5 +119,166 @@ describe('MorningBrief', () => {
     expect(screen.queryByText('Missions')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Expand morning brief/i }));
     expect(await screen.findByText('Missions')).toBeInTheDocument();
+  });
+
+  test('clicking the header again collapses the expanded panel', async () => {
+    mockFetch();
+    renderBrief();
+    expect(await screen.findByText('Missions')).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: /Collapse morning brief/i });
+    await userEvent.click(toggle);
+    // The panel collapses via an exit animation (AnimatePresence); assert the
+    // toggle's own state flips rather than racing the animation's unmount.
+    expect(screen.getByRole('button', { name: /Expand morning brief/i })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('the refresh button triggers a refetch', async () => {
+    const fetchSpy = mockFetch();
+    renderBrief();
+    await screen.findByText('Missions');
+    const callsBefore = fetchSpy.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: /Refresh brief/i }));
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
+  test('flags the approvals stat as a warning when there are pending approvals', async () => {
+    mockFetch();
+    renderBrief();
+    const approvalsValue = await screen.findByText('1');
+    expect(approvalsValue.className).toContain('text-amber-400');
+  });
+
+  test('shows a plain amber "DEGRADED" badge for degraded health', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ...BRIEF, overall_health: 'degraded' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    renderBrief();
+    expect(await screen.findByText(/DEGRADED/)).toBeInTheDocument();
+  });
+
+  test('shows "NEEDS ATTENTION" for the attention_needed health state', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ...BRIEF, overall_health: 'attention_needed' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    renderBrief();
+    expect(await screen.findByText(/NEEDS ATTENTION/)).toBeInTheDocument();
+  });
+});
+
+describe('MorningBriefBadge', () => {
+  function renderBadge() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retryDelay: 0 } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MorningBriefBadge orgId="org-1" />
+      </QueryClientProvider>,
+    );
+  }
+
+  test('renders nothing before the brief has loaded', () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const { container } = renderBadge();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  test('shows the health label and an approvals count once loaded', async () => {
+    mockFetch();
+    renderBadge();
+    expect(await screen.findByText('● Healthy')).toBeInTheDocument();
+    expect(screen.getByText('1 approvals')).toBeInTheDocument();
+  });
+
+  test('omits the approvals chip when there are none pending', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ...BRIEF, pending_approvals: 0 }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    renderBadge();
+    expect(await screen.findByText('● Healthy')).toBeInTheDocument();
+    expect(screen.queryByText(/approvals/)).not.toBeInTheDocument();
+  });
+
+  test('shows the degraded/attention-needed labels', async () => {
+    mockFetch(() => new Response(JSON.stringify({ ...BRIEF, overall_health: 'degraded' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+    renderBadge();
+    expect(await screen.findByText('⚠ Degraded')).toBeInTheDocument();
+  });
+});
+
+describe('WhyCard', () => {
+  const baseProps = {
+    action: 'Posted the weekly digest to #general',
+    trigger: 'Scheduled mission fired at 09:00',
+    evidence: ['Slack API returned 200', 'Message id msg_123'],
+    expectedOutcome: 'Team sees the digest before standup',
+  };
+
+  test('starts collapsed and reveals detail on click', async () => {
+    render(<WhyCard {...baseProps} />);
+    expect(screen.queryByText('Trigger')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText('Trigger')).toBeInTheDocument();
+    expect(screen.getByText(baseProps.trigger)).toBeInTheDocument();
+  });
+
+  test('renders each evidence line and the expected outcome', async () => {
+    render(<WhyCard {...baseProps} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText('Slack API returned 200')).toBeInTheDocument();
+    expect(screen.getByText('Message id msg_123')).toBeInTheDocument();
+    expect(screen.getByText(baseProps.expectedOutcome)).toBeInTheDocument();
+  });
+
+  test('omits the evidence section entirely when there is none', async () => {
+    render(<WhyCard {...baseProps} evidence={[]} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.queryByText('Evidence')).not.toBeInTheDocument();
+  });
+
+  test('shows the policy line only when a policy is provided', async () => {
+    render(<WhyCard {...baseProps} policy="auto-publish-approved" />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText('auto-publish-approved')).toBeInTheDocument();
+  });
+
+  test('defaults to LOW risk styling when riskLevel is omitted', async () => {
+    render(<WhyCard {...baseProps} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText('LOW RISK')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['medium', 'MEDIUM RISK'],
+    ['high', 'HIGH RISK'],
+  ] as const)('renders %s risk styling', async (riskLevel, label) => {
+    render(<WhyCard {...baseProps} riskLevel={riskLevel} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  test('shows the approval status text when provided', async () => {
+    render(<WhyCard {...baseProps} approvalStatus="Approved by ops@acme.test" />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByText('Approved by ops@acme.test')).toBeInTheDocument();
+  });
+
+  test('omits accept/reject controls when no handlers are given', async () => {
+    render(<WhyCard {...baseProps} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.queryByLabelText('Accept this outcome')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Reject and discuss this decision')).not.toBeInTheDocument();
+  });
+
+  test('invokes onAccept and onReject when their buttons are clicked', async () => {
+    const onAccept = vi.fn();
+    const onReject = vi.fn();
+    render(<WhyCard {...baseProps} onAccept={onAccept} onReject={onReject} />);
+    await userEvent.click(screen.getByRole('button', { expanded: false }));
+
+    await userEvent.click(screen.getByLabelText('Accept this outcome'));
+    expect(onAccept).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByLabelText('Reject and discuss this decision'));
+    expect(onReject).toHaveBeenCalledTimes(1);
   });
 });

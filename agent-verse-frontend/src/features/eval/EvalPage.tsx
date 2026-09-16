@@ -199,11 +199,14 @@ function ScorecardTab({ apiKey }: { apiKey: string }) {
     : undefined;
 
   // Fix 6: Regression detection
+  // history is newest-first (saveToHistory prepends each new run onto the
+  // front), so the latest run lives at index 0 and the trailing window is
+  // the next most-recent entries — not the tail of the array.
   const recentScores = history.map(h => h.average_score ?? 0);
-  const latestScore = recentScores[recentScores.length - 1] ?? 0;
-  const prevAvgScores = recentScores.slice(0, -1);
+  const latestScore = recentScores[0] ?? 0;
+  const prevAvgScores = recentScores.slice(1);
   const sevenDayAvg = prevAvgScores.length > 0
-    ? prevAvgScores.slice(-7).reduce((a: number, b: number) => a + b, 0) / Math.min(prevAvgScores.length, 7)
+    ? prevAvgScores.slice(0, 7).reduce((a: number, b: number) => a + b, 0) / Math.min(prevAvgScores.length, 7)
     : latestScore;
   const isRegression = scorecard != null && prevAvgScores.length > 0 && latestScore < sevenDayAvg - 0.05;
 
@@ -601,27 +604,31 @@ function SimulationTab({ apiKey }: { apiKey: string }) {
       </Card>
 
       {/* Steps stream */}
-      {steps.length > 0 && (
+      {(steps.length > 0 || simStatus) && (
         <Card className="p-5">
-          <h3 className="text-sm font-semibold text-foreground mb-4">Execution Steps</h3>
-          <div className="space-y-2">
-            {steps.map((s, i) => (
-              <div key={i} className="flex items-start gap-3 p-3 bg-card rounded-lg border border-border">
-                <span className="text-xs font-mono text-muted-foreground/60 flex-shrink-0 mt-0.5">
-                  {typeof s.step === 'number' ? `${String(s.step).padStart(2, '0')}` : s.step}
-                </span>
-                <div className="flex-1 min-w-0">
-                  {s.tool && <p className="text-xs font-medium text-indigo-300">{s.tool}</p>}
-                  {s.output && (
-                    <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">{String(s.output).slice(0, 120)}</p>
-                  )}
-                </div>
-                {s.cost_usd != null && (
-                  <span className="text-xs text-muted-foreground/60 flex-shrink-0">${s.cost_usd.toFixed(4)}</span>
-                )}
+          {steps.length > 0 && (
+            <>
+              <h3 className="text-sm font-semibold text-foreground mb-4">Execution Steps</h3>
+              <div className="space-y-2">
+                {steps.map((s, i) => (
+                  <div key={i} className="flex items-start gap-3 p-3 bg-card rounded-lg border border-border">
+                    <span className="text-xs font-mono text-muted-foreground/60 flex-shrink-0 mt-0.5">
+                      {typeof s.step === 'number' ? `${String(s.step).padStart(2, '0')}` : s.step}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      {s.tool && <p className="text-xs font-medium text-indigo-300">{s.tool}</p>}
+                      {s.output && (
+                        <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">{String(s.output).slice(0, 120)}</p>
+                      )}
+                    </div>
+                    {s.cost_usd != null && (
+                      <span className="text-xs text-muted-foreground/60 flex-shrink-0">${s.cost_usd.toFixed(4)}</span>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
+          )}
 
           {/* Final summary */}
           {simStatus && (

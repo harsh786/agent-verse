@@ -333,7 +333,7 @@ export default function App() {
         <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorPage orgId="" />)} />
         <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />
         <Route path="settings/gateway" element={lazy_rb("Gateway",        <GatewaySettingsPage />)} />
-        <Route path="org/:orgId/gateway" element={lazy_rb("Org Gateway",  <GatewaySettingsPage />)} />        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
+        <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />
       </Route>
     </Routes>
   );
