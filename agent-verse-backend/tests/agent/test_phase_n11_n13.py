@@ -75,28 +75,39 @@ def test_granular_flag_independent_of_master():
     assert flags.enable_runtime_scorecard is True
 
 
-def test_self_improvement_auto_apply_is_opt_in_only():
-    """Auto-applying a winning config to a live agent must be opt-in.
+def test_self_improvement_auto_apply_is_on_by_default_and_can_be_disabled():
+    """Auto-applying a winning config is now ON by default (closed self-tuning loop).
 
-    It defaults off AND is deliberately NOT switched on by the master
-    dynamic_orchestration flag (unlike the other granular flags) — writing to a
-    live agent's config is higher-risk and must be enabled explicitly.
+    The product decision is that agents auto-apply their own optimized configs
+    end-to-end, so the flag defaults ON — both as the dataclass default (which
+    ``main.py``/the worker read) and as the env-var default. A deployment can
+    still turn it OFF explicitly by setting the env var to a falsey value.
     """
     import os
     import unittest.mock as _um
 
     from app.core.runtime_flags import RuntimeFlags, get_runtime_flags
 
-    assert RuntimeFlags().enable_self_improvement_auto_apply is False
+    assert RuntimeFlags().enable_self_improvement_auto_apply is True
 
+    # Env-var default (no override present) is also ON.
     get_runtime_flags.cache_clear()
-    with _um.patch.dict(os.environ, {"DYNAMIC_ORCHESTRATION": "true"}, clear=False):
+    with _um.patch.dict(
+        os.environ,
+        {"ENABLE_SELF_IMPROVEMENT_AUTO_APPLY": "", "DYNAMIC_ORCHESTRATION": ""},
+        clear=False,
+    ):
         get_runtime_flags.cache_clear()
-        flags = get_runtime_flags()
-        assert flags.enable_self_improvement is True  # master cascades to this one
-        assert flags.enable_self_improvement_auto_apply is False  # but never this one
+        assert get_runtime_flags().enable_self_improvement_auto_apply is True
     get_runtime_flags.cache_clear()
 
+    # Explicit opt-out still works.
+    with _um.patch.dict(os.environ, {"ENABLE_SELF_IMPROVEMENT_AUTO_APPLY": "false"}, clear=False):
+        get_runtime_flags.cache_clear()
+        assert get_runtime_flags().enable_self_improvement_auto_apply is False
+    get_runtime_flags.cache_clear()
+
+    # And it can be turned back on explicitly.
     with _um.patch.dict(os.environ, {"ENABLE_SELF_IMPROVEMENT_AUTO_APPLY": "true"}, clear=False):
         get_runtime_flags.cache_clear()
         assert get_runtime_flags().enable_self_improvement_auto_apply is True

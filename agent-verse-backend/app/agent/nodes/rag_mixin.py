@@ -108,12 +108,34 @@ class RAGMixin:
                 # ContextPipeline.run (PromptBuilder consumes execution_memory as dicts).
                 agent_state.context["_execution_memory_records"] = list(exec_plans)
 
-        # 1b. Execution memory: recall past failure patterns to avoid repeating them
+        # 1b. Execution memory: recall past failure patterns to avoid repeating them.
+        # DB-backed so a fresh worker/pod recalls failures earlier runs persisted
+        # to execution_memory (success=FALSE); in-memory recall is the no-DB fallback.
         if self._exec_memory is not None:
             try:
-                failures = self._exec_memory.recall_failures(
-                    goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                failures: list[dict] = []
+                _recall_failures_async = getattr(
+                    self._exec_memory, "recall_failures_async", None
                 )
+                if _recall_failures_async is not None:
+                    try:
+                        failures = await _recall_failures_async(
+                            agent_state.goal,
+                            tenant_id=tenant_ctx.tenant_id,
+                            db=self._db_session_factory,
+                            limit=3,
+                        )
+                    except Exception as _rf_exc:
+                        self._logger.warning(
+                            "exec_memory_recall_failures_failed", error=str(_rf_exc)
+                        )
+                        failures = self._exec_memory.recall_failures(
+                            goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                        )
+                else:
+                    failures = self._exec_memory.recall_failures(
+                        goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                    )
                 if failures:
                     failure_lines = [
                         f"- {str(f.get('goal', f.get('goal_text', '')))[:100]}"

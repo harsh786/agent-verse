@@ -46,14 +46,20 @@ class RuntimeFlags:
     # Granular flags — each can be enabled independently
     # OR set via the master dynamic_orchestration=True
     enable_runtime_scorecard: bool = False  # RuntimeScorecard 9-dim scoring
-    enable_self_improvement: bool = False  # SelfImprovementEngine action dispatch
+    # ON by default: gates the SelfImprovementEngine action dispatch in the verify
+    # node. Turning it on (together with the self-improvement services now wired
+    # onto the Celery worker graph) is half of closing the self-tuning loop for
+    # goals executed by the worker — the path that actually runs production goals.
+    enable_self_improvement: bool = True  # SelfImprovementEngine action dispatch
     # Closes the self-improvement loop: when a candidate config wins its A/B
-    # experiment, autonomously write it back to the agent. Higher-risk than the
-    # other granular flags (it mutates a live agent's config), so it is opt-in
-    # only and is deliberately NOT switched on by the master dynamic_orchestration
-    # flag — turn it on explicitly, per deployment.  When off, a winning
-    # experiment is concluded and left pending a manual apply via the API.
-    enable_self_improvement_auto_apply: bool = False
+    # experiment, autonomously write it back to the agent. Now ON by default so
+    # agents auto-apply their own optimized configs end-to-end (both in-process
+    # and in the Celery worker). When off, a winning experiment is concluded and
+    # left pending a manual apply via the API. This is the flag SelfOptimizerV2
+    # reads (main.py:677) to arm its closed-loop control; the worker graph wiring
+    # in app/scaling/tasks.py sources the same flag, so this default finishes
+    # closing the self-tuning loop on the worker.
+    enable_self_improvement_auto_apply: bool = True
     enable_rag_strategy_routing: bool = False  # Profile-based RAG strategy selection
     enable_pattern_sse_events: bool = False  # pattern_assembled, eval_score_recorded SSEs
     enable_guardrail_profile: bool = False  # Profile-based GuardrailEnforcer
@@ -89,8 +95,10 @@ class RuntimeFlags:
             guardrail_profile=_bool_env("GUARDRAIL_PROFILE"),
             readiness_gate=_bool_env("READINESS_GATE"),
             enable_runtime_scorecard=_bool_env("ENABLE_RUNTIME_SCORECARD"),
-            enable_self_improvement=_bool_env("ENABLE_SELF_IMPROVEMENT"),
-            enable_self_improvement_auto_apply=_bool_env("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY"),
+            enable_self_improvement=_bool_env("ENABLE_SELF_IMPROVEMENT", True),
+            enable_self_improvement_auto_apply=_bool_env(
+                "ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True
+            ),
             enable_rag_strategy_routing=_bool_env("ENABLE_RAG_STRATEGY_ROUTING"),
             enable_pattern_sse_events=_bool_env("ENABLE_PATTERN_SSE_EVENTS"),
             enable_guardrail_profile=_bool_env("ENABLE_GUARDRAIL_PROFILE"),
@@ -124,8 +132,8 @@ def get_runtime_flags() -> RuntimeFlags:
         guardrail_profile=_env_bool("GUARDRAIL_PROFILE"),
         readiness_gate=_env_bool("READINESS_GATE"),
         enable_runtime_scorecard=_env_bool("ENABLE_RUNTIME_SCORECARD"),
-        enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT"),
-        enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY"),
+        enable_self_improvement=_env_bool("ENABLE_SELF_IMPROVEMENT", True),
+        enable_self_improvement_auto_apply=_env_bool("ENABLE_SELF_IMPROVEMENT_AUTO_APPLY", True),
         enable_rag_strategy_routing=_env_bool("ENABLE_RAG_STRATEGY_ROUTING"),
         enable_pattern_sse_events=_env_bool("ENABLE_PATTERN_SSE_EVENTS"),
         enable_guardrail_profile=_env_bool("ENABLE_GUARDRAIL_PROFILE"),

@@ -145,13 +145,14 @@ Respond with ONLY valid JSON:
         self._db = db_factory
         self._llm_factory = llm_provider_factory
         self._state = TenantOptimizationState(redis)
-        # Closed-loop control: when True (the default, and what unit tests use),
-        # a winning candidate is written back to the agent automatically. When
-        # False, the experiment still concludes and records its winner, but the
-        # config is left pending a manual apply (apply_pending()/the API). The
-        # production wiring in app.main sources this from the opt-in runtime flag
-        # ``enable_self_improvement_auto_apply`` (default False), so autonomous
-        # writes to a live agent's config never happen unless a deployment opts in.
+        # Closed-loop control: when True (the default), a winning candidate is
+        # written back to the agent automatically. When False, the experiment
+        # still concludes and records its winner, but the config is left pending a
+        # manual apply (apply_pending()/the API). Both the production wiring in
+        # app.main AND the Celery worker graph (app/scaling/tasks.py) source this
+        # from the runtime flag ``enable_self_improvement_auto_apply``, which now
+        # defaults ON — so the self-tuning loop closes end-to-end by default. A
+        # deployment can still opt out by setting that flag to a falsey value.
         self._auto_apply = auto_apply
 
     # ── Public API ────────────────────────────────────────────────────────

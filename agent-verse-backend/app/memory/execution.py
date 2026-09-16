@@ -226,6 +226,93 @@ class ExecutionMemory:
                 pass
             return 0
 
+    async def recall_failures_async(
+        self,
+        goal_hint: str,
+        *,
+        tenant_id: str,
+        db: Any = None,
+        limit: int = 3,
+    ) -> list[dict]:
+        """Recall relevant PAST FAILURES from DB for a given goal.
+
+        ``record_failure_async`` persists failed attempts to ``execution_memory``
+        with ``success = FALSE`` and the error stashed in the ``plan`` jsonb as
+        ``{"error": ...}``. The synchronous ``recall_failures`` only reads the
+        in-process ``self._failures`` dict, so a fresh worker/pod would replan
+        blind — it never saw the failures earlier runs recorded. This DB-backed
+        path lets the planner avoid repeating cross-session mistakes.
+
+        Falls back to the in-memory ``self._failures`` when ``db`` is None or the
+        query fails, so the no-DB path keeps working exactly as before.
+        """
+
+        def _from_memory() -> list[dict]:
+            hint_lower = goal_hint.lower()
+            words = hint_lower.split()[:5]
+            results: list[dict] = []
+            for m in self._failures.get(tenant_id, []):
+                goal_str = str(m.get("goal", m.get("goal_text", "")))
+                if not words or any(word in goal_str.lower() for word in words):
+                    results.append(
+                        {
+                            "goal": goal_str,
+                            "goal_text": goal_str,
+                            "error": str(m.get("error", "")),
+                        }
+                    )
+                    if len(results) >= limit:
+                        break
+            return results
+
+        if db is None:
+            return _from_memory()
+
+        try:
+            from sqlalchemy import text
+
+            async with db() as session:
+                rows = (
+                    await session.execute(
+                        text("""
+                        SELECT goal_text, plan FROM execution_memory
+                        WHERE tenant_id = :tid AND success = FALSE
+                        ORDER BY created_at DESC LIMIT :lim
+                    """),
+                        {"tid": tenant_id, "lim": limit * 3},
+                    )
+                ).fetchall()
+
+            hint_lower = goal_hint.lower()
+            words = hint_lower.split()[:5]
+            filtered: list[dict] = []
+            for row in rows:
+                goal_text, plan = row
+                goal_str = str(goal_text or "")
+                if words and not any(word in goal_str.lower() for word in words):
+                    continue
+                error = ""
+                if isinstance(plan, dict):
+                    error = str(plan.get("error", ""))
+                elif isinstance(plan, str):
+                    try:
+                        import json
+
+                        parsed = json.loads(plan)
+                        if isinstance(parsed, dict):
+                            error = str(parsed.get("error", ""))
+                    except Exception:
+                        error = ""
+                filtered.append(
+                    {"goal": goal_str, "goal_text": goal_str, "error": error}
+                )
+                if len(filtered) >= limit:
+                    break
+            return filtered
+        except Exception:
+            # DB failed — fall back to in-memory
+            return _from_memory()
+
     async def recall_async(
         self,
         goal_hint: str,

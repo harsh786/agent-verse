@@ -108,6 +108,30 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
     # _WORKER_CHECKPOINTER stays None → AgentGraph will use MemorySaver()
 
 
+@_worker_init.connect
+def _load_worker_prompt_variants(**kwargs: Any) -> None:
+    """Load persisted A/B prompt variants into the worker's PromptOptimizer.
+
+    The Celery worker runs real goals through the module-global
+    ``_default_optimizer`` (see ``run_goal``). That instance starts empty in a
+    fresh worker process and, without this hook, ``select_variant()`` only ever
+    returns the control prompt — the A/B variants persisted to
+    ``prompt_variants`` by the API/self-optimizer would never be exercised on
+    the path that actually executes goals. Loading them once at worker start
+    closes that gap. Best-effort: a DB error just leaves the optimizer empty
+    (control-only), exactly as before.
+    """
+    try:
+        from app.db.session import get_session_factory
+        from app.intelligence.prompt_optimizer import _default_optimizer
+
+        db_factory = get_session_factory()
+        loaded = _run_async(_default_optimizer.load_from_db(db_factory))
+        logger.info("celery_worker_prompt_variants_loaded count=%s", loaded)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("worker_prompt_variant_load_failed: %s", exc)
+
+
 class _SyncGoalLock:
     """Synchronous Redis-based distributed lock for Celery tasks.
 
@@ -1890,6 +1914,68 @@ def run_goal(
                 _agent_runner._prompt_optimizer = _prompt_opt
             except Exception as _opt_exc:
                 logger.warning("optimizer_wire_failed: %s", _opt_exc)
+
+            # Wire the closed-loop self-improvement services onto the worker graph
+            # so the SAME arm-injection (initialize node), A/B result recording +
+            # on_goal_completed (verify node), and structured reflexion recall
+            # (plan node) that the in-process API path gets also fire for goals
+            # executed by this Celery worker. The mixins read
+            # ``self._app_state.self_optimizer_v2`` / ``self._app_state.prompt_optimizer``
+            # and ``self._agent_id`` (initialize/verify) and ``self._reflexion_service``
+            # (plan). Without this the worker — the path that actually runs
+            # production goals — never drove any of them, so self-improvement was
+            # inert. Best-effort: any wiring failure degrades to the prior behaviour
+            # (LTM / winning-plan ExecutionMemory / Eval scoring are wired above and
+            # are unaffected).
+            try:
+                import types as _types
+
+                from app.core.runtime_flags import get_runtime_flags as _get_rt_flags
+                from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
+                from app.memory.reflexion import ReflexionService
+
+                # DB-backed SelfOptimizerV2 (Bayesian A/B + auto-apply). Uses a
+                # dedicated string-decoded async Redis for its per-tenant experiment
+                # state namespace.
+                _so_v2_redis: Any = None
+                try:
+                    import redis.asyncio as _aioredis_so
+
+                    _so_v2_redis = _aioredis_so.from_url(REDIS_URL, decode_responses=True)
+                except Exception as _so_redis_exc:  # pragma: no cover - defensive
+                    logger.warning("self_optimizer_v2_redis_wire_failed: %s", _so_redis_exc)
+
+                _self_opt_v2 = SelfOptimizerV2(
+                    redis=_so_v2_redis,
+                    db_factory=db_factory,
+                    llm_provider_factory=lambda: provider,
+                    auto_apply=_get_rt_flags().enable_self_improvement_auto_apply,
+                )
+
+                # DB-backed reflexion recall (evidence-backed lessons in the planner).
+                _reflexion_service: Any = None
+                if db_factory is not None:
+                    try:
+                        from app.memory.postgres_repository import PostgresMemoryRepository
+
+                        _reflexion_service = ReflexionService(
+                            repository=PostgresMemoryRepository(db_factory)
+                        )
+                    except Exception as _refl_exc:  # pragma: no cover - defensive
+                        logger.warning("worker_reflexion_wire_failed: %s", _refl_exc)
+
+                # The mixins reach the self-optimizer + prompt-optimizer through
+                # ``_app_state``. The worker has no FastAPI app, so expose a minimal
+                # namespace carrying exactly the attributes the agent nodes read.
+                _agent_runner._app_state = _types.SimpleNamespace(
+                    self_optimizer_v2=_self_opt_v2,
+                    prompt_optimizer=_prompt_opt,
+                    reflexion_service=_reflexion_service,
+                )
+                _agent_runner._agent_id = agent_id
+                _agent_runner._reflexion_service = _reflexion_service
+            except Exception as _si_exc:
+                logger.warning("self_improvement_wire_failed: %s", _si_exc)
             _agent_runner = _WorkerMCPAgentRunner(
                 _agent_runner,
                 _build_worker_mcp_context,
