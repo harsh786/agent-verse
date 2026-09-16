@@ -693,7 +693,7 @@ services:
       SALT: ${LANGFUSE_SALT:-devsalt-change-me}
       ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-devsecret-change-me}
-      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
+      NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3002}
       TELEMETRY_ENABLED: "false"
       CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
       CLICKHOUSE_URL: http://clickhouse:8123
@@ -720,7 +720,8 @@ services:
       clickhouse:
         condition: service_healthy
     ports:
-      - "3100:3000"
+      # NOT 3100 — that host port is already bound by loki (see below).
+      - "3002:3000"
     environment:
       <<: *langfuse-env
       # Auto-provision a dev org/project + API keys so the collector's Basic-auth
