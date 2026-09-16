@@ -20,19 +20,19 @@ export function GovernancePanel() {
 
   const { data: bundleData } = useQuery({
     queryKey: ['compliance-bundles'],
-    queryFn: () => apiFetch('/governance/compliance/bundles'),
+    queryFn: () => apiFetch('/trust/compliance-bundles/active'),
     enabled: !!apiKey,
   });
 
   const { data: pendingData } = useQuery({
     queryKey: ['pending-approvals'],
-    queryFn: () => apiFetch('/governance/approvals?status=pending'),
+    queryFn: () => apiFetch('/trust/approvals?status=pending'),
     enabled: !!apiKey,
     refetchInterval: 10000,
   });
 
   const enableMutation = useMutation({
-    mutationFn: (bundleId: string) => apiFetch(`/governance/compliance/bundles/${bundleId}/enable`, { method: 'POST' }),
+    mutationFn: (bundleId: string) => apiFetch(`/trust/compliance-bundles/${bundleId}/enable`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['compliance-bundles'] }),
   });
 
@@ -57,8 +57,8 @@ export function GovernancePanel() {
         ) : (
           <div className="space-y-2">
             {pendingApprovals.slice(0, 5).map((a: Record<string, unknown>) => (
-              <div key={String(a.request_id)} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
-                <p className="text-sm font-medium text-foreground">{String(a.action || 'High-risk action')}</p>
+              <div key={String(a.approval_id)} className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3">
+                <p className="text-sm font-medium text-foreground">{String(a.step_description || a.tool_name || 'High-risk action')}</p>
                 <p className="text-xs text-muted-foreground mt-0.5">Goal: {String(a.goal_id)} · Required: {String(a.required_approvers)} approver(s)</p>
               </div>
             ))}

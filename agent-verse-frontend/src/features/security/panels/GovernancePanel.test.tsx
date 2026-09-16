@@ -19,12 +19,12 @@ function mockFetch(opts: MockOpts = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
-    if (url.includes('/governance/compliance/bundles/') && url.includes('/enable') && method === 'POST')
-      return new Response(JSON.stringify({ status: 'enabled' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/governance/compliance/bundles'))
+    if (url.includes('/trust/compliance-bundles/') && url.includes('/enable') && method === 'POST')
       return new Response(JSON.stringify({ active, effective_max_autonomy: effective }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/governance/approvals'))
-      return new Response(JSON.stringify({ approvals }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/trust/compliance-bundles/active'))
+      return new Response(JSON.stringify({ active, effective_max_autonomy: effective }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/trust/approvals'))
+      return new Response(JSON.stringify({ approvals, total: approvals.length }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }
@@ -69,7 +69,7 @@ describe('GovernancePanel', () => {
   test('pending approvals render with a count badge and the action', async () => {
     mockFetch({
       approvals: [
-        { request_id: 'a1', action: 'delete prod database', goal_id: 'g-9', required_approvers: 2 },
+        { approval_id: 'a1', step_description: 'delete prod database', goal_id: 'g-9', required_approvers: 2, status: 'pending' },
       ],
     });
     renderPanel();
@@ -92,7 +92,7 @@ describe('GovernancePanel', () => {
     await userEvent.click(screen.getAllByRole('button', { name: 'Enable' })[0]);
     await waitFor(() =>
       expect(spy.mock.calls.some(([u, i]) =>
-        String(u).includes('/governance/compliance/bundles/hipaa/enable') &&
+        String(u).includes('/trust/compliance-bundles/hipaa/enable') &&
         (i as RequestInit)?.method === 'POST',
       )).toBe(true),
     );

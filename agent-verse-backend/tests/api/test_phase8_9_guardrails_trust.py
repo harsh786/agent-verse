@@ -277,3 +277,47 @@ def test_approval_not_found():
     client = TestClient(_make_app())
     resp = client.post("/trust/approvals/nonexistent-id/approve", json={"approver_id": "alice"}, headers=_HEADERS)
     assert resp.status_code == 404
+
+def test_list_approvals_filters_by_status():
+    client = TestClient(_make_app())
+    pending = client.post(
+        "/trust/approvals", json={"goal_id": "g-1", "step_description": "op 1"}, headers=_HEADERS
+    ).json()["approval_id"]
+    rejected = client.post(
+        "/trust/approvals", json={"goal_id": "g-2", "step_description": "op 2"}, headers=_HEADERS
+    ).json()["approval_id"]
+    client.post(f"/trust/approvals/{rejected}/reject", json={"reason": "no"}, headers=_HEADERS)
+
+    resp = client.get("/trust/approvals?status=pending", headers=_HEADERS)
+    assert resp.status_code == 200
+    ids = {a["approval_id"] for a in resp.json()["approvals"]}
+    assert pending in ids
+    assert rejected not in ids
+
+    resp_all = client.get("/trust/approvals", headers=_HEADERS)
+    ids_all = {a["approval_id"] for a in resp_all.json()["approvals"]}
+    assert {pending, rejected} <= ids_all
+
+def test_active_compliance_bundles_starts_empty_and_fully_autonomous():
+    client = TestClient(_make_app())
+    resp = client.get("/trust/compliance-bundles/active", headers=_HEADERS_B)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] == []
+    assert body["effective_max_autonomy"] == "fully-autonomous"
+
+def test_enable_compliance_bundle_updates_active_and_effective_autonomy():
+    client = TestClient(_make_app())
+    resp = client.post("/trust/compliance-bundles/hipaa/enable", headers=_HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] == ["hipaa"]
+    assert body["effective_max_autonomy"] == "supervised"  # HIPAA is the most restrictive mode
+
+    resp2 = client.get("/trust/compliance-bundles/active", headers=_HEADERS)
+    assert resp2.json()["active"] == ["hipaa"]
+
+def test_enable_unknown_compliance_bundle_returns_400():
+    client = TestClient(_make_app())
+    resp = client.post("/trust/compliance-bundles/not-a-real-bundle/enable", headers=_HEADERS)
+    assert resp.status_code == 400

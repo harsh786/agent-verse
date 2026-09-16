@@ -13,20 +13,52 @@ interface VerifyResult {
   broken_at?: string;
 }
 
+interface IntegrityResponse {
+  status: string;
+  verified: boolean;
+  chain_tip_hash: string;
+  events_verified: number;
+  tampered_event: string | null;
+  message: string;
+}
+
+interface AuditExportPackage {
+  tenant_id: string;
+  exported_at: string;
+  event_count: number;
+  events: Record<string, unknown>[];
+  integrity_hash: string;
+  format_version: string;
+}
+
+/** Flatten the export package's events into a simple CSV — the backend only produces JSON. */
+function eventsToCsv(events: Record<string, unknown>[]): string {
+  if (events.length === 0) return '';
+  const columns = Array.from(new Set(events.flatMap(e => Object.keys(e))));
+  const escape = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = events.map(e => columns.map(c => escape(e[c])).join(','));
+  return [columns.join(','), ...rows].join('\n');
+}
+
 export function AuditPanel() {
   const apiKey = useAuthStore(s => s.apiKey) || '';
   const [exportFormat, setExportFormat] = useState<'json' | 'csv'>('json');
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
 
   const verifyMutation = useMutation({
-    mutationFn: () => apiFetch('/governance/audit/verify', { method: 'POST' }),
-    onSuccess: (data: VerifyResult) => setVerifyResult(data),
+    mutationFn: () => apiFetch('/trust/audit/integrity'),
+    onSuccess: (data: IntegrityResponse) => setVerifyResult({
+      valid: data.verified,
+      records_checked: data.events_verified,
+      broken_at: data.tampered_event ?? undefined,
+    }),
   });
 
   const exportMutation = useMutation({
-    mutationFn: () => apiFetch(`/governance/audit/export?format=${exportFormat}`),
-    onSuccess: (data: { data: string }) => {
-      const blob = new Blob([data.data], { type: exportFormat === 'csv' ? 'text/csv' : 'application/json' });
+    mutationFn: () => apiFetch('/trust/audit/export'),
+    onSuccess: (data: AuditExportPackage) => {
+      const content = exportFormat === 'csv' ? eventsToCsv(data.events) : JSON.stringify(data, null, 2);
+      const blob = new Blob([content], { type: exportFormat === 'csv' ? 'text/csv' : 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -37,15 +69,11 @@ export function AuditPanel() {
 
   const { data: recentAudit } = useQuery({
     queryKey: ['audit-recent'],
-    queryFn: () => apiFetch('/governance/audit/export?format=json'),
+    queryFn: () => apiFetch('/trust/audit/export'),
     enabled: !!apiKey,
   });
 
-  let recentRecords: Record<string, unknown>[] = [];
-  try {
-    const raw = (recentAudit as { data?: string } | undefined)?.data;
-    recentRecords = JSON.parse(raw || '[]').slice(0, 10) as Record<string, unknown>[];
-  } catch { /* ignore parse errors */ }
+  const recentRecords = ((recentAudit as AuditExportPackage | undefined)?.events ?? []).slice(0, 10);
 
   return (
     <div className="space-y-6">

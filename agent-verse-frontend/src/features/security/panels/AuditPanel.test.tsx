@@ -13,14 +13,18 @@ const RECORDS = [
 
 function mockFetch(opts: { records?: unknown[]; verify?: unknown } = {}) {
   const records = opts.records ?? RECORDS;
-  const verify = opts.verify ?? { valid: true, records_checked: 2 };
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  // Real /trust/audit/integrity shape: {status, verified, chain_tip_hash, events_verified, tampered_event, message}
+  const verifyDefaults = { verified: true, events_verified: 2, tampered_event: null };
+  const verify = { ...verifyDefaults, ...(opts.verify ?? {}) };
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
     const url = String(input);
-    const method = (init?.method ?? 'GET').toUpperCase();
-    if (url.includes('/governance/audit/verify') && method === 'POST')
+    if (url.includes('/trust/audit/integrity'))
       return new Response(JSON.stringify(verify), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/governance/audit/export'))
-      return new Response(JSON.stringify({ data: JSON.stringify(records) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.includes('/trust/audit/export'))
+      return new Response(JSON.stringify({
+        tenant_id: 't', exported_at: '2026-01-01T00:00:00Z', event_count: records.length,
+        events: records, integrity_hash: 'deadbeef', format_version: '1.0',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }
@@ -67,20 +71,18 @@ describe('AuditPanel', () => {
     expect(await screen.findByText(/No audit records yet/i)).toBeInTheDocument();
   });
 
-  test('Verify Chain posts to the verify endpoint and shows an intact result', async () => {
-    const spy = mockFetch({ verify: { valid: true, records_checked: 7 } });
+  test('Verify Chain hits the integrity endpoint and shows an intact result', async () => {
+    const spy = mockFetch({ verify: { verified: true, events_verified: 7, tampered_event: null } });
     renderPanel();
     await screen.findByText('goal.executed');
     await userEvent.click(screen.getByRole('button', { name: /Verify Chain/i }));
     expect(await screen.findByText('Chain Intact')).toBeInTheDocument();
     expect(screen.getByText(/7 records verified/i)).toBeInTheDocument();
-    expect(spy.mock.calls.some(([u, i]) =>
-      String(u).includes('/governance/audit/verify') && (i as RequestInit)?.method === 'POST',
-    )).toBe(true);
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/trust/audit/integrity'))).toBe(true);
   });
 
   test('a tampered chain result surfaces the broken-at marker', async () => {
-    mockFetch({ verify: { valid: false, records_checked: 3, broken_at: 'seq-4' } });
+    mockFetch({ verify: { verified: false, events_verified: 3, tampered_event: 'seq-4' } });
     renderPanel();
     await screen.findByText('goal.executed');
     await userEvent.click(screen.getByRole('button', { name: /Verify Chain/i }));
@@ -88,14 +90,14 @@ describe('AuditPanel', () => {
     expect(screen.getByText(/Broken at: seq-4/i)).toBeInTheDocument();
   });
 
-  test('choosing CSV and downloading requests the export with format=csv', async () => {
+  test('choosing CSV and downloading requests the export and builds a CSV blob', async () => {
     const spy = mockFetch();
     renderPanel();
     await screen.findByText('goal.executed');
     await userEvent.selectOptions(screen.getByRole('combobox'), 'csv');
     await userEvent.click(screen.getByRole('button', { name: /Download/i }));
     await waitFor(() =>
-      expect(spy.mock.calls.some(([u]) => String(u).includes('/governance/audit/export?format=csv'))).toBe(true),
+      expect(spy.mock.calls.some(([u]) => String(u).includes('/trust/audit/export'))).toBe(true),
     );
     expect(globalThis.URL.createObjectURL).toHaveBeenCalled();
   });

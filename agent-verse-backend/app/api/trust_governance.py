@@ -166,10 +166,12 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
 
 
 @router.get("/approvals")
-async def list_approvals(request: Request) -> dict[str, Any]:
-    """List approval requests for the tenant."""
+async def list_approvals(request: Request, status: str | None = None) -> dict[str, Any]:
+    """List approval requests for the tenant, optionally filtered by status."""
     tenant = _require_tenant(request)
     approvals = list(_approvals.get(tenant.tenant_id, {}).values())
+    if status:
+        approvals = [a for a in approvals if a["status"] == status]
     return {"approvals": approvals, "total": len(approvals)}
 
 
@@ -221,4 +223,36 @@ async def list_compliance_bundles(request: Request) -> dict[str, Any]:
             }
             for b in ComplianceBundle
         ]
+    }
+
+
+@router.get("/compliance-bundles/active")
+async def get_active_compliance_bundles(request: Request) -> dict[str, Any]:
+    """List the compliance bundles this tenant has enabled, and the resulting
+    effective (most restrictive) autonomy cap across all of them."""
+    tenant = _require_tenant(request)
+    from app.governance.compliance_bundles import _bundle_manager
+
+    return {
+        "active": [b.id for b in _bundle_manager.get_active(tenant.tenant_id)],
+        "effective_max_autonomy": _bundle_manager.get_effective_max_autonomy(tenant.tenant_id),
+    }
+
+
+@router.post("/compliance-bundles/{bundle_id}/enable")
+async def enable_compliance_bundle_for_tenant(request: Request, bundle_id: str) -> dict[str, Any]:
+    """Enable a compliance bundle for this tenant (governance/autonomy effects —
+    distinct from POST /guardrails-v2/bundles/{name}, which materializes a
+    bundle's guardrail rules)."""
+    tenant = _require_tenant(request)
+    from app.governance.compliance_bundles import _bundle_manager
+
+    try:
+        _bundle_manager.enable(tenant.tenant_id, bundle_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    return {
+        "active": [b.id for b in _bundle_manager.get_active(tenant.tenant_id)],
+        "effective_max_autonomy": _bundle_manager.get_effective_max_autonomy(tenant.tenant_id),
     }
