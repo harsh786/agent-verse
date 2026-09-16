@@ -266,6 +266,85 @@ def _rrf_score(ranks: list[int]) -> float:
     return sum(1.0 / (_RRF_K + r) for r in ranks)
 
 
+async def _binary_prefilter_shortlist(
+    session: AsyncSession,
+    *,
+    table: str,
+    collection_id: str,
+    embedding_dim: int,
+    query_embedding: list[float],
+    metadata_clause: str,
+    live_chunk_clause: str,
+    metadata_params: dict[str, Any],
+    top_k: int,
+) -> list[str] | None:
+    """Stage-1 binary Hamming shortlist for the vector leg of very large collections.
+
+    Returns a list of candidate chunk ids to constrain the exact vector query to,
+    or ``None`` to run the normal full ANN leg. This NEVER raises and never leaves
+    the outer transaction poisoned: the shortlist query runs inside a SAVEPOINT and
+    any failure (feature off, collection below threshold, pgvector < 0.7, missing
+    migration-0120 bit index, or a halfvec dimension the bit index doesn't cover)
+    resolves to ``None`` so retrieval silently falls back to exact search. Enabling
+    the feature can therefore only trade a little recall for latency — never break.
+    """
+    from app.rag.scale_policy import shortlist_size_for, should_use_binary_prefilter
+
+    settings = get_settings()
+    if not getattr(settings, "rag_binary_prefilter_enabled", False):
+        return None
+    # halfvec-stored dims (>2000) are not covered by the bit_hamming_ops index.
+    if embedding_dim in (2048, 3072):
+        return None
+    try:
+        # Cheap maintained counter — no table scan.
+        size_row = (
+            await session.execute(
+                text("SELECT chunk_count FROM knowledge_collections WHERE id = :cid"),
+                {"cid": collection_id},
+            )
+        ).fetchone()
+        collection_size = int(size_row[0]) if size_row and size_row[0] is not None else 0
+    except Exception:
+        return None
+    if not should_use_binary_prefilter(
+        collection_size,
+        enabled=True,  # gated above
+        threshold=int(getattr(settings, "rag_binary_prefilter_threshold", 50_000)),
+    ):
+        return None
+    shortlist = shortlist_size_for(
+        top_k, multiplier=40, cap=int(getattr(settings, "rag_binary_prefilter_shortlist", 200))
+    )
+    try:
+        # SAVEPOINT: a Stage-1 failure must not abort the surrounding transaction
+        # (the FTS/trigram/BM25 legs still need to run).
+        async with session.begin_nested():
+            rows = await session.execute(
+                text(
+                    f"""
+                    SELECT id
+                      FROM {table}
+                     WHERE collection_id = :cid{metadata_clause}{live_chunk_clause}
+                     ORDER BY binary_quantize(embedding)::bit({embedding_dim})
+                              <~> binary_quantize(CAST(:emb AS vector))::bit({embedding_dim})
+                     LIMIT :shortlist
+                    """
+                ),
+                {
+                    "cid": collection_id,
+                    "emb": str(query_embedding),
+                    "shortlist": shortlist,
+                    **metadata_params,
+                },
+            )
+            ids = [str(r[0]) for r in rows.fetchall()]
+        return ids or None
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.debug("binary_prefilter_shortlist_failed", error=str(exc)[:120])
+        return None
+
+
 async def hybrid_search(
     session: AsyncSession,
     *,
@@ -345,6 +424,21 @@ async def hybrid_search(
                 text("SELECT set_config('hnsw.ef_search', :ef, true)"),
                 {"ef": str(ef_search)},
             )
+            # Optional two-stage path: on very large collections, cheaply shortlist
+            # candidates via the binary Hamming index, then rerank exactly below.
+            # Returns None (→ normal full ANN leg) unless enabled+large+available.
+            shortlist_ids = await _binary_prefilter_shortlist(
+                session,
+                table=table,
+                collection_id=collection_id,
+                embedding_dim=embedding_dim,
+                query_embedding=query_embedding,
+                metadata_clause=metadata_clause,
+                live_chunk_clause=live_chunk_clause,
+                metadata_params=metadata_params,
+                top_k=top_k,
+            )
+            shortlist_clause = " AND id = ANY(:shortlist_ids)" if shortlist_ids else ""
             vec_sql = text(f"""
                 SELECT id, content, metadata,
                        1 - ({vector_expression} <=> {query_vector_expression}) AS score
@@ -352,18 +446,19 @@ async def hybrid_search(
                 WHERE collection_id = :cid
                   {metadata_clause}
                   {live_chunk_clause}
+                  {shortlist_clause}
                  ORDER BY {vector_expression} <=> {query_vector_expression}, id ASC
                 LIMIT :limit
             """)
-            rows = await session.execute(
-                vec_sql,
-                {
-                    "emb": str(query_embedding),
-                    "cid": collection_id,
-                    "limit": top_k * 3,
-                    **metadata_params,
-                },
-            )
+            vec_params = {
+                "emb": str(query_embedding),
+                "cid": collection_id,
+                "limit": top_k * 3,
+                **metadata_params,
+            }
+            if shortlist_ids:
+                vec_params["shortlist_ids"] = shortlist_ids
+            rows = await session.execute(vec_sql, vec_params)
             for i, row in enumerate(rows.fetchall()):
                 vector_ranks[row[0]] = (row[1], row[2] or {}, i + 1, float(row[3]))
         except Exception as e:

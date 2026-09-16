@@ -1,5 +1,9 @@
 """Model-registry UI API: manage the CONFIGURED models selection picks from."""
 
+# Isolate ambient provider/model env so the model registry / on-prem backfill
+# start from a clean provider environment (see tests/conftest.py).
+_ISOLATE_PROVIDER_ENV = True
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

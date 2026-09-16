@@ -1626,6 +1626,22 @@ async def _rerank_default_path(
     )
 
 
+def _pre_rerank_score(result: EngineRetrievalResult) -> float:
+    """The raw retrieval score before any default-path rerank rescored it.
+
+    The rerank stage stores the original score in ``source_metadata`` as
+    ``pre_rerank_score`` whenever it changed the score; when it did not, the
+    current score IS the pre-rerank score. This lets the low-confidence gate
+    reflect true retrieval strength independent of reranker availability.
+    """
+    meta = getattr(result, "source_metadata", None) or {}
+    raw = meta.get("pre_rerank_score", result.score)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(result.score)
+
+
 async def _maybe_low_confidence_fallback(
     context: RetrievalExecutionContext,
     request: RAGExecutionRequest,
@@ -1650,7 +1666,13 @@ async def _maybe_low_confidence_fallback(
     if not results or not bool(getattr(settings, "rag_low_confidence_fallback_enabled", True)):
         return results, None
     threshold = float(getattr(settings, "rag_low_confidence_threshold", 0.35))
-    confidence = retrieval_confidence([float(r.score) for r in results])
+    # Gate on the PRE-rerank retrieval confidence. Widening recovers a weak
+    # RETRIEVAL candidate pool by re-querying wider; reranking only reorders the
+    # existing pool, so it must not decide whether widening fires. Using the raw
+    # retrieval score (preserved by the rerank stage as ``pre_rerank_score`` when
+    # it rescored, else the score itself) also keeps the decision deterministic
+    # across pods regardless of whether a reranker model is loaded/reachable.
+    confidence = retrieval_confidence([_pre_rerank_score(r) for r in results])
     if confidence >= threshold:
         return results, None
 
@@ -1815,7 +1837,10 @@ def _canonical_result(
     from app.core.config import get_settings
     from app.rag.score_calibration import retrieval_confidence
 
-    confidence = retrieval_confidence([float(r.score) for r in results]) if results else 0.0
+    # Keyed off the PRE-rerank retrieval score (see _pre_rerank_score) so the
+    # surfaced confidence reflects true retrieval strength and stays deterministic
+    # across pods regardless of whether a reranker rescored the set.
+    confidence = retrieval_confidence([_pre_rerank_score(r) for r in results]) if results else 0.0
     threshold = float(getattr(get_settings(), "rag_low_confidence_threshold", 0.35))
     is_low = bool(results) and confidence < threshold
     return RAGExecutionResult(

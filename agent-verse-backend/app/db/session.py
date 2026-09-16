@@ -82,8 +82,16 @@ async def dispose_task_engine() -> None:
         loop.run_until_complete(dispose_task_engine())
         loop.close()
     """
+    global _engine, _session_factory
     if _engine is not None:
         await _engine.dispose()
+    # Drop the references so the NEXT event loop builds a fresh engine instead of
+    # reusing this one. A Celery worker runs each task on its own loop (see
+    # _run_async), and asyncpg connections are loop-bound: reusing a disposed
+    # engine across loops raises "got Future attached to a different loop". After
+    # disposing, resetting to None makes get_session_factory() rebuild per loop.
+    _engine = None
+    _session_factory = None
 
 
 @asynccontextmanager

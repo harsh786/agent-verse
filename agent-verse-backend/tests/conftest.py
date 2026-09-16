@@ -102,6 +102,69 @@ def _reset_process_embedding_cache():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_dept_memory_singleton():
+    """Reset the process-global DepartmentMemory singleton after each test.
+
+    ``app.memory.dept_memory._dept_memory`` is a module singleton whose
+    ``_db_factory`` is wired by the app lifespan (main.py). A test that runs the
+    lifespan with a fake/recording session factory (e.g. the gateway lifespan
+    tests) leaves that fake db on the singleton — monkeypatch does not undo the
+    ``set_db`` side-effect — which then leaks into any later test that lists
+    department memory. Restoring the singleton to its pristine, unwired state
+    after every test makes each test start as it does in isolation (the next
+    test's app re-wires the real factory), without mocking anything.
+    """
+    yield
+    try:
+        from app.memory.dept_memory import _dept_memory
+
+        _dept_memory._store.clear()
+        _dept_memory._db_factory = None
+    except Exception:
+        pass
+
+
+# Provider / model / embedding / on-prem env vars. When a real provider is
+# configured in the environment (e.g. NVIDIA keys in a dev shell), the app
+# auto-registers that configured model / backfills on-prem settings at startup,
+# which contaminates tests that assert on an empty or explicitly-seeded model
+# registry. Stripping them gives those tests the clean provider environment they
+# assume (the same one CI runs in) — this is env isolation, not mocking.
+_PROVIDER_ENV_VARS = (
+    "NVIDIA_API_KEY", "NVIDIA_BASE_URL", "NVIDIA_MODEL", "NVIDIA_EMBED_MODEL",
+    "NVIDIA_VISION_MODEL", "NVIDIA_AUDIO_MODEL",
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL",
+    "ANTHROPIC_API_KEY", "VOYAGE_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+    "DEFAULT_LLM_PROVIDER", "DEFAULT_MODEL", "DEFAULT_CLASSIFICATION_MODEL",
+    "DEFAULT_EXECUTION_MODEL", "DEFAULT_PLANNING_MODEL",
+    "DEFAULT_SUMMARIZATION_MODEL", "DEFAULT_VERIFICATION_MODEL",
+    "EMBEDDING_API_KEY", "EMBEDDING_BASE_URL", "EMBEDDING_MODEL", "EMBEDDING_DIM",
+    "ONPREM_ENABLED", "ONPREM_MODELS", "ONPREM_EMBEDDING_MODEL", "ONPREM_RERANKER_MODEL",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_env(request, monkeypatch):
+    """Strip ambient provider/model env for tests that opt in.
+
+    Opt in per-module with ``pytestmark = pytest.mark.usefixtures(...)`` — no, this
+    is autouse but only ACTS when the module sets ``_ISOLATE_PROVIDER_ENV = True``,
+    so it is a no-op for every other test and cannot disturb tests that rely on the
+    ambient provider env.
+    """
+    if getattr(request.module, "_ISOLATE_PROVIDER_ENV", False):
+        for var in _PROVIDER_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        try:
+            from app.core.config import get_settings
+
+            get_settings.cache_clear()
+        except Exception:
+            pass
+    yield
+
+
 @pytest.fixture
 def app():
     from app.main import create_app

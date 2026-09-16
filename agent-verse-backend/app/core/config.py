@@ -159,9 +159,14 @@ class Settings(BaseSettings):
     embedding_quantization: str = "none"
     # Binary first-stage retrieval: use the pgvector binary_quantize() Hamming
     # index (migration 0120) to shortlist candidates cheaply, then rerank the
-    # shortlist by full-precision cosine. Off by default (exact search unchanged).
+    # shortlist by full-precision cosine. Wired into engine.hybrid_search's vector
+    # leg for collections at/above the threshold; on any error (pgvector < 0.7,
+    # missing 0120 index, halfvec dims) it falls back to exact search, so enabling
+    # it can never degrade results — only trade a little recall for latency on very
+    # large collections. Off by default until recall is benchmarked per deployment.
     rag_binary_prefilter_enabled: bool = False
     rag_binary_prefilter_shortlist: int = 200  # candidates the Hamming stage keeps
+    rag_binary_prefilter_threshold: int = 50_000  # min collection chunks to prefilter
 
     # --- RAG default-path reranking (WS-10) -----------------------------------
     # Engage a reranking STAGE on the DEFAULT hybrid retrieval path (not only on
