@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
 
@@ -77,6 +78,123 @@ class LongTermMemoryStore:
 
     def list_all(self, *, tenant_ctx: TenantContext) -> list[LongTermMemory]:
         return list(self._memories.get(tenant_ctx.tenant_id, []))
+
+    # ── DB-backed CRUD (durable; used by the chat /memories API) ──────────────
+    # Mirrors store_async's persistence pattern; falls back to the in-memory
+    # cache when no DB factory is wired (tests / no-DB dev).
+
+    async def list_all_async(self, *, tenant_ctx: TenantContext) -> list[LongTermMemory]:
+        db = self._db_factory
+        if db is None:
+            return self.list_all(tenant_ctx=tenant_ctx)
+        try:
+            from sqlalchemy import text
+
+            async with db() as session:
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, content, memory_type, confidence, source_goal_id, tags "
+                            "FROM long_term_memory WHERE tenant_id = :tid "
+                            "ORDER BY created_at DESC"
+                        ),
+                        {"tid": tenant_ctx.tenant_id},
+                    )
+                ).mappings().all()
+            return [
+                LongTermMemory(
+                    content=r["content"],
+                    source_goal_id=r["source_goal_id"] or "",
+                    memory_type=r["memory_type"] or "domain_fact",
+                    confidence=float(r["confidence"] or 1.0),
+                    memory_id=str(r["id"]),
+                    tags=list(r["tags"] or []),
+                )
+                for r in rows
+            ]
+        except Exception as exc:
+            get_logger(__name__).warning("ltm_list_db_failed", error=str(exc))
+            return self.list_all(tenant_ctx=tenant_ctx)
+
+    async def delete_async(self, *, memory_id: str, tenant_ctx: TenantContext) -> bool:
+        self.delete(memory_id=memory_id, tenant_ctx=tenant_ctx)  # keep cache in sync
+        db = self._db_factory
+        if db is None:
+            return True
+        try:
+            from sqlalchemy import text
+
+            async with db() as session, session.begin():
+                res = await session.execute(
+                    text("DELETE FROM long_term_memory WHERE id = :id AND tenant_id = :tid"),
+                    {"id": memory_id, "tid": tenant_ctx.tenant_id},
+                )
+            return (res.rowcount or 0) > 0
+        except Exception as exc:
+            get_logger(__name__).warning("ltm_delete_db_failed", error=str(exc))
+            return False
+
+    async def update_content_async(
+        self, *, memory_id: str, content: str, tenant_ctx: TenantContext
+    ) -> LongTermMemory | None:
+        # cache
+        found: LongTermMemory | None = None
+        for m in self._memories.get(tenant_ctx.tenant_id, []):
+            if m.memory_id == memory_id:
+                m.content = content
+                found = m
+                break
+        db = self._db_factory
+        if db is None:
+            return found
+        try:
+            from sqlalchemy import text
+
+            async with db() as session, session.begin():
+                res = await session.execute(
+                    text(
+                        "UPDATE long_term_memory SET content = :c "
+                        "WHERE id = :id AND tenant_id = :tid"
+                    ),
+                    {"c": content, "id": memory_id, "tid": tenant_ctx.tenant_id},
+                )
+            if (res.rowcount or 0) == 0:
+                return None
+            return found or LongTermMemory(
+                content=content, source_goal_id="chat", memory_type="domain_fact",
+                memory_id=memory_id,
+            )
+        except Exception as exc:
+            get_logger(__name__).warning("ltm_update_db_failed", error=str(exc))
+            return found
+
+    async def create_user_memory_async(
+        self, *, content: str, tenant_ctx: TenantContext, embedder: Any = None
+    ) -> LongTermMemory:
+        """Create a durable user-authored memory (from the chat /memories API)."""
+        mem = LongTermMemory(content=content, source_goal_id="chat", memory_type="domain_fact")
+        await self.store_async(
+            memory=mem, tenant_ctx=tenant_ctx, db=self._db_factory, embedder=embedder
+        )
+        return mem
+
+    async def delete_all_async(self, *, tenant_ctx: TenantContext) -> int:
+        self._memories.pop(tenant_ctx.tenant_id, None)  # clear cache
+        db = self._db_factory
+        if db is None:
+            return 0
+        try:
+            from sqlalchemy import text
+
+            async with db() as session, session.begin():
+                res = await session.execute(
+                    text("DELETE FROM long_term_memory WHERE tenant_id = :tid"),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+            return res.rowcount or 0
+        except Exception as exc:
+            get_logger(__name__).warning("ltm_delete_all_db_failed", error=str(exc))
+            return 0
 
     def extract_from_goal(
         self,

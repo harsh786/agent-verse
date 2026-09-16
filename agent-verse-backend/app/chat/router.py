@@ -674,18 +674,42 @@ def _memory_to_dict(m: Any) -> dict[str, Any]:
     }
 
 
+def _ltm(request: Request) -> Any:
+    """The DB-backed LongTermMemoryStore from app.state (None in lifespan-less tests)."""
+    return getattr(request.app.state, "long_term_memory", None)
+
+
+def _ltm_to_dict(m: Any) -> dict[str, Any]:
+    return {
+        "id": m.memory_id,
+        "content": m.content,
+        "source": getattr(m, "memory_type", "chat"),
+        "confidence": getattr(m, "confidence", 1.0),
+        "created_at": getattr(m, "created_at", ""),
+    }
+
+
 @router.get("/memories")
 async def list_memories(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
-    memories = _memory_api.list_memories(tenant.tenant_id)
-    return {"memories": [_memory_to_dict(m) for m in memories]}
+    ltm = _ltm(request)
+    if ltm is not None:
+        mems = await ltm.list_all_async(tenant_ctx=tenant)
+        return {"memories": [_ltm_to_dict(m) for m in mems]}
+    return {"memories": [_memory_to_dict(m) for m in _memory_api.list_memories(tenant.tenant_id)]}
 
 
 @router.post("/memories", status_code=status.HTTP_201_CREATED)
 async def create_memory(body: CreateMemoryRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
-    m = _memory_api.create_memory(tenant.tenant_id, body.content)
-    return _memory_to_dict(m)
+    ltm = _ltm(request)
+    if ltm is not None:
+        embedder = getattr(request.app.state, "embedder", None)
+        m = await ltm.create_user_memory_async(
+            content=body.content, tenant_ctx=tenant, embedder=embedder
+        )
+        return _ltm_to_dict(m)
+    return _memory_to_dict(_memory_api.create_memory(tenant.tenant_id, body.content))
 
 
 @router.patch("/memories/{memory_id}")
@@ -693,6 +717,14 @@ async def update_memory(
     memory_id: str, body: UpdateMemoryRequest, request: Request
 ) -> dict[str, Any]:
     tenant = _tenant(request)
+    ltm = _ltm(request)
+    if ltm is not None:
+        m = await ltm.update_content_async(
+            memory_id=memory_id, content=body.content, tenant_ctx=tenant
+        )
+        if not m:
+            raise HTTPException(status_code=404, detail="Memory not found")
+        return _ltm_to_dict(m)
     m = _memory_api.update_memory(memory_id, tenant.tenant_id, body.content)
     if not m:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -702,7 +734,12 @@ async def update_memory(
 @router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_memory(memory_id: str, request: Request) -> None:
     tenant = _tenant(request)
-    ok = _memory_api.delete_memory(memory_id, tenant.tenant_id)
+    ltm = _ltm(request)
+    ok = (
+        await ltm.delete_async(memory_id=memory_id, tenant_ctx=tenant)
+        if ltm is not None
+        else _memory_api.delete_memory(memory_id, tenant.tenant_id)
+    )
     if not ok:
         raise HTTPException(status_code=404, detail="Memory not found")
 
@@ -719,7 +756,12 @@ async def delete_all_memories(
             detail="Set header X-Confirm-Gdpr-Delete: yes to confirm bulk deletion",
         )
     tenant = _tenant(request)
-    count = _memory_api.delete_all_memories(tenant.tenant_id)
+    ltm = _ltm(request)
+    count = (
+        await ltm.delete_all_async(tenant_ctx=tenant)
+        if ltm is not None
+        else _memory_api.delete_all_memories(tenant.tenant_id)
+    )
     return {"deleted": count}
 
 
