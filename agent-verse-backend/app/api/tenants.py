@@ -615,55 +615,125 @@ class InviteMemberRequest(BaseModel):
 
 @router.get("/me/members")
 async def list_members(request: Request) -> dict:
-    """List all members of the current tenant."""
+    """List all members of the current tenant (from tenant_memberships)."""
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
 
-    members = []
-    # Return mock data for now; Phase 1 will add real DB lookup
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        # No database wired (in-memory app): honestly report no persisted members.
+        return {"members": [], "tenant_id": tenant_ctx.tenant_id}
+
+    from sqlalchemy import select
+
+    from app.db.models.user import TenantMembership, User
+    from app.db.rls import sqlalchemy_rls_context
+
+    members: list[dict] = []
+    async with db() as session, session.begin(), sqlalchemy_rls_context(
+        session, tenant_ctx.tenant_id
+    ):
+        result = await session.execute(
+            select(TenantMembership, User)
+            .join(User, User.id == TenantMembership.user_id)
+            .where(TenantMembership.tenant_id == tenant_ctx.tenant_id)
+        )
+        for m, u in result.all():
+            members.append(
+                {
+                    "membership_id": m.id,
+                    "user_id": u.id,
+                    "email": u.email,
+                    "name": u.name,
+                    "role": m.role,
+                    "status": m.status,
+                    "invited_by": m.invited_by,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+            )
     return {"members": members, "tenant_id": tenant_ctx.tenant_id}
 
 
 @router.post("/me/members/invite")
 async def invite_member(body: InviteMemberRequest, request: Request) -> dict:
-    """Invite a user to the tenant."""
-    import uuid as _uuid
-    from datetime import UTC, datetime
-
+    """Invite a user to the tenant — persists a pending tenant_memberships row."""
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
 
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        # Be honest instead of returning a fabricated "invited": nothing was stored.
+        raise HTTPException(
+            status_code=503,
+            detail="Membership store unavailable (no database configured); invite not created.",
+        )
+
+    from sqlalchemy import select
+
+    from app.db.models.user import TenantMembership, User
+    from app.db.rls import sqlalchemy_rls_context
+
     try:
-        invitation_id = _uuid.uuid4().hex
-        invite_data = {
-            "invitation_id": invitation_id,
-            "email": body.email,
-            "role": getattr(body, "role", "member"),
-            "invited_at": datetime.now(UTC).isoformat(),
-            "status": "pending",
-            "tenant_id": tenant_ctx.tenant_id,
-        }
-        # Best-effort email notification (depends on SMTP/notification service config)
-        try:
-            _notif_svc = getattr(request.app.state, "notification_service", None)
-            if _notif_svc is not None and hasattr(_notif_svc, "send_invite"):
-                await _notif_svc.send_invite(invite_data)
-        except Exception:
-            pass  # Email delivery is best-effort
-        return {
-            "status": "invited",
-            "invitation_id": invitation_id,
-            "email": body.email,
-            "role": getattr(body, "role", "member"),
-            "tenant_id": tenant_ctx.tenant_id,
-            "message": "Invitation created. Email delivery depends on SMTP configuration.",
-        }
+        async with db() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_ctx.tenant_id
+        ):
+            user = (
+                await session.execute(select(User).where(User.email == body.email))
+            ).scalar_one_or_none()
+            if user is None:
+                # Global identity keyed by email; membership below scopes it to this tenant.
+                user = User(email=body.email)
+                session.add(user)
+                await session.flush()
+
+            membership = (
+                await session.execute(
+                    select(TenantMembership).where(
+                        TenantMembership.user_id == user.id,
+                        TenantMembership.tenant_id == tenant_ctx.tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if membership is None:
+                membership = TenantMembership(
+                    user_id=user.id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    role=body.role,
+                    status="pending",
+                )
+                session.add(membership)
+                await session.flush()
+            else:
+                # Re-inviting an existing member updates role and re-opens the invite.
+                membership.role = body.role
+                membership.status = "pending"
+            membership_id = membership.id
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # Best-effort email notification (depends on SMTP/notification service config).
+    try:
+        _notif_svc = getattr(request.app.state, "notification_service", None)
+        if _notif_svc is not None and hasattr(_notif_svc, "send_invite"):
+            await _notif_svc.send_invite(
+                {"email": body.email, "role": body.role, "tenant_id": tenant_ctx.tenant_id}
+            )
+    except Exception:
+        pass
+
+    return {
+        "status": "invited",
+        "invitation_id": membership_id,
+        "membership_id": membership_id,
+        "email": body.email,
+        "role": body.role,
+        "tenant_id": tenant_ctx.tenant_id,
+        "message": "Invitation persisted (pending). Email delivery depends on SMTP configuration.",
+    }
 
 
 # ── BYOK vault key management ─────────────────────────────────────────────────
@@ -689,13 +759,18 @@ async def set_byok_vault_key(
     except Exception as exc:
         raise HTTPException(400, f"Invalid key: {exc}") from exc
 
-    # In production: store the key reference securely, not the key itself
+    # Per-tenant BYOK is NOT yet persisted: the vault master key is process-global
+    # (from the VAULT_KEY_BASE64 env / _get_master_key), and there is no secure
+    # per-tenant key store to hold a customer key. Report that honestly rather than
+    # implying the key is now active for this tenant.
     return {
-        "status": "byok_key_accepted",
+        "status": "validated_not_persisted",
         "key_length": len(key_bytes),
+        "persisted": False,
         "message": (
-            "Your encryption key has been set for this session. "
-            "Configure VAULT_KEY_BASE64 env var for persistence."
+            "Key format validated (32 bytes) but NOT stored: per-tenant BYOK is not "
+            "yet implemented. Set the VAULT_KEY_BASE64 env var to configure the "
+            "process-wide vault master key."
         ),
     }
 

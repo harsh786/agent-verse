@@ -524,7 +524,8 @@ def test_create_ip_allowlist_db_exception() -> None:
 # ---------------------------------------------------------------------------
 
 def test_byok_vault_key_valid_32_bytes() -> None:
-    """Lines 476-485: Valid 32-byte key is accepted."""
+    """A valid 32-byte key validates but is honestly reported as NOT persisted
+    (per-tenant BYOK is not implemented; the vault key is process-global)."""
     key_32 = base64.b64encode(b"A" * 32).decode()
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
@@ -534,7 +535,8 @@ def test_byok_vault_key_valid_32_bytes() -> None:
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "byok_key_accepted"
+    assert body["status"] == "validated_not_persisted"
+    assert body["persisted"] is False
     assert body["key_length"] == 32
 
 
