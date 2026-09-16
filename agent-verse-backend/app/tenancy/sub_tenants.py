@@ -31,7 +31,7 @@ from typing import Any
 from sqlalchemy import Column, DateTime, Float, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
-from app.db.base import Base
+from app.db.models import Base
 from app.observability.logging import get_logger
 
 _log = get_logger(__name__)
