@@ -57,20 +57,32 @@ Backend
 - [ ] **A3. Chat client sends Bearer too** (`chat.ts` `headers()`), for SSO parity.
 
 ## Phase 3 — Route endpoints to the real (DB-backed) stores; kill facades
-- [ ] **E1. `/chat/memories` → `LongTermMemoryStore`** (Postgres+pgvector) instead of the in-memory
+- [x] **E1. `/chat/memories` → `LongTermMemoryStore`** (Postgres+pgvector) instead of the in-memory
   `MemoryAPI` singleton; wire via `app.state` (mirror how `api/templates.py` is DB-wired). Highest —
-  user-trusted data + a GDPR-delete that currently only clears a dict.
-- [ ] **E2. Chat `TemplateStore` → the DB-backed `api/templates` store**; **StateMachine registry →
-  DB**.
-- [ ] **D3/E3. `/chat/services` + OAuth connector completion**: stop returning `"connected"` for
-  integrations never registered/token-exchanged — either implement real MCP registration + per-
-  provider token exchange, or return an honest `pending`/`not_configured` status. *(large)*
-- [ ] **D4. Members / invite / BYOK vault-key** persist for real (or return honest `not_implemented`).
+  user-trusted data + a GDPR-delete that currently only clears a dict. *(done — commit 9fe61f53;
+  async DB CRUD + round-trip verified)*
+- [x] **E2. Chat `TemplateStore` → the DB-backed `api/templates` store** *(done — commit e849eba6:
+  personas persist under domain `chat_persona`, round-trip verified)*; **StateMachine registry → DB**
+  *(done — commit f3bbedcf: JSONB tables + migration e9ba31bb5029 + async CRUD, RLS, round-trip)*.
+- [x] **D3/E3. `/chat/services` + OAuth connector completion** *(done — commits 110ca476 backend +
+  8a12a6bb frontend)*: connections are `pending` until `POST /chat/services/{id}/complete` (the
+  OAuth callback) flips them to `connected`; list/connect surface the real status; the panel badge
+  is status-aware. Full per-provider token exchange remains the honest large follow-up.
+- [x] **D4. Members / invite / BYOK vault-key** *(done — commit 964a15f6)*: members/invite persist to
+  `tenant_memberships` under RLS (503 when no DB); BYOK reports `validated_not_persisted`.
 
 ## Phase 4 — Cleanup
-- [ ] Delete or wire the 3 orphaned chat components (`ChatDiff`, `ChatRichOutput`, `ChatStepCard`).
-- [ ] `/ingestion/documents` (always `[]`) and analytics `traces` (fabricated 500ms spans): back
-  with real data or label honestly.
+- [x] Delete or wire the 3 orphaned chat components (`ChatDiff`, `ChatRichOutput`, `ChatStepCard`).
+  *(done — commit c8699ed2: deleted; zero references, predate the canonical SSE event contract.)*
+- [x] `/ingestion/documents` (always `[]`) and analytics `traces` (fabricated 500ms spans): back
+  with real data or label honestly. *(done — commit badb6d84: traces now use real run-timeline
+  spans with an honest `cost_estimate` fallback that fabricates no timing; `/ingestion/documents`
+  labelled honestly as a stub — no `indexed_documents` table exists to query.)*
+
+## Security follow-up (from the background review of the D4 commit)
+- [x] `invite_member` privilege-escalation / cross-user-tamper / role-injection *(done — commit
+  ecf804b0: admin-only via `require_role`, role validated against `VALID_ROLES`, email validated;
+  regression tests added.)*
 
 ## Testing
 Each `[x]` ships with a test where logic changed (vitest for FE handlers/hooks, pytest for BE
