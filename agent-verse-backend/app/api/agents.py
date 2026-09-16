@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
 
 from app.intelligence.meta_agent import MetaAgentPlanner
@@ -249,8 +249,19 @@ class AgentStore:
 
         return self._data.get((tenant_ctx.tenant_id, agent_id))
 
-    async def list_async(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
-        """Read all agents for a tenant directly from DB; fall back to memory cache."""
+    async def list_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Read agents for a tenant directly from DB; fall back to memory cache.
+
+        When ``limit`` is given the query is paginated (LIMIT/OFFSET, newest first)
+        so the list endpoint never loads the whole table. ``limit=None`` keeps the
+        legacy unbounded behaviour for internal callers that need every row.
+        """
         if self._db is not None:
             try:
                 from sqlalchemy import select
@@ -262,7 +273,7 @@ class AgentStore:
                     self._db() as session,
                     sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
-                    result = await session.execute(
+                    stmt = (
                         select(Agent)
                         .where(
                             Agent.tenant_id == tenant_ctx.tenant_id,
@@ -270,7 +281,9 @@ class AgentStore:
                         )
                         .order_by(Agent.created_at.desc())
                     )
-                    rows = result.scalars().all()
+                    if limit is not None:
+                        stmt = stmt.limit(limit).offset(max(0, offset))
+                    rows = (await session.execute(stmt)).scalars().all()
 
                 agents = [self._row_to_dict(r) for r in rows]
                 # Refresh in-memory cache
@@ -282,7 +295,42 @@ class AgentStore:
 
                 get_logger(__name__).warning("agent_list_db_failed", error=str(exc))
 
-        return self.list_all(tenant_ctx=tenant_ctx)
+        rows_mem = self.list_all(tenant_ctx=tenant_ctx)
+        if limit is not None:
+            return rows_mem[offset : offset + limit]
+        return rows_mem
+
+    async def count_async(self, *, tenant_ctx: TenantContext) -> int:
+        """COUNT of a tenant's active agents (for limit enforcement) without
+        materialising every row."""
+        if self._db is not None:
+            try:
+                from sqlalchemy import func, select
+
+                from app.db.models.agent import Agent
+                from app.db.rls import sqlalchemy_rls_context
+
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
+                    return int(
+                        (
+                            await session.execute(
+                                select(func.count())
+                                .select_from(Agent)
+                                .where(
+                                    Agent.tenant_id == tenant_ctx.tenant_id,
+                                    Agent.is_active == True,  # noqa: E712
+                                )
+                            )
+                        ).scalar_one()
+                    )
+            except Exception as exc:
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning("agent_count_db_failed", error=str(exc))
+        return len(self.list_all(tenant_ctx=tenant_ctx))
 
     def list_all(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
         return [rec for (tid, _), rec in self._data.items() if tid == tenant_ctx.tenant_id]
@@ -612,10 +660,14 @@ async def _create_agent_record(
 
 
 @router.get("")
-async def list_agents(request: Request) -> list[dict[str, Any]]:
+async def list_agents(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
     tenant_ctx = _require_tenant(request)
     store = _agent_store(request)
-    return await store.list_async(tenant_ctx=tenant_ctx)
+    return await store.list_async(tenant_ctx=tenant_ctx, limit=limit, offset=offset)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -634,8 +686,8 @@ async def create_agent(request: Request, body: CreateAgentRequest) -> dict[str, 
     # FIX 6: use list_async (DB-backed) for accurate cross-replica limit check
     from app.tenancy.limits import check_agent_limit
 
-    existing = await store.list_async(tenant_ctx=tenant_ctx)
-    check_agent_limit(tenant_ctx, len(existing))
+    existing_count = await store.count_async(tenant_ctx=tenant_ctx)
+    check_agent_limit(tenant_ctx, existing_count)
 
     record: dict[str, Any] = {
         "name": body.name,
@@ -699,8 +751,8 @@ async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dic
     # FIX 4: enforce agent limit via DB-backed list_async
     from app.tenancy.limits import check_agent_limit
 
-    existing = await store.list_async(tenant_ctx=tenant_ctx)
-    check_agent_limit(tenant_ctx, len(existing))
+    existing_count = await store.count_async(tenant_ctx=tenant_ctx)
+    check_agent_limit(tenant_ctx, existing_count)
 
     # FIX 4: NL creation cannot directly produce fully-autonomous agents
     if config.autonomy_mode == "fully-autonomous":
