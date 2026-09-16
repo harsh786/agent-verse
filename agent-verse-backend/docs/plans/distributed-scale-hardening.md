@@ -20,16 +20,27 @@ observability ✓ · X14 frontend pagination ✓ · X18 SQL aggregation ✓.
 callers; `_rules` only holds deterministic code-seeded defaults (identical every
 pod/restart); real per-agent tool perms live in a DB table. No fix needed.
 
-**REMAINING (a read-path subagent failed on an account rate limit mid-task):**
-- **X6** rag/engine vector rework — REVERTED (it regressed a retrieval-widening
-  test); redo carefully: the 2048-dim halfvec cast (X6a) + BM25 corpus gating (X6b).
-- **X12-ANN** `long_term_memory` halfvec HNSW index + its query cast (pair together).
-- **X2** agent-credential store → DB (low severity: resolve isn't wired to auth, so
-  keys don't authenticate; created keys are lost on restart).
-- **X8** magentic_human_review / custom_roles / sub_tenant (minimal usage), X15-X17
-  (per-pod caches, RPA sessions, other in-memory app.state), and backend pagination
-  params (/agents, /schedules, /admin search, /governance/audit outcome+q — surfaced
-  by the frontend work).
+**ALSO DONE (2nd pass, all committed + cross-pod verified):**
+- **X6a** rag 2048-dim halfvec cast — EXPLAIN-proven it uses the HNSW index (91776b32).
+- **X12-ANN** long_term_memory halfvec HNSW index + query cast (3e56a975).
+- **X2** agent-credential store → DB (3e123255).
+- **X8** magentic human-review tokens → DB with atomic cross-pod one-time consume
+  (356daaf2).
+- **X17** department memory → DB (feff14ab); digital-twin set_db wired (526a56ca).
+- Backend pagination params: /agents (+count_async, 0affb653), /schedules, /admin
+  search, /governance/audit outcome+q pushed to SQL (8b9ca65b).
+
+**REMAINING (low-traffic feature stores / caches — not on the billions-of-requests
+critical path, which is complete):**
+- Persistence (full cycle each, low traffic): decision_intelligence version store,
+  learning_experiments (largely superseded by SelfOptimizerV2), marketplace v1
+  (legacy; v2 already DB-backed), KG access-control overrides, strategy_context
+  (per-goal transient), custom_roles (likely dead — roles write to user_roles),
+  sub_tenant (minimal API).
+- **X6b** app-side BM25 corpus gating (perf, not correctness — current path works).
+- **X15** per-pod caches needing pub/sub (policy-list registry read-consistency;
+  SemanticCache L1 rebuilds; feature flags have no runtime toggle) — acceptable today.
+- **X16** RPA browser sessions per-pod — mitigated (a whole goal runs in one worker).
 
 Prod topology: **3 backend + 3 worker replicas; beat = 1 replica** (helm values). So the
 risk is *overlapping runs across the 3 workers*, not multiple beats.
