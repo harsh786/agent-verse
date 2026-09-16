@@ -56,8 +56,14 @@ def _tenant_to_dict(t: Any) -> dict[str, str]:
 
 
 @router.get("/tenants", dependencies=[Depends(_require_admin)])
-async def list_tenants(request: Request, limit: int = 50, offset: int = 0) -> dict[str, Any]:
-    """List all tenants with basic stats."""
+async def list_tenants(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """List all tenants with basic stats. Optional ``search`` filters by name/email/id
+    server-side (so it covers all tenants, not just the current page)."""
     app_state = request.app.state
     tenant_svc = getattr(app_state, "tenant_service", None)
 
@@ -66,6 +72,15 @@ async def list_tenants(request: Request, limit: int = 50, offset: int = 0) -> di
 
     try:
         tenants = list(getattr(tenant_svc, "_tenants", {}).values())
+        if search:
+            needle = search.lower()
+            tenants = [
+                t
+                for t in tenants
+                if needle in str(t.get("name", "")).lower()
+                or needle in str(t.get("email", "")).lower()
+                or needle in str(t.get("tenant_id", "")).lower()
+            ]
         total = len(tenants)
         page = tenants[offset : offset + limit]
         return {

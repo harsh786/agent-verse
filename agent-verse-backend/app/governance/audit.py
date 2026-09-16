@@ -181,6 +181,8 @@ class AuditLog:
         offset: int = 0,
         start_time: str | None = None,
         end_time: str | None = None,
+        outcome: str | None = None,
+        q: str | None = None,
     ) -> list[AuditEvent]:
         """Read audit events directly from PostgreSQL with full filter + pagination.
 
@@ -220,6 +222,17 @@ class AuditLog:
             if end_time:
                 conditions.append("created_at <= :end_time::timestamptz")
                 params["end_time"] = end_time
+            if outcome:
+                conditions.append("outcome = :outcome")
+                params["outcome"] = outcome
+            if q:
+                # Server-side free-text over the human-meaningful columns, so search
+                # covers the WHOLE dataset (not just one page the client loaded).
+                conditions.append(
+                    "(note ILIKE :q OR tool_name ILIKE :q OR goal_id ILIKE :q "
+                    "OR outcome ILIKE :q)"
+                )
+                params["q"] = f"%{q}%"
 
             where_clause = " AND ".join(conditions)
             sql = f"""

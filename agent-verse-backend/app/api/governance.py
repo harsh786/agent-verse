@@ -843,11 +843,14 @@ async def query_audit(
     offset: int = 0,
     start_time: str | None = None,
     end_time: str | None = None,
+    outcome: str | None = None,
+    q: str | None = None,
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     log = _audit(request)
 
-    # Use direct DB query for accuracy + pagination support
+    # Use direct DB query for accuracy + pagination support. outcome/q are filtered
+    # in SQL so search/filter covers the whole dataset, not just a loaded page.
     events = await log.query_db(
         tenant_ctx=tenant_ctx,
         goal_id=goal_id,
@@ -856,6 +859,8 @@ async def query_audit(
         offset=offset,
         start_time=start_time,
         end_time=end_time,
+        outcome=outcome,
+        q=q,
     )
 
     return [

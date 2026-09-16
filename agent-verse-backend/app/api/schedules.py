@@ -123,10 +123,15 @@ def _record_to_dict(rec: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_schedules(request: Request) -> list[dict[str, Any]]:
+async def list_schedules(
+    request: Request,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    return [_record_to_dict(r) for r in store.list_all(tenant_ctx=tenant_ctx)]
+    records = store.list_all(tenant_ctx=tenant_ctx)
+    return [_record_to_dict(r) for r in records[offset : offset + limit]]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
