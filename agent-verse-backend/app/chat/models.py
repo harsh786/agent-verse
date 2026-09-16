@@ -82,8 +82,13 @@ class ChatMessage(Base):
     tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False)  # user|assistant|system
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    metadata: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    # NOTE: the Python attribute is named ``metadata_`` (not ``metadata``) because
+    # ``metadata`` is reserved by SQLAlchemy's Declarative API (it collides with
+    # ``Base.metadata``, the schema MetaData object) and defining a column with
+    # that attribute name raises ``InvalidRequestError`` at class-definition time.
+    # The underlying DB column is still named "metadata" (see migrations 0105/0130).
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
     branch_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     parent_message_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
