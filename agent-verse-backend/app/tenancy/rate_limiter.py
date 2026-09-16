@@ -18,7 +18,10 @@ import time
 import uuid
 from typing import Any
 
+from app.observability.logging import get_logger
 from app.tenancy.store import TenantScopedStore
+
+_log = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Atomic Lua script — TOCTOU-safe rate-limit check+record in a single round-trip
@@ -104,8 +107,11 @@ class SlidingWindowRateLimiter:
                 member,
             )
             return bool(result[0]), int(result[1]), reset_at
-        except Exception:
-            pass  # fall through to non-atomic fallback
+        except Exception as exc:
+            # Redis (shared, cluster-wide) rate limiting degraded to the per-pod
+            # fallback — with N pods this enforces up to Nx the intended global
+            # limit. Log it so the degradation is visible instead of silent.
+            _log.warning("rate_limiter_redis_degraded_to_per_pod", error=str(exc)[:200])
 
         # ── Fallback: 3-op sequence with asyncio.Lock for in-process safety ──
         lock = self._get_lock(endpoint)
@@ -175,8 +181,10 @@ class RateLimiter:
                     member,
                 )
                 return bool(result[0])
-            except Exception:
-                pass  # fall through to in-memory fallback
+            except Exception as exc:
+                # Degraded to the per-pod window (up to Nx the global limit across
+                # pods) — surface it rather than failing silently.
+                _log.warning("rate_limiter_redis_degraded_to_per_pod", error=str(exc)[:200])
 
         # ── In-memory fallback with asyncio.Lock ─────────────────────────────
         lock = self._get_lock(tenant_id)
