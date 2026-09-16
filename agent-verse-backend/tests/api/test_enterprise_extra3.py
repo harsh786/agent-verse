@@ -437,56 +437,46 @@ def test_search_templates_v2() -> None:
 
 # ---------------------------------------------------------------------------
 # Lines 545-549 — get_simulation_available_tools
-# NOTE: The route /simulation/{run_id} (line 172) is registered before
-# /simulation/available-tools (line 241) in enterprise.py. FastAPI matches
-# routes in registration order for same-method paths, so "available-tools"
-# is captured as run_id → get_simulation returns 404. We test the handler
-# directly by calling via unit-test approach (verifies branch behavior).
+# NOTE: GET /simulation/available-tools is registered BEFORE GET
+# /simulation/{run_id} in enterprise.py specifically so the static path wins
+# route matching (FastAPI/Starlette match in registration order, and a
+# parametric route registered first would otherwise swallow this one — see
+# the comment above get_simulation_available_tools in app/api/enterprise.py).
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Lines 545-549 — get_simulation_available_tools
-# NOTE: Route /simulation/{run_id} (line 172) is registered before
-# /simulation/available-tools (line 241) in enterprise.py, so FastAPI
-# matches the parametric route first (Starlette routes in registration order).
-# We cover lines 545-549 via the function import path.
-# ---------------------------------------------------------------------------
 
 def test_get_simulation_available_tools_with_mcp_client() -> None:
-    """Lines 545-549: mcp_client tools returned — verified via mock function call."""
-    # Route is shadowed, so verify function behavior via direct import check
-    from app.api.enterprise import get_simulation_available_tools
-    assert callable(get_simulation_available_tools)
-    # The function exists; the mock below verifies response format
+    """Lines 545-549: mcp_client tools are discovered and returned."""
     tools_raw = [{"name": "jira.search", "description": "Search", "server_id": "s1"}]
-    mcp_mock = MagicMock()
-    mcp_mock.discover_all_tools = AsyncMock(return_value=tools_raw)
-    # Basic sanity
-    assert len(tools_raw) == 1
-
-
-def test_get_simulation_available_tools_without_mcp_client() -> None:
-    """Lines 545-549: no mcp_client path — simulation/{run_id} shadows the route."""
-    # With default simulation mock (non-None run), /simulation/available-tools
-    # actually hits get_simulation with run_id="available-tools" → 200 sim data.
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.get("/enterprise/simulation/available-tools", headers=_headers())
-    # Route is shadowed → returns get_simulation result (has run_id, not total)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "run_id" in data  # confirms get_simulation is being hit
-
-
-def test_get_simulation_available_tools_mcp_exception() -> None:
-    """Lines 545-549: get_simulation_available_tools via simulation route shadow."""
     mcp_client = MagicMock()
-    mcp_client.discover_all_tools = AsyncMock(side_effect=RuntimeError("mcp down"))
+    mcp_client.discover_all_tools = AsyncMock(return_value=tools_raw)
 
-    # Route shadowed → still hits get_simulation
     client = TestClient(_make_app(mcp_client=mcp_client), raise_server_exceptions=False)
     resp = client.get("/enterprise/simulation/available-tools", headers=_headers())
     assert resp.status_code == 200
-    assert "run_id" in resp.json()
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["tools"] == [{"name": "jira.search", "description": "Search", "server_id": "s1"}]
+
+
+def test_get_simulation_available_tools_without_mcp_client() -> None:
+    """Lines 545-549: no mcp_client configured — returns an empty tool list."""
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.get("/enterprise/simulation/available-tools", headers=_headers())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"tools": [], "total": 0}
+
+
+def test_get_simulation_available_tools_mcp_exception() -> None:
+    """Lines 545-549: mcp_client.discover_all_tools raising is swallowed, not a 500."""
+    mcp_client = MagicMock()
+    mcp_client.discover_all_tools = AsyncMock(side_effect=RuntimeError("mcp down"))
+
+    client = TestClient(_make_app(mcp_client=mcp_client), raise_server_exceptions=False)
+    resp = client.get("/enterprise/simulation/available-tools", headers=_headers())
+    assert resp.status_code == 200
+    assert resp.json() == {"tools": [], "total": 0}
 
 
 # ---------------------------------------------------------------------------

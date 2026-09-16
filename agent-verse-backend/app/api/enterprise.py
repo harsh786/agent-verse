@@ -183,6 +183,34 @@ async def run_simulation(request: Request, body: SimulationRequest) -> dict[str,
     }
 
 
+@router.get("/simulation/available-tools")
+async def get_simulation_available_tools(request: Request) -> dict[str, Any]:
+    """Return MCP tools available for mock configuration in simulation.
+
+    NOTE: this route MUST be registered before GET /simulation/{run_id} below —
+    FastAPI matches routes in registration order, and a static path like
+    "available-tools" would otherwise be swallowed by the {run_id} path
+    parameter, producing a spurious 404 "Simulation run not found".
+    """
+    ctx = _require_tenant(request)
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+    tools: list[dict[str, Any]] = []
+    if mcp_client is not None:
+        try:
+            raw_tools = await mcp_client.discover_all_tools(tenant_ctx=ctx)
+            for t in raw_tools:
+                tools.append(
+                    {
+                        "name": t.get("name", "") if isinstance(t, dict) else str(t),
+                        "description": t.get("description", "") if isinstance(t, dict) else "",
+                        "server_id": t.get("server_id", "") if isinstance(t, dict) else "",
+                    }
+                )
+        except Exception:
+            pass
+    return {"tools": tools, "total": len(tools)}
+
+
 @router.get("/simulation/{run_id}")
 async def get_simulation(request: Request, run_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
@@ -252,28 +280,6 @@ async def stream_simulation(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.get("/simulation/available-tools")
-async def get_simulation_available_tools(request: Request) -> dict[str, Any]:
-    """Return MCP tools available for mock configuration in simulation."""
-    ctx = _require_tenant(request)
-    mcp_client = getattr(request.app.state, "mcp_client", None)
-    tools: list[dict[str, Any]] = []
-    if mcp_client is not None:
-        try:
-            raw_tools = await mcp_client.discover_all_tools(tenant_ctx=ctx)
-            for t in raw_tools:
-                tools.append(
-                    {
-                        "name": t.get("name", "") if isinstance(t, dict) else str(t),
-                        "description": t.get("description", "") if isinstance(t, dict) else "",
-                        "server_id": t.get("server_id", "") if isinstance(t, dict) else "",
-                    }
-                )
-        except Exception:
-            pass
-    return {"tools": tools, "total": len(tools)}
 
 
 # --- Red Team ---

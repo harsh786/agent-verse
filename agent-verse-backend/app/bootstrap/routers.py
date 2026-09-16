@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from app.api.a2a import router as a2a_router
 from app.api.admin import router as admin_router
+from app.api.agent_credentials_api import router as agent_credentials_router
 from app.api.agent_directory import router as agent_directory_router
 from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
@@ -207,6 +208,10 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     logger.info("google_oauth_router_registered")
     # Agents, governance, knowledge, scheduling
     app.include_router(agents_router)
+    # Per-agent credential management (Security Center → Agent Identity panel).
+    # This router was previously defined but never mounted, so
+    # GET/POST /agents/{agent_id}/keys 404'd for all clients.
+    app.include_router(agent_credentials_router)
     app.include_router(governance_router)
     app.include_router(grants_router)
     app.include_router(knowledge_router)
