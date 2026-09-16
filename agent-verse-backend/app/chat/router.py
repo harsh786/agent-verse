@@ -818,7 +818,9 @@ async def list_services(request: Request) -> dict[str, Any]:
                 "url": s.url,
                 "scopes": s.scopes,
                 "status": s.status,
-                "connected_at": s.connected_at.isoformat(),
+                "created_at": s.created_at.isoformat(),
+                # None while the OAuth flow is still pending — honest "not connected yet".
+                "connected_at": s.connected_at.isoformat() if s.connected_at else None,
             }
             for s in services
         ]
@@ -829,9 +831,26 @@ async def list_services(request: Request) -> dict[str, Any]:
 async def connect_service(body: ConnectServiceRequest, request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     result = _services_api.initiate_connection(tenant.tenant_id, body.name, body.url, body.scopes)
+    # status is "pending" — the connector is not usable until the OAuth callback
+    # hits /services/{id}/complete. Surface that so the UI can show "Authorizing…".
     return {
         "service_id": result["service_id"],
         "oauth_url": result["oauth_url"],
+        "status": "pending",
+    }
+
+
+@router.post("/services/{service_id}/complete")
+async def complete_service(service_id: str, request: Request) -> dict[str, Any]:
+    """OAuth callback landing — flips a pending connector to connected."""
+    tenant = _tenant(request)
+    svc = _services_api.complete_connection(service_id, tenant.tenant_id)
+    if svc is None:
+        raise HTTPException(status_code=404, detail="Service not found")
+    return {
+        "id": svc.id,
+        "status": svc.status,
+        "connected_at": svc.connected_at.isoformat() if svc.connected_at else None,
     }
 
 

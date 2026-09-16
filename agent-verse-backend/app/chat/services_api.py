@@ -28,8 +28,14 @@ class ConnectedService:
     name: str
     url: str
     scopes: list[str] = field(default_factory=list)
-    status: str = "connected"  # connected | disconnected | error
-    connected_at: datetime = field(default_factory=_now)
+    # pending  → connection initiated, OAuth token exchange NOT yet completed
+    # connected → OAuth completed (complete_connection called by the callback)
+    # error / disconnected
+    status: str = "pending"  # pending | connected | disconnected | error
+    created_at: datetime = field(default_factory=_now)
+    # Only set once the OAuth flow actually completes — None while pending, so the
+    # UI never shows a "connected since" time for a connection that never finished.
+    connected_at: datetime | None = None
 
 
 class ServicesAPI:
@@ -51,19 +57,32 @@ class ServicesAPI:
         url: str,
         scopes: list[str] | None = None,
     ) -> dict:
-        """Register a service and return an OAuth setup URL."""
+        """Register a service in the *pending* state and return an OAuth setup URL.
+
+        The connector is NOT usable until the OAuth flow completes and
+        ``complete_connection`` is called by the callback — status stays
+        ``pending`` until then rather than falsely reporting ``connected``.
+        """
         svc = ConnectedService(
             id=_hex(),
             tenant_id=tenant_id,
             name=name,
             url=url,
             scopes=scopes or [],
-            status="connected",
+            status="pending",
         )
         self._services[svc.id] = svc
-        # In production: call MCPRegistry.register() then build PKCE OAuth URL
         oauth_url = f"https://agentverse.app/oauth/mcp?service_id={svc.id}"
         return {"service_id": svc.id, "oauth_url": oauth_url, "service": svc}
+
+    def complete_connection(self, service_id: str, tenant_id: str) -> ConnectedService | None:
+        """Mark a pending connection connected — called after OAuth token exchange."""
+        svc = self._services.get(service_id)
+        if not svc or svc.tenant_id != tenant_id:
+            return None
+        svc.status = "connected"
+        svc.connected_at = _now()
+        return svc
 
     def disconnect_service(self, service_id: str, tenant_id: str) -> bool:
         svc = self._services.get(service_id)

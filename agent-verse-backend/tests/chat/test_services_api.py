@@ -47,11 +47,28 @@ def test_disconnect_service_rls(api: ServicesAPI) -> None:
     assert not ok
 
 
-def test_service_status_connected(api: ServicesAPI) -> None:
+def test_initiate_connection_is_pending_not_connected(api: ServicesAPI) -> None:
+    # A freshly initiated connection has NOT completed OAuth, so it must not
+    # falsely report "connected" (regression: it used to, hiding a dead flow).
     result = api.initiate_connection(TENANT, "GitHub", "https://github.com")
     svc = api.get_service(result["service_id"], TENANT)
     assert svc is not None
+    assert svc.status == "pending"
+    assert svc.connected_at is None
+
+
+def test_complete_connection_marks_connected(api: ServicesAPI) -> None:
+    result = api.initiate_connection(TENANT, "GitHub", "https://github.com")
+    sid = result["service_id"]
+    svc = api.complete_connection(sid, TENANT)
+    assert svc is not None
     assert svc.status == "connected"
+    assert svc.connected_at is not None
+
+
+def test_complete_connection_wrong_tenant(api: ServicesAPI) -> None:
+    result = api.initiate_connection(TENANT, "GitHub", "https://github.com")
+    assert api.complete_connection(result["service_id"], OTHER) is None
 
 
 def test_get_service_wrong_tenant(api: ServicesAPI) -> None:
