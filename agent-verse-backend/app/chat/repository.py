@@ -9,6 +9,7 @@ otherwise see other tenants' rows).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
@@ -24,18 +25,26 @@ _DEFAULT_MESSAGE_LIMIT = 1000
 _DEFAULT_SESSION_LIMIT = 500
 
 
-def _decode_cursor(cursor: str | None) -> tuple[str, str] | None:
+def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
     """Split an opaque ``"<timestamp_iso>|<id>"`` keyset cursor into its parts.
 
-    Returns None for a missing/malformed cursor so the caller falls back to the
-    first (newest) page rather than raising on untrusted input.
+    The timestamp is parsed to a timezone-aware ``datetime`` (asyncpg binds a
+    ``timestamptz`` parameter from a datetime, not a str). Returns None for a
+    missing/malformed cursor so the caller falls back to the first (newest) page
+    rather than raising on untrusted input.
     """
     if not cursor or "|" not in cursor:
         return None
     ts, _, row_id = cursor.partition("|")
     if not ts or not row_id:
         return None
-    return ts, row_id
+    try:
+        parsed = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed, row_id
 
 
 # Columns callers may update on a session (allowlist — never interpolate arbitrary keys).
