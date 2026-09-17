@@ -20,7 +20,7 @@ const TABS = [
 
 type TabId = typeof TABS[number]['id'];
 
-function SecurityScore({ score }: { score: number }) {
+export function SecurityScore({ score }: { score: number }) {
   const isGood    = score >= 80;
   const isMedium  = score >= 60;
   const color     = isGood ? 'text-verified-green' : isMedium ? 'text-risk-amber' : 'text-mission-red';

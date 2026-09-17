@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import SecurityCenterPage from '../SecurityCenterPage';
+import SecurityCenterPage, { SecurityScore } from '../SecurityCenterPage';
 
 vi.mock('react-router-dom', async () => ({
   ...(await vi.importActual('react-router-dom')),
@@ -86,5 +86,28 @@ describe('SecurityCenterPage', () => {
     fireEvent.click(identityTab);
     const tabContent = screen.getByTestId('tab-content');
     expect(within(tabContent).getByText('Per-Agent API Keys')).toBeTruthy();
+  });
+});
+
+describe('SecurityScore', () => {
+  it('renders the "good" (green) styling for a score >= 80', () => {
+    const { container } = render(<SecurityScore score={92} />);
+    expect(screen.getByText('92')).toBeTruthy();
+    expect(container.querySelector('.text-verified-green')).toBeTruthy();
+    expect(container.querySelector('.bg-verified-green\\/15')).toBeTruthy();
+  });
+
+  it('renders the "medium" (amber) styling for 60 <= score < 80', () => {
+    const { container } = render(<SecurityScore score={78} />);
+    expect(screen.getByText('78')).toBeTruthy();
+    expect(container.querySelector('.text-risk-amber')).toBeTruthy();
+    expect(container.querySelector('.bg-risk-amber\\/15')).toBeTruthy();
+  });
+
+  it('renders the "poor" (red) styling for a score < 60', () => {
+    const { container } = render(<SecurityScore score={41} />);
+    expect(screen.getByText('41')).toBeTruthy();
+    expect(container.querySelector('.text-mission-red')).toBeTruthy();
+    expect(container.querySelector('.bg-mission-red\\/15')).toBeTruthy();
   });
 });
