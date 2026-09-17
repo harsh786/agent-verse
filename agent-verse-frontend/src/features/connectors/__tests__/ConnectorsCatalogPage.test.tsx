@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -14,15 +14,32 @@ vi.mock('react-router-dom', async (importOriginal) => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
+// Stub out OAuthPopupButton so we can trigger its onSuccess callback directly
+// without driving the real popup/postMessage OAuth flow.
+vi.mock('../OAuthPopupButton', () => ({
+  OAuthPopupButton: ({
+    connectorName,
+    onSuccess,
+  }: {
+    connectorName: string;
+    onSuccess?: () => void;
+  }) => (
+    <button type="button" onClick={() => onSuccess?.()}>
+      oauth-connect-{connectorName}
+    </button>
+  ),
+}));
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const utils = render(
     <QueryClientProvider client={qc}>
       <MemoryRouter>
         <ConnectorsCatalogPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { qc, ...utils };
 }
 
 const RICH_CATALOG_ENTRIES = [
@@ -61,6 +78,21 @@ const RICH_CATALOG_ENTRIES = [
     connector_type: 'github',
   },
 ];
+
+const OAUTH_ENTRY = {
+  name: 'slack',
+  display_name: 'Slack',
+  description: 'Slack — team messaging and notifications',
+  auth_type: 'oauth_ac',
+  default_url: 'https://slack.com',
+  icon: 'slack',
+  category: 'communication',
+  auth_fields: [],
+  has_builtin: false,
+  builtin_server_id: null,
+  is_configured: false,
+  connector_type: 'slack',
+};
 
 beforeEach(() => {
   sessionStorage.clear();
@@ -195,5 +227,102 @@ describe('ConnectorsCatalogPage', () => {
     renderPage();
     await screen.findByText('Jira');
     expect(screen.getByRole('button', { name: /All/i })).toBeInTheDocument();
+  });
+
+  test('shows error state when the catalog request fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
+    renderPage();
+    expect(
+      await screen.findByText(/Failed to load catalog\. Make sure the backend is running\./i),
+    ).toBeInTheDocument();
+  });
+
+  test('toggles the built-in explanation callout', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(RICH_CATALOG_ENTRIES), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderPage();
+    await screen.findByText('Jira');
+
+    expect(screen.queryByText(/Built-in connectors run inside AgentVerse/i)).not.toBeInTheDocument();
+
+    const infoToggle = screen.getByRole('button', { name: /What is Built-in\?/i });
+    await userEvent.click(infoToggle);
+    expect(screen.getByText(/Built-in connectors run inside AgentVerse/i)).toBeInTheDocument();
+
+    await userEvent.click(infoToggle);
+    expect(screen.queryByText(/Built-in connectors run inside AgentVerse/i)).not.toBeInTheDocument();
+  });
+
+  test('built-in only filter hides non-builtin connectors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify([...RICH_CATALOG_ENTRIES, OAUTH_ENTRY]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    renderPage();
+    await screen.findByText('Jira');
+    expect(screen.getByText('Slack')).toBeInTheDocument();
+
+    const builtinToggle = screen.getByRole('button', { name: /Built-in only/i });
+    await userEvent.click(builtinToggle);
+    expect(builtinToggle).toHaveAttribute('aria-pressed', 'true');
+
+    await waitFor(() => {
+      expect(screen.queryByText('Slack')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Jira')).toBeInTheDocument();
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
+  });
+
+  test('category button filters entries down to that category', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify([...RICH_CATALOG_ENTRIES, OAUTH_ENTRY]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    renderPage();
+    await screen.findByText('Jira');
+
+    const categoryGroup = screen.getByRole('group', { name: /Filter by category/i });
+    const devToolsButton = within(categoryGroup).getByRole('button', { name: /Dev Tools/i });
+    await userEvent.click(devToolsButton);
+    expect(devToolsButton).toHaveAttribute('aria-pressed', 'true');
+
+    await waitFor(() => {
+      expect(screen.queryByText('Jira')).not.toBeInTheDocument();
+      expect(screen.queryByText('Slack')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('GitHub')).toBeInTheDocument();
+  });
+
+  test('"My Connectors" button navigates to /connectors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(RICH_CATALOG_ENTRIES), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderPage();
+    await screen.findByText('Jira');
+    await userEvent.click(screen.getByRole('button', { name: /My Connectors/i }));
+    expect(mockNavigate).toHaveBeenCalledWith('/connectors');
+  });
+
+  test('renders an OAuth connect button for oauth_ac connectors and invalidates queries on success', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify([OAUTH_ENTRY]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const { qc } = renderPage();
+    await screen.findByText('Slack');
+
+    const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
+    const oauthButton = screen.getByRole('button', { name: /oauth-connect-slack/i });
+    await userEvent.click(oauthButton);
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['connectors-catalog'] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['connectors'] });
   });
 });
