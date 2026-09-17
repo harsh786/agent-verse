@@ -74,7 +74,7 @@ function makeEvalFetch({
   simulationImpl = null as ((url: string, init?: RequestInit) => Promise<Response>) | null,
 } = {}) {
   let evalCallIndex = 0;
-  let redTeamResolvers: Array<() => void> = [];
+  const redTeamResolvers: Array<() => void> = [];
 
   const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -327,6 +327,22 @@ describe('EvalPage branches', () => {
       const classNames = cells.map((c) => c.className).join(' ');
       expect(classNames).toMatch(/text-emerald-400|text-amber-400|text-red-400/);
     });
+
+    test('falls back to "#N" for a history row with no recorded_at', async () => {
+      const history = [
+        { goal_id: 'g0', scores: makeEvalScore(), average_score: 0.6 },
+        { goal_id: 'g0', scores: makeEvalScore(), average_score: 0.65, recorded_at: new Date().toISOString() },
+      ];
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+
+      makeEvalFetch({ goals: [] });
+      renderPage();
+
+      await waitFor(() => {
+        expect(screen.getByText(/eval history \(2 runs\)/i)).toBeInTheDocument();
+      });
+      expect(screen.getByText('#1')).toBeInTheDocument();
+    });
   });
 
   // ─── ScorecardTab: score delta ──────────────────────────────────────────────
@@ -449,6 +465,26 @@ describe('EvalPage branches', () => {
       });
     });
 
+    test('a status other than "complete"/"error*" falls back to the neutral indigo styling', async () => {
+      const events = [
+        JSON.stringify({ type: 'simulation_step', step: 1, tool: 'some:tool' }),
+        JSON.stringify({ type: 'simulation_complete', status: 'partial' }),
+      ];
+      const simulationImpl = async () =>
+        new Response(sseBody(events), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+
+      makeEvalFetch({ simulationImpl });
+      renderPage();
+      await userEvent.click(screen.getByRole('tab', { name: /simulation/i }));
+      await userEvent.type(screen.getByPlaceholderText(/describe the goal to simulate/i), 'Partial run');
+      await userEvent.click(screen.getByRole('button', { name: /run simulation/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText('partial')).toBeInTheDocument();
+      });
+      expect(screen.getByText('partial').className).toMatch(/text-indigo-400/);
+    });
+
     test('network error (fetch rejects) sets sim status to "error: <message>"', async () => {
       const simulationImpl = async () => {
         throw new Error('network down');
@@ -568,6 +604,20 @@ describe('EvalPage branches', () => {
 
       expect(screen.getByText('BLOCKED')).toBeInTheDocument();
       expect(screen.getAllByText('LEAKED').length).toBeGreaterThan(0); // failed + error both render LEAKED
+    });
+
+    test('renders the attack_vector line when present', async () => {
+      const redTeamData = {
+        total: 1, passed: 0, failed: 1,
+        results: [{ case_id: 'c-av', name: 'Vector case', status: 'failed', attack_vector: 'SQL injection attempt' }],
+      };
+      makeEvalFetch({ redTeamData });
+      renderPage();
+      await userEvent.click(screen.getByRole('tab', { name: /red team/i }));
+      await userEvent.click(screen.getByRole('button', { name: /launch red team suite/i }));
+
+      await waitFor(() => expect(screen.getByText('Vector case')).toBeInTheDocument());
+      expect(screen.getByText('SQL injection attempt')).toBeInTheDocument();
     });
 
     test('omits the risk badge when risk_level is absent', async () => {
