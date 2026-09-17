@@ -151,7 +151,9 @@ class OutboundNotificationRouter:
             is_critical = notification.severity == NotificationSeverity.CRITICAL
 
             if in_quiet and not (is_critical and route.override_quiet_for_critical):
-                _log.debug("notification.suppressed_quiet_hours", event=notification.event_type)
+                _log.debug(
+                    "notification.suppressed_quiet_hours", event_type=notification.event_type
+                )
                 return []
 
             notified = []
@@ -165,7 +167,9 @@ class OutboundNotificationRouter:
                         break  # Stop at first success for non-critical
 
             if not notified:
-                _log.warning("notification.all_channels_failed", event=notification.event_type)
+                _log.warning(
+                    "notification.all_channels_failed", event_type=notification.event_type
+                )
 
             return notified
 
