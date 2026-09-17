@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { GoalDetailPage } from './GoalDetailPage';
+import { useToastStore } from '@/stores/toast';
 
 const goalStreamState = vi.hoisted(() => ({
   current: {
@@ -1009,5 +1010,357 @@ describe('GoalDetailPage — additional coverage', () => {
     renderGoalDetailPage();
     await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
     expect(await screen.findByText(/no live events captured/i)).toBeInTheDocument();
+  });
+});
+
+// ── Further breadth coverage: helpers, SSE callbacks, misc handlers ──────────
+
+describe('GoalDetailPage — helper/handler branches', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem('av_api_key', 'tenant-key');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('shows the elapsed timer for an executing goal with a created_at timestamp', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'executing',
+          goal: 'Fix prod',
+          created_at: new Date(Date.now() - 5000).toISOString(),
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect(await screen.findByText(/^\d+:\d{2}$/)).toBeInTheDocument();
+  });
+
+  test('agent chip navigates to the agent detail page', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/agents/agent-42')) {
+        return new Response(JSON.stringify({ id: 'agent-42', name: 'Ops Agent' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'executing', goal: 'Fix prod', agent_id: 'agent-42' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByText('Ops Agent'));
+    await waitFor(() => expect(screen.queryByText('Ops Agent')).not.toBeInTheDocument());
+  });
+
+  test('diff-run and ghost-run icon buttons navigate without crashing', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await screen.findByRole('button', { name: /cancel/i });
+    await userEvent.click(screen.getByTitle('Diff Run'));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument());
+  });
+
+  test('ghost-run icon button navigates without crashing', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await screen.findByRole('button', { name: /cancel/i });
+    await userEvent.click(screen.getByTitle('Ghost Run'));
+    // "/goals/ghost-run" matches the same ":goalId" route, so the page re-renders
+    // with goalId="ghost-run" instead of unmounting — assert it renders cleanly.
+    expect(await screen.findByRole('button', { name: /cancel/i })).toBeInTheDocument();
+  });
+
+  test('typing an approval note updates the textarea value', async () => {
+    mockWaitingHumanGoal();
+    renderGoalDetailPage();
+
+    const textarea = await screen.findByPlaceholderText(/optional note/i);
+    await userEvent.type(textarea, 'looks safe to me');
+    expect(textarea).toHaveValue('looks safe to me');
+  });
+
+  test('scrolling the terminal body near the bottom keeps auto-scroll enabled', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+    await screen.findByText(/execution log/i);
+    const terminalBody = document.querySelector('[class*="overflow-y-auto"]');
+    expect(terminalBody).toBeTruthy();
+
+    Object.defineProperty(terminalBody!, 'scrollHeight', { value: 100, configurable: true });
+    Object.defineProperty(terminalBody!, 'clientHeight', { value: 90, configurable: true });
+    Object.defineProperty(terminalBody!, 'scrollTop', { value: 10, configurable: true });
+    act(() => { terminalBody!.dispatchEvent(new Event('scroll')); });
+
+    // Still shows "auto" (not manual) since we're within 30px of the bottom
+    expect(await screen.findByText('↓ auto')).toBeInTheDocument();
+  });
+
+  test('scrolling the terminal body away from the bottom switches to manual scroll', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+    await screen.findByText(/execution log/i);
+    const terminalBody = document.querySelector('[class*="overflow-y-auto"]');
+    expect(terminalBody).toBeTruthy();
+
+    Object.defineProperty(terminalBody!, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(terminalBody!, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(terminalBody!, 'scrollTop', { value: 0, configurable: true });
+    act(() => { terminalBody!.dispatchEvent(new Event('scroll')); });
+
+    expect(await screen.findByText('↓ manual')).toBeInTheDocument();
+  });
+
+  test('retry mutation shows an error toast when resubmitting fails', async () => {
+    mockGoal('executing');
+    goalStreamState.current = {
+      connected: true,
+      streamingToken: null,
+      events: [{ type: 'tool_call_failed', tool: 'github.create_pr', server_id: 'github', error: 'Token expired' }],
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/goals') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ error: { message: 'boom' } }), {
+          status: 500, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'executing', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('button', { name: /github\.create_pr failed/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /retry from here/i }));
+
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message === 'Failed to retry')).toBe(true)
+    );
+  });
+
+  test('SSE onEvent callback handles waiting_approval, approval_granted, and guardrail_rejected transitions', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let capturedOnEvent: ((evt: Record<string, unknown>) => void) | undefined;
+    mockUseGoalStream.mockImplementation((..._args: unknown[]) => {
+      const opts = _args[1] as { onEvent?: (evt: Record<string, unknown>) => void } | undefined;
+      capturedOnEvent = opts?.onEvent;
+      return goalStreamState.current;
+    });
+    mockGoal('executing');
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+
+    expect(capturedOnEvent).toBeDefined();
+    act(() => { capturedOnEvent!({ type: 'waiting_approval', request_id: 'r1', action: 'delete prod db' }); });
+    expect(await screen.findByText(/delete prod db/i)).toBeInTheDocument();
+
+    act(() => { capturedOnEvent!({ type: 'approval_granted' }); });
+    await vi.advanceTimersByTimeAsync(3100);
+
+    act(() => { capturedOnEvent!({ type: 'guardrail_rejected', rule: 'no-prod-deletes' }); });
+    expect(await screen.findByText(/no-prod-deletes/i)).toBeInTheDocument();
+    await vi.advanceTimersByTimeAsync(8100);
+
+    vi.useRealTimers();
+  });
+
+  test('SSE onEvent callback handles hitl_rejected transition', async () => {
+    let capturedOnEvent: ((evt: Record<string, unknown>) => void) | undefined;
+    mockUseGoalStream.mockImplementation((..._args: unknown[]) => {
+      const opts = _args[1] as { onEvent?: (evt: Record<string, unknown>) => void } | undefined;
+      capturedOnEvent = opts?.onEvent;
+      return goalStreamState.current;
+    });
+    mockGoal('executing');
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+
+    expect(capturedOnEvent).toBeDefined();
+    act(() => { capturedOnEvent!({ type: 'waiting_approval', request_id: 'r2', action: 'drop table' }); });
+    act(() => { capturedOnEvent!({ type: 'hitl_rejected' }); });
+    expect(await screen.findByText(/drop table/i)).toBeInTheDocument();
+  });
+
+  test('unwraps a JSON-wrapped tool result string in the summary', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'complete',
+          goal: 'Fix prod',
+          result_artifact: {
+            kind: 'text',
+            summary: '{"tool": "shell", "result": "Deployment finished successfully."}',
+            downloads: [],
+            tables: [],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect((await screen.findAllByText(/Deployment finished successfully\./i)).length).toBeGreaterThan(0);
+  });
+
+  test('leaves a non-JSON summary string untouched', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'complete',
+          goal: 'Fix prod',
+          result_artifact: {
+            kind: 'text',
+            summary: 'Plain text summary, not JSON.',
+            downloads: [],
+            tables: [],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect((await screen.findAllByText(/Plain text summary, not JSON\./i)).length).toBeGreaterThan(0);
+  });
+
+  test('leaves malformed JSON-looking summary untouched (falls back gracefully)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'complete',
+          goal: 'Fix prod',
+          result_artifact: {
+            kind: 'text',
+            summary: '{"result": not valid json',
+            downloads: [],
+            tables: [],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect(await screen.findByText(/\{"result": not valid json/i)).toBeInTheDocument();
+  });
+
+  test('shows amber "partial results" banner for a completed goal with an empty-kind artifact', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'complete',
+          goal: 'Fix prod',
+          result_artifact: {
+            kind: 'empty',
+            summary: 'Nothing much happened.',
+            downloads: [],
+            tables: [],
+            evidence: { verification: 'Ran out of steps before finishing.' },
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect(await screen.findByText(/goal completed with partial results/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/ran out of steps before finishing/i).length).toBeGreaterThan(0);
+  });
+
+  test('renders a table row with a formatted object value and a missing value dash', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'complete',
+          goal: 'Fix prod',
+          result_artifact: {
+            kind: 'table',
+            downloads: [],
+            tables: [
+              {
+                title: 'Details',
+                summary: 'Row details',
+                columns: [
+                  { key: 'meta', label: 'Meta' },
+                  { key: 'missing', label: 'Missing' },
+                ],
+                rows: [{ meta: { nested: true }, missing: null }],
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+
+    renderGoalDetailPage();
+    expect(await screen.findByText('Details')).toBeInTheDocument();
+    expect(screen.getByText('Row details')).toBeInTheDocument();
+    expect(screen.getAllByText(/"nested": true/).length).toBeGreaterThan(0);
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+  test('shows "+N more tool calls" note when more than 10 tool results are present', async () => {
+    mockGoal('executing');
+    goalStreamState.current = {
+      connected: true,
+      streamingToken: null,
+      events: Array.from({ length: 12 }, (_, i) => ({
+        type: 'tool_call_complete',
+        tool: `tool_${i}`,
+        server_id: 'srv',
+        success: true,
+        output: { i },
+      })),
+    };
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^results$/i }));
+    expect(await screen.findByText(/\+2 more tool calls/i)).toBeInTheDocument();
+  });
+
+  test('copyToClipboard swallows a rejected clipboard write', async () => {
+    Object.assign(navigator, {
+      clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    });
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const copyBtn = await screen.findByRole('button', { name: /copy result/i });
+    await userEvent.click(copyBtn);
+
+    // Toast still fires even though the clipboard write failed under the hood
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message === 'Copied!')).toBe(true)
+    );
   });
 });
