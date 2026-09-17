@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import os as _os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+_DEFAULT_RPA_ARTIFACT_DIR = Path(tempfile.gettempdir()) / "agentverse-rpa"
 
 
 class ArtifactStoreProtocol(Protocol):
@@ -38,7 +41,7 @@ class RPAArtifact:
 class RPAArtifactStore:
     """Store artifacts under /tmp for CI-safe local RPA workflows."""
 
-    def __init__(self, base_dir: Path | str = "/tmp/agentverse-rpa") -> None:
+    def __init__(self, base_dir: Path | str = _DEFAULT_RPA_ARTIFACT_DIR) -> None:
         self.base_dir = Path(base_dir)
 
     def write_bytes(self, *, goal_id: str, name: str, content: bytes) -> RPAArtifact:
@@ -229,7 +232,7 @@ class _RPAArtifactStoreFallback:
 
     async def write_bytes(self, *, goal_id: str, name: str, content: bytes) -> RPAArtifact:
         artifact_id = uuid.uuid4().hex
-        base = Path(f"/tmp/agentverse-rpa/{goal_id}/{artifact_id}")
+        base = _DEFAULT_RPA_ARTIFACT_DIR / goal_id / artifact_id
         base.mkdir(parents=True, exist_ok=True)
         path = base / _safe_name(name)
         path.write_bytes(content)
@@ -245,7 +248,7 @@ class _RPAArtifactStoreFallback:
         self, workspace_id: str | None = None, goal_id: str | None = None
     ) -> list[dict]:
         """List artifacts from /tmp store. Filters by goal_id or workspace_id substring."""
-        base = Path("/tmp/agentverse-rpa")
+        base = _DEFAULT_RPA_ARTIFACT_DIR
         if not base.exists():
             return []
         results = []

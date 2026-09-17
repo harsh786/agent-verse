@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from app.rpa.artifacts import RPAArtifactStore
+from app.rpa.artifacts import _DEFAULT_RPA_ARTIFACT_DIR, RPAArtifactStore
 from app.rpa.runner import LocalRPARunner, execute_rpa_tool
 from app.rpa.session import RPASession
 from app.rpa.tools import RPA_TOOLS, classify_rpa_tool_risk
@@ -96,15 +96,16 @@ def test_local_rpa_runner_sequence_writes_screenshot_artifact() -> None:
         "artifact_uri": None,
         "current_url": "https://example.test/login",
     }
+    expected_path = _DEFAULT_RPA_ARTIFACT_DIR / "goal-rpa-tools" / "login.png"
     assert screenshot_result["success"] is True
-    assert screenshot_result["artifact_uri"] == "file:///tmp/agentverse-rpa/goal-rpa-tools/login.png"
-    assert Path("/tmp/agentverse-rpa/goal-rpa-tools/login.png").read_bytes() == (
+    assert screenshot_result["artifact_uri"] == expected_path.as_uri()
+    assert expected_path.read_bytes() == (
         b"agentverse-local-rpa-screenshot\n"
         b"session=session-1\n"
         b"url=https://example.test/login\n"
     )
     assert session.current_url == "https://example.test/login"
-    assert session.screenshots == ["file:///tmp/agentverse-rpa/goal-rpa-tools/login.png"]
+    assert session.screenshots == [expected_path.as_uri()]
 
 
 def test_artifact_store_sanitizes_goal_id_under_base_dir(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.agent.tool_calls import extract_tool_call
-from app.rpa.artifacts import RPAArtifactStore
+from app.rpa.artifacts import _DEFAULT_RPA_ARTIFACT_DIR, RPAArtifactStore
 from app.rpa.runner import LocalRPARunner, execute_rpa_tool
 from app.rpa.session import RPASession
 
@@ -49,13 +49,14 @@ def test_local_rpa_workflow_returns_structured_outputs() -> None:
         "artifact_uri": None,
         "current_url": "https://example.test/search",
     }
+    expected_path = _DEFAULT_RPA_ARTIFACT_DIR / "goal-rpa-e2e" / "search-results.png"
     assert outputs[4] == {
         "success": True,
         "output": "Screenshot captured",
-        "artifact_uri": "file:///tmp/agentverse-rpa/goal-rpa-e2e/search-results.png",
+        "artifact_uri": expected_path.as_uri(),
         "current_url": "https://example.test/search",
     }
-    assert Path("/tmp/agentverse-rpa/goal-rpa-e2e/search-results.png").is_file()
+    assert expected_path.is_file()
 
 
 def test_malformed_rpa_screenshot_tool_call_does_not_execute(tmp_path: Path) -> None:
