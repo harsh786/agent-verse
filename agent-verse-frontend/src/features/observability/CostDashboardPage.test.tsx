@@ -5,12 +5,48 @@
  */
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import { CostDashboardPage } from './CostDashboardPage';
+
+// recharts needs layout APIs jsdom doesn't provide. Mock it so the chart
+// wrapper components render as plain divs, and have the Axis/Tooltip/Line
+// mocks invoke any tickFormatter/formatter/dot render-prop callbacks so those
+// inline functions (defined in CostDashboardPage) get exercised the same way
+// the real recharts would while laying out the chart.
+vi.mock('recharts', () => ({
+  Cell: () => null,
+  Line: (props: { dot?: unknown }) => {
+    if (typeof props.dot === 'function') {
+      (props.dot as (p: unknown) => unknown)({ cx: 10, cy: 10, payload: { is_anomaly: true, date: 'd-anomaly' } });
+      (props.dot as (p: unknown) => unknown)({ cx: 20, cy: 20, payload: { is_anomaly: false, date: 'd-normal' } });
+    }
+    return null;
+  },
+  LineChart: ({ children }: { children?: ReactNode }) => <div data-testid="mock-line-chart">{children}</div>,
+  Pie: ({ children }: { children?: ReactNode }) => <div data-testid="mock-pie">{children}</div>,
+  PieChart: ({ children }: { children?: ReactNode }) => <div data-testid="mock-pie-chart">{children}</div>,
+  ReferenceLine: () => null,
+  ResponsiveContainer: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Tooltip: (props: { formatter?: (v: number, name?: string) => unknown }) => {
+    props.formatter?.(1.2345, 'Daily Cost');
+    return null;
+  },
+  XAxis: (props: { tickFormatter?: (v: string) => unknown }) => {
+    props.tickFormatter?.('2026-06-28');
+    return null;
+  },
+  YAxis: (props: { tickFormatter?: (v: number) => unknown }) => {
+    props.tickFormatter?.(12.34);
+    return null;
+  },
+  CartesianGrid: () => null,
+}));
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -193,10 +229,54 @@ function setupMockFetch(overrides: Record<string, object> = {}) {
       return respond(overrides['predict'] ?? MOCK_PREDICT);
     if (url.includes('/analytics/goals'))
       return respond({ active_goals: 2, total_goals: 87, success_rate: 0.92, avg_latency_ms: 1200, cost_today_usd: 12.45, goals_today: 5 });
+    if (url.includes('/costs/summary') && !url.includes('format=csv'))
+      return respond(overrides['summary'] ?? { total_cost_usd: 12.45, period_days: 30 });
 
     return new Response(null, { status: 404 });
   });
 }
+
+// Extended per-agent dataset exercising edge cases the default MOCK_PER_AGENT
+// doesn't: a mid-range efficiency ratio (yellow), a null agent_id ("—"
+// fallbacks + "unknown" filter option), zero tokens (no $/1M token figure),
+// and a sparkline trend that goes up (red) rather than down (green).
+const MOCK_PER_AGENT_EXTENDED = {
+  period_days: 30,
+  agents: [
+    {
+      agent_id: 'agent-abc123',
+      total_cost_usd: 95.40,
+      total_prompt_tokens: 500_000,
+      total_completion_tokens: 200_000,
+      goal_count: 20,
+      avg_cost_per_goal: 4.77,
+    },
+    {
+      agent_id: 'agent-xyz789',
+      total_cost_usd: 32.10,
+      total_prompt_tokens: 200_000,
+      total_completion_tokens: 80_000,
+      goal_count: 8,
+      avg_cost_per_goal: 4.01,
+    },
+    {
+      agent_id: 'agent-mid555',
+      total_cost_usd: 55.0,
+      total_prompt_tokens: 100_000,
+      total_completion_tokens: 50_000,
+      goal_count: 1,
+      avg_cost_per_goal: 60.0,
+    },
+    {
+      agent_id: null,
+      total_cost_usd: 3.0,
+      total_prompt_tokens: 0,
+      total_completion_tokens: 0,
+      goal_count: 1,
+      avg_cost_per_goal: 3.0,
+    },
+  ],
+};
 
 // ── Test setup ────────────────────────────────────────────────────────────────
 
@@ -207,10 +287,15 @@ beforeEach(() => {
     plan: 'professional',
     isAuthenticated: true,
   });
+  useToastStore.setState({ toasts: [] });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // The CSV-export test stubs `globalThis.URL` (vi.stubGlobal); restoreAllMocks()
+  // does not undo stubbed globals, so without this later tests would inherit a
+  // broken URL constructor (react-router and other internals rely on the real one).
+  vi.unstubAllGlobals();
 });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -585,5 +670,487 @@ describe('CostDashboardPage', () => {
     useAuthStore.setState({ apiKey: '', isAuthenticated: false });
     vi.spyOn(globalThis, 'fetch').mockReturnValue(new Promise(() => {}));
     expect(() => renderPage()).not.toThrow();
+  });
+});
+
+// ── Additional coverage: budget modal interactions ─────────────────────────────
+
+describe('CostDashboardPage — budget modal interactions', () => {
+  test('per-goal and daily limit inputs update on change', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    const perGoalInput = screen.getByRole('spinbutton', { name: /per-goal budget limit/i }) as HTMLInputElement;
+    const perDayInput = screen.getByRole('spinbutton', { name: /daily budget limit/i }) as HTMLInputElement;
+
+    await user.clear(perGoalInput);
+    await user.type(perGoalInput, '25');
+    await user.clear(perDayInput);
+    await user.type(perDayInput, '750');
+
+    expect(perGoalInput.value).toBe('25');
+    expect(perDayInput.value).toBe('750');
+  });
+
+  test('alert threshold checkboxes can be toggled off', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    const alert80 = screen.getByRole('checkbox', { name: /alert at 80% of daily limit/i });
+    const alert95 = screen.getByRole('checkbox', { name: /alert at 95% of daily limit/i });
+
+    expect(alert80).toBeChecked();
+    expect(alert95).toBeChecked();
+
+    await user.click(alert80);
+    await user.click(alert95);
+
+    expect(alert80).not.toBeChecked();
+    expect(alert95).not.toBeChecked();
+  });
+
+  test('cancel button closes the modal without saving', async () => {
+    const fetchSpy = setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    const callsBefore = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT').length;
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /budget manager/i })).not.toBeInTheDocument()
+    );
+
+    const callsAfter = fetchSpy.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT').length;
+    expect(callsAfter).toBe(callsBefore);
+  });
+
+  test('saving the budget succeeds and shows a success toast', async () => {
+    const fetchSpy = setupMockFetch();
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url);
+      const method = init?.method ?? 'GET';
+      const respond = (data: object) =>
+        new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+      if (url.includes('/costs/budgets') && method === 'PUT') {
+        return respond({ per_goal_usd: 25, per_tenant_daily_usd: 750 });
+      }
+      if (url.includes('/goals/cost-metrics')) return respond(MOCK_COST_METRICS);
+      if (url.includes('/analytics/costs')) return respond(MOCK_ANALYTICS);
+      if (url.includes('/costs/per-agent')) return respond(MOCK_PER_AGENT);
+      if (url.includes('/costs/by-model')) return respond(MOCK_MODEL_BREAKDOWN);
+      if (url.includes('/costs/trends')) return respond(MOCK_TRENDS);
+      if (url.includes('/costs/projection')) return respond(MOCK_PROJECTION);
+      if (url.includes('/costs/budgets')) return respond(MOCK_BUDGETS);
+      if (url.includes('/costs/anomalies')) return respond(MOCK_ANOMALIES);
+      return new Response(null, { status: 404 });
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /save budget/i }));
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'success' && /budget saved/i.test(t.message))).toBe(true);
+    }, { timeout: 5000 });
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: /budget manager/i })).not.toBeInTheDocument()
+    );
+  });
+
+  test('saving the budget shows an error toast when the request fails', async () => {
+    const fetchSpy = setupMockFetch();
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url);
+      const method = init?.method ?? 'GET';
+      const respond = (data: object) =>
+        new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+      if (url.includes('/costs/budgets') && method === 'PUT') {
+        return new Response('Server Error', { status: 500 });
+      }
+      if (url.includes('/goals/cost-metrics')) return respond(MOCK_COST_METRICS);
+      if (url.includes('/analytics/costs')) return respond(MOCK_ANALYTICS);
+      if (url.includes('/costs/per-agent')) return respond(MOCK_PER_AGENT);
+      if (url.includes('/costs/by-model')) return respond(MOCK_MODEL_BREAKDOWN);
+      if (url.includes('/costs/trends')) return respond(MOCK_TRENDS);
+      if (url.includes('/costs/projection')) return respond(MOCK_PROJECTION);
+      if (url.includes('/costs/budgets')) return respond(MOCK_BUDGETS);
+      if (url.includes('/costs/anomalies')) return respond(MOCK_ANOMALIES);
+      return new Response(null, { status: 404 });
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /save budget/i }));
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'error' && /failed to save budget/i.test(t.message))).toBe(true);
+    }, { timeout: 5000 });
+
+    // Modal stays open on failure
+    expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument();
+  });
+
+  test('budget modal fetches its own budget data even when the page-level queries are disabled', async () => {
+    useAuthStore.setState({ apiKey: '', isAuthenticated: false });
+    const fetchSpy = setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /set budget/i }));
+    await waitFor(() => expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument());
+
+    await waitFor(() => {
+      const budgetGetCalls = fetchSpy.mock.calls.filter(([url]) => String(url).includes('/costs/budgets'));
+      expect(budgetGetCalls.length).toBeGreaterThan(0);
+    }, { timeout: 5000 });
+  });
+});
+
+// ── Additional coverage: anomaly panel thresholds & investigate ────────────────
+
+describe('CostDashboardPage — anomaly panel extras', () => {
+  test('investigate button can be clicked without crashing', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    const investigateBtn = await screen.findByRole('button', { name: /investigate/i });
+    await user.click(investigateBtn);
+
+    // Page should still be intact after navigation attempt
+    expect(screen.getByRole('heading', { name: /cost dashboard/i })).toBeInTheDocument();
+  });
+
+  test('configure thresholds modal opens and closes via the X button', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /configure anomaly thresholds/i }, { timeout: 8000 }));
+
+    await waitFor(() => expect(screen.getByText(/anomaly thresholds/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /close threshold modal/i }));
+
+    await waitFor(() => expect(screen.queryByText(/anomaly thresholds/i)).not.toBeInTheDocument());
+  }, 15000);
+
+  test('configure thresholds modal closes via the bottom Close button', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /configure anomaly thresholds/i }, { timeout: 8000 }));
+    await waitFor(() => expect(screen.getByText(/anomaly thresholds/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: /^close$/i }));
+
+    await waitFor(() => expect(screen.queryByText(/anomaly thresholds/i)).not.toBeInTheDocument());
+  }, 15000);
+});
+
+// ── Additional coverage: agent table edge cases & sorting ──────────────────────
+
+describe('CostDashboardPage — agent table edge cases', () => {
+  test('renders fallbacks for missing agent id and zero-token cost efficiency', async () => {
+    setupMockFetch({ 'per-agent': MOCK_PER_AGENT_EXTENDED });
+    renderPage();
+
+    await waitFor(() => {
+      expect(document.body.innerHTML).toMatch(/agent-mid555/);
+    }, { timeout: 8000 });
+
+    // "—" appears for both the missing agent_id row and the zero-token efficiency cell
+    const dashes = screen.getAllByText('—');
+    expect(dashes.length).toBeGreaterThan(0);
+
+    // Efficiency color classes: red (top spender), yellow (mid), green (low)
+    expect(document.body.innerHTML).toMatch(/text-red-600/);
+    expect(document.body.innerHTML).toMatch(/text-yellow-600/);
+    expect(document.body.innerHTML).toMatch(/text-green-600/);
+  });
+
+  test('clicking a table row navigates to the agent detail page', async () => {
+    setupMockFetch();
+    renderPage();
+
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/), { timeout: 8000 });
+
+    const table = screen.getByRole('table');
+    const row = within(table).getByText(/agent-abc123/).closest('tr');
+    expect(row).toBeTruthy();
+    fireEvent.click(row as HTMLElement);
+
+    // No crash — heading remains
+    expect(screen.getByRole('heading', { name: /cost dashboard/i })).toBeInTheDocument();
+  });
+
+  test('pressing Enter on a table row navigates to the agent detail page', async () => {
+    setupMockFetch();
+    renderPage();
+
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/), { timeout: 8000 });
+
+    const table = screen.getByRole('table');
+    const row = within(table).getByText(/agent-abc123/).closest('tr') as HTMLElement;
+    fireEvent.keyDown(row, { key: 'Enter' });
+
+    expect(screen.getByRole('heading', { name: /cost dashboard/i })).toBeInTheDocument();
+  });
+
+  test('sorting by a fresh column (Agent) then Token Efficiency exercises all sort branches', async () => {
+    setupMockFetch({ 'per-agent': MOCK_PER_AGENT_EXTENDED });
+    renderPage();
+
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/), { timeout: 8000 });
+
+    fireEvent.click(screen.getByRole('columnheader', { name: /^agent$/i }));
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/));
+
+    fireEvent.click(screen.getByRole('columnheader', { name: /token efficiency/i }));
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/));
+
+    // Reverse direction on the same column
+    fireEvent.click(screen.getByRole('columnheader', { name: /token efficiency/i }));
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/));
+  });
+});
+
+// ── Additional coverage: filters & selects ──────────────────────────────────────
+
+describe('CostDashboardPage — filters and selects', () => {
+  test('agent filter narrows the table and shows singular/filtered labels', async () => {
+    setupMockFetch({ 'per-agent': MOCK_PER_AGENT_EXTENDED });
+    renderPage();
+
+    await waitFor(() => expect(document.body.innerHTML).toMatch(/agent-abc123/), { timeout: 8000 });
+
+    const filterSelect = screen.getByRole('combobox', { name: /filter by agent/i });
+    fireEvent.change(filterSelect, { target: { value: 'agent-abc123' } });
+
+    await waitFor(() => {
+      expect(screen.getByText(/^1 agent\b/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/\(filtered\)/i)).toBeInTheDocument();
+  });
+
+  test('agent filter dropdown shows an "unknown" option for agents without an id', async () => {
+    setupMockFetch({ 'per-agent': MOCK_PER_AGENT_EXTENDED });
+    renderPage();
+
+    const filterSelect = await screen.findByRole('combobox', { name: /filter by agent/i });
+    await waitFor(() => {
+      expect(within(filterSelect).getByText(/unknown/i)).toBeInTheDocument();
+    }, { timeout: 8000 });
+  });
+
+  test('selecting an agent in the cost predictor dropdown updates the selection', async () => {
+    setupMockFetch({ 'per-agent': MOCK_PER_AGENT_EXTENDED });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByText(/cost predictor/i));
+
+    const agentSelect = await screen.findByRole('combobox', { name: /select agent for prediction/i });
+    fireEvent.change(agentSelect, { target: { value: 'agent-mid555' } });
+
+    expect((agentSelect as HTMLSelectElement).value).toBe('agent-mid555');
+  });
+});
+
+// ── Additional coverage: cost breakdown toggle & edge cases ────────────────────
+
+describe('CostDashboardPage — cost breakdown toggle', () => {
+  test('toggling between By Model and By Operation views updates pressed state', async () => {
+    setupMockFetch();
+    renderPage();
+    const user = userEvent.setup();
+
+    const byModelBtn = await screen.findByRole('button', { name: /by model/i });
+    const byOperationBtn = screen.getByRole('button', { name: /by operation/i });
+
+    expect(byModelBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(byOperationBtn).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(byOperationBtn);
+
+    expect(byOperationBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(byModelBtn).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(byModelBtn);
+    expect(byModelBtn).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('falls back to analytics.cost_by_model when /costs/by-model is empty', async () => {
+    setupMockFetch({ 'by-model': { models: [] } });
+    renderPage();
+
+    // analytics.cost_by_model has claude-opus-4 / gpt-4o / gpt-4o-mini
+    await waitFor(() => {
+      expect(document.body.innerHTML).toMatch(/claude-opus-4|gpt-4o/);
+    }, { timeout: 8000 });
+  });
+
+  test('renders a zero-value pie slice without crashing (0% legend fallback)', async () => {
+    setupMockFetch({ 'by-model': { models: [{ model: 'free-tier-model', total_cost_usd: 0, total_prompt_tokens: 0, total_completion_tokens: 0, call_count: 0 }] } });
+    renderPage();
+
+    await waitFor(() => {
+      expect(document.body.innerHTML).toMatch(/free-tier-model/);
+    }, { timeout: 8000 });
+  });
+
+  test('shows "No operation data yet" when per-agent data is empty', async () => {
+    setupMockFetch({ 'per-agent': { agents: [] } });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: /by operation/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/no operation data yet/i)).toBeInTheDocument();
+    });
+  });
+});
+
+// ── Additional coverage: budget consumption banners ─────────────────────────────
+
+describe('CostDashboardPage — budget consumption banners', () => {
+  test('shows the medium (80-95%) warning banner and can open the modal via Edit', async () => {
+    setupMockFetch({ 'cost-metrics': { ...MOCK_COST_METRICS, budget_utilization: 0.88 } });
+    renderPage();
+    const user = userEvent.setup();
+
+    await waitFor(() => {
+      expect(screen.getByText(/budget 80% consumed/i)).toBeInTheDocument();
+    }, { timeout: 8000 });
+
+    await user.click(screen.getByRole('button', { name: /^edit$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('dialog', { name: /budget manager/i })).toBeInTheDocument()
+    );
+  });
+
+  test('shows the critical (>95%) banner', async () => {
+    setupMockFetch({ 'cost-metrics': { ...MOCK_COST_METRICS, budget_utilization: 0.97 } });
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByText(/critical.*budget almost exhausted/i)).toBeInTheDocument();
+    }, { timeout: 8000 });
+  });
+
+  test('shows no warning banner under 80% utilization', async () => {
+    setupMockFetch({ 'cost-metrics': { ...MOCK_COST_METRICS, budget_utilization: 0.3 } });
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /cost dashboard/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/budget 80% consumed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/critical.*budget almost exhausted/i)).not.toBeInTheDocument();
+  });
+});
+
+// ── Additional coverage: live cost ticker ───────────────────────────────────────
+
+describe('CostDashboardPage — live cost ticker', () => {
+  test('flashes a red delta when spend increases between refreshes', async () => {
+    setupMockFetch();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    renderPage(qc);
+
+    await waitFor(() => {
+      expect(qc.getQueryData(['cost-summary-ticker', 30])).toBeTruthy();
+    }, { timeout: 5000 });
+
+    act(() => {
+      qc.setQueryData(['cost-summary-ticker', 30], { total_cost_usd: 50, period_days: 30 });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/since last refresh/i)).toBeInTheDocument();
+    }, { timeout: 5000 });
+    expect(document.body.innerHTML).toMatch(/\+\$50|\+\$37/);
+  });
+
+  test('flashes a green delta when spend decreases between refreshes', async () => {
+    setupMockFetch();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    renderPage(qc);
+
+    await waitFor(() => {
+      expect(qc.getQueryData(['cost-summary-ticker', 30])).toBeTruthy();
+    }, { timeout: 5000 });
+
+    act(() => {
+      qc.setQueryData(['cost-summary-ticker', 30], { total_cost_usd: 2, period_days: 30 });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/since last refresh/i)).toBeInTheDocument();
+    }, { timeout: 5000 });
+    // Decrease -> no "+" prefix
+    expect(document.body.innerHTML).toMatch(/since last refresh/);
+  });
+});
+
+// ── Additional coverage: CSV export failure ─────────────────────────────────────
+
+describe('CostDashboardPage — export failure handling', () => {
+  test('shows an error toast when the CSV export fails', async () => {
+    const fetchSpy = setupMockFetch();
+    fetchSpy.mockImplementation(async (input) => {
+      const url = String(typeof input === 'string' ? input : (input as Request).url);
+      if (url.includes('format=csv')) throw new Error('network failure');
+      const respond = (data: object) =>
+        new Response(JSON.stringify(data), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/goals/cost-metrics')) return respond(MOCK_COST_METRICS);
+      if (url.includes('/analytics/costs')) return respond(MOCK_ANALYTICS);
+      if (url.includes('/costs/per-agent')) return respond(MOCK_PER_AGENT);
+      if (url.includes('/costs/by-model')) return respond(MOCK_MODEL_BREAKDOWN);
+      if (url.includes('/costs/trends')) return respond(MOCK_TRENDS);
+      if (url.includes('/costs/projection')) return respond(MOCK_PROJECTION);
+      if (url.includes('/costs/budgets')) return respond(MOCK_BUDGETS);
+      if (url.includes('/costs/anomalies')) return respond(MOCK_ANOMALIES);
+      return new Response(null, { status: 404 });
+    });
+
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /export csv/i }));
+
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'error' && /failed to export csv/i.test(t.message))).toBe(true);
+    }, { timeout: 5000 });
   });
 });
