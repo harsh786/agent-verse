@@ -582,7 +582,10 @@ services:
       - ./loki/loki.yml:/etc/loki/loki.yml:ro
       - loki_data:/loki
     ports:
-      - "3100:3100"
+      # Host-side remapped to 3101 — 3100 is already claimed by langfuse-web.
+      # Container port stays 3100: Grafana/Promtail reach Loki over the
+      # internal Docker network at http://loki:3100, unaffected by this.
+      - "3101:3100"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3100/ready"]
       interval: 15s
