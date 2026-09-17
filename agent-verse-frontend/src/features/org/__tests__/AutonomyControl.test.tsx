@@ -178,4 +178,113 @@ describe('AutonomyControl (embeddable panel)', () => {
     // The other, untouched cap fields are still saved as valid numbers.
     expect(body.settings?.max_concurrent).toBe(2);
   });
+
+  it('clicking a non-active level calls patch with the new autonomy_level', async () => {
+    const user = userEvent.setup();
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+    await screen.findByText(/L3/);
+
+    const level5Btn = screen.getByRole('radio', { name: 'L5' });
+    await user.click(level5Btn);
+
+    await waitFor(() => {
+      expect(patchMock).toHaveBeenCalledWith('org-1', { autonomy_level: 5 });
+    });
+  });
+
+  it('clicking the already-active level is a no-op (does not call patch)', async () => {
+    const user = userEvent.setup();
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+    await screen.findByText(/L3/);
+
+    const level3Btn = screen.getByRole('radio', { name: 'L3' });
+    await user.click(level3Btn);
+
+    // Give any (incorrect) async patch call a chance to fire.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it('toggling collaboration calls patch with the flipped collaboration_enabled flag', async () => {
+    const user = userEvent.setup();
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+
+    const collabSwitch = await screen.findByRole('switch', { name: /enable cross-agent collaboration/i });
+    await user.click(collabSwitch);
+
+    await waitFor(() => {
+      expect(patchMock).toHaveBeenCalledWith('org-1', { settings: { collaboration_enabled: true } });
+    });
+  });
+
+  it('editing and saving the collaboration daily budget calls patch and resyncs the buffer', async () => {
+    const user = userEvent.setup();
+    patchMock.mockResolvedValue({
+      ...fixture,
+      settings: { ...fixture.settings, collaboration_daily_budget_usd: 9 },
+    });
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+
+    const collabBudgetInput = await screen.findByLabelText(/^Collaboration daily budget/i);
+    await user.clear(collabBudgetInput);
+    await user.type(collabBudgetInput, '9');
+
+    const saveCollabBtn = await screen.findByRole('button', { name: /save collaboration budget/i });
+    await user.click(saveCollabBtn);
+
+    await waitFor(() => {
+      expect(patchMock).toHaveBeenCalledWith('org-1', { settings: { collaboration_daily_budget_usd: 9 } });
+    });
+    await waitFor(() => expect(collabBudgetInput).toHaveValue(9));
+  });
+
+  it('does not send an emptied/non-numeric collaboration budget field when saving', async () => {
+    const user = userEvent.setup();
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+
+    const collabBudgetInput = await screen.findByLabelText(/^Collaboration daily budget/i);
+    await user.clear(collabBudgetInput);
+
+    // The Save button still appears because the (empty) value differs from
+    // the saved settings, but clicking it must be a no-op guard.
+    const saveCollabBtn = await screen.findByRole('button', { name: /save collaboration budget/i });
+    await user.click(saveCollabBtn);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a "Failed to save changes" banner when a mutation fails', async () => {
+    const user = userEvent.setup();
+    patchMock.mockRejectedValue(new Error('save exploded'));
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+    const pauseBtn = await screen.findByRole('button', { name: /pause/i });
+    await user.click(pauseBtn);
+
+    await screen.findByText(/failed to save changes: save exploded/i);
+  });
+
+  it('shows a generic "Failed to save changes." banner when the mutation error is not an Error instance', async () => {
+    const user = userEvent.setup();
+    patchMock.mockRejectedValue('nope');
+    wrap(<AutonomyControl orgId="org-1" />);
+
+    await waitFor(() => expect(getMock).toHaveBeenCalledWith('org-1'));
+    const pauseBtn = await screen.findByRole('button', { name: /pause/i });
+    await user.click(pauseBtn);
+
+    await screen.findByText(/failed to save changes\.$/i);
+  });
 });
