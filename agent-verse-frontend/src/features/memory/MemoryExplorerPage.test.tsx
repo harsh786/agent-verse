@@ -1,10 +1,37 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
+import React, { type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import { MemoryExplorerPage } from './MemoryExplorerPage';
+
+// ConfirmModal (delete / clear-all flows) uses framer-motion's AnimatePresence.
+// jsdom has no real rAF/animation completion, so stub framer-motion the same
+// way sibling feature tests in this repo do: a memoized per-tag stub (not a
+// fresh component per render, which would remount and lose state).
+vi.mock('framer-motion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('framer-motion')>();
+  const stubCache = new Map<string, (props: { children?: ReactNode; [k: string]: unknown }) => React.ReactElement>();
+  const makeStub = (tag: string) => {
+    let stub = stubCache.get(tag);
+    if (!stub) {
+      stub = ({ children, ...props }) => React.createElement(tag, props as Record<string, unknown>, children);
+      stubCache.set(tag, stub);
+    }
+    return stub;
+  };
+  return {
+    ...actual,
+    useReducedMotion: () => true,
+    AnimatePresence: ({ children }: { children?: ReactNode }) => <>{children}</>,
+    motion: new Proxy(actual.motion as unknown as Record<string, unknown>, {
+      get: (target, key: string) => (key in target ? target[key] : makeStub(key)),
+    }),
+  };
+});
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -251,5 +278,424 @@ describe('MemoryExplorerPage — Governed Records', () => {
     );
     renderPage();
     expect(await screen.findByText(/failed to load governed records/i)).toBeInTheDocument();
+  });
+
+  test('goal id filter form requests /memory/records with goalId, and clears', async () => {
+    const spy = mockRecordsFetch();
+    renderPage();
+    await screen.findByText(/Recovered from a failed deploy/);
+
+    await userEvent.type(screen.getByPlaceholderText(/filter by goal id/i), 'goal-abc123');
+    await userEvent.keyboard('{Enter}');
+
+    await waitFor(() => {
+      const called = spy.mock.calls.some(([u]) => /\/memory\/records\?.*goal_id=goal-abc123/.test(String(u)));
+      expect(called).toBe(true);
+    });
+
+    // Clear button appears once a goal filter is active.
+    await userEvent.click(screen.getByRole('button', { name: /clear goal filter/i }));
+    expect(screen.getByPlaceholderText(/filter by goal id/i)).toHaveValue('');
+  });
+
+  test('renders records missing optional fields (no goal link, no expiry)', async () => {
+    mockRecordsFetch((url) => {
+      if (!url.includes('/memory/records')) return null;
+      return new Response(
+        JSON.stringify({
+          records: [
+            {
+              memory_id: 'r9', memory_kind: 'prospective', content: 'A record with no goal or expiry',
+              source_goal_id: null, source_execution_id: null, classification: 'internal',
+              confidence: 5000, lifecycle_state: 'active', evidence_refs: [],
+              recall_count: 0, helpful_count: 0, harmful_count: 0,
+              expires_at: null, created_at: '2026-06-01T00:00:00Z', updated_at: '2026-06-01T00:00:00Z',
+            },
+          ],
+          total: 1,
+          kinds: { prospective: 1 },
+        }),
+        { status: 200 },
+      );
+    });
+    renderPage();
+    expect(await screen.findByText(/A record with no goal or expiry/)).toBeInTheDocument();
+    expect(screen.queryByText(/goal:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/expires /)).not.toBeInTheDocument();
+  });
+});
+
+// ── Edit Memory flow ────────────────────────────────────────────────────────
+
+describe('MemoryExplorerPage — Edit Memory', () => {
+  test('opens the edit modal pre-filled, edits and saves successfully', async () => {
+    const fetchSpy = mockFetch([MOCK_MEMORY]);
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+
+    await userEvent.click(screen.getByRole('button', { name: /edit memory/i }));
+    const heading = screen.getByRole('heading', { name: /edit memory/i });
+    expect(heading).toBeInTheDocument();
+
+    const contentBox = screen.getByLabelText(/content/i) as HTMLTextAreaElement;
+    expect(contentBox.value).toBe(MOCK_MEMORY.content);
+
+    await userEvent.clear(contentBox);
+    await userEvent.type(contentBox, 'Updated memory content');
+
+    const tagsBox = screen.getByLabelText(/tags/i) as HTMLInputElement;
+    expect(tagsBox.value).toBe('ops');
+    await userEvent.clear(tagsBox);
+    await userEvent.type(tagsBox, 'ops, deploy');
+
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      const patchCall = fetchSpy.mock.calls.find(
+        ([u, i]) => /\/memory\/m1$/.test(String(u)) && ((i as RequestInit)?.method === 'PUT' || (i as RequestInit)?.method === 'PATCH')
+      );
+      expect(patchCall).toBeTruthy();
+    });
+    expect(screen.queryByRole('heading', { name: /edit memory/i })).not.toBeInTheDocument();
+  });
+
+  test('shows an error toast when updating a memory fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method;
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (method && method !== 'GET' && /\/memory\/m1$/.test(url))
+        return new Response('boom', { status: 500 });
+      if (url.match(/\/memory\?/)) return new Response(JSON.stringify([MOCK_MEMORY]), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+
+    await userEvent.click(screen.getByRole('button', { name: /edit memory/i }));
+    await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true);
+    });
+    // Modal stays open on failure.
+    expect(screen.getByRole('heading', { name: /edit memory/i })).toBeInTheDocument();
+  });
+
+  test('closes the edit modal via the close (X) button without saving', async () => {
+    mockFetch([MOCK_MEMORY]);
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+
+    await userEvent.click(screen.getByRole('button', { name: /edit memory/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^close$/i }));
+    expect(screen.queryByRole('heading', { name: /edit memory/i })).not.toBeInTheDocument();
+  });
+
+  test('edit modal type select and confidence slider can be changed', async () => {
+    mockFetch([MOCK_MEMORY]);
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+    await userEvent.click(screen.getByRole('button', { name: /edit memory/i }));
+
+    const typeSelect = screen.getByLabelText(/^type$/i) as HTMLSelectElement;
+    await userEvent.selectOptions(typeSelect, 'skill');
+    expect(typeSelect.value).toBe('skill');
+
+    expect(screen.getByLabelText(/confidence:/i)).toBeInTheDocument();
+    expect(screen.getByText(/confidence: 90%/i)).toBeInTheDocument();
+  });
+});
+
+// ── Add Memory error / cancel paths ─────────────────────────────────────────
+
+describe('MemoryExplorerPage — Add Memory error & cancel', () => {
+  test('shows an error toast when creating a memory fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method;
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (method === 'POST' && url.match(/\/memory\/?$/)) return new Response('nope', { status: 500 });
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText(/no memories yet/i);
+    await userEvent.click(screen.getByRole('button', { name: /add memory/i }));
+    await userEvent.type(screen.getByLabelText(/content/i), 'Something to remember');
+    await userEvent.click(screen.getByRole('button', { name: /create memory/i }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true);
+    });
+    expect(screen.getByRole('heading', { name: /add memory/i })).toBeInTheDocument();
+  });
+
+  test('cancel button and backdrop click close the add modal', async () => {
+    mockFetch([]);
+    renderPage();
+    await screen.findByText(/no memories yet/i);
+
+    await userEvent.click(screen.getByRole('button', { name: /add memory/i }));
+    expect(screen.getByRole('heading', { name: /add memory/i })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByRole('heading', { name: /add memory/i })).not.toBeInTheDocument();
+  });
+
+  test('add modal disables submit until content is entered, and edits type/tags/confidence', async () => {
+    mockFetch([]);
+    renderPage();
+    await screen.findByText(/no memories yet/i);
+    await userEvent.click(screen.getByRole('button', { name: /add memory/i }));
+
+    const createButton = screen.getByRole('button', { name: /create memory/i });
+    expect(createButton).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText(/content/i), 'A new fact');
+    expect(createButton).not.toBeDisabled();
+
+    const typeSelect = screen.getByLabelText(/^type$/i) as HTMLSelectElement;
+    await userEvent.selectOptions(typeSelect, 'preference');
+    expect(typeSelect.value).toBe('preference');
+
+    await userEvent.type(screen.getByLabelText(/tags/i), 'ops, api');
+    expect(screen.getByLabelText(/tags/i)).toHaveValue('ops, api');
+  });
+});
+
+// ── Delete / Clear-all cancel and error paths ───────────────────────────────
+
+describe('MemoryExplorerPage — Delete & Clear-all', () => {
+  test('cancelling the delete confirm modal keeps the memory', async () => {
+    mockFetch([MOCK_MEMORY]);
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+    await userEvent.click(screen.getByRole('button', { name: /delete memory/i }));
+    expect(screen.getByText(/delete memory\?/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByText(/delete memory\?/i)).not.toBeInTheDocument();
+    expect(await screen.findByText(/API key rotates monthly/)).toBeInTheDocument();
+  });
+
+  test('shows an error toast when deleting a memory fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method;
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (method === 'DELETE' && /\/memory\/m1$/.test(url)) return new Response('nope', { status: 500 });
+      if (url.match(/\/memory\?/)) return new Response(JSON.stringify([MOCK_MEMORY]), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+    await userEvent.click(screen.getByRole('button', { name: /delete memory/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true);
+    });
+  });
+
+  test('cancelling clear-all keeps memories, and a failed clear-all shows an error toast', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method;
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (method === 'DELETE' && url.match(/\/memory\/?$/)) return new Response('nope', { status: 500 });
+      if (url.match(/\/memory\?/)) return new Response(JSON.stringify([MOCK_MEMORY]), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText(/API key rotates monthly/);
+
+    await userEvent.click(screen.getByRole('button', { name: /clear all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByText(/clear all memories\?/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /clear all/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^clear all$/i }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true);
+    });
+  });
+});
+
+// ── Recall error / clear paths ───────────────────────────────────────────────
+
+describe('MemoryExplorerPage — Recall extra paths', () => {
+  test('shows an error toast when recall fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.includes('/memory/recall')) return new Response('boom', { status: 500 });
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.type(screen.getByPlaceholderText(/recall memories/i), 'keys');
+    await userEvent.click(screen.getByRole('button', { name: /recall/i }));
+
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true);
+    });
+  });
+
+  test('recall with no matches shows the "no relevant memories" message, and clear resets it', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.includes('/memory/recall'))
+        return new Response(JSON.stringify({ query: 'x', results: [] }), { status: 200 });
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    const input = screen.getByPlaceholderText(/recall memories/i);
+    await userEvent.type(input, 'nothing here');
+    await userEvent.click(screen.getByRole('button', { name: /recall/i }));
+    expect(await screen.findByText(/no relevant memories found/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /clear results/i }));
+    expect(screen.queryByText(/no relevant memories found/i)).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/recall memories/i)).toHaveValue('');
+  });
+
+  test('recall result renders its source snippet', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.includes('/memory/recall'))
+        return new Response(
+          JSON.stringify({
+            query: 'x',
+            results: [{ content: 'recalled with source', confidence: 0.65, memory_type: 'skill', source: 'goal-123456789' }],
+          }),
+          { status: 200 },
+        );
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.type(screen.getByPlaceholderText(/recall memories/i), 'src test');
+    await userEvent.click(screen.getByRole('button', { name: /recall/i }));
+    expect(await screen.findByText('recalled with source')).toBeInTheDocument();
+    expect(screen.getByText(/src: goal-123456/)).toBeInTheDocument();
+  });
+});
+
+// ── Pagination, legacy responses, and remaining branches ────────────────────
+
+describe('MemoryExplorerPage — Pagination & response shapes', () => {
+  test('shows pagination controls when total exceeds the page size', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.match(/\/memory\?/)) {
+        const items = Array.from({ length: 20 }, (_, i) => ({
+          ...MOCK_MEMORY,
+          id: `m${i}`,
+          content: `Memory number ${i}`,
+        }));
+        return new Response(JSON.stringify({ items, total: 45 }), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText('Memory number 0');
+    expect(screen.getByRole('navigation', { name: /pagination/i })).toBeInTheDocument();
+  });
+
+  test('supports legacy flat-array /memory responses (no items/total envelope)', async () => {
+    mockFetch([MOCK_MEMORY]);
+    renderPage();
+    expect(await screen.findByText(/API key rotates monthly/)).toBeInTheDocument();
+  });
+
+  test('handles a non-array, non-enveloped /memory response gracefully (empty state)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.match(/\/memory\?/)) return new Response(JSON.stringify({ weird: true }), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText(/no memories yet/i)).toBeInTheDocument();
+  });
+
+  test('memory row renders even without tags or created_at', async () => {
+    mockFetch([{ id: 'm2', content: 'Bare memory', memory_type: 'observation', confidence: 0.5, tags: [], created_at: '' }]);
+    renderPage();
+    expect(await screen.findByText('Bare memory')).toBeInTheDocument();
+  });
+});
+
+// ── Tool reliability color thresholds & execution memory failure branch ─────
+
+describe('MemoryExplorerPage — Tool reliability thresholds & exec memory failure', () => {
+  test('renders low (<50%) and mid (50-69%) reliability rows with failure counts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability'))
+        return new Response(
+          JSON.stringify([
+            { tool_name: 'flaky_tool', success_count: 3, failure_count: 7, total_calls: 10, success_rate: 0.3 },
+            { tool_name: 'mid_tool', success_count: 6, failure_count: 4, total_calls: 10, success_rate: 0.6 },
+            { tool_name: 'clean_tool', success_count: 10, failure_count: 0, total_calls: 10, success_rate: 1 },
+          ]),
+          { status: 200 },
+        );
+      if (url.includes('/memory?')) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    expect(await screen.findByText('flaky_tool')).toBeInTheDocument();
+    expect(within(screen.getByText('flaky_tool').closest('tr')!).getByText('30%')).toBeInTheDocument();
+    expect(screen.getByText('mid_tool')).toBeInTheDocument();
+    expect(within(screen.getByText('clean_tool').closest('tr')!).getByText('0')).toBeInTheDocument();
+  });
+
+  test('execution memory list shows a failed plan with the failed badge', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.includes('/memory/execution'))
+        return new Response(
+          JSON.stringify([{ goal_text: 'Rollback the release', success: false, recorded_at: '2026-06-01T00:00:00Z' }]),
+          { status: 200 },
+        );
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.click(screen.getByText(/execution memory/i));
+    expect(await screen.findByText('Rollback the release')).toBeInTheDocument();
+    expect(screen.getByText('failed')).toBeInTheDocument();
+  });
+
+  test('execution memory panel collapses again when toggled twice', async () => {
+    mockFetch([]);
+    renderPage();
+    const toggle = screen.getByText(/execution memory/i);
+    await userEvent.click(toggle);
+    expect(await screen.findByText('Deploy the service')).toBeInTheDocument();
+    await userEvent.click(toggle);
+    await waitFor(() => {
+      expect(screen.queryByText('Deploy the service')).not.toBeInTheDocument();
+    });
+  });
+
+  test('shows empty state when there are no execution memories', async () => {
+    mockFetch([]);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return new Response('[]', { status: 200 });
+      if (url.includes('/memory/execution')) return new Response('[]', { status: 200 });
+      if (url.match(/\/memory\?/)) return new Response('[]', { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await userEvent.click(screen.getByText(/execution memory/i));
+    expect(await screen.findByText(/no execution memories/i)).toBeInTheDocument();
   });
 });
