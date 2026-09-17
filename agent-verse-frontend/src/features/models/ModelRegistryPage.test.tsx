@@ -146,4 +146,136 @@ describe('ModelRegistryPage', () => {
     );
     expect(screen.getByText(/No model configured for embeddings/i)).toBeInTheDocument();
   });
+
+  test('does not fetch the registry when no api key is present', async () => {
+    useAuthStore.setState({ apiKey: null, tenantId: 't', plan: 'free', isAuthenticated: false });
+    const spy = mockFetch();
+    renderPage();
+    // Query is disabled without an api key, so no group ever populates and every
+    // capability section falls back to its empty hint.
+    await waitFor(() =>
+      expect(screen.getAllByText(/No model configured for/i)).toHaveLength(5),
+    );
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/models/configured'))).toBe(false);
+  });
+
+  test('toggling a capability chip removes it, then toggling another adds it', async () => {
+    mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.type(screen.getByPlaceholderText(/Platform admin key/i), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+
+    // "Reasoning" (text_generation) starts selected in the default form; clicking
+    // it exercises the filter branch of toggleCap.
+    const reasoningChip = screen.getByRole('button', { name: 'Reasoning' });
+    expect(reasoningChip.className).toMatch(/bg-primary/);
+    await userEvent.click(reasoningChip);
+    expect(reasoningChip.className).not.toMatch(/bg-primary/);
+
+    // Clicking an unselected chip exercises the append branch of toggleCap.
+    const visionChip = screen.getByRole('button', { name: 'Vision' });
+    expect(visionChip.className).not.toMatch(/bg-primary/);
+    await userEvent.click(visionChip);
+    expect(visionChip.className).toMatch(/bg-primary/);
+  });
+
+  test('editing provider, cost, and the tools/vision checkboxes updates the form', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.type(screen.getByPlaceholderText(/Platform admin key/i), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+
+    await userEvent.type(screen.getByPlaceholderText(/openai\/gpt-oss-20b/i), 'gpt-oss-20b');
+    const providerInput = screen.getByPlaceholderText(/nvidia \/ openai \/ anthropic/i);
+    await userEvent.type(providerInput, 'together');
+    const costInput = screen.getByDisplayValue('0');
+    await userEvent.clear(costInput);
+    await userEvent.type(costInput, '0.0012');
+
+    const toolsCheckbox = screen.getByRole('checkbox', { name: /Supports tools/i });
+    const visionCheckbox = screen.getByRole('checkbox', { name: /Supports vision/i });
+    expect(toolsCheckbox).toBeChecked();
+    expect(visionCheckbox).not.toBeChecked();
+    await userEvent.click(toolsCheckbox);
+    await userEvent.click(visionCheckbox);
+    expect(toolsCheckbox).not.toBeChecked();
+    expect(visionCheckbox).toBeChecked();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, i]) => String(u).includes('/models/configured') && (i as RequestInit)?.method === 'POST')).toBe(true),
+    );
+    const [, init] = spy.mock.calls.find(
+      ([u, i]) => String(u).includes('/models/configured') && (i as RequestInit)?.method === 'POST',
+    )!;
+    const posted = JSON.parse((init as RequestInit).body as string);
+    expect(posted.provider).toBe('together');
+    expect(posted.cost_per_1k_input).toBeCloseTo(0.0012);
+    expect(posted.supports_tools).toBe(false);
+    expect(posted.supports_vision).toBe(true);
+  });
+
+  test('selecting the vision capability forces supports_vision on even if unchecked', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.type(screen.getByPlaceholderText(/Platform admin key/i), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+
+    await userEvent.type(screen.getByPlaceholderText(/openai\/gpt-oss-20b/i), 'vision-model');
+    await userEvent.click(screen.getByRole('button', { name: 'Vision' }));
+    expect(screen.getByRole('checkbox', { name: /Supports vision/i })).not.toBeChecked();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, i]) => String(u).includes('/models/configured') && (i as RequestInit)?.method === 'POST')).toBe(true),
+    );
+    const [, init] = spy.mock.calls.find(
+      ([u, i]) => String(u).includes('/models/configured') && (i as RequestInit)?.method === 'POST',
+    )!;
+    const posted = JSON.parse((init as RequestInit).body as string);
+    expect(posted.capabilities).toEqual(expect.arrayContaining(['text_generation', 'vision']));
+    expect(posted.supports_vision).toBe(true);
+  });
+
+  test('cancel closes the modal without posting anything', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.type(screen.getByPlaceholderText(/Platform admin key/i), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+    expect(screen.getByText(/Add \/ override a model/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+    expect(screen.queryByText(/Add \/ override a model/i)).not.toBeInTheDocument();
+    expect(spy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'POST')).toBe(false);
+  });
+
+  test('shows the server error message when saving a model fails', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/models/configured') && method === 'POST')
+        return new Response(JSON.stringify({ error: { message: 'model_id already registered' } }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      if (url.includes('/models/configured'))
+        return new Response(JSON.stringify(REGISTRY), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await screen.findByText('cheap-llm');
+    await userEvent.type(screen.getByPlaceholderText(/Platform admin key/i), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: /Add Model/i }));
+    await userEvent.type(screen.getByPlaceholderText(/openai\/gpt-oss-20b/i), 'dup-model');
+    await userEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/model_id already registered/i);
+    // The modal stays open on failure so the operator can correct and retry.
+    expect(screen.getByText(/Add \/ override a model/i)).toBeInTheDocument();
+    spy.mockRestore();
+  });
 });
