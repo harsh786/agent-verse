@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import { ArtifactsBrowserPage } from './ArtifactsBrowserPage';
 
 const ARTIFACT = (overrides = {}) => ({
@@ -27,6 +28,10 @@ function mockFetch(artifacts = [ARTIFACT()]) {
   });
 }
 
+function mockFetchImpl(handler: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => handler(String(input), init));
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -42,6 +47,7 @@ beforeEach(() => {
   sessionStorage.setItem('av_api_key', 'test-key');
   localStorage.setItem('av_api_key', 'test-key');
   useAuthStore.setState({ apiKey: 'test-key', tenantId: 't', plan: 'free', isAuthenticated: true });
+  useToastStore.setState({ toasts: [] });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -132,5 +138,221 @@ describe('ArtifactsBrowserPage', () => {
     renderPage();
     await waitFor(() => screen.getByTestId('artifact-card'));
     expect(screen.getByTestId('goal-link')).toBeInTheDocument();
+  });
+
+  test('clicking goal link does not open the detail drawer', async () => {
+    mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('goal-link'));
+    expect(screen.queryByLabelText(/details for/i)).not.toBeInTheDocument();
+  });
+
+  test('keyboard Enter on a card opens the detail drawer', async () => {
+    mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    screen.getByTestId('artifact-card').focus();
+    fireEvent.keyDown(screen.getByTestId('artifact-card'), { key: 'Enter' });
+    expect(await screen.findByLabelText(/details for report\.json/i)).toBeInTheDocument();
+  });
+
+  test('shows error state when the artifacts request fails', async () => {
+    mockFetchImpl(async () => new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 500 }));
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/failed to load artifacts/i)).toBeInTheDocument());
+  });
+
+  test('refresh button re-triggers the artifacts query', async () => {
+    const fetchSpy = mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    const callsBefore = fetchSpy.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: /refresh artifacts/i }));
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
+  test('sort select reorders cards (largest/smallest/oldest)', async () => {
+    mockFetch([
+      ARTIFACT({ id: 'a1', name: 'small.json', size_bytes: 10, created_at: new Date(Date.now() - 60_000).toISOString() }),
+      ARTIFACT({ id: 'a2', name: 'big.json', size_bytes: 9000, created_at: new Date().toISOString() }),
+    ]);
+    renderPage();
+    await waitFor(() => screen.getByText('small.json'));
+
+    const getCardNames = () => screen.getAllByTestId('artifact-card').map((c) => within(c).getByTitle(/\.json$/).textContent);
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort artifacts/i), 'largest');
+    await waitFor(() => expect(getCardNames()[0]).toBe('big.json'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort artifacts/i), 'smallest');
+    await waitFor(() => expect(getCardNames()[0]).toBe('small.json'));
+
+    await userEvent.selectOptions(screen.getByLabelText(/sort artifacts/i), 'oldest');
+    await waitFor(() => expect(getCardNames()[0]).toBe('small.json'));
+  });
+
+  test('group by goal groups cards under goal headers, including "(No goal)"', async () => {
+    mockFetch([
+      ARTIFACT({ id: 'a1', name: 'one.json', goal_id: 'goal-aaaaaaaaaaaaaaaa' }),
+      ARTIFACT({ id: 'a2', name: 'two.json', goal_id: 'goal-bbbbbbbbbbbbbbbb' }),
+      ARTIFACT({ id: 'a3', name: 'orphan.json', goal_id: undefined }),
+    ]);
+    renderPage();
+    await waitFor(() => screen.getByText('one.json'));
+
+    await userEvent.click(screen.getByRole('button', { name: /group by goal/i }));
+    expect(await screen.findByText('(No goal)')).toBeInTheDocument();
+    expect(screen.getAllByText(/^Goal:/).length).toBe(2);
+
+    // toggle back to flat list
+    await userEvent.click(screen.getByRole('button', { name: /switch to flat list/i }));
+    await waitFor(() => expect(screen.queryByText('(No goal)')).not.toBeInTheDocument());
+  });
+
+  test('drawer image viewer renders and tolerates load errors', async () => {
+    mockFetch([ARTIFACT({ artifact_type: 'image', content_type: 'image/png', storage_uri: 'https://example.com/pic.png' })]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    const img = await screen.findByAltText('report.json');
+    fireEvent.error(img);
+    expect(img.style.display).toBe('none');
+  });
+
+  test('drawer JSON viewer loads and renders content', async () => {
+    mockFetchImpl(async (url) => {
+      if (url.includes('/artifacts')) return new Response(JSON.stringify([ARTIFACT()]), { status: 200 });
+      return new Response(JSON.stringify({ hello: 'world' }), { status: 200 });
+    });
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await waitFor(() => expect(screen.getByText(/"hello"/)).toBeInTheDocument());
+  });
+
+  test('drawer JSON viewer shows a fallback link when the fetch fails', async () => {
+    mockFetchImpl(async (url) => {
+      if (url.includes('/artifacts')) return new Response(JSON.stringify([ARTIFACT()]), { status: 200 });
+      throw new Error('network down');
+    });
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await waitFor(() => expect(screen.getByText(/cannot load json preview/i)).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: /open in new tab/i })).toBeInTheDocument();
+  });
+
+  test('drawer text viewer renders an iframe', async () => {
+    mockFetch([ARTIFACT({ content_type: 'text/plain', storage_uri: 'https://example.com/notes.txt' })]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    const drawer = await screen.findByLabelText(/details for report\.json/i);
+    expect(drawer.querySelector('iframe[title="report.json"]')).not.toBeNull();
+  });
+
+  test('drawer falls back for unrecognized content types', async () => {
+    mockFetch([ARTIFACT({ content_type: 'application/octet-stream' })]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    expect(await screen.findByText(/preview not available/i)).toBeInTheDocument();
+  });
+
+  test('download link appears for http storage URIs, disabled otherwise', async () => {
+    mockFetch([ARTIFACT({ storage_uri: 's3://bucket/report.json' })]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    const downloadBtn = await screen.findByRole('button', { name: /^download$/i });
+    expect(downloadBtn).toBeDisabled();
+  });
+
+  test('copy URI button copies to clipboard and shows a toast', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByRole('button', { name: /copy uri/i }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('https://example.com/report.json');
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message.includes('URI copied'))).toBe(true)
+    );
+  });
+
+  test('use as input copies uri, toasts, and schedules navigation', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByRole('button', { name: /use as input/i }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('https://example.com/report.json');
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.message.includes('Opening goal form'))).toBe(true)
+    );
+  });
+
+  test('go to goal button in drawer is clickable', async () => {
+    mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    const drawer = await screen.findByLabelText(/details for report\.json/i);
+    await userEvent.click(within(drawer).getByRole('button', { name: /go to goal/i }));
+    // Navigating away doesn't throw; the app shell keeps rendering.
+    expect(screen.queryByText(/failed to load artifacts/i)).not.toBeInTheDocument();
+  });
+
+  test('cancelling the delete confirmation keeps the artifact', async () => {
+    const fetchSpy = mockFetch([ARTIFACT()]);
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /^cancel$/i })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^cancel$/i })).not.toBeInTheDocument());
+    expect(fetchSpy.mock.calls.some(([, i]) => (i as RequestInit)?.method === 'DELETE')).toBe(false);
+  });
+
+  test('delete failure shows an error toast', async () => {
+    mockFetchImpl(async (url, init) => {
+      const method = (init as RequestInit | undefined)?.method;
+      if (url.includes('/artifacts/art-001') && method === 'DELETE') {
+        return new Response(JSON.stringify({ error: { message: 'cannot delete' } }), { status: 500 });
+      }
+      if (url.includes('/artifacts')) return new Response(JSON.stringify([ARTIFACT()]), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await waitFor(() => screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByTestId('artifact-card'));
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }));
+    const confirmButtons = await screen.findAllByRole('button', { name: /^delete$/i });
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message.includes('Delete failed'))).toBe(true)
+    );
+  });
+
+  test('pagination appears when total exceeds the page size and page changes update the query', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => ARTIFACT({ id: `a${i}`, name: `file-${i}.json` }));
+    const fetchSpy = mockFetchImpl(async (url) => {
+      if (url.includes('/artifacts'))
+        return new Response(JSON.stringify({ items, total: 45 }), { status: 200 });
+      return new Response('[]', { status: 200 });
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('artifact-card').length).toBe(30));
+    expect(screen.getByRole('navigation', { name: /pagination/i })).toBeInTheDocument();
+
+    const callsBefore = fetchSpy.mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: /next page/i }));
+    await waitFor(() => expect(fetchSpy.mock.calls.length).toBeGreaterThan(callsBefore));
+    const lastCallUrl = String(fetchSpy.mock.calls[fetchSpy.mock.calls.length - 1][0]);
+    expect(lastCallUrl).toContain('offset=30');
   });
 });
