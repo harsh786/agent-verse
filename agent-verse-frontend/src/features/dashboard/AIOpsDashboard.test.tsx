@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { AIOpsDashboard } from './AIOpsDashboard';
@@ -49,6 +50,28 @@ function renderDashboard() {
   return render(
     <QueryClientProvider client={qc}>
       <MemoryRouter><AIOpsDashboard /></MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function LocationDisplay() {
+  const location = useLocation();
+  return <p data-testid="location">{location.pathname}{location.search}</p>;
+}
+
+/** Renders the dashboard behind real routes so navigate() calls are observable. */
+function renderDashboardWithRoutes() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<AIOpsDashboard />} />
+          <Route path="/goals" element={<LocationDisplay />} />
+          <Route path="/goals/:id" element={<LocationDisplay />} />
+          <Route path="/models" element={<LocationDisplay />} />
+        </Routes>
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -111,5 +134,85 @@ describe('AIOpsDashboard', () => {
     expect(await screen.findByText('No active goals')).toBeInTheDocument();
     expect(screen.getByText('No providers tested yet')).toBeInTheDocument();
     expect(screen.getByText('0/0')).toBeInTheDocument();
+  });
+
+  test('clicking the Active Goals KPI navigates to the executing-goals route', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Completed Today');
+    await userEvent.click(screen.getByRole('button', { name: /Active Goals/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/goals?status=executing');
+  });
+
+  test('clicking the Completed Today KPI navigates to the complete-goals route', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Completed Today');
+    await userEvent.click(screen.getByRole('button', { name: /Completed Today/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/goals?status=complete');
+  });
+
+  test('clicking the Failed Today KPI navigates to the failed-goals route', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Failed Today');
+    await userEvent.click(screen.getByRole('button', { name: /Failed Today/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/goals?status=failed');
+  });
+
+  test('clicking the Healthy Providers KPI navigates to /models', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Healthy Providers');
+    await userEvent.click(screen.getByRole('button', { name: /Healthy Providers/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/models');
+  });
+
+  test('"View all" navigates to /goals and clicking an active goal navigates to its detail page', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Deploy the billing service');
+    await userEvent.click(screen.getByRole('button', { name: /Deploy the billing service/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/goals/g1');
+  });
+
+  test('"View all →" link in the Active Goals panel navigates to /goals', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('Deploy the billing service');
+    await userEvent.click(screen.getByRole('button', { name: /View all/i }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/goals');
+    expect(await screen.findByTestId('location')).not.toHaveTextContent('status=');
+  });
+
+  test('"Details →" link in the Provider Health panel navigates to /models', async () => {
+    mockFetch();
+    renderDashboardWithRoutes();
+    await screen.findByText('anthropic');
+    await userEvent.click(screen.getByRole('button', { name: 'Details →' }));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/models');
+  });
+
+  test('shows a green healthy-providers icon when every provider is healthy', async () => {
+    mockFetch({ models: { providers: [{ provider: 'anthropic', is_healthy: true, avg_latency_ms: 50 }] } });
+    renderDashboard();
+    expect(await screen.findByText('1/1')).toBeInTheDocument();
+  });
+
+  test('renders a critical regression status with its own icon and alert severities', async () => {
+    mockFetch({
+      regression: { status: 'critical', critical_alerts: 2, warning_alerts: 0 },
+      alerts: {
+        alerts: [
+          { alert_id: 'a1', message: 'Critical drift', severity: 'critical', drift_type: 'latency' },
+          { alert_id: 'a2', message: 'Minor drift', severity: 'warning', drift_type: 'cost' },
+        ],
+      },
+    });
+    renderDashboard();
+    expect(await screen.findByText(/critical detected/i)).toBeInTheDocument();
+    expect(screen.getByText('2 critical · 0 warnings')).toBeInTheDocument();
+    expect(screen.getByText('Critical drift')).toBeInTheDocument();
+    expect(screen.getByText('Minor drift')).toBeInTheDocument();
   });
 });
