@@ -7,6 +7,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import WorkflowMarketplacePage from '../WorkflowMarketplacePage';
 
+const mockNavigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return { ...actual, useNavigate: () => mockNavigate };
+});
+
 vi.mock('../../../lib/api/client', () => ({
   workflowEngineApi: {
     listTemplates: vi.fn(),
@@ -64,6 +70,7 @@ describe('WorkflowMarketplacePage', () => {
       id: 'wf-new', name: 'KYC Automation (copy)', status: 'draft' as const,
       version: '1', labels: {}, description: '', created_at: '', updated_at: '',
     });
+    mockNavigate.mockClear();
   });
 
   it('renders page heading', async () => {

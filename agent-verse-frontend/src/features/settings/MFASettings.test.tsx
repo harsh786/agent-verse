@@ -18,7 +18,17 @@ const ENROLL = {
   period: 30,
 };
 
-function mockFetch(status: MFAStatus, opts: { statusPending?: boolean } = {}) {
+function mockFetch(
+  status: MFAStatus,
+  opts: {
+    statusPending?: boolean;
+    enrollFails?: boolean;
+    verifyFails?: boolean;
+    disableFails?: boolean;
+    regenFails?: boolean;
+    noQrCode?: boolean;
+  } = {},
+) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
@@ -26,12 +36,23 @@ function mockFetch(status: MFAStatus, opts: { statusPending?: boolean } = {}) {
       if (opts.statusPending) return new Promise<Response>(() => {}); // never resolves
       return new Response(JSON.stringify(status), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
-    if (url.includes('/auth/mfa/enroll') && method === 'POST')
-      return new Response(JSON.stringify(ENROLL), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/auth/mfa/verify-enrollment') && method === 'POST')
+    if (url.includes('/auth/mfa/enroll') && method === 'POST') {
+      if (opts.enrollFails) return new Response(JSON.stringify({ message: 'enroll failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      const body = opts.noQrCode ? { ...ENROLL, qr_code: null } : ENROLL;
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.includes('/auth/mfa/verify-enrollment') && method === 'POST') {
+      if (opts.verifyFails) return new Response(JSON.stringify({ message: 'invalid code' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       return new Response(JSON.stringify({ status: 'enabled', recovery_codes: ['aaaa-1111', 'bbbb-2222'], message: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/auth/mfa/disable') && method === 'POST')
+    }
+    if (url.includes('/auth/mfa/disable') && method === 'POST') {
+      if (opts.disableFails) return new Response(JSON.stringify({ message: 'invalid code' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       return new Response(JSON.stringify({ status: 'disabled', message: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.includes('/auth/mfa/regenerate') && method === 'POST') {
+      if (opts.regenFails) return new Response(JSON.stringify({ message: 'invalid code' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ recovery_codes: ['cccc-3333', 'dddd-4444'], message: 'ok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
 }
