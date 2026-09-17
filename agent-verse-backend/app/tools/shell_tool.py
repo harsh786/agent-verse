@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import posixpath
 import shlex
 from dataclasses import dataclass
 
@@ -57,9 +58,14 @@ def _validate_working_dir(working_dir: str) -> str:
         return "/tmp"
 
     try:
-        normalized = os.path.normpath(working_dir)
+        # working_dir always names a path inside the Linux sandbox container,
+        # never a path on the host filesystem — normalize with posixpath so
+        # this doesn't turn into a backslashed Windows path (and silently
+        # fail every containment check below) when the backend runs on
+        # Windows.
+        normalized = posixpath.normpath(working_dir)
         for safe_root in _SAFE_ROOTS:
-            if normalized == safe_root or normalized.startswith(safe_root + os.sep):
+            if normalized == safe_root or normalized.startswith(safe_root + "/"):
                 return normalized
     except Exception:
         pass
