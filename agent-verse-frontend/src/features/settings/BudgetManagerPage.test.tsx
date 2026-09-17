@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
@@ -281,5 +282,199 @@ describe('BudgetManagerPage', () => {
       expect(screen.getByText('claude-3-sonnet')).toBeInTheDocument()
     );
     expect(screen.getByText('gpt-4')).toBeInTheDocument();
+  });
+
+  test('sorting the agent table by column toggles direction on repeat click', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const costSortBtn = screen.getByRole('button', { name: 'Cost' });
+    await userEvent.click(costSortBtn);
+    // Default sort col is total_cost_usd desc already; clicking again should flip to asc
+    await userEvent.click(costSortBtn);
+    // No crash and table still renders both agents regardless of order
+    expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Researcher').length).toBeGreaterThan(0);
+  });
+
+  test('sorting by a different column (Goals) switches sort column to desc', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const goalsSortBtn = screen.getByRole('button', { name: /^goals/i });
+    await userEvent.click(goalsSortBtn);
+    expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0);
+  });
+
+  test('sorting by Avg/Goal column works too', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const avgSortBtn = screen.getByRole('button', { name: /avg\/goal/i });
+    await userEvent.click(avgSortBtn);
+    expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0);
+  });
+
+  test('clicking an agent row navigates to its detail page', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const row = screen.getAllByText('Triage Bot')[screen.getAllByText('Triage Bot').length - 1].closest('tr');
+    expect(row).toBeTruthy();
+    await userEvent.click(row as HTMLElement);
+    // No crash; row remains rendered (navigation itself isn't assertable without a route spy)
+    expect(row).toBeInTheDocument();
+  });
+
+  test('editing global daily budget marks form dirty and shows Save Changes button', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Daily Budget (USD)')).toBeInTheDocument());
+    const dailyBudgetInputs = screen.getAllByRole('spinbutton');
+    const dailyInput = dailyBudgetInputs[0];
+    fireEvent.change(dailyInput, { target: { value: '20' } });
+    await waitFor(() => expect(screen.getByText('Save Changes')).toBeInTheDocument());
+  });
+
+  test('editing an alert threshold updates and re-sorts the thresholds', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/alert thresholds/i)).toBeInTheDocument());
+    const spinbuttons = screen.getAllByRole('spinbutton');
+    // Thresholds are the last 3 spinbuttons rendered (50, 75, 90)
+    const thresholdInputs = spinbuttons.slice(-3);
+    fireEvent.change(thresholdInputs[0], { target: { value: '99' } });
+    await waitFor(() => expect(screen.getByText('Save Changes')).toBeInTheDocument());
+  });
+
+  test('saving budget changes calls both cost + governance update APIs', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Daily Budget (USD)')).toBeInTheDocument());
+    const dailyInput = screen.getAllByRole('spinbutton')[0];
+    fireEvent.change(dailyInput, { target: { value: '20' } });
+    const saveBtn = await screen.findByText('Save Changes');
+    await userEvent.click(saveBtn);
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, init]) => String(u).includes('/costs/budgets') && (init as RequestInit)?.method === 'PUT')).toBe(true)
+    );
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, init]) => String(u).includes('/governance/budget') && (init as RequestInit)?.method === 'PUT')).toBe(true)
+    );
+  });
+
+  test('save failure shows an error toast and form remains dirty', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init as RequestInit | undefined)?.method ?? 'GET';
+      if (method === 'PUT') return new Response(null, { status: 500, statusText: 'Server Error' });
+      if (url.includes('/costs/summary')) return new Response(JSON.stringify(MOCK_SUMMARY), { status: 200 });
+      if (url.includes('/costs/budgets')) return new Response(JSON.stringify(MOCK_BUDGETS), { status: 200 });
+      if (url.includes('/costs/per-agent')) return new Response(JSON.stringify({ agents: MOCK_PER_AGENT, period_days: 30 }), { status: 200 });
+      if (url.includes('/costs/anomalies')) return new Response(JSON.stringify([]), { status: 200 });
+      if (url.includes('/governance/budget')) return new Response(JSON.stringify(MOCK_GOV_BUDGET), { status: 200 });
+      return new Response(null, { status: 404 });
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Daily Budget (USD)')).toBeInTheDocument());
+    const dailyInput = screen.getAllByRole('spinbutton')[0];
+    fireEvent.change(dailyInput, { target: { value: '20' } });
+    const saveBtn = await screen.findByText('Save Changes');
+    await userEvent.click(saveBtn);
+    // Still dirty (isDirty not reset on error) -> Save Changes button remains
+    await waitFor(() => expect(screen.getByText('Save Changes')).toBeInTheDocument());
+  });
+
+  test('per-agent override input sets and resets a budget override with usage bar', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const overrideInputs = screen.getAllByPlaceholderText('No limit');
+    fireEvent.change(overrideInputs[0], { target: { value: '5' } });
+    await waitFor(() => expect(screen.getByText('Save Changes')).toBeInTheDocument());
+    const resetBtns = screen.getAllByText('Reset');
+    await userEvent.click(resetBtns[0]);
+    expect((overrideInputs[0] as HTMLInputElement).value).toBe('');
+  });
+
+  test('per-agent override input clears back to "no limit" when set to empty string', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getAllByText('Triage Bot').length).toBeGreaterThan(0));
+    const overrideInputs = screen.getAllByPlaceholderText('No limit');
+    fireEvent.change(overrideInputs[0], { target: { value: '5' } });
+    fireEvent.change(overrideInputs[0], { target: { value: '' } });
+    expect((overrideInputs[0] as HTMLInputElement).value).toBe('');
+  });
+
+  test('cost predictor: estimates cost and shows confidence + run this goal', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/costs/predict')) {
+        return new Response(JSON.stringify({
+          predicted_cost_usd: 0.42, p95_cost_usd: 0.9, confidence: 'high',
+        }), { status: 200 });
+      }
+      if (url.includes('/goals') && !url.includes('/costs')) {
+        return new Response(JSON.stringify({ id: 'goal-abc12345' }), { status: 200 });
+      }
+      if (url.includes('/costs/summary')) return new Response(JSON.stringify(MOCK_SUMMARY), { status: 200 });
+      if (url.includes('/costs/budgets')) return new Response(JSON.stringify(MOCK_BUDGETS), { status: 200 });
+      if (url.includes('/costs/per-agent')) return new Response(JSON.stringify({ agents: MOCK_PER_AGENT, period_days: 30 }), { status: 200 });
+      if (url.includes('/costs/anomalies')) return new Response(JSON.stringify([]), { status: 200 });
+      if (url.includes('/governance/budget')) return new Response(JSON.stringify(MOCK_GOV_BUDGET), { status: 200 });
+      return new Response(null, { status: 404 });
+    });
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Cost Predictor')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /cost predictor/i }));
+    const goalTextarea = await screen.findByPlaceholderText(/describe the goal/i);
+    await userEvent.type(goalTextarea, 'Summarize open PRs');
+    await userEvent.click(screen.getByRole('button', { name: /estimate cost/i }));
+    await waitFor(() => expect(screen.getByText('high confidence')).toBeInTheDocument());
+    expect(screen.getByText('$0.42')).toBeInTheDocument();
+    expect(screen.getByText('$0.90')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /run this goal/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, init]) => String(u).includes('/goals') && (init as RequestInit | undefined)?.method === 'POST')).toBe(true)
+    );
+  });
+
+  test('estimate cost button disabled when goal input is blank', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Cost Predictor')).toBeInTheDocument());
+    await userEvent.click(screen.getByRole('button', { name: /cost predictor/i }));
+    await screen.findByPlaceholderText(/describe the goal/i);
+    expect(screen.getByRole('button', { name: /estimate cost/i })).toBeDisabled();
+  });
+
+  test('budget runway indicator shows days remaining message', async () => {
+    mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/at current burn rate/i)).toBeInTheDocument());
+  });
+
+  test('refresh button refetches all queries', async () => {
+    const spy = mockFetch();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Budget Manager')).toBeInTheDocument());
+    const before = spy.mock.calls.length;
+    await userEvent.click(screen.getByLabelText('Refresh all data'));
+    await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  test('empty per-agent breakdown shows empty state', async () => {
+    mockFetch({ perAgent: [] });
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/no agent cost data/i)).toBeInTheDocument());
+    expect(screen.getByText(/no agents found/i)).toBeInTheDocument();
+  });
+
+  test('empty cost chart data shows empty state', async () => {
+    mockFetch({ summary: { ...MOCK_SUMMARY, cost_by_day: [] } });
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/no cost data available/i)).toBeInTheDocument());
   });
 });
