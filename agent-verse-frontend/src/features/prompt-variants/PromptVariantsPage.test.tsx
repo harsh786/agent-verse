@@ -50,7 +50,7 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 function mockFetch(variants = VARIANTS) {
-  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method === 'GET') return jsonResponse(variants);
     return jsonResponse({ status: 'ok' });

@@ -35,8 +35,8 @@ import {
 } from './AllNodes';
 
 // The node components only read data/selected/id from NodeProps.
-function renderNode(Node: React.ComponentType<never>, data: Record<string, unknown>, selected = false) {
-  return render(<Node {...({ id: 'n', data, selected } as never)} />);
+function renderNode(Node: React.ElementType, data: Record<string, unknown>, selected = false) {
+  return render(<Node {...({ id: 'n', data, selected } as Record<string, unknown>)} />);
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -104,7 +104,7 @@ describe('AllNodes — WaitNode', () => {
 });
 
 describe('AllNodes — BaseWorkflowNode-backed node types', () => {
-  const cases: Array<[React.ComponentType<never>, string, string]> = [
+  const cases: Array<[React.ElementType, string, string]> = [
     [ToolNode as never, 'tool', 'MCP Tool'],
     [LLMNode as never, 'llm', 'LLM Prompt'],
     [RAGNode as never, 'rag', 'RAG Retrieval'],

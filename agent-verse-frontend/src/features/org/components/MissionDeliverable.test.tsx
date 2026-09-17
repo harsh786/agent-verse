@@ -277,9 +277,7 @@ describe('MissionDeliverable', () => {
     afterEach(() => {
       vi.restoreAllMocks();
       vi.useRealTimers();
-      // @ts-expect-error — test cleanup of a test-only global
       delete (navigator as unknown as { clipboard?: unknown }).clipboard;
-      // @ts-expect-error — test cleanup of a test-only global
       delete (navigator as unknown as { share?: unknown }).share;
     });
 

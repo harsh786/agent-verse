@@ -377,7 +377,7 @@ describe('ApprovalInboxPage', () => {
 
   it('shows the pending count only when greater than zero and hides the badge otherwise', async () => {
     vi.mocked(workflowEngineApi.approvalStats).mockResolvedValue({
-      pending_count: 0, total_requests: 0, avg_resolution_seconds: null,
+      pending_count: 0, total_requests: 0, avg_resolution_seconds: 0,
     });
     renderPage();
 

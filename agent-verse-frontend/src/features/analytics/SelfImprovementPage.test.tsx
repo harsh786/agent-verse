@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import type { Experiment } from '@/lib/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { SelfImprovementPage } from './SelfImprovementPage';
@@ -18,7 +19,7 @@ function renderPage() {
   );
 }
 
-const MOCK_EXPERIMENTS = [
+const MOCK_EXPERIMENTS: Experiment[] = [
   {
     id: 'exp-1',
     name: 'Temperature A/B test',

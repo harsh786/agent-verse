@@ -22,6 +22,7 @@ vi.mock('../../../lib/api/client', () => ({
 }));
 
 import { workflowEngineApi } from '../../../lib/api/client';
+import type { WEWorkflow } from '../../../lib/api/client';
 
 const mockTemplates = [
   {
@@ -130,7 +131,7 @@ describe('WorkflowMarketplacePage', () => {
   });
 
   it('forks a template, shows the pending spinner, and navigates to the editor', async () => {
-    let resolveFork: (wf: unknown) => void = () => {};
+    let resolveFork: (wf: WEWorkflow) => void = () => {};
     vi.mocked(workflowEngineApi.forkTemplate).mockReturnValue(
       new Promise((resolve) => {
         resolveFork = resolve;

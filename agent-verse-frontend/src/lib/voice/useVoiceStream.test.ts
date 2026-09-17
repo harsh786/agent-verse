@@ -6,7 +6,7 @@
  * open/message/error/close and drive the state machine. These are transport
  * doubles, NOT source changes.
  */
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { useVoiceStream } from './useVoiceStream';

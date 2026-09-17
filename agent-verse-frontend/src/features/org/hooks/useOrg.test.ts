@@ -124,7 +124,7 @@ describe('useOrganizations / useOrganization / useOrgHealth', () => {
     orgApiMock.get.mockResolvedValue({ id: 'o1' });
     const { result, rerender } = renderHook(({ id }: { id: string | null }) => useOrganization(id), {
       wrapper,
-      initialProps: { id: null },
+      initialProps: { id: null as string | null },
     });
     expect(result.current.fetchStatus).toBe('idle');
     expect(orgApiMock.get).not.toHaveBeenCalled();
@@ -320,7 +320,7 @@ describe('useOrgEvents', () => {
   test('is disabled without an orgId, fetches once set', async () => {
     const { result, rerender } = renderHook(({ id }: { id: string | null }) => useOrgEvents(id), {
       wrapper,
-      initialProps: { id: null },
+      initialProps: { id: null as string | null },
     });
     expect(result.current.fetchStatus).toBe('idle');
     orgApiMock.listEvents.mockResolvedValue([{ id: 'e1' }]);

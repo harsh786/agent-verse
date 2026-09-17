@@ -34,8 +34,6 @@ const MISSION_ALPHA = {
   started_at: null, completed_at: null, created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
 };
 const MISSIONS = { data: [MISSION_ALPHA], cursor: null, hasMore: false };
-const EMPTY_MISSIONS = { data: [], cursor: null, hasMore: false };
-
 function mockFetch(events: unknown = EVENTS) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);

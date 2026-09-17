@@ -148,7 +148,7 @@ describe('ModelRegistryPage', () => {
   });
 
   test('does not fetch the registry when no api key is present', async () => {
-    useAuthStore.setState({ apiKey: null, tenantId: 't', plan: 'free', isAuthenticated: false });
+    useAuthStore.setState({ apiKey: '', tenantId: 't', plan: 'free', isAuthenticated: false });
     const spy = mockFetch();
     renderPage();
     // Query is disabled without an api key, so no group ever populates and every

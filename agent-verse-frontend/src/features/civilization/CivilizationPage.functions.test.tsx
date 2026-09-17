@@ -22,7 +22,7 @@ import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useToastStore } from '@/stores/toast';
-import type { CivilizationEvent } from '../../lib/api/civilizationApi';
+import type { Civilization, CivilizationEvent } from '../../lib/api/civilizationApi';
 
 vi.mock('../../lib/api/civilizationApi', () => ({
   civilizationApi: {
@@ -99,7 +99,7 @@ function renderPage(civId?: string) {
   );
 }
 
-const BASE_CIV = {
+const BASE_CIV: Civilization = {
   id: 'c1',
   name: 'Test Civ',
   status: 'active',
@@ -141,6 +141,7 @@ describe('CivilizationPage — SSE event handling', () => {
     await waitFor(() => {
       capturedOnEvent?.({
         id: 'e1',
+        civilization_id: 'c1',
         type: 'agent_spawned',
         ts: '2024-01-01T12:00:05Z',
         payload: { agent_id: 'agent-42' },

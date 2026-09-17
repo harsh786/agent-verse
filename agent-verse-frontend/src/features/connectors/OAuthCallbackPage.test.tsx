@@ -2,7 +2,7 @@
  * Tests for OAuthCallbackPage — forwards the OAuth result to window.opener via
  * postMessage and renders a status.
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import OAuthCallbackPage from './OAuthCallbackPage';

@@ -3,11 +3,6 @@ import type { Node } from '@xyflow/react';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { WorkflowStepConfig } from './WorkflowStepConfig';
 
-/** Grab the patch object most recently handed to onUpdate. */
-function lastArg(fn: ReturnType<typeof vi.fn>): Record<string, unknown> {
-  return fn.mock.calls.at(-1)![0] as Record<string, unknown>;
-}
-
 function makeNode(stepType: string, data: Record<string, unknown> = {}, id = 'step-1'): Node {
   return {
     id,

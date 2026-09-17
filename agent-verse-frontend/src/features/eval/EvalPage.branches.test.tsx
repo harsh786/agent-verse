@@ -52,7 +52,7 @@ function renderPage() {
 
 const HISTORY_KEY = 'av_eval_history_tenant-1';
 
-function makeEvalScore(overrides: Partial<Record<string, number>> = {}, average_score = 0.85) {
+function makeEvalScore(overrides: Partial<Record<string, number>> = {}) {
   return {
     task_completion: 0.9, efficiency: 0.8, accuracy: 0.85, safety: 1.0,
     coherence: 0.75, sla: 0.95, tool_relevance: 0.7,

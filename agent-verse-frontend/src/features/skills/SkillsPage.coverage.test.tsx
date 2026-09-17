@@ -97,7 +97,7 @@ describe('SkillsPage — extra coverage', () => {
   afterEach(() => vi.restoreAllMocks());
 
   test('does not fetch skills when there is no apiKey', async () => {
-    useAuthStore.setState({ apiKey: '', tenantId: null, plan: 'free', isAuthenticated: false });
+    useAuthStore.setState({ apiKey: '', tenantId: '', plan: 'free', isAuthenticated: false });
     const spy = mockFetch();
     renderPage();
     // Query is disabled, so the loading text never appears and no skills load.

@@ -530,9 +530,7 @@ describe('LiveSessionPanel', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(buildFetchMock(sessionRoutes(DEBATE_SESSION)));
     const createObjectURL = vi.fn(() => 'blob:mock');
     const revokeObjectURL = vi.fn();
-    // @ts-expect-error jsdom does not implement these
     URL.createObjectURL = createObjectURL;
-    // @ts-expect-error jsdom does not implement these
     URL.revokeObjectURL = revokeObjectURL;
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 

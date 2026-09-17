@@ -316,7 +316,7 @@ describe('SourceCard', () => {
 
   test('delete action requires confirmation click, then calls DELETE', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       if (init?.method === 'DELETE') {
         return new Response(null, { status: 204 });
       }

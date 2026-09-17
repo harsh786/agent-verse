@@ -28,10 +28,12 @@ vi.mock('framer-motion', () => ({
 
 import { BaseWorkflowNode } from './BaseWorkflowNode';
 
+const AnyBaseWorkflowNode = BaseWorkflowNode as React.ElementType;
+
 function renderNode(id: string, data: Record<string, unknown>, selected = false) {
   return render(
     // The component only reads id/data/selected from NodeProps.
-    <BaseWorkflowNode {...({ id, data, selected } as never)} />,
+    <AnyBaseWorkflowNode {...({ id, data, selected } as Record<string, unknown>)} />,
   );
 }
 

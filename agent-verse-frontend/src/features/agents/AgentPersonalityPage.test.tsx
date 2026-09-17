@@ -184,7 +184,7 @@ describe('AgentPersonalityPage', () => {
   });
 
   test('saving the personality PUTs the derived config and shows a success toast', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'PUT') {
         return new Response(JSON.stringify({ ...MOCK_AGENT, autonomy_mode: 'fully-autonomous' }), {
@@ -209,7 +209,7 @@ describe('AgentPersonalityPage', () => {
   });
 
   test('a failed save surfaces an error toast instead of crashing', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
       const method = (init?.method ?? 'GET').toUpperCase();
       if (method === 'PUT') return new Response('Server error', { status: 500 });
       return new Response(JSON.stringify(MOCK_AGENT), {
