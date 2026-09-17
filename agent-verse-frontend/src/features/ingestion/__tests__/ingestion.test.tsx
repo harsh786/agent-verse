@@ -125,6 +125,43 @@ describe('QuotaUsageBar', () => {
     // Critical state shows a warning banner with specific text
     expect(screen.getByText(/Quota nearly exceeded/i)).toBeInTheDocument();
   });
+
+  test('shows non-critical warning banner when sources usage is >80% but <=95%', async () => {
+    const { QuotaUsageBar } = await import('../components/QuotaUsageBar');
+    const sourceWarningQuota = { ...QUOTA, sources_used: 17, sources_limit: 20 }; // 85%
+    wrap(<QuotaUsageBar quota={sourceWarningQuota} />);
+    expect(screen.getByText(/Approaching quota limit/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Quota nearly exceeded/i)).not.toBeInTheDocument();
+  });
+
+  test('shows critical state when sources usage is >95%', async () => {
+    const { QuotaUsageBar } = await import('../components/QuotaUsageBar');
+    const sourceCriticalQuota = { ...QUOTA, sources_used: 20, sources_limit: 20 }; // 100%
+    wrap(<QuotaUsageBar quota={sourceCriticalQuota} />);
+    expect(screen.getByText(/Quota nearly exceeded/i)).toBeInTheDocument();
+  });
+
+  test('renders unlimited label and skips cost line when limits/cost are null-ish', async () => {
+    const { QuotaUsageBar } = await import('../components/QuotaUsageBar');
+    const unlimitedQuota = {
+      ...QUOTA,
+      sources_limit: null,
+      tokens_limit_month: null,
+      cost_usd_month: 0,
+    };
+    wrap(<QuotaUsageBar quota={unlimitedQuota} />);
+    const unlimitedLabels = screen.getAllByText(/\(unlimited\)/i);
+    expect(unlimitedLabels.length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByText(/Embedding cost/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Approaching quota limit/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Quota nearly exceeded/i)).not.toBeInTheDocument();
+  });
+
+  test('renders embedding cost line when cost_usd_month > 0', async () => {
+    const { QuotaUsageBar } = await import('../components/QuotaUsageBar');
+    wrap(<QuotaUsageBar quota={QUOTA} />);
+    expect(screen.getByText(/Embedding cost/i)).toBeInTheDocument();
+  });
 });
 
 // ── SourceCard ───────────────────────────────────────────────────────────────
