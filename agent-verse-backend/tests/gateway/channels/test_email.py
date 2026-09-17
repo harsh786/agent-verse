@@ -148,7 +148,7 @@ def test_format_response_basic():
     resp = OrgResponse(command_id="c1", text="Hello\n\nWorld")
     formatted = adapter.format_response(resp)
     assert formatted["text_body"] == "Hello\n\nWorld"
-    assert "<p>Hello</p><p>World</p>" == formatted["html_body"]
+    assert formatted["html_body"] == "<p>Hello</p><p>World</p>"
     assert formatted["references"] == "c1"
     assert formatted["subject"].startswith("Re: AgentVerse —")
 
