@@ -128,4 +128,58 @@ describe('WorkflowMarketplacePage', () => {
       expect(screen.getByRole('status')).toBeInTheDocument();
     });
   });
+
+  it('forks a template, shows the pending spinner, and navigates to the editor', async () => {
+    let resolveFork: (wf: unknown) => void = () => {};
+    vi.mocked(workflowEngineApi.forkTemplate).mockReturnValue(
+      new Promise((resolve) => {
+        resolveFork = resolve;
+      })
+    );
+
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText('KYC Automation')).toBeInTheDocument();
+    });
+
+    const forkButtons = screen.getAllByRole('button', { name: /fork template/i });
+    fireEvent.click(forkButtons[0]);
+
+    // While the mutation is pending, the fork button for that card should
+    // render the spinner instead of the GitFork icon.
+    await waitFor(() => {
+      expect(document.querySelector('.animate-spin')).toBeTruthy();
+    });
+
+    resolveFork({
+      id: 'wf-new', name: 'KYC Automation (copy)', status: 'draft' as const,
+      version: '1', labels: {}, description: '', created_at: '', updated_at: '',
+    });
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/workflows/wf-new/edit');
+    });
+    expect(workflowEngineApi.forkTemplate).toHaveBeenCalledWith('kyc-automation');
+
+    // Once settled, the spinner should be gone again.
+    await waitFor(() => {
+      expect(document.querySelector('.animate-spin')).toBeFalsy();
+    });
+  });
+
+  it('filters by category and resets back to all', async () => {
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /financial services/i })).toBeInTheDocument();
+    });
+
+    const financialButton = screen.getByRole('button', { name: /financial services/i });
+    fireEvent.click(financialButton);
+    expect(financialButton).toHaveAttribute('aria-pressed', 'true');
+
+    const allButton = screen.getByRole('button', { name: 'All' });
+    fireEvent.click(allButton);
+    expect(allButton).toHaveAttribute('aria-pressed', 'true');
+    expect(financialButton).toHaveAttribute('aria-pressed', 'false');
+  });
 });
