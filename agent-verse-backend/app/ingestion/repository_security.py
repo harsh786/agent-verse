@@ -200,7 +200,10 @@ def read_repository_files(
         if total_bytes > limits.max_total_bytes:
             raise RepositorySecurityError("Repository total byte limit exceeded")
         try:
-            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+            )
         except OSError as exc:
             raise RepositorySecurityError("Repository file cannot be opened safely") from exc
         try:
