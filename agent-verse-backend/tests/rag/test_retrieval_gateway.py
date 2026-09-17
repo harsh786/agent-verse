@@ -814,7 +814,9 @@ async def test_success_records_total_latency_without_query_content(
 
     success_trace = result.strategy_trace[-1]
     assert success_trace.action == "strategy_complete"
-    assert success_trace.detail["total_latency_ms"] > 0
+    # >= 0, not > 0: on some platforms (e.g. Windows) time.monotonic() has coarse
+    # clock resolution and a fast in-memory op can legitimately measure 0.0ms.
+    assert success_trace.detail["total_latency_ms"] >= 0
     assert "query" not in success_trace.detail
     assert info.call_args.kwargs["strategy"] == "fusion"
     assert "query" not in info.call_args.kwargs
