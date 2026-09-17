@@ -1363,4 +1363,40 @@ describe('GoalDetailPage — helper/handler branches', () => {
       expect(useToastStore.getState().toasts.some((t) => t.message === 'Copied!')).toBe(true)
     );
   });
+
+  test('"Back to goals" link on the goal-not-found screen navigates away', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(null), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    renderGoalDetailPage();
+
+    const backLink = await screen.findByRole('button', { name: /back to goals/i });
+    await userEvent.click(backLink);
+    await waitFor(() => expect(screen.queryByText(/goal not found/i)).not.toBeInTheDocument());
+  });
+
+  test('developer log entry with no message payload renders without the message span', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/goals/goal-1/replay')) {
+        return new Response(
+          JSON.stringify({
+            timeline: [{ event_id: 'event-1', goal_id: 'goal-1', type: 'step_started' }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /dev log/i }));
+    expect(await screen.findByText('step started')).toBeInTheDocument();
+  });
 });
