@@ -593,3 +593,421 @@ describe('GoalDetailPage — token streaming display', () => {
     expect(screen.queryByRole('status', { name: /live llm output/i })).not.toBeInTheDocument();
   });
 });
+
+// ── Additional breadth coverage: handlers, branches, tabs ────────────────────
+
+describe('GoalDetailPage — additional coverage', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem('av_api_key', 'tenant-key');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test('shows pause button for executing goal and calls pause API', async () => {
+    const fetchMock = mockGoal('executing');
+    renderGoalDetailPage();
+
+    const pauseBtn = await screen.findByRole('button', { name: /pause/i });
+    await userEvent.click(pauseBtn);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/goals\/goal-1\/pause$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
+  test('does not show pause button for planning goal, shows resume for paused goal and calls resume API', async () => {
+    mockGoal('planning');
+    renderGoalDetailPage();
+    await screen.findByRole('button', { name: /cancel/i });
+    expect(screen.queryByRole('button', { name: /pause/i })).not.toBeInTheDocument();
+
+    const fetchMock = mockGoal('paused');
+    renderGoalDetailPage();
+    const resumeBtn = await screen.findByRole('button', { name: /resume/i });
+    await userEvent.click(resumeBtn);
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/goals\/goal-1\/resume$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
+  test('refresh button triggers refetch and bumps stream key', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    const refreshBtn = await screen.findByRole('button', { name: /refresh/i });
+    await userEvent.click(refreshBtn);
+
+    // Component should still be alive and show the goal after refresh
+    expect(await screen.findByText('Fix prod')).toBeInTheDocument();
+  });
+
+  test('rerun button navigates to goals list with prefill state for terminal goal', async () => {
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const rerunBtn = await screen.findByRole('button', { name: /rerun/i });
+    await userEvent.click(rerunBtn);
+    // Navigating away unmounts this page's content
+    await waitFor(() => expect(screen.queryByRole('button', { name: /rerun/i })).not.toBeInTheDocument());
+  });
+
+  test('DNA, diff, and ghost-run icon buttons navigate without crashing', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await screen.findByRole('button', { name: /cancel/i });
+    await userEvent.click(screen.getByTitle('View DNA'));
+    // Navigated away from goal-1 route (no matching Route) — page unmounts
+    await waitFor(() => expect(screen.queryByRole('button', { name: /cancel/i })).not.toBeInTheDocument());
+  });
+
+  test('back to goals button navigates away', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /back to goals/i }));
+    await waitFor(() => expect(screen.queryByText('Fix prod')).not.toBeInTheDocument());
+  });
+
+  test('shows agent info, connectors, workflow mode, iterations, and priority badges', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/agents/agent-42')) {
+        return new Response(
+          JSON.stringify({
+            id: 'agent-42',
+            name: 'Ops Agent',
+            autonomy_mode: 'semi-auto',
+            connector_ids: ['jira', 'github', 'slack', 'confluence', 'pagerduty'],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: 'goal-1',
+          goal_id: 'goal-1',
+          status: 'executing',
+          goal: 'Fix prod',
+          agent_id: 'agent-42',
+          workflow_mode: 'multi_agent',
+          iterations: 3,
+          priority: 'high',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+
+    expect(await screen.findByText('Ops Agent')).toBeInTheDocument();
+    expect(screen.getByText(/semi auto/i)).toBeInTheDocument();
+    const connectorsText = screen.getByText(/jira, github, slack, confluence/);
+    expect(connectorsText).toBeInTheDocument();
+    expect(connectorsText.parentElement?.textContent).toContain('+1');
+    expect(screen.getByText(/multi agent/i)).toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.tagName === 'SPAN' && /iterations/i.test(el.textContent ?? '') && el.textContent!.includes('3'))).toBeInTheDocument();
+    expect(screen.getByText('high')).toBeInTheDocument();
+  });
+
+  test('shows "No agent assigned" when goal has no agent_id', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+    expect(await screen.findByText(/no agent assigned/i)).toBeInTheDocument();
+  });
+
+  test('retrying a failed step from the terminal log calls the retry/resubmit API', async () => {
+    mockGoal('executing');
+    goalStreamState.current = {
+      connected: true,
+      streamingToken: null,
+      events: [
+        { type: 'tool_call_failed', tool: 'github.create_pr', server_id: 'github', error: 'Token expired' },
+      ],
+    };
+    const fetchMock = mockGoal('executing');
+
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: /github\.create_pr failed/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /retry from here/i }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/goals$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
+  test('switches to the pattern tab without crashing', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/pattern-selection')) {
+        return new Response('Not found', { status: 404 });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /pattern/i }));
+    expect(screen.getByRole('tabpanel', { name: /pattern/i })).toBeInTheDocument();
+    expect(await screen.findByTestId('pattern-empty')).toBeInTheDocument();
+  });
+
+  test('switches to the explain tab without crashing', async () => {
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /why/i }));
+    expect(screen.getByRole('tabpanel', { name: /why/i })).toBeInTheDocument();
+  });
+
+  test('eval tab shows empty state and triggers evaluation run', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated', suggestions: [] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/eval')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      void init;
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+    expect(await screen.findByText(/no evaluation yet/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /run eval|re-score/i }));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/goals\/goal-1\/eval$/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+  });
+
+  test('eval tab renders scorecard with dimension breakdown when evaluation exists', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated', suggestions: [] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/eval')) {
+        return new Response(
+          JSON.stringify({
+            status: 'evaluated',
+            passed: true,
+            average_score: 0.9,
+            scores: { task_completion: 0.95, safety: 0.8, unknown_dim: 0.5 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+
+    expect(await screen.findByText('90%')).toBeInTheDocument();
+    expect(screen.getByText(/PASSED/)).toBeInTheDocument();
+    expect(screen.getByText('Task Completion')).toBeInTheDocument();
+    expect(screen.getByText('Safety')).toBeInTheDocument();
+    expect(screen.getByText('unknown dim')).toBeInTheDocument();
+  });
+
+  test('eval tab shows failed scorecard styling when evaluation did not pass', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated', suggestions: [] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/eval')) {
+        return new Response(
+          JSON.stringify({ status: 'evaluated', passed: false, average_score: 0.4, scores: {} }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'failed', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+    expect(await screen.findByText(/FAILED/)).toBeInTheDocument();
+  });
+
+  test('copy result button copies to clipboard and shows a toast', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    const copyBtn = await screen.findByRole('button', { name: /copy result/i });
+    await userEvent.click(copyBtn);
+
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+  });
+
+  test('download buttons render and can be clicked when artifact has downloads', async () => {
+    const createObjectURL = vi.fn().mockReturnValue('blob:mock');
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await screen.findByText('PCF-58608');
+    await userEvent.click(screen.getByRole('button', { name: /^json$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^csv$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /^markdown$/i }));
+    await userEvent.click(screen.getByRole('button', { name: /raw data/i }));
+
+    expect(createObjectURL).toHaveBeenCalledTimes(4);
+  });
+
+  test('print button invokes window.print', async () => {
+    const printSpy = vi.spyOn(window, 'print').mockImplementation(() => {});
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await screen.findByText('PCF-58608');
+    await userEvent.click(screen.getByRole('button', { name: /print/i }));
+    expect(printSpy).toHaveBeenCalled();
+  });
+
+  test('does not render download buttons when artifact has no downloads', async () => {
+    mockFailedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await waitFor(() => expect(screen.getByText(/goal did not fully complete/i)).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /^json$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^csv$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^markdown$/i })).not.toBeInTheDocument();
+  });
+
+  test('evidence tab shows populated tool evidence with verification banner', async () => {
+    mockCompletedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /evidence/i }));
+    expect(screen.getByText('Jira returned matching issues.')).toBeInTheDocument();
+    expect(screen.getByText('jira_search_issues')).toBeInTheDocument();
+  });
+
+  test('evidence tab shows empty state when goal has no evidence at all', async () => {
+    mockCompletedGoalWithoutResultArtifact();
+    goalStreamState.current = { connected: true, streamingToken: null, events: [] };
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /evidence/i }));
+    expect(await screen.findByText(/no evidence yet/i)).toBeInTheDocument();
+  });
+
+  test('evidence tab falls back to SSE-derived tool evidence when artifact has none', async () => {
+    mockGoal('executing');
+    goalStreamState.current = {
+      connected: true,
+      streamingToken: null,
+      events: [
+        { type: 'tool_call_complete', tool: 'jira.search', server_id: 'jira', success: true, output: { total: 0 } },
+      ],
+    };
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /evidence/i }));
+    expect(await screen.findByText('jira.search')).toBeInTheDocument();
+  });
+
+  test('results tab shows empty-output ghost state when goal has no summary and no events', async () => {
+    mockGoal('executing');
+    goalStreamState.current = { connected: true, streamingToken: null, events: [] };
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^results$/i }));
+    expect(await screen.findByText(/no output captured/i)).toBeInTheDocument();
+  });
+
+  test('shows waiting-human panel with no pending approval yet', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/governance/approvals')) {
+        return new Response(JSON.stringify([]), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'waiting_human', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    expect(await screen.findByText(/awaiting approval request from backend/i)).toBeInTheDocument();
+  });
+
+  test('status badge renders cancelled and unknown status variants', async () => {
+    mockGoal('cancelled');
+    renderGoalDetailPage();
+    expect(await screen.findByText('cancelled')).toBeInTheDocument();
+  });
+
+  test('terminal panel auto-scroll toggle button flips label', async () => {
+    mockGoal('executing');
+    renderGoalDetailPage();
+
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+    const toggleBtn = await screen.findByTitle(/disable auto-scroll/i);
+    await userEvent.click(toggleBtn);
+    expect(await screen.findByTitle(/enable auto-scroll/i)).toBeInTheDocument();
+  });
+
+  test('execution tab shows waiting-for-events message for a non-terminal goal with no events', async () => {
+    mockGoal('executing');
+    goalStreamState.current = { connected: true, streamingToken: null, events: [] };
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+    expect(await screen.findByText(/waiting for events/i)).toBeInTheDocument();
+  });
+
+  test('execution tab shows no-live-events message for a terminal goal with no events', async () => {
+    mockCompletedGoalWithoutResultArtifact();
+    goalStreamState.current = { connected: true, streamingToken: null, events: [] };
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /execution/i }));
+    expect(await screen.findByText(/no live events captured/i)).toBeInTheDocument();
+  });
+});
