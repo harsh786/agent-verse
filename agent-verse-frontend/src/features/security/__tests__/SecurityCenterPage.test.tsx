@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import SecurityCenterPage from '../SecurityCenterPage';
@@ -11,15 +11,19 @@ vi.mock('react-router-dom', async () => ({
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
+function renderPage() {
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>
+        <SecurityCenterPage />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+}
+
 describe('SecurityCenterPage', () => {
   it('renders all 6 tabs', () => {
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>
-          <SecurityCenterPage />
-        </MemoryRouter>
-      </QueryClientProvider>
-    );
+    renderPage();
     expect(screen.getByText('Security Center')).toBeTruthy();
     expect(screen.getByText('Agent Identity')).toBeTruthy();
     expect(screen.getByText('Governance')).toBeTruthy();
@@ -30,13 +34,57 @@ describe('SecurityCenterPage', () => {
   });
 
   it('shows security score', () => {
-    render(
-      <QueryClientProvider client={qc}>
-        <MemoryRouter>
-          <SecurityCenterPage />
-        </MemoryRouter>
-      </QueryClientProvider>
-    );
+    renderPage();
     expect(screen.getByText('Security Score')).toBeTruthy();
+    expect(screen.getByText('78')).toBeTruthy();
+  });
+
+  it('renders the Agent Identity panel by default and highlights the identity tab', () => {
+    renderPage();
+    const tabContent = screen.getByTestId('tab-content');
+    expect(within(tabContent).getByText('Per-Agent API Keys')).toBeTruthy();
+
+    const identityTab = screen.getByTestId('tab-identity');
+    expect(identityTab.className).toContain('bg-neural-violet');
+
+    const governanceTab = screen.getByTestId('tab-governance');
+    expect(governanceTab.className).not.toContain('bg-neural-violet text-white');
+  });
+
+  it('switches panels and active-tab styling when each tab is clicked', () => {
+    renderPage();
+
+    const sequence: Array<{ id: string; heading: string }> = [
+      { id: 'governance', heading: 'Pending Approvals' },
+      { id: 'guardrails', heading: 'Active Guardrail Layers' },
+      { id: 'audit', heading: 'Hash Chain Integrity' },
+      { id: 'scopes', heading: 'Built-in Role Hierarchy' },
+      { id: 'limits', heading: 'Plan Limits Comparison' },
+      { id: 'identity', heading: 'Per-Agent API Keys' },
+    ];
+
+    let previousHeading = 'Per-Agent API Keys';
+
+    for (const { id, heading } of sequence) {
+      const tabButton = screen.getByTestId(`tab-${id}`);
+      fireEvent.click(tabButton);
+
+      const tabContent = screen.getByTestId('tab-content');
+      expect(within(tabContent).getByText(heading)).toBeTruthy();
+      expect(tabButton.className).toContain('bg-neural-violet');
+
+      if (heading !== previousHeading) {
+        expect(within(tabContent).queryByText(previousHeading)).not.toBeInTheDocument();
+      }
+      previousHeading = heading;
+    }
+  });
+
+  it('clicking the already-active tab keeps the same panel rendered', () => {
+    renderPage();
+    const identityTab = screen.getByTestId('tab-identity');
+    fireEvent.click(identityTab);
+    const tabContent = screen.getByTestId('tab-content');
+    expect(within(tabContent).getByText('Per-Agent API Keys')).toBeTruthy();
   });
 });
