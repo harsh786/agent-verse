@@ -87,11 +87,13 @@ test.describe('Schedules — Real E2E', () => {
   });
 
   test('POST /schedules creates a schedule', async ({ api }) => {
+    // CreateScheduleRequest (app/api/schedules.py) fields are trigger_type/cron_expr,
+    // not cron_expression/enabled.
     const resp = await api.post('/schedules', {
       name: `e2e-schedule-${Date.now()}`,
       goal_template: 'Generate daily report',
-      cron_expression: '0 9 * * 1-5',
-      enabled: false,
+      trigger_type: 'cron',
+      cron_expr: '0 9 * * 1-5',
     });
     expect([200, 201]).toContain(resp.status());
   });
@@ -100,7 +102,8 @@ test.describe('Schedules — Real E2E', () => {
     const resp = await api.post('/schedules', {
       name: `bad-cron-${Date.now()}`,
       goal_template: 'Test',
-      cron_expression: 'not-valid-cron',
+      trigger_type: 'cron',
+      cron_expr: 'not-valid-cron',
     });
     expect([400, 422]).toContain(resp.status());
   });

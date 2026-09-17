@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -144,6 +145,35 @@ def test_create_schedule() -> None:
     assert body["spec"]["trigger_type"] == "cron"
     assert body["agent_id"] == "agent-abc"
     assert body["goal_template"] == "Run daily report"
+
+
+@pytest.mark.filterwarnings("ignore::starlette.exceptions.StarletteDeprecationWarning")
+@pytest.mark.filterwarnings("ignore:.*HTTP_422_UNPROCESSABLE_ENTITY.*:DeprecationWarning")
+def test_create_schedule_with_invalid_cron_expr_returns_422() -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        resp = client.post(
+            "/schedules",
+            json={"trigger_type": "cron", "cron_expr": "not-valid-cron"},
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 422
+    assert "cron" in resp.json()["detail"].lower()
+
+
+def test_create_schedule_with_non_cron_type_skips_cron_validation() -> None:
+    # A garbage cron_expr on a non-cron trigger type must not be validated —
+    # it's simply unused.
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post(
+        "/schedules",
+        json={"trigger_type": "interval", "interval_seconds": 60, "cron_expr": "garbage"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 201
 
 
 def test_create_schedule_awaits_create_async_before_returning() -> None:

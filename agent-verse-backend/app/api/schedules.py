@@ -148,6 +148,17 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
             detail=f"Unknown trigger_type: {body.trigger_type}",
         ) from None
 
+    if ttype == TriggerType.CRON:
+        from app.triggers.models import validate_cron
+
+        try:
+            validate_cron(body.cron_expr, str(getattr(tenant_ctx, "plan", "free") or "free"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+
     _validate_agent_id(request, body.agent_id, tenant_ctx=tenant_ctx)
 
     webhook_token = ""
