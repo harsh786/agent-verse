@@ -24,8 +24,17 @@ def test_verify_rejects_garbage():
 
 def test_verify_rejects_tampered_signature():
     token = mint_stream_token(tenant_id="t", key_id="k")
-    # Flip the last character of the signature.
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    # Flip the FIRST character of the signature, not the last: a base64-encoded
+    # 32-byte digest has 43 chars with no padding, so its last character only
+    # carries 4 significant bits — the other 2 are discard bits ignored by the
+    # decoder. 'A' (000000) and 'B' (000001) differ only in a discard bit, so
+    # swapping between them there is sometimes a no-op after decoding (~1/32 of
+    # random signatures, whenever the real last char happens to be 'A' or 'B'),
+    # making the assertion flaky. The first character's bits are always fully
+    # significant, so tampering there reliably changes the decoded bytes.
+    header, body, sig = token.split(".")
+    tampered_sig = ("A" if sig[0] != "A" else "B") + sig[1:]
+    tampered = f"{header}.{body}.{tampered_sig}"
     assert verify_stream_token(tampered) is None
 
 
