@@ -150,6 +150,154 @@ describe('SourceCard', () => {
     const syncBtn = screen.getByRole('button', { name: /sync source now/i });
     expect(syncBtn).toBeInTheDocument();
   });
+
+  test('shows healthy status badge when health check succeeds', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/health')) {
+        return new Response(JSON.stringify({ ok: true, latency_ms: 42 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    // The badge already reads "healthy" before the health query settles (see
+    // SourceCard.tsx: `health?.ok === false` is false while health is still
+    // undefined), so wait for the actual latency text rather than asserting
+    // on it as a separate synchronous step right after the label appears.
+    await waitFor(() => expect(screen.getByText(/Connected \(42ms\)/)).toBeInTheDocument());
+    expect(screen.getByLabelText(/status: healthy/i)).toBeInTheDocument();
+  });
+
+  test('shows error status badge when health check fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/health')) {
+        return new Response(JSON.stringify({ ok: false, latency_ms: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    await waitFor(() => expect(screen.getByLabelText(/status: error/i)).toBeInTheDocument());
+    expect(screen.getByText(/Connection error/)).toBeInTheDocument();
+  });
+
+  test('shows disabled status badge and no health polling when source disabled', async () => {
+    const { SourceCard } = await import('../components/SourceCard');
+    const disabledSource = { ...SOURCE, enabled: false };
+    wrap(<SourceCard source={disabledSource} />);
+    expect(screen.getByLabelText(/status: disabled/i)).toBeInTheDocument();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+    // Enable/Disable button should now say "Enable"
+    expect(screen.getByRole('button', { name: /enable source/i })).toBeInTheDocument();
+  });
+
+  test('does not show last_synced_at row when absent', async () => {
+    const { SourceCard } = await import('../components/SourceCard');
+    const noSync = { ...SOURCE, last_synced_at: null as unknown as string };
+    wrap(<SourceCard source={noSync} />);
+    expect(screen.getByText('My S3 Bucket')).toBeInTheDocument();
+  });
+
+  test('clicking the card opens the detail drawer, and closing it hides it again', async () => {
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    const card = screen.getByRole('article');
+    await userEvent.click(card);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+
+    // Close via the backdrop click handler (onClose)
+    const backdrop = dialog.querySelector('.absolute.inset-0.bg-black\\/40') as HTMLElement;
+    await userEvent.click(backdrop);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  test('clicking sync action triggers the sync API call and does not open the drawer', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/sync') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ status: 'pending' }), { status: 202, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    const syncBtn = screen.getByRole('button', { name: /sync source now/i });
+    await userEvent.click(syncBtn);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/sources\/src-001\/sync/),
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+    // Clicking the action button (which stops propagation) must not open the drawer
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  test('clicking the enable/disable action toggles enabled via PATCH', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      if (init?.method === 'PATCH') {
+        return new Response(JSON.stringify({ ...SOURCE, enabled: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    const toggleBtn = screen.getByRole('button', { name: /disable source/i });
+    await userEvent.click(toggleBtn);
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/sources\/src-001$/),
+        expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ enabled: false }) })
+      )
+    );
+  });
+
+  test('delete action requires confirmation click, then calls DELETE', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      if (init?.method === 'DELETE') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    const deleteBtn = screen.getByRole('button', { name: /delete source/i });
+
+    // First click arms the confirmation state — no DELETE call yet.
+    await userEvent.click(deleteBtn, { advanceTimers: vi.advanceTimersByTime });
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'DELETE' }));
+    expect(screen.getByRole('button', { name: /delete source/i })).toHaveAttribute('title', 'Click again to confirm');
+
+    // Second click within the window confirms and deletes.
+    await userEvent.click(deleteBtn, { advanceTimers: vi.advanceTimersByTime });
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringMatching(/\/sources\/src-001$/),
+        expect.objectContaining({ method: 'DELETE' })
+      )
+    );
+    vi.useRealTimers();
+  });
+
+  test('delete confirmation resets automatically after the timeout window', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    const deleteBtn = screen.getByRole('button', { name: /delete source/i });
+    await userEvent.click(deleteBtn, { advanceTimers: vi.advanceTimersByTime });
+    expect(screen.getByRole('button', { name: /delete source/i })).toHaveAttribute('title', 'Click again to confirm');
+
+    vi.advanceTimersByTime(3100);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /delete source/i })).toHaveAttribute('title', 'Delete')
+    );
+    vi.useRealTimers();
+  });
 });
 
 // ── SourceList ───────────────────────────────────────────────────────────────
@@ -274,6 +422,60 @@ describe('SourcesPage', () => {
         expect.objectContaining({ method: 'POST' })
       )
     );
+  });
+
+  test('shows error banner and retries on click when sources fail to load', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/sources') && !url.includes('/health') && !url.includes('/sync')) {
+        return new Response(JSON.stringify({ detail: 'boom' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (url.includes('/quota')) return new Response(JSON.stringify(QUOTA), { status: 200 });
+      return new Response('{}', { status: 200 });
+    });
+    const { SourcesPage } = await import('../SourcesPage');
+    wrap(<SourcesPage />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    expect(screen.getByText(/failed to load sources/i)).toBeInTheDocument();
+
+    const retryBtn = screen.getByRole('button', { name: /retry/i });
+    await userEvent.click(retryBtn);
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  test('renders the quota usage bar once quota data loads', async () => {
+    mockFetch([]);
+    const { SourcesPage } = await import('../SourcesPage');
+    wrap(<SourcesPage />);
+    await waitFor(() => expect(screen.getByText('Sources')).toBeInTheDocument());
+  });
+
+  test('filters the visible source list by family chip selection, and toggles back to all', async () => {
+    mockFetch();
+    const { SourcesPage } = await import('../SourcesPage');
+    wrap(<SourcesPage />);
+    await waitFor(() => screen.getByText('My S3 Bucket'));
+
+    const commChip = screen.getByRole('checkbox', { name: /communication/i });
+    await userEvent.click(commChip);
+    await waitFor(() => {
+      expect(screen.getByText('Company Slack')).toBeInTheDocument();
+      expect(screen.queryByText('My S3 Bucket')).not.toBeInTheDocument();
+    });
+
+    // Clicking the same active chip again toggles the filter back off ('all').
+    await userEvent.click(commChip);
+    await waitFor(() => expect(screen.getByText('My S3 Bucket')).toBeInTheDocument());
+  });
+
+  test('shows stat card counts for total, active and families', async () => {
+    mockFetch();
+    const { SourcesPage } = await import('../SourcesPage');
+    wrap(<SourcesPage />);
+    await waitFor(() => screen.getByText('My S3 Bucket'));
+    expect(screen.getByText('Total Sources')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByText('Families')).toBeInTheDocument();
   });
 });
 

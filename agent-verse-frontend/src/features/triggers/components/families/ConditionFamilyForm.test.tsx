@@ -45,6 +45,27 @@ describe('ConditionFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ counter_threshold: 250 });
   });
 
+  test('counter_threshold key and window fields report edits', () => {
+    const onChange = vi.fn();
+    render(<ConditionFamilyForm triggerType="counter_threshold" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText('api_calls_per_user'), { target: { value: 'logins' } });
+    expect(lastArg(onChange)).toEqual({ counter_key: 'logins' });
+    fireEvent.change(screen.getByDisplayValue('3600'), { target: { value: '600' } });
+    expect(lastArg(onChange)).toEqual({ counter_window_secs: 600 });
+  });
+
+  test('state_transition renders machine id, from/to state and reports edits', () => {
+    const onChange = vi.fn();
+    render(<ConditionFamilyForm triggerType="state_transition" value={{}} onChange={onChange} />);
+    expect(screen.getByText('State Machine ID')).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText('machine-uuid'), { target: { value: 'wf-1' } });
+    expect(lastArg(onChange)).toEqual({ state_machine_id: 'wf-1' });
+    fireEvent.change(screen.getByPlaceholderText('pending'), { target: { value: 'processing' } });
+    expect(lastArg(onChange)).toEqual({ from_state: 'processing' });
+    fireEvent.change(screen.getByPlaceholderText('completed'), { target: { value: 'done' } });
+    expect(lastArg(onChange)).toEqual({ to_state: 'done' });
+  });
+
   test('compound type splits comma-separated child trigger ids into an array', () => {
     const onChange = vi.fn();
     render(<ConditionFamilyForm triggerType="compound" value={{}} onChange={onChange} />);
@@ -60,5 +81,41 @@ describe('ConditionFamilyForm', () => {
     render(<ConditionFamilyForm triggerType="window_aggregate" value={{}} onChange={onChange} />);
     fireEvent.change(screen.getByDisplayValue('sum'), { target: { value: 'avg' } });
     expect(lastArg(onChange)).toEqual({ window_aggregation: 'avg' });
+  });
+
+  test('window_aggregate field, window seconds, and threshold report edits', () => {
+    const onChange = vi.fn();
+    render(<ConditionFamilyForm triggerType="window_aggregate" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText('payload.amount'), { target: { value: 'payload.total' } });
+    expect(lastArg(onChange)).toEqual({ window_field: 'payload.total' });
+    fireEvent.change(screen.getByDisplayValue('3600'), { target: { value: '60' } });
+    expect(lastArg(onChange)).toEqual({ window_seconds: 60 });
+    fireEvent.change(screen.getByDisplayValue('100'), { target: { value: '50' } });
+    expect(lastArg(onChange)).toEqual({ window_threshold: 50 });
+  });
+
+  test('compound logic select reports edits', () => {
+    const onChange = vi.fn();
+    render(<ConditionFamilyForm triggerType="compound" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByDisplayValue('AND (all must fire)'), { target: { value: 'OR' } });
+    expect(lastArg(onChange)).toEqual({ compound_logic: 'OR' });
+  });
+
+  test('compound preserves an existing compound_trigger_ids array in the joined display', () => {
+    render(
+      <ConditionFamilyForm
+        triggerType="compound"
+        value={{ compound_trigger_ids: ['trig-1', 'trig-2'] }}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByDisplayValue('trig-1, trig-2')).toBeInTheDocument();
+  });
+
+  test('renders nothing for an unrelated trigger type', () => {
+    const { container } = render(
+      <ConditionFamilyForm triggerType="cron" value={{}} onChange={vi.fn()} />,
+    );
+    expect(container.querySelector('.space-y-4')?.children.length).toBe(0);
   });
 });
