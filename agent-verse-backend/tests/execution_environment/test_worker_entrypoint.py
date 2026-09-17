@@ -17,6 +17,7 @@ import base64
 import json
 import os
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.execution_environment.envelope import build_envelope
@@ -481,6 +482,163 @@ def test_main_non_dry_run_propagates_plan_tier_from_agent_config() -> None:
     assert rc == 0
     assert captured_ctx
     assert captured_ctx[0].plan.value == "enterprise"
+
+
+class _NullAsyncCtx:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _FakeAsyncSession:
+    """Minimal AsyncSession stand-in that records every executed statement."""
+
+    def __init__(self) -> None:
+        self.executed: list[tuple[Any, Any]] = []
+        self.bind = None  # forces the non-postgres (select-then-write) branch
+
+    async def execute(self, stmt: Any, params: Any = None) -> Any:
+        self.executed.append((stmt, params))
+        return SimpleNamespace(scalar_one_or_none=lambda: None)
+
+    def add(self, obj: Any) -> None:
+        pass
+
+    def begin(self) -> _NullAsyncCtx:
+        return _NullAsyncCtx()
+
+
+class _SessionCtx:
+    """Async context manager yielding a fixed fake session (dunders must live
+    on the class, not the instance — `async with` looks them up via type())."""
+
+    def __init__(self, session: _FakeAsyncSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _FakeAsyncSession:
+        return self._session
+
+    async def __aexit__(self, *exc_info: Any) -> bool:
+        return False
+
+
+class _FakeSessionFactory:
+    """Stand-in for the callable returned by app.db.session._make_session_factory."""
+
+    def __init__(self, session: _FakeAsyncSession) -> None:
+        self._session = session
+
+    def __call__(self) -> _SessionCtx:
+        return _SessionCtx(self._session)
+
+
+def test_main_non_dry_run_wires_db_factory_into_agent_graph() -> None:
+    """The factory built from _ISOLATED_WORKER_DB_URL must be attached to the
+    AgentGraph instance as `_db_session_factory` — previously it was built and
+    discarded, silently disabling checkpoint persistence for isolated-worker runs."""
+    import app.agent.graph as graph_mod
+    from app.agent.state import GoalStatus
+
+    sentinel_factory = object()
+    captured: list[Any] = []
+
+    class _CapturingGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.append(self)
+
+        async def run(self, *, goal, tenant_ctx, initial_context, event_callback):
+            return SimpleNamespace(
+                status=GoalStatus.COMPLETE,
+                iterations=1,
+                plan=[],
+                steps=[],
+                verification_feedback="",
+            )
+
+    encoded = _signed_payload(goal_text="do the thing", dry_run=False)
+
+    with (
+        patch.object(graph_mod, "AgentGraph", _CapturingGraph),
+        patch(
+            "app.execution_environment.worker_entrypoint._make_db_factory",
+            return_value=sentinel_factory,
+        ),
+    ):
+        events, rc = _run_main_with_env(
+            {"_ISOLATED_WORKER_ENVELOPE": encoded, "_ISOLATED_WORKER_DB_URL": "postgresql://x/y"}
+        )
+
+    assert rc == 0
+    assert captured
+    assert captured[0]._db_session_factory is sentinel_factory
+
+
+def test_main_non_dry_run_leaves_db_session_factory_none_without_db_url() -> None:
+    """No _ISOLATED_WORKER_DB_URL set -> _db_factory is None -> wired through as None
+    (AgentGraph's own `if self._db_session_factory is None: return` early-return
+    already makes this a safe no-op for checkpointing)."""
+    import app.agent.graph as graph_mod
+    from app.agent.state import GoalStatus
+
+    captured: list[Any] = []
+
+    class _CapturingGraph:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.append(self)
+
+        async def run(self, *, goal, tenant_ctx, initial_context, event_callback):
+            return SimpleNamespace(
+                status=GoalStatus.COMPLETE, iterations=1, plan=[], steps=[], verification_feedback=""
+            )
+
+    encoded = _signed_payload(goal_text="do the thing", dry_run=False)
+
+    with patch.object(graph_mod, "AgentGraph", _CapturingGraph):
+        events, rc = _run_main_with_env({"_ISOLATED_WORKER_ENVELOPE": encoded})
+
+    assert rc == 0
+    assert captured
+    assert captured[0]._db_session_factory is None
+
+
+async def test_write_checkpoint_sets_rls_guc_on_session_from_wired_factory() -> None:
+    """End-to-end (minus a real DB): a session obtained through the factory
+    that worker_entrypoint now wires into AgentGraph._db_session_factory must
+    have `app.tenant_id` set via SET LOCAL / set_config before the checkpoint
+    write, exactly as app/db/rls.sqlalchemy_rls_context does."""
+    from app.agent.graph import AgentGraph
+    from app.providers.fake import FakeProvider
+
+    session = _FakeAsyncSession()
+    factory = _FakeSessionFactory(session)
+
+    graph = AgentGraph(
+        planner=FakeProvider(responses=[]),
+        executor=FakeProvider(responses=[]),
+        verifier=FakeProvider(responses=[]),
+    )
+    # Simulates the fix: worker_entrypoint._run() now sets this after
+    # constructing AgentGraph, instead of leaving _db_factory unused.
+    graph._db_session_factory = factory
+
+    tenant_ctx = SimpleNamespace(tenant_id="tenant-rls-check")
+    fake_state = SimpleNamespace(plan=["step one"], iterations=1)
+
+    await graph._write_checkpoint(
+        goal_id="goal-1", step_index=0, state=fake_state, tenant_ctx=tenant_ctx
+    )
+
+    rls_calls = [
+        params
+        for (_stmt, params) in session.executed
+        if params and params.get("tid") == "tenant-rls-check"
+    ]
+    assert rls_calls, (
+        f"expected a set_config('app.tenant_id', ...) call for tenant-rls-check, "
+        f"got executed statements: {session.executed}"
+    )
 
 
 def test_main_non_dry_run_invalid_plan_tier_falls_back_to_professional() -> None:

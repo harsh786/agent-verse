@@ -188,29 +188,29 @@ def _build_provider(llm_key: str, role: str) -> Any:
 
 
 def _make_db_factory(db_url: str, tenant_id: str) -> Any:
-    """Build an async DB session factory that enforces RLS for ``tenant_id``.
+    """Build an async DB session factory for ``tenant_id``.
+
+    Returns the raw session factory (an ``async_sessionmaker``-like callable
+    yielding an ``AsyncSession`` async context manager) — the RLS GUC is
+    enforced per-operation via :func:`app.db.rls.sqlalchemy_rls_context`
+    at the call site (see ``AgentGraph._write_checkpoint``/``_load_checkpoint``,
+    which the returned factory is wired into via ``_db_session_factory``).
+    That per-operation pattern is required because ``SET LOCAL`` is
+    transaction-scoped: it must run inside the same transaction as the
+    query it protects, not once up front when the factory is built.
+
+    ``tenant_id`` is accepted for API stability (call sites pass it) even
+    though this function no longer touches the DB itself.
 
     Returns ``None`` if ``db_url`` is empty or the DB stack is unavailable.
     """
+    del tenant_id  # enforced downstream per-session, not at factory-build time
     if not db_url:
         return None
     try:
         from app.db.session import _make_session_factory as _msf
 
-        factory = _msf(database_url=db_url)
-
-        # Wrap to inject RLS GUC on every session
-        from sqlalchemy import text as _sa_text
-
-        async def _rls_factory():  # type: ignore[no-untyped-def]
-            async with factory() as session:
-                await session.execute(
-                    _sa_text("SET LOCAL app.tenant_id = :tid"),
-                    {"tid": tenant_id},
-                )
-                yield session
-
-        return factory  # caller uses rls context manager separately
+        return _msf(database_url=db_url)
     except Exception as exc:
         _emit_log("warning", f"DB factory init failed: {exc} — continuing without DB")
         return None
@@ -415,6 +415,12 @@ def main() -> int:
             executor=executor,
             verifier=verifier,
         )
+        # Wire the RLS-enforcing session factory through so step checkpoints
+        # (crash-recovery) are persisted for isolated-worker goal runs too —
+        # previously built above but never attached, so checkpointing was
+        # silently a no-op in this execution path (see _write_checkpoint's
+        # `if self._db_session_factory is None: return` early return).
+        loop._db_session_factory = _db_factory
 
         # Propagate real plan tier from agent_config
         plan_str = str((envelope_dict.get("agent_config") or {}).get("plan", "professional"))
