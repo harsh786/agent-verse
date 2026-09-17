@@ -12,19 +12,23 @@ const STATUS_COLORS = {
   error:     'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300',
   healthy:   'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
   disabled:  'bg-muted text-muted-foreground',
+  checking:  'bg-muted text-muted-foreground',
 };
 
 export function SourceCard({ source }: SourceCardProps) {
   const [showDetail, setShowDetail] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const { data: health } = useSourceHealth(source.source_id, source.enabled);
+  const { data: health, isLoading: healthLoading, isError: healthErrored } = useSourceHealth(source.source_id, source.enabled);
   const sync   = useTriggerSync();
   const del    = useDeleteSource();
   const update = useUpdateSource();
 
   const familyCfg = FAMILY_CONFIG[source.family];
-  const statusKey = !source.enabled ? 'disabled' : health?.ok === false ? 'error' : 'healthy';
+  const statusKey = !source.enabled ? 'disabled'
+    : (healthErrored || health?.ok === false) ? 'error'
+    : healthLoading ? 'checking'
+    : 'healthy';
 
   function handleToggleEnabled(e: React.MouseEvent) {
     e.stopPropagation();
@@ -106,16 +110,18 @@ export function SourceCard({ source }: SourceCardProps) {
 
 function HealthBadge({ statusKey, health }: { statusKey: string; health?: { ok: boolean; latency_ms: number } | null }) {
   const cls = STATUS_COLORS[statusKey as keyof typeof STATUS_COLORS] ?? STATUS_COLORS.healthy;
-  const label = statusKey === 'healthy' ? `Connected (${Math.round(health?.latency_ms ?? 0)}ms)` :
-                statusKey === 'error'   ? 'Connection error' :
-                statusKey === 'syncing' ? 'Syncing…' : 'Disabled';
+  const label = statusKey === 'healthy'  ? `Connected (${Math.round(health?.latency_ms ?? 0)}ms)` :
+                statusKey === 'checking' ? 'Checking…' :
+                statusKey === 'error'    ? 'Connection error' :
+                statusKey === 'syncing'  ? 'Syncing…' : 'Disabled';
   return (
     <span
       className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${cls}`}
       aria-label={`Status: ${statusKey}`}
     >
-      {statusKey === 'healthy' ? <CheckCircle className="h-3 w-3" /> :
-       statusKey === 'syncing' ? <Zap className="h-3 w-3 animate-pulse" /> :
+      {statusKey === 'healthy'  ? <CheckCircle className="h-3 w-3" /> :
+       statusKey === 'checking' ? <Clock className="h-3 w-3 animate-pulse" /> :
+       statusKey === 'syncing'  ? <Zap className="h-3 w-3 animate-pulse" /> :
        <AlertCircle className="h-3 w-3" />}
       {label}
     </span>

@@ -183,6 +183,28 @@ describe('SourceCard', () => {
     expect(screen.getByText(/Connection error/)).toBeInTheDocument();
   });
 
+  test('shows a neutral "checking" status badge while the health query is pending', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {})); // never resolves
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    expect(screen.getByLabelText(/status: checking/i)).toBeInTheDocument();
+    expect(screen.getByText(/Checking…/)).toBeInTheDocument();
+    expect(screen.queryByText(/Connected/)).not.toBeInTheDocument();
+  });
+
+  test('shows the error status badge (not healthy) when the health fetch itself throws', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/health')) throw new Error('network down');
+      return new Response('{}', { status: 200 });
+    });
+    const { SourceCard } = await import('../components/SourceCard');
+    wrap(<SourceCard source={SOURCE} />);
+    await waitFor(() => expect(screen.getByLabelText(/status: error/i)).toBeInTheDocument());
+    expect(screen.getByText(/Connection error/)).toBeInTheDocument();
+    expect(screen.queryByText(/Connected/)).not.toBeInTheDocument();
+  });
+
   test('shows disabled status badge and no health polling when source disabled', async () => {
     const { SourceCard } = await import('../components/SourceCard');
     const disabledSource = { ...SOURCE, enabled: false };
