@@ -158,6 +158,13 @@ export default function ChatPage() {
     onDone,
   );
 
+  // A stream that ends in a server/connection error (as opposed to 'done')
+  // never calls onDone, so isSending would otherwise stay true forever —
+  // permanently disabling the composer and the error banner's Retry button.
+  useEffect(() => {
+    if (streamError) setIsSending(false);
+  }, [streamError]);
+
   // Downloadable artifacts produced during the session. streamEvents reset on
   // each new stream, so accumulate artifact_created events into session state.
   const [artifacts, setArtifacts] = useState<ArtifactCardData[]>([]);
