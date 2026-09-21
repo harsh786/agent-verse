@@ -560,11 +560,19 @@ class VerifierMixin:
                     # Dispatch improvement actions
                     try:
                         for _action in _actions:
+                            # BUG FIX: ImprovementAction is a lowercase StrEnum
+                            # (e.g. "update_prompt_variant"), but the branches
+                            # below match against UPPERCASE literals — without
+                            # .upper() here every "X" in _action_type check is
+                            # comparing against the wrong case and silently
+                            # never matches, so no improvement action (prompt
+                            # variant update, model routing switch, tool
+                            # blacklisting) was ever actually dispatched.
                             _action_type = (
                                 _action.action_type.value
                                 if hasattr(_action, "action_type")
                                 else str(_action)
-                            )
+                            ).upper()
                             if "STORE_REFLEXION_LESSON" in _action_type:
                                 pass  # handled by reflexion_wirer in failure branch
                             elif "UPDATE_PROMPT_VARIANT" in _action_type:
