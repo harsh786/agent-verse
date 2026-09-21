@@ -82,6 +82,10 @@ _BYPASS_PREFIXES = (
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
+    "/scim/v2",  # SCIM 2.0 provisioning — IdPs send their own hashed bearer token
+    # (require_scim_auth checks it against scim_tokens), never a tenant API key.
+    # Without this bypass every SCIM request from an IdP (Okta, Azure AD, ...)
+    # is rejected here with a generic 401 before it ever reaches SCIM auth.
     "/v1/gateway/",  # channel webhooks (telegram/whatsapp/slack) use per-channel signature auth
 )
 
