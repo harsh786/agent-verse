@@ -131,7 +131,7 @@ async def test_foreach_on_item_failure_abort_raises() -> None:
     )
     node = ForeachStepNode(step, _ctx())
     state = _state(inputs={"items": [2, 0, 5]})
-    with pytest.raises(RuntimeError, match="fe.*aborted"):
+    with pytest.raises(RuntimeError, match=r"fe.*aborted"):
         await node.execute(state)  # type: ignore[arg-type]
 
 
