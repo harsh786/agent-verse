@@ -147,3 +147,54 @@ async def test_sessions_are_tenant_scoped(repo: PostgresChatRepository) -> None:
     assert await repo.get_session(s1, t2) is None
     assert all(s["id"] != s1 for s in await repo.list_sessions(t2))
     assert any(s["id"] == s1 for s in await repo.list_sessions(t1))
+
+
+async def test_sessions_are_limit_bounded_and_keyset_pageable(
+    repo: PostgresChatRepository,
+) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    ids = [uuid.uuid4().hex for _ in range(5)]
+    for i, sid in enumerate(ids):
+        await repo.create_session(session_id=sid, tenant_id=tenant, title=f"s{i}")
+
+    # Newest page, bounded: last-created 2 sessions, newest first.
+    page1 = await repo.list_sessions(tenant, limit=2)
+    assert [s["title"] for s in page1] == ["s4", "s3"]
+
+    # Keyset further back using the oldest row of the page as the cursor.
+    oldest = page1[-1]
+    cursor = f"{oldest['updated_at'].isoformat()}|{oldest['id']}"
+    page2 = await repo.list_sessions(tenant, limit=2, before=cursor)
+    assert [s["title"] for s in page2] == ["s2", "s1"]
+
+    # A malformed cursor falls back to the newest page (no error).
+    assert await repo.list_sessions(tenant, limit=2, before="garbage") == page1
+
+    for sid in ids:
+        await repo.delete_session(sid, tenant)
+
+
+async def test_delete_session_returns_false_when_missing(
+    repo: PostgresChatRepository,
+) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    assert await repo.delete_session(uuid.uuid4().hex, tenant) is False
+
+
+async def test_update_session_returns_false_when_missing(
+    repo: PostgresChatRepository,
+) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    assert await repo.update_session(uuid.uuid4().hex, tenant, title="x") is False
+
+
+async def test_update_message_content_returns_false_when_missing(
+    repo: PostgresChatRepository,
+) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    assert await repo.update_message_content(uuid.uuid4().hex, tenant, "x") is False
+
+
+async def test_get_message_returns_none_when_missing(repo: PostgresChatRepository) -> None:
+    tenant = f"t-{uuid.uuid4().hex[:8]}"
+    assert await repo.get_message(uuid.uuid4().hex, tenant) is None
