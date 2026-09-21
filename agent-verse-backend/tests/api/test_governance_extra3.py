@@ -412,11 +412,7 @@ def test_email_approve_link_bad_sig() -> None:
 
 
 def test_email_approve_link_no_gateway() -> None:
-    """Lines 849: valid sig — but scoping bug in governance.py means UnboundLocalError → 500.
-    The code has `from fastapi import HTTPException` inside a conditional block, which
-    makes HTTPException UnboundLocal in subsequent raise statements when that block isn't entered.
-    Test confirms 500 behavior (code bug, not test bug).
-    """
+    """Lines 849: valid sig, no HITL gateway configured -> 503."""
     with patch("app.integrations.email.approval_sender._verify", return_value=True):
         app = _make_app()
         del app.state.hitl_gateway
@@ -426,14 +422,11 @@ def test_email_approve_link_no_gateway() -> None:
             "/governance/hitl/req-abc/approve?sig=valid-sig",
             headers=_headers(),
         )
-        # 500 due to UnboundLocalError (Python scoping bug in source code)
-        assert resp.status_code == 500
+        assert resp.status_code == 503
 
 
 def test_email_approve_link_not_found() -> None:
-    """Lines 849-852: gateway present but request not found.
-    Same scoping bug: HTTPException is UnboundLocal when _verify returns True → 500.
-    """
+    """Lines 849-852: gateway present but request not found -> 404."""
     with patch("app.integrations.email.approval_sender._verify", return_value=True):
         gateway = HITLGateway()
         # Empty gateway has no requests
@@ -443,8 +436,7 @@ def test_email_approve_link_not_found() -> None:
             "/governance/hitl/req-notexist/approve?sig=valid-sig",
             headers=_headers(),
         )
-        # 500 due to scoping bug
-        assert resp.status_code == 500
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -470,7 +462,7 @@ def test_email_reject_link_bad_sig() -> None:
 
 
 def test_email_reject_link_no_gateway() -> None:
-    """Lines 879: no gateway — same scoping bug as email_approve_link → 500."""
+    """Lines 879: no gateway configured -> 503."""
     with patch("app.integrations.email.approval_sender._verify", return_value=True):
         app = _make_app()
         del app.state.hitl_gateway
@@ -480,11 +472,11 @@ def test_email_reject_link_no_gateway() -> None:
             "/governance/hitl/req-789/reject?sig=valid",
             headers=_headers(),
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 503
 
 
 def test_email_reject_link_not_found() -> None:
-    """Lines 886-887: request not in gateway → same scoping bug → 500."""
+    """Lines 886-887: request not in gateway -> 404."""
     with patch("app.integrations.email.approval_sender._verify", return_value=True):
         gateway = HITLGateway()
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
@@ -492,7 +484,7 @@ def test_email_reject_link_not_found() -> None:
             "/governance/hitl/req-missing/reject?sig=valid",
             headers=_headers(),
         )
-        assert resp.status_code == 500
+        assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------

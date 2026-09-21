@@ -1176,8 +1176,6 @@ async def email_approve_link(request: Request, request_id: str, sig: str = "") -
     from app.integrations.email.approval_sender import _verify
 
     if not sig or not _verify(request_id, "approve", sig):
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=403, detail="Invalid or expired approval link")
 
     gateway = getattr(request.app.state, "hitl_gateway", None)
@@ -1233,8 +1231,6 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
     from app.integrations.email.approval_sender import _verify
 
     if not sig or not _verify(request_id, "reject", sig):
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=403, detail="Invalid or expired rejection link")
 
     gateway = getattr(request.app.state, "hitl_gateway", None)

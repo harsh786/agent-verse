@@ -18,9 +18,9 @@ Covers, among other things:
     that occurs *after* the gate was found re-raises as a 500 instead of a
     silent False.
   - Cross-tenant / terminal-goal approval hiding.
-  - The email one-click approve/reject links, including a real pre-existing
-    bug where a locally-shadowed ``HTTPException`` import means any non-403
-    error path in those two endpoints crashes with an unhandled
+  - The email one-click approve/reject links, including a regression test
+    for a fixed bug where a locally-shadowed ``HTTPException`` import meant
+    any non-403 error path in those two endpoints crashed with an unhandled
     UnboundLocalError (-> 500) instead of returning the intended status code.
 """
 
@@ -1011,17 +1011,15 @@ def test_email_approve_link_cross_action_signature_is_rejected() -> None:
     )
 
 
-def test_email_approve_link_already_resolved_crashes_with_500_due_to_scoping_bug() -> None:
-    """Documents a real bug: governance.py's email_approve_link shadows the
+def test_email_approve_link_already_resolved_returns_409() -> None:
+    """Regression test: governance.py's email_approve_link used to shadow the
     module-level `HTTPException` with a *local* `from fastapi import
     HTTPException` inside the signature-check `if` block. Because Python
     resolves a name's scope for the whole function at compile time, once sig
-    is valid every later `raise HTTPException(...)` in the function (503,
-    404, 409) reads an unbound local and blows up with UnboundLocalError
-    instead of returning the intended status code. This test locks in that
-    the request is NOT resolved a second time and the failure is a crash
-    (500), not a clean 409 -- a follow-up should hoist the import (or just
-    rely on the top-level import already present) to fix this."""
+    was valid every later `raise HTTPException(...)` in the function (503,
+    404, 409) read an unbound local and blew up with UnboundLocalError
+    instead of returning the intended status code. The shadowing import has
+    been removed; this locks in the correct 409 Conflict on double-resolve."""
     gateway = HITLGateway()
     request_id = str(
         gateway.request_approval(
@@ -1036,11 +1034,11 @@ def test_email_approve_link_already_resolved_crashes_with_500_due_to_scoping_bug
     assert first.status_code == 200
 
     second = client.get(f"/governance/hitl/{request_id}/approve?sig={sig}", headers=_h())
-    assert second.status_code == 500  # intended: 409 Conflict
+    assert second.status_code == 409
 
 
-def test_email_reject_link_already_resolved_crashes_with_500_due_to_scoping_bug() -> None:
-    """Same scoping bug as above, mirrored on the reject link."""
+def test_email_reject_link_already_resolved_returns_409() -> None:
+    """Same regression as above, mirrored on the reject link."""
     gateway = HITLGateway()
     request_id = str(
         gateway.request_approval(
@@ -1055,7 +1053,7 @@ def test_email_reject_link_already_resolved_crashes_with_500_due_to_scoping_bug(
     assert first.status_code == 200
 
     second = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
-    assert second.status_code == 500  # intended: 409 Conflict
+    assert second.status_code == 409
 
 
 def test_email_reject_link_tenant_lookup_exception_falls_back_to_free_plan() -> None:
