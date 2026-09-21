@@ -182,7 +182,7 @@ function ApprovalCard({
   onReject: (note: string) => void;
   approving: boolean;
   rejecting: boolean;
-  cardRef?: React.RefObject<HTMLDivElement>;
+  cardRef?: (el: HTMLDivElement | null) => void;
 }) {
   const [note, setNote] = useState("");
   const [noteOpen, setNoteOpen] = useState(false);
@@ -668,23 +668,23 @@ export function ApprovalsPage() {
           {/* Cards */}
           {pending.length > 0 && (
             <div className="space-y-3">
-              {pending.map((req, i) => {
-                const ref = { current: cardRefs.current.get(req.request_id) ?? null } as React.RefObject<HTMLDivElement>;
-                return (
-                  <ApprovalCard
-                    key={req.request_id}
-                    req={req}
-                    isSelected={selected.has(req.request_id)}
-                    isFocused={focusIndex === i}
-                    onSelect={() => toggleSelect(req.request_id)}
-                    onApprove={(note) => approveMutation.mutate({ requestId: req.request_id, note })}
-                    onReject={(note) => rejectMutation.mutate({ requestId: req.request_id, note })}
-                    approving={actionPending === req.request_id && approveMutation.isPending}
-                    rejecting={actionPending === req.request_id && rejectMutation.isPending}
-                    cardRef={ref}
-                  />
-                );
-              })}
+              {pending.map((req, i) => (
+                <ApprovalCard
+                  key={req.request_id}
+                  req={req}
+                  isSelected={selected.has(req.request_id)}
+                  isFocused={focusIndex === i}
+                  onSelect={() => toggleSelect(req.request_id)}
+                  onApprove={(note) => approveMutation.mutate({ requestId: req.request_id, note })}
+                  onReject={(note) => rejectMutation.mutate({ requestId: req.request_id, note })}
+                  approving={actionPending === req.request_id && approveMutation.isPending}
+                  rejecting={actionPending === req.request_id && rejectMutation.isPending}
+                  cardRef={(el) => {
+                    if (el) cardRefs.current.set(req.request_id, el);
+                    else cardRefs.current.delete(req.request_id);
+                  }}
+                />
+              ))}
             </div>
           )}
 
