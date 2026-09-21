@@ -1082,6 +1082,176 @@ def test_fire_due_schedules_once_schedule_due_fires(monkeypatch: pytest.MonkeyPa
     assert result["schedules_fired"] == 1
 
 
+def test_fire_due_schedules_rrule_due_dispatches_goal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An RRULE (iCalendar recurrence) schedule that is due fires a goal.
+
+    Real scenario: an operator configures a recurring schedule via an RRULE
+    string instead of cron (e.g. "every weekday"), and the missed-runs
+    window must be honored the same way cron schedules are.
+    """
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.scaling.tasks import fire_due_schedules
+
+    old_time = (datetime.now(UTC) - timedelta(days=2)).replace(tzinfo=None).isoformat()
+
+    rrule_schedule = {
+        "goal_template": "rrule task",
+        "tenant_id": "t1",
+        "trigger_type": "rrule",
+        # Fires daily since a fixed DTSTART — with last_fired_at two days ago
+        # there is a due slot in the window.
+        "rrule_string": "DTSTART:20240101T000000\nFREQ=DAILY",
+        "paused": False,
+        "last_fired_at": old_time,
+        "coalesce_missed_runs": True,
+    }
+
+    mock_r = MagicMock()
+    mock_r.scan_iter.return_value = iter(["schedule:t1:rrule1"])
+    mock_r.get.return_value = json.dumps(rrule_schedule)
+    mock_r.set = MagicMock()
+
+    with (
+        patch("redis.from_url", return_value=mock_r),
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
+    ):
+        result = fire_due_schedules.run()
+
+    assert result["schedules_fired"] == 1
+
+
+def test_fire_due_schedules_rrule_parse_error_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A malformed RRULE must be logged and skipped, not crash the whole beat tick."""
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    import json
+
+    from app.scaling.tasks import fire_due_schedules
+
+    bad_rrule_schedule = {
+        "goal_template": "broken rrule task",
+        "tenant_id": "t1",
+        "trigger_type": "rrule",
+        "rrule_string": "NOT A VALID RRULE",
+        "paused": False,
+        "last_fired_at": None,
+    }
+
+    mock_r = MagicMock()
+    mock_r.scan_iter.return_value = iter(["schedule:t1:rrule_bad"])
+    mock_r.get.return_value = json.dumps(bad_rrule_schedule)
+    mock_r.set = MagicMock()
+
+    with (
+        patch("redis.from_url", return_value=mock_r),
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()) as mock_apply,
+    ):
+        result = fire_due_schedules.run()
+
+    assert result["schedules_fired"] == 0
+    mock_apply.assert_not_called()
+
+
+def test_fire_due_schedules_solar_due_dispatches_goal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A solar (sunrise/sunset) schedule that is due fires a goal.
+
+    astral isn't installed in this environment (the production behaviour
+    when it's genuinely missing is exercised by
+    ``TestSolarDueRunUtc.test_astral_unavailable_returns_none``), so this
+    injects a minimal fake ``astral``/``astral.sun`` module to exercise the
+    dispatch branch that only runs when astral IS available.
+    """
+    import sys
+    import types
+
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.scaling.tasks import fire_due_schedules
+
+    now = datetime.now(UTC)
+    sunrise_today = now - timedelta(minutes=5)  # already happened, unfired
+
+    fake_astral = types.ModuleType("astral")
+
+    class _FakeLocationInfo:
+        def __init__(self, *, latitude: float, longitude: float) -> None:
+            self.observer = object()
+
+    fake_astral.LocationInfo = _FakeLocationInfo  # type: ignore[attr-defined]
+    fake_astral_sun = types.ModuleType("astral.sun")
+    fake_astral_sun.sun = lambda observer, *, date, tzinfo: {"sunrise": sunrise_today}  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "astral", fake_astral)
+    monkeypatch.setitem(sys.modules, "astral.sun", fake_astral_sun)
+
+    solar_schedule = {
+        "goal_template": "solar task",
+        "tenant_id": "t1",
+        "trigger_type": "solar",
+        "solar_event": "sunrise",
+        "solar_latitude": 51.5,
+        "solar_longitude": -0.12,
+        "paused": False,
+        "last_fired_at": None,
+    }
+
+    mock_r = MagicMock()
+    mock_r.scan_iter.return_value = iter(["schedule:t1:solar1"])
+    mock_r.get.return_value = json.dumps(solar_schedule)
+    mock_r.set = MagicMock()
+
+    with (
+        patch("redis.from_url", return_value=mock_r),
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
+    ):
+        result = fire_due_schedules.run()
+
+    assert result["schedules_fired"] == 1
+
+
+def test_fire_due_schedules_relative_delay_due_dispatches_goal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relative_delay schedule (fire once at base + offset) dispatches when due."""
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("AGENTVERSE_DB_SCHEDULE_DISCOVERY", raising=False)
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.scaling.tasks import fire_due_schedules
+
+    base_time = (datetime.now(UTC) - timedelta(hours=1)).replace(tzinfo=None).isoformat()
+
+    relative_delay_schedule = {
+        "goal_template": "follow-up task",
+        "tenant_id": "t1",
+        "trigger_type": "relative_delay",
+        "fire_at_iso": base_time,
+        "relative_offset_seconds": 60,  # base + 60s is well in the past now
+        "paused": False,
+        "last_fired_at": None,
+    }
+
+    mock_r = MagicMock()
+    mock_r.scan_iter.return_value = iter(["schedule:t1:reldelay1"])
+    mock_r.get.return_value = json.dumps(relative_delay_schedule)
+    mock_r.set = MagicMock()
+
+    with (
+        patch("redis.from_url", return_value=mock_r),
+        patch("app.scaling.tasks.run_scheduled_goal.apply_async", MagicMock()),
+    ):
+        result = fire_due_schedules.run()
+
+    assert result["schedules_fired"] == 1
+
+
 # ===========================================================================
 # run_goal dry_run path — covers large swath of the task body
 # ===========================================================================

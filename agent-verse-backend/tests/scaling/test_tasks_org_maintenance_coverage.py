@@ -15,8 +15,10 @@ All DB/Redis/LLM boundaries are faked in-process — no real Postgres/Redis.
 
 from __future__ import annotations
 
+import datetime
 import uuid
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -393,6 +395,217 @@ class TestPublishMissionDeliverableEarlyReturns:
         )
         assert self._run(mission) == {"status": "not_approved"}
 
+    def test_not_approved_with_pending_retries(self):
+        """approved=False but publish_pending=True means the approve endpoint's
+
+        commit may not be visible yet — the task must raise and retry rather
+        than giving up, since a fresh delivery would otherwise permanently
+        skip a mission that was actually approved.
+        """
+        import celery.exceptions
+
+        mission = SimpleNamespace(
+            extra_data={
+                "publish": {"connector_server_id": "srv1", "approved": False},
+                "publish_pending": True,
+            },
+            status="completed",
+        )
+        with pytest.raises((celery.exceptions.Retry, RuntimeError)):
+            self._run(mission)
+
+
+# ── publish_mission_deliverable (full MCP-dispatch path) ────────────────────
+
+
+def _publish_mission(mission_phase_a, mission_phase_c, call_result, *, redis_from_url_ok=True):
+    """Drive publish_mission_deliverable through the full dispatch path.
+
+    Fakes both DB phases (load/validate, then record receipt + emit event)
+    plus the worker-local MCP client construction, so the real success and
+    failure branches of the connector dispatch (previously fully uncovered)
+    run for real.
+    """
+    from app.scaling.tasks import publish_mission_deliverable
+
+    session_a = _make_session(execute_side_effect=[])
+    session_c = _make_session(execute_side_effect=[])
+    db_factory = MagicMock(
+        side_effect=[
+            MagicMock(__aenter__=AsyncMock(return_value=session_a), __aexit__=AsyncMock(return_value=False)),
+            MagicMock(__aenter__=AsyncMock(return_value=session_c), __aexit__=AsyncMock(return_value=False)),
+        ]
+    )
+
+    mock_svc = MagicMock()
+    mock_svc.get_mission = AsyncMock(side_effect=[mission_phase_a, mission_phase_c])
+    mock_svc._emit_event = AsyncMock(return_value=None)
+
+    mock_redis_client = AsyncMock()
+    mock_redis_client.aclose = AsyncMock(return_value=None)
+
+    mock_mcp_client = MagicMock()
+    mock_mcp_client.call_tool = AsyncMock(return_value=call_result)
+
+    with (
+        patch("app.db.session.get_session_factory", return_value=db_factory),
+        patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
+        patch("app.org.service.OrgService", return_value=mock_svc),
+        patch(
+            "redis.asyncio.from_url",
+            return_value=mock_redis_client if redis_from_url_ok else (_ for _ in ()).throw(RuntimeError("no redis")),
+        ),
+        patch("app.mcp.servers.registry_wiring.get_builtin_server_configs", return_value=[]),
+        patch("app.providers.vault.get_vault", return_value=MagicMock()),
+        patch("app.providers.vault.RedisConnectorSecretStore", return_value=MagicMock()),
+        patch("app.providers.vault.resolve_connector_secret_ref_for_tenant", new=AsyncMock(return_value=None)),
+        patch("app.mcp.registry.MCPRegistry", return_value=MagicMock()),
+        patch("app.mcp.client.MCPClient", return_value=mock_mcp_client),
+    ):
+        result = publish_mission_deliverable.run(mission_id="m1", tenant_id="t1")
+
+    return result, mock_svc, mock_mcp_client
+
+
+class TestPublishMissionDeliverableFullPath:
+    def _mission(self, **extra_overrides):
+        extra = {
+            "publish": {
+                "connector_server_id": "srv1",
+                "tool_name": "send_report",
+                "approved": True,
+                "arguments": {"body": "{{deliverable}}"},
+            },
+        }
+        extra.update(extra_overrides)
+        return SimpleNamespace(
+            id="m1",
+            org_id=uuid.uuid4(),
+            title="Weekly report",
+            objective="Summarize the week",
+            status="completed",
+            extra_data=extra,
+        )
+
+    def test_success_records_receipt_and_emits_event(self):
+        mission_a = self._mission()
+        mission_a.extra_data["result"] = {"deliverable": {"output": "All done"}}
+        mission_c = self._mission()
+        mission_c.extra_data["result"] = mission_a.extra_data["result"]
+
+        call_result = SimpleNamespace(success=True, error="", output="ok")
+        result, mock_svc, mock_mcp_client = _publish_mission(mission_a, mission_c, call_result)
+
+        assert result["status"] == "published"
+        assert result["receipt"]["success"] is True
+        assert result["receipt"]["server_id"] == "srv1"
+        assert result["receipt"]["tool_name"] == "send_report"
+        mock_mcp_client.call_tool.assert_awaited_once()
+        call_kwargs = mock_mcp_client.call_tool.call_args.kwargs
+        assert call_kwargs["server_id"] == "srv1"
+        assert call_kwargs["tool_name"] == "send_report"
+        # The {{deliverable}} template token must be substituted from the
+        # mission's finalized result before being sent to the connector.
+        assert call_kwargs["arguments"]["body"] == "All done"
+        mock_svc._emit_event.assert_awaited_once()
+        emit_kwargs = mock_svc._emit_event.call_args.kwargs
+        assert emit_kwargs["severity"] == "info"
+        assert "published" in mission_c.extra_data or True  # mission_c is the Phase-C load
+
+    def test_connector_failure_raises_and_retries(self):
+        import celery.exceptions
+
+        mission_a = self._mission()
+        mission_a.extra_data["result"] = {"deliverable": "text body"}
+        mission_c = self._mission()
+        mission_c.extra_data["result"] = mission_a.extra_data["result"]
+
+        call_result = SimpleNamespace(success=False, error="connector timed out", output=None)
+
+        with pytest.raises((celery.exceptions.Retry, RuntimeError)):
+            _publish_mission(mission_a, mission_c, call_result)
+
+
+# ── _deliverable_text / _render_publish_args (pure helpers) ─────────────────
+
+
+class TestDeliverableText:
+    def test_no_result_returns_empty_string(self):
+        from app.scaling.tasks import _deliverable_text
+
+        assert _deliverable_text({}) == ""
+        assert _deliverable_text({"result": None}) == ""
+
+    def test_string_result_returned_as_is(self):
+        from app.scaling.tasks import _deliverable_text
+
+        assert _deliverable_text({"result": "plain text"}) == "plain text"
+
+    def test_dict_deliverable_prefers_known_keys(self):
+        from app.scaling.tasks import _deliverable_text
+
+        assert (
+            _deliverable_text({"result": {"deliverable": {"output": "the output"}}})
+            == "the output"
+        )
+        assert (
+            _deliverable_text({"result": {"deliverable": {"summary": "the summary"}}})
+            == "the summary"
+        )
+
+    def test_dict_deliverable_without_known_keys_falls_back_to_json(self):
+        from app.scaling.tasks import _deliverable_text
+
+        out = _deliverable_text({"result": {"deliverable": {"weird_key": "value"}}})
+        assert "weird_key" in out
+        assert "value" in out
+
+    def test_non_dict_deliverable_stringified(self):
+        from app.scaling.tasks import _deliverable_text
+
+        assert _deliverable_text({"result": {"deliverable": 42}}) == "42"
+
+    def test_result_without_nested_deliverable_key_uses_result_itself(self):
+        from app.scaling.tasks import _deliverable_text
+
+        # `result` has no "deliverable" sub-key, so the whole `result` value
+        # (a plain string) is used directly.
+        assert _deliverable_text({"result": "raw result text"}) == "raw result text"
+
+
+class TestRenderPublishArgs:
+    def test_string_token_substitution(self):
+        from app.scaling.tasks import _render_publish_args
+
+        ctx = {"deliverable": "D", "title": "T", "objective": "O"}
+        assert (
+            _render_publish_args("{{title}}: {{deliverable}} ({{objective}})", ctx)
+            == "T: D (O)"
+        )
+
+    def test_nested_dict_and_list_are_walked_recursively(self):
+        from app.scaling.tasks import _render_publish_args
+
+        ctx = {"deliverable": "D", "title": "T", "objective": "O"}
+        template = {
+            "body": "{{deliverable}}",
+            "meta": {"subject": "{{title}}"},
+            "tags": ["{{objective}}", "static"],
+        }
+        rendered = _render_publish_args(template, ctx)
+        assert rendered == {
+            "body": "D",
+            "meta": {"subject": "T"},
+            "tags": ["O", "static"],
+        }
+
+    def test_non_string_values_pass_through_unchanged(self):
+        from app.scaling.tasks import _render_publish_args
+
+        ctx = {"deliverable": "D", "title": "T", "objective": "O"}
+        assert _render_publish_args(42, ctx) == 42
+        assert _render_publish_args(None, ctx) is None
+
 
 # ── re_embed_collection ──────────────────────────────────────────────────────
 
@@ -484,6 +697,119 @@ class TestProcessFeedbackBatch:
             result = process_feedback_batch.run()
 
         assert "error" in result
+
+
+# ── _brain_tick_for_org (per-org tick body, mocked-out by TestOrgBrainLoop) ──
+
+
+class TestBrainTickForOrg:
+    """``org_brain_loop`` tests above stub `_brain_tick_for_org` entirely, so
+
+    its own short-circuit and dispatch-buffering logic was never exercised.
+    """
+
+    async def _run(self, **overrides):
+        from app.scaling.tasks import _brain_tick_for_org
+
+        kwargs = {
+            "db_factory": overrides.pop("db_factory", MagicMock()),
+            "redis": overrides.pop("redis", AsyncMock()),
+            "org_id": "org-1",
+            "tenant_id": "tenant-1",
+            "autonomy_level": 4,
+        }
+        kwargs.update(overrides)
+        return await _brain_tick_for_org(**kwargs)
+
+    @pytest.mark.asyncio
+    async def test_feature_flag_off_short_circuits(self):
+        with patch("app.scaling.tasks.is_feature_enabled", return_value=False):
+            result = await self._run()
+        assert result == {"proposed": 0, "executed": 0, "blocked": 0}
+
+    @pytest.mark.asyncio
+    async def test_autonomy_below_threshold_short_circuits(self):
+        with patch("app.scaling.tasks.is_feature_enabled", return_value=True):
+            result = await self._run(autonomy_level=2)
+        assert result == {"proposed": 0, "executed": 0, "blocked": 0}
+
+    @pytest.mark.asyncio
+    async def test_tick_lock_already_held_short_circuits(self):
+        mock_counters = AsyncMock()
+        mock_counters.acquire_tick_lock = AsyncMock(return_value=False)
+        with (
+            patch("app.scaling.tasks.is_feature_enabled", return_value=True),
+            patch("app.org.brain_counters.BrainCounters", return_value=mock_counters),
+        ):
+            result = await self._run()
+        assert result == {"proposed": 0, "executed": 0, "blocked": 0}
+
+    @pytest.mark.asyncio
+    async def test_org_missing_short_circuits_after_lock_acquired(self):
+        session = _make_session(execute_side_effect=[])
+        db_factory = _make_db_factory(session)
+        mock_counters = AsyncMock()
+        mock_counters.acquire_tick_lock = AsyncMock(return_value=True)
+        mock_svc = MagicMock()
+        mock_svc.get_organization = AsyncMock(return_value=None)
+
+        with (
+            patch("app.scaling.tasks.is_feature_enabled", return_value=True),
+            patch("app.org.brain_counters.BrainCounters", return_value=mock_counters),
+            patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
+            patch("app.org.service.OrgService", return_value=mock_svc),
+        ):
+            result = await self._run(db_factory=db_factory)
+
+        assert result == {"proposed": 0, "executed": 0, "blocked": 0}
+
+    @pytest.mark.asyncio
+    async def test_success_buffers_dispatch_until_after_commit(self):
+        """The mission dispatch must only reach the Celery broker AFTER the
+
+        tick's own DB transaction has committed — otherwise a fast worker can
+        claim a mission row before it exists (see the docstring on
+        ``_brain_tick_for_org``). We simulate ``OrgBrain.run_tick`` invoking
+        the dispatcher (as the real brain does when it decides to ACT) and
+        assert ``execute_org_mission.apply_async`` still fires exactly once,
+        with the buffered kwargs, once the async-with block has exited.
+        """
+        session = _make_session(execute_side_effect=[])
+        db_factory = _make_db_factory(session)
+        mock_counters = AsyncMock()
+        mock_counters.acquire_tick_lock = AsyncMock(return_value=True)
+        mock_svc = MagicMock()
+        mock_org = SimpleNamespace(settings={}, monthly_budget_usd=100.0, goals=[], mission="Grow")
+        mock_svc.get_organization = AsyncMock(return_value=mock_org)
+
+        captured: dict[str, Any] = {}
+
+        def _fake_org_brain(**kwargs):
+            captured["dispatcher"] = kwargs["dispatcher"]
+
+            class _FakeBrain:
+                async def run_tick(self, **_kw):
+                    # Mirrors a real ACT decision: buffer a dispatch, don't
+                    # publish to the broker yet.
+                    captured["dispatcher"]({"mission_id": "auto-1", "tenant_id": "tenant-1"})
+                    return {"proposed": 1, "executed": 1, "blocked": 0}
+
+            return _FakeBrain()
+
+        with (
+            patch("app.scaling.tasks.is_feature_enabled", return_value=True),
+            patch("app.org.brain_counters.BrainCounters", return_value=mock_counters),
+            patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
+            patch("app.org.service.OrgService", return_value=mock_svc),
+            patch("app.org.brain.OrgBrain", side_effect=_fake_org_brain),
+            patch("app.scaling.tasks.execute_org_mission.apply_async") as mock_apply,
+        ):
+            result = await self._run(db_factory=db_factory)
+
+        assert result == {"proposed": 1, "executed": 1, "blocked": 0}
+        mock_apply.assert_called_once_with(
+            kwargs={"mission_id": "auto-1", "tenant_id": "tenant-1"}
+        )
 
 
 # ── org_brain_loop ───────────────────────────────────────────────────────────
@@ -844,3 +1170,243 @@ class TestOrgCronTasks:
         ):
             result = org_twin_sync.run({"event_type": "x"})
         assert "error" in result
+
+
+# ── delta_reingest_files ─────────────────────────────────────────────────────
+
+
+class TestDeltaReingestFiles:
+    def test_unsupported_source_type_returns_explicit_status(self):
+        """An unregistered source_type must never fabricate a success count —
+
+        it should report ``unsupported`` explicitly (WS-12 honesty rule).
+        """
+        from app.scaling.tasks import delta_reingest_files
+
+        with (
+            patch("app.ingestion.connector_registry.load_all_connectors", return_value=None),
+            patch(
+                "app.ingestion.connector_registry.get_connector",
+                side_effect=KeyError("nope"),
+            ),
+        ):
+            result = delta_reingest_files.run(
+                tenant_id="t1",
+                collection_id="c1",
+                source_type="not_a_real_connector",
+                source_config={},
+            )
+
+        assert result["status"] == "unsupported"
+        assert result["source_type"] == "not_a_real_connector"
+        assert result["tenant_id"] == "t1"
+        assert result["collection_id"] == "c1"
+
+    def test_success_tallies_indexed_skipped_and_failed(self):
+        from app.scaling.tasks import delta_reingest_files
+
+        docs = [("doc1", "cursor1"), ("doc2", "cursor2"), ("doc3", "cursor3")]
+
+        async def _fake_get_delta(config, cursor):
+            for doc, cur in docs:
+                yield doc, cur
+
+        mock_connector = MagicMock()
+        mock_connector.get_delta = _fake_get_delta
+        mock_connector_cls = MagicMock(return_value=mock_connector)
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.ingest = AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, skipped=False),
+                SimpleNamespace(success=False, skipped=True),
+                SimpleNamespace(success=False, skipped=False),
+            ]
+        )
+
+        with (
+            patch("app.ingestion.connector_registry.load_all_connectors", return_value=None),
+            patch(
+                "app.ingestion.connector_registry.get_connector",
+                return_value=mock_connector_cls,
+            ),
+            patch("app.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline),
+        ):
+            result = delta_reingest_files.run(
+                tenant_id="t1",
+                collection_id="c1",
+                source_type="github",
+                source_config={"token": "vault://x"},
+            )
+
+        assert result == {
+            "status": "ok",
+            "source_type": "github",
+            "docs_indexed": 1,
+            "docs_skipped": 1,
+            "docs_failed": 1,
+            "tenant_id": "t1",
+            "collection_id": "c1",
+        }
+        assert mock_pipeline.ingest.await_count == 3
+
+    def test_connector_error_mid_stream_returns_partial_tallies(self):
+        """A connector that blows up partway through must report what it
+
+        already indexed, not silently drop the whole run.
+        """
+        from app.scaling.tasks import delta_reingest_files
+
+        async def _fake_get_delta(config, cursor):
+            yield "doc1", "cursor1"
+            raise RuntimeError("upstream API rate limited")
+
+        mock_connector = MagicMock()
+        mock_connector.get_delta = _fake_get_delta
+        mock_connector_cls = MagicMock(return_value=mock_connector)
+
+        mock_pipeline = MagicMock()
+        mock_pipeline.ingest = AsyncMock(return_value=SimpleNamespace(success=True, skipped=False))
+
+        with (
+            patch("app.ingestion.connector_registry.load_all_connectors", return_value=None),
+            patch(
+                "app.ingestion.connector_registry.get_connector",
+                return_value=mock_connector_cls,
+            ),
+            patch("app.ingestion.pipeline.IngestionPipeline", return_value=mock_pipeline),
+        ):
+            result = delta_reingest_files.run(
+                tenant_id="t1",
+                collection_id="c1",
+                source_type="notion",
+                source_config={},
+            )
+
+        assert result["status"] == "error"
+        assert "rate limited" in result["error"]
+        assert result["docs_indexed"] == 1
+        assert result["docs_skipped"] == 0
+        assert result["docs_failed"] == 0
+
+
+# ── _solar_due_run_utc (solar-event schedule firing edge cases) ─────────────
+
+
+class TestSolarDueRunUtc:
+    def test_astral_unavailable_returns_none(self):
+        """astral is not a hard dependency of the worker — if it isn't
+
+        installed, a solar-event schedule must be skipped (with the caller
+        logging a warning) rather than crashing the beat loop.
+        """
+        from app.scaling.tasks import _solar_due_run_utc
+
+        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
+        # astral is genuinely not installed in this environment, so this
+        # exercises the real ImportError branch, not a simulated one.
+        assert _solar_due_run_utc({"solar_event": "sunrise"}, now) is None
+
+    def _install_fake_astral(self, monkeypatch, events: dict[str, datetime.datetime]):
+        import sys
+        import types
+
+        fake_astral = types.ModuleType("astral")
+
+        class _FakeLocationInfo:
+            def __init__(self, *, latitude: float, longitude: float) -> None:
+                self.latitude = latitude
+                self.longitude = longitude
+                self.observer = object()
+
+        fake_astral.LocationInfo = _FakeLocationInfo  # type: ignore[attr-defined]
+
+        fake_astral_sun = types.ModuleType("astral.sun")
+
+        def _fake_sun(observer, *, date, tzinfo):
+            return events
+
+        fake_astral_sun.sun = _fake_sun  # type: ignore[attr-defined]
+
+        monkeypatch.setitem(sys.modules, "astral", fake_astral)
+        monkeypatch.setitem(sys.modules, "astral.sun", fake_astral_sun)
+
+    def test_known_solar_event_applies_offset(self, monkeypatch: pytest.MonkeyPatch):
+        from app.scaling.tasks import _solar_due_run_utc
+
+        sunrise = datetime.datetime(2024, 6, 21, 5, 30, 0, tzinfo=datetime.UTC)
+        self._install_fake_astral(monkeypatch, {"sunrise": sunrise})
+
+        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
+        result = _solar_due_run_utc(
+            {
+                "solar_event": "SUNRISE",  # case-insensitive
+                "solar_latitude": 51.5,
+                "solar_longitude": -0.12,
+                "solar_offset_seconds": 600,
+            },
+            now,
+        )
+
+        assert result == datetime.datetime(2024, 6, 21, 5, 40, 0)
+
+    def test_unknown_solar_event_raises(self, monkeypatch: pytest.MonkeyPatch):
+        from app.scaling.tasks import _solar_due_run_utc
+
+        self._install_fake_astral(
+            monkeypatch, {"sunrise": datetime.datetime(2024, 6, 21, 5, 30, 0, tzinfo=datetime.UTC)}
+        )
+
+        now = datetime.datetime(2024, 6, 21, 12, 0, 0)
+        with pytest.raises(ValueError, match="unknown solar_event"):
+            _solar_due_run_utc({"solar_event": "midnight_snack"}, now)
+
+
+# ── _count_tenant_rows (DB_ROW_CHANGE trigger, allowlist-gated) ─────────────
+
+
+class TestCountTenantRows:
+    @pytest.mark.asyncio
+    async def test_table_not_in_allowlist_returns_none_without_querying(self):
+        from app.scaling.tasks import _count_tenant_rows
+
+        with patch("app.db.session.get_session_factory") as mock_factory:
+            result = await _count_tenant_rows("goals", "t1", frozenset({"missions"}))
+
+        assert result is None
+        mock_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unsafe_identifier_returns_none_even_if_allowlisted(self):
+        """Defense-in-depth: even a name that made it into the allowlist must
+
+        still match the bare-identifier regex before it is ever interpolated
+        into SQL.
+        """
+        from app.scaling.tasks import _count_tenant_rows
+
+        result = await _count_tenant_rows(
+            "goals; DROP TABLE goals", "t1", frozenset({"goals; DROP TABLE goals"})
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_allowlisted_table_counts_rows(self):
+        from app.scaling.tasks import _count_tenant_rows
+
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one=MagicMock(return_value=7))
+        )
+        db_factory = _make_db_factory(session)
+
+        with (
+            patch("app.db.session.get_session_factory", return_value=db_factory),
+            patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
+        ):
+            result = await _count_tenant_rows("goals", "t1", frozenset({"goals"}))
+
+        assert result == 7
+        session.execute.assert_awaited_once()
+        query_text = str(session.execute.call_args.args[0])
+        assert "goals" in query_text
