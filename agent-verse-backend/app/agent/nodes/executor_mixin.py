@@ -1925,167 +1925,175 @@ class ExecutorMixin:
                                         time.monotonic() - tool_call_started,
                                     )
                                     raise
-                            # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)  # noqa: E501
-                            raw_output_text = ""
-                            if isinstance(result.output, dict):
-                                raw_output_text = str(
-                                    result.output.get("content")
-                                    or result.output.get("result")
-                                    or ""
-                                )
-                            elif isinstance(result.output, str):
-                                raw_output_text = result.output[:500]
-                            if self._guardrail_checker and raw_output_text:
-                                pii_issues = self._guardrail_checker.check_output(
-                                    output=raw_output_text
-                                )
-                                if pii_issues:
-                                    await self._emit(
+                                # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)  # noqa: E501
+                                raw_output_text = ""
+                                if isinstance(result.output, dict):
+                                    raw_output_text = str(
+                                        result.output.get("content")
+                                        or result.output.get("result")
+                                        or ""
+                                    )
+                                elif isinstance(result.output, str):
+                                    raw_output_text = result.output[:500]
+                                if self._guardrail_checker and raw_output_text:
+                                    pii_issues = self._guardrail_checker.check_output(
+                                        output=raw_output_text
+                                    )
+                                    if pii_issues:
+                                        await self._emit(
+                                            {
+                                                "type": "pii_redacted",
+                                                "tool": getattr(tool_call, "tool", "")
+                                                if tool_call
+                                                else "",
+                                                "issues": pii_issues,
+                                            }
+                                        )
+                                        if self._audit_log is not None:
+                                            with contextlib.suppress(Exception):
+                                                self._audit_log.record(
+                                                    AuditEvent(
+                                                        goal_id=state.goal_id,
+                                                        tool_name="guardrail_checker",
+                                                        action_level=ActionLevel.ALLOW_LOG,
+                                                        outcome="pii_redacted",
+                                                        step_id=state.steps[-1].step_id
+                                                        if state.steps
+                                                        else "",
+                                                        api_key_id=getattr(
+                                                            tenant_ctx, "api_key_id", None
+                                                        )
+                                                        or "",
+                                                        note=f"issues_count={len(pii_issues)} step={step[:100]}",  # noqa: E501
+                                                    ),
+                                                    tenant_ctx=tenant_ctx,
+                                                )
+                                raw_result_output = self._sanitize_tool_raw_output(result.output)
+                                raw_result_error = self._sanitize_tool_raw_output(result.error)
+
+                                # Guardrail check: tool_output (Guardrails 2.0)
+                                if (
+                                    _GUARDRAILS_AVAILABLE
+                                    and guardrails_engine is not None
+                                    and tenant_ctx
+                                ):
+                                    try:
+                                        _g2_out_preview = (
+                                            str(raw_result_output)[:500]
+                                            if raw_result_output
+                                            else ""
+                                        )
+                                        await guardrails_engine.evaluate(
+                                            content=_g2_out_preview,
+                                            layer=GuardrailLayer.TOOL_OUTPUT,
+                                            tenant_id=tenant_ctx.tenant_id,
+                                            goal_id=getattr(state, "goal_id", None),
+                                        )
+                                    except Exception:
+                                        pass  # Guardrail errors must never break execution
+
+                                # ── Indirect injection scan on tool output ──────────────
+                                # External tool results (Confluence, web, email) may contain
+                                # adversarial text designed to hijack the agent (tool poisoning).
+                                if result.success and raw_result_output:
+                                    try:
+                                        from app.agent.exfil_guard import (
+                                            check_tool_output_for_injection,
+                                        )
+
+                                        _injection_warning = check_tool_output_for_injection(
+                                            tool_ref.name, raw_result_output
+                                        )
+                                        if _injection_warning:
+                                            self._logger.warning(
+                                                "indirect_injection_detected",
+                                                tool=tool_ref.name,
+                                                warning=_injection_warning[:120],
+                                            )
+                                            raw_result_output = (
+                                                _injection_warning + "\n\n" + raw_result_output
+                                            )
+                                    except Exception:
+                                        pass  # injection scan must never block execution
+
+                                # ── C4 Fix: Populate StepResult.tool_calls ─────────────
+                                # This allows the verifier's [TOOL FAILED] markers to fire.
+                                if state.steps:
+                                    state.steps[-1].tool_calls.append(
                                         {
-                                            "type": "pii_redacted",
-                                            "tool": getattr(tool_call, "tool", "")
-                                            if tool_call
-                                            else "",
-                                            "issues": pii_issues,
+                                            "tool_name": tool_ref.name,
+                                            "server_id": tool_ref.server_id,
+                                            "success": result.success,
+                                            "error": result.error or "",
+                                            "output": (
+                                                str(result.output)[:300]
+                                                if result.output
+                                                else ""
+                                            ),
                                         }
                                     )
-                                    if self._audit_log is not None:
-                                        with contextlib.suppress(Exception):
-                                            self._audit_log.record(
-                                                AuditEvent(
-                                                    goal_id=state.goal_id,
-                                                    tool_name="guardrail_checker",
-                                                    action_level=ActionLevel.ALLOW_LOG,
-                                                    outcome="pii_redacted",
-                                                    step_id=state.steps[-1].step_id
-                                                    if state.steps
-                                                    else "",
-                                                    api_key_id=getattr(
-                                                        tenant_ctx, "api_key_id", None
-                                                    )
-                                                    or "",
-                                                    note=f"issues_count={len(pii_issues)} step={step[:100]}",  # noqa: E501
-                                                ),
-                                                tenant_ctx=tenant_ctx,
-                                            )
-                            raw_result_output = self._sanitize_tool_raw_output(result.output)
-                            raw_result_error = self._sanitize_tool_raw_output(result.error)
 
-                            # Guardrail check: tool_output (Guardrails 2.0)
-                            if (
-                                _GUARDRAILS_AVAILABLE
-                                and guardrails_engine is not None
-                                and tenant_ctx
-                            ):
-                                try:
-                                    _g2_out_preview = (
-                                        str(raw_result_output)[:500] if raw_result_output else ""
+                                # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
+                                raw_output_text = ""
+                                if isinstance(result.output, dict):
+                                    raw_output_text = str(
+                                        result.output.get("content")
+                                        or result.output.get("result")
+                                        or ""
                                     )
-                                    await guardrails_engine.evaluate(
-                                        content=_g2_out_preview,
-                                        layer=GuardrailLayer.TOOL_OUTPUT,
-                                        tenant_id=tenant_ctx.tenant_id,
-                                        goal_id=getattr(state, "goal_id", None),
-                                    )
-                                except Exception:
-                                    pass  # Guardrail errors must never break execution
-
-                            # ── Indirect injection scan on tool output ──────────────
-                            # External tool results (Confluence, web, email) may contain
-                            # adversarial text designed to hijack the agent (tool poisoning).
-                            if result.success and raw_result_output:
-                                try:
-                                    from app.agent.exfil_guard import (
-                                        check_tool_output_for_injection,
-                                    )
-
-                                    _injection_warning = check_tool_output_for_injection(
-                                        tool_ref.name, raw_result_output
-                                    )
-                                    if _injection_warning:
-                                        self._logger.warning(
-                                            "indirect_injection_detected",
-                                            tool=tool_ref.name,
-                                            warning=_injection_warning[:120],
-                                        )
-                                        raw_result_output = (
-                                            _injection_warning + "\n\n" + raw_result_output
-                                        )
-                                except Exception:
-                                    pass  # injection scan must never block execution
-
-                            # ── C4 Fix: Populate StepResult.tool_calls ─────────────
-                            # This allows the verifier's [TOOL FAILED] markers to fire.
-                            if state.steps:
-                                state.steps[-1].tool_calls.append(
-                                    {
-                                        "tool_name": tool_ref.name,
-                                        "server_id": tool_ref.server_id,
-                                        "success": result.success,
-                                        "error": result.error or "",
-                                        "output": str(result.output)[:300] if result.output else "",
-                                    }
-                                )
-
-                            # ── H3 Fix: PII check on ToolCallResult (not dict) ──────
-                            raw_output_text = ""
-                            if isinstance(result.output, dict):
-                                raw_output_text = str(
-                                    result.output.get("content")
-                                    or result.output.get("result")
-                                    or ""
-                                )
-                            elif isinstance(result.output, str):
-                                raw_output_text = result.output[:500]
-                            await self._emit(
-                                {
-                                    "type": "tool_call_complete",
-                                    "tool": tool_ref.name,
-                                    "server_id": tool_ref.server_id,
-                                    "success": result.success,
-                                    "output": self._sanitize_tool_event_value(result.output),
-                                    "error": self._sanitize_tool_event_value(result.error),
-                                    # tool_output preserves the raw structured dict for result_artifacts.py  # noqa: E501
-                                    # without truncation so downstream consumers can access full data.  # noqa: E501
-                                    "tool_output": result.output
-                                    if isinstance(result.output, dict)
-                                    else None,
-                                }
-                            )
-                            # Check for artifact capture (RPA screenshot etc.)
-                            # result is always ToolCallResult — use getattr not dict access
-                            _artifact_uri: str = getattr(result, "artifact_url", "") or ""
-                            _artifact_name: str = getattr(result, "artifact_name", "") or ""
-                            if _artifact_uri and not _artifact_uri.startswith("data:"):
+                                elif isinstance(result.output, str):
+                                    raw_output_text = result.output[:500]
                                 await self._emit(
                                     {
-                                        "type": "artifact_captured",
-                                        "artifact_type": "screenshot",
-                                        "artifact_url": _artifact_uri,
-                                        "artifact_name": _artifact_name,
+                                        "type": "tool_call_complete",
                                         "tool": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "success": result.success,
+                                        "output": self._sanitize_tool_event_value(result.output),
+                                        "error": self._sanitize_tool_event_value(result.error),
+                                        # tool_output preserves the raw structured dict for result_artifacts.py  # noqa: E501
+                                        # without truncation so downstream consumers can access full data.  # noqa: E501
+                                        "tool_output": result.output
+                                        if isinstance(result.output, dict)
+                                        else None,
                                     }
                                 )
-                            record_tool_call(
-                                tool_ref.name,
-                                tool_ref.server_id,
-                                "success" if result.success else "failed",
-                                time.monotonic() - tool_call_started,
-                            )
-                            raw_output = raw_result_output if result.success else raw_result_error
-                            # Surface the SENT content (e.g. the brief in a telegram
-                            # send) so the verifier can confirm the deliverable — the
-                            # tool result is only a receipt ({'ok': True, ...}).
-                            if tool_call is not None:
-                                from app.agent.nodes._helpers import surface_delivered_content
-
-                                raw_output = surface_delivered_content(
-                                    raw_output,
-                                    tool_call.tool,
-                                    tool_call.arguments,
-                                    result.success,
+                                # Check for artifact capture (RPA screenshot etc.)
+                                # result is always ToolCallResult — use getattr not dict access
+                                _artifact_uri: str = getattr(result, "artifact_url", "") or ""
+                                _artifact_name: str = getattr(result, "artifact_name", "") or ""
+                                if _artifact_uri and not _artifact_uri.startswith("data:"):
+                                    await self._emit(
+                                        {
+                                            "type": "artifact_captured",
+                                            "artifact_type": "screenshot",
+                                            "artifact_url": _artifact_uri,
+                                            "artifact_name": _artifact_name,
+                                            "tool": tool_ref.name,
+                                        }
+                                    )
+                                record_tool_call(
+                                    tool_ref.name,
+                                    tool_ref.server_id,
+                                    "success" if result.success else "failed",
+                                    time.monotonic() - tool_call_started,
                                 )
-                            raw_output_sanitized = True
+                                raw_output = (
+                                    raw_result_output if result.success else raw_result_error
+                                )
+                                # Surface the SENT content (e.g. the brief in a telegram
+                                # send) so the verifier can confirm the deliverable — the
+                                # tool result is only a receipt ({'ok': True, ...}).
+                                if tool_call is not None:
+                                    from app.agent.nodes._helpers import surface_delivered_content
+
+                                    raw_output = surface_delivered_content(
+                                        raw_output,
+                                        tool_call.tool,
+                                        tool_call.arguments,
+                                        result.success,
+                                    )
+                                raw_output_sanitized = True
 
         # ── Strategy B: parallel tool calls ─────────────────────────────────────
         # When the resolved strategy is PARALLEL and this turn produced more than
