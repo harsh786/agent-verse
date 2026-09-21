@@ -110,6 +110,12 @@ dev = [
     "httpx2>=2.4.0",
     "asgi-lifespan>=2.1.0",
     "fakeredis>=2.38.0",
+    # Optional ingestion-format parsers (app/ingestion/{connectors,parsers}/*.py
+    # lazy-import these; tests exercise the real parsing/feed logic, not fakes).
+    "feedparser>=6.0.0",
+    "openpyxl>=3.1.0",
+    "pyarrow>=17.0.0",
+    "fastavro>=1.9.0",
 ]
 
 [build-system]
