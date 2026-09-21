@@ -1,8 +1,8 @@
 /**
  * Tests for run-viewer components: RunTimeline, StepOutputInspector, RunCostSummary.
  */
-import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { RunTimeline } from '../run-viewer/RunTimeline';
@@ -144,6 +144,134 @@ describe('StepOutputInspector', () => {
   it('has accessible region', () => {
     wrap(<StepOutputInspector data={{ x: 1 }} title="Output" />);
     expect(screen.getByRole('region', { name: /output data/i })).toBeInTheDocument();
+  });
+
+  it('renders undefined data as no-data message too', () => {
+    wrap(<StepOutputInspector data={undefined} title="Input" />);
+    expect(screen.getByText(/no input data/i)).toBeInTheDocument();
+  });
+
+  it('renders a nested undefined field (e.g. a missing optional output key) as "undefined"', () => {
+    wrap(<StepOutputInspector data={{ result: 'ok', missing: undefined }} title="Output" />);
+    const region = screen.getByRole('region', { name: /output data/i });
+    expect(within(region).getByText('undefined')).toBeInTheDocument();
+  });
+
+  it('renders empty array as []', () => {
+    wrap(<StepOutputInspector data={[]} title="List" />);
+    const region = screen.getByRole('region', { name: /list data/i });
+    expect(within(region).getByText('[]')).toBeInTheDocument();
+  });
+
+  it('renders empty object as {}', () => {
+    wrap(<StepOutputInspector data={{}} title="Obj" />);
+    const region = screen.getByRole('region', { name: /obj data/i });
+    expect(within(region).getByText('{}')).toBeInTheDocument();
+  });
+
+  it('collapses and re-expands a top-level array on toggle click', () => {
+    wrap(<StepOutputInspector data={[1, 2, 3]} title="Arr" />);
+    const region = screen.getByRole('region', { name: /arr data/i });
+    const toggle = within(region).getByRole('button', { expanded: true });
+    expect(toggle).toHaveTextContent('[');
+    // Fully expanded initially (depth 0 <= 2): individual items visible.
+    expect(within(region).getByText('0:')).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle.textContent).toMatch(/…3 items/);
+    expect(within(region).queryByText('0:')).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(within(region).getByText('0:')).toBeInTheDocument();
+  });
+
+  it('collapses and re-expands a top-level object on toggle click', () => {
+    wrap(<StepOutputInspector data={{ a: 1, b: 2 }} title="Obj2" />);
+    const region = screen.getByRole('region', { name: /obj2 data/i });
+    const toggle = within(region).getByRole('button', { expanded: true });
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle.textContent).toMatch(/…2 keys/);
+    expect(within(region).queryByText('"a"')).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(within(region).getByText('"a"')).toBeInTheDocument();
+  });
+
+  it('auto-collapses deeply nested values (depth > 2) and can be expanded', () => {
+    wrap(
+      <StepOutputInspector
+        data={{ l1: { l2: { l3: { l4: 'deep-value' } } } }}
+        title="Deep"
+      />
+    );
+    const region = screen.getByRole('region', { name: /deep data/i });
+    // l4's own object is at depth 3, so it starts collapsed.
+    expect(within(region).queryByText(/"deep-value"/)).not.toBeInTheDocument();
+    const collapsedToggle = within(region).getByRole('button', { expanded: false });
+    expect(collapsedToggle.textContent).toMatch(/…1 keys/);
+
+    fireEvent.click(collapsedToggle);
+    expect(within(region).getByText(/"deep-value"/)).toBeInTheDocument();
+  });
+
+  it('falls back to String() rendering for exotic value types (e.g. functions)', () => {
+    const weirdValue = () => 'noop';
+    wrap(<StepOutputInspector data={weirdValue} title="Weird" />);
+    const region = screen.getByRole('region', { name: /weird data/i });
+    expect(within(region).getByText(String(weirdValue))).toBeInTheDocument();
+  });
+
+  describe('copy button', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('copies the JSON payload and reverts the icon after a timeout', async () => {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+        configurable: true,
+      });
+      vi.useFakeTimers();
+      wrap(<StepOutputInspector data={{ a: 1 }} title="Output" />);
+      const copyBtn = screen.getByRole('button', { name: /copy to clipboard/i });
+
+      await act(async () => {
+        fireEvent.click(copyBtn);
+      });
+
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        JSON.stringify({ a: 1 }, null, 2)
+      );
+      expect(screen.getByRole('button', { name: /copied/i })).toBeInTheDocument();
+
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+      expect(screen.getByRole('button', { name: /copy to clipboard/i })).toBeInTheDocument();
+    });
+
+    it('silently ignores a clipboard failure without crashing', async () => {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+        configurable: true,
+      });
+      wrap(<StepOutputInspector data={{ a: 1 }} title="Output" />);
+      const copyBtn = screen.getByRole('button', { name: /copy to clipboard/i });
+
+      await act(async () => {
+        fireEvent.click(copyBtn);
+      });
+
+      await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalled());
+      // Stays in the un-copied state since the write rejected.
+      expect(screen.getByRole('button', { name: /copy to clipboard/i })).toBeInTheDocument();
+    });
   });
 });
 
