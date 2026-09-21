@@ -37,20 +37,35 @@ class FakeWebSocket {
   static latest() { return FakeWebSocket.instances[FakeWebSocket.instances.length - 1]; }
 }
 
+interface FakeBufferSource {
+  buffer: unknown;
+  connect: ReturnType<typeof vi.fn>;
+  start: ReturnType<typeof vi.fn>;
+  onended: (() => void) | null;
+}
+
 class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
+  static lastBufferSource: FakeBufferSource | null = null;
   destination = {};
   audioWorklet = { addModule: vi.fn().mockResolvedValue(undefined) };
   close = vi.fn().mockResolvedValue(undefined);
   createMediaStreamSource = vi.fn(() => ({ connect: vi.fn() }));
+  constructor() { FakeAudioContext.instances.push(this); }
   createBuffer(_c: number, len: number) { return { getChannelData: () => new Float32Array(len) }; }
-  createBufferSource() { return { buffer: null as unknown, connect: vi.fn(), start: vi.fn(), onended: null as (() => void) | null }; }
+  createBufferSource(): FakeBufferSource {
+    const src: FakeBufferSource = { buffer: null, connect: vi.fn(), start: vi.fn(), onended: null };
+    FakeAudioContext.lastBufferSource = src;
+    return src;
+  }
 }
 
 class FakeAudioWorkletNode {
+  static lastInstance: FakeAudioWorkletNode | null = null;
   port = { onmessage: null as ((e: MessageEvent<ArrayBuffer>) => void) | null };
   connect = vi.fn();
   disconnect = vi.fn();
-  constructor(_ctx: unknown, _name: string) {}
+  constructor(_ctx: unknown, _name: string) { FakeAudioWorkletNode.lastInstance = this; }
 }
 
 const Original = {
@@ -64,6 +79,8 @@ let getUserMedia: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  FakeAudioContext.instances = [];
+  FakeAudioContext.lastBufferSource = null;
   (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
   (globalThis as Record<string, unknown>).AudioContext = FakeAudioContext;
   (globalThis as Record<string, unknown>).AudioWorkletNode = FakeAudioWorkletNode;
@@ -184,6 +201,24 @@ describe('useVoiceStream', () => {
     expect(ws.sent).toContain(JSON.stringify({ type: 'end_of_speech' }));
   });
 
+  test('startMic wires the worklet to base64-encode PCM chunks and send them over the WS', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+
+    await act(async () => { await result.current.startMic(); });
+    const ws = FakeWebSocket.latest();
+    ws.sent = [];
+
+    const worklet = FakeAudioWorkletNode.lastInstance;
+    expect(worklet).not.toBeNull();
+    const chunk = new Uint8Array([1, 2, 3, 4]).buffer;
+    act(() => worklet?.port.onmessage?.({ data: chunk } as MessageEvent<ArrayBuffer>));
+
+    const expectedB64 = btoa(String.fromCharCode(1, 2, 3, 4));
+    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_chunk', data: expectedB64 }));
+  });
+
   test('startMic reports a mic-access failure through onError', async () => {
     getUserMedia.mockRejectedValueOnce(new Error('NotAllowedError'));
     const onError = vi.fn();
@@ -215,5 +250,116 @@ describe('useVoiceStream', () => {
 
     act(() => result.current.sendDecisionId('dec-9'));
     expect(ws.sent).toContain(JSON.stringify({ type: 'set_pending_decision', decision_id: 'dec-9' }));
+  });
+
+  test('agent_thinking event fires onAgentThinking and moves to processing', async () => {
+    const onAgentThinking = vi.fn();
+    const { result } = renderHook(() => useVoiceStream('org-1', { onAgentThinking }));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+
+    act(() => FakeWebSocket.latest().simulateMessage({ type: 'agent_thinking' }));
+    expect(onAgentThinking).toHaveBeenCalled();
+    expect(result.current.state).toBe('processing');
+  });
+
+  test('connect() is a no-op when the socket is already open', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await act(async () => { await result.current.connect(); });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(result.current.state).toBe('listening');
+  });
+
+  test('connect() catches a synchronous WebSocket construction failure', async () => {
+    const onError = vi.fn();
+    class ThrowingWebSocket {
+      static OPEN = 1;
+      static CLOSED = 3;
+      constructor() { throw new Error('constructor boom'); }
+    }
+    (globalThis as Record<string, unknown>).WebSocket = ThrowingWebSocket;
+
+    const { result } = renderHook(() => useVoiceStream('org-1', { onError }));
+    await act(async () => { await result.current.connect(); });
+
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('Connection failed'));
+    expect(result.current.state).toBe('error');
+  });
+
+  test('tts_chunk buffers PCM without changing state', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+    act(() => FakeWebSocket.latest().simulateMessage({ type: 'agent_response', text: 'hi' }));
+    expect(result.current.state).toBe('speaking');
+
+    const pcmB64 = btoa(String.fromCharCode(1, 0, 2, 0));
+    act(() => FakeWebSocket.latest().simulateMessage({ type: 'tts_chunk', data: pcmB64 }));
+    // Buffering a chunk alone does not move the state machine.
+    expect(result.current.state).toBe('speaking');
+    expect(FakeAudioContext.instances).toHaveLength(0);
+  });
+
+  test('tts_done flushes buffered PCM through an AudioContext and returns to listening', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+
+    const pcmB64 = btoa(String.fromCharCode(1, 0, 2, 0));
+    act(() => FakeWebSocket.latest().simulateMessage({ type: 'tts_chunk', data: pcmB64 }));
+
+    let settled = false;
+    await act(async () => {
+      FakeWebSocket.latest().simulateMessage({ type: 'tts_done' });
+      // Let the microtask queue advance so _flushPCM creates the AudioContext/source.
+      await Promise.resolve();
+      await Promise.resolve();
+      settled = true;
+    });
+    expect(settled).toBe(true);
+    expect(FakeAudioContext.instances).toHaveLength(1);
+    const src = FakeAudioContext.lastBufferSource;
+    expect(src).not.toBeNull();
+    expect(src?.start).toHaveBeenCalled();
+
+    await act(async () => { src?.onended?.(); await Promise.resolve(); });
+    expect(result.current.state).toBe('listening');
+  });
+
+  test('tts_done with no buffered PCM skips AudioContext creation and returns to listening', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+
+    await act(async () => {
+      FakeWebSocket.latest().simulateMessage({ type: 'tts_done' });
+      await Promise.resolve();
+    });
+    expect(FakeAudioContext.instances).toHaveLength(0);
+    expect(result.current.state).toBe('listening');
+  });
+
+  test('startMic connects first when called from idle', async () => {
+    const { result } = renderHook(() => useVoiceStream('org-1'));
+    expect(result.current.state).toBe('idle');
+
+    await act(async () => { await result.current.startMic(); });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(getUserMedia).toHaveBeenCalled();
+    expect(result.current.state).toBe('listening');
+  });
+
+  test('unmount cleans up the connection via disconnect', async () => {
+    const { result, unmount } = renderHook(() => useVoiceStream('org-1'));
+    await act(async () => { await result.current.connect(); });
+    act(() => FakeWebSocket.latest().simulateOpen());
+    const ws = FakeWebSocket.latest();
+
+    unmount();
+    expect(ws.closed).toBe(true);
   });
 });

@@ -153,8 +153,10 @@ export function useVoiceStream(orgId: string, callbacks?: UseVoiceStreamCallback
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.connect(ctx.destination);
-    await new Promise<void>(resolve => { src.onended = () => { ctx.close(); resolve(); }; });
-    src.start();
+    await new Promise<void>(resolve => {
+      src.onended = () => { ctx.close(); resolve(); };
+      src.start();
+    });
   };
 
   useEffect(() => () => disconnect(), [disconnect]);
