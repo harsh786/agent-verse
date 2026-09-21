@@ -498,9 +498,18 @@ class MCPClient:
                             try:
                                 # Pass tenant_ctx if the resolver accepts it
                                 if self._secret_resolver_accepts_tenant and tenant_ctx is not None:
-                                    plain = await self._secret_resolver(v, tenant_ctx)
+                                    plain = self._secret_resolver(v, tenant_ctx)
                                 else:
-                                    plain = await self._secret_resolver(v)
+                                    plain = self._secret_resolver(v)
+                                # The resolver may be sync (e.g. the default
+                                # resolve_connector_secret_ref) or async — only
+                                # await when it actually returned an awaitable.
+                                # Unconditionally awaiting a sync resolver's
+                                # plain string/None return raises TypeError,
+                                # which used to be swallowed here, silently
+                                # leaving the raw "vault://…" ref unresolved.
+                                if inspect.isawaitable(plain):
+                                    plain = await plain
                             except Exception:
                                 pass
                         resolved[k] = plain or v
