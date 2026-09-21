@@ -510,7 +510,7 @@ class PlannerMixin:
                         req,
                         provider_name=type(self._planner).__name__,
                     )
-                except RuntimeError as cb_exc:
+                except (RuntimeError, TimeoutError) as cb_exc:
                     raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
                 record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
             # 2.3: Per-goal planner cost tracking

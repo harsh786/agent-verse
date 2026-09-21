@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -347,3 +348,35 @@ def test_load_checkpoint_without_db_returns_none() -> None:
     ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k")
     result = asyncio.run(graph._load_checkpoint("g1", ctx))
     assert result is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Planning unavailable: circuit open", "Verification unavailable: circuit open"],
+)
+async def test_run_treats_circuit_breaker_denials_as_graceful_failure(message: str) -> None:
+    """A circuit-breaker-open PermissionError from either the planner or the
+    verifier mixin (message prefixed "Planning unavailable:" / "Verification
+    unavailable:") must degrade to a normal FAILED goal state, not crash
+    AgentGraph.run(). Regression test for a bug where only the planner's
+    prefix was recognised — a verifier circuit-open denial used to propagate
+    as an unhandled exception instead of failing the goal gracefully."""
+    p = FakeProvider(responses=["done"])
+    g = AgentGraph(planner=p, executor=p, verifier=p)
+    with patch.object(g._graph, "ainvoke", AsyncMock(side_effect=PermissionError(message))):
+        state = await g.run(goal="test", tenant_ctx=TENANT)
+    assert state.status == GoalStatus.FAILED
+    assert state.error_message == message
+
+
+async def test_run_reraises_permission_errors_that_are_not_circuit_breaker_denials() -> None:
+    """A genuine governance/HITL PermissionError (not a circuit-breaker
+    message) must still propagate to the caller rather than being swallowed
+    as a graceful failure."""
+    p = FakeProvider(responses=["done"])
+    g = AgentGraph(planner=p, executor=p, verifier=p)
+    with patch.object(
+        g._graph, "ainvoke", AsyncMock(side_effect=PermissionError("tool denied by policy"))
+    ):
+        with pytest.raises(PermissionError, match="tool denied by policy"):
+            await g.run(goal="test", tenant_ctx=TENANT)

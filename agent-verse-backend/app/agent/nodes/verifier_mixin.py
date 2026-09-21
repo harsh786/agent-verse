@@ -134,7 +134,7 @@ class VerifierMixin:
                         req,
                         provider_name=type(self._verifier).__name__,
                     )
-                except RuntimeError as cb_exc:
+                except (RuntimeError, TimeoutError) as cb_exc:
                     raise PermissionError(f"Verification unavailable: {cb_exc}") from cb_exc
                 record_verify_duration(time.monotonic() - _verify_start)
             # 2.3: Per-goal verifier cost tracking

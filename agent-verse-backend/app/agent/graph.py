@@ -756,11 +756,12 @@ class AgentGraph(
                         await self._emit({"type": "goal_failed", "reason": final.error_message})
                     return final
                 except PermissionError as exc:
-                    # "Planning unavailable: ..." comes from the circuit breaker wrapping
-                    # a downstream RuntimeError in _node_plan — treat as a regular failure,
-                    # not a governance denial (HITL rejections are handled inside the loop).
+                    # "Planning unavailable: ..." / "Verification unavailable: ..." come
+                    # from the circuit breaker wrapping a downstream RuntimeError/TimeoutError
+                    # in _node_plan / _node_verify — treat as a regular failure, not a
+                    # governance denial (HITL rejections are handled inside the loop).
                     _exc_str = str(exc)
-                    if _exc_str.startswith("Planning unavailable:"):
+                    if _exc_str.startswith(("Planning unavailable:", "Verification unavailable:")):
                         err_state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
                         err_state.status = GoalStatus.FAILED
                         err_state.error_message = _exc_str

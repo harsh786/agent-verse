@@ -121,7 +121,7 @@ class ReasoningMixin:
                 req,
                 provider_name=type(self._planner).__name__,
             )
-        except RuntimeError as cb_exc:
+        except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
         # The provider's private reasoning is intentionally discarded. Only
         # aggregate execution evidence is checkpointed or exposed.
@@ -182,7 +182,7 @@ class ReasoningMixin:
                 req,
                 provider_name=type(self._planner).__name__,
             )
-        except RuntimeError as cb_exc:
+        except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
         from app.agent.reasoning_evidence import critique_categories
 

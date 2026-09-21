@@ -169,12 +169,13 @@ async def test_verify_circuit_breaker_open_raises_permission_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_verify_timeout_is_not_swallowed() -> None:
+async def test_verify_timeout_converts_to_permission_error() -> None:
     """A verification timeout (asyncio.wait_for inside call_with_circuit_breaker
-    raises TimeoutError, not RuntimeError) is NOT caught by _node_verify's
-    ``except RuntimeError`` clause and propagates to the caller. This documents
-    real behavior: a slow verifier LLM call fails the whole node rather than
-    being treated as an ambiguous/failed verdict."""
+    raises TimeoutError, not RuntimeError) IS caught by _node_verify's
+    ``except (RuntimeError, TimeoutError)`` clause and converted to a
+    PermissionError, exactly like a circuit-open RuntimeError — so a slow
+    verifier LLM call degrades to a graceful goal failure (via graph.py's
+    "Verification unavailable:" handling) rather than crashing the node."""
     graph = _make_graph()
     agent_state = _agent_state()
     agent_state.steps.append(_completed_step())
@@ -183,7 +184,7 @@ async def test_verify_timeout_is_not_swallowed() -> None:
         "app.agent.nodes.verifier_mixin.call_with_circuit_breaker",
         AsyncMock(side_effect=TimeoutError("verifier call timed out")),
     ):
-        with pytest.raises(TimeoutError):
+        with pytest.raises(PermissionError, match="Verification unavailable"):
             await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
 
 
