@@ -1167,6 +1167,12 @@ async def retrieve_multi_hop(
                     raise RetrievalStrategyExecutionError(
                         "multi_hop", "retrieval hop failed"
                     ) from exc
+                # Non-strict: this hop contributed no evidence, but a later
+                # `zip(sub_queries, per_hop_results, strict=True)` requires the
+                # lists to stay the same length as `sub_queries`, or it raises
+                # ValueError and crashes the whole multi-hop query. Append an
+                # empty hop instead of silently dropping the slot.
+                per_hop_results.append([])
 
     if strategy_evidence is not None:
         strategy_evidence.extend(
