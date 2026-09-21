@@ -6,7 +6,7 @@ import contextlib
 import hashlib
 import re
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -905,7 +905,7 @@ async def export_tenant_data(request: Request) -> dict:
 
     export_data: dict = {
         "tenant_id": tenant.tenant_id,
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": datetime.now(UTC).isoformat(),
         "goals": [],
         "agents": [],
     }
