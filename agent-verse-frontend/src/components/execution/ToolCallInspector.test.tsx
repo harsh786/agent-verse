@@ -116,4 +116,131 @@ describe('ToolCallInspector', () => {
     const toolButton = screen.getByRole('button', { name: /github_create_pr/i });
     expect(within(toolButton).getByText('failed')).toBeInTheDocument();
   });
+
+  test('returns null when there are no tool events', () => {
+    const { container } = render(<ToolCallInspector toolEvents={[]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  test('pluralizes the tool call count and shows a placeholder before selection', () => {
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          { type: 'tool_call_complete', tool_name: 'tool_one', success: true },
+          { type: 'tool_call_complete', tool_name: 'tool_two', success: true },
+        ]}
+      />
+    );
+
+    expect(screen.getByText('2 tool calls')).toBeInTheDocument();
+    expect(screen.getByText('Select a tool call to inspect')).toBeInTheDocument();
+  });
+
+  test('shows latency in both the list item and the detail panel, and shows the timestamp', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          {
+            type: 'tool_call_complete',
+            tool_name: 'slow_tool',
+            success: true,
+            latency_ms: 1234,
+            ts: '2024-05-01T12:34:56.789Z',
+          },
+        ]}
+      />
+    );
+
+    const toolButton = screen.getByRole('button', { name: /slow_tool/i });
+    expect(within(toolButton).getByText('1234ms')).toBeInTheDocument();
+
+    await user.click(toolButton);
+
+    expect(screen.getByText('1234ms latency')).toBeInTheDocument();
+    expect(screen.getByText('2024-05-01T12:34:56')).toBeInTheDocument();
+  });
+
+  test('shows a risk badge when the event carries a risk level', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          {
+            type: 'tool_call_complete',
+            tool_name: 'delete_resource',
+            success: true,
+            risk: 'critical',
+          },
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /delete_resource/i }));
+
+    expect(screen.getByText('critical')).toHaveClass('text-red-600');
+  });
+
+  test('falls back to the "tool" field and "Unknown Tool" label when tool_name is absent', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          { type: 'tool_call_complete', tool: 'legacy_tool', success: true },
+          { type: 'tool_call_complete', success: true },
+        ]}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: /legacy_tool/i })).toBeInTheDocument();
+    const unknownButton = screen.getByRole('button', { name: /^unknown success$/i });
+    expect(unknownButton).toBeInTheDocument();
+
+    await user.click(unknownButton);
+    expect(screen.getByRole('heading', { name: /unknown tool/i })).toBeInTheDocument();
+  });
+
+  test('falls back to String() when arguments cannot be JSON-serialized', async () => {
+    const user = userEvent.setup();
+    const circular: Record<string, unknown> = { name: 'circular' };
+    circular.self = circular;
+
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          {
+            type: 'tool_call_complete',
+            tool_name: 'weird_args_tool',
+            success: true,
+            arguments: circular,
+          },
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /weird_args_tool/i }));
+
+    expect(screen.getByText('[object Object]')).toBeInTheDocument();
+  });
+
+  test('renders no output or error section when a successful call has neither', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <ToolCallInspector
+        toolEvents={[
+          { type: 'tool_call_complete', tool_name: 'no_output_tool', success: true },
+        ]}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /no_output_tool/i }));
+
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.queryByText('Error')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region')).not.toBeInTheDocument();
+  });
 });
