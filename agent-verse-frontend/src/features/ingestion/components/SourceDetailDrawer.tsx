@@ -12,7 +12,7 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
   const { data: health } = useSourceHealth(source.source_id);
   const { data: syncStatus } = useSyncStatus(source.source_id);
   const triggerSync = useTriggerSync();
-  const familyCfg = FAMILY_CONFIG[source.family];
+  const familyCfg = FAMILY_CONFIG[source.family] ?? { label: source.family, icon: 'Bot', color: 'stone-500', description: '' };
 
   return (
     <div className="fixed inset-0 z-50 flex" role="dialog" aria-modal="true" aria-label={`${source.name} source detail`}>
