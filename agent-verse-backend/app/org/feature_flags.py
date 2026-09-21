@@ -193,7 +193,7 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
     from sqlalchemy import select
 
     from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
-    from app.db.session import db_factory  # type: ignore[import]
+    from app.db.session import get_session_factory  # type: ignore[import]
     from app.org.analytics import OrgAnalyticsService
     from app.org.models import Organization
 
@@ -201,6 +201,7 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
     insights_generated = 0
 
     try:
+        db_factory = get_session_factory()
         async with db_factory() as session:
             result = await session.execute(
                 select(Organization.id, Organization.tenant_id)
@@ -236,14 +237,15 @@ async def _run_org_digest_cron() -> dict[str, Any]:
     from sqlalchemy import select
 
     from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
-    from app.db.session import db_factory  # type: ignore[import]
-    from app.org.digest import OrgDigestService
+    from app.db.session import get_session_factory  # type: ignore[import]
+    from app.org.digest import DigestGenerator
     from app.org.models import Organization
 
     processed = 0
     digests_generated = 0
 
     try:
+        db_factory = get_session_factory()
         async with db_factory() as session:
             result = await session.execute(
                 select(Organization.id, Organization.tenant_id)
@@ -255,8 +257,8 @@ async def _run_org_digest_cron() -> dict[str, Any]:
         for org_id, tenant_id in orgs:
             try:
                 async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
-                    digest_svc = OrgDigestService(s2, str(tenant_id))
-                    await digest_svc.generate(str(org_id))
+                    digest_svc = DigestGenerator(s2)
+                    await digest_svc.generate(str(org_id), str(tenant_id))
                     digests_generated += 1
                 processed += 1
             except Exception as exc:
