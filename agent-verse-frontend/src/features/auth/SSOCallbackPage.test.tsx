@@ -53,6 +53,60 @@ describe("SSOCallbackPage", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/User denied access/i);
   });
 
+  test("falls back to the raw error code when no error_description is given", async () => {
+    renderCallback("?error=access_denied");
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/SSO login failed: access_denied/i);
+  });
+
+  test("falls back to a generic message when the token-exchange error body has no detail", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("not json", {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    renderCallback("?code=bad-code");
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent(/Token exchange failed \(400\)/i);
+  });
+
+  test("falls back to email for the tenant id when preferred_username is missing", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "t",
+            refresh_token: "r",
+            expires_in: 300,
+            token_type: "Bearer",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            sub: "u3",
+            email: "fallback@example.com",
+            name: "No Username",
+            preferred_username: "",
+            roles: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+
+    renderCallback("?code=no-username-code");
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    });
+    expect(useAuthStore.getState().tenantId).toBe("fallback@example.com");
+  });
+
   test("shows state mismatch error when state does not match stored value", async () => {
     sessionStorage.setItem("av_sso_state", "expected-state");
     renderCallback("?code=abc123&state=wrong-state");
@@ -208,6 +262,88 @@ describe("SSOCallbackPage", () => {
     });
     await userEvent.click(retryBtn);
     expect(screen.getByText("Auth Page")).toBeInTheDocument();
+  });
+
+  test("falls back to an empty tenant/free plan when the userinfo fetch fails", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "jwt.access",
+            refresh_token: "jwt.refresh",
+            expires_in: 300,
+            token_type: "Bearer",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ detail: "unauthorized" }), {
+          status: 401,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+
+    renderCallback("?code=valid-code");
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    });
+
+    expect(useAuthStore.getState().tenantId).toBe("");
+    expect(useAuthStore.getState().plan).toBe("free");
+  });
+
+  test("shows a generic error message when a non-Error value is thrown", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce("boom");
+
+    renderCallback("?code=valid-code");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /an unexpected error occurred/i
+    );
+  });
+
+  test('shows the "loading your profile" state while fetching userinfo', async () => {
+    let resolveUserInfo!: (value: Response) => void;
+    const userInfoPromise = new Promise<Response>((resolve) => {
+      resolveUserInfo = resolve;
+    });
+
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            access_token: "jwt.access",
+            refresh_token: "jwt.refresh",
+            expires_in: 300,
+            token_type: "Bearer",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockImplementationOnce(() => userInfoPromise);
+
+    renderCallback("?code=valid-code");
+
+    expect(await screen.findByText(/loading your profile/i)).toBeInTheDocument();
+
+    resolveUserInfo(
+      new Response(
+        JSON.stringify({
+          sub: "u",
+          email: "u@e.com",
+          name: "U",
+          preferred_username: "u",
+          roles: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      )
+    );
+
+    await waitFor(() => {
+      expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    });
   });
 
   test("clears state token from sessionStorage on success", async () => {

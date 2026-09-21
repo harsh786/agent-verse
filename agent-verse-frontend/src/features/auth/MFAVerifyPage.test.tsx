@@ -3,9 +3,10 @@
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import MFAVerifyPage from './MFAVerifyPage';
 
 function mockFetch(status = 200, payload: unknown = { status: 'verified', method: 'totp', remaining_recovery_codes: 8 }) {
@@ -39,6 +40,7 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   useAuthStore.setState({ apiKey: 'k', tenantId: 't', plan: 'free', isAuthenticated: true, mfaRequired: true, mfaToken: 'pending' });
+  useToastStore.setState({ toasts: [] });
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -49,6 +51,17 @@ describe('MFAVerifyPage', () => {
     expect(screen.getByRole('heading', { name: /Two-Factor Authentication/i })).toBeInTheDocument();
     expect(screen.getByText(/Enter the 6-digit code from your authenticator app/i)).toBeInTheDocument();
     expect(screen.getByLabelText('TOTP verification code')).toBeInTheDocument();
+  });
+
+  test('submitting the form with a blank code does not trigger verification', async () => {
+    const spy = mockFetch();
+    renderPage();
+    const form = screen.getByLabelText('TOTP verification code').closest('form');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/auth/mfa/verify'))).toBe(false);
   });
 
   test('the Verify button is disabled until 6 digits are entered', () => {
@@ -102,5 +115,78 @@ describe('MFAVerifyPage', () => {
     fireEvent.change(input, { target: { value: '000000' } });
     await waitFor(() => expect(input).toHaveValue(''));
     expect(screen.getByRole('heading', { name: /Two-Factor Authentication/i })).toBeInTheDocument();
+  });
+
+  test('shows an error toast and refocuses the input when the code is rejected', async () => {
+    mockFetch(400, { detail: 'bad code' });
+    renderPage();
+    const input = screen.getByLabelText('TOTP verification code');
+    fireEvent.change(input, { target: { value: '000000' } });
+
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message === 'Invalid code. Please try again.')
+      ).toBe(true);
+    });
+    expect(input).toHaveFocus();
+  });
+
+  test('shows a success toast and navigates to /goals on successful verification', async () => {
+    mockFetch(200, { status: 'verified', method: 'totp', remaining_recovery_codes: 8 });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/mfa']}>
+          <Routes>
+            <Route path="/mfa" element={<MFAVerifyPage />} />
+            <Route path="/goals" element={<div>Goals Page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+
+    fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '123456' } });
+
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'success' && t.message === 'Verified! Welcome back.')
+      ).toBe(true);
+    });
+    expect(await screen.findByText('Goals Page')).toBeInTheDocument();
+    expect(useAuthStore.getState().mfaRequired).toBe(false);
+    expect(useAuthStore.getState().mfaToken).toBeNull();
+  });
+
+  test('warns when recovery codes are running low after a successful recovery-code verification', async () => {
+    mockFetch(200, { status: 'verified', method: 'recovery', remaining_recovery_codes: 2 });
+    renderPage();
+
+    fireEvent.click(screen.getByRole('button', { name: /Use a recovery code instead/i }));
+    fireEvent.change(screen.getByLabelText('Recovery code'), { target: { value: 'aaaaa-bbbbb' } });
+    fireEvent.click(screen.getByRole('button', { name: /Verify/i }));
+
+    await waitFor(() => {
+      expect(
+        useToastStore
+          .getState()
+          .toasts.some(
+            (t) => t.kind === 'warning' && t.message === 'Only 2 recovery codes remaining. Regenerate soon.'
+          )
+      ).toBe(true);
+    });
+  });
+
+  test('does not warn about recovery codes when remaining count is comfortably above the threshold', async () => {
+    mockFetch(200, { status: 'verified', method: 'totp', remaining_recovery_codes: 8 });
+    renderPage();
+
+    fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '123456' } });
+
+    await waitFor(() => {
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'success')
+      ).toBe(true);
+    });
+    expect(useToastStore.getState().toasts.some((t) => t.kind === 'warning')).toBe(false);
   });
 });
