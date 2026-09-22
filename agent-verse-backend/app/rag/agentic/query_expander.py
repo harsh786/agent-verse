@@ -9,8 +9,15 @@ class QueryExpander:
     def expand(self, query: str, max_variants: int = 3) -> list[str]:
         variants = [query]
         q = query.lower()
-        if "ticket" in q or "issue" in q:
-            variants.append(q.replace("ticket", "issue").replace("issue", "ticket"))
+        # Bug fix: chaining .replace("ticket", "issue").replace("issue", "ticket")
+        # round-trips any "ticket" query straight back to itself (the second
+        # replace also undoes the first), so it silently produced zero new
+        # variants for the more common "ticket" phrasing. Handle each
+        # direction independently so both synonyms actually get generated.
+        if "ticket" in q:
+            variants.append(q.replace("ticket", "issue"))
+        elif "issue" in q:
+            variants.append(q.replace("issue", "ticket"))
         if "find" in q:
             variants.append(q.replace("find", "search for"))
         return list(dict.fromkeys(variants))[:max_variants]

@@ -4,6 +4,10 @@ Runs per-collection searches in parallel, normalises scores within each
 collection (so results from collections with different embedding models are
 comparable), deduplicates by content hash, and returns the global top-k.
 
+A failure in any one collection (timeout, exception, ...) propagates and
+fails the whole search -- a collection error must never silently become an
+empty successful response (see test_federated_search_propagates_collection_error).
+
 Usage::
 
     from app.knowledge.federated_search import federated_search
