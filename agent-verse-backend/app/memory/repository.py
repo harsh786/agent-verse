@@ -23,6 +23,16 @@ from app.memory.retention import resolve_expires_at
 Embedder = Callable[[str], Awaitable[tuple[float, ...]]]
 
 
+def _has_evidence(evidence_refs: tuple[str, ...]) -> bool:
+    """True when at least one evidence ref is a non-blank string.
+
+    A tuple of only empty/whitespace strings is not real evidence — treating it
+    as such would let a claim with no actual evidence bypass the quarantine
+    gate that an empty ``evidence_refs`` tuple is meant to trigger.
+    """
+    return any(ref.strip() for ref in evidence_refs)
+
+
 class MemoryRepository(Protocol):
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord: ...
     async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]: ...
@@ -94,7 +104,7 @@ class InMemoryMemoryRepository:
                 source=request.source,
                 confidence=request.confidence,
                 lifecycle_state="quarantined"
-                if quarantined or not request.evidence_refs
+                if quarantined or not _has_evidence(request.evidence_refs)
                 else "active",
                 version=1,
                 embedding_model="memory-embedding-v1",

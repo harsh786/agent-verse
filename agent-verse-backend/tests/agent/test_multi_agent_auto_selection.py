@@ -50,6 +50,80 @@ def test_expert_high_risk_selects_debate() -> None:
     assert sel.debate is True
 
 
+def test_critical_risk_selects_consensus_regardless_of_complexity() -> None:
+    """Consensus is an irreversible/high-stakes gate keyed purely on risk — a
+    'simple' goal with critical risk still warrants independent convergence."""
+    sel = select_multi_agent_patterns(
+        complexity="simple", domain="operational", multi_step=False, risk="critical"
+    )
+    assert sel.consensus is True
+    assert sel.supervisor is False
+    assert sel.debate is False
+    assert dict(sel.reasons)["consensus"]
+
+
+def test_high_risk_alone_does_not_select_consensus() -> None:
+    """Only 'critical' triggers consensus; 'high' does not (debate may still apply)."""
+    sel = select_multi_agent_patterns(
+        complexity="simple", domain="operational", multi_step=False, risk="high"
+    )
+    assert sel.consensus is False
+
+
+def test_expert_analytical_not_multi_step_still_selects_debate_not_supervisor() -> None:
+    """Supervisor requires multi_step; debate does not — single-step expert/analytical
+    goals still warrant adversarial cross-checking even without decomposition."""
+    sel = select_multi_agent_patterns(
+        complexity="expert", domain="analytical", multi_step=False, risk="low"
+    )
+    assert sel.debate is True
+    assert sel.supervisor is False
+
+
+def test_selector_is_case_insensitive_on_all_string_inputs() -> None:
+    """Mixed-case complexity/domain/risk must still match the lowercase rule sets —
+    if case weren't normalized, 'Analytical' wouldn't match _DECOMPOSABLE_DOMAINS
+    and supervisor would wrongly stay unselected."""
+    sel = select_multi_agent_patterns(
+        complexity="EXPERT", domain="Analytical", multi_step=True, risk="CRITICAL"
+    )
+    assert sel.supervisor is True
+    assert sel.debate is True
+    assert sel.consensus is True
+
+
+def test_selector_handles_empty_strings_without_raising() -> None:
+    sel = select_multi_agent_patterns(complexity="", domain="", multi_step=True, risk="")
+    assert sel.patterns == frozenset()
+
+
+def test_selector_handles_unrecognized_values_without_raising() -> None:
+    sel = select_multi_agent_patterns(
+        complexity="nonsense", domain="nonexistent-domain", multi_step=True, risk="unknown"
+    )
+    assert sel.patterns == frozenset()
+
+
+def test_moderate_complexity_does_not_select_supervisor() -> None:
+    """Only 'complex'/'expert' are ADVANCED_COMPLEXITIES for supervisor decomposition,
+    even though 'moderate' is compatible with the ToT pattern elsewhere in the codebase."""
+    sel = select_multi_agent_patterns(
+        complexity="moderate", domain="technical", multi_step=True, risk="low"
+    )
+    assert sel.supervisor is False
+
+
+def test_all_three_patterns_can_be_selected_simultaneously() -> None:
+    """A complex/expert, multi-step, analytical, critical-risk goal should stack all
+    three signals: supervisor (decompose) + debate (cross-check) + consensus (converge)."""
+    sel = select_multi_agent_patterns(
+        complexity="expert", domain="analytical", multi_step=True, risk="critical"
+    )
+    assert sel.patterns == frozenset({"supervisor", "debate", "consensus"})
+    reasons = dict(sel.reasons)
+    assert reasons.keys() == {"supervisor", "debate", "consensus"}
+
+
 # ── graph wiring (behavioural) ────────────────────────────────────────────────
 
 

@@ -19,7 +19,7 @@ from app.memory.contracts import (
     MemoryRecord,
     MemoryWriteRequest,
 )
-from app.memory.repository import Embedder, _matches_scope, _similarity
+from app.memory.repository import Embedder, _has_evidence, _matches_scope, _similarity
 from app.memory.retention import resolve_expires_at
 
 
@@ -82,7 +82,7 @@ class PostgresMemoryRepository:
                 "classification": request.classification,
                 "confidence": request.confidence,
                 "lifecycle_state": "quarantined"
-                if poisoned or not request.evidence_refs
+                if poisoned or not _has_evidence(request.evidence_refs)
                 else "active",
                 "version": 1,
                 "embedding_model": "memory-embedding-v1",

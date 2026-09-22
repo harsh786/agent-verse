@@ -63,16 +63,23 @@ async def execute_spawn_tool(
             "error": "Civilization Governor not available — spawn disabled",
         }
 
-    # Get spawn verdict
-    verdict = await governor.evaluate_spawn_request(
-        requester_agent_id=requester_agent_id,
-        requested_capability=capability,
-        goal_text=goal,
-        depth=depth,
-        parent_budget_usd=parent_budget_usd,
-        parent_policy_ids=parent_policy_ids,
-        tenant_ctx=tenant_ctx,
-    )
+    # Get spawn verdict. Like the spawn_agent() call below, this must never raise
+    # into the agent's tool-execution loop — a governance-evaluation failure
+    # (e.g. a metrics/DB hiccup) should fail closed with a structured error, the
+    # same contract the LLM gets for every other failure mode of this tool.
+    try:
+        verdict = await governor.evaluate_spawn_request(
+            requester_agent_id=requester_agent_id,
+            requested_capability=capability,
+            goal_text=goal,
+            depth=depth,
+            parent_budget_usd=parent_budget_usd,
+            parent_policy_ids=parent_policy_ids,
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        logger.error("spawn_tool_evaluate_spawn_request_failed", error=str(exc))
+        return {"success": False, "error": str(exc)}
 
     from app.civilization.models import SpawnDecision
 
