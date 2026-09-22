@@ -2552,3 +2552,65 @@ async def test_ingest_rejects_embedding_dimension_mismatch(
             source_type="policy",
             source_doc_id=f"doc-mismatch-{collection_id}",
         )
+
+
+async def test_query_time_vector_dimension_mismatch_falls_back_non_strict(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """A query embedding whose length disagrees with the collection's stored
+    ``vector(768)`` column dimension makes real pgvector raise ("different
+    vector dimensions: 768 and 1536") inside the vector leg. Non-strict hybrid
+    search must swallow that genuine DB error (not a mocked one) and degrade
+    gracefully rather than propagating a raw DBAPIError to the caller."""
+    tenant_a, _ = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant_a, dimension=768)
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_a.tenant_id),
+    ):
+        results = await hybrid_search(
+            session,
+            query="canonical persisted retrieval evidence",
+            query_embedding=_embedding(1536),
+            collection_id=collection_id,
+            embedding_dim=768,
+            retrieval_mode="vector",
+            strict=False,
+        )
+
+    assert results == []
+
+
+async def test_query_time_vector_dimension_mismatch_raises_strict(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """The strict counterpart of the above: a real pgvector dimension-mismatch
+    error on the vector leg must surface as ``RetrievalLegExecutionError``
+    (leg="vector"), not an opaque DBAPIError, so gateway callers get the
+    canonical failure contract."""
+    from app.rag.engine import RetrievalLegExecutionError
+
+    tenant_a, _ = tenants
+    collection_id, _ = await _ingest(postgres_database, tenant_a, dimension=768)
+
+    with pytest.raises(RetrievalLegExecutionError, match="vector") as exc_info:
+        async with (
+            postgres_database.runtime_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_a.tenant_id),
+        ):
+            await hybrid_search(
+                session,
+                query="canonical persisted retrieval evidence",
+                query_embedding=_embedding(1536),
+                collection_id=collection_id,
+                embedding_dim=768,
+                retrieval_mode="vector",
+                strict=True,
+            )
+
+    assert exc_info.value.leg == "vector"

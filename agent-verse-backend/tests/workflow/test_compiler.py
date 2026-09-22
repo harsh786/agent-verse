@@ -153,3 +153,176 @@ def test_step_input_payload_empty_for_bare_step() -> None:
     # A conditional carries no input-bearing fields → empty payload (nothing to show).
     step = StepDefinition(id="c", type="conditional")
     assert WorkflowCompiler._step_input_payload(step) == {}
+
+
+# ── _parse_step_timeout: '30s' / '5m' / '2h' / bare seconds / invalid → float ──
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("", 0.0),
+        ("100ms", 0.1),
+        ("30s", 30.0),
+        ("5m", 300.0),
+        ("2h", 7200.0),
+        ("15", 15.0),
+        ("not-a-duration", 0.0),
+    ],
+)
+def test_parse_step_timeout(raw: str, expected: float) -> None:
+    assert WorkflowCompiler._parse_step_timeout(raw) == pytest.approx(expected)
+
+
+# ── _should_retry: RetryConfig.fail_on / retry_on exception-name filters ──────
+
+
+def test_should_retry_defaults_true_with_no_filters() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    assert WorkflowCompiler._should_retry(RetryConfig(), RuntimeError("x")) is True
+
+
+def test_should_retry_false_when_exception_in_fail_on() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(fail_on=["ValueError"])
+    assert WorkflowCompiler._should_retry(retry, ValueError("bad input")) is False
+    # A different exception type is unaffected by fail_on.
+    assert WorkflowCompiler._should_retry(retry, RuntimeError("transient")) is True
+
+
+def test_should_retry_false_when_not_in_retry_on_allowlist() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(retry_on=["TimeoutError"])
+    assert WorkflowCompiler._should_retry(retry, RuntimeError("not listed")) is False
+    assert WorkflowCompiler._should_retry(retry, TimeoutError("listed")) is True
+
+
+def test_should_retry_fail_on_takes_precedence_over_retry_on() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(retry_on=["ValueError"], fail_on=["ValueError"])
+    assert WorkflowCompiler._should_retry(retry, ValueError("both lists")) is False
+
+
+# ── _retry_delay: fixed / linear / exponential backoff ─────────────────────────
+
+
+def test_retry_delay_fixed_backoff_is_constant() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(backoff="fixed", base_delay_ms=1000)
+    assert WorkflowCompiler._retry_delay(retry, 1) == 1.0
+    assert WorkflowCompiler._retry_delay(retry, 5) == 1.0
+
+
+def test_retry_delay_linear_backoff_scales_with_attempt() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(backoff="linear", base_delay_ms=1000)
+    assert WorkflowCompiler._retry_delay(retry, 1) == 1.0
+    assert WorkflowCompiler._retry_delay(retry, 3) == 3.0
+
+
+def test_retry_delay_exponential_backoff_doubles() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(backoff="exponential", base_delay_ms=1000)
+    assert WorkflowCompiler._retry_delay(retry, 1) == 1.0
+    assert WorkflowCompiler._retry_delay(retry, 2) == 2.0
+    assert WorkflowCompiler._retry_delay(retry, 3) == 4.0
+
+
+def test_retry_delay_negative_base_clamped_to_zero() -> None:
+    from app.workflow.dsl import RetryConfig
+
+    retry = RetryConfig(backoff="fixed", base_delay_ms=-500)
+    assert WorkflowCompiler._retry_delay(retry, 1) == 0.0
+
+
+# ── _find_downstream / _find_terminal_steps: depends_on_any, branch/action targets ──
+
+
+def test_find_downstream_depends_on_any_matches_any_listed_dep() -> None:
+    wf = WorkflowDefinition(
+        name="fanin",
+        steps=[
+            StepDefinition(id="a", type="tool", tool="t"),
+            StepDefinition(id="b", type="tool", tool="t"),
+            StepDefinition(
+                id="c", type="tool", tool="t", depends_on=["a", "b"], depends_on_any=True
+            ),
+        ],
+    )
+    # Both "a" and "b" individually route to "c" under depends_on_any semantics.
+    assert WorkflowCompiler._find_downstream("a", wf) == ["c"]
+    assert WorkflowCompiler._find_downstream("b", wf) == ["c"]
+
+
+def test_find_downstream_depends_on_all_requires_full_dep_match() -> None:
+    # Without depends_on_any, _find_downstream still lists "c" for each of its
+    # individual deps (LangGraph's own edge semantics enforce the join), so this
+    # documents that the helper doesn't distinguish AND vs ANY beyond the flag.
+    wf = WorkflowDefinition(
+        name="fanin2",
+        steps=[
+            StepDefinition(id="a", type="tool", tool="t"),
+            StepDefinition(id="b", type="tool", tool="t"),
+            StepDefinition(id="c", type="tool", tool="t", depends_on=["a", "b"]),
+        ],
+    )
+    assert WorkflowCompiler._find_downstream("a", wf) == ["c"]
+
+
+def test_find_terminal_steps_excludes_conditional_branch_targets() -> None:
+    from app.workflow.dsl import ConditionalBranch
+
+    wf = WorkflowDefinition(
+        name="cond-terminal",
+        steps=[
+            StepDefinition(
+                id="check",
+                type="conditional",
+                expression="1 == 1",
+                branches=[
+                    ConditionalBranch(condition="1 == 1", next="yes"),
+                    ConditionalBranch(condition="else", next="no"),
+                ],
+            ),
+            StepDefinition(id="yes", type="tool", tool="t"),
+            StepDefinition(id="no", type="tool", tool="t"),
+        ],
+    )
+    # "yes"/"no" are reached only via branch targets (no depends_on), but must
+    # still be excluded from the terminal set — otherwise the compiler would
+    # wire them to BOTH their branch edge and END, corrupting routing.
+    terminal = WorkflowCompiler._find_terminal_steps(wf)
+    assert "yes" not in terminal
+    assert "no" not in terminal
+
+
+def test_find_terminal_steps_excludes_hitl_action_targets() -> None:
+    from app.workflow.dsl import HITLAction
+
+    wf = WorkflowDefinition(
+        name="hitl-terminal",
+        steps=[
+            StepDefinition(
+                id="gate",
+                type="hitl",
+                actions=[
+                    HITLAction(id="approve", next="done"),
+                    HITLAction(id="reject"),
+                ],
+            ),
+            StepDefinition(id="done", type="tool", tool="t"),
+        ],
+    )
+    terminal = WorkflowCompiler._find_terminal_steps(wf)
+    assert "done" not in terminal
+    # Nothing depends_on "gate" itself, so the helper (which only looks at
+    # depends_on plus branch/action *targets*) still reports it terminal here;
+    # _compile_uncached separately wires "gate" via add_conditional_edges.
+    assert "gate" in terminal

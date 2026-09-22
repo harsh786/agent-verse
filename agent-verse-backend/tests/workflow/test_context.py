@@ -120,3 +120,95 @@ def test_non_string_passthrough(resolver, state):
     assert resolver.resolve(42, state) == 42
     assert resolver.resolve(None, state) is None
     assert resolver.resolve({"a": 1}, state) == {"a": 1}
+
+
+# ── Genuinely under-tested branches: resolve_all, list indexing, vault client,
+# unrecognized expressions, remaining workflow.* keys, multi-expr formatting ──
+
+
+def test_resolve_all_walks_nested_lists_and_dicts(resolver, state):
+    obj = {
+        "items": ["{{inputs.doc_url}}", {"nested": "{{vars.total}}"}],
+        "static": 1,
+    }
+    result = resolver.resolve_all(obj, state)
+    assert result == {
+        "items": ["https://example.com/doc.pdf", {"nested": 10}],
+        "static": 1,
+    }
+
+
+def test_resolve_list_index_into_step_output(resolver, state):
+    state = {**state}
+    state["step_outputs"] = {**state["step_outputs"], "step2": {"items": ["a", "b", "c"]}}
+    assert resolver.resolve("{{steps.step2.output.items.1}}", state) == "b"
+
+
+def test_resolve_list_index_out_of_range_returns_none(resolver, state):
+    state = {**state}
+    state["step_outputs"] = {**state["step_outputs"], "step2": {"items": ["a"]}}
+    assert resolver.resolve("{{steps.step2.output.items.5}}", state) is None
+
+
+def test_resolve_list_index_non_numeric_returns_none(resolver, state):
+    state = {**state}
+    state["step_outputs"] = {**state["step_outputs"], "step2": {"items": ["a", "b"]}}
+    assert resolver.resolve("{{steps.step2.output.items.foo}}", state) is None
+
+
+def test_vault_client_success_returns_secret_value(resolver, state):
+    class _Vault:
+        def get(self, key: str) -> str:
+            return f"secret-value-for-{key}"
+
+    resolver = ContextResolver(vault_client=_Vault())
+    assert resolver.resolve("{{vault://DB_PASSWORD}}", state) == "secret-value-for-DB_PASSWORD"
+    assert "DB_PASSWORD" in resolver.vault_keys_used
+
+
+def test_vault_client_raises_falls_back_to_placeholder(resolver, state):
+    class _BrokenVault:
+        def get(self, key: str) -> str:
+            raise RuntimeError("vault unreachable")
+
+    resolver = ContextResolver(vault_client=_BrokenVault())
+    result = resolver.resolve("{{vault://DB_PASSWORD}}", state)
+    assert result == "[vault:DB_PASSWORD]"
+    assert "DB_PASSWORD" in resolver.vault_keys_used
+
+
+def test_unrecognized_expression_prefix_resolves_to_none(resolver, state):
+    assert resolver.resolve("{{bogus.thing}}", state) is None
+
+
+def test_resolve_workflow_now_unix_is_int(resolver, state):
+    result = resolver.resolve("{{workflow.now_unix}}", state)
+    assert isinstance(result, int)
+
+
+def test_resolve_workflow_completed_branch(resolver, state):
+    state = {**state, "completed_branch": "approved"}
+    assert resolver.resolve("{{workflow.completed_branch}}", state) == "approved"
+
+
+def test_resolve_workflow_tenant_admin_email(resolver, state):
+    state = {**state, "_tenant_admin_email": "admin@example.test"}
+    assert resolver.resolve("{{workflow.tenant_admin_email}}", state) == "admin@example.test"
+
+
+def test_resolve_workflow_unknown_key_returns_none(resolver, state):
+    assert resolver.resolve("{{workflow.nonexistent_field}}", state) is None
+
+
+def test_resolve_mixed_string_serializes_dict_value_as_json(resolver, state):
+    result = resolver.resolve("Output: {{steps.step1.output.nested}}", state)
+    assert result == 'Output: {"key": "val"}'
+
+
+def test_resolve_mixed_string_renders_none_as_empty(resolver, state):
+    result = resolver.resolve("Value=[{{steps.missing.output.x}}]", state)
+    assert result == "Value=[]"
+
+
+def test_resolve_string_without_any_expression_is_unchanged(resolver, state):
+    assert resolver.resolve("just plain text", state) == "just plain text"
