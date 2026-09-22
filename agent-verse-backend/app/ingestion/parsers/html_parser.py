@@ -50,7 +50,10 @@ class HTMLParser:
         except Exception as exc:
             _log.debug("bs4_error: %s", exc)
 
-        # Ultimate fallback: regex tag stripping
-        text = re.sub(r"<[^>]+>", " ", content)
+        # Ultimate fallback: regex tag stripping. Script/style *content* (JS/CSS
+        # source, not just the tags) must be dropped first — a plain tag-strip
+        # would otherwise leak raw JS/CSS text into the extracted document.
+        text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", content, flags=re.I | re.S)
+        text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:50000]

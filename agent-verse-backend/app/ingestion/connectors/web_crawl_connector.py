@@ -154,7 +154,10 @@ class WebCrawlConnector(BaseConnector):
         except Exception:
             import re
 
-            text = re.sub(r"<[^>]+>", " ", html)
+            # Strip script/style *content* first — not just their tags — so
+            # raw JS/CSS source doesn't leak into the crawled document text.
+            text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
+            text = re.sub(r"<[^>]+>", " ", text)
             return re.sub(r"\s+", " ", text).strip()[:50000]
 
     @staticmethod

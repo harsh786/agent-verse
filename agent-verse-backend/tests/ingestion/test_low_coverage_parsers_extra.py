@@ -293,6 +293,76 @@ class TestMarkdownParser:
         sections = MarkdownParser().parse_sections("")
         assert sections == []
 
+    # ── Edge cases: malformed front matter, code fences, lists, tables, HTML ──
+
+    def test_malformed_front_matter_missing_closing_marker_is_left_intact(self) -> None:
+        # No closing `---` — the front-matter regex requires a matching close,
+        # so this should NOT be stripped (left as ordinary body text).
+        content = "---\ntitle: Foo\nno closing marker here\n# Heading\nBody"
+        result = MarkdownParser().parse(content)
+        assert "title: Foo" in result
+        assert "Heading" in result
+
+    def test_code_fence_content_is_preserved_verbatim(self) -> None:
+        # Regression test: formatting-stripping regexes must not rewrite the
+        # contents of a fenced code block (e.g. a snippet demonstrating
+        # markdown syntax, or Python using ** for exponentiation).
+        content = (
+            "Intro text.\n\n"
+            "```python\n"
+            "# a comment\n"
+            "x = 2 ** 10\n"
+            'return "**not bold**"\n'
+            "```\n\n"
+            "More text with **real bold** after."
+        )
+        result = MarkdownParser().parse(content)
+        assert "```python" in result
+        assert "x = 2 ** 10" in result
+        assert '"**not bold**"' in result
+        # Formatting outside the fence is still processed normally.
+        assert "real bold" in result
+        assert "**real bold**" not in result
+
+    def test_nested_triple_backtick_inside_four_backtick_fence(self) -> None:
+        content = "````markdown\nExample:\n```\ncode inside\n```\n````"
+        result = MarkdownParser().parse(content)
+        assert "code inside" in result
+
+    def test_deeply_nested_lists_preserve_bullet_markers(self) -> None:
+        content = (
+            "- level 1\n"
+            "  - level 2\n"
+            "    - level 3\n"
+            "      - level 4 with *emphasis* text\n"
+            "        - level 5\n"
+        )
+        result = MarkdownParser().parse(content)
+        assert "- level 1" in result
+        assert "- level 2" in result
+        assert "- level 5" in result
+        assert "emphasis" in result
+
+    def test_bullet_marker_survives_when_line_also_has_italic(self) -> None:
+        # Regression test: a `* ` list marker must not be consumed as the
+        # opening delimiter of a same-line italic run.
+        content = "* item one\n* item two with *emphasis* inline\n* item three"
+        result = MarkdownParser().parse(content)
+        assert result.count("* item") == 3
+        assert "emphasis" in result
+
+    def test_table_syntax_passes_through_unchanged(self) -> None:
+        content = "| A | B |\n|---|---|\n| 1 | 2 |"
+        result = MarkdownParser().parse(content)
+        assert result == content
+
+    def test_mixed_html_in_markdown_left_as_is(self) -> None:
+        content = 'Some <div class="x">raw html</div> and **bold** text.'
+        result = MarkdownParser().parse(content)
+        assert "<div class=\"x\">raw html</div>" in result
+        assert "bold" in result
+        assert "**bold**" not in result
+
 
 class TestYAMLParser:
     def test_parses_yaml_content(self) -> None:
@@ -390,6 +460,92 @@ class TestHTMLParser:
         with patch.dict("sys.modules", {"trafilatura": fake_trafilatura}):
             result = HTMLParser().parse(html)
         assert "Fallback content" in result
+
+    # ── Edge cases: malformed HTML, deep nesting, script/style, encoding ──────
+
+    def test_bs4_generic_exception_falls_back_to_regex(self) -> None:
+        fake_bs4 = MagicMock()
+        fake_bs4.BeautifulSoup.side_effect = RuntimeError("bs4 internal error")
+        html = "<p>Regex fallback content</p>"
+        with patch.dict("sys.modules", {"trafilatura": None, "bs4": fake_bs4}):
+            result = HTMLParser().parse(html)
+        assert "Regex fallback content" in result
+
+    def test_malformed_html_unclosed_tags_does_not_raise(self) -> None:
+        html = "<html><body><div><p>Unclosed paragraph<div>Another block</body>"
+        with patch.dict("sys.modules", {"trafilatura": None}):
+            result = HTMLParser().parse(html)
+        assert "Unclosed paragraph" in result
+        assert "Another block" in result
+
+    def test_malformed_html_full_fallback_no_bs4_no_trafilatura(self) -> None:
+        html = "<div><p>Broken <b>markup missing closes"
+        with patch.dict("sys.modules", {"trafilatura": None, "bs4": None}):
+            result = HTMLParser().parse(html)
+        assert "Broken" in result
+        assert "markup missing closes" in result
+        assert "<" not in result
+
+    def test_extremely_deep_dom_nesting_does_not_raise(self) -> None:
+        depth = 500
+        html = "<div>" * depth + "deeply nested content" + "</div>" * depth
+        with patch.dict("sys.modules", {"trafilatura": None}):
+            result = HTMLParser().parse(html)
+        assert "deeply nested content" in result
+
+    def test_script_tag_content_stripped_in_bs4_path(self) -> None:
+        html = (
+            "<html><body><script>var secret = 'do-not-index';</script>"
+            "<p>Visible article content.</p></body></html>"
+        )
+        with patch.dict("sys.modules", {"trafilatura": None}):
+            result = HTMLParser().parse(html)
+        assert "Visible article content" in result
+        assert "secret" not in result
+        assert "do-not-index" not in result
+
+    def test_style_tag_content_stripped_in_bs4_path(self) -> None:
+        html = (
+            "<html><head><style>body { color: red; }</style></head>"
+            "<body><p>Visible text.</p></body></html>"
+        )
+        with patch.dict("sys.modules", {"trafilatura": None}):
+            result = HTMLParser().parse(html)
+        assert "Visible text" in result
+        assert "color: red" not in result
+
+    def test_script_and_style_content_stripped_in_ultimate_regex_fallback(self) -> None:
+        # Regression test: when BOTH trafilatura and bs4 are unavailable, the
+        # last-resort regex fallback must strip script/style *content* too —
+        # not just their surrounding tags — or raw JS/CSS source leaks into
+        # the extracted (and later indexed) document text.
+        html = (
+            "<html><body><script>var evil_token = 12345; doBadThing();</script>"
+            "<style>.a { color: blue; }</style>"
+            "<p>Real content here.</p></body></html>"
+        )
+        with patch.dict("sys.modules", {"trafilatura": None, "bs4": None}):
+            result = HTMLParser().parse(html)
+        assert "Real content here" in result
+        assert "evil_token" not in result
+        assert "doBadThing" not in result
+        assert "color: blue" not in result
+
+    def test_non_ascii_encoding_characters_preserved(self) -> None:
+        html = "<html><body><p>Café résumé — naïve façade 日本語 emoji 🎉</p></body></html>"
+        with patch.dict("sys.modules", {"trafilatura": None}):
+            result = HTMLParser().parse(html)
+        assert "Café" in result
+        assert "日本語" in result
+        assert "🎉" in result
+
+    def test_html_entities_in_ultimate_fallback_left_as_is(self) -> None:
+        # The ultimate regex fallback does not decode entities — documents
+        # current (best-effort) behaviour rather than asserting decoding.
+        html = "<p>Fish &amp; Chips &lt;tag&gt;</p>"
+        with patch.dict("sys.modules", {"trafilatura": None, "bs4": None}):
+            result = HTMLParser().parse(html)
+        assert "Fish &amp; Chips &lt;tag&gt;" in result
 
 
 # ═══════════════════════════════════════════════════════════════════════════

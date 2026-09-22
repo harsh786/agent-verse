@@ -65,6 +65,11 @@ class SlackIngestor:
                                 "metadata": {
                                     "channel_id": channel_id,
                                     "channel_name": channel_name,
+                                    # LAW-03: SlackConnector.get_delta reads this to
+                                    # advance/skip on the incremental sync cursor —
+                                    # without it every sync would silently re-ingest
+                                    # the whole channel from scratch.
+                                    "ts": last_ts,
                                 },
                             }
                         )
@@ -76,9 +81,9 @@ class SlackIngestor:
                             "content": "\n".join(window),
                             "source_url": f"https://slack.com/archives/{channel_id}",
                             "source_type": "slack",
-                            "source_doc_id": channel_id,
+                            "source_doc_id": f"{channel_id}/{last_ts}",
                             "page_number": None,
-                            "metadata": {"channel_id": channel_id},
+                            "metadata": {"channel_id": channel_id, "ts": last_ts},
                         }
                     )
 

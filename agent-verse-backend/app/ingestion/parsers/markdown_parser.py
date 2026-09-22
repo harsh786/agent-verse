@@ -19,13 +19,31 @@ class MarkdownParser:
         # Remove front matter (YAML/TOML)
         text = _FRONT_MATTER_RE.sub("", content)
 
-        # Preserve code blocks as-is (valuable for code search)
+        # Preserve code blocks as-is (valuable for code search): stash fenced
+        # blocks behind placeholders before the formatting regexes below run,
+        # so sample markdown/asterisks inside a fence (e.g. a snippet showing
+        # **bold** syntax) isn't rewritten, then restore them verbatim.
+        code_blocks: list[str] = []
+
+        def _stash(m: re.Match[str]) -> str:
+            code_blocks.append(m.group(0))
+            return f"\x00CODEBLOCK{len(code_blocks) - 1}\x00"
+
+        text = _CODE_BLOCK_RE.sub(_stash, text)
+
         # Convert inline/block formatting to plain text
         text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # bold
-        text = re.sub(r"\*(.+?)\*", r"\1", text)  # italic
+        # Italic: require the delimiters to hug their content (not preceded/
+        # followed by whitespace) so a `* ` list-item marker on its own line
+        # isn't mistaken for an opening italic delimiter.
+        text = re.sub(r"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)", r"\1", text)  # italic
         text = re.sub(r"`{1,2}([^`]+)`{1,2}", r"\1", text)  # inline code
         text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"[Image: \1]", text)  # images
         text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # links
+
+        # Restore stashed code blocks verbatim
+        for i, block in enumerate(code_blocks):
+            text = text.replace(f"\x00CODEBLOCK{i}\x00", block)
 
         # Clean up whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)

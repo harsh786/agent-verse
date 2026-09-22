@@ -238,3 +238,104 @@ class TestGetDelta:
         with patch("httpx.AsyncClient", return_value=client):
             docs = await _collect(WebCrawlConnector().get_delta(config, None))
         assert docs == []
+
+    async def test_redirect_loop_is_skipped_gracefully(self):
+        # httpx raises TooManyRedirects when follow_redirects=True hits a
+        # cycle; the per-URL try/except must swallow it and keep crawling.
+        import httpx as real_httpx
+
+        client = _fake_client(AsyncMock(side_effect=real_httpx.TooManyRedirects("loop")))
+        config = _make_config({"seed_urls": ["https://example.com/loop"], "crawl_delay_seconds": 0})
+        with patch("httpx.AsyncClient", return_value=client):
+            docs = await _collect(WebCrawlConnector().get_delta(config, None))
+        assert docs == []
+
+    async def test_invalid_utf8_bytes_decoded_with_replacement_not_fatal(self):
+        # Response body with invalid UTF-8 byte sequences must not crash the
+        # crawl — get_delta decodes with errors="replace".
+        html = (
+            b"<html><head><title>T</title></head><body>"
+            + b"Valid text content here. " * 10
+            + b"\xff\xfe invalid bytes here \xff"
+            + b"</body></html>"
+        )
+        resp = MagicMock(status_code=200, content=html, headers={})
+        client = _fake_client(AsyncMock(return_value=resp))
+        config = _make_config({"seed_urls": ["https://example.com/"], "crawl_delay_seconds": 0})
+        with patch("httpx.AsyncClient", return_value=client):
+            docs = await _collect(WebCrawlConnector().get_delta(config, None))
+        assert len(docs) == 1
+        assert "Valid text content" in docs[0][0].content.decode()
+
+    async def test_malformed_url_in_seed_list_is_skipped_not_fatal(self):
+        # A malformed seed URL fails at request time; the crawler must not
+        # let one bad URL abort the whole run.
+        good_html = (
+            b"<html><head><title>Good</title></head><body>"
+            + b"Good content here for the page. " * 10
+            + b"</body></html>"
+        )
+        responses = iter(
+            [
+                OSError("Invalid URL"),
+                MagicMock(status_code=200, content=good_html, headers={}),
+            ]
+        )
+
+        async def get(*a, **kw):
+            r = next(responses)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        client = _fake_client(get)
+        config = _make_config(
+            {
+                "seed_urls": ["not-a-valid-url", "https://example.com/good"],
+                "crawl_delay_seconds": 0,
+            }
+        )
+        with patch("httpx.AsyncClient", return_value=client):
+            docs = await _collect(WebCrawlConnector().get_delta(config, None))
+        assert len(docs) == 1
+        assert docs[0][0].title == "Good"
+
+
+class TestExtractTextEdgeCases:
+    def test_malformed_html_unclosed_tags_does_not_raise(self):
+        html = "<html><body><div><p>Unclosed paragraph<div>More text</body>"
+        text = WebCrawlConnector._extract_text(html)
+        assert "Unclosed paragraph" in text
+        assert "More text" in text
+
+    def test_extremely_deep_dom_nesting_does_not_raise(self):
+        depth = 500
+        html = "<div>" * depth + "deep content here" + "</div>" * depth
+        text = WebCrawlConnector._extract_text(html)
+        assert "deep content here" in text
+
+    def test_script_and_style_content_stripped_not_leaked(self):
+        html = (
+            "<html><body><script>var token = 'super-secret';</script>"
+            "<style>.x { color: red; }</style>"
+            "<p>Visible article body.</p></body></html>"
+        )
+        text = WebCrawlConnector._extract_text(html)
+        assert "Visible article body" in text
+        assert "super-secret" not in text
+        assert "color: red" not in text
+
+    def test_non_ascii_encoding_preserved(self):
+        html = "<html><body><p>Café naïve 日本語 emoji 🎉</p></body></html>"
+        text = WebCrawlConnector._extract_text(html)
+        assert "Café" in text
+        assert "日本語" in text
+        assert "🎉" in text
+
+
+
+class TestExtractLinksEdgeCases:
+    def test_malformed_href_does_not_raise(self):
+        html = '<a href="http://[invalid">bad</a><a href="/ok">ok</a>'
+        links = WebCrawlConnector._extract_links(html, "https://example.com/")
+        assert "https://example.com/ok" in links

@@ -57,6 +57,24 @@ class TestValidateConnection:
         assert health.ok is False
         assert "dns failure" in health.error
 
+    async def test_auth_failure_401_raises_http_status_error(self):
+        import httpx
+
+        resp = MagicMock(status_code=401)
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Unauthorized", request=MagicMock(), response=resp
+        )
+
+        async def get(*a, **kw):
+            return resp
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _mock_async_client(get)
+            connector = ConfluenceConnector()
+            health = await connector.validate_connection(_make_config())
+        assert health.ok is False
+        assert "Unauthorized" in health.error
+
 
 def _page(page_id, title, body_html, modified):
     return {
@@ -183,6 +201,65 @@ class TestGetDelta:
             connector = ConfluenceConnector()
             results = [d async for d in connector.get_delta(_make_config(), None)]
         assert results == []
+
+    async def test_auth_failure_401_breaks_loop_gracefully(self):
+        async def get(*a, **kw):
+            resp = MagicMock()
+            resp.is_success = False
+            resp.status_code = 401
+            return resp
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _mock_async_client(get)
+            connector = ConfluenceConnector()
+            results = [d async for d in connector.get_delta(_make_config(), None)]
+        assert results == []
+
+    async def test_empty_result_set_yields_nothing(self):
+        async def get(*a, **kw):
+            resp = MagicMock()
+            resp.is_success = True
+            resp.json.return_value = {"results": []}
+            return resp
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _mock_async_client(get)
+            connector = ConfluenceConnector()
+            results = [d async for d in connector.get_delta(_make_config(), None)]
+        assert results == []
+
+    async def test_malformed_cql_400_response_breaks_loop_gracefully(self):
+        # An invalid/unsupported space key or content type still builds a
+        # request; the connector must handle a 400-class error the same way
+        # as any other failed response — no crash, empty result.
+        async def get(*a, **kw):
+            resp = MagicMock()
+            resp.is_success = False
+            resp.status_code = 400
+            return resp
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _mock_async_client(get)
+            connector = ConfluenceConnector()
+            config = _make_config({"base_url": "https://x.atlassian.net/wiki", "space_keys": ["!!!bad"]})
+            results = [d async for d in connector.get_delta(config, None)]
+        assert results == []
+
+    async def test_content_type_appears_in_metadata_for_blogpost(self):
+        pages = {"results": [_page("1", "Blog Post", "<p>content</p>", "2026-01-01T00:00:00Z")]}
+
+        async def get(url, params=None, auth=None):
+            resp = MagicMock()
+            resp.is_success = True
+            resp.json.return_value = pages
+            return resp
+
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_cls.return_value = _mock_async_client(get)
+            connector = ConfluenceConnector()
+            config = _make_config({"content_types": ["blogpost"]})
+            results = [d async for d in connector.get_delta(config, None)]
+        assert results[0][0].metadata["type"] == "blogpost"
 
 
 def test_source_type_and_registration():
