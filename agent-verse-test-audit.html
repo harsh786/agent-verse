@@ -1,0 +1,835 @@
+<title>Scenario Coverage Audit</title>
+<meta name="description" content="A 20-area gap audit of AgentVerse's integration/edge-case test coverage across agent patterns, RAG, memory, guardrails, governance, and the rest of the platform.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#f6f4ef;
+    --surface:#ffffff;
+    --surface-2:#efece3;
+    --ink:#1c1a16;
+    --ink-dim:#5c574c;
+    --border:#ddd7c8;
+    --accent:#7a4a2e;
+    --accent-ink:#ffffff;
+    --good-bg:#e4efe0;
+    --good-ink:#356027;
+    --good-dot:#4c8a3b;
+    --shallow-bg:#faf1dd;
+    --shallow-ink:#8a5a10;
+    --shallow-dot:#c98a1f;
+    --missing-bg:#f7e4e1;
+    --missing-ink:#9a3226;
+    --missing-dot:#c1493a;
+    --na-bg:#eceae3;
+    --na-ink:#7c7666;
+    --na-dot:#a39d8c;
+    --code-bg:#eee9dc;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#161410;
+      --surface:#1f1c16;
+      --surface-2:#26221b;
+      --ink:#efe9dc;
+      --ink-dim:#b3aa96;
+      --border:#3a352a;
+      --accent:#d99a6c;
+      --accent-ink:#1c1a16;
+      --good-bg:#1e2a1a;
+      --good-ink:#9fce8c;
+      --good-dot:#6ba852;
+      --shallow-bg:#2e2411;
+      --shallow-ink:#e8b869;
+      --shallow-dot:#d69a2e;
+      --missing-bg:#301a16;
+      --missing-ink:#e59484;
+      --missing-dot:#d35c4a;
+      --na-bg:#26241d;
+      --na-ink:#948d7a;
+      --na-dot:#6b6455;
+      --code-bg:#26221b;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#161410;
+    --surface:#1f1c16;
+    --surface-2:#26221b;
+    --ink:#efe9dc;
+    --ink-dim:#b3aa96;
+    --border:#3a352a;
+    --accent:#d99a6c;
+    --accent-ink:#1c1a16;
+    --good-bg:#1e2a1a;
+    --good-ink:#9fce8c;
+    --good-dot:#6ba852;
+    --shallow-bg:#2e2411;
+    --shallow-ink:#e8b869;
+    --shallow-dot:#d69a2e;
+    --missing-bg:#301a16;
+    --missing-ink:#e59484;
+    --missing-dot:#d35c4a;
+    --na-bg:#26241d;
+    --na-ink:#948d7a;
+    --na-dot:#6b6455;
+    --code-bg:#26221b;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans",system-ui,sans-serif;
+    font-size:15px;
+    line-height:1.5;
+    padding-block:2.5rem;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding-inline:1.25rem;}
+  code, .mono{font-family:"IBM Plex Mono",ui-monospace,monospace;}
+
+  header.hero{
+    padding:2.75rem 2rem;
+    background:linear-gradient(160deg,var(--surface) 0%, var(--surface-2) 100%);
+    border:1px solid var(--border);
+    border-radius:18px;
+    margin-bottom:2rem;
+  }
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace;
+    font-size:.72rem;
+    letter-spacing:.14em;
+    text-transform:uppercase;
+    color:var(--accent);
+    font-weight:600;
+  }
+  h1{
+    font-size:clamp(1.7rem,3.4vw,2.5rem);
+    margin:.4rem 0 .6rem;
+    text-wrap:balance;
+    letter-spacing:-0.01em;
+  }
+  .lede{color:var(--ink-dim);max-width:62ch;font-size:1rem;margin:0 0 1.4rem;}
+
+  .stat-row{display:flex;flex-wrap:wrap;gap:.75rem;}
+  .stat{
+    flex:1 1 130px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:.85rem 1rem;
+  }
+  .stat .n{font-family:"IBM Plex Mono",monospace;font-size:1.6rem;font-weight:600;font-variant-numeric:tabular-nums;}
+  .stat .l{font-size:.74rem;color:var(--ink-dim);text-transform:uppercase;letter-spacing:.06em;margin-top:.15rem;}
+  .stat.good .n{color:var(--good-dot);}
+  .stat.shallow .n{color:var(--shallow-dot);}
+  .stat.missing .n{color:var(--missing-dot);}
+  .stat.na .n{color:var(--na-dot);}
+
+  .layout{display:grid;grid-template-columns:230px 1fr;gap:2rem;align-items:start;}
+  @media (max-width:860px){.layout{grid-template-columns:1fr;}}
+
+  nav.toc{
+    position:sticky;top:1.25rem;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:1rem;
+    max-height:calc(100vh - 2.5rem);
+    overflow-y:auto;
+  }
+  @media (max-width:860px){nav.toc{position:static;max-height:none;}}
+  nav.toc .toc-title{font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-dim);margin-bottom:.5rem;font-weight:600;}
+  nav.toc a{
+    display:flex;gap:.5rem;align-items:baseline;
+    text-decoration:none;color:var(--ink);
+    font-size:.83rem;
+    padding:.3rem .4rem;
+    border-radius:6px;
+  }
+  nav.toc a:hover{background:var(--surface-2);}
+  nav.toc a .num{color:var(--ink-dim);font-family:"IBM Plex Mono",monospace;font-size:.75rem;min-width:1.3em;}
+
+  main{min-width:0;}
+  section.area{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:1.5rem 1.6rem 1.7rem;
+    margin-bottom:1.25rem;
+    scroll-margin-top:1rem;
+  }
+  section.area h2{
+    display:flex;align-items:baseline;gap:.6rem;
+    font-size:1.18rem;margin:0 0 .3rem;
+  }
+  section.area h2 .idx{
+    font-family:"IBM Plex Mono",monospace;color:var(--accent);font-weight:600;font-size:.95rem;
+  }
+  .area-summary{color:var(--ink-dim);font-size:.86rem;margin:0 0 1rem;}
+
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;}
+  table{border-collapse:collapse;width:100%;font-size:.82rem;min-width:640px;}
+  thead th{
+    text-align:left;
+    background:var(--surface-2);
+    color:var(--ink-dim);
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    font-size:.68rem;
+    padding:.55rem .7rem;
+    border-bottom:1px solid var(--border);
+    white-space:nowrap;
+  }
+  tbody td{
+    padding:.55rem .7rem;
+    border-bottom:1px solid var(--border);
+    vertical-align:top;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--surface-2);}
+  td.sub{font-weight:500;max-width:15em;}
+  td.impl, td.test{font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--ink-dim);max-width:17em;}
+  td.gap{color:var(--ink-dim);max-width:22em;}
+
+  .rating{
+    display:inline-flex;align-items:center;gap:.35rem;
+    padding:.18rem .55rem;border-radius:999px;
+    font-family:"IBM Plex Mono",monospace;font-size:.68rem;font-weight:600;
+    letter-spacing:.03em;white-space:nowrap;
+  }
+  .rating .dot{width:.45em;height:.45em;border-radius:50%;flex:none;}
+  .rating.good{background:var(--good-bg);color:var(--good-ink);}
+  .rating.good .dot{background:var(--good-dot);}
+  .rating.shallow{background:var(--shallow-bg);color:var(--shallow-ink);}
+  .rating.shallow .dot{background:var(--shallow-dot);}
+  .rating.missing{background:var(--missing-bg);color:var(--missing-ink);}
+  .rating.missing .dot{background:var(--missing-dot);}
+  .rating.na{background:var(--na-bg);color:var(--na-ink);}
+  .rating.na .dot{background:var(--na-dot);}
+
+  .priority{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:1.5rem 1.6rem 1.7rem;
+    margin-bottom:1.25rem;
+  }
+  .priority h2{margin-top:0;}
+  .plist{display:flex;flex-direction:column;gap:.6rem;margin-top:1rem;}
+  .pitem{
+    display:grid;grid-template-columns:auto 1fr;gap:.7rem;
+    padding:.7rem .8rem;
+    background:var(--surface-2);
+    border-radius:10px;
+    border-left:3px solid var(--missing-dot);
+  }
+  .pitem.shallow-item{border-left-color:var(--shallow-dot);}
+  .pitem .ptitle{font-weight:600;font-size:.88rem;}
+  .pitem .pnote{color:var(--ink-dim);font-size:.82rem;margin-top:.15rem;}
+  .pitem .ploc{font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--ink-dim);}
+
+  footer{color:var(--ink-dim);font-size:.78rem;text-align:center;padding:2rem 0 .5rem;}
+</style>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">AgentVerse &middot; Backend + Frontend</div>
+    <h1>Scenario &amp; edge-case test coverage audit</h1>
+    <p class="lede">A file-by-file check of whether real integration/scenario tests — not just happy-path unit tests — exist for the 20 core concept areas of an agentic AI platform: agent patterns, RAG, memory, knowledge graph, ingestion, retrieval, embeddings, prompting, evals, observability, guardrails, governance, scopes, multimodal, model routing, chunking, hallucination handling, and core platform plumbing.</p>
+    <div class="stat-row">
+      <div class="stat good"><div class="n">142</div><div class="l">Good</div></div>
+      <div class="stat shallow"><div class="n">61</div><div class="l">Shallow</div></div>
+      <div class="stat missing"><div class="n">11</div><div class="l">Missing</div></div>
+      <div class="stat na"><div class="n">3</div><div class="l">N/A</div></div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc">
+      <div class="toc-title">20 areas</div>
+      <a href="#a1"><span class="num">01</span> Agent patterns</a>
+      <a href="#a2"><span class="num">02</span> RAG patterns</a>
+      <a href="#a3"><span class="num">03</span> Agent memories</a>
+      <a href="#a4"><span class="num">04</span> Knowledge &amp; graph</a>
+      <a href="#a5"><span class="num">05</span> Ingestion</a>
+      <a href="#a6"><span class="num">06</span> Retrieval strategies</a>
+      <a href="#a7"><span class="num">07</span> Embeddings</a>
+      <a href="#a8"><span class="num">08</span> Prompt builder</a>
+      <a href="#a9"><span class="num">09</span> Agent improvement</a>
+      <a href="#a10"><span class="num">10</span> Evals</a>
+      <a href="#a11"><span class="num">11</span> Observability</a>
+      <a href="#a12"><span class="num">12</span> Guardrails</a>
+      <a href="#a13"><span class="num">13</span> Governance</a>
+      <a href="#a14"><span class="num">14</span> Scopes</a>
+      <a href="#a15"><span class="num">15</span> Multimodal</a>
+      <a href="#a16"><span class="num">16</span> Model router</a>
+      <a href="#a17"><span class="num">17</span> Chunking</a>
+      <a href="#a18"><span class="num">18</span> Hallucination</a>
+      <a href="#a19"><span class="num">19</span> Core platform</a>
+      <a href="#a20"><span class="num">20</span> Other platform</a>
+      <a href="#priority" style="margin-top:.5rem;border-top:1px solid var(--border);padding-top:.6rem;"><span class="num">&#9888;</span> Priority gaps</a>
+    </nav>
+
+    <main>
+
+      <section class="priority" id="priority">
+        <h2>Priority gaps to close first</h2>
+        <p class="area-summary">The 11 MISSING items and the highest-risk SHALLOW ones, ranked by blast radius.</p>
+        <div class="plist">
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">GitHub Action has zero test coverage</div>
+              <div class="ploc">agent-verse-github-action/entrypoint.py</div>
+              <div class="pnote">The entire external integration surface — the only file in the project besides Dockerfile/action.yml — has no test file anywhere.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">Embedding drift monitor untested</div>
+              <div class="ploc">app/embedding/drift_monitor.py &middot; DriftMonitor, DriftSeverity</div>
+              <div class="pnote">Severity thresholds and drift-score clamping have no test referencing them at all — silent failure mode for embedding quality regressions in production.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">GraphRAGPattern never exercised by any test</div>
+              <div class="ploc">app/rag/agentic/patterns/graph.py</div>
+              <div class="pnote">Defined and exported, zero grep hits across the entire tests/ tree. Graph-store plumbing (KnowledgeGraphStore.get_neighbors) is well tested — the RAG pattern itself is not.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">Tenant-plan-aware model routing not wired or tested</div>
+              <div class="ploc">app/ai_router/model_orchestrator.py &middot; PlanTier</div>
+              <div class="pnote">PlanTier exists in tenancy but never appears inside app/ai_router/ — budget-downgrade tests use raw budget %, not plan tier, so plan-based routing is unverified because it may not exist.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">Image-region chunking silently falls back to text chunking</div>
+              <div class="ploc">app/ingestion/chunkers/__init__.py:27</div>
+              <div class="pnote">The "region" strategy is advertised in the selector but dispatches to SemanticChunker — a real, functional stub rather than a missing test.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">Multi-query retrieval has no isolated test</div>
+              <div class="ploc">query_expander.py / agentic/patterns/fusion.py</div>
+              <div class="pnote">No module is distinctly named for multi-query fan-out, and no test isolates it from query expansion or fusion RAG.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">No structured observability for hallucination/grounding debugging</div>
+              <div class="ploc">app/observability/metrics.py &middot; runtime_decision_trace.py</div>
+              <div class="pnote">grounding.py only has ad hoc logger.debug calls — no metric or trace field exists for grounding failures, so production hallucination incidents have no dedicated signal to alert on.</div>
+            </div>
+          </div>
+          <div class="pitem">
+            <span></span>
+            <div>
+              <div class="ptitle">Tool schema injection into prompts is untested</div>
+              <div class="ploc">app/context/tool_prompt_builder.py</div>
+              <div class="pnote">17-line module with no test file referencing it directly — only indirectly exercised via broad agent/graph tests, so a schema-formatting regression could ship silently.</div>
+            </div>
+          </div>
+          <div class="pitem shallow-item">
+            <span></span>
+            <div>
+              <div class="ptitle">Frontend SSE goal-stream path is thin vs. its WebSocket counterpart</div>
+              <div class="ploc">useGoalStream.ts (5 tests) vs. useCollabSocket.ts (18 tests)</div>
+              <div class="pnote">The live-update path most users watch during a goal run has roughly a quarter of the edge-case coverage of the collaboration socket; reconnection/backoff/partial-event handling is unclear.</div>
+            </div>
+          </div>
+          <div class="pitem shallow-item">
+            <span></span>
+            <div>
+              <div class="ptitle">Vault credential resolution: only 12 tests for a security-critical module</div>
+              <div class="ploc">app/providers/vault.py &middot; CredentialVault (AES-256-GCM/Fernet)</div>
+              <div class="pnote">Key-rotation and corrupt-ciphertext edge cases are not explicitly confirmed present.</div>
+            </div>
+          </div>
+          <div class="pitem shallow-item">
+            <span></span>
+            <div>
+              <div class="ptitle">CRAG's actual correction branch is essentially untested</div>
+              <div class="ploc">app/rag/agentic/patterns/corrective.py</div>
+              <div class="pnote">Only 2 tests total — a fallback-delegation check and a threshold-constant assertion. No test drives the low-confidence &rarr; correction path end to end.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="area" id="a1">
+        <h2><span class="idx">01</span> Agent patterns</h2>
+        <p class="area-summary">14 patterns audited &mdash; strong overall; three patterns (plan-and-execute, reflection, tree-of-thoughts, agent spawning) rely on shared harnesses rather than dedicated failure-mode tests.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Plan-and-execute</td><td class="impl">app/agent/patterns/plan_execute.py</td><td class="test">test_agent_patterns.py, test_all_agent_patterns_comprehensive.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only via generic pattern-compat harness; no plan-step-failure / mid-plan-replan scenarios</td></tr>
+            <tr><td class="sub">ReAct / tool calling</td><td class="impl">patterns/react.py, tool_calls.py</td><td class="test">test_tool_calls*.py, test_parallel_tool_calls.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Markdown-JSON extraction, placeholder names, parallel calls all covered</td></tr>
+            <tr><td class="sub">Reflection</td><td class="impl">patterns/reflection.py</td><td class="test">test_agent_patterns.py, test_reflection_integration.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No failure-loop or repeated-reflection-convergence case found</td></tr>
+            <tr><td class="sub">Reflexion</td><td class="impl">patterns/reflexion.py, reflexion_store.py, reflexion_wirer.py</td><td class="test">test_reflexion_recall_in_plan.py, test_reflexion_wirer_persistence.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Persistence, recall, wiring all separately covered</td></tr>
+            <tr><td class="sub">Goal trees</td><td class="impl">app/agent/goal_tree.py</td><td class="test">test_goal_tree.py, test_goal_tree_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Invalid JSON, missing keys, all-failed fallback, dependency chains covered</td></tr>
+            <tr><td class="sub">Supervisor agents</td><td class="impl">patterns/supervisor.py, agent/supervisor.py</td><td class="test">test_supervisor*.py (4 files)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Wiring, goal-id threading, debate interplay all covered</td></tr>
+            <tr><td class="sub">Debate agents</td><td class="impl">patterns/debate.py, agent/debate.py</td><td class="test">test_debate.py, test_debate_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Clamped n_agents/rounds, unknown-vote fallback, callback exceptions covered</td></tr>
+            <tr><td class="sub">Consensus / self-consistency</td><td class="impl">patterns/consensus.py, self_consistency.py</td><td class="test">test_consensus.py, test_consensus_adapter.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Majority-wins and single-sample-fallback both covered</td></tr>
+            <tr><td class="sub">Tree of thoughts</td><td class="impl">patterns/tree_of_thoughts.py</td><td class="test">test_agent_patterns_complete.py, _e2e.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only generate/return-best happy path; no pruning/tie/all-low-score case</td></tr>
+            <tr><td class="sub">Workflow planning/execution</td><td class="impl">workflow_planner.py, workflow_executor.py</td><td class="test">test_workflow_planner_comprehensive.py + 3 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Empty-goal plan, tool-failure-falls-back-to-LLM, exception paths covered</td></tr>
+            <tr><td class="sub">Agent routing</td><td class="impl">app/agent/router.py</td><td class="test">test_router.py, _comprehensive.py, _wiring.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Empty tokens, invalid-JSON LLM score, low-confidence-returns-none covered</td></tr>
+            <tr><td class="sub">Agent spawning / orchestration</td><td class="impl">civilization/spawn_tool.py, multi_agent_selector.py</td><td class="test">test_civilization_spawn_wiring.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Wiring-level only; no spawn-depth-limit, runaway-spawn, or spawn-failure cleanup test</td></tr>
+            <tr><td class="sub">Human-in-the-loop execution</td><td class="impl">governance/hitl.py</td><td class="test">test_hitl_gate.py + 8 governance files + 2 e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-replica, persistence, resume-on-terminal-goal all covered</td></tr>
+            <tr><td class="sub">Recovery / rollback / retry / replanning</td><td class="impl">reliability/rollback.py, retry_strategy_selector.py</td><td class="test">test_rollback_enhanced.py, test_graph_rollback.py, test_recovery.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">LIFO order, empty-stack no-op, sync+async inverses all covered</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a2">
+        <h2><span class="idx">02</span> RAG patterns</h2>
+        <p class="area-summary">16 patterns audited &mdash; the strongest area in the whole audit, with one real miss (GraphRAG) and one thin spot (CRAG's actual correction branch).</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Basic RAG</td><td class="impl">app/rag/engine.py, contracts.py</td><td class="test">test_rag.py, test_retrieval_engine.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">No-embedding / no-provider / empty-result edge cases covered</td></tr>
+            <tr><td class="sub">Hybrid RAG</td><td class="impl">engine.py::hybrid_search()</td><td class="test">test_retrieval_engine.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Leg-failure propagation and zero-vs-error distinction tested</td></tr>
+            <tr><td class="sub">Fusion RAG</td><td class="impl">patterns/fusion.py</td><td class="test">test_fusion_rag.py, test_fusion_embedder.py + real e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Real-Postgres RRF e2e plus unit tests</td></tr>
+            <tr><td class="sub">Corrective RAG (CRAG)</td><td class="impl">patterns/corrective.py</td><td class="test">test_corrective_rag.py, test_corrective_threshold.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 2 tests; no test drives the low-confidence &rarr; correction branch end to end</td></tr>
+            <tr><td class="sub">Self-RAG</td><td class="impl">patterns/self_rag.py</td><td class="test">test_all_rag_patterns_comprehensive.py + real e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Comprehensive suites plus real-provider e2e</td></tr>
+            <tr><td class="sub">Speculative RAG</td><td class="impl">patterns/speculative.py</td><td class="test">test_all_rag_patterns_comprehensive.py, test_gateway_gap_closure.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Candidate generation covered across suites</td></tr>
+            <tr><td class="sub">FLARE</td><td class="impl">patterns/flare.py</td><td class="test">test_retrieval_engine.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failure fallback and callback-wrapping edge cases present</td></tr>
+            <tr><td class="sub">RAPTOR / hierarchical</td><td class="impl">patterns/raptor.py</td><td class="test">test_bm25_ws_raptor.py, test_retrieval_engine.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failure-fallback edge case plus dedicated module</td></tr>
+            <tr><td class="sub">Agentic RAG</td><td class="impl">agentic/patterns/agentic.py, retriever_tool.py</td><td class="test">test_agentic/test_layer4_complete.py + 2 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedicated subpackage with parallel-retrieval/tool-selection edge cases</td></tr>
+            <tr><td class="sub">Multi-hop retrieval</td><td class="impl">engine.py::retrieve_multi_hop()</td><td class="test">test_retrieval_strategies.py, TestRetrieveMultiHop</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Unbounded hop-count rejection, relabel rejection, cancel/race all covered</td></tr>
+            <tr><td class="sub">Federated retrieval</td><td class="impl">knowledge/federated_search.py</td><td class="test">test_knowledge_extra4.py, test_gateway_gap_closure.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated test file; partial-source-failure/timeout not clearly isolated</td></tr>
+            <tr><td class="sub">Web retrieval</td><td class="impl">patterns/web_augmented.py</td><td class="test">test_safe_web_capability.py, test_grounding_strategies.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">SSRF rejection, redirect-to-private-target, DNS re-pinning all covered</td></tr>
+            <tr><td class="sub">Memory-augmented RAG</td><td class="impl">engine.py (strategy="memory")</td><td class="test">test_memory_strategy.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 2 tests; no stale/low-confidence filtering or multi-memory ranking</td></tr>
+            <tr><td class="sub">Graph-augmented RAG</td><td class="impl">patterns/graph.py::GraphRAGPattern</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">Defined/exported, zero references in the entire tests/ tree</td></tr>
+            <tr><td class="sub">Code RAG</td><td class="impl">patterns/code_rag.py</td><td class="test">test_code_rag.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Symbol extraction, dedup, empty-prose, score-boost edge cases covered</td></tr>
+            <tr><td class="sub">Retrieval strategy selection</td><td class="impl">engine.py, orchestration/strategy_registry.py</td><td class="test">test_strategy_dispatch.py, test_adaptive_selection_hardening.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Adaptive selection hardening targets ambiguous routing cases</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a3">
+        <h2><span class="idx">03</span> Agent memories</h2>
+        <p class="area-summary">11 memory types audited &mdash; execution/long-term/RPA memory are deeply tested; reflexion, episodic, procedural, and the write&rarr;inject round trip are thinner.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Current run context</td><td class="impl">app/agent/state.py::AgentState</td><td class="test">test_agent_graph.py, test_agent_loop.py, test_async_safety.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Exercised broadly across graph/loop tests</td></tr>
+            <tr><td class="sub">Agent state</td><td class="impl">state.py (AgentState, StepResult, GoalStatus)</td><td class="test">test_critical_bug_fixes.py, test_graph_extra2.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">No gaps surfaced</td></tr>
+            <tr><td class="sub">Execution memory</td><td class="impl">memory/execution.py</td><td class="test">test_execution_memory_comprehensive.py (22 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Tenant isolation, DB-failure fallback, async trim-at-100 all covered</td></tr>
+            <tr><td class="sub">Long-term memory</td><td class="impl">memory/long_term.py</td><td class="test">test_long_term_memory_comprehensive.py (24 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Includes pgvector semantic-search path</td></tr>
+            <tr><td class="sub">Reflexion memory</td><td class="impl">memory/reflexion.py, reflexion_store.py</td><td class="test">test_reflexion_service.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 2 tests; no concurrent-writes or malformed-evidence coverage</td></tr>
+            <tr><td class="sub">Episodic memory</td><td class="impl">memory/episodic.py</td><td class="test">test_episodic_procedural.py, test_all_memory_types.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">~10 shared tests; no eviction/retention edge cases specific to episodes</td></tr>
+            <tr><td class="sub">Procedural memory</td><td class="impl">memory/procedural.py, procedural_validator.py</td><td class="test">test_episodic_procedural.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">procedural_validator.py has no dedicated test file</td></tr>
+            <tr><td class="sub">Semantic memory</td><td class="impl">folded into long_term.py (semantic_score)</td><td class="test">test_long_term_memory_comprehensive.py</td><td><span class="rating na"><span class="dot"></span>N/A</span></td><td class="gap">No standalone semantic-memory type exists — folded into LTM (Good)</td></tr>
+            <tr><td class="sub">RPA / visual memory</td><td class="impl">memory/* RPA hooks, app/perception/*</td><td class="test">test_rpa_ltm.py, test_rpa_recall_loop.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Noise-filtering, chunking, vision-analysis recall all covered</td></tr>
+            <tr><td class="sub">Memory scoping (tenant/agent/goal/collection/source)</td><td class="impl">memory/repository.py, postgres_repository.py</td><td class="test">test_memory_scoping_and_retention.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Agent-id exclusion and collection+source scoping explicitly tested</td></tr>
+            <tr><td class="sub">Memory write &amp; recall flows</td><td class="impl">memory/repository.py, chat integration</td><td class="test">test_memory_write.py, test_memory_injection.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 2 tests each — thin coverage of the write&rarr;inject round trip</td></tr>
+            <tr><td class="sub">Memory safety &amp; retention</td><td class="impl">memory/retention.py</td><td class="test">test_memory_scoping_and_retention.py, test_memory_ttl_uniform.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Purge-expired, tenant-scoped purge, uniform TTL all covered</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a4">
+        <h2><span class="idx">04</span> Knowledge &amp; knowledge graph</h2>
+        <p class="area-summary">The graph-vs-vector routing decision and community detection are the weak points; core KnowledgeStore behavior is solid.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Collections / documents / chunks / metadata</td><td class="impl">rag/store.py, knowledge/chunker_v2.py</td><td class="test">test_knowledge_store_comprehensive.py, test_exists_by_hash.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Hash-based existence check is a real dedup edge case</td></tr>
+            <tr><td class="sub">Citations</td><td class="impl">rag/certification.py, contracts.py</td><td class="test">test_canonical_contracts.py, test_rag_certification.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Certification tests check citation validity, not just presence</td></tr>
+            <tr><td class="sub">KnowledgeStore behavior</td><td class="impl">app/rag/store.py</td><td class="test">test_store_db_paths.py, test_store_full.py + 3 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple DB-path suites cover fallback/error branches</td></tr>
+            <tr><td class="sub">Vector + lexical (trigram) indexes</td><td class="impl">rag/store.py, engine.py, gateway.py</td><td class="test">test_ann_recall.py, test_bm25_ws_raptor.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated trigram typo-tolerance test separate from BM25/RAPTOR suite</td></tr>
+            <tr><td class="sub">KG nodes / edges / relationships</td><td class="impl">knowledge_graph/models.py, store.py, extractor.py</td><td class="test">test_kg_neighbourhood.py, test_multi_hop.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Unknown-node and tenant-scoped neighbor edge cases explicit</td></tr>
+            <tr><td class="sub">KG retrieval path (community detection, org builder)</td><td class="impl">community_detection.py, org_builder.py</td><td class="test">test_org_builder.py, test_access_control.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">community_detection.py lacks a focused test file</td></tr>
+            <tr><td class="sub">Graph vs vector retrieval routing</td><td class="impl">state_runtime/knowledge_policy.py, kg_query_engine.py</td><td class="test">test_spec_coverage.py (incidental only)</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">The actual decision logic has no direct unit test</td></tr>
+            <tr><td class="sub">KG + RAG/memory/agent integration</td><td class="impl">memory/knowledge_graph_memory.py, ingestion_hook.py</td><td class="test">test_knowledge_graph_e2e.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">e2e explicitly covers cross-tenant KG isolation</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a5">
+        <h2><span class="idx">05</span> Ingestion</h2>
+        <p class="area-summary">Per-format parsers are generally solid; per-connector edge cases (GitHub/Jira/Confluence/Slack) ride on shared generic suites rather than dedicated files.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">PDF</td><td class="impl">parsers/pdf_parser.py</td><td class="test">test_pdf_parser.py + e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">e2e PDF+RPA coverage in addition to unit tests</td></tr>
+            <tr><td class="sub">DOCX</td><td class="impl">parsers/docx_parser.py</td><td class="test">test_low_coverage_connectors_parsers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Targets a real text-leakage bug class</td></tr>
+            <tr><td class="sub">Markdown / text</td><td class="impl">parsers/markdown_parser.py</td><td class="test">test_parsers.py, test_new_parsers.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No malformed-front-matter or nested-code-fence edge cases</td></tr>
+            <tr><td class="sub">HTML / web page</td><td class="impl">parsers/html_parser.py, web_crawl_connector.py</td><td class="test">test_parsers.py, test_connectors*.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No malformed-HTML / redirect-loop test found</td></tr>
+            <tr><td class="sub">Code / GitHub</td><td class="impl">connectors/github_connector.py</td><td class="test">test_connectors*.py (generic)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated GitHub-specific test file</td></tr>
+            <tr><td class="sub">Jira / Confluence</td><td class="impl">connectors/jira_connector.py, confluence_connector.py</td><td class="test">test_connectors*.py (generic)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Generic connector suites, not per-connector edge-case files</td></tr>
+            <tr><td class="sub">Slack</td><td class="impl">connectors/slack_connector.py</td><td class="test">test_connectors*.py (generic)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No rate-limit / thread-pagination test found</td></tr>
+            <tr><td class="sub">CSV / JSON</td><td class="impl">parsers/csv_parser.py, json_parser.py</td><td class="test">test_low_coverage_connectors_parsers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Per-row content edge case explicitly named</td></tr>
+            <tr><td class="sub">Image</td><td class="impl">parsers/vision_parser.py</td><td class="test">test_vision_parser.py + OCR-fallback test</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">OCR&rarr;LLM fallback is a genuine, explicitly-tested edge case</td></tr>
+            <tr><td class="sub">Audio</td><td class="impl">parsers/audio_parser.py</td><td class="test">test_audio_parser.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Small test count; no malformed/unsupported-codec evidence</td></tr>
+            <tr><td class="sub">Video</td><td class="impl">parsers/video_parser.py</td><td class="test">test_video_parser.py (10), test_video_route.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Route-level + parser-level tests together</td></tr>
+            <tr><td class="sub">Browser / RPA extraction</td><td class="impl">perception/browser_agent.py, page_analyzer.py</td><td class="test">test_browser_agent_comprehensive.py + e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Full integration + e2e workflow tests present</td></tr>
+            <tr><td class="sub">Content classification / parser selection</td><td class="impl">content_classifier.py, chunking_strategy_selector.py</td><td class="test">test_strategy_dispatch.py, test_multimodal_router.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dispatch/selection logic has dedicated tests</td></tr>
+            <tr><td class="sub">Deduplication / hashing</td><td class="impl">chunker_v2.py hash, ingestion/pipeline.py</td><td class="test">test_dedup_reingest.py, test_content_dedup.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">"Near-dup" / "honest delta reingest" naming shows real edge-case intent</td></tr>
+            <tr><td class="sub">Failure handling / reprocessing</td><td class="impl">orchestrator.py, job_tracker.py, scheduler.py</td><td class="test">test_ingestion_hardening.py, DLQ wiring test</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">DLQ wiring is an explicit failure-path edge case</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a6">
+        <h2><span class="idx">06</span> Retrieval strategies</h2>
+        <p class="area-summary">ColBERT and cross-encoder reranking are the deepest-tested strategies in the repo; multi-query fan-out has no isolated test at all.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Vector similarity</td><td class="impl">rag/store.py, engine.py</td><td class="test">test_ann_recall.py, test_retrieval_engine.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Targets approximate-search quality, not just exact match</td></tr>
+            <tr><td class="sub">Postgres full-text search</td><td class="impl">gateway.py, engine.py (to_tsvector)</td><td class="test">test_retrieval_strategies*.py (shared)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No isolated tsquery-syntax-error / language-config test</td></tr>
+            <tr><td class="sub">Trigram fuzzy search</td><td class="impl">store.py, engine.py, gateway.py (pg_trgm)</td><td class="test">test_bm25_ws_raptor.py (shared)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated typo-tolerance test file</td></tr>
+            <tr><td class="sub">BM25</td><td class="impl">app/rag/bm25.py</td><td class="test">test_bm25_ws_raptor.py (12 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Hybrid scoring / RRF</td><td class="impl">engine.py, store.py, fusion.py</td><td class="test">test_fusion_rag.py, test_retrieval_strategies_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Cross-encoder reranking</td><td class="impl">rag/cross_encoder.py, rerank_stage.py</td><td class="test">test_cross_encoder_runtime.py, test_hosted_reranker.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Hosted vs. local reranker explicitly distinguished</td></tr>
+            <tr><td class="sub">ColBERT / late interaction</td><td class="impl">late_chunker.py, patterns/colbert.py</td><td class="test">test_colbert_maxsim.py, test_colbert_runtime.py (20 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Largest single test file in the RAG suite</td></tr>
+            <tr><td class="sub">Parent-child retrieval</td><td class="impl">rag/parent_child_chunker.py</td><td class="test">test_parent_child_sentence_window.py (7 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Sentence window retrieval</td><td class="impl">rag/sentence_window.py</td><td class="test">test_parent_child_sentence_window.py (shared)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Window-boundary edge cases (start/end of doc) not confirmed distinct</td></tr>
+            <tr><td class="sub">Query expansion</td><td class="impl">agentic/query_expander.py</td><td class="test">test_retrieval_engine.py (indirect only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No standalone test_query_expander.py</td></tr>
+            <tr><td class="sub">HyDE</td><td class="impl">gateway.py, engine.py, retrieval_policy.py</td><td class="test">test_retrieval_strategies.py (folded in)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No isolated unit test for hypothetical-doc generation failure/fallback</td></tr>
+            <tr><td class="sub">Multi-query retrieval</td><td class="impl">not a distinctly named module</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">No explicit multi-query fan-out test isolated from expansion/fusion</td></tr>
+            <tr><td class="sub">Multi-hop retrieval</td><td class="impl">gateway.py, engine.py; KG side well tested</td><td class="test">test_multi_hop.py (KG side)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">RAG-engine multi-hop reasoning chain has no dedicated file</td></tr>
+            <tr><td class="sub">Reranking / score calibration</td><td class="impl">score_calibration.py, rerank_stage.py</td><td class="test">test_score_calibration.py (10), test_gateway_rerank_calibration.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Tested at both gateway and context-pipeline layers</td></tr>
+            <tr><td class="sub">Retrieval confidence / fallback</td><td class="impl">agentic/fallback_chain.py, readiness.py</td><td class="test">test_retrieval_confidence.py (5), test_corrective_threshold.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Corrective-RAG threshold test targets the low-confidence fallback branch</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a7">
+        <h2><span class="idx">07</span> Embeddings</h2>
+        <p class="area-summary">Router and orchestrator are well tested with real fallback/failure branches; drift detection is the one flat-out missing piece.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Provider abstraction</td><td class="impl">providers/base.py, *_provider.py</td><td class="test">test_async_embedding_providers.py, test_all_providers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Per-provider async embed paths covered incl. failures</td></tr>
+            <tr><td class="sub">Embedding router</td><td class="impl">embedding/router.py</td><td class="test">test_embedding_routing.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dimension-guard, batch-failure, multimodal-honesty all tested</td></tr>
+            <tr><td class="sub">Embedding orchestrator</td><td class="impl">embedding/orchestrator.py</td><td class="test">test_embedding_orchestrator.py, test_orchestrator_fallback.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">All-providers-fail and failed-items-must-be-None regression covered</td></tr>
+            <tr><td class="sub">Model dimensions</td><td class="impl">model_registry.py, dimension_policy.py</td><td class="test">test_embedding_orchestrator.py (1 test)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Unknown-model-id fallback and boundary dims untested</td></tr>
+            <tr><td class="sub">Text embeddings</td><td class="impl">orchestrator.py (content-type routing)</td><td class="test">test_embedding_orchestrator.py (1 test)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Single happy-path case, no malformed/empty text</td></tr>
+            <tr><td class="sub">Code embeddings</td><td class="impl">orchestrator.py</td><td class="test">test_embedding_orchestrator.py (1 test)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Same — one happy-path assertion</td></tr>
+            <tr><td class="sub">Multimodal embeddings</td><td class="impl">orchestrator.py, router.py</td><td class="test">TestMultimodalHonesty</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Explicit guard against mislabeling image embeddings as true multimodal</td></tr>
+            <tr><td class="sub">Embedding fallbacks</td><td class="impl">orchestrator.py::embed_with_fallback</td><td class="test">test_orchestrator_fallback.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">First-ok, skip-failing, all-fail-raises all covered</td></tr>
+            <tr><td class="sub">Tenant plan / cost constraints</td><td class="impl">orchestrator.py (plan-based selection)</td><td class="test">test_embedding_orchestrator.py (free-plan only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No paid-tier/upgrade/downgrade or budget-exceeded scenarios</td></tr>
+            <tr><td class="sub">Drift detection</td><td class="impl">embedding/drift_monitor.py</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">Zero references; severity thresholds and score clamping untested</td></tr>
+            <tr><td class="sub">Re-embedding policies</td><td class="impl">embedding/reembedding_policy.py</td><td class="test">test_embedding_orchestrator.py (dimension-mismatch only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">MODEL_CHANGED / DRIFT_DETECTED / STALE triggers untested</td></tr>
+            <tr><td class="sub">Index compatibility / dimension mismatch</td><td class="impl">embedding/vector_index_policy.py</td><td class="test">test_embeddings_chunking.py, TestDimensionGuard</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">EXACT/HNSW/IVF thresholds and unsupported-dimension rejection untested</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a8">
+        <h2><span class="idx">08</span> Prompt builder</h2>
+        <p class="area-summary">Planner/executor/verifier prompt construction is solidly covered; tool-schema injection is the notable gap.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Planner prompt construction</td><td class="impl">agent/prompts.py, nodes/planner_mixin.py</td><td class="test">test_tool_aware_planning.py, test_context_pipeline.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Pipeline test verifies all context sources reach planner prompt</td></tr>
+            <tr><td class="sub">Executor prompt construction</td><td class="impl">prompts.py, nodes/executor_mixin.py</td><td class="test">test_executor_mixin_failure_modes.py, test_prompt_injection_resistance.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failure-mode tests plus injection framing covered</td></tr>
+            <tr><td class="sub">Verifier prompt construction</td><td class="impl">prompts.py, nodes/verifier_mixin.py</td><td class="test">test_verifier_mixin_scenarios.py + self_improvement.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple scenario files</td></tr>
+            <tr><td class="sub">System prompt injection (assembly)</td><td class="impl">context/prompt_builder.py</td><td class="test">test_prompt_builder_compress.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only compression/bundle happy paths; no oversized-prompt boundary test</td></tr>
+            <tr><td class="sub">Tool schema injection</td><td class="impl">context/tool_prompt_builder.py (17 lines)</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">No test file references it; only indirect exercise via broader tests</td></tr>
+            <tr><td class="sub">RAG context injection</td><td class="impl">context/context_pipeline.py, nodes/rag_mixin.py</td><td class="test">test_context_pipeline.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedup, diversity limiting, below-threshold filtering covered</td></tr>
+            <tr><td class="sub">Memory injection</td><td class="impl">working_memory_wiring.py, entity_memory_wiring.py</td><td class="test">test_all_memory_types.py, test_all_memory_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Wiring-specific corrupted-memory edge cases not isolated</td></tr>
+            <tr><td class="sub">Visual context injection</td><td class="impl">multimodal attachment handling (goals.py)</td><td class="test">test_goals_multimodal_attachments.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">PDF/code/image-url and no-attachment cases explicit</td></tr>
+            <tr><td class="sub">Feedback / verifier-failure injection</td><td class="impl">prompts.py (REFLECTION_SYSTEM), reflexion_wirer.py</td><td class="test">test_reflexion_wiring.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Persistence and wiring both tested</td></tr>
+            <tr><td class="sub">Prompt variants</td><td class="impl">context/prompt_variant_selector.py (20 lines)</td><td class="test">test_prompt_variants_api.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">API-surface only; selector weighting logic not directly unit-tested</td></tr>
+            <tr><td class="sub">Prompt optimization</td><td class="impl">intelligence/prompt_optimizer.py</td><td class="test">3 dedicated test files incl. persistence</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Prompt safety / injection resistance</td><td class="impl">guardrail_engine.py, indirect_injection.py, encoding_attacks.py</td><td class="test">test_prompt_injection_resistance.py, test_guardrails_v3.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Poisoned-chunk framing tests plus dedicated attack-module suites</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a9">
+        <h2><span class="idx">09</span> Agent improvement</h2>
+        <p class="area-summary">The improvement loop is consistently well tested end to end, including a historical "orphaned module" gap class that was caught and fixed.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Eval-driven improvement</td><td class="impl">evals/self_improvement_engine.py</td><td class="test">test_self_improvement_feedback.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Tested from both eval and verifier-node sides</td></tr>
+            <tr><td class="sub">Prompt optimizer</td><td class="impl">intelligence/prompt_optimizer.py</td><td class="test">3 files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">See Area 8</td></tr>
+            <tr><td class="sub">Self-optimizer</td><td class="impl">self_optimization.py, self_optimizer_v2.py</td><td class="test">5+ dedicated files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Rejected-suggestion, zero-mean, no-numpy-fallback edge cases present</td></tr>
+            <tr><td class="sub">Lessons learned</td><td class="impl">state_runtime/reflexion_store.py</td><td class="test">test_reflexion_wiring.py, test_phase_n1_n4.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Includes a schema-compatibility regression test</td></tr>
+            <tr><td class="sub">Reflexion feedback loop</td><td class="impl">patterns/reflexion.py, reflexion_wirer.py</td><td class="test">test_agent_patterns_complete.py, test_reflexion_wiring.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">A documented "reflexion quality poisoning" runbook exists — dedicated regression test not confirmed</td></tr>
+            <tr><td class="sub">Memory-assisted improvement</td><td class="impl">memory/procedural.py</td><td class="test">test_all_memory_types.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Procedural feedback path exercised</td></tr>
+            <tr><td class="sub">Model selection improvement</td><td class="impl">ai_router/selection.py, registry.py</td><td class="test">test_generic_registry_selection.py, health-tracking test</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Health-tracking-affects-selection is a real adaptive edge case</td></tr>
+            <tr><td class="sub">Retrieval quality improvement</td><td class="impl">agentic/retrieval_policy.py</td><td class="test">test_agentic/test_layer4_complete.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Tool success feedback</td><td class="impl">memory/procedural.py, agent/tool_selector.py</td><td class="test">test_all_memory_comprehensive.py (indirect)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test isolates the success/failure feedback signal itself</td></tr>
+            <tr><td class="sub">Cost / latency optimization</td><td class="impl">intelligence/cost_optimizer.py, cost_tracker.py</td><td class="test">4 dedicated files incl. "comprehensive" variants</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Regression detection</td><td class="impl">evals/regression_gate.py, regression_baseline.py</td><td class="test">test_regression_baseline.py, test_eval_gates_promotion.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Rejects on missing evidence AND evidence-version mismatch</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a10">
+        <h2><span class="idx">10</span> Evals</h2>
+        <p class="area-summary">Offline eval discrimination is strong; judge-model disagreement/adversarial-input and dataset construction are thin.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Goal evals</td><td class="impl">evals/goal_score.py</td><td class="test">test_evals_comprehensive.py, test_evals_complete.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Retrieval evals</td><td class="impl">rag/gateway.py, retrieval_policy.py</td><td class="test">test_grounding_strategies.py, test_core_strategy_evidence.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Tool relevance evals</td><td class="impl">evals/agent_score.py (tool_relevance dim)</td><td class="test">test_eval_dimensions.py (presence check only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test of actual scoring logic against good/bad tool choices</td></tr>
+            <tr><td class="sub">Safety evals</td><td class="impl">evals/safety_score.py, guardrail_patterns.py</td><td class="test">test_phase4_evals_security.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Destructive-action-blocked is a real edge case</td></tr>
+            <tr><td class="sub">Accuracy / grounding evals</td><td class="impl">grounding_verification.py, attribution_verifier.py</td><td class="test">test_grounding_verification.py, test_hallucination_golden_gate.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">AttributionVerifier was previously orphaned — since caught and wired in</td></tr>
+            <tr><td class="sub">SLA / latency evals</td><td class="impl">evals/runtime_scorecard.py</td><td class="test">test_runtime_scorecard.py, test_scorecard_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Latency-vs-cost distinctness explicitly asserted</td></tr>
+            <tr><td class="sub">Cost evals</td><td class="impl">evals/model_score.py, runtime_scorecard.py</td><td class="test">test_evals_comprehensive.py, test_phase4_evals_security.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Explicit separate-cost-vs-latency scorer test</td></tr>
+            <tr><td class="sub">Judge models</td><td class="impl">intelligence/eval.py, eval_suite.py</td><td class="test">test_eval_judge.py, test_eval_judge_output.py (7 tests)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test of judge disagreement/miscalibration or adversarial inputs</td></tr>
+            <tr><td class="sub">Eval datasets / suites</td><td class="impl">evals/dataset_builder.py, eval_suite.py</td><td class="test">test_eval_gates_promotion.py (incidental)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">dataset_builder.py has no dedicated test file</td></tr>
+            <tr><td class="sub">Online vs offline evaluation</td><td class="impl">intelligence/eval_suite.py::EvalSuiteRunner</td><td class="test">test_eval_suite_offline_discrimination.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Offline path well tested; no distinct "online/live-traffic" eval path found</td></tr>
+            <tr><td class="sub">How evals feed improvement</td><td class="impl">self_improvement_engine.py, regression_gate.py</td><td class="test">test_self_improvement_feedback.py, test_optimizer_wired.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Wiring-verification test guards against the "orphaned module" gap class</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a11">
+        <h2><span class="idx">11</span> Observability</h2>
+        <p class="area-summary">Metrics, tracing, and cost breakdown are solid. No test exercises a full production-incident workflow end to end.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Structured logging</td><td class="impl">observability/logging.py</td><td class="test">test_structlog_migration.py, test_log_trace_correlation.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Trace/span stamping and absence-of-span both tested</td></tr>
+            <tr><td class="sub">Metrics</td><td class="impl">observability/metrics.py</td><td class="test">test_metrics.py, test_metric_exemplars.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Exemplar with/without span tested</td></tr>
+            <tr><td class="sub">Tracing</td><td class="impl">tracing.py, trace_propagation.py</td><td class="test">test_tracing_comprehensive.py, test_trace_propagation.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Empty-headers and inject/extract round-trip covered</td></tr>
+            <tr><td class="sub">Runtime decision traces</td><td class="impl">runtime_decision_trace.py</td><td class="test">test_runtime_sse_events.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">9 distinct emitted-event types tested</td></tr>
+            <tr><td class="sub">RAG traces</td><td class="impl">rag/agentic/rag_trace.py</td><td class="test">test_layer4_complete.py (wiring-level)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated edge-case file for malformed/partial RAG traces</td></tr>
+            <tr><td class="sub">Cost breakdown</td><td class="impl">observability/cost_breakdown.py</td><td class="test">test_cost_breakdown_api.py, _persistence.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failure-swallowed/persistence-fallback edge cases covered</td></tr>
+            <tr><td class="sub">Goal events (SSE)</td><td class="impl">api/goals.py, runtime_decision_trace.py</td><td class="test">test_runtime_sse_events.py, test_goal_trace_api.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple event kinds and live-path assertions</td></tr>
+            <tr><td class="sub">SSE events (general)</td><td class="impl">api/observability.py</td><td class="test">test_observability.py (2 tests)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Broad SSE disconnect/backpressure edge cases not evident</td></tr>
+            <tr><td class="sub">Worker events (Celery)</td><td class="impl">scaling/tasks.py</td><td class="test">test_tasks_dlq_paths.py, test_celery_tasks_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">DLQ, lock, retry, coverage-gap tests present</td></tr>
+            <tr><td class="sub">Audit correlation</td><td class="impl">governance/audit_v3.py, tracing.py</td><td class="test">test_agent_pattern_audit_integrity.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No single dedicated audit-trace-correlation edge-case file</td></tr>
+            <tr><td class="sub">Debugging / incident workflows</td><td class="impl">docs-only (RUNBOOK.md)</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">No test simulates an outage end-to-end and verifies traces/logs/alerts surface</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a12">
+        <h2><span class="idx">12</span> Guardrails</h2>
+        <p class="area-summary">This is the deepest-tested safety surface in the repo — fail-closed behavior, PII, injection, and tool validation are all explicitly attacked.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Prompt injection detection</td><td class="impl">intelligence/guardrails.py</td><td class="test">test_guardrails_comprehensive.py, test_guardrails_redteam.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Classic + indirect + SQL-in-tool-args + legit-goal-not-flagged</td></tr>
+            <tr><td class="sub">Encoded injection detection</td><td class="impl">intelligence/encoding_attacks.py</td><td class="test">test_security_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Base64 and ROT13, positive and negative cases</td></tr>
+            <tr><td class="sub">Unicode / homoglyph attacks</td><td class="impl">encoding_attacks.py::normalize_homoglyphs</td><td class="test">test_guardrails_redteam.py (corpus only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No isolated unit test for mixed-script/partial-substitution cases</td></tr>
+            <tr><td class="sub">Dangerous command detection</td><td class="impl">intelligence/guardrails.py</td><td class="test">test_security_comprehensive.py (2 payloads)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No obfuscated/chained-command coverage</td></tr>
+            <tr><td class="sub">PII detection / leakage prevention</td><td class="impl">guardrails.py (_pii_spans, redact_pii)</td><td class="test">test_pii_redaction.py, test_guardrail_enforcer_blocking.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Luhn-valid vs random-16-digit false positive explicitly tested</td></tr>
+            <tr><td class="sub">Tool hallucination prevention</td><td class="impl">tool_calls.py::validate_tool_name</td><td class="test">test_hallucination_fixes.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Unknown-tool rejection, built-in RPA bypass covered</td></tr>
+            <tr><td class="sub">Tool name validation</td><td class="impl">tool_calls.py::validate_tool_name</td><td class="test">test_hallucination_fixes.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Same as above</td></tr>
+            <tr><td class="sub">Tool argument validation</td><td class="impl">tool_calls.py::validate_tool_arguments</td><td class="test">test_hallucination_fixes.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Missing required, unknown field, missing/empty schema all covered</td></tr>
+            <tr><td class="sub">Output grounding</td><td class="impl">agent/grounding.py, intelligence/grounding_verification.py</td><td class="test">test_grounding.py, test_grounding_gate.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multi-tool-output merge and strict mode both covered</td></tr>
+            <tr><td class="sub">Citation verification</td><td class="impl">context/citation_manager.py</td><td class="test">test_citation_gate.py, test_synthesis_citation_gate.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Uncited-claim stripped and wrong-citation rejected covered</td></tr>
+            <tr><td class="sub">Safety fail-closed behavior</td><td class="impl">security_runtime/guardrail_enforcer.py</td><td class="test">test_guardrail_enforcer_blocking.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Explicit fail-closed-on-engine-error test exists</td></tr>
+            <tr><td class="sub">Human approval gates</td><td class="impl">governance/hitl.py, agent/tool_risk.py</td><td class="test">test_tool_risk_comprehensive.py (46 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Unknown-tool-defaults-to-write-high explicitly tested</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a13">
+        <h2><span class="idx">13</span> Governance</h2>
+        <p class="area-summary">Uniformly the strongest area audited — concurrency races, cross-replica behavior, and tamper-evidence are consistently tested, not just CRUD.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Tenant isolation</td><td class="impl">tenancy/store.py, context.py, db/rls.py</td><td class="test">test_tenant_isolation.py + 3 e2e/integration files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-replica + e2e cross-tenant leakage explicitly tested</td></tr>
+            <tr><td class="sub">API key scopes</td><td class="impl">services/tenant_service.py</td><td class="test">test_scope_restrictions.py, test_phase3_rbac.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">No explicit expired/revoked key rotation test found</td></tr>
+            <tr><td class="sub">RBAC</td><td class="impl">tenancy/rbac.py, domain_role_templates.py</td><td class="test">test_rbac_comprehensive2.py, test_phase3_rbac.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Role hierarchy, JWT extraction, CIDR edge cases well exercised</td></tr>
+            <tr><td class="sub">Row-level security</td><td class="impl">db/rls.py (rls_context)</td><td class="test">test_rls.py, test_rls_system_session.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">System-session-bypass privilege-escalation case has its own test</td></tr>
+            <tr><td class="sub">Policy engine</td><td class="impl">governance/policies.py, policy_rules.py</td><td class="test">test_policies_comprehensive2.py (34), test_policy_propagation.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-replica propagation and versioning/rollback both covered</td></tr>
+            <tr><td class="sub">Permission matrix</td><td class="impl">governance/permissions.py</td><td class="test">test_governance.py, test_middleware_full.py (incidental)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated file; role×action×risk-level combinations not obviously exhaustive</td></tr>
+            <tr><td class="sub">Cost control / budget enforcement</td><td class="impl">governance/cost.py</td><td class="test">test_cost_atomic.py, test_cost_race.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Atomicity and race-condition tests, not just happy path</td></tr>
+            <tr><td class="sub">Audit trail</td><td class="impl">audit.py, audit_v2/v3.py, audit_chain*.py</td><td class="test">test_audit_chain.py + 6 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Hash-chain tamper-evidence tested, a real edge case</td></tr>
+            <tr><td class="sub">Compliance controls</td><td class="impl">enterprise/compliance.py, compliance_v2.py</td><td class="test">test_compliance_comprehensive.py (33) + 6 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">GDPR/DPDP-specific behavioral tests, not generic checklist tests</td></tr>
+            <tr><td class="sub">Approval workflows (HITL)</td><td class="impl">governance/hitl.py</td><td class="test">test_hitl_comprehensive2.py (50) + 8 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-replica race and startup-recovery both covered</td></tr>
+            <tr><td class="sub">Tool risk classification</td><td class="impl">agent/tool_risk.py</td><td class="test">test_tool_risk_comprehensive.py (46)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Deploy/delete/prod keyword routing heavily parametrized</td></tr>
+            <tr><td class="sub">Enterprise controls</td><td class="impl">enterprise/marketplace.py, red_team.py, simulation.py</td><td class="test">test_real_red_team*.py, test_simulation_comprehensive*.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Red-team/simulation suites target adversarial edge cases</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a14">
+        <h2><span class="idx">14</span> Scopes</h2>
+        <p class="area-summary">Tenant, memory, and policy scoping are all cross-checked at multiple layers; agent-level and connector-level scope leakage tests are thinner.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Tenant scope</td><td class="impl">tenancy/context.py, store.py</td><td class="test">test_tenant_isolation.py, RLS e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">API key scope</td><td class="impl">db/models/auth.py, tenant_service.py</td><td class="test">test_tenants*.py (incidental)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated wrong-tenant-key / key-revocation edge-case file</td></tr>
+            <tr><td class="sub">Agent scope</td><td class="impl">api/agents.py (AgentStore)</td><td class="test">scattered, no dedicated file</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test verifies agent-from-tenant-A inaccessible to tenant B specifically</td></tr>
+            <tr><td class="sub">Knowledge collection scope</td><td class="impl">rag/store.py, knowledge_graph/store.py</td><td class="test">test_access_control.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Directly targets cross-scope access</td></tr>
+            <tr><td class="sub">Connector scope</td><td class="impl">api/connectors.py, connector_registry.py</td><td class="test">test_connectors_comprehensive*.py (generic)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test specifically named/targeted at tenant-scope leakage between connectors</td></tr>
+            <tr><td class="sub">Tool scope</td><td class="impl">governance/tool_risk.py, policies.py</td><td class="test">test_scope_restrictions.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedicated scope-restriction file</td></tr>
+            <tr><td class="sub">Memory scope</td><td class="impl">app/memory/*</td><td class="test">test_memory_scoping_and_retention.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Policy scope</td><td class="impl">governance/policies.py</td><td class="test">test_policy_isolation.py, test_policy_propagation.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Runtime context scope</td><td class="impl">orchestration/runtime_profile.py</td><td class="test">test_dynamic_orchestration_e2e.py (indirect)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No isolated unit tests for GoalRuntimeProfile scope boundaries</td></tr>
+            <tr><td class="sub">Leakage / unsafe-action prevention (cross-cutting)</td><td class="impl">tenancy/*, governance/*, db/rls.py</td><td class="test">test_tenant_isolation.py, test_rls_cross_tenant_e2e.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple independent layers (DB + app) each tested</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a15">
+        <h2><span class="idx">15</span> Multimodal</h2>
+        <p class="area-summary">OCR, image, and table extraction are deeply tested; audio/video and the "planner ignores stale visual context" scenario are thinner.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Text</td><td class="impl">ingestion/parser_registry.py</td><td class="test">test_parsers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">PDF</td><td class="impl">parsers/pdf_parser.py</td><td class="test">test_multimodal_router.py, test_parsers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Image</td><td class="impl">parsers/vision_parser.py</td><td class="test">test_multimodal_router.py, test_pipeline.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Invalid-base64 and large-image-no-Pillow fallback tested</td></tr>
+            <tr><td class="sub">Screenshot (browser)</td><td class="impl">rpa/runner.py, perception/browser_agent.py</td><td class="test">test_browser_agent_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Audio</td><td class="impl">parsers/audio_parser.py</td><td class="test">test_multimodal_router.py (dispatch only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No dedicated corrupt/unsupported-codec edge-case file</td></tr>
+            <tr><td class="sub">Video</td><td class="impl">parsers/video_parser.py</td><td class="test">test_multimodal_router.py (dispatch only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Same as audio — only router-level coverage in this area's own tests</td></tr>
+            <tr><td class="sub">OCR</td><td class="impl">ocr/engine.py, extractors/general.py</td><td class="test">test_engine.py, test_ocr_everywhere_consistency.py + 3 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Voter ID, GSTIN, cheque, salary-slip document types covered</td></tr>
+            <tr><td class="sub">Tables</td><td class="impl">multimodal/pipeline.py</td><td class="test">test_table_code_modalities.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Includes no-table-found empty-extraction case</td></tr>
+            <tr><td class="sub">Code (as modality)</td><td class="impl">multimodal/pipeline.py, ast_chunker.py</td><td class="test">test_table_code_modalities.py, test_chunkers.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Browser DOM / page screenshots</td><td class="impl">perception/page_analyzer.py</td><td class="test">test_page_analyzer_comprehensive.py, test_perception_gaps.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">"gaps" file name suggests edge-case focus</td></tr>
+            <tr><td class="sub">Asset ingestion jobs</td><td class="impl">multimodal/job_store.py, job_tracker.py</td><td class="test">test_job_store.py, test_job_tracker.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedicated job-lifecycle files</td></tr>
+            <tr><td class="sub">Extracted spans</td><td class="impl">ocr/models.py::OcrResult</td><td class="test">test_models.py, test_validators.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Validators file implies boundary checks</td></tr>
+            <tr><td class="sub">Visual context in planning</td><td class="impl">multimodal/pipeline.py &rarr; agent planning</td><td class="test">test_planning_context_wiring.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Wiring-level only; no test for planner mis-using stale visual context</td></tr>
+            <tr><td class="sub">Multimodal limitations</td><td class="impl">multimodal/pipeline.py, content_classifier.py</td><td class="test">test_table_code_modalities.py (partial)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No systematic unsupported-MIME-type or oversized-file-rejected suite</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a16">
+        <h2><span class="idx">16</span> Multi AI model router</h2>
+        <p class="area-summary">Vision/audio failover and provider circuit-breaking are tested with real "both-down" edge cases; plan-tier-aware routing appears unimplemented.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Planner/executor/verifier role assignment</td><td class="impl">ai_router/model_orchestrator.py</td><td class="test">test_model_orchestrator.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">All 7 roles + debate-judge conditional logic tested</td></tr>
+            <tr><td class="sub">Judge model selection</td><td class="impl">prompts.py (JUDGE_RUBRIC_SYSTEM)</td><td class="test">test_consensus.py, test_eval_judge*.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Embedding model selection</td><td class="impl">providers/registry.py, agent/model_router.py</td><td class="test">test_async_embedding_providers.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test ties embedding model choice to tenant/task config specifically</td></tr>
+            <tr><td class="sub">Vision model selection</td><td class="impl">model_orchestrator.py (content_type routing)</td><td class="test">test_router_hardening.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failover-preserves-vision-capability is a strong edge case</td></tr>
+            <tr><td class="sub">Audio model selection</td><td class="impl">model_orchestrator.py</td><td class="test">test_router_hardening.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Same failover pattern as vision</td></tr>
+            <tr><td class="sub">Reranker selection</td><td class="impl">rag_platform/reranker.py</td><td class="test">test_hosted_reranker.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Single test file; fallback/error-path coverage not confirmed</td></tr>
+            <tr><td class="sub">Cost-aware routing</td><td class="impl">cost_latency_quality_policy.py</td><td class="test">test_model_orchestrator.py (2 budget thresholds)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">90% and 75% budget-downgrade thresholds both tested</td></tr>
+            <tr><td class="sub">Latency-aware routing</td><td class="impl">agent/execution_strategy.py::LatencyTier</td><td class="test">test_model_orchestrator.py (1 tier)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only "realtime" tier evidenced; batch/background tiers not confirmed</td></tr>
+            <tr><td class="sub">Tenant-plan-aware routing</td><td class="impl">tenancy/context.py::PlanTier (not wired into ai_router)</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">Zero grep hits for PlanTier inside app/ai_router/ — may not be implemented at all</td></tr>
+            <tr><td class="sub">Provider fallback</td><td class="impl">providers/circuit_breaker.py, model_orchestrator.py</td><td class="test">test_provider_failover_wiring.py, test_router_hardening.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">"Both providers down still returns a usable model" explicitly tested</td></tr>
+            <tr><td class="sub">Circuit breaker behavior</td><td class="impl">providers/circuit_breaker.py, reliability/circuit_breaker.py</td><td class="test">test_circuit_breaker_timeout.py, test_circuit_breaker_tenant.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Trip-at-50% and recovery-on-success both tested; tenant-scoped variant separate</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a17">
+        <h2><span class="idx">17</span> Chunking strategies</h2>
+        <p class="area-summary">Most chunkers are well tested; image-region chunking is a functional stub, and JSON/CSV chunking silently reuses generic table logic.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Fixed token/word chunking</td><td class="impl">chunking_strategy_selector.py::_fixed_chunk</td><td class="test">test_chunkers.py, test_chunkers_comprehensive.py (34)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Fallback path and boundary sizes covered</td></tr>
+            <tr><td class="sub">Token-aware chunking</td><td class="impl">knowledge/chunker_v2.py::chunk_by_tokens</td><td class="test">test_token_counting.py (1 test)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No tokenizer-unavailable fallback or overlap&ge;max guard test</td></tr>
+            <tr><td class="sub">Semantic chunking</td><td class="impl">chunkers/semantic.py</td><td class="test">test_semantic_chunking.py + comprehensive suite</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">No-punctuation and huge-single-sentence edge cases present</td></tr>
+            <tr><td class="sub">Markdown heading chunking</td><td class="impl">chunkers/heading.py</td><td class="test">test_chunkers_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Nested headings / no-heading docs covered</td></tr>
+            <tr><td class="sub">Code-aware (AST) chunking</td><td class="impl">chunkers/ast_chunker.py</td><td class="test">test_chunkers_comprehensive.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple languages, syntax-error fallback exercised</td></tr>
+            <tr><td class="sub">Parent-child chunking</td><td class="impl">rag/parent_child_chunker.py</td><td class="test">test_parent_child_sentence_window.py (7)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Overlap and full-context return explicitly asserted</td></tr>
+            <tr><td class="sub">Sentence window chunking</td><td class="impl">rag/sentence_window.py</td><td class="test">test_parent_child_sentence_window.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Window-expansion behavior explicitly asserted</td></tr>
+            <tr><td class="sub">Timestamp chunking (audio)</td><td class="impl">chunkers/timestamp.py</td><td class="test">test_chunkers.py, test_audio_parser.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Covered alongside audio parser integration</td></tr>
+            <tr><td class="sub">Table chunking</td><td class="impl">chunkers/table.py</td><td class="test">test_chunkers_comprehensive.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No malformed-table / irregular-column tests</td></tr>
+            <tr><td class="sub">JSON / CSV chunking</td><td class="impl">no dedicated chunker — maps to TableChunker</td><td class="test">test_chunkers_comprehensive.py (indirect)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No JSON-record-specific or nested-JSON test</td></tr>
+            <tr><td class="sub">Image region chunking</td><td class="impl">chunkers/__init__.py:27 &mdash; "region" maps to SemanticChunker</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">Advertised but functionally a text-chunker stub, not real spatial chunking</td></tr>
+            <tr><td class="sub">Agentic chunking</td><td class="impl">rag/agentic/patterns/agentic_chunking.py</td><td class="test">test_rag_pattern_adapters.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Ingestion selector's "agentic" strategy silently falls back to semantic — not reconciled with tests</td></tr>
+            <tr><td class="sub">Chunk overlap</td><td class="impl">_fixed_chunk, chunk_by_tokens, parent_child_chunker.py</td><td class="test">Covered within respective chunker files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Overlap&ge;max guard exists in code; direct unit test not confirmed</td></tr>
+            <tr><td class="sub">Chunk metadata</td><td class="impl">chunkers/base.py::Chunk.metadata, pipeline.py</td><td class="test">test_ingestion_framework.py (indirect)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No test specifically asserts chunk metadata schema end-to-end</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a18">
+        <h2><span class="idx">18</span> Hallucination handling</h2>
+        <p class="area-summary">Grounding and guardrails are heavily tested; there is no structured observability signal specifically for hallucination debugging.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">Retrieval grounding</td><td class="impl">agent/grounding.py</td><td class="test">test_grounding.py (24) + 2 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Includes LLM-check-failure branch</td></tr>
+            <tr><td class="sub">Citation requirements</td><td class="impl">agent/citation_gate.py, context/citation_manager.py</td><td class="test">test_citation_gate.py (5)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Thin relative to grounding.py's 24 tests</td></tr>
+            <tr><td class="sub">Tool schema / name validation</td><td class="impl">nodes/executor_mixin.py, mcp/client.py</td><td class="test">test_executor_mixin_failure_modes.py, test_client_comprehensive2.py (40)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedicated failure-mode file plus broad MCP coverage</td></tr>
+            <tr><td class="sub">Verifier checks</td><td class="impl">nodes/verifier_mixin.py</td><td class="test">test_verifier_grounding_wiring.py (3 tests)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Thin wiring test despite being verifier&harr;grounding join point</td></tr>
+            <tr><td class="sub">Self-checking / confidence estimation</td><td class="impl">agent/semantic_entropy.py</td><td class="test">test_semantic_entropy.py (5)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">No stated coverage of degenerate sample distributions</td></tr>
+            <tr><td class="sub">Corrective retrieval (CRAG-like)</td><td class="impl">patterns/corrective.py</td><td class="test">comprehensive suite + real e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Has both unit and real-provider e2e exercising actual re-fetch</td></tr>
+            <tr><td class="sub">Debate / consensus for uncertainty</td><td class="impl">multi_agent_selector.py::debate()</td><td class="test">test_multi_agent_auto_selection.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Not clearly tied to hallucination/uncertainty-triggered debate specifically</td></tr>
+            <tr><td class="sub">Guardrails (general)</td><td class="impl">guardrails_v2/engine.py, streaming_guard.py</td><td class="test">7 dedicated files incl. red-team + e2e blocking</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Very broad; includes red-team and e2e blocking scenarios</td></tr>
+            <tr><td class="sub">Human-in-the-loop fallback</td><td class="impl">governance/hitl.py</td><td class="test">test_consumer_hitl.py (14)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Inferred from trigger-consumer coverage; dedicated file not directly checked this pass</td></tr>
+            <tr><td class="sub">Observability for debugging</td><td class="impl">grounding.py (logger.debug only)</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">No structured metric/trace field for grounding/citation/hallucination anywhere</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a19">
+        <h2><span class="idx">19</span> Core platform</h2>
+        <p class="area-summary">Wiring integrity, MCP, and worker execution are exceptionally deep. Two real external-boundary gaps: the GitHub Action and RAG-before-planning ordering.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">App startup / lifespan wiring</td><td class="impl">app/main.py::create_app(), lifespan()</td><td class="test">test_wiring_integrity.py (26 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Dedicated wiring-integrity suite is a strong signal</td></tr>
+            <tr><td class="sub">In-memory vs DB/Redis service swap</td><td class="impl">main.py lifespan, core/pools.py</td><td class="test">test_wiring_integrity.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">A common historical bug source per CLAUDE.md, now explicitly covered</td></tr>
+            <tr><td class="sub">Tenant auth</td><td class="impl">tenancy/middleware.py, context.py</td><td class="test">tests/tenancy/* (broad)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Goal submission</td><td class="impl">services/goal_service.py</td><td class="test">test_goal_service.py (35)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">Queue routing</td><td class="impl">scaling/celery_app.py (per-plan queues)</td><td class="test">test_celery_routing.py (4), test_priority_queue.py (15)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Routing table itself thin (4) but priority behavior covered elsewhere</td></tr>
+            <tr><td class="sub">Worker execution</td><td class="impl">scaling/tasks.py::run_goal()</td><td class="test">test_celery_tasks_coverage.py (106) + 2 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Very high test count</td></tr>
+            <tr><td class="sub">AgentGraph lifecycle</td><td class="impl">agent/graph.py, loop.py</td><td class="test">4 comprehensive/extra files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">&mdash;</td></tr>
+            <tr><td class="sub">MCP tool discovery / execution</td><td class="impl">mcp/registry.py, client.py</td><td class="test">tests/mcp/ (60+ files, 700+ tests for servers alone)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Exceptionally deep coverage</td></tr>
+            <tr><td class="sub">Vault credential resolution</td><td class="impl">providers/vault.py (AES-256-GCM/Fernet)</td><td class="test">test_vault.py (12)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 12 tests for a security-critical module; key-rotation edge cases unconfirmed</td></tr>
+            <tr><td class="sub">RAG-before-planning ordering</td><td class="impl">rag/gateway.py, planner integration</td><td class="test">not directly isolated this pass</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Needs a follow-up grep for a dedicated ordering test</td></tr>
+            <tr><td class="sub">Plan / execute / verify / replan / complete / fail</td><td class="impl">graph.py, executor_mixin.py, verifier_mixin.py</td><td class="test">comprehensive suites + failure-mode file</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Failure-mode-specific test file is a good edge-case signal</td></tr>
+            <tr><td class="sub">Memory write</td><td class="impl">app/memory/*</td><td class="test">test_all_memory_types.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">"All memory types" suggests breadth</td></tr>
+            <tr><td class="sub">Eval scoring</td><td class="impl">evals/runtime_scorecard.py, self_improvement_engine.py</td><td class="test">test_runtime_scorecard.py + eval_cost_efficiency.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Regression-gate + scorecard both present</td></tr>
+            <tr><td class="sub">Observability emission</td><td class="impl">observability/logging.py, metrics.py, cost_breakdown.py</td><td class="test">test_cost_breakdown*.py</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Cost breakdown well tested; general SSE/trace emitter coverage not directly confirmed</td></tr>
+            <tr><td class="sub">Frontend SSE update path</td><td class="impl">src/lib/sse/useGoalStream.ts</td><td class="test">useGoalStream.test.ts (5 tests, x2 files)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 5 tests for a critical live-update path; reconnection/backoff unclear</td></tr>
+            <tr><td class="sub">Frontend WS update path</td><td class="impl">src/lib/ws/useCollabSocket.ts</td><td class="test">useCollabSocket.test.ts (18 tests)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Notably deeper than the SSE counterpart</td></tr>
+            <tr><td class="sub">GitHub Action interaction path</td><td class="impl">agent-verse-github-action/entrypoint.py</td><td class="test">&mdash;</td><td><span class="rating missing"><span class="dot"></span>Missing</span></td><td class="gap">Zero test files anywhere under agent-verse-github-action/</td></tr>
+            <tr><td class="sub">Semantic cache</td><td class="impl">rag/semantic_cache.py</td><td class="test">test_semantic_cache.py, test_semantic_cache_world_class.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Explicitly named for tenant isolation / error-guard / fresh-evidence cases</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section class="area" id="a20">
+        <h2><span class="idx">20</span> Other platform concepts</h2>
+        <p class="area-summary">Reliability primitives (circuit breakers, rollback, dedup) and RLS are all deeply tested; bulkheads and Postgres+pgvector specifics are the thin spots.</p>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Subtopic</th><th>Implementation</th><th>Tests</th><th>Rating</th><th>Gap note</th></tr></thead>
+          <tbody>
+            <tr><td class="sub">MCP registry / clients</td><td class="impl">mcp/registry.py, client.py</td><td class="test">tests/mcp/ (60+ files)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Among the deepest-tested subsystems in the repo</td></tr>
+            <tr><td class="sub">Provider abstraction</td><td class="impl">providers/base.py + real providers + FakeProvider</td><td class="test">tests/providers/*</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Well-exercised via FakeProvider elsewhere too</td></tr>
+            <tr><td class="sub">Cost control</td><td class="impl">governance/cost.py</td><td class="test">test_cost_atomic.py, test_cost_race.py + 3 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Race-condition/atomicity tested — real edge-case signal</td></tr>
+            <tr><td class="sub">Rate limiting</td><td class="impl">tenancy/ sliding-window limiter</td><td class="test">test_rate_limiter.py, integration test</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-cutting integration test included</td></tr>
+            <tr><td class="sub">Bulkheads</td><td class="impl">reliability/bulkhead.py</td><td class="test">test_bulkhead.py (4), test_redis_bulkhead.py (9)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Only 13 tests combined for a concurrency-safety primitive</td></tr>
+            <tr><td class="sub">Circuit breakers</td><td class="impl">reliability/circuit_breaker.py + per-domain breakers</td><td class="test">test_redis_circuit_breaker_comprehensive.py (27) + 4 more</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Multiple independent breaker instances each independently tested</td></tr>
+            <tr><td class="sub">Deduplication</td><td class="impl">multiple dedup modules</td><td class="test">6 dedicated files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Near-dup and TTL-expiry edge cases both present</td></tr>
+            <tr><td class="sub">Rollback / compensating actions</td><td class="impl">reliability/tool_inverses.py</td><td class="test">~50 tests across 6 files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Combined coverage across the rollback surface</td></tr>
+            <tr><td class="sub">Triggers / schedules</td><td class="impl">app/triggers/*</td><td class="test">~35 files, hundreds of tests</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">One of the deepest-tested directories in the repo</td></tr>
+            <tr><td class="sub">Celery queues</td><td class="impl">scaling/celery_app.py</td><td class="test">~35 files</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">See Area 19</td></tr>
+            <tr><td class="sub">Postgres + pgvector</td><td class="impl">rag/store.py::KnowledgeStore</td><td class="test">not directly isolated this pass</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Needs explicit confirmation of pgvector-specific ANN-recall / trigram-fallback tests</td></tr>
+            <tr><td class="sub">Redis usage</td><td class="impl">bulkhead/circuit-breaker/dedup/cost Redis variants</td><td class="test">test_redis_bulkhead.py, test_redis_pooling.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Redis variants explicitly tested separately from in-memory ones</td></tr>
+            <tr><td class="sub">RLS / multi-tenancy</td><td class="impl">db/rls.py, tenancy/context.py</td><td class="test">6 dedicated files incl. e2e cross-tenant</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Cross-tenant isolation explicitly e2e-tested</td></tr>
+            <tr><td class="sub">Marketplace / templates</td><td class="impl">enterprise/marketplace.py</td><td class="test">test_enterprise.py (36)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Reasonable breadth for a lower-priority feature</td></tr>
+            <tr><td class="sub">RPA / browser automation</td><td class="impl">rpa/executor.py, session_manager.py</td><td class="test">test_executor_playwright_mock.py (94)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Very deep for a single subsystem</td></tr>
+            <tr><td class="sub">External integration boundaries</td><td class="impl">MCP connectors, mcp/oauth.py</td><td class="test">test_oauth*.py (~76), test_client_ssrf.py</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">SSRF-specific test is a notable edge-case signal</td></tr>
+            <tr><td class="sub">Workflow engine</td><td class="impl">app/workflow/*</td><td class="test">test_ocr_step_security.py (referenced only)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Needs a dedicated pass over the full tests/workflow/ directory</td></tr>
+            <tr><td class="sub">OCR</td><td class="impl">app/ocr/engine.py</td><td class="test">tests/ocr/ (10 files) + e2e</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">e2e + consistency-across-callsites tests are strong signals</td></tr>
+            <tr><td class="sub">Voice</td><td class="impl">app/voice/router.py</td><td class="test">tests/voice/ (19 files)</td><td><span class="rating good"><span class="dot"></span>Good</span></td><td class="gap">Broad coverage per file count</td></tr>
+            <tr><td class="sub">"AI Agent Team" feature</td><td class="impl">org/service.py::OrgService (missions, TeamChannel)</td><td class="test">test_agent_teams_e2e.py (1 test)</td><td><span class="rating shallow"><span class="dot"></span>Shallow</span></td><td class="gap">Real feature confirmed, but e2e coverage is a single test</td></tr>
+            <tr><td class="sub">"Jarvis" feature</td><td class="impl">UI-layer branding only (JARVISPageShell.tsx)</td><td class="test">&mdash;</td><td><span class="rating na"><span class="dot"></span>N/A</span></td><td class="gap">Not a standalone backend module — verified as a UI name for the assistant chat experience</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+    </main>
+  </div>
+
+  <footer>Compiled from a 6-pass, read-only codebase audit &middot; ratings: Good = edge cases covered &middot; Shallow = happy-path only &middot; Missing = no tests found &middot; N/A = concept not implemented as a distinct module</footer>
+</div>
