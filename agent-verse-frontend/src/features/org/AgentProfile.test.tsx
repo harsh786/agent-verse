@@ -59,4 +59,65 @@ describe('AgentProfile', () => {
     const { container } = render(<AgentProfile agent={null} onClose={() => {}} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  test('falls back to defaults for a minimal agent with no optional fields', () => {
+    render(<AgentProfile agent={{ id: 'a2', name: 'Bare Agent' }} onClose={() => {}} />);
+    // No status → defaults to "Idle".
+    expect(screen.getByText('Idle')).toBeInTheDocument();
+    // No current_task banner.
+    expect(screen.queryByText(/Refactoring/i)).not.toBeInTheDocument();
+    // Metrics fall back to zeroed values.
+    expect(screen.getByText('0%')).toBeInTheDocument();
+    expect(screen.getByText('0.00')).toBeInTheDocument();
+    expect(screen.getByText('$0.00')).toBeInTheDocument();
+    expect(screen.getByText('0.0 min')).toBeInTheDocument();
+    // No primary_model → no "Current Session" card.
+    expect(screen.queryByText('Current Session')).not.toBeInTheDocument();
+    // No capabilities → no Capabilities card.
+    expect(screen.queryByText('Capabilities')).not.toBeInTheDocument();
+  });
+
+  test('falls back to the idle status config for an unrecognized status', () => {
+    render(<AgentProfile agent={{ id: 'a3', name: 'Odd Agent', status: 'some-unknown-status' }} onClose={() => {}} />);
+    expect(screen.getByText('Idle')).toBeInTheDocument();
+  });
+
+  test('the Memory tab shows an empty state when there are no memory items', async () => {
+    render(<AgentProfile agent={{ id: 'a4', name: 'Empty Memory Agent' }} onClose={() => {}} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Memory' }));
+    expect(await screen.findByText('No memory items yet.')).toBeInTheDocument();
+  });
+
+  test('the Tools tab shows an empty state when there are no allowed tools', async () => {
+    render(<AgentProfile agent={{ id: 'a5', name: 'No Tools Agent' }} onClose={() => {}} />);
+    await userEvent.click(screen.getByRole('tab', { name: 'Tools' }));
+    expect(await screen.findByText('No tools configured.')).toBeInTheDocument();
+  });
+
+  test('renders token usage and cost when a primary model is active', () => {
+    render(
+      <AgentProfile
+        agent={{
+          id: 'a6', name: 'Model Agent', primary_model: 'claude-sonnet',
+          tokens_in: 1200, tokens_out: 340, cost_usd: 0.045,
+        }}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText('Current Session')).toBeInTheDocument();
+    expect(screen.getByText(/1,200 in \/ 340 out/)).toBeInTheDocument();
+    expect(screen.getByText(/\$0\.045/)).toBeInTheDocument();
+  });
+
+  test('omits the token/cost line when a model is set but no tokens were used', () => {
+    render(<AgentProfile agent={{ id: 'a7', name: 'Idle Model Agent', primary_model: 'claude-sonnet' }} onClose={() => {}} />);
+    expect(screen.getByText('Current Session')).toBeInTheDocument();
+    expect(screen.queryByText(/in \/.*out/)).not.toBeInTheDocument();
+  });
+
+  test('renders role and department separator when both are present', () => {
+    render(<AgentProfile agent={AGENT} onClose={() => {}} />);
+    expect(screen.getByText('Senior Engineer')).toBeInTheDocument();
+    expect(screen.getByText('Engineering')).toBeInTheDocument();
+  });
 });

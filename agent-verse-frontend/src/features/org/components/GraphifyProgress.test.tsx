@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import React, { type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
@@ -32,11 +32,17 @@ class MockEventSource {
   onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: ((e: Event) => void) | null = null;
   close = vi.fn();
-  constructor(url: string) { this.url = url; }
+  constructor(url: string) { this.url = url; mockEventSourceInstances.push(this); }
 }
+let mockEventSourceInstances: MockEventSource[] = [];
 beforeEach(() => {
+  mockEventSourceInstances = [];
   (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
 });
+
+function send(es: MockEventSource, data: Record<string, unknown>) {
+  act(() => { es.onmessage?.({ data: JSON.stringify(data) } as MessageEvent); });
+}
 
 function mockFetch(startStatus = 200) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -107,5 +113,120 @@ describe('GraphifyProgress', () => {
     renderProgress({ onClose });
     fireEvent.click(screen.getByRole('button', { name: /Close graphify panel/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('renders no close button when onClose is not provided', () => {
+    mockFetch();
+    renderProgress();
+    expect(screen.queryByRole('button', { name: /Close graphify panel/i })).not.toBeInTheDocument();
+  });
+
+  describe('live SSE stream', () => {
+    async function startAndConnect() {
+      mockFetch();
+      renderProgress();
+      fireEvent.click(screen.getByRole('button', { name: /Start building knowledge graph/i }));
+      await waitFor(() => expect(mockEventSourceInstances.length).toBe(1));
+      return mockEventSourceInstances[0];
+    }
+
+    test('a "phase" event advances the phase label and progress percentage', async () => {
+      const es = await startAndConnect();
+      send(es, { type: 'phase', phase: 2, total_phases: 4, label: 'Connecting relationships' });
+      expect(await screen.findByText('Building Graph')).toBeInTheDocument();
+      expect(screen.getByText('Connecting relationships')).toBeInTheDocument();
+      expect(screen.getByText('50%')).toBeInTheDocument();
+    });
+
+    test('a "stats" event updates the stat tiles incrementally', async () => {
+      const es = await startAndConnect();
+      send(es, { type: 'stats', nodes: 42, edges: 10 });
+      expect(await screen.findByText('42')).toBeInTheDocument();
+      expect(screen.getByText('10')).toBeInTheDocument();
+      // communities/discoveries were untouched by this frame — stay at 0.
+      expect(screen.getAllByText('0').length).toBeGreaterThan(0);
+    });
+
+    test('a "complete" event finishes the run, fires onComplete and shows the summary', async () => {
+      const onComplete = vi.fn();
+      mockFetch();
+      renderProgress({ onComplete });
+      fireEvent.click(screen.getByRole('button', { name: /Start building knowledge graph/i }));
+      await waitFor(() => expect(mockEventSourceInstances.length).toBe(1));
+      const es = mockEventSourceInstances[0];
+      send(es, { type: 'complete', nodes: 5, edges: 3, communities: 1, discoveries: 2 });
+      expect(await screen.findByText(/Graph built — 5 nodes, 3 edges/)).toBeInTheDocument();
+      expect(onComplete).toHaveBeenCalledWith({ nodes: 5, edges: 3, communities: 1, discoveries: 2 });
+      expect(es.close).toHaveBeenCalled();
+    });
+
+    test('the "View glowing graph" button appears on complete and invokes onViewGraph', async () => {
+      const onViewGraph = vi.fn();
+      mockFetch();
+      renderProgress({ onViewGraph });
+      fireEvent.click(screen.getByRole('button', { name: /Start building knowledge graph/i }));
+      await waitFor(() => expect(mockEventSourceInstances.length).toBe(1));
+      send(mockEventSourceInstances[0], { type: 'complete', nodes: 1, edges: 1 });
+      const btn = await screen.findByRole('button', { name: /View glowing knowledge graph/i });
+      fireEvent.click(btn);
+      expect(onViewGraph).toHaveBeenCalledTimes(1);
+    });
+
+    test('an "error" event surfaces the message and closes the stream', async () => {
+      const es = await startAndConnect();
+      send(es, { type: 'error', message: 'Extraction crashed' });
+      expect(await screen.findByText('Extraction crashed')).toBeInTheDocument();
+      expect(es.close).toHaveBeenCalled();
+    });
+
+    test('an error event with no message falls back to a generic message', async () => {
+      const es = await startAndConnect();
+      send(es, { type: 'error' });
+      expect(await screen.findByText('Unknown error')).toBeInTheDocument();
+    });
+
+    test('a "connected" event is a no-op', async () => {
+      const es = await startAndConnect();
+      send(es, { type: 'connected' });
+      // Still in the running (queued) phase — no crash, no phase change.
+      expect(screen.getByText('Queued')).toBeInTheDocument();
+    });
+
+    test('a legacy bare phase string updates phase and progress directly', async () => {
+      const es = await startAndConnect();
+      send(es, { phase: 'discovery', progress: 77 });
+      expect(await screen.findByText('Discovering')).toBeInTheDocument();
+      expect(screen.getByText('77%')).toBeInTheDocument();
+    });
+
+    test('a malformed SSE frame is ignored without crashing', async () => {
+      const es = await startAndConnect();
+      act(() => { es.onmessage?.({ data: 'not json' } as MessageEvent); });
+      // Still shows the queued phase — nothing blew up.
+      expect(screen.getByText('Queued')).toBeInTheDocument();
+    });
+
+    test('onerror on the EventSource surfaces a disconnected error', async () => {
+      const es = await startAndConnect();
+      act(() => { es.onerror?.(new Event('error')); });
+      expect(await screen.findByText('Stream disconnected')).toBeInTheDocument();
+      expect(es.close).toHaveBeenCalled();
+    });
+
+    test('connects with an empty stream token when the token fetch fails', async () => {
+      const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.includes('/graphify') && method === 'POST')
+          return new Response(JSON.stringify({ job_id: 'job-1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (url.includes('/tenants/stream-token')) return new Response('nope', { status: 500 });
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      renderProgress();
+      fireEvent.click(screen.getByRole('button', { name: /Start building knowledge graph/i }));
+      await waitFor(() => expect(mockEventSourceInstances.length).toBe(1));
+      expect(mockEventSourceInstances[0].url).toContain('token=');
+      spy.mockRestore();
+    });
   });
 });

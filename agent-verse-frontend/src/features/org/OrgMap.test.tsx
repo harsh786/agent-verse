@@ -12,17 +12,37 @@ import { useAuthStore } from '@/stores/auth';
 // own graph-building, toolbar, search and refresh behaviour is exercised for real.
 // (Mirrors the existing @xyflow mock in CivilizationPage.test.tsx.)
 vi.mock('@xyflow/react', () => ({
-  ReactFlow: ({ nodes }: { nodes?: Array<{ id: string; data?: { label?: unknown } }> }) => (
+  // Render through the real per-type node components (DeptNode/AgentNode) when a
+  // matching entry exists in `nodeTypes`, so their JSX is actually exercised —
+  // still without the real engine's DOM-measuring layout machinery.
+  ReactFlow: ({
+    nodes, nodeTypes,
+  }: {
+    nodes?: Array<{ id: string; type?: string; data?: Record<string, unknown> }>;
+    nodeTypes?: Record<string, React.ComponentType<{ data: Record<string, unknown> }>>;
+  }) => (
     <div data-testid="react-flow">
-      {(nodes ?? []).map((n) => (
-        <div key={n.id}>{String(n.data?.label ?? '')}</div>
-      ))}
+      {(nodes ?? []).map((n) => {
+        const Comp = n.type ? nodeTypes?.[n.type] : undefined;
+        return (
+          <div key={n.id}>
+            {Comp ? <Comp data={n.data ?? {}} /> : String(n.data?.label ?? '')}
+          </div>
+        );
+      })}
     </div>
   ),
   ReactFlowProvider: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   Background: () => null,
   Controls: () => null,
-  MiniMap: () => null,
+  // Invoke the real `nodeColor` callback with representative dept/agent nodes so
+  // its branches are exercised, same spirit as feeding nodeTypes above.
+  MiniMap: ({ nodeColor }: { nodeColor?: (n: { type: string; data: Record<string, unknown> }) => string }) => {
+    nodeColor?.({ type: 'dept', data: { color: '#123456' } });
+    nodeColor?.({ type: 'agent', data: { status: 'executing' } });
+    nodeColor?.({ type: 'agent', data: { status: 'unknown-status' } });
+    return null;
+  },
   Handle: () => null,
   Position: { Top: 'top', Bottom: 'bottom', Left: 'left', Right: 'right' },
   MarkerType: { ArrowClosed: 'arrowclosed' },
@@ -101,5 +121,44 @@ describe('OrgMap', () => {
     await waitFor(() =>
       expect(spy.mock.calls.filter(([u]) => String(u).includes('/departments')).length).toBeGreaterThan(before),
     );
+  });
+
+  test('the clear-search button resets the search box and disappears', async () => {
+    mockDepartments();
+    renderMap();
+    const input = await screen.findByLabelText<HTMLInputElement>('Search org map');
+    await userEvent.type(input, 'Eng');
+    const clearBtn = screen.getByLabelText('Clear search');
+    await userEvent.click(clearBtn);
+    expect(input.value).toBe('');
+    expect(screen.queryByLabelText('Clear search')).not.toBeInTheDocument();
+  });
+
+  test('falls back to a default colour for a department name outside the known palette', async () => {
+    mockDepartments([
+      { id: 'd9', org_id: 'org-1', name: 'Zorptech Division', purpose: '', capability_domains: [], parent_dept_id: null, manager_agent_id: null, agent_count: 0, status: 'active', created_at: '', updated_at: '' },
+    ]);
+    renderMap();
+    expect(await screen.findByText('Zorptech Division')).toBeInTheDocument();
+  });
+
+  test('defaults a department with no agent_count to 0 agents', async () => {
+    mockDepartments([
+      { id: 'd10', org_id: 'org-1', name: 'Ghost Team', purpose: '', capability_domains: [], parent_dept_id: null, manager_agent_id: null, agent_count: undefined as unknown as number, status: 'active', created_at: '', updated_at: '' },
+    ]);
+    renderMap();
+    expect(await screen.findByText('Ghost Team')).toBeInTheDocument();
+    expect(await screen.findByText('0 agents')).toBeInTheDocument();
+  });
+
+  test('unwraps a paginated { data: [...] } response shape for departments', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/departments'))
+        return new Response(JSON.stringify({ data: DEPARTMENTS }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderMap();
+    expect(await screen.findByText('Engineering')).toBeInTheDocument();
   });
 });

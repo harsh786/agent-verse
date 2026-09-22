@@ -470,4 +470,34 @@ describe('MissionDeliverable', () => {
       expect(screen.getByText('42')).toBeInTheDocument();
     });
   });
+
+  describe('markdown body rendering', () => {
+    it('renders rich markdown — bold, lists, headings, links and inline code — through their styled overrides', () => {
+      const md = [
+        '# Top heading',
+        '## Sub heading',
+        '### Minor heading',
+        '',
+        'A **bold** claim with `inline code` and a [live dashboard](https://x.test/dash) link.',
+        '',
+        '- first bullet',
+        '- second bullet',
+        '',
+        '1. step one',
+        '2. step two',
+      ].join('\n');
+      render(<MissionDeliverable outputs={[{ deliverable: { summary: md } }]} evidence={[]} />);
+
+      expect(screen.getByRole('heading', { name: 'Top heading', level: 3 })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Sub heading', level: 3 })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: 'Minor heading', level: 4 })).toBeInTheDocument();
+      expect(screen.getByText('bold').closest('strong')).toBeInTheDocument();
+      expect(screen.getByText('inline code').closest('code')).toBeInTheDocument();
+      const link = screen.getByRole('link', { name: 'live dashboard' });
+      expect(link).toHaveAttribute('href', 'https://x.test/dash');
+      expect(link).toHaveAttribute('target', '_blank');
+      expect(screen.getByText('first bullet').closest('ul')).toBeInTheDocument();
+      expect(screen.getByText('step one').closest('ol')).toBeInTheDocument();
+    });
+  });
 });
