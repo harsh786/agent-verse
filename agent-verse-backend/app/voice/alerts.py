@@ -135,7 +135,7 @@ class VoiceAlertManager:
                 span.set_attribute("tenant_id", tenant_id)
 
                 alert_text = build_alert_text(event_type, context)
-                log.info("voice.alerts.synthesizing", tenant_id=tenant_id, event=event_type)
+                log.info("voice.alerts.synthesizing", tenant_id=tenant_id, event_type=event_type)
 
                 # Synthesise TTS for the alert
                 from app.voice.tts_engine import synthesize_streaming
@@ -147,7 +147,7 @@ class VoiceAlertManager:
                 # Push to all subscribers for this tenant
                 for q in list(self._subscribers.get(tenant_id, [])):
                     try:
-                        await q.put(
+                        q.put_nowait(
                             {
                                 "event_type": event_type,
                                 "text": alert_text,
@@ -187,4 +187,4 @@ async def publish_voice_alert(
     )
     channel = f"voice:alerts:{tenant_id}"
     await redis.publish(channel, payload)
-    log.info("voice.alerts.published", tenant_id=tenant_id, event=event_type)
+    log.info("voice.alerts.published", tenant_id=tenant_id, event_type=event_type)
