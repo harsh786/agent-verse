@@ -22,9 +22,12 @@ _logger = _get_logger(__name__)
 
 def _not_found_response(request: Request, exc: Exception) -> HTTPException:
     """Return a sanitized 404 with correlation_id — avoids leaking internal IDs."""
-    correlation_id = (
-        getattr(getattr(request, "state", None), "correlation_id", None) or str(uuid.uuid4())[:8]
-    )
+    correlation_id = getattr(getattr(request, "state", None), "correlation_id", None)
+    if not correlation_id:
+        correlation_id = str(uuid.uuid4())[:8]
+        # Persist so later error helpers in the same request (e.g. a second
+        # 404 during retry logic) correlate to the same id, not a new one.
+        request.state.correlation_id = correlation_id
     _logger.info("goal_not_found", correlation_id=correlation_id, detail=str(exc))
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,

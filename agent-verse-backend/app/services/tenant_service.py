@@ -443,11 +443,20 @@ class TenantService:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                # Explicit tenant_id filter as defense-in-depth alongside RLS: a
+                # revoke call scoped to the wrong tenant must not touch another
+                # tenant's key even if the RLS context were ever misapplied.
                 key_hash = (
-                    await session.execute(select(ApiKey.key_hash).where(ApiKey.id == key_id))
+                    await session.execute(
+                        select(ApiKey.key_hash).where(
+                            ApiKey.id == key_id, ApiKey.tenant_id == tenant_id
+                        )
+                    )
                 ).scalar_one_or_none()
                 await session.execute(
-                    update(ApiKey).where(ApiKey.id == key_id).values(is_active=False)
+                    update(ApiKey)
+                    .where(ApiKey.id == key_id, ApiKey.tenant_id == tenant_id)
+                    .values(is_active=False)
                 )
             return key_hash
         except Exception as exc:

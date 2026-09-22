@@ -291,6 +291,13 @@ async def stream_logs(request: Request) -> StreamingResponse:
                     last_id = log_entry.pop("_stream_id", last_id)
                     yield f"data: {json.dumps(log_entry)}\n\n"
                 # No heartbeat needed when Redis is available — XREAD itself polls
+                # for up to 2s on success. But stream_new_since swallows Redis
+                # errors and returns [] *immediately* (no blocking), so a
+                # persistent Redis failure would otherwise busy-loop this
+                # generator with zero backoff, hammering Redis and burning
+                # CPU. Guarantee a minimum pause whenever nothing came back.
+                if not new_logs:
+                    await asyncio.sleep(0.5)
             else:
                 # No Redis: poll goal events and emit heartbeat with backoff
                 goal_svc = getattr(request.app.state, "goal_service", None)
