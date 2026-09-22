@@ -79,3 +79,54 @@ def test_ingest_image_response_never_claims_real_multimodal_embedding() -> None:
     assert data["embedding_strategy"] == "caption_then_text_embed"
     assert data["real_multimodal_embedding"] is False
     assert data.get("extractor_model")
+
+
+# ── Unsupported modality / oversized attachment ────────────────────────────
+
+
+def test_ingest_unsupported_modality_is_rejected_with_clear_400() -> None:
+    """An unrecognized `modality` string must be rejected outright with a
+    clear, actionable error -- not silently mapped to some default handler
+    or passed through to a downstream parser."""
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/multimodal/ingest",
+        json={"modality": "spreadsheet", "content": "irrelevant"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 400
+    assert "spreadsheet" in resp.json()["detail"]
+    assert "Unsupported modality" in resp.json()["detail"]
+
+
+def test_ingest_empty_modality_is_rejected_with_clear_400() -> None:
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/multimodal/ingest",
+        json={"modality": "", "content": "irrelevant"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 400
+
+
+def test_ingest_oversized_image_attachment_fails_job_not_500() -> None:
+    """A base64 payload over the 25 MB attachment limit must come back as a
+    normal 200 response with a failed job + clear error -- never a 500, and
+    never silently truncated/mishandled as if it were a small image."""
+    import base64
+
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    client = TestClient(_make_app())
+    oversized_b64 = base64.b64encode(b"x" * (_MAX_ATTACHMENT_BYTES + 1)).decode()
+    resp = client.post(
+        "/multimodal/ingest",
+        json={"modality": "image", "base64_data": oversized_b64},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["error"] is not None
+    assert "25 MB" in data["error"]
+    assert data["span_count"] == 0

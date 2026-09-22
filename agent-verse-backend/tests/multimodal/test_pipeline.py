@@ -240,3 +240,116 @@ async def test_set_job_store_swaps_persistence_backend() -> None:
 
     new_job = await pipeline.ingest_text("hi again", "tenant-1")
     assert await pipeline.get_job(new_job.job_id, "tenant-1") is not None
+
+
+# ── Oversized attachment rejection ──────────────────────────────────────────
+#
+# Finding: before this, none of the binary ingest_* methods enforced any size
+# limit on the incoming base64 payload -- an arbitrarily large attachment
+# would be handed straight to a vision LLM / Whisper / ffmpeg. The analogous
+# mission-attachment upload path (app/org/router.py) already rejects at 25 MB
+# with a clear 413; MultimodalPipeline now mirrors that limit
+# (_MAX_ATTACHMENT_BYTES) and fails the job cleanly instead. These tests
+# pin down the fix and the underlying size-estimation helper.
+
+
+def _b64_of_size(num_bytes: int) -> str:
+    """Base64 string whose *decoded* size is exactly num_bytes."""
+    return base64.b64encode(b"x" * num_bytes).decode()
+
+
+class TestDecodedB64Size:
+    def test_empty_string_is_zero(self) -> None:
+        from app.multimodal.pipeline import _decoded_b64_size
+
+        assert _decoded_b64_size("") == 0
+
+    def test_matches_actual_decoded_length_no_padding(self) -> None:
+        from app.multimodal.pipeline import _decoded_b64_size
+
+        data = base64.b64encode(b"x" * 300).decode()  # 300 % 3 == 0 -> no padding
+        assert _decoded_b64_size(data) == 300
+
+    def test_matches_actual_decoded_length_with_padding(self) -> None:
+        from app.multimodal.pipeline import _decoded_b64_size
+
+        for n in (1, 2, 3, 10, 4096):
+            data = base64.b64encode(b"y" * n).decode()
+            assert _decoded_b64_size(data) == n, f"mismatch for n={n}"
+
+
+async def test_ingest_image_over_limit_is_rejected_before_any_llm_call() -> None:
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    provider = _VisionProvider()
+    pipeline = MultimodalPipeline()
+    pipeline.set_provider(provider)
+    oversized = _b64_of_size(_MAX_ATTACHMENT_BYTES + 1)
+
+    job = await pipeline.ingest_image(oversized, "tenant-1")
+
+    assert job.status == "failed"
+    assert job.error is not None
+    assert "25 MB" in job.error
+    assert job.spans == []
+    # No expensive vision-provider call was made for an attachment this large.
+    assert provider.last_request is None
+
+
+async def test_ingest_image_at_or_under_limit_is_not_rejected() -> None:
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    provider = _VisionProvider()
+    pipeline = MultimodalPipeline()
+    pipeline.set_provider(provider)
+    just_under = _b64_of_size(min(_MAX_ATTACHMENT_BYTES, 1024))  # keep test fast
+
+    job = await pipeline.ingest_image(just_under, "tenant-1")
+
+    assert job.status == "completed"
+    assert job.error is None
+
+
+async def test_ingest_pdf_over_limit_fails_job_with_clear_error() -> None:
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    pipeline = MultimodalPipeline()
+    oversized = _b64_of_size(_MAX_ATTACHMENT_BYTES + 1)
+
+    job = await pipeline.ingest_pdf(oversized, "tenant-1")
+
+    assert job.status == "failed"
+    assert job.error is not None
+    assert "25 MB" in job.error
+
+
+async def test_ingest_audio_over_limit_is_rejected_before_transcription() -> None:
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    orchestrator = ModelOrchestrator()
+    orchestrator.select_for_content_type = Mock(  # type: ignore[method-assign]
+        wraps=orchestrator.select_for_content_type
+    )
+    pipeline = MultimodalPipeline(model_orchestrator=orchestrator)
+    oversized = _b64_of_size(_MAX_ATTACHMENT_BYTES + 1)
+
+    job = await pipeline.ingest_audio(oversized, "tenant-1")
+
+    assert job.status == "failed"
+    assert job.error is not None
+    assert "25 MB" in job.error
+    # Rejected before even selecting an extractor model for the (wasted) call.
+    orchestrator.select_for_content_type.assert_not_called()
+
+
+async def test_ingest_video_over_limit_fails_job_with_clear_error() -> None:
+    from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
+
+    pipeline = MultimodalPipeline()
+    oversized = _b64_of_size(_MAX_ATTACHMENT_BYTES + 1)
+
+    job = await pipeline.ingest_video(oversized, "tenant-1")
+
+    assert job.status == "failed"
+    assert job.error is not None
+    assert "25 MB" in job.error

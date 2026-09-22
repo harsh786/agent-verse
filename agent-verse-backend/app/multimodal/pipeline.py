@@ -19,6 +19,25 @@ _log = logging.getLogger(__name__)
 # A markdown table separator cell, e.g. "---", ":--", "--:", ":-:".
 _MD_SEPARATOR_CELL = re.compile(r"^:?-+:?$")
 
+# Binary attachments (image/pdf/audio/video) had no size cap at all in this
+# pipeline -- an arbitrarily large base64 payload would be handed straight to
+# a vision LLM / Whisper / ffmpeg with no bound, unlike the equivalent
+# mission-attachment upload path (app/org/router.py's `_ATTACHMENT_MAX_BYTES`),
+# which already rejects with a clear 413 at 25 MB. Mirror that limit here so
+# oversized multimodal attachments fail fast with a clear error instead of
+# silently costing an expensive provider call (or worse).
+_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB
+
+
+def _decoded_b64_size(data_b64: str) -> int:
+    """Approximate decoded byte size of a base64 string from its length
+    alone (accounting for `=` padding), without fully decoding it -- the
+    whole point is to bound cost for huge payloads before doing real work."""
+    if not data_b64:
+        return 0
+    padding = len(data_b64) - len(data_b64.rstrip("="))
+    return max(0, (len(data_b64) * 3) // 4 - padding)
+
 
 class MultimodalPipeline:
     """Universal multimodal ingestion and extraction pipeline."""
@@ -67,6 +86,9 @@ class MultimodalPipeline:
             tenant_id, Modality.IMAGE, collection_id=collection_id, filename=filename
         )
         job.source_base64 = image_base64
+        if self._reject_if_oversized(job, image_base64):
+            await self._job_store.save(job)
+            return job
 
         assignment = self._model_orchestrator.select_for_content_type(ContentType.IMAGE)
         job.metadata["extractor_model"] = assignment.extractor_model
@@ -106,6 +128,9 @@ class MultimodalPipeline:
             tenant_id, Modality.PDF, collection_id=collection_id, filename=filename
         )
         job.source_base64 = pdf_base64
+        if self._reject_if_oversized(job, pdf_base64):
+            await self._job_store.save(job)
+            return job
 
         try:
             job.status = "processing"
@@ -128,6 +153,9 @@ class MultimodalPipeline:
         collection_id: str | None = None,
     ) -> AssetIngestionJob:
         job = self._create_job(tenant_id, Modality.AUDIO, collection_id=collection_id)
+        if self._reject_if_oversized(job, audio_base64):
+            await self._job_store.save(job)
+            return job
 
         assignment = self._model_orchestrator.select_for_content_type(ContentType.AUDIO)
         job.metadata["extractor_model"] = assignment.extractor_model
@@ -169,6 +197,9 @@ class MultimodalPipeline:
         """Extract an audio transcript from video. Visual/scene analysis is
         not implemented and is gated honestly rather than faked (see below)."""
         job = self._create_job(tenant_id, Modality.VIDEO, collection_id=collection_id)
+        if self._reject_if_oversized(job, video_base64):
+            await self._job_store.save(job)
+            return job
 
         assignment = self._model_orchestrator.select_for_content_type(ContentType.VIDEO)
         job.metadata["extractor_model"] = assignment.extractor_model
@@ -506,6 +537,31 @@ class MultimodalPipeline:
 
     async def get_job(self, job_id: str, tenant_id: str) -> AssetIngestionJob | None:
         return await self._job_store.get(job_id, tenant_id)
+
+    def _reject_if_oversized(self, job: AssetIngestionJob, data_b64: str) -> bool:
+        """Fail *job* in place if ``data_b64`` exceeds ``_MAX_ATTACHMENT_BYTES``.
+
+        Returns True (and marks the job failed with a clear error) when
+        oversized, so callers can bail out before doing any expensive work
+        (LLM vision call, Whisper transcription, ffmpeg). Returns False for
+        an attachment within the limit, leaving the job untouched.
+        """
+        size_bytes = _decoded_b64_size(data_b64)
+        if size_bytes <= _MAX_ATTACHMENT_BYTES:
+            return False
+        limit_mb = _MAX_ATTACHMENT_BYTES // (1024 * 1024)
+        job.status = "failed"
+        job.error = (
+            f"Attachment exceeds the {limit_mb} MB limit "
+            f"(~{size_bytes / (1024 * 1024):.1f} MB)."
+        )
+        _log.warning(
+            "multimodal_attachment_oversized: modality=%s size_bytes=%d limit_bytes=%d",
+            job.asset_type,
+            size_bytes,
+            _MAX_ATTACHMENT_BYTES,
+        )
+        return True
 
     def _create_job(self, tenant_id: str, modality: Modality, **kwargs: Any) -> AssetIngestionJob:
         import datetime

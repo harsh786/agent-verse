@@ -50,6 +50,48 @@ def test_classify_mime_ignores_params_and_unknown():
     assert c.classify_mime("") is None
 
 
+def test_classify_mime_returns_none_for_unsupported_dangerous_binary_types():
+    """Executable/unknown-binary MIME types must not be misclassified as
+    something ingestible -- classify_mime() returns None (unrecognised) so
+    the caller falls back to content sniffing rather than treating the raw
+    bytes of e.g. a Windows executable as a PDF/DOCX/image."""
+    c = ContentClassifier()
+    assert c.classify_mime("application/x-msdownload") is None
+    assert c.classify_mime("application/octet-stream") is None
+    assert c.classify_mime("application/x-executable") is None
+    assert c.classify_mime("application/x-sh") is None
+
+
+def test_pipeline_unsupported_binary_mime_falls_back_to_text_without_crashing():
+    """An unsupported/unrecognised MIME type (classify_mime -> None) must not
+    crash the pipeline. It degrades to content-sniffed classification
+    (ContentType.TEXT for content that doesn't match any sniffing pattern)
+    rather than raising or silently dropping the document with no trace."""
+    import asyncio
+
+    from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.source_config import RawDocument
+
+    async def _run():
+        pipeline = IngestionPipeline()
+        raw = RawDocument(
+            doc_id="d-exe",
+            source_id="s1",
+            tenant_id="t1",
+            content=b"MZ\x90\x00\x03\x00\x00\x00 not a real document, just binary-ish bytes " * 20,
+            content_type="application/x-msdownload",
+        )
+        config = _config()
+        result = await pipeline.ingest(raw, config)
+        # Must reach past classify+parse without raising -- whatever the
+        # final status, it must not be a hard "failed" from an unhandled
+        # exception in the classify stage.
+        assert result.status in ("skipped", "success", "completed")
+        assert pipeline.last_strategy == str(ContentType.TEXT)
+
+    asyncio.run(_run())
+
+
 # ── ING-4: real DOCX parser through the pipeline ──────────────────────────────
 
 

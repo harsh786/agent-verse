@@ -42,6 +42,48 @@ def _frame_untrusted(label: str, content: str) -> str:
     )
 
 
+def _field_or_self(item: Any, key: str) -> str:
+    """``item.get(key, item)``, tolerant of a non-dict ``item``.
+
+    Context records (RAG hits, memory rows, graph facts) come from
+    retrieval/storage layers that can hand back malformed or corrupted
+    entries -- e.g. a plain string instead of the expected dict, from a
+    flaky upstream source. Mirrors the ``item.get(key, item)`` fallback
+    pattern used throughout this module but degrades a non-dict ``item`` to
+    its ``str()`` form instead of raising ``AttributeError`` and crashing
+    prompt assembly for every other (well-formed) source in the bundle.
+    """
+    if isinstance(item, dict):
+        return str(item.get(key, item))
+    return str(item)
+
+
+def _field_or_default(item: Any, key: str, default: Any) -> Any:
+    """``item.get(key, default)``, tolerant of a non-dict ``item``. See
+    :func:`_field_or_self` for why this tolerance matters."""
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return default
+
+
+def _chunk_content(chunk: Any) -> str:
+    """Extract a knowledge-chunk's text, tolerant of a malformed (non-dict)
+    ``chunk``. A dict without a ``content`` key still yields ``""`` (an
+    empty/placeholder chunk); a non-dict chunk falls back to its ``str()``
+    form so the record isn't silently dropped."""
+    if isinstance(chunk, dict):
+        return str(chunk.get("content", ""))
+    return str(chunk)
+
+
+def _web_result_text(item: Any) -> str:
+    """Extract a web-result's text (``content`` then ``snippet``), tolerant
+    of a malformed (non-dict) ``item``. See :func:`_chunk_content`."""
+    if isinstance(item, dict):
+        return str(item.get("content", item.get("snippet", "")))
+    return str(item)
+
+
 @dataclass
 class PromptContextBundle:
     """All context sources assembled before prompt construction."""
@@ -69,30 +111,43 @@ class PromptBuilder:
         return max(1, len(text) // _CHARS_PER_TOKEN)
 
     def _auto_compress(self, text: str, model_max_tokens: int | None = None) -> str:
-        """Compress *text* if it exceeds _AUTO_COMPRESS_THRESHOLD of the context window."""
+        """Compress *text* if it exceeds _AUTO_COMPRESS_THRESHOLD of the context window.
+
+        Runs the heuristic ``PromptCompressor`` as a first pass (collapses
+        blank lines, strips verbose filler, truncates labeled context/RAG
+        blocks and oversized tool lists). If the compressed prompt still
+        exceeds the model's context window, a hard character truncation is
+        applied on top as the last-resort boundary -- so the return value
+        is *always* bounded to ``threshold_chars``, even when compression
+        alone isn't enough (e.g. an oversized prompt with no labeled
+        context blocks for the compressor to shrink) or fails outright.
+        """
         limit = model_max_tokens or self._max_tokens
         threshold_chars = int(limit * _CHARS_PER_TOKEN * _AUTO_COMPRESS_THRESHOLD)
         if len(text) <= threshold_chars:
             return text
         try:
-            from app.context.prompt_compressor import PromptCompressor
+            from app.agent.prompt_compressor import PromptCompressor
 
-            compressor = PromptCompressor(target_tokens=int(limit * _AUTO_COMPRESS_THRESHOLD))
+            compressor = PromptCompressor()
             compressed = compressor.compress(text)
-            return compressed
         except Exception:
-            # Fallback: hard truncate
-            return text[:threshold_chars]
+            compressed = text
+        if len(compressed) <= threshold_chars:
+            return compressed
+        # Compression alone didn't bring it under the model's context window
+        # (or raised) -- hard truncate as the final, always-safe boundary.
+        return compressed[:threshold_chars]
 
     def _truncate_chunks(self, chunks: list[dict[str, Any]], token_budget: int) -> str:
         parts = []
         used = 0
         for chunk in chunks:
-            content = chunk.get("content", "")
+            content = _chunk_content(chunk)
             tokens = max(1, len(content) // _CHARS_PER_TOKEN)
             if used + tokens > token_budget:
                 break
-            citation_idx = chunk.get("_citation_index")
+            citation_idx = _field_or_default(chunk, "_citation_index", None)
             ref = f" [{citation_idx}]" if citation_idx else ""
             parts.append(f"{content}{ref}")
             used += tokens
@@ -110,28 +165,29 @@ class PromptBuilder:
                 untrusted.append(_frame_untrusted("Knowledge", chunk_text))
 
         if bundle.session_memory:
-            mem_text = "\n".join(str(m.get("content", m)) for m in bundle.session_memory[:3])
+            mem_text = "\n".join(_field_or_self(m, "content") for m in bundle.session_memory[:3])
             untrusted.append(_frame_untrusted("Session context", mem_text))
 
         if bundle.execution_memory:
-            plans = [str(m.get("plan", [])) for m in bundle.execution_memory[:2]]
+            plans = [str(_field_or_default(m, "plan", [])) for m in bundle.execution_memory[:2]]
             untrusted.append(_frame_untrusted("Prior successful approaches", "\n".join(plans)))
 
         if bundle.long_term_memory:
-            prefs = "\n".join(str(m.get("content", m)) for m in bundle.long_term_memory[:3])
+            prefs = "\n".join(_field_or_self(m, "content") for m in bundle.long_term_memory[:3])
             untrusted.append(_frame_untrusted("Learned preferences", prefs))
 
         if bundle.semantic_cache_hits:
-            cached = "\n".join(str(h.get("content", h)) for h in bundle.semantic_cache_hits[:2])
+            cached = "\n".join(_field_or_self(h, "content") for h in bundle.semantic_cache_hits[:2])
             untrusted.append(_frame_untrusted("Cached context", cached))
 
         if bundle.graph_facts:
-            facts = "\n".join(str(f.get("fact", f)) for f in bundle.graph_facts[:5])
+            facts = "\n".join(_field_or_self(f, "fact") for f in bundle.graph_facts[:5])
             untrusted.append(_frame_untrusted("Knowledge graph context", facts))
 
         if bundle.web_results:
             web_text = "\n".join(
-                r.get("content", r.get("snippet", ""))[:200] for r in bundle.web_results[:3]
+                _web_result_text(r)[:200]
+                for r in bundle.web_results[:3]
             )
             untrusted.append(_frame_untrusted("Web context", web_text))
 
@@ -173,7 +229,8 @@ class PromptBuilder:
 
         if bundle.web_results:
             web_text = "\n".join(
-                r.get("content", r.get("snippet", ""))[:200] for r in bundle.web_results[:3]
+                _web_result_text(r)[:200]
+                for r in bundle.web_results[:3]
             )
             untrusted.append(_frame_untrusted("Web results", web_text))
 
