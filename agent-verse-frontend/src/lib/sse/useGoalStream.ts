@@ -140,6 +140,12 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
         }
 
         setConnected(true);
+        // A successful (re)connect proves the backend is reachable again — reset
+        // the backoff so a *later* drop starts from 1s instead of continuing to
+        // climb toward the 30s cap. Without this, a goal with a few transient
+        // blips over its 1+ hour run would ratchet up to 30s delays permanently,
+        // since only a terminal event or a new goalId reset the counter before.
+        retryCountRef.current = 0;
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
