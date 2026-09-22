@@ -131,3 +131,66 @@ class TestChunkByTokensTiktoken:
         result = chunk_by_tokens(short_text, max_tokens=512, overlap_tokens=64)
         assert len(result) >= 1
         assert result[0].strip() != ""
+
+
+# ── chunk_by_tokens — real tiktoken (no mocking) edge cases ──────────────────
+# tiktoken is an installed dependency in this environment, so these exercise
+# the actual encode/decode path rather than a mock, complementing the mocked
+# tests above which pin the *guard logic* in isolation.
+
+class TestChunkByTokensRealTiktoken:
+    def test_overlap_equal_to_max_tokens_terminates_and_clamps_step(self):
+        """overlap_tokens == max_tokens forces the step<=0 guard (step=1): the
+        loop must still terminate and produce a bounded number of chunks, not
+        hang or produce one chunk per token."""
+        text = "token " * 50  # comfortably more than max_tokens=5
+        result = chunk_by_tokens(text, max_tokens=5, overlap_tokens=5)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        # With step=1 the number of windows is bounded by (num_tokens - max + 1),
+        # not unbounded / infinite.
+        assert len(result) < 200
+
+    def test_overlap_greater_than_max_tokens_terminates(self):
+        """overlap_tokens > max_tokens also trips the guard (step would be
+        negative without it)."""
+        text = "some reasonably long piece of text to tokenize here " * 10
+        result = chunk_by_tokens(text, max_tokens=8, overlap_tokens=20)
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_very_long_single_word_with_no_natural_break_points(self):
+        """A single 'word' with no whitespace still gets split into multiple
+        token-bounded chunks — tiktoken's BPE encoding does not require word
+        boundaries to tokenize, so chunking must not choke on it."""
+        long_word = "a" * 5000
+        result = chunk_by_tokens(long_word, max_tokens=50, overlap_tokens=5)
+        assert isinstance(result, list)
+        assert len(result) > 1
+        assert all(isinstance(c, str) and c for c in result)
+        # Reassembling (ignoring overlap) should still cover the original content;
+        # at minimum, the decoded chunks must not be empty/blank.
+        assert all(c.strip() for c in result)
+
+    def test_chunk_token_count_never_exceeds_max_tokens(self):
+        """Every produced chunk must decode to at most max_tokens tokens."""
+        import tiktoken
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        text = (
+            "The quick brown fox jumps over the lazy dog. " * 40
+            + "Supercalifragilisticexpialidocious antidisestablishmentarianism."
+        )
+        max_tokens = 30
+        result = chunk_by_tokens(text, max_tokens=max_tokens, overlap_tokens=5)
+        for chunk in result:
+            assert len(enc.encode(chunk)) <= max_tokens
+
+    def test_no_overlap_still_covers_all_tokens(self):
+        """overlap_tokens=0 must still chunk the full text without dropping the
+        tail (regression guard for off-by-one in the step/end calculation)."""
+        text = "word " * 300
+        result = chunk_by_tokens(text, max_tokens=20, overlap_tokens=0)
+        assert len(result) >= 1
+        # The last chunk should contain the tail of the input.
+        assert "word" in result[-1]

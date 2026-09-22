@@ -136,7 +136,14 @@ class EmbeddingOrchestrator:
                 best = max(affordable, key=lambda m: m.dimension)
                 return EmbeddingSelectionResult(
                     model_id=best.model_id,
-                    dimension=self._dim_policy.select(best.model_id),
+                    # Trust the registry's own dimension for THIS model spec rather
+                    # than a second, hardcoded lookup (DimensionPolicy): a custom
+                    # model configured via EMBEDDING_MODEL/EMBEDDING_DIM (see
+                    # EmbeddingModelRegistry.build_default) is never present in
+                    # DimensionPolicy's static map, so routing its model_id through
+                    # DimensionPolicy silently reported the wrong dimension (falling
+                    # back to 1536) instead of the model's real, configured one.
+                    dimension=best.dimension,
                     modality=best.modality,
                     cost_class=best.cost_class,
                     provider=best.provider,
@@ -150,7 +157,8 @@ class EmbeddingOrchestrator:
             m = fallback[0]
             return EmbeddingSelectionResult(
                 model_id=m.model_id,
-                dimension=self._dim_policy.select(m.model_id),
+                # See the comment above: trust the registry spec's own dimension.
+                dimension=m.dimension,
                 modality=m.modality,
                 cost_class=m.cost_class,
                 provider=m.provider,

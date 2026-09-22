@@ -5,7 +5,7 @@ from __future__ import annotations
 _DIMENSION_MAP: dict[str, int] = {
     "text-embedding-3-small": 1536,
     "text-embedding-3-large": 3072,
-    "voyage-3-lite": 1024,
+    "voyage-3-lite": 512,
     "voyage-code-3": 1024,
     "voyage-multimodal-3": 1024,
     "fake-embedding": 10,
