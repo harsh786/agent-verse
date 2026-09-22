@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import { MFASettings } from './MFASettings';
 
 type MFAStatus = { enabled: boolean; has_pending_enrollment: boolean; recovery_codes_count: number };
@@ -158,6 +159,218 @@ describe('MFASettings', () => {
             (i as RequestInit)?.method === 'POST' &&
             String((i as RequestInit)?.body ?? '').includes('654321'),
         ),
+      ).toBe(true),
+    );
+  });
+
+  test('singular grammar is used when exactly one recovery code remains', async () => {
+    mockFetch({ enabled: true, has_pending_enrollment: false, recovery_codes_count: 1 });
+    renderSettings();
+    expect(await screen.findByText('MFA Enabled')).toBeInTheDocument();
+    expect(
+      screen.getByText((_, node) => node?.textContent === '1 recovery code remaining'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, node) =>
+          node?.tagName === 'P' &&
+          !!node.textContent?.includes('Only 1 recovery code remaining. Regenerate them before'),
+      ),
+    ).toBeInTheDocument();
+  });
+
+  test('enroll failure toasts an error and stays on the idle step', async () => {
+    mockFetch(
+      { enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 },
+      { enrollFails: true },
+    );
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true),
+    );
+    expect(screen.queryByText(/Step 1: Scan QR Code/i)).not.toBeInTheDocument();
+  });
+
+  test('enrollment without a QR code falls back to the manual-entry message', async () => {
+    mockFetch(
+      { enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 },
+      { noQrCode: true },
+    );
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    expect(await screen.findByText(/QR code unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByAltText('MFA QR Code')).not.toBeInTheDocument();
+  });
+
+  test('toggling and copying the manual entry secret', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await screen.findByText(/Step 1: Scan QR Code/i);
+
+    // Secret is hidden by default (blurred) and the copy button is not shown yet.
+    expect(screen.queryByRole('button', { name: 'Copy secret' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Show secret' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Copy secret' }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(ENROLL.secret);
+    expect(
+      useToastStore.getState().toasts.some((t) => t.kind === 'success' && t.message === 'Secret copied'),
+    ).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Hide secret' }));
+    expect(screen.queryByRole('button', { name: 'Copy secret' })).not.toBeInTheDocument();
+  });
+
+  test('the Back button in the verify step returns to the QR scan step', async () => {
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    expect(await screen.findByText(/Step 2: Verify your code/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /Back/i }));
+    expect(await screen.findByText(/Step 1: Scan QR Code/i)).toBeInTheDocument();
+  });
+
+  test('an invalid verification code toasts an error, clears the field, and refocuses input', async () => {
+    mockFetch(
+      { enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 },
+      { verifyFails: true },
+    );
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    const input = screen.getByLabelText('TOTP code');
+    await userEvent.type(input, '000000');
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'error' && /Invalid code/i.test(t.message)),
+      ).toBe(true),
+    );
+    expect(input).toHaveValue('');
+    expect(input).toHaveFocus();
+  });
+
+  test('non-digit characters are stripped from the TOTP input and it is capped at 6 digits', async () => {
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    const input = screen.getByLabelText('TOTP code');
+    await userEvent.type(input, 'ab12cd34ef56gh');
+    expect(input).toHaveValue('123456');
+  });
+
+  test('the Verify & Enable button is disabled until 6 digits are entered', async () => {
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    const submit = screen.getByRole('button', { name: /Verify & Enable/i });
+    expect(submit).toBeDisabled();
+    await userEvent.type(screen.getByLabelText('TOTP code'), '12345');
+    expect(submit).toBeDisabled();
+  });
+
+  test('copying a single recovery code and copying all codes', async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    await userEvent.type(screen.getByLabelText('TOTP code'), '123456');
+    await screen.findByText('aaaa-1111');
+
+    await userEvent.click(screen.getByText('aaaa-1111'));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('aaaa-1111');
+
+    await userEvent.click(screen.getByRole('button', { name: /Copy all codes/i }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('aaaa-1111\nbbbb-2222');
+    expect(
+      useToastStore
+        .getState()
+        .toasts.some((t) => t.kind === 'success' && t.message === 'All recovery codes copied!'),
+    ).toBe(true);
+  });
+
+  test('finishing the recovery-codes step returns to idle and refetches status', async () => {
+    mockFetch({ enabled: false, has_pending_enrollment: false, recovery_codes_count: 0 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Enable MFA/i }));
+    await userEvent.click(await screen.findByRole('button', { name: /scanned the QR code/i }));
+    await userEvent.type(screen.getByLabelText('TOTP code'), '123456');
+    await screen.findByText(/Save Your Recovery Codes/i);
+
+    await userEvent.click(screen.getByRole('button', { name: /Done/i }));
+    expect(screen.queryByText(/Save Your Recovery Codes/i)).not.toBeInTheDocument();
+  });
+
+  test('cancelling the disable flow returns to idle without submitting', async () => {
+    mockFetch({ enabled: true, has_pending_enrollment: false, recovery_codes_count: 8 });
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Disable MFA/i }));
+    await userEvent.type(screen.getByLabelText(/TOTP code to disable MFA/i), '111111');
+    await userEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    expect(screen.queryByLabelText(/TOTP code to disable MFA/i)).not.toBeInTheDocument();
+  });
+
+  test('an invalid disable code toasts an error and keeps MFA enabled', async () => {
+    mockFetch(
+      { enabled: true, has_pending_enrollment: false, recovery_codes_count: 8 },
+      { disableFails: true },
+    );
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Disable MFA/i }));
+    await userEvent.type(screen.getByLabelText(/TOTP code to disable MFA/i), '222222');
+    const disableButtons = screen.getAllByRole('button', { name: /^Disable MFA$/i });
+    await userEvent.click(disableButtons[disableButtons.length - 1]);
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message === 'Invalid code'),
+      ).toBe(true),
+    );
+    expect(screen.getByText('MFA Enabled')).toBeInTheDocument();
+  });
+
+  test('the regenerate flow POSTs the code, shows new recovery codes, and cancel works', async () => {
+    const spy = mockFetch({ enabled: true, has_pending_enrollment: false, recovery_codes_count: 8 });
+    renderSettings();
+
+    // Cancel path first.
+    await userEvent.click(await screen.findByRole('button', { name: /Regenerate codes/i }));
+    await userEvent.type(screen.getByLabelText(/TOTP code to regenerate recovery codes/i), '333');
+    await userEvent.click(screen.getByRole('button', { name: /Cancel/i }));
+    expect(screen.queryByLabelText(/TOTP code to regenerate recovery codes/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /Regenerate codes/i }));
+    await userEvent.type(screen.getByLabelText(/TOTP code to regenerate recovery codes/i), '444444');
+    await userEvent.click(screen.getByRole('button', { name: /^Regenerate$/i }));
+
+    await waitFor(() =>
+      expect(
+        spy.mock.calls.some(
+          ([u, i]) =>
+            String(u).includes('/auth/mfa/regenerate') &&
+            (i as RequestInit)?.method === 'POST' &&
+            String((i as RequestInit)?.body ?? '').includes('444444'),
+        ),
+      ).toBe(true),
+    );
+    expect(await screen.findByText('cccc-3333')).toBeInTheDocument();
+  });
+
+  test('an invalid regenerate code toasts an error', async () => {
+    mockFetch(
+      { enabled: true, has_pending_enrollment: false, recovery_codes_count: 8 },
+      { regenFails: true },
+    );
+    renderSettings();
+    await userEvent.click(await screen.findByRole('button', { name: /Regenerate codes/i }));
+    await userEvent.type(screen.getByLabelText(/TOTP code to regenerate recovery codes/i), '555555');
+    await userEvent.click(screen.getByRole('button', { name: /^Regenerate$/i }));
+    await waitFor(() =>
+      expect(
+        useToastStore.getState().toasts.some((t) => t.kind === 'error' && t.message === 'Invalid code'),
       ).toBe(true),
     );
   });

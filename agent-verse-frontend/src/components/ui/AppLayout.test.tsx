@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
@@ -93,5 +93,110 @@ describe('AppLayout', () => {
     mockFetch();
     renderLayout();
     expect(screen.getByRole('link', { name: 'Skip to main content' })).toBeInTheDocument();
+  });
+
+  test('clicking the mobile backdrop closes the sidebar', () => {
+    mockFetch();
+    const { container } = renderLayout();
+    const backdrop = container.querySelector('[aria-hidden="true"].fixed.inset-0.z-20');
+    expect(backdrop).toBeTruthy();
+    fireEvent.click(backdrop as Element);
+    expect(useUiStore.getState().sidebarOpen).toBe(false);
+  });
+
+  test('does not render the mobile backdrop when the sidebar is closed', () => {
+    mockFetch();
+    useUiStore.setState({ sidebarOpen: false });
+    const { container } = renderLayout();
+    expect(container.querySelector('.fixed.inset-0.z-20')).toBeNull();
+  });
+
+  test('clearing the emergency stop calls the DELETE endpoint and resets local state', async () => {
+    const fetchSpy = mockFetch();
+    useEmergencyStore.setState({
+      isActive: true,
+      activatedAt: new Date().toISOString(),
+      cancelledGoals: 2,
+      rejectedApprovals: 0,
+    });
+    renderLayout();
+
+    fireEvent.click(screen.getByRole('button', { name: /Clear Emergency Stop/i }));
+
+    await waitFor(() => {
+      expect(useEmergencyStore.getState().isActive).toBe(false);
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('/governance/emergency-stop'),
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+    expect(screen.queryByText(/Emergency Stop Active/i)).not.toBeInTheDocument();
+  });
+
+  test('clearing the emergency stop still resets local state when the DELETE request fails', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
+    useEmergencyStore.setState({
+      isActive: true,
+      activatedAt: new Date().toISOString(),
+      cancelledGoals: 5,
+      rejectedApprovals: 0,
+    });
+    renderLayout();
+
+    fireEvent.click(screen.getByRole('button', { name: /Clear Emergency Stop/i }));
+
+    await waitFor(() => {
+      expect(useEmergencyStore.getState().isActive).toBe(false);
+    });
+  });
+
+  test('opens the keyboard-shortcuts help overlay via "shift+/" and closes it on Escape', () => {
+    mockFetch();
+    renderLayout();
+
+    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: '/', code: '/', shiftKey: true });
+    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
+    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
+  });
+
+  test('closes the help overlay via the Close button and via the backdrop, not via an inner click', () => {
+    mockFetch();
+    renderLayout();
+    fireEvent.keyDown(document.body, { key: '/', code: '/', shiftKey: true });
+    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
+
+    // Clicking inside the modal panel must not close it (stopPropagation).
+    fireEvent.click(screen.getByText('Keyboard Shortcuts'));
+    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
+  });
+
+  test('closes the help overlay when clicking the outer backdrop', () => {
+    mockFetch();
+    const { container } = renderLayout();
+    fireEvent.keyDown(document.body, { key: '/', code: '/', shiftKey: true });
+    expect(screen.getByText('Keyboard Shortcuts')).toBeInTheDocument();
+
+    const overlay = container.querySelector('.fixed.inset-0.z-\\[150\\]');
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay as Element);
+    expect(screen.queryByText('Keyboard Shortcuts')).not.toBeInTheDocument();
+  });
+
+  test('falls back to "now" in the emergency banner when activatedAt is not set', () => {
+    mockFetch();
+    useEmergencyStore.setState({
+      isActive: true,
+      activatedAt: null,
+      cancelledGoals: 0,
+      rejectedApprovals: 0,
+    });
+    renderLayout();
+    expect(screen.getByText(/since now\./i)).toBeInTheDocument();
   });
 });

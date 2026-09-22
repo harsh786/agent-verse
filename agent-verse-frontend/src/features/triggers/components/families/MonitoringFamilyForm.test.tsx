@@ -66,4 +66,39 @@ describe('MonitoringFamilyForm', () => {
     expect(screen.getByDisplayValue('checkout-svc')).toBeInTheDocument();
     expect(screen.getByDisplayValue('payload.level == "fatal"')).toBeInTheDocument();
   });
+
+  test('log_pattern type merges edits to the optional log stream field', () => {
+    const onChange = vi.fn();
+    render(<MonitoringFamilyForm triggerType="log_pattern" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText('app.error'), { target: { value: 'app.warn' } });
+    expect(lastArg(onChange)).toEqual({ log_stream: 'app.warn' });
+  });
+
+  test('sentry_issue type merges edits to project and environment fields', () => {
+    const onChange = vi.fn();
+    render(<MonitoringFamilyForm triggerType="sentry_issue" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText('my-app-backend'), { target: { value: 'checkout-svc' } });
+    expect(lastArg(onChange)).toEqual({ sentry_project: 'checkout-svc' });
+    fireEvent.change(screen.getByPlaceholderText('production'), { target: { value: 'staging' } });
+    expect(lastArg(onChange)).toEqual({ sentry_environment: 'staging' });
+  });
+
+  test('pagerduty type renders the check URL field and merges edits', () => {
+    const onChange = vi.fn();
+    render(<MonitoringFamilyForm triggerType="pagerduty" value={{}} onChange={onChange} />);
+    expect(screen.getByText('Check URL')).toBeInTheDocument();
+    const urlInput = screen.getByPlaceholderText('https://api.example.com/health');
+    expect(urlInput).toHaveAttribute('type', 'url');
+    fireEvent.change(urlInput, { target: { value: 'https://api.example.com/status' } });
+    expect(lastArg(onChange)).toEqual({ poll_url: 'https://api.example.com/status' });
+  });
+
+  test('the CEL condition field merges edits regardless of trigger type', () => {
+    const onChange = vi.fn();
+    render(<MonitoringFamilyForm triggerType="datadog" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByPlaceholderText(/payload.severity/), {
+      target: { value: 'payload.severity == "warning"' },
+    });
+    expect(lastArg(onChange)).toEqual({ condition_expression: 'payload.severity == "warning"' });
+  });
 });

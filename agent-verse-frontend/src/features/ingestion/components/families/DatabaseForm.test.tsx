@@ -54,6 +54,29 @@ describe('DatabaseForm', () => {
       expect(screen.getByDisplayValue('h1')).toBeInTheDocument();
       expect(screen.getByDisplayValue('u1')).toBeInTheDocument();
     });
+
+    test('typing in port, database, username, password, and tables fields all merge into value', () => {
+      const onChange = vi.fn();
+      render(<DatabaseForm sourceType="postgresql" value={{}} onChange={onChange} />);
+
+      fireEvent.change(screen.getByDisplayValue('5432'), { target: { value: '5433' } });
+      expect(lastArg(onChange)).toEqual({ port: 5433 });
+
+      // Textbox order: host(0), database(1), username(2); tables_csv has its own placeholder.
+      const textboxes = screen.getAllByRole('textbox');
+      fireEvent.change(textboxes[1], { target: { value: 'mydb' } });
+      expect(lastArg(onChange)).toEqual({ database: 'mydb' });
+
+      fireEvent.change(textboxes[2], { target: { value: 'admin' } });
+      expect(lastArg(onChange)).toEqual({ username: 'admin' });
+
+      const passwordInput = document.querySelector('input[type="password"]')!;
+      fireEvent.change(passwordInput, { target: { value: 'secret' } });
+      expect(lastArg(onChange)).toEqual({ password: 'secret' });
+
+      fireEvent.change(screen.getByPlaceholderText('orders, customers'), { target: { value: 'orders' } });
+      expect(lastArg(onChange)).toEqual({ tables_csv: 'orders' });
+    });
   });
 
   describe('snowflake branch', () => {
@@ -74,6 +97,32 @@ describe('DatabaseForm', () => {
       fireEvent.change(screen.getByPlaceholderText('org-account'), { target: { value: 'my-org' } });
       expect(lastArg(onChange)).toEqual({ account: 'my-org' });
     });
+
+    test('typing in warehouse, database, schema, username, password, and tables fields all merge into value', () => {
+      const onChange = vi.fn();
+      render(<DatabaseForm sourceType="snowflake" value={{}} onChange={onChange} />);
+
+      // Textbox order: account(0), warehouse(1), database(2), schema(3), username(4).
+      const textboxes = screen.getAllByRole('textbox');
+      fireEvent.change(textboxes[1], { target: { value: 'wh1' } });
+      expect(lastArg(onChange)).toEqual({ warehouse: 'wh1' });
+
+      fireEvent.change(textboxes[2], { target: { value: 'db1' } });
+      expect(lastArg(onChange)).toEqual({ database: 'db1' });
+
+      fireEvent.change(textboxes[3], { target: { value: 'CUSTOM_SCHEMA' } });
+      expect(lastArg(onChange)).toEqual({ schema: 'CUSTOM_SCHEMA' });
+
+      fireEvent.change(textboxes[4], { target: { value: 'admin' } });
+      expect(lastArg(onChange)).toEqual({ username: 'admin' });
+
+      const passwordInput = document.querySelector('input[type="password"]')!;
+      fireEvent.change(passwordInput, { target: { value: 'secret' } });
+      expect(lastArg(onChange)).toEqual({ password: 'secret' });
+
+      fireEvent.change(textboxes[5], { target: { value: 'orders' } });
+      expect(lastArg(onChange)).toEqual({ tables_csv: 'orders' });
+    });
   });
 
   describe('mongodb branch', () => {
@@ -90,6 +139,16 @@ describe('DatabaseForm', () => {
       render(<DatabaseForm sourceType="mongodb" value={{ database: 'd1' }} onChange={onChange} />);
       fireEvent.change(screen.getByPlaceholderText('mongodb+srv://...'), { target: { value: 'mongodb+srv://x' } });
       expect(lastArg(onChange)).toEqual({ database: 'd1', uri: 'mongodb+srv://x' });
+    });
+
+    test('typing in database and collections fields merges into value', () => {
+      const onChange = vi.fn();
+      render(<DatabaseForm sourceType="mongodb" value={{}} onChange={onChange} />);
+      const textboxes = screen.getAllByRole('textbox');
+      fireEvent.change(textboxes[1], { target: { value: 'mydb' } });
+      expect(lastArg(onChange)).toEqual({ database: 'mydb' });
+      fireEvent.change(textboxes[2], { target: { value: 'users, orders' } });
+      expect(lastArg(onChange)).toEqual({ collections_csv: 'users, orders' });
     });
   });
 });
