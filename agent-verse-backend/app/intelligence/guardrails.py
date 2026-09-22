@@ -150,8 +150,21 @@ def _detect_rot13_injection(text: str) -> list[str]:
 
 
 def _detect_homoglyph_injection(text: str) -> list[str]:
-    """Detect Unicode homoglyphs (e.g. cyrillic 'e', 'i', 'o') used to bypass filters."""
-    normalized = _normalize_text(text)
+    """Detect Unicode homoglyphs (e.g. cyrillic 'e', 'i', 'o') used to bypass filters.
+
+    BUG FIX: plain NFKC normalization (``_normalize_text``) only canonicalizes
+    *compatibility* variants of a character (fullwidth forms, ligatures, etc.)
+    — it does NOT map a character from one script to its lookalike in another
+    script, so a genuine Cyrillic/Greek homoglyph swap (e.g. Cyrillic U+0456
+    for Latin 'i') passed straight through unnoticed, defeating the exact
+    attack this function's docstring claims to catch. Cross-script lookalikes
+    are folded to ASCII first via ``normalize_homoglyphs`` (the same map used
+    by ``app.intelligence.encoding_attacks``), then NFKC still runs for the
+    compatibility-variant case.
+    """
+    from app.intelligence.encoding_attacks import normalize_homoglyphs
+
+    normalized = _normalize_text(normalize_homoglyphs(text))
     if normalized != text.lower() and any(phrase in normalized for phrase in _INJECTION_PHRASES):
         return ["unicode-homoglyph injection detected"]
     return []
@@ -174,6 +187,35 @@ def _detect_indirect_injection(text: str) -> list[str]:
     return issues
 
 
+def _detect_base64_dangerous_command(text: str) -> bool:
+    """Detect a dangerous shell/SQL command hidden inside a base64-encoded
+    substring of a tool arg (e.g. ``{"cmd": "echo <b64> | base64 -d | sh"}``).
+
+    BUG FIX: ``_scan_value_recursive`` previously ran ``_DANGEROUS_PATTERNS``
+    only against the raw, undecoded string — a base64-wrapped ``rm -rf /``
+    payload produced zero issues even though the equivalent plain-text
+    injection phrase IS decoded and caught (via ``_detect_base64_injection``
+    in ``check_goal``). Dangerous-command detection had no such decoding path
+    at all, so this obfuscation bypassed tool-arg scanning entirely.
+    """
+    import base64
+
+    # Dangerous commands ("rm -rf", "mkfs", ...) are much shorter than typical
+    # injection phrases, so a base64 wrapper can be as short as ~8 chars — the
+    # 16-char threshold used for injection-phrase detection would miss them.
+    for word in text.split():
+        if len(word) >= 8 and re.match(r"^[A-Za-z0-9+/=]+$", word):
+            try:
+                decoded = base64.b64decode(word.rstrip("=") + "==").decode(
+                    "utf-8", errors="ignore"
+                )
+            except Exception:
+                continue
+            if any(pattern.search(decoded) for pattern in _DANGEROUS_PATTERNS):
+                return True
+    return False
+
+
 def _scan_value_recursive(value: Any, depth: int = 0) -> list[str]:
     """FIX: Recursively scan nested dict/list values for injection and dangerous patterns.
 
@@ -190,10 +232,14 @@ def _scan_value_recursive(value: Any, depth: int = 0) -> list[str]:
             if phrase in text:
                 issues.append(f"Possible prompt-injection detected: '{phrase}'")
                 break
+        _dangerous_found = False
         for pattern in _DANGEROUS_PATTERNS:
             if pattern.search(value):
                 issues.append("Dangerous command pattern detected in args")
+                _dangerous_found = True
                 break
+        if not _dangerous_found and _detect_base64_dangerous_command(value):
+            issues.append("Dangerous command pattern detected in args (base64-encoded)")
     elif isinstance(value, dict):
         for k, v in value.items():
             child_issues = _scan_value_recursive(v, depth + 1)
