@@ -316,4 +316,47 @@ describe('RunCostSummary', () => {
     wrap(<RunCostSummary run={mockRun} stepCount={7} />);
     expect(screen.getByText('7')).toBeInTheDocument();
   });
+
+  it('shows "with error" sub-label when the run has an error', () => {
+    wrap(<RunCostSummary run={mockRun} />);
+    expect(screen.getByText('with error')).toBeInTheDocument();
+  });
+
+  it('shows "clean" sub-label when the run has no error', () => {
+    wrap(<RunCostSummary run={{ ...mockRun, error: undefined }} />);
+    expect(screen.getByText('clean')).toBeInTheDocument();
+  });
+
+  it('shows "—" for duration when started_at/finished_at are missing', () => {
+    wrap(<RunCostSummary run={{ ...mockRun, started_at: undefined, finished_at: undefined }} />);
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+  it('shows "—" for duration when only started_at is present', () => {
+    wrap(<RunCostSummary run={{ ...mockRun, finished_at: undefined }} />);
+    expect(screen.getByText('—')).toBeInTheDocument();
+  });
+
+  it('formats sub-second durations in milliseconds', () => {
+    wrap(
+      <RunCostSummary
+        run={{ ...mockRun, started_at: '2026-01-01T00:00:00.000Z', finished_at: '2026-01-01T00:00:00.500Z' }}
+      />
+    );
+    expect(screen.getByText('500ms')).toBeInTheDocument();
+  });
+
+  it('formats sub-minute durations in seconds', () => {
+    wrap(
+      <RunCostSummary
+        run={{ ...mockRun, started_at: '2026-01-01T00:00:00.000Z', finished_at: '2026-01-01T00:00:12.300Z' }}
+      />
+    );
+    expect(screen.getByText('12.3s')).toBeInTheDocument();
+  });
+
+  it('falls back to run.step_count when stepCount prop is not provided', () => {
+    wrap(<RunCostSummary run={{ ...mockRun, step_count: 9 }} />);
+    expect(screen.getByText('9')).toBeInTheDocument();
+  });
 });

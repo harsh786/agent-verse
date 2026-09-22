@@ -14,24 +14,55 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 
+const rf = vi.hoisted(() => ({
+  fitView: vi.fn(),
+  zoomIn: vi.fn(),
+  zoomOut: vi.fn(),
+}));
+
 vi.mock('@xyflow/react', () => ({
-  ReactFlow: ({ nodes, onNodeClick, children }: { nodes?: Array<{ id: string; data: { label?: string } }>; onNodeClick?: (e: unknown, n: unknown) => void; children?: React.ReactNode }) => (
+  ReactFlow: ({
+    nodes,
+    onNodeClick,
+    nodeTypes,
+    children,
+  }: {
+    nodes?: Array<{ id: string; type?: string; data: { label?: string } }>;
+    onNodeClick?: (e: unknown, n: unknown) => void;
+    nodeTypes?: Record<string, React.ComponentType<{ data: unknown; selected?: boolean }>>;
+    children?: React.ReactNode;
+  }) => (
     <div data-testid="react-flow">
-      {(nodes ?? []).map((n) => (
-        <button key={n.id} data-testid={`rf-node-${n.id}`} onClick={(e) => onNodeClick?.(e, n)}>
-          {n.data?.label ?? n.id}
-        </button>
-      ))}
+      {(nodes ?? []).map((n) => {
+        const Custom = nodeTypes?.[n.type ?? 'custom'];
+        return (
+          <button key={n.id} data-testid={`rf-node-${n.id}`} onClick={(e) => onNodeClick?.(e, n)}>
+            {Custom ? <Custom data={n.data} selected={false} /> : (n.data?.label ?? n.id)}
+          </button>
+        );
+      })}
       {children}
     </div>
   ),
   ReactFlowProvider: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   Background: () => null,
   BackgroundVariant: { Dots: 'dots', Lines: 'lines', Cross: 'cross' },
-  MiniMap: () => null,
+  MiniMap: ({ nodeColor }: { nodeColor?: (n: { data: unknown }) => string }) => (
+    <div data-testid="minimap">
+      {nodeColor
+        ? JSON.stringify(
+            [
+              { data: { nodeType: 'start' } },
+              { data: { nodeType: 'tool', status: 'failed' } },
+              { data: { nodeType: 'unknown' } },
+            ].map((n) => nodeColor(n)),
+          )
+        : null}
+    </div>
+  ),
   Panel: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   MarkerType: { ArrowClosed: 'arrowclosed' },
-  useReactFlow: () => ({ fitView: vi.fn(), zoomIn: vi.fn(), zoomOut: vi.fn(), getNodes: () => [] }),
+  useReactFlow: () => ({ fitView: rf.fitView, zoomIn: rf.zoomIn, zoomOut: rf.zoomOut, getNodes: () => [] }),
   getNodesBounds: () => ({ x: 0, y: 0, width: 200, height: 200 }),
 }));
 
@@ -126,8 +157,10 @@ describe('GoalDNAPage', () => {
     expect(screen.getByText('nodes')).toBeInTheDocument();
     expect(screen.getByText('tool calls')).toBeInTheDocument();
     expect(screen.getByText('unique tools')).toBeInTheDocument();
-    // tool-2 failed → the failed stat pill appears.
-    expect(screen.getByText('failed')).toBeInTheDocument();
+    // tool-2 failed → the failed stat pill appears (the failed *node* badge
+    // in the mocked graph also renders the text "failed", so scope to the
+    // stat pill's distinct styling to avoid an ambiguous multi-match).
+    expect(screen.getByText('failed', { selector: 'span.text-red-500' })).toBeInTheDocument();
   });
 
   test('clicking a tool node opens the inspector with its tool + server + output details', async () => {

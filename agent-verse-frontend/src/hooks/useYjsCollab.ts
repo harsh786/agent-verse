@@ -79,8 +79,15 @@ export function useYjsCollab({
     docRef.current = doc;
     const yText = doc.getText('content');
 
-    // Undo manager scoped to content
-    const undoManager = new Y.UndoManager(yText, { captureTimeout: 500 });
+    // Undo manager scoped to content. `setText` transacts with origin 'local'
+    // (see below), so trackedOrigins must include it — Y.UndoManager's default
+    // trackedOrigins is `Set([null])`, which would silently never capture any
+    // user edit (all of them transact with a non-null origin) and undo/redo
+    // would be permanently no-ops.
+    const undoManager = new Y.UndoManager(yText, {
+      captureTimeout: 500,
+      trackedOrigins: new Set(['local']),
+    });
     undoManagerRef.current = undoManager;
 
     // Update undo/redo state on every stack change

@@ -76,4 +76,64 @@ describe('GoalPrintView', () => {
     expect(html).toContain('OPP-2');
     expect(html).toContain('Bug fix');
   });
+
+  test('renders "—" for missing cell values in a row', () => {
+    const mockPrintWin = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(mockPrintWin as unknown as Window);
+
+    const artifact: ResultArtifact = {
+      ...ARTIFACT,
+      tables: [
+        {
+          title: 'Issues',
+          columns: [
+            { key: 'key', label: 'Key', type: 'link' },
+            { key: 'summary', label: 'Summary', type: 'text' },
+          ],
+          rows: [{ key: 'OPP-3' }], // summary missing
+        },
+      ],
+    };
+
+    openPrintView(artifact, 'goal');
+    const html = mockPrintWin.document.write.mock.calls[0][0] as string;
+    expect(html).toContain('OPP-3');
+    expect(html).toContain('<td>—</td>');
+  });
+
+  test('falls back to the summary paragraph when there is no table', () => {
+    const mockPrintWin = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(mockPrintWin as unknown as Window);
+
+    const artifact: ResultArtifact = { ...ARTIFACT, tables: [] };
+    openPrintView(artifact, 'goal');
+    const html = mockPrintWin.document.write.mock.calls[0][0] as string;
+    expect(html).not.toContain('<table>');
+    expect(html).toContain(`<p>${artifact.summary}</p>`);
+  });
+
+  test('omits the metrics block entirely when there are no metrics', () => {
+    const mockPrintWin = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(mockPrintWin as unknown as Window);
+
+    const artifact: ResultArtifact = { ...ARTIFACT, metrics: [] };
+    openPrintView(artifact, 'goal');
+    const html = mockPrintWin.document.write.mock.calls[0][0] as string;
+    expect(html).not.toContain('class="metrics"');
+  });
+
+  test('renders the metrics block when metrics are present', () => {
+    const mockPrintWin = { document: { write: vi.fn(), close: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, 'open').mockReturnValue(mockPrintWin as unknown as Window);
+
+    openPrintView(ARTIFACT, 'goal');
+    const html = mockPrintWin.document.write.mock.calls[0][0] as string;
+    expect(html).toContain('class="metrics"');
+    expect(html).toContain('Issues');
+  });
+
+  test('does nothing (no throw) when window.open is blocked by a popup blocker', () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    expect(() => openPrintView(ARTIFACT, 'goal')).not.toThrow();
+  });
 });

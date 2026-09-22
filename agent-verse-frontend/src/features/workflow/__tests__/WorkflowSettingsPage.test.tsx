@@ -141,4 +141,89 @@ describe('WorkflowSettingsPage', () => {
     );
     expect(builderLink).toBeDefined();
   });
+
+  it('switching to environment panel shows environment content', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /environment/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Environment Variables')).toBeInTheDocument();
+      expect(screen.getByText(/Workflow ID: wf-1 \| Version: 1/)).toBeInTheDocument();
+    });
+  });
+
+  it('switching to notifications panel shows notification content', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /notifications/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Notification Rules')).toBeInTheDocument();
+    });
+  });
+
+  it('permissions panel shows a loading indicator before resolving', async () => {
+    let resolveList!: (v: { items: never[]; total: number; page: number; per_page: number }) => void;
+    vi.mocked(workflowEngineApi.list).mockReturnValueOnce(
+      new Promise((resolve) => { resolveList = resolve; })
+    );
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /permissions/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/loading permissions/i)).toBeInTheDocument();
+    });
+    resolveList({ items: [], total: 0, page: 1, per_page: 20 });
+    await waitFor(() => {
+      expect(screen.getByText(/access control/i)).toBeInTheDocument();
+    });
+  });
+
+  it('marks the active panel button with aria-current', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    const generalBtn = screen.getByRole('button', { name: /general/i });
+    expect(generalBtn).toHaveAttribute('aria-current', 'page');
+    const secretsBtn = screen.getByRole('button', { name: /secrets/i });
+    expect(secretsBtn).not.toHaveAttribute('aria-current');
+    fireEvent.click(secretsBtn);
+    await waitFor(() => expect(secretsBtn).toHaveAttribute('aria-current', 'page'));
+    expect(generalBtn).not.toHaveAttribute('aria-current');
+  });
+
+  it('editing the name and description fields updates their values', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    const nameInput = screen.getByLabelText(/workflow name/i) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: 'Renamed Workflow' } });
+    expect(nameInput.value).toBe('Renamed Workflow');
+
+    const descInput = screen.getByLabelText(/description/i) as HTMLTextAreaElement;
+    fireEvent.change(descInput, { target: { value: 'New description' } });
+    expect(descInput.value).toBe('New description');
+
+    const retentionInput = screen.getByLabelText(/run retention/i) as HTMLInputElement;
+    fireEvent.change(retentionInput, { target: { value: '30' } });
+    expect(retentionInput.value).toBe('30');
+  });
+
+  it('clicking Save Changes calls the update API with the current name/description', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    const nameInput = screen.getByLabelText(/workflow name/i);
+    fireEvent.change(nameInput, { target: { value: 'Renamed Workflow' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() => {
+      expect(workflowEngineApi.update).toHaveBeenCalledWith('wf-1', {
+        name: 'Renamed Workflow',
+        description: 'A test workflow',
+      });
+    });
+  });
+
+  it('shows a full-page loading spinner while the workflow query is pending', () => {
+    vi.mocked(workflowEngineApi.get).mockReturnValue(new Promise(() => {}));
+    wrap();
+    expect(screen.queryByText('General Settings')).not.toBeInTheDocument();
+  });
 });
