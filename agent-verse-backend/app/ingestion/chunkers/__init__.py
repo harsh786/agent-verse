@@ -4,6 +4,7 @@ from app.ingestion.chunkers.ast_chunker import ASTChunker
 from app.ingestion.chunkers.base import Chunk, ChunkerBase
 from app.ingestion.chunkers.heading import HeadingChunker
 from app.ingestion.chunkers.pdf_layout import PDFLayoutChunker
+from app.ingestion.chunkers.region import RegionChunker
 from app.ingestion.chunkers.scene import SceneChunker
 from app.ingestion.chunkers.semantic import SemanticChunker
 from app.ingestion.chunkers.table import TableChunker
@@ -24,7 +25,10 @@ _STRATEGY_TO_CHUNKER: dict[str, ChunkerBase] = {
     "row_group": TableChunker(),
     "table": TableChunker(),
     "record": TableChunker(),
-    "region": SemanticChunker(),
+    # No real spatial/bounding-box chunker exists in this codebase (see
+    # app.ingestion.chunkers.region for why); RegionChunker logs a warning and
+    # tags chunk metadata so the fallback is observable rather than silent.
+    "region": RegionChunker(),
     # Advanced strategies — fall back to SemanticChunker for the flat-chunk pass;
     # the orchestrator handles the real parent_child / sentence_window dispatch.
     "parent_child": SemanticChunker(),
@@ -45,6 +49,7 @@ __all__ = [
     "ChunkerBase",
     "HeadingChunker",
     "PDFLayoutChunker",
+    "RegionChunker",
     "SceneChunker",
     "SemanticChunker",
     "TableChunker",

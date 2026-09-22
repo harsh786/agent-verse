@@ -130,6 +130,20 @@ _MULTIMODAL_MODELS: dict[str, dict[str, Any]] = {
 _BUDGET_75 = 0.75
 _BUDGET_90 = 0.90
 
+# Plan-tier-aware model ceiling. FREE tenants are hard-capped at the cheapest
+# quality tier regardless of budget headroom (cost control for a non-paying
+# tier); STARTER cannot reach "high" even when complexity/risk would warrant
+# it; PROFESSIONAL and ENTERPRISE have no plan-based ceiling — they can still
+# be downgraded by the existing budget-spent logic above, but plan alone never
+# raises the tier past what complexity/risk/budget already selected.
+_PLAN_TIER_CAP: dict[str, str] = {
+    "free": "low",
+    "starter": "medium",
+    "professional": "high",
+    "enterprise": "high",
+}
+_TIER_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
 
 @dataclass
 class ModelRoleAssignment:
@@ -142,6 +156,7 @@ class ModelRoleAssignment:
     classifier: str
     quality_tier: str = "medium"
     latency_class: str = "interactive"
+    plan_tier: str = ""
 
 
 @dataclass
@@ -179,6 +194,11 @@ class ModelOrchestrator:
         elif budget_spent_ratio >= _BUDGET_75 and tier == "high":
             tier = "medium"
 
+        plan_tier = (config.plan_tier or "").strip().lower()
+        plan_cap = _PLAN_TIER_CAP.get(plan_tier)
+        if plan_cap is not None and _TIER_RANK[tier] > _TIER_RANK[plan_cap]:
+            tier = plan_cap
+
         tier_models = _TIER_MODELS[tier]
 
         def resolve(role: str, hint: str) -> str:
@@ -196,6 +216,7 @@ class ModelOrchestrator:
             classifier=resolve("classifier", config.model_classifier),
             quality_tier=tier,
             latency_class=latency_class,
+            plan_tier=plan_tier,
         )
 
     def select_for_content_type(self, content_type: ContentType) -> MultimodalModelAssignment:
@@ -341,6 +362,11 @@ class ModelOrchestratorAdapter:
                 model_executor=getattr(runtime_profile.model_plan, "executor", "") or "",
                 model_verifier=getattr(runtime_profile.model_plan, "verifier", "") or "",
                 model_classifier="",
+                # D-xx wiring: thread the tenant's plan tier (GoalRuntimeProfile.tenant_plan,
+                # C5) into model selection so free/starter tenants are capped to
+                # cheaper tiers regardless of budget headroom. Missing/unknown
+                # attribute falls back to "" (no plan-based cap).
+                plan_tier=str(getattr(runtime_profile, "tenant_plan", "") or ""),
             )
             self._cached_assignment = self._orchestrator.select_models(
                 pattern_config, budget_spent_ratio

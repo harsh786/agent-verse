@@ -76,6 +76,10 @@ class PatternConfig:
     goal_properties: GoalProperties | None = None
     selection_reason: dict[str, str] = field(default_factory=dict)
     assembly_latency_ms: float = 0.0
+    # Tenant plan tier (app.tenancy.context.PlanTier value, e.g. "free"/"starter"/
+    # "professional"/"enterprise"). Empty string means "unknown" — ModelOrchestrator
+    # then applies no plan-based cap, preserving pre-plan-tier-routing behavior.
+    plan_tier: str = ""
 
     def to_sse_event(self, goal_id: str) -> dict[str, Any]:
         """Emit pattern_assembled SSE event (exact doc-4 shape)."""

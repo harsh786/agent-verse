@@ -290,6 +290,17 @@ PATTERN_SAFETY_TOTAL = Counter(
     registry=REGISTRY,
 )
 
+_GROUNDING_STATUS_LABELS = frozenset({"grounded", "ungrounded"})
+_GROUNDING_RISK_LABELS = frozenset({"high_risk", "normal"})
+
+GROUNDING_CHECK_TOTAL = Counter(
+    "agentverse_grounding_check_total",
+    "Claim-grounding checks by bounded outcome and risk labels "
+    "(hallucination/grounding-failure observability).",
+    labelnames=("status", "risk"),
+    registry=REGISTRY,
+)
+
 
 def render_metrics(accept: str = "") -> tuple[bytes, str]:
     """Return (body, content_type) for the metrics endpoint, negotiating format.
@@ -569,6 +580,23 @@ def record_prompt_tokens_saved(amount: int) -> None:
 
     with contextlib.suppress(Exception):
         PROMPT_TOKENS_SAVED_TOTAL.inc(max(0, amount))
+
+
+def record_grounding_check(*, grounded: bool, high_risk: bool = False) -> None:
+    """Record a claim-grounding check outcome (app.agent.grounding).
+
+    Labelled by bounded ``status`` ("grounded"/"ungrounded") and ``risk``
+    ("high_risk"/"normal") — never by goal/tenant/claim content, so this is
+    safe to call on every check. The ``ungrounded`` count over the
+    ``grounded+ungrounded`` total is the hallucination/grounding-failure
+    rate consumed by dashboards and alerts.
+    """
+    status = "grounded" if grounded else "ungrounded"
+    risk = "high_risk" if high_risk else "normal"
+    GROUNDING_CHECK_TOTAL.labels(
+        status=_normalize_exact_label(status, _GROUNDING_STATUS_LABELS),
+        risk=_normalize_exact_label(risk, _GROUNDING_RISK_LABELS),
+    ).inc()
 
 
 # ── Dynamic Orchestration metrics ────────────────────────────────────────────

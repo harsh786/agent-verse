@@ -47,6 +47,50 @@ class GroundingResult:
     ungrounded_claims: list[str]
     checked_claims: int
     evidence_length: int
+    # Populated only when grounded is False: a ready-to-emit runtime decision
+    # trace event (see app.observability.runtime_decision_trace) that a caller
+    # with an SSE event callback can forward via self._emit(...). None on a
+    # successful check.
+    trace_event: dict[str, Any] | None = None
+
+
+def _record_grounding_observability(
+    *,
+    grounded: bool,
+    ungrounded: list[str],
+    total_claims: int,
+    goal_id: str,
+    strict: bool,
+) -> dict[str, Any] | None:
+    """Record the grounding-check metric and, on failure, build a structured
+    runtime decision trace event.
+
+    This is the observability hook for hallucination/grounding debugging
+    (previously only ad hoc ``logger.debug``/``logger.info`` calls existed).
+    Never raises — observability must never affect the grounding decision.
+    """
+    try:
+        from app.observability import metrics as _metrics
+
+        _metrics.record_grounding_check(grounded=grounded, high_risk=strict)
+    except Exception:
+        pass
+
+    if grounded:
+        return None
+
+    try:
+        from app.observability.runtime_decision_trace import RuntimeSSEEmitter
+
+        return RuntimeSSEEmitter().grounding_check_failed(
+            goal_id=goal_id,
+            ungrounded_count=len(ungrounded),
+            checked_claims=total_claims,
+            high_risk=strict,
+            ungrounded_samples=ungrounded[:3],
+        )
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +185,7 @@ def check_grounding(
     strict: bool = False,
     max_ungrounded_ratio: float | None = None,
     normalize: bool = False,
+    goal_id: str = "",
 ) -> GroundingResult:
     """
     Check if claims in `output` are grounded in `tool_outputs`.
@@ -152,6 +197,9 @@ def check_grounding(
         max_ungrounded_ratio: Fraction of claims allowed to be ungrounded.
             When None, defaults to 0.0 for strict and 0.25 otherwise. High/
             critical-risk callers must pass 0.0 for zero tolerance.
+        goal_id: Optional goal id stamped onto the runtime decision trace event
+            (``GroundingResult.trace_event``) built on failure. Purely for
+            observability — omitting it does not affect the grounding decision.
 
     Returns:
         GroundingResult with grounded status and details.
@@ -178,11 +226,19 @@ def check_grounding(
 
     if not tool_outputs:
         # Claims exist but there is no evidence at all → cannot be grounded.
+        _trace = _record_grounding_observability(
+            grounded=False,
+            ungrounded=all_claims,
+            total_claims=len(all_claims),
+            goal_id=goal_id,
+            strict=strict,
+        )
         return GroundingResult(
             grounded=False,
             ungrounded_claims=list(all_claims),
             checked_claims=len(all_claims),
             evidence_length=0,
+            trace_event=_trace,
         )
 
     # Combine all tool outputs into evidence string
@@ -211,11 +267,20 @@ def check_grounding(
             ungrounded_samples=ungrounded[:3],
         )
 
+    _trace = _record_grounding_observability(
+        grounded=grounded,
+        ungrounded=ungrounded,
+        total_claims=len(all_claims),
+        goal_id=goal_id,
+        strict=strict,
+    )
+
     return GroundingResult(
         grounded=grounded,
         ungrounded_claims=ungrounded,
         checked_claims=len(all_claims),
         evidence_length=len(evidence),
+        trace_event=_trace,
     )
 
 
@@ -308,6 +373,7 @@ class GroundingChecker:
         tool_outputs: list[str],
         *,
         high_risk: bool = False,
+        goal_id: str = "",
     ) -> GroundingResult:
         """Deterministic synchronous check. Delegates to :func:`check_grounding`.
 
@@ -319,6 +385,7 @@ class GroundingChecker:
             tool_outputs,
             strict=self._strict or high_risk,
             normalize=True,
+            goal_id=goal_id,
         )
 
     async def check(
@@ -331,6 +398,7 @@ class GroundingChecker:
         answer: str | None = None,
         tool_output: str | None = None,
         tenant_id: str = "",
+        goal_id: str = "",
     ) -> GroundingResult:
         """Unified async grounding check.
 
@@ -351,7 +419,7 @@ class GroundingChecker:
         else:
             _outputs = []
 
-        result = self._sync_check(_output, _outputs, high_risk=high_risk)
+        result = self._sync_check(_output, _outputs, high_risk=high_risk, goal_id=goal_id)
 
         # Fast path: everything grounded or no claims to check
         if result.grounded or result.checked_claims == 0:
@@ -386,11 +454,20 @@ class GroundingChecker:
                 resp = await self._llm.complete(req)
                 data = _json.loads(resp.content)
                 still_ungrounded: list[str] = data.get("ungrounded", result.ungrounded_claims)
+                _llm_grounded = len(still_ungrounded) == 0
+                _trace = _record_grounding_observability(
+                    grounded=_llm_grounded,
+                    ungrounded=still_ungrounded,
+                    total_claims=result.checked_claims,
+                    goal_id=goal_id,
+                    strict=self._strict or high_risk,
+                )
                 return GroundingResult(
-                    grounded=len(still_ungrounded) == 0,
+                    grounded=_llm_grounded,
                     ungrounded_claims=still_ungrounded,
                     checked_claims=result.checked_claims,
                     evidence_length=result.evidence_length,
+                    trace_event=_trace,
                 )
             except Exception as exc:
                 logger.debug("grounding_llm_check_failed", error=str(exc)[:60])

@@ -15,6 +15,7 @@ class SSEEventType:
     GUARDRAIL_PROFILE_SELECTED = "guardrail_profile_selected"
     EVAL_SCORE_RECORDED = "eval_score_recorded"
     SELF_IMPROVEMENT_SUGGESTED = "self_improvement_suggested"
+    GROUNDING_CHECK_FAILED = "grounding_check_failed"
 
 
 class RuntimeSSEEmitter:
@@ -148,6 +149,27 @@ class RuntimeSSEEmitter:
             "content_type": content_type,
             "strategy": strategy,
             "reason": reason,
+        }
+
+    def grounding_check_failed(
+        self,
+        *,
+        goal_id: str,
+        ungrounded_count: int,
+        checked_claims: int,
+        high_risk: bool = False,
+        ungrounded_samples: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """A claim-grounding check (app.agent.grounding) failed: the step/final
+        answer asserted claims that were not supported by tool/RAG evidence.
+        Emitted only on failure — a successful check produces no event."""
+        return {
+            "type": SSEEventType.GROUNDING_CHECK_FAILED,
+            "goal_id": goal_id,
+            "ungrounded_count": ungrounded_count,
+            "checked_claims": checked_claims,
+            "high_risk": high_risk,
+            "ungrounded_samples": ungrounded_samples or [],
         }
 
     def embedding_strategy_selected(
