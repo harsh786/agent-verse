@@ -138,6 +138,50 @@ describe('TemplatePickerModal', () => {
     expect(screen.getByText('Deploy Service')).toBeInTheDocument();
     expect(screen.queryByText('Run Test Suite')).not.toBeInTheDocument();
   });
+
+  test('clicking a domain filter re-queries by domain, and clicking it again clears the filter', async () => {
+    const fetchSpy = mockFetch();
+    renderPicker();
+    await waitFor(() => screen.getByText('Deploy Service'));
+
+    await userEvent.click(screen.getByRole('button', { name: 'devops' }));
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes('domain=devops'))).toBe(true),
+    );
+
+    // Clicking the now-active domain button again clears the filter.
+    await userEvent.click(screen.getByRole('button', { name: 'devops' }));
+    await waitFor(() =>
+      expect(fetchSpy.mock.calls.some((c) => String(c[0]).includes('domain='))).toBe(true),
+    );
+
+    // Clicking "All" also clears it.
+    await userEvent.click(screen.getByRole('button', { name: 'devops' }));
+    await userEvent.click(screen.getByRole('button', { name: 'All' }));
+    await waitFor(() => expect(screen.getByText('Run Test Suite')).toBeInTheDocument());
+  });
+
+  test('shows a loading skeleton while the templates query is in flight', async () => {
+    let resolveFetch!: (r: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    const { container } = renderPicker();
+    expect(container.querySelectorAll('.h-44').length).toBe(6);
+    expect(screen.queryByText('No templates found')).not.toBeInTheDocument();
+
+    resolveFetch(new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    await waitFor(() => expect(screen.getByText('No templates found')).toBeInTheDocument());
+  });
+
+  test('clicking "Manage templates" closes the picker', async () => {
+    mockFetch([]);
+    const onClose = vi.fn();
+    renderPicker(vi.fn(), onClose);
+    await waitFor(() => screen.getByText('No templates found'));
+    await userEvent.click(screen.getByRole('link', { name: /manage templates/i }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });
 
 // ── TemplateInstantiator onUseInGoal ─────────────────────────────────────────

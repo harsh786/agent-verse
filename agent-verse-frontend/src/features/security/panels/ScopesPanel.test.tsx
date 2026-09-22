@@ -39,6 +39,27 @@ describe('ScopesPanel', () => {
     expect(nameInput.value).toBe('data-entry-clerk');
   });
 
+  test('selecting an inherits-from option updates its value', async () => {
+    render(<ScopesPanel />);
+    await userEvent.click(screen.getByRole('button', { name: /Create Role/i }));
+    const select = screen.getByDisplayValue('viewer') as HTMLSelectElement;
+    await userEvent.selectOptions(select, 'builder');
+    expect(select.value).toBe('builder');
+  });
+
+  test('typing into the extra-scopes and denied-scopes fields updates their values', async () => {
+    render(<ScopesPanel />);
+    await userEvent.click(screen.getByRole('button', { name: /Create Role/i }));
+
+    const extra = screen.getByPlaceholderText('goals:write, templates:read') as HTMLInputElement;
+    await userEvent.type(extra, 'goals:write');
+    expect(extra.value).toBe('goals:write');
+
+    const denied = screen.getByPlaceholderText('agents:admin, policies:write') as HTMLInputElement;
+    await userEvent.type(denied, 'agents:admin');
+    expect(denied.value).toBe('agents:admin');
+  });
+
   test('clicking Create Role again collapses the form', async () => {
     render(<ScopesPanel />);
     const toggle = screen.getByRole('button', { name: /Create Role/i });

@@ -20,7 +20,7 @@ vi.mock('framer-motion', async (importOriginal) => {
 });
 
 // Import after mocks are registered.
-const { useJarvisSpeech } = await import('./useJarvisSpeech');
+const { useJarvisSpeech, lineFor } = await import('./useJarvisSpeech');
 
 function missionStarted(overrides?: Partial<OrgEvent>): OrgEvent {
   return {
@@ -101,5 +101,62 @@ describe('useJarvisSpeech', () => {
       result.current.handleEvent(missionStarted({ event_type: ORG_EVENTS.MISSION_COMPLETED, payload: { title: 'Launch campaign' } }));
     });
     expect(speakMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('swallows a speak() failure so the console is never disrupted', async () => {
+    speakMock.mockRejectedValueOnce(new Error('tts down'));
+    const { result } = renderHook(() => useJarvisSpeech());
+    await act(async () => {
+      result.current.handleEvent(missionStarted());
+    });
+    expect(speakMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('lineFor', () => {
+  const base = {
+    org_id: 'org-1',
+    tenant_id: 't-1',
+    timestamp: new Date().toISOString(),
+    version: '1',
+  };
+
+  it('falls back to a generic line when MISSION_STARTED has no title', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.MISSION_STARTED, payload: {} }))
+      .toBe('A mission is now underway.');
+  });
+
+  it('announces a team being formed', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.TEAM_FORMED, payload: {} }))
+      .toBe('A new team has been assembled.');
+  });
+
+  it('falls back to a generic line when AGENT_ACTIVATED has no role', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.AGENT_ACTIVATED, payload: {} }))
+      .toBe('A new agent is now active.');
+  });
+
+  it('includes the role when AGENT_ACTIVATED has one', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.AGENT_ACTIVATED, payload: { role: 'Researcher' } }))
+      .toBe('Researcher is now active.');
+  });
+
+  it('falls back to a generic line when APPROVAL_REQUESTED has no action', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.APPROVAL_REQUESTED, payload: {} }))
+      .toBe('Your approval is needed.');
+  });
+
+  it('includes the action when APPROVAL_REQUESTED has one', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.APPROVAL_REQUESTED, payload: { action: 'deploy prod' } }))
+      .toBe('Your approval is needed for deploy prod.');
+  });
+
+  it('falls back to a generic line when MISSION_COMPLETED has no title', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.MISSION_COMPLETED, payload: {} }))
+      .toBe('A mission is complete.');
+  });
+
+  it('returns null for a non-speakable event type', () => {
+    expect(lineFor({ ...base, event_type: ORG_EVENTS.HEALTH_DEGRADED, payload: {} })).toBeNull();
   });
 });

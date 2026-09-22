@@ -11,7 +11,7 @@
  * The spring presets remain exported for components that still tune framer
  * transitions locally.
  */
-import type { HTMLAttributes, ReactNode } from 'react';
+import type { HTMLAttributes, ReactNode, Ref } from 'react';
 
 // ── Spring presets (kept for local framer transitions elsewhere) ───────────
 export const SPRING_PAGE   = { type: 'spring', stiffness: 280, damping: 26 } as const;
@@ -83,6 +83,7 @@ export function JARVISButton({
   disabled,
   type = 'button',
   'aria-label': ariaLabel,
+  ref,
 }: {
   children:    ReactNode;
   className?:  string;
@@ -90,9 +91,11 @@ export function JARVISButton({
   disabled?:   boolean;
   type?:       'button' | 'submit' | 'reset';
   'aria-label'?: string;
+  ref?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
+      ref={ref}
       type={type}
       onClick={onClick}
       disabled={disabled}

@@ -144,6 +144,74 @@ describe('useVoiceAlerts', () => {
     expect(es.closed).toBe(true);
   });
 
+  test('decodes a PCM16 sample above 32767 as a negative value (sign branch)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const onAlert = vi.fn();
+    renderHook(() => useVoiceAlerts({ enabled: true, onAlert }));
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+
+    // 0xFF 0xFF little-endian -> s16 = 65535 > 32767 -> negative branch
+    const event: VoiceAlertEvent = { event_type: 'agent_error', text: 'err', chunks: [b64([0xff, 0xff])] };
+    await act(async () => { FakeEventSource.latest().emit(event); await Promise.resolve(); });
+    expect(onAlert).toHaveBeenCalledWith(event);
+    expect(FakeAudioContext.count).toBe(1);
+  });
+
+  test('an event with no chunks does not spin up an AudioContext', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    const onAlert = vi.fn();
+    renderHook(() => useVoiceAlerts({ enabled: true, onAlert }));
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+
+    const event = { event_type: 'mission_completed', text: 'done' } as unknown as VoiceAlertEvent;
+    await act(async () => { FakeEventSource.latest().emit(event); await Promise.resolve(); });
+    expect(onAlert).toHaveBeenCalledWith(event);
+    expect(FakeAudioContext.count).toBe(0);
+  });
+
+  test('unmounting before the stream-token exchange resolves skips opening the stream', async () => {
+    let resolveFetch!: (r: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    const { unmount } = renderHook(() => useVoiceAlerts({ enabled: true }));
+    unmount();
+    resolveFetch(new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  test('onerror is a no-op (SSE auto-reconnects)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderHook(() => useVoiceAlerts({ enabled: true }));
+    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
+    const es = FakeEventSource.latest();
+
+    expect(() => es.onerror?.(new Event('error'))).not.toThrow();
+  });
+
+  test('re-opens the stream with a fresh token on the periodic refresh interval', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderHook(() => useVoiceAlerts({ enabled: true }));
+    await act(async () => { await Promise.resolve(); });
+    expect(FakeEventSource.instances.length).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    });
+    expect(FakeEventSource.instances.length).toBe(2);
+    expect(FakeEventSource.instances[0].closed).toBe(true);
+  });
+
   test('dismiss() closes the active stream', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),

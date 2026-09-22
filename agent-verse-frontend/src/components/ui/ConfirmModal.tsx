@@ -140,6 +140,7 @@ export function ConfirmModal({
 
             <div className="mt-6 flex justify-end gap-3">
               <JARVISButton
+                ref={cancelRef}
                 onClick={onCancel}
                 disabled={isLoading}
                 className="px-4 py-2 text-sm font-medium rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08] text-[#94A3B8] hover:text-[#F1F5F9] transition-colors disabled:opacity-50"
