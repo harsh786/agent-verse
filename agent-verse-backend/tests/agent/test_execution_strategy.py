@@ -143,6 +143,49 @@ def test_is_seeded():
     assert is_seeded("") is False
 
 
+def test_all_three_latency_tiers_yield_distinct_fastest_choice():
+    """Sweep all three LatencyTier values (FAST/MEDIUM/SLOW) as the planner's
+    tier against a SLOW executor+verifier, and confirm the resolver's "fastest
+    role model" routing (Strategy C) actually distinguishes all three — not
+    just FAST vs SLOW as the existing tests do."""
+    slow_exec = ModelCapabilityProfile(model_id="slow-exec", latency_tier=LatencyTier.SLOW.value)
+    slow_verifier = ModelCapabilityProfile(
+        model_id="slow-verifier", latency_tier=LatencyTier.SLOW.value
+    )
+
+    fast_planner = ModelCapabilityProfile(
+        model_id="fast-planner", latency_tier=LatencyTier.FAST.value
+    )
+    s_fast = resolve(planner=fast_planner, executor=slow_exec, verifier=slow_verifier)
+    assert s_fast.verifier_model == "fast-planner"
+
+    medium_planner = ModelCapabilityProfile(
+        model_id="medium-planner", latency_tier=LatencyTier.MEDIUM.value
+    )
+    s_medium = resolve(planner=medium_planner, executor=slow_exec, verifier=slow_verifier)
+    assert s_medium.verifier_model == "medium-planner"
+
+    slow_planner = ModelCapabilityProfile(
+        model_id="slow-planner", latency_tier=LatencyTier.SLOW.value
+    )
+    s_slow = resolve(planner=slow_planner, executor=slow_exec, verifier=slow_verifier)
+    # Nothing is faster than the (also slow) verifier -> no reroute.
+    assert s_slow.verifier_model == ""
+
+    # The three outcomes are pairwise distinct, proving the tier ranking
+    # (FAST < MEDIUM < SLOW) drives a different selection at every step, not
+    # just a binary fast/not-fast split.
+    assert s_fast.verifier_model != s_medium.verifier_model
+    assert s_medium.verifier_model != s_slow.verifier_model
+
+
+def test_latency_tier_rank_ordering_is_fast_lt_medium_lt_slow():
+    from app.agent.execution_strategy import _TIER_RANK
+
+    assert _TIER_RANK[LatencyTier.FAST.value] < _TIER_RANK[LatencyTier.MEDIUM.value]
+    assert _TIER_RANK[LatencyTier.MEDIUM.value] < _TIER_RANK[LatencyTier.SLOW.value]
+
+
 def test_no_verifier_reroute_when_already_fast():
     fast_v = ModelCapabilityProfile(model_id="gpt-4o-mini", latency_tier=LatencyTier.FAST.value)
     s = resolve(planner=_frontier(), executor=_frontier(), verifier=fast_v,

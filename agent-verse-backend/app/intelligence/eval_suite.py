@@ -163,12 +163,23 @@ class LLMJudge:
             json_match = re.search(r"\{.*\}", resp.content, re.DOTALL)
             if json_match:
                 scores = json.loads(json_match.group())
+
+                def _clamped(value: Any, default: float) -> float:
+                    # The judge is asked for 0.0-1.0, but nothing upstream
+                    # enforces that: a miscalibrated or adversarially-steered
+                    # judge (e.g. text under evaluation trying to talk the
+                    # judge into an extreme score) can return values outside
+                    # that range. Clamp so a single bad score can't silently
+                    # blow out aggregates or defeat a min_score/pass gate.
+                    parsed = float(value)
+                    return max(0.0, min(1.0, parsed)) if parsed == parsed else default  # NaN check
+
                 return {
-                    "correctness": float(scores.get("correctness", 0.5)),
-                    "completeness": float(scores.get("completeness", 0.5)),
-                    "coherence": float(scores.get("coherence", 0.5)),
-                    "safety": float(scores.get("safety", 1.0)),
-                    "overall": float(scores.get("overall", 0.5)),
+                    "correctness": _clamped(scores.get("correctness", 0.5), 0.5),
+                    "completeness": _clamped(scores.get("completeness", 0.5), 0.5),
+                    "coherence": _clamped(scores.get("coherence", 0.5), 0.5),
+                    "safety": _clamped(scores.get("safety", 1.0), 1.0),
+                    "overall": _clamped(scores.get("overall", 0.5), 0.5),
                     "reasoning": str(scores.get("reasoning", "")),
                     "llm_judged": True,
                 }

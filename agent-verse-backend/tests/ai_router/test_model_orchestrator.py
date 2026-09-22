@@ -122,6 +122,88 @@ def test_latency_class_realtime() -> None:
     assert assignment.latency_class == "realtime"
 
 
+# ── Latency-aware routing: the other `time_sensitivity` values ────────────────
+# GoalProperties.time_sensitivity is documented as "realtime | normal | batch"
+# (see app/agent/pattern_config.py), but prior to this only "realtime" had a
+# test. These sweep "normal" and "batch" and confirm what CostLatencyQualityPolicy
+# actually does with them: "realtime" is the only value that overrides tier
+# selection (forces "low", trading quality for speed); "normal" and "batch" both
+# fall through to the ordinary complexity/risk-driven tier with no special
+# handling of their own — i.e. "batch" does NOT currently downgrade the tier for
+# a latency-tolerant, cost-sensitive background job, unlike "realtime" forcing
+# it down for a latency-critical one. This test locks in that (possibly
+# surprising) asymmetry so a future change to add batch-specific routing is a
+# deliberate, visible decision rather than an accidental behavior change.
+
+
+def test_latency_class_normal_is_interactive() -> None:
+    orch = ModelOrchestrator()
+    cfg = _make_config(complexity=Complexity.MEDIUM, risk=RiskLevel.LOW, time_sensitivity="normal")
+    assignment = orch.select_models(cfg)
+    assert assignment.latency_class == "interactive"
+
+
+def test_latency_class_batch_is_interactive_not_a_distinct_class() -> None:
+    """Only "realtime" maps to the "realtime" latency_class; "batch" (like
+    "normal") maps to "interactive" — there is no third latency_class today."""
+    orch = ModelOrchestrator()
+    cfg = _make_config(complexity=Complexity.MEDIUM, risk=RiskLevel.LOW, time_sensitivity="batch")
+    assignment = orch.select_models(cfg)
+    assert assignment.latency_class == "interactive"
+
+
+def test_realtime_forces_low_tier_and_a_different_model_than_normal() -> None:
+    """This is the one time_sensitivity value that actually changes model
+    selection: an expert/high-risk goal would normally reach the high tier,
+    but "realtime" overrides that down to "low" — a materially cheaper/faster
+    model, not just a differently-labeled tier."""
+    orch = ModelOrchestrator()
+    premium_cfg = _make_config(complexity=Complexity.EXPERT, risk=RiskLevel.LOW, time_sensitivity="normal")
+    realtime_cfg = _make_config(complexity=Complexity.EXPERT, risk=RiskLevel.LOW, time_sensitivity="realtime")
+
+    normal_assignment = orch.select_models(premium_cfg)
+    realtime_assignment = orch.select_models(realtime_cfg)
+
+    assert normal_assignment.quality_tier == "high"
+    assert realtime_assignment.quality_tier == "low"
+    # planner keeps PatternConfig's default hint ("gpt-5.2") regardless of tier
+    # (see test_pattern_config_hints_respected) — embedder has no such hint and
+    # is the cleanest signal that the tier itself actually changed.
+    assert normal_assignment.embedder != realtime_assignment.embedder
+    assert normal_assignment.judge != realtime_assignment.judge
+
+
+def test_batch_and_normal_produce_the_same_tier_and_models() -> None:
+    """Documents the current (non-)behavior: "batch" is not yet wired to select
+    a cheaper tier the way "realtime" is wired to force a faster one, so batch
+    and normal goals of the same complexity/risk get identical assignments."""
+    orch = ModelOrchestrator()
+    normal_cfg = _make_config(complexity=Complexity.COMPLEX, risk=RiskLevel.LOW, time_sensitivity="normal")
+    batch_cfg = _make_config(complexity=Complexity.COMPLEX, risk=RiskLevel.LOW, time_sensitivity="batch")
+
+    normal_assignment = orch.select_models(normal_cfg)
+    batch_assignment = orch.select_models(batch_cfg)
+
+    assert normal_assignment.quality_tier == batch_assignment.quality_tier
+    assert normal_assignment.planner == batch_assignment.planner
+    assert normal_assignment.embedder == batch_assignment.embedder
+
+
+def test_critical_risk_wins_over_realtime_latency() -> None:
+    """CostLatencyQualityPolicy.select_tier checks risk *before* latency: a
+    HIGH/CRITICAL-risk goal returns "high" immediately, so "realtime" never
+    even gets consulted for it — risk-driven safety wins over latency-driven
+    speed. This ordering was entirely untested; without it, one might assume
+    (incorrectly) that realtime always forces the cheap/fast tier."""
+    orch = ModelOrchestrator()
+    cfg = _make_config(complexity=Complexity.EXPERT, risk=RiskLevel.CRITICAL, time_sensitivity="realtime")
+    assignment = orch.select_models(cfg)
+    assert assignment.quality_tier == "high"
+    # latency_class still reflects the request's own time_sensitivity even
+    # though it didn't end up affecting the quality tier.
+    assert assignment.latency_class == "realtime"
+
+
 def test_role_policy_adds_judge_for_debate() -> None:
     policy = RolePolicy()
     cfg = PatternConfig(multi_agent_patterns=["debate"])
