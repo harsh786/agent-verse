@@ -133,11 +133,19 @@ async def persist_tools(
     """Persist tool definitions to tool_capabilities table.
 
     Returns count of tools persisted.
+
+    Note: there is no SQLAlchemy ORM model for ``tool_capabilities`` anywhere
+    in ``app/db/models/`` -- every other read/write path against this table
+    (``app/api/connectors.py::list_capabilities``/``discover_connector_tools``,
+    ``app/mcp/client.py::_update_tool_stats``) uses raw SQL via ``text()``.
+    This mirrors that established pattern instead of importing a
+    ``ToolCapability`` ORM class that does not exist.
     """
     if db_session_factory is None or not tools:
         return len(tools)  # In test mode, count as persisted
 
-    from app.db.models.mcp import ToolCapability
+    from sqlalchemy import text
+
     from app.db.rls import sqlalchemy_rls_context
 
     try:
@@ -147,18 +155,35 @@ async def persist_tools(
             sqlalchemy_rls_context(session, tenant_id),
         ):
             for tool in tools:
-                row = ToolCapability(
-                    id=tool["id"],
-                    tenant_id=tool["tenant_id"],
-                    connector_id=tool["connector_id"],
-                    tool_name=tool["tool_name"],
-                    description=tool["description"],
-                    http_method=tool["http_method"],
-                    http_path=tool["http_path"],
-                    parameters_schema=tool["parameters_schema"],
-                    response_schema=tool.get("response_schema"),
+                response_schema = tool.get("response_schema")
+                await session.execute(
+                    text(
+                        """
+                        INSERT INTO tool_capabilities
+                            (id, tenant_id, connector_id, tool_name,
+                             description, http_method, http_path,
+                             parameters_schema, response_schema)
+                        VALUES
+                            (:id, :tid, :cid, :name,
+                             :desc, :method, :path,
+                             CAST(:params AS json), CAST(:response AS json))
+                        ON CONFLICT (tenant_id, connector_id, tool_name) DO NOTHING
+                        """
+                    ),
+                    {
+                        "id": tool["id"],
+                        "tid": tool["tenant_id"],
+                        "cid": tool["connector_id"],
+                        "name": tool["tool_name"],
+                        "desc": tool["description"],
+                        "method": tool["http_method"],
+                        "path": tool["http_path"],
+                        "params": json.dumps(tool["parameters_schema"]),
+                        "response": json.dumps(response_schema)
+                        if response_schema is not None
+                        else None,
+                    },
                 )
-                session.add(row)
         return len(tools)
     except Exception as exc:
         import logging

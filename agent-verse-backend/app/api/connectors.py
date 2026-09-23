@@ -1719,18 +1719,24 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
 
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 for tool in tools:
                     await session.execute(
                         text(
                             """
                             INSERT INTO tool_capabilities
                                 (id, tenant_id, connector_id, tool_name,
-                                 description, input_schema, risk_level,
+                                 description, http_path, input_schema, risk_level,
                                  last_discovered)
                             VALUES
                                 (:id, :tid, :cid, :name,
-                                 :desc, CAST(:schema AS jsonb), :risk,
+                                 :desc, :path, CAST(:schema AS jsonb), :risk,
                                  NOW())
                             ON CONFLICT (tenant_id, connector_id, tool_name)
                             DO UPDATE SET
@@ -1746,6 +1752,12 @@ async def discover_connector_tools(request: Request, server_id: str) -> dict:
                             "cid": server_id,
                             "name": getattr(tool, "name", str(tool)),
                             "desc": getattr(tool, "description", ""),
+                            # ToolDefinition (app/mcp/client.py) has no http_path field --
+                            # MCP-discovered tools aren't necessarily HTTP endpoints, unlike
+                            # the OpenAPI importer's tools. http_path is NOT NULL with no
+                            # column default (migration 0020), so this INSERT previously
+                            # raised NotNullViolationError on every call.
+                            "path": getattr(tool, "http_path", "") or "",
                             "schema": json.dumps(getattr(tool, "input_schema", {})),
                             "risk": getattr(tool, "risk_level", "low"),
                         },

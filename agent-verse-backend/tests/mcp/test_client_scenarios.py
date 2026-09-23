@@ -1217,9 +1217,17 @@ async def test_update_tool_stats_executes_update_statement_on_success():
     await client._update_tool_stats(
         "srv-1", "search", "tid-1", success=True, latency_ms=42.0, db=db_factory
     )
-    mock_session.execute.assert_awaited_once()
-    _, call_kwargs = mock_session.execute.call_args
-    params = mock_session.execute.call_args[0][1]
+    # _update_tool_stats now wraps its session in sqlalchemy_rls_context, which
+    # issues two extra `SET LOCAL app.tenant_id` executes (set on entry, reset
+    # on exit) around the real UPDATE -- so `execute` is called 3 times total.
+    # Find the actual tool_capabilities UPDATE among them.
+    update_calls = [
+        call
+        for call in mock_session.execute.call_args_list
+        if "UPDATE tool_capabilities" in str(call.args[0])
+    ]
+    assert len(update_calls) == 1
+    params = update_calls[0].args[1]
     assert params["tid"] == "tid-1"
     assert params["tool"] == "search"
     assert params["status"] == "healthy"

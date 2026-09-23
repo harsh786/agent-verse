@@ -1276,10 +1276,16 @@ class MCPClient:
         try:
             from sqlalchemy import text
 
+            from app.db.rls import sqlalchemy_rls_context
+
             col_success = "call_count = call_count + 1" + (
                 ", error_count = error_count + 1" if not success else ""
             )
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(f"""
                     UPDATE tool_capabilities

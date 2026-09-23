@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
 from app.db.rls import sqlalchemy_rls_context
+from app.mcp.openapi_importer import persist_tools
 
 pytestmark = pytest.mark.integration
 
@@ -204,6 +205,92 @@ async def test_tool_capability_persists_and_lists_under_nobypassrls_role(
         assert rows[0][0] == "http_request"
     finally:
         async with admin_factory() as s, s.begin():
+            await s.execute(
+                text("DELETE FROM tool_capabilities WHERE tenant_id = :tid"),
+                {"tid": tenant_id},
+            )
+
+
+@pytest.mark.asyncio
+async def test_persist_tools_actually_persists_under_nobypassrls_role(
+    factories: tuple,
+) -> None:
+    """Regression test for app/mcp/openapi_importer.py::persist_tools.
+
+    persist_tools used to ``from app.db.models.mcp import ToolCapability`` --
+    a class that does not exist anywhere in ``app/db/models/`` (every other
+    tool_capabilities read/write path in this codebase uses raw SQL via
+    ``text()``, never an ORM model). That import raised ``ImportError`` on
+    every single call, which the function's own ``except Exception`` swallowed
+    and logged as a warning, then returned ``0`` -- so tool-capability
+    persistence via the OpenAPI importer path had never actually worked in
+    production; every OpenAPI-imported connector silently ended up with zero
+    persisted tool_capabilities rows despite ``import_and_register``/the
+    ``/connectors/import`` endpoint reporting a nonzero ``tool_count``.
+
+    This calls the real ``persist_tools`` (not a hand-copied INSERT) against a
+    NOBYPASSRLS role, so it also proves the RLS wrapping inside persist_tools
+    is correct now that the import bug no longer masks it.
+    """
+    _admin_factory, app_factory = factories
+    tenant_id = f"tenant-{secrets.token_hex(6)}"
+    connector_id = "conn-" + secrets.token_hex(4)
+    tools = [
+        {
+            "id": uuid.uuid4().hex,
+            "tenant_id": tenant_id,
+            "connector_id": connector_id,
+            "tool_name": "get_widgets",
+            "description": "List widgets",
+            "http_method": "GET",
+            "http_path": "/widgets",
+            "parameters_schema": {"type": "object", "properties": {}, "required": []},
+            "response_schema": None,
+        },
+        {
+            "id": uuid.uuid4().hex,
+            "tenant_id": tenant_id,
+            "connector_id": connector_id,
+            "tool_name": "post_widgets",
+            "description": "Create widget",
+            "http_method": "POST",
+            "http_path": "/widgets",
+            "parameters_schema": {"type": "object", "properties": {"body": {}}, "required": []},
+            "response_schema": {"type": "object"},
+        },
+    ]
+
+    try:
+        count = await persist_tools(tools, app_factory, tenant_id)
+        assert count == len(tools), (
+            "persist_tools did not report all tools as persisted -- it "
+            "returned 0 when the ToolCapability ORM import raised ImportError"
+        )
+
+        # Prove the rows actually reached Postgres (not silently rejected/
+        # skipped) by reading them back with the admin (RLS-bypassing)
+        # connection.
+        async with _admin_factory() as s:
+            rows = (
+                await s.execute(
+                    text(
+                        "SELECT tool_name, http_method, response_schema "
+                        "FROM tool_capabilities WHERE tenant_id = :tid ORDER BY tool_name"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchall()
+        assert len(rows) == 2, (
+            "persist_tools reported success but no rows were actually "
+            "persisted to Postgres"
+        )
+        assert rows[0][0] == "get_widgets"
+        assert rows[0][1] == "GET"
+        assert rows[0][2] is None
+        assert rows[1][0] == "post_widgets"
+        assert rows[1][2] == {"type": "object"}
+    finally:
+        async with _admin_factory() as s, s.begin():
             await s.execute(
                 text("DELETE FROM tool_capabilities WHERE tenant_id = :tid"),
                 {"tid": tenant_id},

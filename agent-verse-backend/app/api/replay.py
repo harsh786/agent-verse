@@ -42,7 +42,9 @@ async def replay_goal(
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, sqlalchemy_rls_context(session, tenant_ctx.tenant_id):
             # Verify goal exists and belongs to tenant
             goal_row = (
                 await session.execute(
