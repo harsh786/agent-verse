@@ -203,6 +203,18 @@ class PlannerMixin:
         if agent_state.verification_feedback:
             extra_parts.append(f"[Previous attempt feedback]\n{agent_state.verification_feedback}")
 
+        # rag_remediate (see RAGMixin._node_rag_remediate) stashes freshly
+        # re-retrieved context in agent_state.context["remediation_context"] after
+        # a verification failure flagged a context gap, and routes back here via
+        # the "rag_remediate" -> "plan" edge. Without reading it back out, that
+        # entire remediation retrieval was a no-op: the planner replanned with
+        # the exact same (insufficient) context that caused the gap in the first
+        # place. Popped (not just read) so it is injected into this one replan
+        # only, not into every later, unrelated planning round for this goal.
+        remediation_context = agent_state.context.pop("remediation_context", "")
+        if remediation_context:
+            extra_parts.append(remediation_context)
+
         if state.get("reasoning_evidence"):
             extra_parts.append(
                 "[Reasoning mode]\nUse deliberate decomposition; private reasoning is not retained."
