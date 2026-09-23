@@ -1,4 +1,22 @@
-"""Goal chain trigger consumer — subscribes to Redis goal lifecycle events."""
+"""Goal chain trigger consumer — subscribes to Redis goal lifecycle events.
+
+NOTE: ``hitl.approved`` / ``hitl.rejected`` / ``memory.created`` are deliberately
+NOT in ``CHANNELS`` here even though goal-chain triggers can reference those
+trigger types. Those three channels are already owned exclusively by
+``HITLTriggerConsumer`` / ``MemoryTriggerConsumer`` (see
+``app/triggers/consumers/hitl.py`` / ``memory.py``), which additionally apply
+the ``hitl_queue_id`` / ``memory_type`` scoping filters this consumer does not
+implement. All three consumers are started together by
+``TriggerConsumerSupervisor``, each opening its own ``redis.pubsub()``
+subscription — Redis fans a published message out to every subscriber, so if
+this consumer also subscribed to those channels, a single HITL
+approve/reject or memory-creation event would be dispatched twice: once here
+(with a ``source_goal_id``/``completion_event_id``-keyed idempotency key) and
+once by the dedicated consumer (which does not pass those, so it derives a
+*different* key) — two different dedup keys for the same event means the
+Redis-backed dedup in ``TriggerDispatcher._is_duplicate`` never sees a
+collision, and the trigger fires (and creates a goal) twice per event.
+"""
 
 from __future__ import annotations
 
@@ -17,9 +35,6 @@ class ChainTriggerConsumer:
         "goal.completed",
         "goal.failed",
         "goal.score_below",
-        "hitl.approved",
-        "hitl.rejected",
-        "memory.created",
     ]
 
     def __init__(
@@ -89,9 +104,6 @@ class ChainTriggerConsumer:
             "goal.completed": "goal_completed",
             "goal.failed": "goal_failed",
             "goal.score_below": "goal_score_below",
-            "hitl.approved": "hitl_approved",
-            "hitl.rejected": "hitl_rejected",
-            "memory.created": "memory_created",
         }.get(channel)
 
     async def _dispatch_matching(self, trigger_type: str, data: dict, chain_depth: int) -> None:
@@ -114,7 +126,17 @@ class ChainTriggerConsumer:
             return
 
         for trigger in triggers:
-            spec = getattr(trigger, "spec", trigger)
+            # ``find_by_type_async`` returns plain dict records (the trigger's
+            # TriggerSpec lives under the "spec" key) — ``getattr(trigger, "spec",
+            # trigger)`` always fell through to the default (a dict does not expose
+            # its keys as attributes), so ``spec`` silently ended up being the raw
+            # dict on every call. ``dispatcher.dispatch()`` then raised
+            # ``AttributeError: 'dict' object has no attribute 'trigger_type'``,
+            # caught by the except-block below and merely logged — so this
+            # consumer never actually fired a single goal_completed / goal_failed
+            # / goal_score_below trigger. ``.get("spec", trigger)`` (matching
+            # HITLTriggerConsumer / MemoryTriggerConsumer) fixes the extraction.
+            spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
 
             # Filter by watch_agent_id / watch_goal_id if set
             if getattr(spec, "watch_agent_id", "") and spec.watch_agent_id != agent_id:

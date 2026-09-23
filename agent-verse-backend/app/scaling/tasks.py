@@ -2873,6 +2873,37 @@ def _deadline_due_utc(
     return target if _naive(now) >= _naive(target) else None
 
 
+_INTERVAL_EPOCH = datetime.datetime(1970, 1, 1)
+
+
+def _interval_due_slot_utc(
+    interval_seconds: int,
+    last_fired_utc: datetime.datetime | None,
+    now_utc: datetime.datetime,
+) -> datetime.datetime | None:
+    """INTERVAL: return the deterministic fire slot if the schedule is due, else None.
+
+    The slot MUST NOT be derived from wall-clock ``now_utc`` directly (e.g. via
+    ``now_utc.isoformat()``), because it doubles as the trigger's idempotency key
+    (``derive_idempotency_key`` / ``scheduled_fire_time``). Two concurrent
+    executions of ``fire_due_schedules`` (overlapping beat ticks after the
+    ``beat_task_guard`` lock expires under load, or a retry racing the prior
+    attempt) each capture their own ``now_utc`` a few milliseconds apart, so a
+    wall-clock-based key would differ between the two runs and the Redis
+    dedup (keyed on that value) would never see a collision — letting the same
+    interval firing dispatch twice. Bucketing to a fixed epoch-aligned slot
+    ("this interval's slot"), like the cron/rrule slot helpers already do, keeps
+    the key identical across concurrent, near-simultaneous evaluations.
+    """
+    if interval_seconds <= 0:
+        return None
+    if last_fired_utc is not None and (now_utc - last_fired_utc).total_seconds() < interval_seconds:
+        return None
+    elapsed = (now_utc - _INTERVAL_EPOCH).total_seconds()
+    slot_index = int(elapsed // interval_seconds)
+    return _INTERVAL_EPOCH + datetime.timedelta(seconds=slot_index * interval_seconds)
+
+
 def _is_business_time(dt_utc: datetime.datetime, tz_name: str = "UTC") -> bool:
     """True when the instant is Mon-Fri, 09:00-17:00 (local wall-clock in tz)."""
     tz = _resolve_tz(tz_name)
@@ -3477,19 +3508,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                     interval_s: int = sched.get("interval_seconds", 0)
                     if interval_s > 0:
                         last_fired = sched.get("last_fired_at")
-                        due: bool
-                        if last_fired is None:
-                            due = True
-                        else:
-                            last_dt = _schedule_datetime(last_fired)
-                            due = last_dt is None or (now - last_dt).total_seconds() >= interval_s
+                        last_dt = _schedule_datetime(last_fired) if last_fired is not None else None
+                        slot = _interval_due_slot_utc(interval_s, last_dt, now)
 
-                        if due:
+                        if slot is not None:
                             goal_kwargs = advance_and_dispatch_schedule(
                                 key,
                                 sched,
-                                fired_at=now,
-                                fire_instance_id=now.isoformat(),
+                                fired_at=slot,
+                                fire_instance_id=slot.isoformat(),
                             )
                             if goal_kwargs is not None:
                                 fired += 1

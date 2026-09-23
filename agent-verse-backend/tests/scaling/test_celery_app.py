@@ -500,6 +500,16 @@ def test_fire_due_schedules_discovers_db_schedule_without_redis(monkeypatch: Any
 
     result = tasks.fire_due_schedules()
 
+    # INTERVAL schedules derive their idempotency-bearing fire_instance_id from
+    # a deterministic epoch-aligned slot (this interval's bucket), not from raw
+    # wall-clock "now" — two concurrent evaluations of the same due schedule
+    # must agree on the fire instant. For a 60s interval that slot is "now"
+    # floored to the minute.
+    expected_slot = (
+        datetime.datetime.fromisoformat(result["checked_at"])
+        .replace(second=0, microsecond=0)
+        .isoformat()
+    )
     assert result["schedules_checked"] == 1
     assert result["schedules_fired"] == 1
     assert dispatched == [
@@ -509,7 +519,7 @@ def test_fire_due_schedules_discovers_db_schedule_without_redis(monkeypatch: Any
                 "goal_template": "Compile DB report",
                 "tenant_id": "tenant-1",
                 "agent_id": "agent-1",
-                "fire_instance_id": result["checked_at"],
+                "fire_instance_id": expected_slot,
             },
             "queue": "schedules",
         }
@@ -600,6 +610,12 @@ def test_fire_due_schedules_persists_db_interval_last_fired_at(monkeypatch: Any)
 
     result = tasks.fire_due_schedules()
 
+    # See test_fire_due_schedules_discovers_db_schedule_without_redis: INTERVAL
+    # fire instants are the deterministic epoch-aligned slot, "now" floored to
+    # the minute for a 60s interval — not raw "now".
+    expected_slot = datetime.datetime.fromisoformat(result["checked_at"]).replace(
+        second=0, microsecond=0
+    )
     assert result["schedules_checked"] == 1
     assert result["schedules_fired"] == 1
     assert dispatched[0]["kwargs"]["schedule_id"] == "schedule:tenant-1:sched-db-1"
@@ -607,7 +623,7 @@ def test_fire_due_schedules_persists_db_interval_last_fired_at(monkeypatch: Any)
         {
             "tenant_id": "tenant-1",
             "schedule_id": "sched-db-1",
-            "fired_at": datetime.datetime.fromisoformat(result["checked_at"]),
+            "fired_at": expected_slot,
         }
     ]
 
@@ -1016,16 +1032,22 @@ def test_fire_due_schedules_updates_db_when_schedule_also_exists_in_redis(
 
     result = tasks.fire_due_schedules()
 
+    # INTERVAL fire instants are the deterministic epoch-aligned slot ("now"
+    # floored to the minute for a 60s interval), not raw "now" — see
+    # test_fire_due_schedules_discovers_db_schedule_without_redis.
+    expected_slot_dt = datetime.datetime.fromisoformat(result["checked_at"]).replace(
+        second=0, microsecond=0
+    )
     assert result["schedules_checked"] == 1
     assert result["schedules_fired"] == 1
     assert direct_dispatched == []
     assert dispatched[0]["kwargs"]["schedule_id"] == "schedule:tenant-1:sched-shared"
-    assert dispatched[0]["kwargs"]["fire_instance_id"] == result["checked_at"]
+    assert dispatched[0]["kwargs"]["fire_instance_id"] == expected_slot_dt.isoformat()
     assert updates == [
         {
             "tenant_id": "tenant-1",
             "schedule_id": "sched-shared",
-            "fired_at": datetime.datetime.fromisoformat(result["checked_at"]),
+            "fired_at": expected_slot_dt,
         }
     ]
 
@@ -1360,9 +1382,16 @@ def test_fire_due_schedules_merges_redis_and_db_without_duplicate(monkeypatch: A
         "Compile shared report",
         "Compile DB-only report",
     ]
+    # INTERVAL fire instants are the deterministic epoch-aligned slot ("now"
+    # floored to the minute for a 60s interval), not raw "now" — see
+    # test_fire_due_schedules_discovers_db_schedule_without_redis.
+    expected_slot = (
+        datetime.datetime.fromisoformat(result["checked_at"])
+        .replace(second=0, microsecond=0)
+        .isoformat()
+    )
     assert all(
-        call["kwargs"]["fire_instance_id"] == result["checked_at"]
-        for call in dispatched_scheduled
+        call["kwargs"]["fire_instance_id"] == expected_slot for call in dispatched_scheduled
     )
 
 
