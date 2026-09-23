@@ -498,7 +498,15 @@ class OrgMCPServer:
                         "status": m.status,
                         "priority": m.priority,
                         "created_at": m.created_at.isoformat() if m.created_at else None,
-                        "goal_id": (m.metadata or {}).get("goal_id"),
+                        # OrgMission has no "metadata" column — "metadata" on any
+                        # SQLAlchemy declarative instance is the inherited
+                        # Base.metadata MetaData registry, not this row's JSONB
+                        # scratch field (that's "extra_data"). `.get(...)` on it
+                        # raised AttributeError on every call, which call_tool's
+                        # broad `except Exception` silently turned into
+                        # {"error": ...} — so this tool never returned mission
+                        # data in production.
+                        "goal_id": (m.extra_data or {}).get("goal_id"),
                     }
                     for m in missions
                 ]
@@ -531,7 +539,10 @@ class OrgMCPServer:
                 "completed_at": mission.completed_at.isoformat() if mission.completed_at else None,
                 "tasks_total": len(tasks),
                 "tasks_completed": sum(1 for t in tasks if t.status == "completed"),
-                "metadata": mission.metadata or {},
+                # See the identical note in _tool_list_missions above: the JSONB
+                # scratch field is "extra_data", not "metadata" (which is the
+                # inherited SQLAlchemy Base.metadata registry object).
+                "metadata": mission.extra_data or {},
             }
         finally:
             await session.close()

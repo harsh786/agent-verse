@@ -200,6 +200,39 @@ class TestIsUnderHold:
         result = await mgr.is_under_hold("t1", "resource-1")
         assert result is False
 
+    async def test_stale_redis_cache_falls_through_to_db(self) -> None:
+        """Regression: a resource newly held in the DB but not yet reflected in
+        the (non-empty) Redis cache must still be reported as held.
+
+        create_hold() does the DB INSERT and the Redis SADD as two separate
+        awaits (and the SADD is itself best-effort), so there is a real window
+        -- and a real failure mode -- where the DB already has an active hold
+        for a resource while the cached set (populated by other, older holds)
+        does not include it yet. Before the fix, is_under_hold() treated any
+        non-empty cached set as authoritative and returned False here without
+        ever consulting the DB, which would have let a deletion request racing
+        moments behind a brand-new legal hold proceed undetected.
+        """
+        mock_redis = AsyncMock()
+        # Cache is warm (non-empty) from unrelated holds, but doesn't (yet)
+        # contain "resource-1" -- the exact post-create_hold race window.
+        mock_redis.smembers = AsyncMock(return_value={"other-resource"})
+
+        mock_result = MagicMock()
+        mock_result.fetchone = MagicMock(return_value=(1,))  # DB: actively held
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        @asynccontextmanager
+        async def factory():
+            yield mock_session
+
+        mgr = _make_legal_hold_manager(redis=mock_redis, db=factory)
+        result = await mgr.is_under_hold("t1", "resource-1")
+        assert result is True
+
     async def test_redis_empty_falls_through_to_db(self) -> None:
         mock_redis = AsyncMock()
         mock_redis.smembers = AsyncMock(return_value=set())

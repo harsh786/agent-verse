@@ -11,11 +11,13 @@ Covers:
 from __future__ import annotations
 
 import types
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.gateway.mcp_server import ORG_MCP_TOOLS, MCPTool, OrgMCPServer
+from app.org.models import OrgMission
 
 ORG_ID = "org-mcp-test"
 
@@ -346,13 +348,20 @@ class TestToolListMissions:
         server = OrgMCPServer(org_id=ORG_ID)
         fake_session = AsyncMock()
         fake_svc = AsyncMock()
-        mission = MagicMock(
-            id="m1",
+        # A real OrgMission instance, not MagicMock(metadata=...): OrgMission has
+        # no "metadata" column (only "extra_data" is the JSONB scratch field), so
+        # a MagicMock built with a metadata= kwarg masks the real bug — on an
+        # actual ORM instance ".metadata" is the inherited SQLAlchemy
+        # Base.metadata registry (no .get()), not the dict callers expect.
+        mission = OrgMission(
+            id=uuid.uuid4(),
+            tenant_id="t1",
+            org_id=uuid.uuid4(),
             title="Test",
             status="active",
             priority="high",
             created_at=None,
-            metadata={"goal_id": "g1"},
+            extra_data={"goal_id": "g1"},
         )
         fake_svc.list_missions = AsyncMock(return_value=[mission])
         monkeypatch.setattr(
@@ -360,6 +369,7 @@ class TestToolListMissions:
         )
         result = await server._tool_list_missions({"status": "all"}, {})
         assert result["total"] == 1
+        assert result["missions"][0]["goal_id"] == "g1"
         fake_svc.list_missions.assert_awaited_once_with(org_id=ORG_ID, status=None, limit=20)
 
     @pytest.mark.asyncio
@@ -410,13 +420,19 @@ class TestToolGetMissionResult:
         server = OrgMCPServer(org_id=ORG_ID)
         fake_session = AsyncMock()
         fake_svc = AsyncMock()
-        mission = MagicMock(
+        # Real OrgMission (see test_with_db_status_all above for why MagicMock
+        # can't stand in here): ".metadata" on a genuine instance is the
+        # SQLAlchemy Base.metadata registry, not this row's "extra_data" JSONB.
+        mission = OrgMission(
+            id=uuid.uuid4(),
+            tenant_id="t1",
+            org_id=uuid.uuid4(),
             title="T",
             status="completed",
             objective="Obj",
             expected_outcome="Outcome",
             completed_at=None,
-            metadata={"k": "v"},
+            extra_data={"k": "v"},
         )
         fake_svc.get_mission = AsyncMock(return_value=mission)
         task1 = MagicMock(status="completed")
@@ -428,6 +444,7 @@ class TestToolGetMissionResult:
         result = await server._tool_get_mission_result({"mission_id": "m1"}, {})
         assert result["tasks_total"] == 2
         assert result["tasks_completed"] == 1
+        assert result["metadata"] == {"k": "v"}
 
 
 # ── _tool_list_pending_approvals ──────────────────────────────────────────

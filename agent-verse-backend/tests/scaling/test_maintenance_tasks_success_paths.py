@@ -413,7 +413,7 @@ class TestProcessDpdpErasures:
         db_factory = _db_factory(session)
         mock_orchestrator = MagicMock()
         mock_orchestrator.execute_deletion = AsyncMock(
-            return_value=SimpleNamespace(suspended=False)
+            return_value=SimpleNamespace(suspended=False, verified=True, residue={})
         )
 
         with (
@@ -429,6 +429,49 @@ class TestProcessDpdpErasures:
         assert result["status"] == "ok"
         assert result["processed"] == 1
         mock_orchestrator.execute_deletion.assert_awaited_once_with("t1", "dp-1")
+        # A clean, verified deletion is marked "completed".
+        update_params = session.execute.call_args_list[1].args[1]
+        assert update_params["st"] == "completed"
+
+    def test_residue_from_concurrent_write_is_not_marked_completed(self):
+        """Regression: a goal actively executing for the erased subject can write
+        a new row into a store that already had its DELETE pass (execute_deletion
+        cascades across several independent per-store transactions, so nothing
+        locks out a concurrent writer). execute_deletion's own re-scan catches
+        this as residue (verified=False), but the caller used to only branch on
+        `suspended`, so a residue-positive run was still recorded "completed" --
+        silently failing the erasure guarantee with no operator visibility."""
+        from app.scaling.tasks import process_dpdp_erasures
+
+        session = _session(
+            execute_side_effect=[
+                MagicMock(fetchall=MagicMock(return_value=[("req-1", "t1", "dp-1")])),
+                MagicMock(),
+            ]
+        )
+        db_factory = _db_factory(session)
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.execute_deletion = AsyncMock(
+            return_value=SimpleNamespace(
+                suspended=False, verified=False, residue={"goal_feedback": 1}
+            )
+        )
+
+        with (
+            patch("app.db.session.get_session_factory", return_value=db_factory),
+            patch("app.governance.audit_v3.AuditV3", return_value=MagicMock()),
+            patch(
+                "app.lifecycle.deletion_orchestrator.DeletionOrchestrator",
+                return_value=mock_orchestrator,
+            ),
+        ):
+            result = process_dpdp_erasures.run()
+
+        assert result["status"] == "ok"
+        assert result["processed"] == 1
+        update_params = session.execute.call_args_list[1].args[1]
+        assert update_params["st"] != "completed"
+        assert update_params["st"] == "verification_failed"
 
     def test_per_request_error_is_caught_and_skipped(self):
         from app.scaling.tasks import process_dpdp_erasures

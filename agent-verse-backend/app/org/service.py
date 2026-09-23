@@ -885,7 +885,16 @@ class OrgService:
                 "tags": tags or [],
                 "created_by": created_by,
                 "trigger_event": trigger_event,
-                "metadata": metadata or {},
+                # NOTE: OrgMission has no "metadata" column — that name is the
+                # SQLAlchemy declarative Base.metadata registry, which every
+                # mapped class inherits, so passing metadata= doesn't raise; it
+                # just shadows the class attribute on this instance and is NEVER
+                # persisted. The JSONB scratch field is "extra_data". This is the
+                # same silent-data-loss bug already fixed for create_task's
+                # OrgTask and record_decision's OrgDecision construction — it was
+                # missed here, and org_create_mission_execute (app/org/router.py)
+                # passes metadata=body.metadata expecting it to be saved.
+                "extra_data": metadata or {},
             }
             if status is not None:
                 mission_kwargs["status"] = status
@@ -2453,11 +2462,51 @@ class OrgService:
         emitting ``mission.progress`` (100%) and (via update_mission_status)
         ``mission.completed`` / ``mission.failed``. When the goal is not yet
         terminal it emits partial progress and returns ``finalized=False``.
+
+        Genuinely idempotent, not just idempotent-ish: this is invoked from more
+        than one place for the same mission — the worker's automatic
+        ``_finalize_owning_mission`` hook (on goal completion/failure) and the
+        manual ``POST .../finalize`` endpoint both call it, and nothing
+        serializes those two call sites. Without a guard, two overlapping calls
+        (worker callback racing a user/UI-triggered manual finalize, or a retried
+        Celery delivery) each see the mission still ``active``, so both would
+        re-run the terminal-transition side effects: append a duplicate
+        aggregated report onto ``mission.outputs``, and re-emit
+        ``mission.completed``/``mission.failed`` + a duplicate 100% ``mission.
+        progress`` event via ``update_mission_status``, which unconditionally
+        fires an event on every call regardless of whether the status actually
+        changed. ``SELECT ... FOR UPDATE`` on the mission row below serializes
+        concurrent finalizers: the loser blocks until the winner's transaction
+        commits, then observes the now-terminal status and returns early instead
+        of redoing the finalization.
         """
-        mission = await self.get_mission(mission_id)
+        result = await self._session.execute(
+            select(OrgMission)
+            .where(
+                and_(
+                    OrgMission.tenant_id == self._tenant_id,
+                    OrgMission.id == uuid.UUID(mission_id),
+                )
+            )
+            .with_for_update()
+        )
+        mission = result.scalar_one_or_none()
         if not mission:
             return {"error": "mission_not_found", "finalized": False}
         org_uuid = cast(uuid.UUID, mission.org_id)
+
+        if str(mission.status) in ("completed", "failed", "cancelled", "archived"):
+            # Already finalized by a prior (possibly concurrent) call — do not
+            # re-emit completion events or duplicate the report.
+            existing_result = (mission.extra_data or {}).get("result") or {}
+            return {
+                "mission_id": mission_id,
+                "status": str(mission.status),
+                "goal_status": existing_result.get("goal_status"),
+                "result": existing_result,
+                "finalized": True,
+                "already_finalized": True,
+            }
 
         goal_id = (mission.extra_data or {}).get("goal_id")
         goal_status: str | None = None

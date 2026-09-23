@@ -4954,7 +4954,32 @@ def process_dpdp_erasures(self: Any) -> dict:
             try:
                 # Real, verifiable erasure cascade (suspends on active legal hold).
                 receipt = await orchestrator.execute_deletion(tenant_id, dpid)
-                new_status = "suspended" if receipt.suspended else "completed"
+                # execute_deletion runs its cascade across several independent
+                # per-store transactions (see DeletionOrchestrator._apply), so a
+                # goal actively executing for this exact subject can write a new
+                # row (goal_feedback, a memory, ...) into a store that already had
+                # its DELETE pass — the cascade doesn't lock out concurrent
+                # writers. execute_deletion's own independent re-scan
+                # (verify_deleted) does catch that: receipt.verified is False and
+                # receipt.residue lists what survived. Previously this only
+                # branched on receipt.suspended, so a residue-positive run was
+                # still recorded as "completed" — silently failing the erasure
+                # guarantee with no operator visibility and no retry. Surface it
+                # as its own status instead of masquerading as success.
+                if receipt.suspended:
+                    new_status = "suspended"
+                elif not receipt.verified:
+                    new_status = "verification_failed"
+                    import logging as _logging
+
+                    _logging.getLogger(__name__).warning(
+                        "dpdp_erasure_residue_detected req_id=%s tenant=%s residue=%s",
+                        req_id,
+                        tenant_id,
+                        receipt.residue,
+                    )
+                else:
+                    new_status = "completed"
                 async with db() as session:
                     await session.execute(
                         text(

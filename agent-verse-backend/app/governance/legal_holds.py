@@ -165,15 +165,31 @@ class LegalHoldManager:
     # ------------------------------------------------------------------
 
     async def is_under_hold(self, tenant_id: str, resource_id: str) -> bool:
-        """Return True if *resource_id* is under any active hold (O(1) via Redis)."""
-        # Redis cache check (fast path)
+        """Return True if *resource_id* is under any active hold (O(1) via Redis).
+
+        Redis is only trusted as a *positive* cache: finding ``resource_id`` in
+        the cached set is proof of an active hold. Any other cache outcome
+        (empty set, error, or a non-empty set that simply doesn't contain this
+        resource yet) is NOT proof the resource isn't held -- ``create_hold``
+        inserts into the DB and only then warms Redis (two separate awaits,
+        and the warm step is itself best-effort/non-fatal on error), so there
+        is a real window right after a hold is created where the DB already
+        has it but Redis doesn't yet. Previously, whenever the cached set was
+        non-empty (e.g. populated by *other* holds) this returned a confident
+        "not held" straight from that possibly-stale set without ever checking
+        the DB, so a deletion racing a few milliseconds behind a brand-new
+        hold could slip through undetected. Only a genuine Redis error still
+        falls through for the same reason as before.
+        """
+        # Redis cache check (fast path) — a hit is authoritative; anything
+        # else falls through to the DB, which is the source of truth.
         if self._redis is not None:
             try:
                 cache_key = _CACHE_KEY.format(tenant_id=tenant_id)
                 members = await self._redis.smembers(cache_key)
-                if members:
-                    str_members = {m.decode() if isinstance(m, bytes) else m for m in members}
-                    return resource_id in str_members
+                str_members = {m.decode() if isinstance(m, bytes) else m for m in members}
+                if resource_id in str_members:
+                    return True
             except Exception as exc:
                 logger.warning("legal_hold_cache_check_error", error=str(exc))
                 # Fall through to DB

@@ -89,7 +89,13 @@ class ComplianceController:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, req.tenant_id),
+            ):
                 await session.execute(
                     text(
                         """INSERT INTO compliance_requests
@@ -119,7 +125,19 @@ class ComplianceController:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            # NOTE: compliance_requests has RLS FORCE'd (migration 0026/0767fe9d87bfe).
+            # Every read/write here previously ran with no `app.tenant_id` GUC set at
+            # all, so under any non-BYPASSRLS DB role (the least-privilege role this
+            # app actually provisions in production and in integration tests) the
+            # policy's `tenant_id = current_setting('app.tenant_id', TRUE)` check was
+            # never satisfiable -- every call silently failed (caught below) and fell
+            # back to the in-process dict, so GDPR export request state never
+            # actually reached Postgres despite the class docstring's promise that it
+            # does. Only invisible under a superuser/BYPASSRLS connection (RLS never
+            # applies to those), which is why this went unnoticed.
+            async with self._db() as session, sqlalchemy_rls_context(session, tenant_id):
                 row = (
                     await session.execute(
                         text(
