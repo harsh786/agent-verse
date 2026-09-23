@@ -2244,11 +2244,26 @@ def run_goal(
         _record_goal_duration_metric(
             "failed", started_monotonic=started_monotonic, priority=priority
         )
-        _run_async(mark_worker_failed(exc))
-        try:
-            raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
-        except self.MaxRetriesExceededError:
-            # Route to dead-letter queue
+        # Decide BEFORE calling self.retry() whether this is the final,
+        # unrecoverable attempt. Celery's Task.retry(exc=exc, ...) re-raises the
+        # *original* exception once retries are exhausted whenever `exc` is
+        # passed while an exception is active (see
+        # celery.app.task.raise_with_context: it does a bare ``raise`` when
+        # ``sys.exc_info()[1] is exc``) instead of raising
+        # MaxRetriesExceededError. That means the ``except
+        # self.MaxRetriesExceededError`` handler below never actually fires —
+        # so DLQ enqueue, the terminal DB status update, and the tenant
+        # concurrent-goal counter decrement were silently skipped on every
+        # goal that truly exhausted its retries (a permanently-broken goal
+        # would fail as a bare Celery task exception with none of that
+        # bookkeeping, and the per-tenant concurrency counter would leak
+        # forever). Checking self.request.retries here is the only reliable
+        # way to detect exhaustion.
+        _retries_exhausted = self.request.retries >= self.max_retries
+        if _retries_exhausted:
+            # Terminal failure: do the once-only bookkeeping now and return,
+            # instead of calling self.retry() (which would just re-raise
+            # `exc` and skip everything below).
             with contextlib.suppress(Exception):
                 run_goal_dlq.delay(
                     goal_id=goal_id,
@@ -2256,7 +2271,6 @@ def run_goal(
                     goal_text=effective_goal,
                     reason="max_retries_exceeded",
                 )
-            # Still update DB to failed
             _run_async(
                 mark_worker_failed(
                     RuntimeError(f"Goal {goal_id} exceeded max retries, routed to DLQ")
@@ -2265,6 +2279,25 @@ def run_goal(
             # Decrement counter — goal is permanently done
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "dead_lettered", "goal_id": goal_id}
+
+        # Not yet exhausted: this goal is about to be retried, so it is NOT
+        # terminally failed. Previously `mark_worker_failed(exc)` ran
+        # unconditionally here, which set the goal's DB status to "failed"
+        # and (via _finalize_owning_mission) permanently finalized any owning
+        # org mission on a purely transient error (rate limit, network blip,
+        # etc.) before the retry had a chance to succeed. finalize_mission
+        # only reconciles missions that are still "active", so a later
+        # successful retry's own mark_worker_complete -> _finalize_owning_
+        # mission call became a silent no-op — the mission stayed wrongly
+        # "failed" forever even though the goal went on to complete.
+        logger.warning(
+            "goal_transient_failure_will_retry goal_id=%s attempt=%s/%s error=%s",
+            goal_id,
+            self.request.retries + 1,
+            self.max_retries,
+            exc,
+        )
+        raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
     finally:
         # Release distributed lock
         if _lock:
