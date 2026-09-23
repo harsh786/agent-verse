@@ -198,21 +198,31 @@ class HITLGateway:
         status: str,
         approver: str = "",
         note: str = "",
-    ) -> None:
+    ) -> bool:
         """Persist a resolution (approved/rejected/expired) to the DB row.
 
         Without this, ``approve``/``reject`` only mutated the in-memory request;
         the ``approval_requests`` row stayed ``pending`` and ``startup_restore``
         re-hydrated it on the next restart — so an approved gate reappeared in the
         inbox. Writing the terminal status here makes an approval durable.
+
+        Returns ``True`` when this call's UPDATE actually flipped the row (i.e. it
+        won the ``WHERE status = 'pending'`` compare-and-swap), ``False`` when the
+        row was already resolved by someone else (another replica, or a racing
+        approve/reject on this one) — the caller uses this to detect a lost
+        cross-replica race instead of assuming its own decision took effect.
+        When no DB is configured there is no cross-replica concern, so this
+        returns ``True`` (matches the pre-existing in-memory-only behavior).
+        On a DB error it also returns ``True`` (fail-open) so a transient DB
+        hiccup doesn't newly block an approval that used to succeed.
         """
         if self._db_session_factory is None:
-            return
+            return True
         try:
             from sqlalchemy import text
 
             async with self._db_session_factory() as session, session.begin():
-                await session.execute(
+                result = await session.execute(
                     text(
                         "UPDATE approval_requests "
                         "SET status = :s, approver = :a, note = :n, resolved_at = NOW() "
@@ -226,15 +236,85 @@ class HITLGateway:
                         "tid": tenant_id,
                     },
                 )
+            return bool(result.rowcount)
         except Exception as exc:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("hitl_db_resolve_failed", error=str(exc))
+            return True
+
+    async def _db_read_status(self, request_id: str, tenant_id: str) -> str | None:
+        """Read the DB-authoritative status for a request, or ``None`` if unavailable."""
+        if self._db_session_factory is None:
+            return None
+        try:
+            from sqlalchemy import text
+
+            async with self._db_session_factory() as session:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT status FROM approval_requests "
+                            "WHERE id = :id AND tenant_id = :tid"
+                        ),
+                        {"id": request_id, "tid": tenant_id},
+                    )
+                ).first()
+            return str(row[0]) if row else None
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_db_read_status_failed", error=str(exc))
+            return None
+
+    async def _reconcile_after_db_resolution(
+        self, request_id: str, tenant_id: str, status: str, approver: str, note: str
+    ) -> None:
+        """Persist a resolution and self-heal local state on a lost cross-replica race.
+
+        If this replica's write lost the DB compare-and-swap (another replica —
+        or another racing call on this one — already resolved the request with
+        a possibly *different* outcome), the local in-memory copy would
+        otherwise stay stuck on the outcome this call optimistically assumed,
+        forever disagreeing with the DB and with any other replica. Re-reading
+        the DB's real status and applying it locally makes any late waiter
+        (asyncio.Event or a fresh ``wait_for_approval`` call on this replica)
+        observe the true, DB-arbitrated decision instead of a phantom one.
+        """
+        won = await self._db_update_resolution(request_id, tenant_id, status, approver, note)
+        if won:
+            return
+        real_status = await self._db_read_status(request_id, tenant_id)
+        mapped = {
+            "approved": ApprovalStatus.APPROVED,
+            "rejected": ApprovalStatus.REJECTED,
+            "timed_out": ApprovalStatus.TIMED_OUT,
+            "expired": ApprovalStatus.TIMED_OUT,
+        }.get(real_status or "")
+        req = self._requests.get((tenant_id, request_id))
+        if mapped is None or req is None or req.status == mapped:
+            return
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning(
+            "hitl_cross_replica_conflict_resolved",
+            request_id=request_id,
+            attempted=status,
+            actual=real_status,
+        )
+        req.status = mapped
+        req._event.set()
 
     def _schedule_db_resolution(
         self, request_id: str, tenant_id: str, status: str, approver: str = "", note: str = ""
     ) -> None:
-        """Fire-and-forget the DB resolution write (same pattern as create-persist)."""
+        """Fire-and-forget the DB resolution write (same pattern as create-persist).
+
+        Uses ``_reconcile_after_db_resolution`` rather than a bare
+        ``_db_update_resolution`` call so that a lost cross-replica CAS race is
+        self-healed instead of leaving this replica's in-memory state stuck on
+        an outcome the DB never actually recorded.
+        """
         if self._db_session_factory is None:
             return
         import asyncio as _aio
@@ -242,7 +322,7 @@ class HITLGateway:
         try:
             loop = _aio.get_running_loop()
             loop.create_task(  # noqa: RUF006
-                self._db_update_resolution(request_id, tenant_id, status, approver, note)
+                self._reconcile_after_db_resolution(request_id, tenant_id, status, approver, note)
             )
         except RuntimeError:
             pass  # No running loop (shouldn't happen in async context)
@@ -416,12 +496,27 @@ class HITLGateway:
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
             return False
+
+        # Cross-replica CAS guard: gate the *local* transition on the DB write
+        # actually winning (rowcount > 0), instead of committing to REJECTED
+        # and reporting success before we know whether another replica (or a
+        # racing approve() on this one) already resolved the same request with
+        # a different outcome. Without this, two operators hitting two
+        # different pods — one clicking Approve, one clicking Reject on the
+        # same request — could both get a 200 success response with
+        # contradictory decisions, even though only one can really be true in
+        # the DB. Awaiting it here (reject() is always called with `await`)
+        # means the loser correctly reports failure instead of a false
+        # success.
+        if not await self._db_update_resolution(
+            request_id, tenant_ctx.tenant_id, "rejected", approver, note
+        ):
+            return False
+
         req.status = ApprovalStatus.REJECTED
         req.approver = approver
         req.note = note
         req._event.set()  # Unblock waiting agent
-        # Durably record the rejection so it survives a restart.
-        self._schedule_db_resolution(request_id, tenant_ctx.tenant_id, "rejected", approver, note)
 
         # Phase 12: Publish rejection with note so goal_service can forward to planner
         if self._redis is not None:

@@ -236,7 +236,6 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         allowed_weekdays=body.allowed_weekdays,
         tenant_id=tenant_ctx.tenant_id,
     )
-    engine.add_policy(policy)
 
     record: dict[str, Any] = {
         "policy_id": policy_id,
@@ -248,8 +247,15 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
         "allowed_hours_utc": body.allowed_hours_utc,
         "allowed_weekdays": body.allowed_weekdays,
     }
-    registry.setdefault(tenant_ctx.tenant_id, {})[policy_id] = record
-    await _db_create_policy(request, tenant_ctx.tenant_id, record)
+    # Hold the engine's reload lock across the in-memory add + DB insert so
+    # this can't interleave with a concurrent reload_from_db() for the same
+    # tenant (e.g. this same create's own pub/sub echo, or another operator's
+    # change) — otherwise the reload's stale-snapshot replace can silently
+    # wipe this policy back out of `_policies` right after we added it.
+    async with engine.lock:
+        engine.add_policy(policy)
+        registry.setdefault(tenant_ctx.tenant_id, {})[policy_id] = record
+        await _db_create_policy(request, tenant_ctx.tenant_id, record)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="created")
     return record
@@ -283,13 +289,18 @@ async def delete_policy(request: Request, policy_id: str) -> None:
     # Matching only on name (without tenant check) would delete identically-named
     # policies belonging to other tenants — the critical isolation bug. Other pods
     # re-sync their engine from the DB via the pub/sub publish below.
-    engine._policies = [  # type: ignore[attr-defined]
-        p
-        for p in engine._policies  # type: ignore[attr-defined]
-        if not (p.name == record["name"] and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id)
-    ]
-    tenant_policies.pop(policy_id, None)
-    await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
+    # Held under the engine's reload lock (see create_policy) so this can't
+    # interleave with a concurrent reload_from_db() for the same tenant.
+    async with engine.lock:
+        engine._policies = [  # type: ignore[attr-defined]
+            p
+            for p in engine._policies  # type: ignore[attr-defined]
+            if not (
+                p.name == record["name"] and getattr(p, "tenant_id", "") == tenant_ctx.tenant_id
+            )
+        ]
+        tenant_policies.pop(policy_id, None)
+        await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="deleted")
 

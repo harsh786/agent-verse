@@ -2,14 +2,176 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
 
-from app.governance.hitl import ApprovalStatus, HITLGateway
+from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
 from app.tenancy.context import PlanTier, TenantContext
 
 T = TenantContext(tenant_id="hitl-t1", plan=PlanTier.ENTERPRISE, api_key_id="k1", roles=())
+
+
+# ---------------------------------------------------------------------------
+# Fake DB session factory — mimics the exact CAS semantics of the real
+# ``UPDATE approval_requests ... WHERE status = 'pending'`` statement
+# HITLGateway issues, backed by a plain dict shared across two HITLGateway
+# instances (simulating two replicas that both write through to one Postgres).
+# ---------------------------------------------------------------------------
+
+
+class _FakeResult:
+    def __init__(self, rowcount: int = 0, row: tuple[Any, ...] | None = None) -> None:
+        self.rowcount = rowcount
+        self._row = row
+
+    def first(self) -> tuple[Any, ...] | None:
+        return self._row
+
+
+class _FakeTxn:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _FakeSession:
+    def __init__(self, store: dict[tuple[str, str], str]) -> None:
+        self._store = store
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def begin(self) -> _FakeTxn:
+        return _FakeTxn()
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _FakeResult:
+        sql = str(stmt)
+        params = params or {}
+        key = (params.get("id"), params.get("tid"))
+        if "UPDATE approval_requests" in sql:
+            if self._store.get(key) == "pending":
+                self._store[key] = params["s"]
+                return _FakeResult(rowcount=1)
+            return _FakeResult(rowcount=0)
+        if "SELECT status FROM approval_requests" in sql:
+            status = self._store.get(key)
+            return _FakeResult(row=(status,) if status is not None else None)
+        return _FakeResult(rowcount=0)
+
+
+class _FakeSessionFactory:
+    """Shared fake DB backing multiple HITLGateway 'replicas' with real CAS semantics."""
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str], str] = {}
+
+    def __call__(self) -> _FakeSession:
+        return _FakeSession(self.store)
+
+
+class TestApproveRejectCrossReplicaRace:
+    """Two operators resolve the same request via two different replicas.
+
+    Each ``HITLGateway`` only holds its OWN in-memory copy of the pending
+    request (exactly as it would after ``load_pending_from_db_full`` on two
+    separate pods, or after the request was created on one pod and the
+    approve/reject HTTP call landed on another). The shared DB is the only
+    real cross-replica arbiter. Before the fix, ``approve()``/``reject()``
+    decided success purely from local memory and fired the DB write
+    fire-and-forget without ever checking whether it actually won the
+    ``WHERE status = 'pending'`` compare-and-swap — so the "losing" replica
+    still reported success for a decision the DB silently discarded.
+    """
+
+    @pytest.mark.asyncio
+    async def test_reject_loses_race_reports_failure_not_false_success(self) -> None:
+        """reject() must not report success once another replica already approved."""
+        db = _FakeSessionFactory()
+        db.store[("req-1", T.tenant_id)] = "pending"
+
+        gw_a = HITLGateway(timeout_seconds=5.0)
+        gw_b = HITLGateway(timeout_seconds=5.0)
+        gw_a._db_session_factory = db
+        gw_b._db_session_factory = db
+
+        req_a = ApprovalRequest(
+            goal_id="g1", action="deploy", risk_level="high", request_id="req-1"
+        )
+        req_b = ApprovalRequest(
+            goal_id="g1", action="deploy", risk_level="high", request_id="req-1"
+        )
+        gw_a._requests[(T.tenant_id, "req-1")] = req_a
+        gw_b._requests[(T.tenant_id, "req-1")] = req_b
+
+        # Operator 1 approves via replica A, and that write lands in the DB.
+        approve_ok = bool(gw_a.approve("req-1", approver="alice", tenant_ctx=T))
+        await asyncio.sleep(0.05)  # let approve()'s fire-and-forget DB write land
+        assert db.store[("req-1", T.tenant_id)] == "approved"
+
+        # Operator 2's pod never heard about that — its local copy still shows
+        # PENDING — and they click Reject.
+        reject_ok = await gw_b.reject("req-1", approver="bob", tenant_ctx=T)
+
+        assert approve_ok is True
+        assert reject_ok is False, (
+            "reject() reported success even though the request was already "
+            "approved in the DB by another replica — the operator on "
+            "replica B would be told their rejection worked when it "
+            "silently did nothing"
+        )
+        assert db.store[("req-1", T.tenant_id)] == "approved", "DB truth must be unchanged"
+        assert req_b.status == ApprovalStatus.PENDING, (
+            "a losing reject() must not flip its own local status to REJECTED"
+        )
+
+    @pytest.mark.asyncio
+    async def test_approve_losing_race_self_heals_local_state(self) -> None:
+        """A losing approve() must reconcile local state to the DB's real outcome."""
+        db = _FakeSessionFactory()
+        db.store[("req-2", T.tenant_id)] = "pending"
+
+        gw_a = HITLGateway(timeout_seconds=5.0)
+        gw_b = HITLGateway(timeout_seconds=5.0)
+        gw_a._db_session_factory = db
+        gw_b._db_session_factory = db
+
+        req_a = ApprovalRequest(
+            goal_id="g1", action="deploy", risk_level="high", request_id="req-2"
+        )
+        req_b = ApprovalRequest(
+            goal_id="g1", action="deploy", risk_level="high", request_id="req-2"
+        )
+        gw_a._requests[(T.tenant_id, "req-2")] = req_a
+        gw_b._requests[(T.tenant_id, "req-2")] = req_b
+
+        # Operator 1 rejects via replica B first; the write lands immediately
+        # since reject() now awaits its DB CAS inline.
+        reject_ok = await gw_b.reject("req-2", approver="bob", tenant_ctx=T)
+        assert reject_ok is True
+        assert db.store[("req-2", T.tenant_id)] == "rejected"
+
+        # Operator 2's pod (replica A) never heard about that — its local
+        # copy still shows PENDING — and they click Approve.
+        approve_ok = bool(gw_a.approve("req-2", approver="alice", tenant_ctx=T))
+        assert approve_ok is True  # approve() is sync-only and reports optimistically
+        assert req_a.status == ApprovalStatus.APPROVED  # phantom local state, not yet reconciled
+
+        # Once the fire-and-forget reconciliation runs, replica A must
+        # self-heal to the DB's real, already-arbitrated outcome instead of
+        # staying stuck on an "approved" that never actually took effect.
+        await asyncio.sleep(0.05)
+        assert req_a.status == ApprovalStatus.REJECTED, (
+            "replica A's in-memory approval state was left permanently "
+            "inconsistent with the DB after losing the cross-replica race"
+        )
+        assert db.store[("req-2", T.tenant_id)] == "rejected"
 
 
 class TestApprovePublishesRedis:
