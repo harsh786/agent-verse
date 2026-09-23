@@ -1175,6 +1175,106 @@ async def test_cancel_goal_persists_status_to_db() -> None:
     assert (created["goal_id"], _CTX_A.tenant_id, GoalStatus.CANCELLED.value) in captured
 
 
+# ── pause_goal ────────────────────────────────────────────────────────────────
+
+
+async def test_pause_goal_persists_status_to_db() -> None:
+    """Regression: pause must write 'waiting_human' to the DB, not only in memory.
+
+    cancel_goal already does this (see test_cancel_goal_persists_status_to_db);
+    pause_goal did not, so _refresh_goal_from_db_if_needed reloads the stale
+    'executing' row on the very next read whenever a task_queue is configured
+    (Celery/multi-replica mode always refreshes regardless of status — see
+    _should_refresh_goal_from_db) — silently un-pausing the goal from every
+    caller's point of view.
+    """
+    captured: list[tuple[str, str, str]] = []
+
+    class _SpyService(GoalService):
+        async def _db_update_goal_status(  # type: ignore[override]
+            self, goal_id: str, tenant_id: str, status: str, *a: Any, **k: Any
+        ) -> None:
+            captured.append((goal_id, tenant_id, status))
+
+    svc = _SpyService(db_session_factory=object())
+    created = await svc.submit_goal(
+        goal="Long running analysis", priority="normal", dry_run=True, tenant_ctx=_CTX_A
+    )
+    # dry_run goals complete synchronously; force a non-terminal status so
+    # pause_goal doesn't reject it as "not running".
+    svc._goals[created["goal_id"]].status = GoalStatus.EXECUTING
+    await svc.pause_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
+
+    assert (created["goal_id"], _CTX_A.tenant_id, GoalStatus.WAITING_HUMAN.value) in captured
+
+
+async def test_pause_goal_status_survives_concurrent_get_goal_poll() -> None:
+    """Regression (race): a status poll racing a pause must see 'waiting_human'.
+
+    Simulates the real production topology this repo runs in Celery mode: a
+    task_queue is configured, so every get_goal() call unconditionally refreshes
+    the record from the DB (_should_refresh_goal_from_db returns True whenever
+    self._task_queue is not None, regardless of status). Races pause_goal()
+    against a concurrent get_goal() poll (e.g. a dashboard or another replica)
+    with asyncio.gather — before the fix, pause_goal never wrote through to the
+    DB, so the concurrent poll always read back the stale 'executing' row and
+    reported the goal as still running even though the caller who paused it was
+    told it succeeded.
+    """
+    goal_id = "g-pause-race"
+
+    class _FakeDBGoalService(GoalService):
+        def __init__(self, *a: Any, **k: Any) -> None:
+            super().__init__(*a, **k)
+            self.fake_db_status: dict[str, str] = {}
+
+        async def _db_update_goal_status(  # type: ignore[override]
+            self, goal_id: str, tenant_id: str, status: str, *a: Any, **k: Any
+        ) -> None:
+            self.fake_db_status[goal_id] = status
+
+        async def _db_get_goal_record(  # type: ignore[override]
+            self, goal_id: str, tenant_ctx: TenantContext
+        ) -> GoalRecord | None:
+            status = self.fake_db_status.get(goal_id)
+            if status is None:
+                return None
+            record = GoalRecord(
+                goal_id=goal_id,
+                goal_text="race goal",
+                status=GoalStatus(status),
+                tenant_id=tenant_ctx.tenant_id,
+                priority="normal",
+                dry_run=False,
+                created_at="2024-01-01T00:00:00",
+            )
+            self._goals[goal_id] = record
+            return record
+
+    svc = _FakeDBGoalService(db_session_factory=object(), task_queue=FakeGoalQueue())
+    svc._goals[goal_id] = GoalRecord(
+        goal_id=goal_id,
+        goal_text="race goal",
+        status=GoalStatus.EXECUTING,
+        tenant_id=_CTX_A.tenant_id,
+        priority="normal",
+        dry_run=False,
+        created_at="2024-01-01T00:00:00",
+    )
+    svc.fake_db_status[goal_id] = GoalStatus.EXECUTING.value
+
+    pause_result, get_result = await asyncio.gather(
+        svc.pause_goal(goal_id, _CTX_A),
+        svc.get_goal(goal_id, _CTX_A),
+    )
+
+    assert pause_result["status"] == "paused"
+    assert get_result["status"] == GoalStatus.WAITING_HUMAN.value, (
+        "a concurrent get_goal() must observe the pause, not the DB's stale "
+        "'executing' row"
+    )
+
+
 # ── get_events ────────────────────────────────────────────────────────────────
 
 

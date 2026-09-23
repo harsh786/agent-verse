@@ -3428,6 +3428,16 @@ class GoalService:
             raise ValueError(f"Goal {goal_id} is not running (status: {record.status.value})")
         _GOAL_PAUSE_EVENTS[goal_id] = asyncio.Event()
         record.status = GoalStatus.WAITING_HUMAN
+        # Persist to the DB directly, mirroring the cancel_goal fix: a concurrent
+        # (or merely subsequent) get_goal() call refreshes from the DB whenever a
+        # task_queue is configured — regardless of status — via
+        # _should_refresh_goal_from_db. Without this write, that refresh reloads
+        # the stale "executing" row and silently un-pauses the goal from every
+        # caller's point of view (while the operator believes it is paused and
+        # the worker may in fact be blocked on the Redis pause flag).
+        await self._db_update_goal_status(
+            goal_id, tenant_ctx.tenant_id, GoalStatus.WAITING_HUMAN.value
+        )
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
 
         # Signal via Redis for cross-process Celery workers.
@@ -3457,6 +3467,22 @@ class GoalService:
         record = self._get_record(goal_id, tenant_ctx)
         if record.status in _TERMINAL_STATUSES:
             raise ValueError(f"Goal {goal_id} is already terminal (status: {record.status.value})")
+        if record.status != GoalStatus.WAITING_HUMAN:
+            # Idempotency guard: without this, a duplicate/racing resume_goal
+            # call (double-click, retried request, etc.) that arrives after the
+            # first call has already flipped the record out of WAITING_HUMAN
+            # (e.g. to EXECUTING, below) would pass the "not terminal" check
+            # above and re-run this whole method a second time — firing a
+            # second fire-and-forget graph._graph.astream(resume_input,
+            # config=config) task against the *same* LangGraph checkpoint
+            # thread_id concurrently with the first. Two concurrent astream()
+            # calls against one checkpoint thread can interleave writes and
+            # duplicate side effects (e.g. re-run the step the HITL gate was
+            # blocking on). Requiring WAITING_HUMAN specifically closes that
+            # window: the second call now raises instead of double-resuming.
+            raise ValueError(
+                f"Goal {goal_id} is not waiting for human approval (status: {record.status.value})"
+            )
 
         if not approved:
             record.status = GoalStatus.FAILED
@@ -3467,6 +3493,9 @@ class GoalService:
             # and inject it into the reflection prompt.
             record.hitl_rejection_note = feedback
             record.execution_context["hitl_rejection_note"] = feedback
+            await self._db_update_goal_status(
+                goal_id, tenant_ctx.tenant_id, GoalStatus.FAILED.value
+            )
             await self._dispatch_event(
                 goal_id,
                 {"type": "goal_failed", "reason": f"HITL rejected: {feedback}"},
@@ -3504,6 +3533,9 @@ class GoalService:
 
                 _asyncio.create_task(_resume_graph())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 record.status = GoalStatus.EXECUTING
+                await self._db_update_goal_status(
+                    goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
+                )
                 # C4 fix: clear Redis pause flag on checkpoint-based resume path too
                 try:
                     from app.reliability.goal_lifecycle import signal_resume as _signal_resume_cp
@@ -3522,6 +3554,9 @@ class GoalService:
 
         # Fallback: fire any waiting asyncio pause-event (legacy path)
         record.status = GoalStatus.EXECUTING
+        await self._db_update_goal_status(
+            goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
+        )
         record.events.append(
             {"type": "hitl_approved", "feedback": feedback, "ts": datetime.now(UTC).isoformat()}
         )

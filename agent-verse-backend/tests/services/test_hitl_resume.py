@@ -199,3 +199,55 @@ async def test_resume_goal_dispatches_resumed_event() -> None:
 
     types = [e.get("type") for e in received_events]
     assert "goal_resumed" in types, f"goal_resumed event not dispatched; got: {types}"
+
+
+@pytest.mark.asyncio
+async def test_resume_goal_concurrent_calls_do_not_double_resume() -> None:
+    """Regression (race): racing two resume_goal() calls must not both succeed.
+
+    resume_goal() used to only reject already-*terminal* statuses. A duplicate
+    or racing call (double-click "Approve", a retried HTTP request, two
+    replicas both handling the same webhook) arriving after the first call had
+    already flipped record.status from WAITING_HUMAN to EXECUTING would still
+    pass that guard (EXECUTING is not terminal) and re-run the whole method —
+    including scheduling a *second* fire-and-forget
+    ``graph._graph.astream(resume_input, config=config)`` task against the
+    exact same LangGraph checkpoint thread_id, concurrently with the first.
+    Races two resume_goal() calls with asyncio.gather and asserts the graph's
+    astream() is invoked exactly once.
+    """
+    svc = GoalService()
+    record = _make_waiting_goal(svc, goal_id="g-race-1")
+
+    streamed_inputs: list[Any] = []
+
+    class FakeGraph:
+        async def astream(self, input_state: Any, config: Any):
+            streamed_inputs.append(input_state)
+            yield {"result": "ok"}
+
+    class FakeAgentGraph:
+        _graph = FakeGraph()
+
+    record._graph_instance = FakeAgentGraph()
+
+    results = await asyncio.gather(
+        svc.resume_goal("g-race-1", _CTX, approved=True, feedback="a"),
+        svc.resume_goal("g-race-1", _CTX, approved=True, feedback="b"),
+        return_exceptions=True,
+    )
+
+    # Let both fire-and-forget _resume_graph() tasks (if more than one was
+    # scheduled) actually run.
+    await asyncio.sleep(0.05)
+
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    failures = [r for r in results if isinstance(r, BaseException)]
+
+    assert len(successes) == 1, f"exactly one resume_goal call should succeed, got {results}"
+    assert len(failures) == 1
+    assert isinstance(failures[0], ValueError)
+    assert len(streamed_inputs) == 1, (
+        "graph.astream() must be invoked exactly once even when two resume_goal "
+        f"calls race — got {len(streamed_inputs)} invocations"
+    )
