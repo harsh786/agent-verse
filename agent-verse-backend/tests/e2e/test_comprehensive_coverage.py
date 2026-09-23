@@ -824,11 +824,16 @@ async def test_goal_service_cancel():
     T = TenantContext(
         tenant_id="gs-cancel-t1", plan=PlanTier.FREE, api_key_id="gsc1"
     )
+    from app.agent.state import GoalStatus
+
     svc = GoalService()
     result = await svc.submit_goal(
         goal="cancel me", priority="normal", dry_run=True, tenant_ctx=T
     )
     gid = result["goal_id"]
+    # dry_run goals complete synchronously; force a non-terminal status so
+    # this actually exercises cancelling a running goal.
+    svc._goals[gid].status = GoalStatus.EXECUTING
     cancelled = await svc.cancel_goal(goal_id=gid, tenant_ctx=T)
     assert cancelled["status"] == "cancelled"
 

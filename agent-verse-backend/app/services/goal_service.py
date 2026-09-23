@@ -3396,6 +3396,8 @@ class GoalService:
     async def cancel_goal(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
         """Cancel a running goal.  Idempotent if the goal is already terminal."""
         record = self._get_record(goal_id, tenant_ctx)
+        if record.status in _TERMINAL_STATUSES:
+            return {"goal_id": goal_id, "status": record.status.value}
         if record.task is not None and not record.task.done():
             record.task.cancel()
 

@@ -66,19 +66,23 @@ async def test_goal_service_subscribe_events_dry_run_terminates() -> None:
 
 
 async def test_goal_service_cancel_already_terminal() -> None:
-    """Cancelling a terminal goal is idempotent — returns cancelled both times."""
+    """Cancelling a terminal goal is idempotent — it must not overwrite the
+    goal's existing terminal status (e.g. a completed goal must not be
+    downgraded to "cancelled" by a stray/late cancel call)."""
     svc = GoalService()
     result = await svc.submit_goal(
         goal="cancel terminal", priority="normal", dry_run=True, tenant_ctx=T
     )
     gid = result["goal_id"]
+    # dry_run goals complete synchronously, so by this point the goal is
+    # already terminal ("complete") before cancel is ever called.
 
     r1 = await svc.cancel_goal(goal_id=gid, tenant_ctx=T)
-    assert r1["status"] == "cancelled"
+    assert r1["status"] == "complete"
 
-    # Second cancel must not raise
+    # Second cancel must not raise, and must not change the outcome either
     r2 = await svc.cancel_goal(goal_id=gid, tenant_ctx=T)
-    assert r2["status"] == "cancelled"
+    assert r2["status"] == "complete"
 
 
 async def test_goal_service_handle_approval_approve() -> None:

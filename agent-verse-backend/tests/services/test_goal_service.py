@@ -1102,6 +1102,10 @@ async def test_cancel_goal(svc: GoalService) -> None:
         dry_run=True,
         tenant_ctx=_CTX_A,
     )
+    # dry_run goals complete synchronously; force a non-terminal status so this
+    # actually exercises cancelling a running goal rather than a no-op on an
+    # already-complete one.
+    svc._goals[created["goal_id"]].status = GoalStatus.EXECUTING
     result = await svc.cancel_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
     assert result["status"] == GoalStatus.CANCELLED.value
     assert result["goal_id"] == created["goal_id"]
@@ -1114,6 +1118,34 @@ async def test_cancel_goal(svc: GoalService) -> None:
 async def test_cancel_nonexistent_goal_raises(svc: GoalService) -> None:
     with pytest.raises(NotFoundError):
         await svc.cancel_goal(goal_id="no-such-goal", tenant_ctx=_CTX_A)
+
+
+async def test_cancel_goal_is_noop_on_already_complete_goal(svc: GoalService) -> None:
+    """Regression: cancel must not downgrade a terminal goal's status.
+
+    cancel_goal's own docstring claims it is "idempotent if the goal is already
+    terminal", but the implementation used to unconditionally overwrite
+    record.status = CANCELLED with no guard. A stray/late cancel call arriving
+    after a goal already completed (or failed) would silently corrupt its
+    terminal status — and downstream consumers like
+    OrgService.finalize_mission read goal status to decide mission outcome, so
+    this could flip a successful mission to "failed" after the fact.
+    """
+    created = await svc.submit_goal(
+        goal="Quick analysis",
+        priority="normal",
+        dry_run=True,
+        tenant_ctx=_CTX_A,
+    )
+    record = svc._goals[created["goal_id"]]
+    record.status = GoalStatus.COMPLETE
+
+    result = await svc.cancel_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
+
+    assert result["status"] == GoalStatus.COMPLETE.value
+    assert record.status == GoalStatus.COMPLETE
+    fetched = await svc.get_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
+    assert fetched["status"] == GoalStatus.COMPLETE.value
 
 
 async def test_cancel_goal_persists_status_to_db() -> None:
@@ -1135,6 +1167,9 @@ async def test_cancel_goal_persists_status_to_db() -> None:
     created = await svc.submit_goal(
         goal="Long running analysis", priority="normal", dry_run=True, tenant_ctx=_CTX_A
     )
+    # dry_run goals complete synchronously; force a non-terminal status so
+    # cancel_goal doesn't short-circuit its now-guarded idempotent no-op path.
+    svc._goals[created["goal_id"]].status = GoalStatus.EXECUTING
     await svc.cancel_goal(goal_id=created["goal_id"], tenant_ctx=_CTX_A)
 
     assert (created["goal_id"], _CTX_A.tenant_id, GoalStatus.CANCELLED.value) in captured
