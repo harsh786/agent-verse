@@ -372,14 +372,30 @@ class RedisCostController:
 
         cfg = self._tenant_configs.get(resolved_id, BudgetConfig())
         remaining = max(0.0, cfg.per_tenant_daily_usd - daily_spent)
+        daily_pct_remaining = remaining / max(cfg.per_tenant_daily_usd, 0.01)
 
-        return {
+        result: dict[str, Any] = {
             "daily_spent": daily_spent,
             "daily_limit": cfg.per_tenant_daily_usd,
             "daily_remaining": remaining,
-            "budget_pct_remaining": remaining / max(cfg.per_tenant_daily_usd, 0.01),
+            "budget_pct_remaining": daily_pct_remaining,
             "goal_spent": goal_spent,
         }
+
+        # A goal that is close to exhausting ITS OWN per_goal_usd cap must be
+        # reflected here too — otherwise get_cost_tier() (which drives model
+        # auto-downgrade for a single goal) only ever sees the tenant-wide daily
+        # ratio and stays "premium" right up until check_and_record hard-blocks
+        # the goal's next call, skipping the graceful cost/quality tradeoff.
+        # budget_pct_remaining is the MORE constrained of the two — whichever
+        # limit would bind first is the one that should drive the tier.
+        if goal_key is not None and cfg.per_goal_usd > 0:
+            goal_remaining = max(0.0, cfg.per_goal_usd - goal_spent)
+            goal_pct_remaining = goal_remaining / max(cfg.per_goal_usd, 0.01)
+            result["goal_pct_remaining"] = goal_pct_remaining
+            result["budget_pct_remaining"] = min(daily_pct_remaining, goal_pct_remaining)
+
+        return result
 
     async def get_cost_tier(self, *, goal_id: str, tenant_ctx: Any) -> str:
         """

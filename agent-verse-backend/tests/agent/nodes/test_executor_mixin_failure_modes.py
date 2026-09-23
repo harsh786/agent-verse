@@ -1210,3 +1210,87 @@ async def test_loop_until_retries_then_succeeds_on_third_attempt() -> None:
 
     assert result == "done"
     assert step.iterations_used == 3
+
+
+# ---------------------------------------------------------------------------
+# Cost accounting: a single executor LLM call must be billed exactly once
+# ---------------------------------------------------------------------------
+
+
+class _UsageAwareProvider(FakeProvider):
+    """Returns a CompletionResponse with `.usage` populated, matching every real
+    provider (Anthropic/OpenAI/Gemini all set `usage=TokenUsage(...)` — see
+    app/providers/anthropic_provider.py, openai_compatible.py, gemini_provider.py).
+    Needed to exercise the CostTracker branch of the executor's cost-recording
+    block, which only runs when `resp.usage is not None`.
+    """
+
+    def __init__(self, *, input_tokens: int, output_tokens: int, model: str) -> None:
+        super().__init__(responses=["ok, no tool needed"])
+        self._input_tokens = input_tokens
+        self._output_tokens = output_tokens
+        self._model = model
+
+    async def stream_tokens(self, request: object, on_token: object) -> CompletionResponse:  # type: ignore[override]
+        self.call_history.append(request)  # type: ignore[arg-type]
+        await on_token("ok")  # type: ignore[operator]
+        from app.providers.base import TokenUsage
+
+        return CompletionResponse(
+            content="ok, no tool needed",
+            model=self._model,
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            usage=TokenUsage(
+                prompt_tokens=self._input_tokens,
+                completion_tokens=self._output_tokens,
+                total_tokens=self._input_tokens + self._output_tokens,
+            ),
+        )
+
+
+async def test_executor_llm_cost_is_recorded_exactly_once() -> None:
+    """A single executor LLM call must add its cost to
+    ``state.context['total_cost_usd']`` exactly once.
+
+    Bug: the cost-recording block in ExecutorMixin (app/agent/nodes/
+    executor_mixin.py) first adds `_actual_cost` (from the deprecated
+    governance.pricing.estimate_cost, used to feed the real-time budget check)
+    and then — whenever a CostTracker is wired AND the provider populated
+    `.usage` (which every real provider does) — ALSO adds `_real_cost` (from
+    intelligence.cost_tracker.calculate_cost) for the *same* call on top of it,
+    using a completely different pricing table. The running total silently
+    ends up roughly 2x the true cost of the call. This total feeds the
+    planner's budget-based model auto-downgrade ratio, the verifier's audit
+    trail, and persisted attempt-cost records — all get inflated.
+    """
+    from app.governance.cost import CostController
+    from app.governance.pricing import estimate_cost
+    from app.intelligence.cost_tracker import CostTracker, calculate_cost
+
+    model = "gpt-4o"
+    input_tokens, output_tokens = 1000, 500
+
+    executor = _UsageAwareProvider(input_tokens=input_tokens, output_tokens=output_tokens, model=model)
+    graph = _make_graph(
+        executor=executor,
+        cost_controller=CostController(per_goal_usd=1_000.0, per_tenant_daily_usd=1_000.0),
+        cost_tracker=CostTracker(),
+    )
+    state = _make_state(step_desc="do something simple")
+
+    await graph._execute_step("do something simple", state, T)
+
+    expected_single_charge = calculate_cost(model, input_tokens, output_tokens)
+    # Sanity check: the two pricing tables genuinely disagree for this model/
+    # token combination, so a bug that sums both would land on neither figure
+    # alone — it would be their sum.
+    deprecated_estimate = estimate_cost(model, input_tokens, output_tokens)
+    assert deprecated_estimate != pytest.approx(expected_single_charge)
+
+    recorded = state.context["total_cost_usd"]
+    assert recorded == pytest.approx(expected_single_charge, rel=1e-6), (
+        f"total_cost_usd={recorded} but a single call should cost "
+        f"{expected_single_charge} (CostTracker's authoritative figure) — "
+        f"got sum-of-both-estimates={deprecated_estimate + expected_single_charge} instead?"
+    )

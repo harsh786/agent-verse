@@ -1216,8 +1216,14 @@ class ExecutorMixin:
                     resp.usage.completion_tokens,
                 )
                 async with self._state_lock:
+                    # This is the SAME LLM call already charged above (via the
+                    # deprecated governance.pricing estimate, used only to drive
+                    # the real-time budget check) — replace that estimate with
+                    # CostTracker's authoritative figure instead of adding on
+                    # top of it, so one call is billed once, not twice.
+                    _already_charged = _actual_cost if "_actual_cost" in locals() else 0.0
                     state.context["total_cost_usd"] = (
-                        state.context.get("total_cost_usd", 0.0) + _real_cost
+                        state.context.get("total_cost_usd", 0.0) - _already_charged + _real_cost
                     )
                 await self._cost_tracker.record_llm_usage(
                     model=_model_name,

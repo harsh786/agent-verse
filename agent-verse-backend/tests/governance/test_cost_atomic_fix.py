@@ -207,6 +207,36 @@ class TestRedisCostControllerAtomicFix:
         assert status["goal_spent"] == pytest.approx(0.0002)
 
     @pytest.mark.asyncio
+    async def test_get_cost_tier_downgrades_when_goal_budget_is_tight(self):
+        """A single goal that has nearly exhausted its OWN per_goal_usd cap must
+        get downgraded to a cheaper model tier, even when the tenant's daily
+        aggregate spend is nowhere near its own (much larger) cap.
+
+        get_budget_status()['budget_pct_remaining'] previously reflected ONLY
+        the tenant-wide daily spend ratio and silently discarded the returned
+        goal_spent figure, so get_cost_tier() — which ModelOrchestrator/planner
+        use to auto-downgrade a goal that's running expensive — never fired for
+        a goal blowing through its own budget, right up until check_and_record
+        hard-blocks the next call with no graceful cost/quality tradeoff.
+        """
+        fake_redis = _make_fake_redis()
+        ctrl = RedisCostController(redis=fake_redis)
+        ctrl.configure_tenant_budget(
+            T.tenant_id,
+            BudgetConfig(per_goal_usd=10.0, per_tenant_daily_usd=500.0),
+        )
+
+        # Goal has spent 95% of its own $10 cap; tenant daily spend is trivial
+        # relative to the $500 daily cap (1.9%).
+        ok = await ctrl.check_and_record(goal_id="g1", cost_usd=9.5, tenant_ctx=T)
+        assert ok is True
+
+        tier = await ctrl.get_cost_tier(goal_id="g1", tenant_ctx=T)
+        assert tier == "economy", (
+            f"Expected 'economy' — goal is at 95% of its own per-goal budget — got {tier!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_internal_retry_reuses_same_invocation_reservation(self):
         fake_redis = _make_fake_redis()
         controller = RedisCostController(redis=fake_redis)
