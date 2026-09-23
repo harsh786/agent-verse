@@ -1377,7 +1377,23 @@ def run_goal(
 
             _lock_redis_sync = _sync_redis_mod.from_url(_redis_url, decode_responses=True)
             _lock = _SyncGoalLock(_lock_redis_sync, _uuid.uuid4().hex)
-            _acquired = _lock.acquire(goal_id, ttl_ms=1_800_000)
+            # The lock TTL must cover the goal's *entire* allowed execution
+            # window (per-plan goal_timeout_seconds below, in the isolation
+            # check further down — free=1h, starter=2h, professional=8h,
+            # enterprise=24h), plus headroom for setup/teardown. A fixed
+            # 30-minute TTL used to be shorter than every plan's timeout, so
+            # Redis would silently expire and delete the lock key while the
+            # goal was still genuinely executing — a second worker (e.g. after
+            # a duplicate submission or broker redelivery) could then acquire
+            # the now-free lock and start executing the SAME goal
+            # concurrently with the still-running original (split-brain).
+            from app.tenancy.context import PLAN_LIMITS as _LOCK_PLAN_LIMITS
+
+            _lock_plan_timeout_s = getattr(
+                _LOCK_PLAN_LIMITS.get(plan), "goal_timeout_seconds", 1_800
+            )
+            _lock_ttl_ms = (_lock_plan_timeout_s + 300) * 1_000  # +5 min headroom
+            _acquired = _lock.acquire(goal_id, ttl_ms=_lock_ttl_ms)
             if not _acquired:
                 logger.warning("Goal %s already executing in another worker — skipping", goal_id)
                 return {
