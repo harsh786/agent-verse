@@ -35,6 +35,10 @@ class CircuitBreaker:
         self._failure_count = 0
         self._state = CircuitState.CLOSED
         self._opened_at: float = 0.0
+        # True once a HALF_OPEN probe has been handed out, so concurrent
+        # callers racing the same cooldown expiry don't all get waved through
+        # (see can_call()).
+        self._half_open_probe_taken = False
 
     @property
     def state(self) -> CircuitState:
@@ -49,26 +53,44 @@ class CircuitBreaker:
         )
 
     def can_call(self) -> bool:
-        """Return True if a call is allowed now (handles HALF_OPEN probe window)."""
+        """Return True if a call is allowed now (handles HALF_OPEN probe window).
+
+        HALF_OPEN is meant to allow exactly *one* in-flight probe against the
+        still-possibly-broken downstream so a concurrent burst of callers
+        (e.g. a goal's parallel tool-call wave) doesn't all rush it the
+        instant the cooldown expires. Without ``_half_open_probe_taken``,
+        every caller that observed ``state == HALF_OPEN`` — including the
+        many callers racing the same OPEN->HALF_OPEN transition — would pass
+        this check, turning "one probe" into an unbounded thundering herd
+        until the first probe's result is recorded.
+        """
         if self._state == CircuitState.CLOSED:
             return True
         if self._state == CircuitState.OPEN:
             if self.allows_probe():
                 self._state = CircuitState.HALF_OPEN
+                self._half_open_probe_taken = True
                 return True
             return False
-        return self._state == CircuitState.HALF_OPEN
+        if self._state == CircuitState.HALF_OPEN:
+            if self._half_open_probe_taken:
+                return False
+            self._half_open_probe_taken = True
+            return True
+        return False
 
     def record_failure(self) -> None:
         self._failure_count += 1
         if self._failure_count >= self._threshold:
             self._state = CircuitState.OPEN
             self._opened_at = time.monotonic()
+            self._half_open_probe_taken = False
 
     def record_success(self) -> None:
         self._failure_count = 0
         self._state = CircuitState.CLOSED
         self._opened_at = 0.0
+        self._half_open_probe_taken = False
 
     # ── Async wrappers — same interface as RedisCircuitBreaker ─────────────────
 

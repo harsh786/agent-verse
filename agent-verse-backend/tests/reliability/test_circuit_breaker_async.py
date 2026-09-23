@@ -105,3 +105,27 @@ async def test_half_open_probe_fails_reopens() -> None:
     # Probe fails → re-opens
     await cb.record_failure_async()
     assert cb.state == CircuitState.OPEN
+
+
+def test_half_open_only_allows_a_single_concurrent_probe() -> None:
+    """Real scenario: a goal's parallel tool-call wave hits a connector right
+    as its circuit breaker's cooldown expires. Every call in the wave checks
+    can_call() at essentially the same time. Only ONE of them may be let
+    through as the recovery probe; the rest must stay blocked until that
+    probe's outcome (record_success/record_failure) is known — otherwise the
+    whole wave floods the still-possibly-broken downstream at once instead
+    of a single controlled probe.
+    """
+    cb = CircuitBreaker(failure_threshold=1, cooldown_seconds=0)
+    cb.record_failure()
+    assert cb.state == CircuitState.OPEN
+
+    # Simulate several concurrent callers racing the same OPEN->HALF_OPEN
+    # transition (cooldown=0, so the first can_call() flips it immediately).
+    outcomes = [cb.can_call() for _ in range(10)]
+    assert outcomes.count(True) == 1, "exactly one caller should win the probe slot"
+    assert cb.state == CircuitState.HALF_OPEN
+
+    # Once the probe's result lands, a fresh probe becomes available again.
+    cb.record_failure()
+    assert cb.state == CircuitState.OPEN

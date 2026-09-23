@@ -116,14 +116,46 @@ def _jsonrpc(method: str, params: dict[str, Any] | None = None) -> dict[str, Any
     return payload
 
 
-def _response_json(resp: httpx.Response) -> Any:
+def _response_json(resp: httpx.Response, expected_id: str | None = None) -> Any:
+    """Parse a JSON or SSE (text/event-stream) MCP response body.
+
+    An MCP server speaking the streamable-HTTP transport may emit several SSE
+    ``data:`` events for a single POST — e.g. `notifications/progress` or
+    `notifications/message` (logging) frames — before the actual JSON-RPC
+    response for the request. Those notifications are valid JSON-RPC objects
+    (they have ``jsonrpc`` and ``method``) but are NOT the response: a
+    JSON-RPC *response* always carries the request's ``id`` and a ``result``
+    or ``error`` key, while a *notification* has no ``id`` at all.
+
+    Blindly returning the first ``data:`` line (as this used to) silently
+    treats a leading progress/log notification as the tool's result — a
+    valid-looking dict with no error, so the caller reports `success=True`
+    with the wrong payload instead of the real tool output.
+    """
     content_type = resp.headers.get("content-type", "")
     if "text/event-stream" not in content_type:
         return resp.json()
+
+    events: list[Any] = []
     for line in resp.text.splitlines():
         if line.startswith("data: "):
-            return json.loads(line[6:].strip())
-    return {}
+            with suppress(json.JSONDecodeError):
+                events.append(json.loads(line[6:].strip()))
+    if not events:
+        return {}
+
+    if expected_id is not None:
+        for event in events:
+            if isinstance(event, dict) and event.get("id") == expected_id:
+                return event
+
+    # No id to match against (or no exact match found) — prefer an actual
+    # JSON-RPC response (has "result" or "error") over a notification.
+    for event in events:
+        if isinstance(event, dict) and ("result" in event or "error" in event):
+            return event
+
+    return events[-1]
 
 
 class MCPClient:
@@ -391,23 +423,28 @@ class MCPClient:
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
+                _list_req_id: str | None = None
                 if is_mcp_endpoint:
+                    _list_req = _jsonrpc("tools/list")
+                    _list_req_id = _list_req["id"]
                     resp = await client.post(
                         cfg.url.rstrip("/"),
-                        json=_jsonrpc("tools/list"),
+                        json=_list_req,
                         headers=headers,
                     )
                     if self._requires_initialize(resp):
                         headers = await self._ensure_mcp_session(client, cfg, headers)
+                        _list_req = _jsonrpc("tools/list")
+                        _list_req_id = _list_req["id"]
                         resp = await client.post(
                             cfg.url.rstrip("/"),
-                            json=_jsonrpc("tools/list"),
+                            json=_list_req,
                             headers=headers,
                         )
                 else:
                     resp = await client.get(f"{cfg.url.rstrip('/')}/tools", headers=headers)
                 resp.raise_for_status()
-                data = _response_json(resp)
+                data = _response_json(resp, expected_id=_list_req_id)
                 if isinstance(data, list):
                     tools = data
                 elif isinstance(data, dict):
@@ -819,23 +856,28 @@ class MCPClient:
             headers["Accept"] = "application/json, text/event-stream"
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
+            _call_req_id: str | None = None
             if using_jsonrpc:
+                _call_req = _jsonrpc(
+                    "tools/call",
+                    {"name": tool_name, "arguments": arguments},
+                )
+                _call_req_id = _call_req["id"]
                 resp = await client.post(
                     cfg.url.rstrip("/"),
-                    json=_jsonrpc(
-                        "tools/call",
-                        {"name": tool_name, "arguments": arguments},
-                    ),
+                    json=_call_req,
                     headers=headers,
                 )
                 if self._requires_initialize(resp):
                     headers = await self._ensure_mcp_session(client, cfg, headers)
+                    _call_req = _jsonrpc(
+                        "tools/call",
+                        {"name": tool_name, "arguments": arguments},
+                    )
+                    _call_req_id = _call_req["id"]
                     resp = await client.post(
                         cfg.url.rstrip("/"),
-                        json=_jsonrpc(
-                            "tools/call",
-                            {"name": tool_name, "arguments": arguments},
-                        ),
+                        json=_call_req,
                         headers=headers,
                     )
             else:
@@ -845,7 +887,7 @@ class MCPClient:
                     headers=headers,
                 )
             resp.raise_for_status()
-            payload = _response_json(resp)
+            payload = _response_json(resp, expected_id=_call_req_id)
             is_jsonrpc_response = using_jsonrpc or (
                 isinstance(payload, dict) and payload.get("jsonrpc") == "2.0"
             )

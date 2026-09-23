@@ -383,6 +383,72 @@ async def test_refresh_token_http_error_returns_none() -> None:
     assert result is None
 
 
+# ── OAuthFlowManager.refresh_token — concurrency ──────────────────────────────
+
+
+async def test_refresh_token_concurrent_calls_dedupe_to_single_request() -> None:
+    """Real-world scenario: a goal's parallel tool-call wave (executor_mixin
+    fires several tool calls at once) all read the SAME OAuthToken via
+    ``get_token()`` before any of them notices it's expired and calls
+    ``refresh_token(token=<that snapshot>, ...)`` — exactly how
+    ``MCPClient._build_auth_headers`` uses it. All 8 callers therefore pass
+    the identical stale token/refresh_token in, regardless of scheduling
+    order.
+
+    Only ONE refresh request should ever reach the OAuth provider — the rest
+    must reuse its result. Providers that rotate the refresh token on each
+    use (common for public/PKCE clients) accept only the first such request
+    and reject every other one with invalid_grant; before the fix, each of
+    those rejected callers returned None, which meant the calling tool call
+    then sent its request with NO Authorization header at all instead of the
+    fresh token a sibling call in the same wave had just obtained.
+    """
+    import asyncio
+
+    mgr = OAuthFlowManager()
+    stale_token = OAuthToken(access_token="old", refresh_token="ref-shared", expires_in=60)
+    mgr._tokens[("oauth-comp-t1", "srv-concurrent")] = stale_token
+    call_count = 0
+
+    def _token_response(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count > 1:
+            # A rotating-refresh-token provider rejects any request that
+            # replays an already-consumed refresh_token.
+            return httpx.Response(400, json={"error": "invalid_grant"})
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new-tok",
+                "refresh_token": "ref-rotated",
+                "expires_in": 3600,
+            },
+        )
+
+    with respx.mock:
+        respx.post("http://auth.test/token").mock(side_effect=_token_response)
+        results = await asyncio.gather(
+            *[
+                mgr.refresh_token(
+                    server_id="srv-concurrent",
+                    token_url="http://auth.test/token",
+                    client_id="cid",
+                    tenant_ctx=TENANT,
+                    token=stale_token,  # every caller's own (identical) stale snapshot
+                )
+                for _ in range(8)
+            ]
+        )
+
+    assert call_count == 1, "only one refresh request should reach the provider"
+    assert all(r is not None for r in results), (
+        "every concurrent caller must get a usable token, not a failed "
+        "refresh from a duplicate (and rejected) request"
+    )
+    assert {r.access_token for r in results if r is not None} == {"new-tok"}
+
+
 # ── OAuthFlowManager._persist_token_to_db ────────────────────────────────────
 
 

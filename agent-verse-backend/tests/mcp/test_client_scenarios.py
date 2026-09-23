@@ -159,6 +159,85 @@ def test_response_json_event_stream_without_data_line_returns_empty():
     assert _response_json(resp) == {}
 
 
+def test_response_json_picks_response_over_leading_notification():
+    """An MCP server on the streamable-HTTP transport may emit a
+    `notifications/progress` (or `notifications/message` logging) SSE frame
+    before the actual JSON-RPC response to a `tools/call` request — both are
+    valid JSON-RPC objects. Returning the FIRST `data:` line unconditionally
+    (the old behaviour) would silently hand back the progress notification —
+    a valid-looking dict with no "error" key — as if it were the tool's
+    result, instead of failing loudly or returning the real output."""
+    resp = MagicMock()
+    resp.headers = {"content-type": "text/event-stream"}
+    resp.text = (
+        'data: {"jsonrpc":"2.0","method":"notifications/progress",'
+        '"params":{"progress":1,"total":3}}\n\n'
+        'data: {"jsonrpc":"2.0","id":"req-1","result":{"content":[{"type":"text","text":"done"}]}}\n\n'
+    )
+    result = _response_json(resp, expected_id="req-1")
+    assert result == {
+        "jsonrpc": "2.0",
+        "id": "req-1",
+        "result": {"content": [{"type": "text", "text": "done"}]},
+    }
+
+
+def test_response_json_falls_back_to_result_bearing_event_without_id_match():
+    """Even without a matching request id (e.g. the id round-trips as a
+    different JSON type), a notification (no "result"/"error") must not be
+    preferred over an actual JSON-RPC response."""
+    resp = MagicMock()
+    resp.headers = {"content-type": "text/event-stream"}
+    resp.text = (
+        'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}\n\n'
+        'data: {"jsonrpc":"2.0","id":"other-id","result":{"ok":true}}\n\n'
+    )
+    result = _response_json(resp, expected_id="req-does-not-match")
+    assert result == {"jsonrpc": "2.0", "id": "other-id", "result": {"ok": True}}
+
+
+@pytest.mark.asyncio
+async def test_call_tool_ignores_leading_progress_notification_over_sse():
+    """End-to-end: call_tool() against a real MCP JSON-RPC endpoint whose
+    tools/call response streams a progress notification before the actual
+    result must return the tool's real output, not the notification."""
+    cfg = MCPServerConfig(name="StreamingSrv", url="https://streaming.example.com/mcp")
+    registry = MCPRegistry(redis=None)
+    client = _make_client(registry)
+
+    captured_ids: list[str] = []
+
+    async def _post(url: str, json: dict, headers: dict) -> MagicMock:
+        captured_ids.append(json["id"])
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.headers = {"content-type": "text/event-stream"}
+        resp.text = (
+            'data: {"jsonrpc":"2.0","method":"notifications/progress",'
+            '"params":{"progress":1,"total":2}}\n\n'
+            'data: {"jsonrpc":"2.0","id":"' + json["id"] + '",'
+            '"result":{"content":[{"type":"text","text":"42"}]}}\n\n'
+        )
+        return resp
+
+    ctx = _http_ctx(post=_post)
+    with (
+        patch.object(registry, "get", AsyncMock(return_value=cfg)),
+        patch("httpx.AsyncClient", return_value=ctx),
+    ):
+        result = await client.call_tool(
+            server_id="streaming-srv",
+            tool_name="long_task",
+            arguments={},
+            tenant_ctx=_ctx(),
+        )
+
+    assert captured_ids  # sanity: the request id we asserted against was real
+    assert result.success is True
+    assert result.output == {"content": [{"type": "text", "text": "42"}]}
+
+
 # ---------------------------------------------------------------------------
 # Tool execution returning a non-2xx status
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import secrets
@@ -62,6 +63,15 @@ class OAuthFlowManager:
         self._tokens: dict[tuple[str, str], OAuthToken] = {}
         # Set externally to enable DB persistence
         self._db_session_factory: Any = None
+        # (tenant_id, server_id) → lock serialising concurrent refresh_token()
+        # calls for that connector, so a burst of concurrent tool calls that
+        # all see the same expired token (e.g. a goal's parallel execution
+        # wave) doesn't send duplicate refresh requests. Many OAuth providers
+        # rotate the refresh token on each use, so a second concurrent
+        # request with the now-superseded refresh_token would fail with
+        # invalid_grant instead of just reusing the token the first request
+        # already obtained.
+        self._refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
 
     def _encrypt_token(self, value: str) -> str:
         """Encrypt *value* using the vault if available, else return as-is."""
@@ -200,6 +210,14 @@ class OAuthFlowManager:
             tenant_id = getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else ""
         return self._tokens.get((tenant_id, server_id))
 
+    def _get_refresh_lock(self, tenant_id: str, server_id: str) -> asyncio.Lock:
+        key = (tenant_id, server_id)
+        lock = self._refresh_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._refresh_locks[key] = lock
+        return lock
+
     async def refresh_token(
         self,
         *,
@@ -211,7 +229,18 @@ class OAuthFlowManager:
         token: OAuthToken | None = None,
         auth_config: dict[str, Any] | None = None,
     ) -> OAuthToken | None:
-        """Refresh an expired access token."""
+        """Refresh an expired access token.
+
+        Concurrent callers for the same (tenant, server) are serialised on a
+        lock. Without it, a burst of tool calls that all observe the same
+        expired token (e.g. a goal's parallel execution wave) each fire their
+        own refresh request; a provider that rotates refresh tokens on use
+        accepts only the first and rejects the rest with invalid_grant, so
+        every other caller in the wave would fail outright — and previously
+        did so ungracefully, sending its request with NO Authorization
+        header at all rather than falling back to the token the winning
+        caller just obtained.
+        """
         # Resolve tenant_id from either tenant_ctx or the explicit keyword
         resolved_tenant_id = getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else tenant_id
         # Use the provided token, or look it up from internal store
@@ -219,40 +248,53 @@ class OAuthFlowManager:
         if existing is None or not existing.refresh_token:
             return None
 
-        # Resolve token_url / client_id from auth_config if not given directly
-        cfg = auth_config or {}
-        resolved_token_url = token_url or cfg.get("token_url", "")
-        resolved_client_id = client_id or cfg.get("client_id", "")
+        async with self._get_refresh_lock(resolved_tenant_id, server_id):
+            # Another concurrent caller may have already refreshed this same
+            # token while we were waiting for the lock. Reuse it instead of
+            # sending a second refresh request with our (possibly now
+            # superseded) refresh_token.
+            current = self._tokens.get((resolved_tenant_id, server_id))
+            if (
+                current is not None
+                and current.access_token != existing.access_token
+                and not current.is_expired()
+            ):
+                return current
 
-        if not resolved_token_url:
-            return None
+            # Resolve token_url / client_id from auth_config if not given directly
+            cfg = auth_config or {}
+            resolved_token_url = token_url or cfg.get("token_url", "")
+            resolved_client_id = client_id or cfg.get("client_id", "")
 
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.post(
-                    resolved_token_url,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": existing.refresh_token,
-                        "client_id": resolved_client_id,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as exc:
-            import logging
+            if not resolved_token_url:
+                return None
 
-            logging.getLogger(__name__).error("Token refresh failed: %s", exc)
-            return None  # Don't silently return stale token
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    resp = await client.post(
+                        resolved_token_url,
+                        data={
+                            "grant_type": "refresh_token",
+                            "refresh_token": existing.refresh_token,
+                            "client_id": resolved_client_id,
+                        },
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+            except Exception as exc:
+                import logging
 
-        new_token = OAuthToken(
-            access_token=data.get("access_token", existing.access_token),
-            token_type=data.get("token_type", "Bearer"),
-            refresh_token=data.get("refresh_token", existing.refresh_token),
-            expires_in=int(data.get("expires_in", 3600)),
-        )
-        self._tokens[(resolved_tenant_id, server_id)] = new_token
-        return new_token
+                logging.getLogger(__name__).error("Token refresh failed: %s", exc)
+                return None  # Don't silently return stale token
+
+            new_token = OAuthToken(
+                access_token=data.get("access_token", existing.access_token),
+                token_type=data.get("token_type", "Bearer"),
+                refresh_token=data.get("refresh_token", existing.refresh_token),
+                expires_in=int(data.get("expires_in", 3600)),
+            )
+            self._tokens[(resolved_tenant_id, server_id)] = new_token
+            return new_token
 
     async def _persist_token_to_db(self, tenant_id: str, server_id: str, token: OAuthToken) -> None:
         """Persist an OAuth token to the database for cross-restart recovery."""

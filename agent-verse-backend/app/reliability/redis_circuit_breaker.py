@@ -91,6 +91,19 @@ class RedisCircuitBreaker:
         Handles the OPEN → HALF_OPEN transition after the cooldown expires.
         Uses ``time.time()`` (wall-clock) to compare against the stored
         ``opened_at`` timestamp so the comparison is valid across replicas.
+
+        HALF_OPEN is meant to let exactly *one* probe through across the
+        whole fleet before the downstream's health is re-established. The
+        state alone can't enforce that: once any replica flips
+        ``state`` to ``half_open``, a plain ``state == HALF_OPEN`` check lets
+        every other replica's concurrent caller through too — e.g. a goal's
+        parallel tool-call wave hitting the same cooling-down connector would
+        send its whole burst at once the instant the cooldown expires,
+        instead of one probe. A ``SET ... NX`` on a dedicated claim key is
+        atomic in Redis, so only the caller that wins it proceeds; everyone
+        else is blocked until ``record_success_async``/``record_failure_async``
+        resolves the probe (or the claim's TTL expires if the prober died
+        without reporting either way).
         """
         try:
             state_str = await self._redis.get(self._key("state"))
@@ -105,14 +118,36 @@ class RedisCircuitBreaker:
                     opened_at = float(opened_at_str)
                     # H16: use wall-clock (time.time()) for cross-replica correctness
                     if time.time() - opened_at >= self._cooldown:
-                        # Promote to HALF_OPEN to allow a single probe call
-                        await self._redis.set(self._key("state"), CircuitState.HALF_OPEN.value)
-                        return True
+                        claimed = await self._claim_half_open_probe()
+                        if claimed:
+                            await self._redis.set(
+                                self._key("state"), CircuitState.HALF_OPEN.value
+                            )
+                        return claimed
                 return False
 
-            return state == CircuitState.HALF_OPEN
+            if state == CircuitState.HALF_OPEN:
+                # A probe is already in flight somewhere in the fleet (it
+                # claimed the slot when it flipped OPEN->HALF_OPEN above).
+                # Block everyone else until it reports success/failure.
+                return False
+
+            return False
         except Exception:
             return self._fallback.can_call()
+
+    async def _claim_half_open_probe(self) -> bool:
+        """Atomically claim the single HALF_OPEN probe slot.
+
+        Returns True only for the one caller (across all replicas) that wins
+        the ``SET NX`` race. The claim has its own short TTL so a prober that
+        crashes mid-call doesn't wedge the breaker open forever.
+        """
+        claim_ttl = max(1, int(min(self._cooldown, 30)))
+        claimed = await self._redis.set(
+            self._key("half_open_claim"), "1", nx=True, ex=claim_ttl
+        )
+        return bool(claimed)
 
     async def record_failure_async(self) -> None:
         """Record a failure.  Opens the circuit once ``failure_threshold`` is reached."""
@@ -131,6 +166,10 @@ class RedisCircuitBreaker:
             ttl = int(self._cooldown * 2)
             await self._redis.expire(self._key("state"), ttl)
             await self._redis.expire(self._key("failures"), ttl)
+            # Release the half-open probe claim (if this failure was the
+            # probe's result) so the *next* cooldown expiry can claim a
+            # fresh probe instead of waiting out the claim's own TTL.
+            await self._redis.delete(self._key("half_open_claim"))
         except Exception:
             self._fallback.record_failure()
 
@@ -141,6 +180,7 @@ class RedisCircuitBreaker:
                 self._key("state"),
                 self._key("failures"),
                 self._key("opened_at"),
+                self._key("half_open_claim"),
             )
         except Exception:
             self._fallback.record_success()
