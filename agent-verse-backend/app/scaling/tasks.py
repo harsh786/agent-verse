@@ -4486,8 +4486,14 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
 
         db = _get_fresh_db()
         try:
-            # Collect all tenant data
-            async with db() as session:
+            # Collect all tenant data. goals and audit_log both have FORCE ROW
+            # LEVEL SECURITY (migrations 0004 / 0005), so this read must set the
+            # app.tenant_id GUC via sqlalchemy_rls_context -- without it, under any
+            # non-BYPASSRLS role the policy silently filters every row out and the
+            # "export" would always be empty regardless of the persistence fix below.
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with db() as session, sqlalchemy_rls_context(session, tenant_id):
                 goals = (
                     await session.execute(
                         text(
@@ -4511,7 +4517,6 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                     audit = []
 
             import json
-            import uuid as _uuid
             from datetime import datetime
 
             export_data = {
@@ -4523,9 +4528,46 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                 ],
             }
 
-            export_json = json.dumps(export_data, indent=2, default=str)  # noqa: F841
-            export_id = _uuid.uuid4().hex
-            download_url = f"/compliance/export/{export_id}/download"
+            # Persist the export content itself (not just a job-status row), and
+            # reuse this job's own job_id as the download URL's id, rather than an
+            # unrelated uuid nobody stores anywhere. The download endpoint (GET
+            # /compliance/export/{request_id}/download in app/api/enterprise.py)
+            # resolves via ComplianceController.get_export_status(), which reads
+            # the compliance_requests table by request_id + tenant_id -- so the
+            # export must land there for the link to ever serve real data instead
+            # of 404ing forever. compliance_requests has FORCE ROW LEVEL SECURITY
+            # (migration 0026 / 767fe9d87bfe), so the write must set the
+            # app.tenant_id GUC via sqlalchemy_rls_context (app/db/rls.py; already
+            # imported above for the goals/audit_log read).
+
+            # NOTE: the download endpoint (download_export in app/api/enterprise.py)
+            # is registered on the "/enterprise"-prefixed router, not the
+            # "/compliance"-prefixed compliance_router this task's job lives under
+            # -- so the URL must carry that prefix to actually resolve.
+            download_url = f"/enterprise/compliance/export/{job_id}/download"
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        """INSERT INTO compliance_requests
+                           (request_id, tenant_id, status, download_url, payload, created_at)
+                           VALUES (:rid, :tid, 'ready', :url, CAST(:payload AS jsonb), NOW())
+                           ON CONFLICT (request_id) DO UPDATE
+                             SET status = EXCLUDED.status,
+                                 download_url = EXCLUDED.download_url,
+                                 payload = EXCLUDED.payload"""
+                    ),
+                    {
+                        "rid": job_id,
+                        "tid": tenant_id,
+                        "url": download_url,
+                        "payload": json.dumps(export_data, default=str),
+                    },
+                )
 
             async with db() as session, session.begin():
                 await session.execute(

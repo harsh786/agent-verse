@@ -143,10 +143,24 @@ class TestRunGdprExport:
     def test_success_marks_job_complete(self):
         from app.scaling.tasks import run_gdpr_export
 
+        # Sequence of session.execute() calls run_gdpr_export now issues:
+        #   1. sqlalchemy_rls_context enter (SET app.tenant_id) -- goals/audit read
+        #   2. SELECT goals
+        #   3. SELECT audit_log
+        #   4. sqlalchemy_rls_context exit (reset app.tenant_id)
+        #   5. sqlalchemy_rls_context enter -- compliance_requests write
+        #   6. INSERT INTO compliance_requests
+        #   7. sqlalchemy_rls_context exit (reset app.tenant_id)
+        #   8. UPDATE gdpr_export_jobs
         session = _session_with_begin(
             execute_side_effect=[
+                MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[(1, "goal text", "completed", None)])),
                 MagicMock(fetchall=MagicMock(return_value=[(1, 1, "tool_x", "ok")])),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
                 MagicMock(),
             ]
         )
@@ -156,14 +170,23 @@ class TestRunGdprExport:
         assert result["status"] == "complete"
         assert result["job_id"] == "job-1"
         assert "download_url" in result
+        assert result["download_url"] == "/enterprise/compliance/export/job-1/download"
 
     def test_audit_query_failure_is_tolerated(self):
         from app.scaling.tasks import run_gdpr_export
 
+        # See test_success_marks_job_complete for the full 8-call sequence;
+        # here call 3 (SELECT audit_log) raises and is swallowed by the
+        # production code's own try/except, so audit falls back to [].
         session = _session_with_begin(
             execute_side_effect=[
+                MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[])),
                 RuntimeError("audit_log missing"),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
+                MagicMock(),
                 MagicMock(),
             ]
         )
