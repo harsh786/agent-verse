@@ -330,15 +330,27 @@ class IngestionPipeline:
             # gathered at Stage 5; persist it (and the document-level hash) onto
             # every indexed chunk so dedup + provenance survive re-ingest.
             provenance = dict(getattr(result, "metadata", {}) or {})
-            chunk_ids = await self._index(
-                unique_chunks,
-                raw_doc,
-                source_config,
-                content_hash,
-                quality_score,
-                pii_detected,
-                provenance,
-            )
+            from app.rag.store import DuplicateContentError
+
+            try:
+                chunk_ids = await self._index(
+                    unique_chunks,
+                    raw_doc,
+                    source_config,
+                    content_hash,
+                    quality_score,
+                    pii_detected,
+                    provenance,
+                )
+            except DuplicateContentError:
+                # Lost the race against a concurrent identical ingestion (a retry
+                # overlapping the original attempt, or a re-sync overlapping a
+                # manual sync) that committed first — the content IS indexed,
+                # just not by this call. Treat exactly like the Stage 3 dedup
+                # skip rather than a pipeline failure (no DLQ, no retry storm).
+                result.status = "skipped"
+                result.skip_reason = "dedup"
+                return result
             result.chunks_created = len(chunk_ids)
 
             # ── D-15: KG auto-population — extract entities/relations per indexed

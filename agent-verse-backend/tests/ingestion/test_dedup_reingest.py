@@ -12,6 +12,8 @@ embedder-failure path (item 5).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.ingestion.pipeline import IngestionPipeline
@@ -75,6 +77,57 @@ async def test_reingest_same_document_is_deduped() -> None:
     assert second.skip_reason == "dedup"
     # No new chunks written on the deduped re-ingest.
     assert len(store._data[("t1", "c1")].chunks) == len(stored)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_reingest_is_deduped_not_duplicated() -> None:
+    """Two concurrent ingestions of the SAME new content must not both index.
+
+    Regression for the TOCTOU between Stage 3's ``exists_by_hash`` pre-check
+    and the later Stage 12 write (``ingest_chunks_async``): a retry racing the
+    original attempt, or a scheduled re-sync overlapping a manual "re-sync
+    now", can both observe "not yet indexed" in the gap between the two —
+    every real await point in between (parse/PII/chunk/embed) is a chance for
+    the other coroutine to run. An ``asyncio.Event`` barrier forces both
+    attempts past the check before either is allowed to write, so the race
+    window is hit on every run instead of depending on incidental timing.
+    """
+    store = _store()
+    pipeline = IngestionPipeline(knowledge_store=store, embedder=FakeProvider(embed_dim=768))
+    content = ("Concurrent identical retry content. " * 40).encode()
+
+    both_checked = asyncio.Event()
+    check_count = 0
+    real_exists_by_hash = store.exists_by_hash
+
+    async def _gated_exists_by_hash(*args: object, **kwargs: object) -> bool:
+        nonlocal check_count
+        result = await real_exists_by_hash(*args, **kwargs)  # type: ignore[arg-type]
+        check_count += 1
+        if check_count == 2:
+            both_checked.set()
+        await both_checked.wait()
+        return result
+
+    store.exists_by_hash = _gated_exists_by_hash  # type: ignore[method-assign]
+
+    results = await asyncio.gather(
+        pipeline.ingest(_doc(content), _config()),
+        pipeline.ingest(_doc(content), _config()),
+    )
+
+    statuses = sorted(result.status for result in results)
+    assert statuses == ["indexed", "skipped"], (
+        f"expected exactly one winner and one graceful dedup skip, got: {results}"
+    )
+    skipped = next(result for result in results if result.status == "skipped")
+    assert skipped.skip_reason == "dedup"
+
+    # Exactly one document's worth of chunks persisted, not two.
+    stored = store._data[("t1", "c1")].chunks
+    assert stored
+    doc_hashes = {chunk.metadata.get("doc_content_hash") for chunk in stored}
+    assert len(doc_hashes) == 1
 
 
 @pytest.mark.asyncio

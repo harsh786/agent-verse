@@ -2151,6 +2151,105 @@ async def test_concurrent_repository_completion_and_cancel_preserve_one_terminal
         assert isinstance(completion, Exception)
 
 
+async def test_concurrent_identical_ingestion_dedups_instead_of_duplicating(
+    postgres_database: _Database,
+    tenants: tuple[TenantContext, TenantContext],
+) -> None:
+    """Two racing identical ingestions must not both persist chunks.
+
+    Mirrors the real production sequence: the ingestion pipeline's Stage 3
+    ``exists_by_hash`` dedup check runs in its own (short) transaction, and
+    only later — after parsing/PII/chunking/embedding — does the actual write
+    land via ``ingest_chunks_async`` in a SEPARATE transaction. A retry racing
+    the original attempt (or a scheduled re-sync overlapping a manual
+    "re-sync now") can pass that earlier check before either write commits.
+
+    An ``asyncio.Event`` barrier forces both coroutines past their dedup
+    check before either is allowed to write, so the race window is hit on
+    every run rather than depending on incidental timing.
+    """
+    import hashlib
+
+    from app.rag.models import Chunk
+
+    try:
+        from app.rag.store import DuplicateContentError
+    except ImportError:  # pre-fix baseline: the guard doesn't exist yet
+
+        class DuplicateContentError(Exception):  # type: ignore[no-redef]
+            pass
+
+    tenant, _ = tenants
+    collection_id = uuid.uuid4().hex
+    store = KnowledgeStore(postgres_database.runtime_factory)
+    await store.create_collection_async(
+        KnowledgeCollection(name=f"dedup-race-{collection_id}", collection_id=collection_id),
+        tenant_ctx=tenant,
+    )
+
+    content = "Identical re-uploaded content racing its own retry"
+    doc_hash = hashlib.sha256(content.encode()).hexdigest()
+    both_checked = asyncio.Event()
+    check_count = 0
+    check_lock = asyncio.Lock()
+
+    async def ingest_attempt(document_id: str) -> list[str]:
+        nonlocal check_count
+        # Stage 3: the dedup pre-check, in its own transaction (matches
+        # IngestionPipeline._check_existing_hash / the RPA + OCR pre-checks).
+        already_indexed = await store.exists_by_hash(
+            content_hash=doc_hash,
+            tenant_id=tenant.tenant_id,
+            collection_id=collection_id,
+        )
+        async with check_lock:
+            check_count += 1
+            if check_count == 2:
+                both_checked.set()
+        await both_checked.wait()
+        assert not already_indexed, "fixture bug: seeded content before the race started"
+
+        # Stage 12: the actual write, in a separate later transaction — after
+        # parsing/PII/chunking/embedding would have run in the real pipeline.
+        chunk = Chunk(
+            document_id,
+            content,
+            _embedding(768),
+            0,
+            metadata={"doc_content_hash": doc_hash},
+        )
+        return await store.ingest_chunks_async(
+            [chunk], collection_id=collection_id, tenant_ctx=tenant
+        )
+
+    results = await asyncio.gather(
+        ingest_attempt("retry-attempt"),
+        ingest_attempt("original-attempt"),
+        return_exceptions=True,
+    )
+
+    successes = [r for r in results if isinstance(r, list)]
+    failures = [r for r in results if isinstance(r, DuplicateContentError)]
+    assert len(successes) == 1, f"expected exactly one writer to win the race, got: {results}"
+    assert len(failures) == 1, f"expected the loser to raise DuplicateContentError: {results}"
+
+    async with (
+        postgres_database.runtime_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant.tenant_id),
+    ):
+        count = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM knowledge_chunks_768 "
+                    "WHERE collection_id = :cid AND metadata->>'doc_content_hash' = :h"
+                ),
+                {"cid": collection_id, "h": doc_hash},
+            )
+        ).scalar_one()
+    assert count == 1, "duplicate content was persisted twice instead of deduplicated"
+
+
 async def test_reconciliation_preserves_live_lease_and_fails_stale_queue(
     postgres_database: _Database,
     tenants: tuple[TenantContext, TenantContext],

@@ -58,6 +58,20 @@ class EmbeddingProviderUnavailableError(RuntimeError):
     """A vector ingestion request has no usable embedding provider."""
 
 
+class DuplicateContentError(RuntimeError):
+    """A concurrent/retried ingestion lost the race to index this content.
+
+    Raised from ``_persist_chunks`` when, under the collection's row lock, a
+    chunk carrying the same ``doc_content_hash`` is already persisted for this
+    tenant/collection. Closes the TOCTOU window between the caller's earlier
+    ``exists_by_hash`` check (Stage 3 of the ingestion pipeline, or the RPA/OCR
+    equivalent) and the later write: two concurrent identical ingestions (a
+    retry racing the original attempt, or a re-sync overlapping a manual sync)
+    can both observe "not yet indexed" before either commits. The loser should
+    be treated as an idempotent no-op dedup skip, not a hard failure.
+    """
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=False))
     mag_a = math.sqrt(sum(x * x for x in a))
@@ -1616,6 +1630,22 @@ class KnowledgeStore:
                 )
             return []
         if self._db is None:
+            # Same TOCTOU guard as the DB path's ``_persist_chunks``: a caller's
+            # earlier ``exists_by_hash`` dedup check ran in a prior ``await``
+            # gap (parse/PII/chunk/embed), so a concurrent identical ingestion
+            # can have slipped in in the meantime. This whole branch runs with
+            # no ``await`` inside it, so re-checking here right before the
+            # in-memory append is race-free for this store instance.
+            doc_hashes = {
+                str(chunk.metadata.get("doc_content_hash") or "") for chunk in chunks
+            }
+            doc_hashes.discard("")
+            if doc_hashes and self._exists_by_hash_memory(
+                next(iter(doc_hashes)), tenant_ctx.tenant_id, collection_id
+            ):
+                raise DuplicateContentError(
+                    f"Content already indexed in collection {collection_id}"
+                )
             for chunk in chunks:
                 self.ingest_chunk(chunk, collection_id=collection_id, tenant_ctx=tenant_ctx)
             return [chunk.chunk_id for chunk in chunks]
@@ -1886,6 +1916,43 @@ class KnowledgeStore:
                         "document_id": replacement_document_id,
                     },
                 )
+            else:
+                # TOCTOU guard: an earlier ``exists_by_hash`` dedup check (pipeline
+                # Stage 3, RPA/OCR pre-checks) ran in its own, now-closed
+                # transaction — a concurrent identical ingestion (a retry racing
+                # the original attempt, or a re-sync overlapping a manual sync)
+                # can pass that same check before either one commits. Re-check
+                # ``doc_content_hash`` here, inside the transaction that holds
+                # this collection's row lock, so the loser is caught atomically
+                # instead of racing into a duplicate insert (or, when document_id
+                # also matches, an ugly unique-constraint failure).
+                doc_hashes = {
+                    str(record["metadata"].get("doc_content_hash") or "")
+                    for record in records
+                }
+                doc_hashes.discard("")
+                for doc_hash in doc_hashes:
+                    duplicate = (
+                        await session.execute(
+                            text(
+                                f"SELECT 1 FROM {table} "
+                                "WHERE collection_id = :collection_id "
+                                "AND tenant_id = :tenant_id "
+                                "AND metadata->>'doc_content_hash' = :doc_hash "
+                                "LIMIT 1"
+                            ),
+                            {
+                                "collection_id": collection_id,
+                                "tenant_id": tenant_id,
+                                "doc_hash": doc_hash,
+                            },
+                        )
+                    ).scalar_one_or_none()
+                    if duplicate is not None:
+                        raise DuplicateContentError(
+                            f"Content already indexed in collection {collection_id} "
+                            f"(doc_content_hash={doc_hash[:12]}...)"
+                        )
 
             await session.execute(
                 text(f"""

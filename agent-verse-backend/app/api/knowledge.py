@@ -36,7 +36,7 @@ from app.rag.contracts import (
 from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
-from app.rag.store import EmbeddingProviderUnavailableError, KnowledgeStore
+from app.rag.store import DuplicateContentError, EmbeddingProviderUnavailableError, KnowledgeStore
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 
@@ -292,6 +292,13 @@ async def _persist_chunks_or_http(
             collection_id=collection_id,
             tenant_ctx=tenant_ctx,
         )
+    except DuplicateContentError:
+        # Lost the TOCTOU race against a concurrent identical ingestion (e.g. a
+        # double-submitted upload, or a scrape retry overlapping the original
+        # request) that already committed this content — treat as an idempotent
+        # no-op, matching the explicit exists_by_hash dedup skip used elsewhere,
+        # rather than surfacing a misleading persistence failure.
+        return []
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
     except ValueError as exc:
@@ -1394,13 +1401,17 @@ async def _ingest_chunks_from_source(
                 },
             )
         )
-    await _persist_chunks_or_http(
+    stored_ids = await _persist_chunks_or_http(
         store,
         rag_chunks,
         collection_id=collection_id,
         tenant_ctx=tenant_ctx,
     )
-    return len(rag_chunks)
+    # Report what was actually persisted, not what was prepared — a caught
+    # DuplicateContentError (concurrent identical ingestion already won the
+    # race) makes _persist_chunks_or_http return [] and callers must not
+    # report a false-positive "ingested" count for content that was skipped.
+    return len(stored_ids)
 
 
 @router.post("/ingest/pdf", status_code=201)
