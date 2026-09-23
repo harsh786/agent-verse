@@ -12,8 +12,6 @@ that depends on "region" as its default strategy keeps working.
 
 from __future__ import annotations
 
-import structlog
-
 from app.ingestion.chunkers import RegionChunker, get_chunker_for_strategy
 from app.ingestion.chunkers.base import Chunk
 from app.ingestion.chunkers.region import RegionChunker as RegionChunkerDirect
@@ -60,24 +58,33 @@ def test_region_chunker_tags_metadata_as_a_fallback() -> None:
         assert c.metadata["chunking_strategy_fallback"] == "semantic"
 
 
-def test_region_chunker_logs_a_warning_every_call() -> None:
-    """The gap must show up in logs/telemetry rather than being silent."""
-    events: list[dict] = []
+def test_region_chunker_logs_a_warning_every_call(monkeypatch) -> None:
+    """The gap must show up in logs/telemetry rather than being silent.
 
-    def _capture(_logger, _method, event_dict):
-        events.append(dict(event_dict))
-        return event_dict
+    `region.py` binds its `logger` at module import time, and the project's
+    global structlog config sets `cache_logger_on_first_use=True` — so once
+    that module-level logger has been used anywhere else in a full test-suite
+    run, it caches its own processor chain and a later
+    `structlog.configure(...)` call in this test has no effect on it,
+    making a global-reconfigure approach order-dependently flaky. Patch the
+    module's `logger` reference directly instead, which is deterministic
+    regardless of test execution order or prior cache state.
+    """
+    import app.ingestion.chunkers.region as region_module
 
-    original_processors = structlog.get_config()["processors"]
-    structlog.configure(processors=[_capture, lambda _l, _m, ed: str(ed)])
-    try:
-        RegionChunker().chunk("Image text to chunk.")
-    finally:
-        structlog.configure(processors=original_processors)
+    calls: list[tuple[str, dict]] = []
 
-    warnings = [e for e in events if e.get("event") == "region_chunking_not_implemented"]
+    class _StubLogger:
+        def warning(self, event, **kwargs):
+            calls.append((event, kwargs))
+
+    monkeypatch.setattr(region_module, "logger", _StubLogger())
+
+    RegionChunker().chunk("Image text to chunk.")
+
+    warnings = [c for c in calls if c[0] == "region_chunking_not_implemented"]
     assert len(warnings) == 1
-    assert "region" in warnings[0]["detail"].lower()
+    assert "region" in warnings[0][1]["detail"].lower()
 
 
 def test_region_chunker_empty_content_does_not_crash() -> None:
