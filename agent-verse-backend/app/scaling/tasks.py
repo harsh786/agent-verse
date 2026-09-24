@@ -4194,6 +4194,75 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+# Tables created as ``PARTITION BY RANGE (created_at)`` with only a fixed set of
+# monthly partitions pre-created by their migration (0055_guardrails,
+# 0056_governance_v2, 0057_audit_rails_v2, 0058_cost_optimization). Each also has
+# (or, as of 3f2bbce84e68, now has) a DEFAULT partition as a hard-failure safety
+# net, but rows landing in DEFAULT are not covered by monthly pruning and degrade
+# toward an unindexed-by-time scan as they accumulate there. This task keeps
+# ahead of the calendar so DEFAULT stays empty in the steady state.
+_RANGE_PARTITIONED_TABLES: tuple[str, ...] = (
+    "cost_ledger",
+    "audit_events",
+    "policy_evaluations",
+    "guardrail_violations",
+)
+
+
+_MONTHS_AHEAD = 6
+
+
+async def _ensure_future_partitions() -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    created: dict[str, list[str]] = {t: [] for t in _RANGE_PARTITIONED_TABLES}
+    errors: dict[str, str] = {}
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory as _get_fresh_db
+
+        db = _get_fresh_db()
+        now = datetime.now(UTC)
+        # Month index 0..N relative to the current month, in calendar order.
+        months: list[tuple[int, int]] = []
+        yr, mo = now.year, now.month
+        for _ in range(_MONTHS_AHEAD + 1):
+            months.append((yr, mo))
+            mo += 1
+            if mo > 12:
+                mo = 1
+                yr += 1
+
+        async with db() as session, session.begin(), system_session(session):
+            for table in _RANGE_PARTITIONED_TABLES:
+                for yr2, mo2 in months:
+                    start = f"{yr2}-{mo2:02d}-01"
+                    next_mo = mo2 + 1 if mo2 < 12 else 1
+                    next_yr = yr2 if mo2 < 12 else yr2 + 1
+                    end = f"{next_yr}-{next_mo:02d}-01"
+                    tname = f"{table}_{yr2}_{mo2:02d}"
+                    try:
+                        async with session.begin_nested():
+                            await session.execute(
+                                text(
+                                    f"CREATE TABLE IF NOT EXISTS {tname} "
+                                    f"PARTITION OF {table} "
+                                    f"FOR VALUES FROM ('{start}') TO ('{end}')"
+                                )
+                            )
+                            created[table].append(tname)
+                    except Exception as exc:
+                        # A DEFAULT partition already claiming this range (or any
+                        # other per-table hiccup) must not abort the rest of the
+                        # loop — each attempt runs in its own SAVEPOINT.
+                        errors[tname] = str(exc)
+        return {"created": created, "errors": errors}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 @celery_app.task(name="app.scaling.tasks.expire_hitl_approvals", bind=True, max_retries=0)
 def expire_hitl_approvals(self: Any) -> dict[str, Any]:
     """Auto-reject HITL approval requests that have passed their expires_at.
@@ -4785,9 +4854,23 @@ def warm_jwks_cache() -> dict:
 
 
 @celery_app.task(name="app.scaling.tasks.create_guardrail_partitions", queue="maintenance")
-def create_guardrail_partitions() -> dict:
-    """Create next 3 months of monthly partitions for guardrail_events."""
-    return {"status": "noop"}
+def create_guardrail_partitions() -> dict[str, Any]:
+    """Pre-create the next few months' partitions for RANGE-partitioned tables.
+
+    Previously this unconditionally returned a static placeholder result —
+    scheduled monthly in beat (``create-guardrail-partitions``) since M-1, but
+    never actually did anything. Every one of ``_RANGE_PARTITIONED_TABLES`` (cost_ledger,
+    audit_events, policy_evaluations, guardrail_violations) is
+    ``PARTITION BY RANGE (created_at)`` with only whatever partitions its
+    migration happened to pre-create for a fixed calendar window. Once real
+    time passes that window, new rows fall through to the DEFAULT partition
+    (migration 3f2bbce84e68) — or, before that migration existed, the INSERT
+    hard-failed outright. This creates partitions for the current month plus
+    the next ``_MONTHS_AHEAD`` months so provisioning always stays well ahead
+    of need even if a scheduled run is skipped or delayed, keeping DEFAULT
+    empty in the steady state.
+    """
+    return _run_async(_ensure_future_partitions())
 
 
 @celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")

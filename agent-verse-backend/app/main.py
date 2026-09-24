@@ -1322,6 +1322,20 @@ def create_app(
             app.state.event_store = event_store
             app.state.agent_store = _agent_store_with_db
 
+            # Bug fix: Marketplace (app.state.marketplace, built pre-lifespan at
+            # module scope with `agent_store=_agent_store`) captured the in-memory
+            # AgentStore at construction time — the same closure-capture hazard
+            # already fixed above for IngestionPipeline/KnowledgeStore. Without
+            # this rewire, POST /marketplace/*/deploy silently creates the agent
+            # in the orphaned in-memory store: the call returns a success payload
+            # with an agent_id, but that agent is invisible to app.state.agent_store
+            # (DB-backed), to GET /agents, to every other replica, and disappears
+            # entirely on restart.
+            _marketplace_state = getattr(app.state, "marketplace", None)
+            if _marketplace_state is not None:
+                _marketplace_state._agent_store = _agent_store_with_db
+                logger.info("marketplace_agent_store_rewired")
+
             # Register built-in MCP servers for every active tenant when their
             # required env vars are present. Without this, catalog connectors
             # can exist in Redis with no tool_definitions/handler, causing

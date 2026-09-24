@@ -182,6 +182,16 @@ class MCPClient:
         self._provider: Any = llm_provider
         # OAuth manager — wired externally
         self._oauth_manager: Any = None
+        # Keyed by "{tenant_id}:{server_id}", not server_id alone. server_id is a
+        # per-tenant UUID for user-registered connectors (registry.py assigns a
+        # fresh uuid4 per registration) so this is currently a latent risk rather
+        # than a live leak — but built-in connectors ARE registered under a fixed,
+        # cross-tenant-shared server_id (e.g. "builtin-github"), and only avoid
+        # this path today because they always resolve a local Python handler
+        # before reaching session-based HTTP dispatch. If that resolution ever
+        # fails (or a future built-in ships without a handler), a bare server_id
+        # key would hand tenant A's Mcp-Session-Id to tenant B's calls against
+        # the same nominal server. Scoping by tenant closes that off entirely.
         self._mcp_sessions: dict[str, str] = {}
         # Per-session tool schema cache: server_id → list[ToolDefinition]
         # Avoids calling discover_tools() on every call_tool() invocation
@@ -251,8 +261,14 @@ class MCPClient:
         client: httpx.AsyncClient,
         cfg: MCPServerConfig,
         headers: dict[str, str],
+        tenant_id: str = "",
     ) -> dict[str, str]:
-        session = self._mcp_sessions.get(cfg.server_id)
+        # Scoped by (tenant_id, server_id): server_id alone is not guaranteed
+        # tenant-unique (built-in connectors share a fixed canonical id across
+        # every tenant that registers them) — see the comment on
+        # ``self._mcp_sessions`` in __init__.
+        cache_key = f"{tenant_id}:{cfg.server_id}"
+        session = self._mcp_sessions.get(cache_key)
         if session:
             return {**headers, "Mcp-Session-Id": session}
 
@@ -272,7 +288,7 @@ class MCPClient:
         session = init_resp.headers.get("mcp-session-id")
         if not session:
             return headers
-        self._mcp_sessions[cfg.server_id] = session
+        self._mcp_sessions[cache_key] = session
         session_headers = {**headers, "Mcp-Session-Id": session}
         await client.post(
             cfg.url.rstrip("/"),
@@ -433,7 +449,9 @@ class MCPClient:
                         headers=headers,
                     )
                     if self._requires_initialize(resp):
-                        headers = await self._ensure_mcp_session(client, cfg, headers)
+                        headers = await self._ensure_mcp_session(
+                            client, cfg, headers, tenant_id=getattr(tenant_ctx, "tenant_id", "")
+                        )
                         _list_req = _jsonrpc("tools/list")
                         _list_req_id = _list_req["id"]
                         resp = await client.post(
@@ -869,7 +887,9 @@ class MCPClient:
                     headers=headers,
                 )
                 if self._requires_initialize(resp):
-                    headers = await self._ensure_mcp_session(client, cfg, headers)
+                    headers = await self._ensure_mcp_session(
+                        client, cfg, headers, tenant_id=getattr(tenant_ctx, "tenant_id", "")
+                    )
                     _call_req = _jsonrpc(
                         "tools/call",
                         {"name": tool_name, "arguments": arguments},

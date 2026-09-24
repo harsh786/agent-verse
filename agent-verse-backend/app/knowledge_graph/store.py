@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,6 +13,13 @@ from app.db.rls import sqlalchemy_rls_context
 from app.knowledge_graph.models import EdgeType, GraphEdge, GraphNode, NodeType
 
 _log = logging.getLogger(__name__)
+
+# How long a per-tenant DB hydration stays "fresh" before query_nodes() will
+# trigger another background reload. Without a TTL, a tenant hydrated once on
+# a replica never picks up nodes/edges written by (or deleted by) ANOTHER
+# replica for the remaining lifetime of the process — the two in-memory
+# caches permanently diverge even though both are backed by the same DB.
+_REHYDRATE_INTERVAL_SECONDS = 30.0
 
 
 class KnowledgeGraphStore:
@@ -23,7 +31,10 @@ class KnowledgeGraphStore:
         self._tenant_nodes: dict[str, set[str]] = {}  # tenant_id → {node_ids}
         self._tenant_edges: dict[str, set[str]] = {}  # tenant_id → {edge_ids}
         self._db: Any = None  # set via set_db() in lifespan
-        self._hydrated_tenants: set[str] = set()
+        # tenant_id -> monotonic time of last successful/attempted hydration.
+        # A TTL (not a one-shot "seen it" set) so writes/deletes made on another
+        # replica become visible here without requiring a process restart.
+        self._hydrated_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # DB wiring
@@ -76,9 +87,14 @@ class KnowledgeGraphStore:
         limit: int = 50,
     ) -> list[GraphNode]:
         """Query nodes by type, search text, and confidence."""
-        # Lazy per-tenant DB hydration (runs once per tenant per process lifetime)
-        if self._db is not None and tenant_id not in self._hydrated_tenants:
-            self._hydrated_tenants.add(tenant_id)  # mark before load to prevent recursion
+        # Lazy per-tenant DB hydration, refreshed every _REHYDRATE_INTERVAL_SECONDS
+        # so this replica eventually observes writes/deletes made by other
+        # replicas (or by this process's own async persistence tasks racing
+        # ahead of a caller) instead of caching the first snapshot forever.
+        _now = time.monotonic()
+        _last = self._hydrated_at.get(tenant_id)
+        if self._db is not None and (_last is None or _now - _last >= _REHYDRATE_INTERVAL_SECONDS):
+            self._hydrated_at[tenant_id] = _now  # mark before load to prevent recursion/thundering
             try:
                 import asyncio
 
@@ -195,14 +211,51 @@ class KnowledgeGraphStore:
             "avg_confidence": sum(n.confidence for n in nodes) / max(len(nodes), 1),
         }
 
-    def delete_tenant_graph(self, tenant_id: str) -> None:
-        """Delete all graph data for a tenant."""
+    async def delete_tenant_graph(self, tenant_id: str) -> None:
+        """Delete all graph data for a tenant, in-memory AND in the DB.
+
+        Previously this only cleared the calling replica's in-memory cache:
+        the ``knowledge_nodes``/``knowledge_edges`` rows survived, so (a) other
+        replicas kept serving the "deleted" graph indefinitely, (b) this same
+        replica would serve it again after the next hydration TTL tick or
+        process restart, and (c) rebuild-then-reingest left the old rows
+        permanently orphaned (unbounded table growth — nothing ever purges
+        them). The DB delete is scoped by RLS context and is best-effort per
+        table so a failure on one table doesn't abort the other.
+        """
         for nid in list(self._tenant_nodes.get(tenant_id, set())):
             self._nodes.pop(nid, None)
         for eid in list(self._tenant_edges.get(tenant_id, set())):
             self._edges.pop(eid, None)
         self._tenant_nodes.pop(tenant_id, None)
         self._tenant_edges.pop(tenant_id, None)
+        # Treat as freshly hydrated (i.e. "known empty") so a query on this same
+        # replica doesn't immediately re-pull the rows we are about to delete —
+        # or, if the DB delete below fails, re-hydrate promptly on the next tick
+        # instead of caching "empty" forever.
+        self._hydrated_at[tenant_id] = time.monotonic()
+
+        if not self._db:
+            return
+        from sqlalchemy import text as _t
+
+        async with self._db() as session, session.begin(), sqlalchemy_rls_context(
+            session, tenant_id
+        ):
+            try:
+                await session.execute(
+                    _t("DELETE FROM knowledge_edges WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            except Exception as exc:
+                _log.warning("Failed to delete KG edges from DB for tenant %s: %s", tenant_id, exc)
+            try:
+                await session.execute(
+                    _t("DELETE FROM knowledge_nodes WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            except Exception as exc:
+                _log.warning("Failed to delete KG nodes from DB for tenant %s: %s", tenant_id, exc)
 
     def detect_communities(self, tenant_id: str) -> list[dict[str, Any]]:
         """Community detection using Union-Find connected components via CommunityDetector."""

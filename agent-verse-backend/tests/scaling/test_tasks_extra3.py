@@ -486,12 +486,16 @@ class TestWarmJwksCache:
 # ── create_guardrail_partitions ───────────────────────────────────────────────
 
 class TestCreateGuardrailPartitions:
-    """Line 1863: noop task."""
+    """Was a noop task — now provisions real future partitions for every
+    RANGE-partitioned table (cost_ledger, audit_events, policy_evaluations,
+    guardrail_violations). See app/scaling/tasks.py::_ensure_future_partitions
+    and migration 3f2bbce84e68 for why the previous noop was a scale bug."""
 
-    def test_returns_noop(self):
+    def test_provisions_real_partitions(self):
         from app.scaling.tasks import create_guardrail_partitions
         result = create_guardrail_partitions.run()
-        assert result == {"status": "noop"}
+        assert result != {"status": "noop"}
+        assert "created" in result or "error" in result
 
 
 # ── enforce_hitl_sla ──────────────────────────────────────────────────────────

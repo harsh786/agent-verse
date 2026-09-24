@@ -78,11 +78,84 @@ def test_expire_stale_documents_has_real_sql() -> None:
     assert "noop" not in src.lower()
 
 
-def test_create_guardrail_partitions_is_noop_stub() -> None:
-    """create_guardrail_partitions is intentionally a noop — verify it returns correctly."""
+def test_create_guardrail_partitions_provisions_real_partitions() -> None:
+    """Was a ``{"status": "noop"}`` stub — scheduled monthly in beat but never
+    doing anything, so cost_ledger/audit_events/policy_evaluations/
+    guardrail_violations would eventually fall through to their DEFAULT
+    partition (or, before that DEFAULT existed, hard-fail every insert) once
+    real time passed their migration's fixed pre-created calendar window. Now
+    delegates to the real ``_ensure_future_partitions`` DB logic."""
     from app.scaling.tasks import create_guardrail_partitions
-    result = create_guardrail_partitions()
-    assert result == {"status": "noop"}
+
+    src = inspect.getsource(create_guardrail_partitions)
+    assert "noop" not in src.lower()
+    assert "_ensure_future_partitions" in src
+
+
+def test_ensure_future_partitions_covers_all_range_partitioned_tables() -> None:
+    from app.scaling.tasks import _RANGE_PARTITIONED_TABLES
+
+    assert set(_RANGE_PARTITIONED_TABLES) == {
+        "cost_ledger",
+        "audit_events",
+        "policy_evaluations",
+        "guardrail_violations",
+    }
+
+
+async def test_ensure_future_partitions_creates_current_and_lookahead_months() -> None:
+    """Runs against a mocked DB session — proves the SQL it emits targets the
+    right partition names for the current month through _MONTHS_AHEAD months,
+    for every range-partitioned table, without needing a real Postgres."""
+    from contextlib import asynccontextmanager
+    from datetime import UTC, datetime
+    from unittest.mock import MagicMock, patch
+
+    from app.scaling.tasks import _ensure_future_partitions
+
+    executed_sql: list[str] = []
+
+    class _FakeNestedTxn:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _FakeSession:
+        def begin_nested(self):
+            return _FakeNestedTxn()
+
+        async def execute(self, stmt, params=None):
+            executed_sql.append(str(stmt))
+            return MagicMock()
+
+    @asynccontextmanager
+    async def _fake_begin(*args, **kwargs):
+        yield None
+
+    fake_session = _FakeSession()
+    fake_session.begin = _fake_begin  # type: ignore[attr-defined]
+
+    @asynccontextmanager
+    async def _fake_db():
+        yield fake_session
+
+    with (
+        patch("app.db.session.get_session_factory", return_value=_fake_db),
+        patch("app.db.rls.system_session", new=_fake_begin),
+    ):
+        result = await _ensure_future_partitions()
+
+    assert "error" not in result, result
+    now = datetime.now(UTC)
+    expected_current = f"cost_ledger_{now.year}_{now.month:02d}"
+    assert any(expected_current in sql for sql in executed_sql), executed_sql
+    # All four tables must be provisioned, not just cost_ledger.
+    for table in ("cost_ledger", "audit_events", "policy_evaluations", "guardrail_violations"):
+        assert any(f"PARTITION OF {table} " in sql for sql in executed_sql), (
+            f"no partition DDL emitted for {table}"
+        )
 
 
 # ── Helper functions ──────────────────────────────────────────────────────────

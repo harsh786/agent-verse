@@ -6,9 +6,18 @@ to the `reflexion_lessons` table (migration 0087).
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections import deque
 from typing import Any
+
+# Re-hydrate a tenant's recent-lessons cache from the DB at most this often.
+# recall() only re-pulls from the DB when its LOCAL deque is empty for that
+# tenant — so as soon as this replica records even one lesson locally, it never
+# looks at the DB again for that tenant, and lessons another replica recorded
+# (and persisted via record_async) never become visible here. The TTL bounds
+# that divergence instead of letting it last for the process lifetime.
+_REHYDRATE_INTERVAL_SECONDS = 30.0
 
 
 class ReflexionStore:
@@ -17,6 +26,7 @@ class ReflexionStore:
         self._max = max_per_tenant
         self._db_factory = db_factory
         self._hydrated_tenants: set[str] = set()
+        self._hydrated_at: dict[str, float] = {}
 
     # ── Sync (in-memory) ──────────────────────────────────────────────────────
 
@@ -43,9 +53,15 @@ class ReflexionStore:
         """Recall recent failure lessons. Triggers lazy DB hydration on first miss."""
         lessons = list(self._lessons.get(tenant_id, []))
 
-        # Lazy DB hydration — only if we have a factory and haven't hydrated this tenant
-        if not lessons and self._db_factory is not None and tenant_id not in self._hydrated_tenants:
-            self._hydrated_tenants.add(tenant_id)  # mark immediately to prevent re-entry
+        # Lazy DB hydration — gated by a TTL (not "ever hydrated"), so a lesson
+        # recorded locally on this replica doesn't permanently hide lessons
+        # another replica persisted to the DB for the same tenant.
+        _now = time.monotonic()
+        _last = self._hydrated_at.get(tenant_id)
+        _due = _last is None or _now - _last >= _REHYDRATE_INTERVAL_SECONDS
+        if _due and self._db_factory is not None:
+            self._hydrated_tenants.add(tenant_id)  # legacy marker, kept for compatibility
+            self._hydrated_at[tenant_id] = _now  # mark immediately to prevent re-entry
             try:
                 import asyncio
 

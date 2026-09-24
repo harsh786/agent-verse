@@ -55,6 +55,28 @@ def test_beat_schedule_records_queue_depths_on_maintenance_queue() -> None:
     assert options["queue"] == "maintenance"
 
 
+def test_beat_schedule_provisions_future_partitions_on_maintenance_queue() -> None:
+    """cost_ledger/audit_events/policy_evaluations/guardrail_violations are all
+    ``PARTITION BY RANGE (created_at)`` with only a fixed, migration-time set of
+    monthly partitions. Without an ongoing task provisioning new ones, inserts
+    eventually fall through to the DEFAULT partition (migration 3f2bbce84e68)
+    forever, or — before that migration — hard-fail outright once real time
+    passes the last pre-created month. ``create_guardrail_partitions`` (was a
+    ``{"status": "noop"}`` stub, see test_celery_maintenance_real.py) now does
+    this for real; this locks in that it stays wired into beat.
+    """
+    task = celery_app.tasks.get("app.scaling.tasks.create_guardrail_partitions")
+    assert task is not None
+    assert task.queue == "maintenance"
+
+    beat_schedule = cast(Mapping[str, Mapping[str, Any]], celery_app.conf.beat_schedule)
+    schedule_entry = beat_schedule["create-guardrail-partitions"]
+    options = cast(Mapping[str, str], schedule_entry["options"])
+
+    assert schedule_entry["task"] == "app.scaling.tasks.create_guardrail_partitions"
+    assert options["queue"] == "maintenance"
+
+
 def test_beat_schedule_does_not_periodically_invoke_per_goal_dlq_handler() -> None:
     """Periodic beat entries must not call run_goal_dlq without a goal payload.
 

@@ -273,7 +273,7 @@ async def rebuild_graph(request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    kg_store.delete_tenant_graph(tenant.tenant_id)
+    await kg_store.delete_tenant_graph(tenant.tenant_id)
     return {"status": "cleared", "tenant_id": tenant.tenant_id}
 
 

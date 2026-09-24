@@ -1373,9 +1373,26 @@ async def test_dispatch_jira_rest_tool_pagination_token_forwarded():
 async def test_ensure_mcp_session_returns_cached_session_header():
     cfg = MCPServerConfig(server_id="srv-sess", name="Srv", url="http://mcp.example.com/mcp")
     client = _make_client()
-    client._mcp_sessions["srv-sess"] = "cached-session-id"
-    headers = await client._ensure_mcp_session(AsyncMock(), cfg, {"X-Base": "1"})
+    # Cache key is "{tenant_id}:{server_id}" — server_id alone is not a safe
+    # cross-tenant cache key (see the comment on MCPClient._mcp_sessions).
+    client._mcp_sessions["tenant-a:srv-sess"] = "cached-session-id"
+    headers = await client._ensure_mcp_session(
+        AsyncMock(), cfg, {"X-Base": "1"}, tenant_id="tenant-a"
+    )
     assert headers == {"X-Base": "1", "Mcp-Session-Id": "cached-session-id"}
+
+    # A different tenant hitting the same nominal server_id must NOT get
+    # tenant-a's cached session.
+    other_client = AsyncMock()
+    other_init_resp = MagicMock()
+    other_init_resp.raise_for_status = MagicMock()
+    other_init_resp.headers = {"mcp-session-id": "tenant-b-session"}
+    other_client.post = AsyncMock(return_value=other_init_resp)
+    headers_b = await client._ensure_mcp_session(
+        other_client, cfg, {"X-Base": "1"}, tenant_id="tenant-b"
+    )
+    assert headers_b["Mcp-Session-Id"] == "tenant-b-session"
+    assert client._mcp_sessions["tenant-a:srv-sess"] == "cached-session-id"
 
 
 @pytest.mark.asyncio

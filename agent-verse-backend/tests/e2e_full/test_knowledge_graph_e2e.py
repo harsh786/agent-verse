@@ -198,3 +198,76 @@ async def test_knowledge_graph_isolated_by_tenant(
         stats_b = await client_b.get("/knowledge-graph/stats")
         assert stats_b.status_code == 200
         assert stats_b.json()["total_nodes"] == 0
+
+
+async def test_rebuild_purges_db_rows_not_just_in_memory_cache(
+    app: Any,
+    tenant_client: Any,
+    _fake_embedder: Any,
+    _migrated_backends: tuple[str, str],
+) -> None:
+    """DELETE /knowledge-graph/rebuild must delete the DB rows, not only clear
+    this replica's in-memory kg_store cache.
+
+    Before the fix, ``delete_tenant_graph`` only popped the process-local
+    dicts: the ``knowledge_nodes``/``knowledge_edges`` rows survived, so (a)
+    another replica (or this one after its next hydration-TTL tick, or a
+    restart) would keep serving the "deleted" graph, and (b) the rows would
+    accumulate forever with nothing to prune them. This asserts the rows are
+    actually gone from Postgres, read back with a fresh connection/session that
+    never touches the in-memory kg_store at all.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    me = await tenant_client.get("/tenants/me")
+    assert me.status_code == 200, me.text
+    tenant_id = me.json()["tenant_id"]
+
+    person = "Marisol Windthorne"
+    content = (
+        f"{person} signed off on the rebuild-purge verification memo. "
+        f"{person} is the only reviewer listed for this audit trail."
+    )
+    collection_id = await _make_collection(tenant_client)
+    source, raw_doc = _build_source_and_doc(tenant_id, collection_id, content)
+
+    pipeline = app.state.ingestion_pipeline
+    result = await pipeline.ingest(raw_doc, source)
+    assert result.status == "indexed", result
+    assert result.kg_entities > 0, result
+
+    database_url, _ = _migrated_backends
+    engine = create_async_engine(database_url)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _count_rows() -> tuple[int, int]:
+        async with session_factory() as session, sqlalchemy_rls_context(session, tenant_id):
+            nodes = (
+                await session.execute(
+                    text("SELECT count(*) FROM knowledge_nodes WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            ).scalar_one()
+            edges = (
+                await session.execute(
+                    text("SELECT count(*) FROM knowledge_edges WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            ).scalar_one()
+            return int(nodes), int(edges)
+
+    try:
+        nodes_before, _ = await _count_rows()
+        assert nodes_before >= 1, "expected at least the ingested entity row in the DB"
+
+        rebuild = await tenant_client.delete("/knowledge-graph/rebuild")
+        assert rebuild.status_code == 200, rebuild.text
+
+        nodes_after, edges_after = await _count_rows()
+        assert nodes_after == 0, f"knowledge_nodes rows survived rebuild: {nodes_after}"
+        assert edges_after == 0, f"knowledge_edges rows survived rebuild: {edges_after}"
+    finally:
+        await engine.dispose()

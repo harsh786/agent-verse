@@ -54,6 +54,15 @@ async def test_lifespan_upgrades_services_to_db_redis_backed(app: Any) -> None:
     # Trigger dispatcher was wired with the goal service (WT-3), not left unset.
     assert getattr(state.trigger_dispatcher, "_goal_service", None) is state.goal_service
 
+    # Marketplace (template gallery) was built pre-lifespan with the in-memory
+    # AgentStore closure-captured at construction time. If it is not rewired to
+    # the DB-backed instance after the swap, POST /marketplace/*/deploy silently
+    # creates agents in an orphaned in-memory store: invisible to app.state.agent_store,
+    # to every other replica, and gone on restart, while still reporting success.
+    assert getattr(state.marketplace, "_agent_store", None) is state.agent_store, (
+        "marketplace still holds the pre-lifespan in-memory AgentStore"
+    )
+
 
 async def test_backends_reachable_via_signup_roundtrip(client: Any) -> None:
     """A real DB+Redis round-trip: signup persists a tenant and returns a key."""
