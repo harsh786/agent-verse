@@ -2089,7 +2089,16 @@ class TestMCPClientWave3:
 
         client = MCPClient(registry=AsyncMock())
         await client._update_tool_stats("srv1", "tool1", "t1", True, 42.0, db=_db)
-        mock_session.execute.assert_called_once()
+        # _update_tool_stats wraps its session in sqlalchemy_rls_context, which
+        # issues two extra `SET LOCAL app.tenant_id` executes (set on entry,
+        # reset on exit) around the real UPDATE -- so `execute` is called 3
+        # times total. Find the actual tool_capabilities UPDATE among them.
+        update_calls = [
+            call
+            for call in mock_session.execute.call_args_list
+            if "UPDATE tool_capabilities" in str(call.args[0])
+        ]
+        assert len(update_calls) == 1
 
     @pytest.mark.asyncio
     async def test_oauth_token_refresh_exception_swallowed(self) -> None:

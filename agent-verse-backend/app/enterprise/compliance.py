@@ -379,6 +379,8 @@ class ComplianceController:
 
         from sqlalchemy import text
 
+        from app.db.rls import sqlalchemy_rls_context
+
         deleted_counts: dict[str, Any] = {}
         tables_ordered = [
             # Child tables first (FK constraints)
@@ -411,23 +413,50 @@ class ComplianceController:
             "tenants",
         ]
 
-        async with db() as session, session.begin():
+        # NOTE: several of these tables (decision_traces, tool_capabilities,
+        # compliance_requests, agent_snapshots, ...) have RLS FORCE'd. Without
+        # the `app.tenant_id` GUC set on this session, every DELETE below would
+        # silently match zero rows under a non-BYPASSRLS role (the
+        # least-privilege role this app actually provisions in production) --
+        # GDPR erasure would report "success" while deleting nothing. Only
+        # invisible under a superuser/BYPASSRLS connection, which is why this
+        # went unnoticed.
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
             for table in tables_ordered:
+                # Each table's DELETE runs in its own SAVEPOINT. Postgres aborts
+                # the *entire* enclosing transaction on any error (permission
+                # denied, constraint violation, etc.) until a ROLLBACK — without
+                # a savepoint here, one table's failure silently poisons every
+                # subsequent table's DELETE in this loop too (each one then
+                # raises "current transaction is aborted" and gets swallowed by
+                # the except below), so a single mid-list failure would make
+                # this function report a string of independent-looking
+                # "skipped: ..." entries while actually having deleted nothing
+                # for the rest of the tenant's data.
                 try:
-                    # Use tenant_id column — all tables have it
-                    # tenants uses id column
-                    col = "id" if table == "tenants" else "tenant_id"
-                    result = await session.execute(
-                        text(f"DELETE FROM {table} WHERE {col} = :tid"),
-                        {"tid": tenant_ctx.tenant_id},
-                    )
-                    deleted_counts[table] = result.rowcount
+                    async with session.begin_nested():
+                        # Use tenant_id column — all tables have it
+                        # tenants uses id column
+                        col = "id" if table == "tenants" else "tenant_id"
+                        result = await session.execute(
+                            text(f"DELETE FROM {table} WHERE {col} = :tid"),
+                            {"tid": tenant_ctx.tenant_id},
+                        )
+                        deleted_counts[table] = result.rowcount
                 except Exception as exc:
                     deleted_counts[table] = f"skipped: {exc}"
 
         # Also remove from deleted_tenants tracking table
         try:
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 await session.execute(
                     text("DELETE FROM deleted_tenants WHERE tenant_id = :tid"),
                     {"tid": tenant_ctx.tenant_id},
