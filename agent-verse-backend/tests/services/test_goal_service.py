@@ -994,6 +994,56 @@ async def test_run_agent_loop_seeds_tool_context_without_mcp_client() -> None:
     }
 
 
+async def test_run_agent_loop_enforces_wall_clock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A goal executed in-process (no Celery task_queue configured) must still
+    be killed by a wall-clock timeout when a tool call hangs.
+
+    Regression test: only the Celery task path (app/scaling/tasks.py) wrapped
+    goal execution in ``asyncio.wait_for(..., timeout=goal_timeout_seconds)``.
+    The in-process path used by GoalService whenever ``task_queue`` is None
+    (no Redis/Celery configured — a supported, documented deployment mode)
+    awaited ``loop.run()`` directly with no timeout at all, so a goal stuck on
+    a hung MCP/RPA tool call would run — and hold its bulkhead/concurrency
+    slot — forever.
+    """
+    import dataclasses
+
+    from app.tenancy.context import PLAN_LIMITS
+
+    monkeypatch.setitem(
+        PLAN_LIMITS,
+        _CTX_A.plan,
+        dataclasses.replace(PLAN_LIMITS[_CTX_A.plan], goal_timeout_seconds=0.05),
+    )
+
+    class HangingLoop:
+        async def run(self, **kwargs: Any) -> None:
+            await asyncio.sleep(10)  # simulates a stuck tool call / hung MCP server
+
+    class HangingGoalService(GoalService):
+        def _make_agent_loop_for_tenant(self, *args: Any, **kwargs: Any) -> HangingLoop:
+            return HangingLoop()
+
+    svc = HangingGoalService()  # no task_queue → in-process execution path
+    result = await svc.submit_goal(
+        goal="do something that hangs forever",
+        priority="normal",
+        dry_run=False,
+        tenant_ctx=_CTX_A,
+    )
+    record = svc._goals[result["goal_id"]]
+    assert record.task is not None
+
+    # Outer safety net: if the fix regresses, this fails after 5s instead of
+    # hanging the test suite forever.
+    await asyncio.wait_for(record.task, timeout=5.0)
+
+    assert record.status == GoalStatus.FAILED
+    assert "timed out" in (record.error_message or "").lower()
+
+
 async def test_submit_goal_dry_run_records_goal_duration_metric(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

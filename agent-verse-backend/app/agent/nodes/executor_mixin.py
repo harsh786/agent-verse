@@ -1111,6 +1111,25 @@ class ExecutorMixin:
             tool_choice=_step_tool_choice,
         )
 
+        # 0. Cost pre-flight: the only budget check on this path previously ran
+        # AFTER the LLM call completed (below, using the actual token cost) —
+        # meaning an already-over-budget goal would still pay for, and make,
+        # another full LLM call on every subsequent iteration before being
+        # told "budget exceeded" post-hoc, compounding real spend past
+        # per_goal_usd / per_tenant_daily_usd on every replan until
+        # max_iterations finally stopped it.
+        #
+        # Note this can't be closed by re-checking CostController's recorded
+        # totals: check_and_record deliberately does NOT charge a denied call
+        # (see its Lua script docstring — "a denied request never permanently
+        # charges the tenant"), so goal_total()/daily_total() stay unchanged
+        # after a denial and a totals-based pre-check would immediately pass
+        # again next iteration, reproducing the same bug one layer down.
+        # Instead latch onto agent_state once any call has been denied for
+        # this goal, and refuse to start another for the rest of the run.
+        if state.context.get("_budget_exhausted"):
+            return "Step skipped: budget exceeded."
+
         # 8a. Bulkhead — distributed concurrency limit per tenant (RedisBulkhead or Semaphore)
         _bulkhead = None
         if self._bulkhead_registry is not None and tenant_ctx is not None:
@@ -1202,6 +1221,9 @@ class ExecutorMixin:
                 tenant_ctx=tenant_ctx,
             )
             if not ok:
+                # Latch so no further LLM call is attempted for the rest of
+                # this goal's run (see the pre-flight check above).
+                state.context["_budget_exhausted"] = True
                 return "Step skipped: budget exceeded."
 
         # 1b. Record ACTUAL token cost via CostTracker when usage is available

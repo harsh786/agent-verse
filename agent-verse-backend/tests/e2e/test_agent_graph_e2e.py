@@ -138,6 +138,41 @@ async def test_cost_budget_exceeded_skips_step():
         )
 
 
+async def test_over_budget_goal_stops_making_further_llm_calls():
+    """Once a goal's cost budget is exhausted, no further executor LLM calls
+    should be made on later replan iterations.
+
+    Regression test: the budget check previously ran only AFTER the executor's
+    LLM call completed (using its actual token cost), so an already-over-budget
+    goal still paid for — and made — one more full LLM call every iteration
+    before being told "budget exceeded" post-hoc. With a verifier that always
+    reports failure (forcing a replan loop), that let real spend compound past
+    per_goal_usd on every iteration until max_iterations finally stopped it.
+    """
+    planner_p = FakeProvider(responses=['{"steps": ["do a step"]}'])
+    executor_p = FakeProvider(responses=["did the step"])
+    verifier_p = FakeProvider(responses=['{"success": false, "reason": "not done"}'])
+
+    # Any positive cost exceeds this, so the very first executor call is
+    # denied post-hoc — the scenario under test is what happens on the *next*
+    # iteration once the goal is already over budget.
+    cost = CostController(BudgetConfig(per_goal_usd=0.0, per_tenant_daily_usd=100.0))
+    graph = AgentGraph(
+        planner=planner_p,
+        executor=executor_p,
+        verifier=verifier_p,
+        cost_controller=cost,
+        max_iterations=5,
+    )
+    await graph.run(goal="expensive task that never verifies", tenant_ctx=T)
+
+    assert len(executor_p.call_history) == 1, (
+        "expected exactly one executor LLM call once the goal's budget was "
+        f"exhausted, got {len(executor_p.call_history)} — a goal already over "
+        "budget must not start another LLM call on a later replan iteration"
+    )
+
+
 async def test_secret_redaction_in_output():
     """ResultProcessor must scrub secrets from step output."""
     p = FakeProvider(

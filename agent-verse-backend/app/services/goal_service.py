@@ -2253,14 +2253,40 @@ class GoalService:
             async def callback(event: dict[str, Any]) -> None:
                 await self._dispatch_event(goal_id, event, tenant_ctx=tenant_ctx)
 
+            # Wall-clock timeout for the goal as a whole. Without this, a goal
+            # running in-process (task_queue=None — no Redis/Celery configured,
+            # or tests) has no upper bound: a stuck/slow tool call (hung MCP
+            # server, RPA browser wedge, etc.) would let the goal — and the
+            # bulkhead/concurrency slot it holds — run forever. The Celery task
+            # path (app/scaling/tasks.py) already enforces this same per-plan
+            # goal_timeout_seconds via asyncio.wait_for; mirror it here so the
+            # in-process path gets the identical hard stop.
+            from app.tenancy.context import PLAN_LIMITS as _PLAN_LIMITS
+
+            _goal_timeout_s = getattr(
+                _PLAN_LIMITS.get(tenant_ctx.plan), "goal_timeout_seconds", 3600
+            )
+
             try:
-                await loop.run(
-                    goal=goal_text,
-                    tenant_ctx=tenant_ctx,
-                    initial_context=initial_context or None,
-                    event_callback=callback,
-                    goal_id=goal_id,
+                await asyncio.wait_for(
+                    loop.run(
+                        goal=goal_text,
+                        tenant_ctx=tenant_ctx,
+                        initial_context=initial_context or None,
+                        event_callback=callback,
+                        goal_id=goal_id,
+                    ),
+                    timeout=float(_goal_timeout_s),
                 )
+            except TimeoutError:
+                if record is not None:
+                    record.status = GoalStatus.FAILED
+                    record.error_message = f"Goal timed out after {_goal_timeout_s}s"
+                    timeout_event: dict[str, Any] = {
+                        "type": "goal_failed",
+                        "reason": f"timeout after {_goal_timeout_s}s",
+                    }
+                    await self._dispatch_event(goal_id, timeout_event, tenant_ctx=tenant_ctx)
             except asyncio.CancelledError:
                 if record is not None and record.status != GoalStatus.CANCELLED:
                     cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
