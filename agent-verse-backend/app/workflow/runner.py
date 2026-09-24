@@ -314,7 +314,33 @@ class WorkflowRunner:
         # Mark RUNNING before executing so started_at is stamped at the real start
         # (update_status COALESCEs started_at on 'running') — otherwise the run
         # jumps straight to a terminal status and duration can't be computed.
+        #
+        # But check the CURRENT status first: this Celery task may have sat
+        # queued for a while (busy tier queue) after ``run()`` created the row
+        # as 'pending' and dispatched it. An operator can cancel or pause a
+        # still-queued run in that window (WorkflowService.cancel_run/pause_run
+        # both accept 'pending'). ``update_status`` has no WHERE-status guard —
+        # it unconditionally overwrites whatever status is there — so blindly
+        # setting RUNNING here would silently resurrect a CANCELLED/PAUSED run
+        # back to RUNNING right before ``ainvoke`` executes every step for real
+        # (including side-effecting ones), defeating the cancel/pause entirely.
+        # The per-step cooperative check in compiler.py's node_fn can't save us
+        # either: it reads status from the DB too, and by then we'd have
+        # already overwritten the CANCELLED/PAUSED marker with RUNNING.
         if self._run_store is not None and not is_test_run:
+            current_status: str | None = None
+            with contextlib.suppress(Exception):
+                current_status = await self._run_store.get_status(tenant_id, run_id)
+            if current_status in (
+                WorkflowRunStatus.CANCELLED.value,
+                WorkflowRunStatus.PAUSED.value,
+            ):
+                _log.info(
+                    "workflow_run_start_skipped_terminal_or_paused",
+                    run_id=run_id,
+                    status=current_status,
+                )
+                return
             with contextlib.suppress(Exception):
                 await self._run_store.update_status(
                     run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id

@@ -60,11 +60,21 @@ class _FakeCompiler:
 
 
 class _FakeRunStore:
-    def __init__(self, definition: WorkflowDefinition, record: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        definition: WorkflowDefinition,
+        record: dict[str, Any] | None = None,
+        status: str | None = None,
+    ) -> None:
         self._definition = definition
         self._record = record or {"inputs": {}, "labels": {}}
         self.status_calls: list[dict[str, Any]] = []
         self.created: dict[str, Any] | None = None
+        # Current persisted run status, as an operator's cancel/pause call (or
+        # ``execute_fresh``'s own RUNNING stamp) would have set it. Defaults to
+        # None (no row / status unknown) so existing tests, which never set a
+        # pre-existing status, are unaffected.
+        self.status = status
 
     async def create(self, **kwargs: Any) -> None:
         self.created = kwargs
@@ -78,8 +88,12 @@ class _FakeRunStore:
     async def get_definition(self, workflow_id: str, tenant_id: str) -> dict[str, Any]:
         return self._definition.to_json()
 
+    async def get_status(self, tenant_id: str, run_id: str) -> str | None:
+        return self.status
+
     async def update_status(self, run_id: str, status: Any, *, tenant_id: str, **kwargs: Any) -> bool:
         self.status_calls.append({"run_id": run_id, "status": status, "tenant_id": tenant_id, **kwargs})
+        self.status = status.value if hasattr(status, "value") else status
         return True
 
 
@@ -317,6 +331,42 @@ async def test_execute_fresh_generic_exception_marks_failed_with_error() -> None
     last = run_store.status_calls[-1]
     assert last["status"] == WorkflowRunStatus.FAILED
     assert "tool exploded" in last["error"]
+
+
+async def test_execute_fresh_skips_already_cancelled_run() -> None:
+    """Real-world race: ``run()`` creates the row 'pending' and dispatches to a
+    Celery tier queue; the queue is busy, so the task sits for a while before a
+    worker picks it up. In that window an operator cancels the (still-queued)
+    run — ``WorkflowService.cancel_run`` accepts 'pending'. When the worker
+    finally calls ``execute_fresh``, it must NOT blindly stamp RUNNING (there is
+    no WHERE-status guard on ``update_status`` — it would silently overwrite
+    CANCELLED) and must not execute a single step of a run the operator already
+    cancelled.
+    """
+    definition = _wf()
+    run_store = _FakeRunStore(definition, status=WorkflowRunStatus.CANCELLED.value)
+    compiled = _FakeCompiled(result={"status": WorkflowRunStatus.COMPLETE})
+    runner = WorkflowRunner(compiler=_FakeCompiler(compiled), run_store=run_store)
+
+    await runner.execute_fresh("run-1", "wf-1", "t-1")
+
+    assert run_store.status_calls == []  # never stamped RUNNING, never finalized
+    assert compiled.invoked_with is None  # the graph never ran
+    assert run_store.status == WorkflowRunStatus.CANCELLED.value  # stays cancelled
+
+
+async def test_execute_fresh_skips_already_paused_run() -> None:
+    """Same race as above, but for a run paused while still queued."""
+    definition = _wf()
+    run_store = _FakeRunStore(definition, status=WorkflowRunStatus.PAUSED.value)
+    compiled = _FakeCompiled(result={"status": WorkflowRunStatus.COMPLETE})
+    runner = WorkflowRunner(compiler=_FakeCompiler(compiled), run_store=run_store)
+
+    await runner.execute_fresh("run-1", "wf-1", "t-1")
+
+    assert run_store.status_calls == []
+    assert compiled.invoked_with is None
+    assert run_store.status == WorkflowRunStatus.PAUSED.value
 
 
 # ── execute_resume_fresh() ──────────────────────────────────────────────────

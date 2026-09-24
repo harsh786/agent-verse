@@ -118,6 +118,45 @@ def test_different_versions_different_cache_keys(compiler: WorkflowCompiler) -> 
     assert r1 is not r2
 
 
+def test_content_change_with_same_id_and_version_recompiles(
+    compiler: WorkflowCompiler,
+) -> None:
+    """A workflow republished with edited steps but an unchanged ``version``
+    string must still recompile — this is the real-world case for API/visual
+    -builder workflows, whose DB mirror row hardcodes version="1.0.0" forever
+    (see ``_WorkflowStore._bridge_upsert_definition``) and is never bumped on
+    edit or publish. Nothing in the app calls ``WorkflowCompiler.invalidate()``
+    on update/publish either. Without a content-based cache key, an operator's
+    bug fix to a live workflow (e.g. fixing a conditional's routing target)
+    would be silently ignored by the compiler for the life of the process —
+    even for brand-new runs triggered long after the fix was published.
+    """
+    wf_before = WorkflowDefinition(
+        id="wf-live",
+        name="wf",
+        version="1.0.0",
+        steps=[StepDefinition(id="a", type="tool", tool="t")],
+    )
+    r1 = compiler.compile(wf_before)
+    assert len(r1.definition.steps) == 1
+
+    # Operator edits and republishes: same id, same version, different steps.
+    wf_after = WorkflowDefinition(
+        id="wf-live",
+        name="wf",
+        version="1.0.0",
+        steps=[
+            StepDefinition(id="a", type="tool", tool="t"),
+            StepDefinition(id="b", type="tool", tool="t", depends_on=["a"]),
+        ],
+    )
+    r2 = compiler.compile(wf_after)
+
+    assert r2 is not r1
+    assert r2.definition is wf_after
+    assert len(r2.definition.steps) == 2
+
+
 def test_invalidate_removes_all_versions(compiler: WorkflowCompiler) -> None:
     wf1 = WorkflowDefinition(name="v1", version="1",
                               steps=[StepDefinition(id="s", type="tool", tool="t")])

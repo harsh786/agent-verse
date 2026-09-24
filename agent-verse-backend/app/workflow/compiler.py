@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json as _json
 from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -72,7 +74,7 @@ class WorkflowCompiler:
 
     def compile(self, definition: WorkflowDefinition) -> CompiledWorkflow:
         """Compile a WorkflowDefinition to a runnable graph. Uses cache."""
-        cache_key = f"{definition.id}:{definition.version}"
+        cache_key = self._cache_key(definition)
         if cache_key in self._cache:
             return self._cache[cache_key]
 
@@ -85,6 +87,28 @@ class WorkflowCompiler:
         keys_to_del = [k for k in self._cache if k.startswith(f"{workflow_id}:")]
         for k in keys_to_del:
             del self._cache[k]
+
+    @staticmethod
+    def _cache_key(definition: WorkflowDefinition) -> str:
+        """Cache key: workflow id + declared version + a content hash.
+
+        ``id:version`` alone is not a reliable invalidation signal in practice:
+        API/visual-builder-created workflows are mirrored into
+        ``workflow_definitions`` with a hardcoded version ("1.0.0" — see
+        ``_WorkflowStore._bridge_upsert_definition``) that is never bumped on
+        update/republish, and nothing in the app calls ``WorkflowCompiler
+        .invalidate()`` when a workflow is edited or published. Keying on
+        ``id:version`` alone would mean the FIRST compiled graph for a workflow
+        is served forever (for the life of this process) — an operator fixing a
+        bug in a live workflow's steps/branches/routing would have that fix
+        silently ignored by every subsequent run, including brand-new ones
+        triggered well after the fix, until the process restarts. The content
+        hash guarantees a definition change always produces a fresh compile
+        regardless of whether ``version`` (or ``invalidate()``) is used.
+        """
+        payload = _json.dumps(definition.to_json(), sort_keys=True, default=str)
+        digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+        return f"{definition.id}:{definition.version}:{digest}"
 
     def _compile_uncached(self, definition: WorkflowDefinition) -> CompiledWorkflow:
         graph = StateGraph(WorkflowState)
