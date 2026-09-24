@@ -236,3 +236,161 @@ class TestLockReleaseFix:
             "H12: run_goal must use _SyncGoalLock (sync Redis) or a single asyncio.run() "
             "to avoid event loop mismatch when acquiring/releasing the distributed lock."
         )
+
+
+class _AsyncNullCM:
+    """Trivial async context manager (stands in for ``session.begin()``)."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        return False
+
+
+class _FakeSavepoint:
+    """Stands in for ``session.begin_nested()`` with real SAVEPOINT semantics.
+
+    Entering increments the session's savepoint depth so a failure inside is
+    known to be *local*; on exit (whether clean or via exception) it decrements
+    the depth again -- mirroring Postgres's ROLLBACK TO SAVEPOINT, which undoes
+    only that subtransaction and leaves the *enclosing* transaction usable.
+    Critically it does NOT suppress the exception: the caller's own
+    ``try/except`` around ``async with session.begin_nested():`` is what
+    records the per-item failure, exactly as in the real code.
+    """
+
+    def __init__(self, session: _FakePoisonableSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _FakeSavepoint:
+        self._session.savepoint_depth += 1
+        return self
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        self._session.savepoint_depth -= 1
+        return False  # never suppress -- let the surrounding try/except handle it
+
+
+class _FakePoisonableSession:
+    """Fake asyncpg/SQLAlchemy session that reproduces the exact Postgres
+    behaviour the real bug depended on: once a statement fails *outside of a
+    savepoint*, the whole transaction is aborted and every later statement on
+    the same session raises "current transaction is aborted" -- until a
+    savepoint (``begin_nested``) isolates the failure instead.
+    """
+
+    def __init__(self, fail_substrings: set[str]) -> None:
+        self.fail_substrings = fail_substrings
+        self.poisoned = False
+        self.savepoint_depth = 0
+        self.executed_sql: list[str] = []
+
+    async def execute(self, stmt: object, params: object = None) -> MagicMock:
+        sql = str(stmt)
+        self.executed_sql.append(sql)
+        if self.poisoned:
+            raise RuntimeError(
+                "current transaction is aborted, commands ignored until end of "
+                "transaction block"
+            )
+        if any(needle in sql for needle in self.fail_substrings):
+            if self.savepoint_depth == 0:
+                # Not inside a SAVEPOINT: the abort is permanent for the rest
+                # of this transaction, exactly like real Postgres.
+                self.poisoned = True
+            raise RuntimeError("simulated permission denied for this statement")
+        result = MagicMock()
+        result.rowcount = 1
+        return result
+
+    def begin(self) -> _AsyncNullCM:
+        return _AsyncNullCM()
+
+    def begin_nested(self) -> _FakeSavepoint:
+        return _FakeSavepoint(self)
+
+
+class TestDeleteExpiredRecordsSavepointIsolation:
+    """Regression test: one table's DELETE failing must not poison the
+    later tables' DELETEs in the same ``_delete_expired_records`` transaction.
+
+    Mirrors the bug fixed in ``ComplianceController.execute_data_deletion_async``
+    (see tests/enterprise/test_gdpr_erasure_rls.py): a per-iteration
+    ``try/except`` around a raw DELETE, all sharing one
+    ``session.begin()`` transaction, looks like independent per-table
+    outcomes -- but without a SAVEPOINT, Postgres aborts the whole
+    transaction on the first error and every subsequent DELETE fails too
+    with "current transaction is aborted", silently masquerading as its own
+    independent failure.
+    """
+
+    @pytest.mark.asyncio
+    async def test_goal_events_failure_does_not_poison_decision_traces_delete(self) -> None:
+        from app.db import rls as rls_module
+
+        # Only the FIRST table's DELETE ("goal_events") is made to fail.
+        # "decision_traces" and "memory_records" would succeed on a fresh
+        # transaction -- the whole point of the regression test is proving
+        # they still do, instead of failing with the poisoned-transaction error.
+        session = _FakePoisonableSession(fail_substrings={"goal_events"})
+
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        db_factory = MagicMock(return_value=cm)  # db() -> cm
+
+        with patch.object(rls_module, "system_session") as mock_sys:
+            mock_sys.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("app.db.session.get_session_factory", return_value=db_factory):
+                from app.scaling.tasks import _delete_expired_records
+
+                result = await _delete_expired_records(90)
+
+        deleted = result["deleted"]
+
+        # goal_events genuinely failed.
+        assert isinstance(deleted["goal_events"], str)
+        assert "error" in deleted["goal_events"]
+
+        # The load-bearing assertions: decision_traces and memory_records were
+        # NOT poisoned by goal_events' failure and actually ran (rowcount==1),
+        # rather than each also failing with "current transaction is aborted".
+        assert deleted["decision_traces"] == 1, (
+            f"decision_traces DELETE was poisoned by goal_events' failure: {deleted}"
+        )
+        assert deleted["memory_records"] == 1, (
+            f"memory_records DELETE was poisoned by an earlier failure: {deleted}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_all_tables_isolated_when_middle_table_fails(self) -> None:
+        """Failing table need not be first -- decision_traces failing must not
+        poison the later memory_records DELETE either."""
+        from app.db import rls as rls_module
+
+        session = _FakePoisonableSession(fail_substrings={"decision_traces"})
+
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        db_factory = MagicMock(return_value=cm)
+
+        with patch.object(rls_module, "system_session") as mock_sys:
+            mock_sys.return_value.__aenter__ = AsyncMock(return_value=session)
+            mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with patch("app.db.session.get_session_factory", return_value=db_factory):
+                from app.scaling.tasks import _delete_expired_records
+
+                result = await _delete_expired_records(90)
+
+        deleted = result["deleted"]
+        assert deleted["goal_events"] == 1
+        assert isinstance(deleted["decision_traces"], str)
+        assert "error" in deleted["decision_traces"]
+        assert deleted["memory_records"] == 1, (
+            f"memory_records DELETE was poisoned by decision_traces' failure: {deleted}"
+        )

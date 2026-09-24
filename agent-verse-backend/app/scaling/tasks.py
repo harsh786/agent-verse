@@ -4153,11 +4153,22 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         db = _get_fresh_db()
         async with db() as session, session.begin(), system_session(session):
             for table in ["goal_events", "decision_traces"]:
+                # Each table's DELETE runs in its own SAVEPOINT. Postgres aborts
+                # the *entire* enclosing transaction on any error (permission
+                # denied, constraint violation, etc.) until a ROLLBACK —
+                # without a savepoint here, one table's failure silently
+                # poisons every subsequent statement in this loop too (each
+                # one then raises "current transaction is aborted" and gets
+                # swallowed by the except below), so a single mid-list
+                # failure would make this task report a string of
+                # independent-looking "error: ..." entries while actually
+                # having deleted nothing for the rest of the tables.
                 try:
-                    r = await session.execute(
-                        text(f"DELETE FROM {table} WHERE created_at < :c"), {"c": cutoff}
-                    )
-                    counts[table] = r.rowcount
+                    async with session.begin_nested():
+                        r = await session.execute(
+                            text(f"DELETE FROM {table} WHERE created_at < :c"), {"c": cutoff}
+                        )
+                        counts[table] = r.rowcount
                 except Exception as exc:
                     counts[table] = f"error: {exc}"
             # D-18: physically purge expired memory rows. Unlike the tables above
@@ -4165,14 +4176,17 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
             # its own retention deadline in ``expires_at`` — previously enforced only
             # at read time, so expired rows accumulated forever. Delete them here so
             # the scheduled retention policy actually reclaims them tenant-wide.
+            # Also run in its own SAVEPOINT so a prior table's failure above
+            # can't poison this DELETE too.
             try:
-                r = await session.execute(
-                    text(
-                        "DELETE FROM memory_records "
-                        "WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+                async with session.begin_nested():
+                    r = await session.execute(
+                        text(
+                            "DELETE FROM memory_records "
+                            "WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+                        )
                     )
-                )
-                counts["memory_records"] = r.rowcount
+                    counts["memory_records"] = r.rowcount
             except Exception as exc:
                 counts["memory_records"] = f"error: {exc}"
         return {"retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": counts}
