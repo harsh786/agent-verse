@@ -239,7 +239,7 @@ class CollaborationStore:
                         :session_id,
                         :tenant_id,
                         COALESCE(MAX(version), 0) + 1,
-                        :operation::jsonb,
+                        CAST(:operation AS jsonb),
                         :author,
                         NOW()
                     FROM collab_operations

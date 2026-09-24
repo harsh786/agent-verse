@@ -264,7 +264,7 @@ async def update_budgets(
                         "INSERT INTO budget_configs "
                         "(tenant_id, per_goal_usd, per_tenant_daily_usd, "
                         " per_agent_daily_usd, alert_pct_thresholds) "
-                        "VALUES (:tid, :pg, :ptd, :pad::jsonb, :apt) "
+                        "VALUES (:tid, :pg, :ptd, CAST(:pad AS jsonb), :apt) "
                         "ON CONFLICT (tenant_id) DO UPDATE SET "
                         "  per_goal_usd = EXCLUDED.per_goal_usd, "
                         "  per_tenant_daily_usd = EXCLUDED.per_tenant_daily_usd, "

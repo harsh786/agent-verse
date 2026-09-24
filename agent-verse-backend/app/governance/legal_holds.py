@@ -73,7 +73,7 @@ class LegalHoldManager:
                                  status, legal_matter_id, created_by, created_at, expires_at)
                             VALUES
                                 (:id, :tid, :name, :desc, :rtype,
-                                 :rids::jsonb, :uids::jsonb, :dstart, :dend,
+                                 CAST(:rids AS jsonb), CAST(:uids AS jsonb), :dstart, :dend,
                                  'active', :matter_id, :by, now(), :expires)
                             """
                         ),
@@ -206,7 +206,7 @@ class LegalHoldManager:
                             SELECT 1 FROM legal_holds
                             WHERE tenant_id = :tid
                               AND status = 'active'
-                              AND resource_ids @> :rid::jsonb
+                              AND resource_ids @> CAST(:rid AS jsonb)
                             LIMIT 1
                             """
                         ),

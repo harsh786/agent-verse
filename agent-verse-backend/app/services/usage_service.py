@@ -210,7 +210,7 @@ class UsageService:
                             " unit_cost_usd, total_cost_usd, period_start, metadata)"
                             " VALUES (:id, :tenant_id, :goal_id, :metric, :quantity,"
                             " :unit_cost_usd, :total_cost_usd, :period_start,"
-                            " :metadata::jsonb)"
+                            " CAST(:metadata AS jsonb))"
                             " ON CONFLICT (id) DO NOTHING"
                         ),
                         {**record, "metadata": str(record["metadata"]).replace("'", '"')},

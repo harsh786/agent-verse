@@ -136,7 +136,7 @@ class ConversationManager:
 
             q = text("""
                 UPDATE gateway_conversations
-                SET turns = turns || :new_turn::jsonb,
+                SET turns = turns || CAST(:new_turn AS jsonb),
                     last_command_at = NOW(),
                     updated_at = NOW()
                 WHERE id = :cid AND tenant_id = :tid

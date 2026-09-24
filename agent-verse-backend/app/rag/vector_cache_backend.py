@@ -147,11 +147,11 @@ class PgVectorCacheBackend:
                 result = await session.execute(
                     text("""
                         SELECT response,
-                               1 - (embedding <=> :emb::vector) AS score
+                               1 - (embedding <=> CAST(:emb AS vector)) AS score
                         FROM semantic_cache_entries
                         WHERE tenant_id = :tid
-                          AND 1 - (embedding <=> :emb::vector) >= :threshold
-                        ORDER BY embedding <=> :emb::vector
+                          AND 1 - (embedding <=> CAST(:emb AS vector)) >= :threshold
+                        ORDER BY embedding <=> CAST(:emb AS vector)
                         LIMIT 1
                     """),
                     {"emb": emb_str, "tid": tenant_id, "threshold": threshold},
@@ -185,7 +185,7 @@ class PgVectorCacheBackend:
                     text("""
                         INSERT INTO semantic_cache_entries
                             (id, tenant_id, query, embedding, response, created_at)
-                        VALUES (:id, :tid, :q, :emb::vector, :resp, NOW())
+                        VALUES (:id, :tid, :q, CAST(:emb AS vector), :resp, NOW())
                         ON CONFLICT DO NOTHING
                     """),
                     {

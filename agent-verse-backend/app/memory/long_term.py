@@ -16,6 +16,17 @@ from typing import Any
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
+# Width of the long_term_memory.embedding column as currently sized by
+# migration 0122 (app/db/migrations/versions/0122_ltm_embedding_2048.py). This
+# is a single fixed-width pgvector column (no per-row/per-collection dimension
+# like RAG's knowledge_chunks_* tables), so recall_async's SQL must match
+# whatever the latest applied migration actually set the column to — NOT
+# settings.embedding_dim, which only selects the live embedder and can drift
+# from the column's real width if an operator changes it without also writing
+# a new resize migration. Update this constant (and add a migration) together
+# whenever the column is resized again.
+_LTM_EMBEDDING_DIM = 2048
+
 
 @dataclass
 class LongTermMemory:
@@ -452,22 +463,42 @@ class LongTermMemoryStore:
                     query_vec = resp.embeddings[0]
                     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
 
+                    # long_term_memory.embedding is a FIXED-width vector(_LTM_EMBEDDING_DIM)
+                    # column, sized by migration 0122 — unlike the per-collection
+                    # dynamic-width knowledge_chunks_* tables (app/rag/engine.py), there is
+                    # no per-row/per-collection dimension to look up here, so the query must
+                    # match whatever the *currently applied* migration actually sized the
+                    # column to. Deliberately NOT settings.embedding_dim: that config value
+                    # only chooses which embedder is wired up live and can drift from the
+                    # column's real width whenever an operator edits it without also
+                    # authoring/running a new LTM resize migration (that drift is exactly
+                    # what migration 0122 itself fixed once already — see its docstring).
+                    # If the column is ever resized again, update _LTM_EMBEDDING_DIM to match
+                    # the new migration.
+                    dim = _LTM_EMBEDDING_DIM
+                    if dim > 2000:
+                        vector_expr = f"embedding::halfvec({dim})"
+                        qvec_expr = f"CAST(:qvec AS halfvec({dim}))"
+                    else:
+                        vector_expr = "embedding"
+                        qvec_expr = "CAST(:qvec AS vector)"
+
                     async with (
                         db() as session,
                         sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                     ):
                         result = await session.execute(
                             text(
-                                """
+                                f"""
                                 SELECT id, content, memory_type, confidence,
                                        source_goal_id, tags, created_at,
-                                       1 - (embedding::halfvec(2048)
-                                            <=> CAST(:qvec AS halfvec(2048))) AS similarity
+                                       1 - ({vector_expr}
+                                            <=> {qvec_expr}) AS similarity
                                 FROM long_term_memory
                                 WHERE tenant_id = :tid
                                   AND embedding IS NOT NULL
-                                ORDER BY embedding::halfvec(2048)
-                                         <=> CAST(:qvec AS halfvec(2048))
+                                ORDER BY {vector_expr}
+                                         <=> {qvec_expr}
                                 LIMIT :k
                                 """
                             ),

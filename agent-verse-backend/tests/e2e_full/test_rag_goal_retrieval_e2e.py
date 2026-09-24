@@ -6,12 +6,13 @@ goal execution, and the retrieved chunks are surfaced as citations on the
 ``knowledge_retrieved`` SSE event (source + content + collection_id). Proven
 against the booted app with real Postgres + pgvector + Redis, goal run inline.
 
-Determinism: a 768-dim ``FakeProvider`` embedder is pinned for both ingest and
-the retrieval gateway (the gateway embeds the query itself), and the goal text
-repeats the document's distinctive marker so the hybrid strategy's lexical leg
-matches regardless of the (non-semantic) fake vectors. A fresh tenant is used so
-the node's "auto-list the tenant's collections" path targets exactly the one
-collection ingested here.
+Determinism: a ``FakeProvider`` embedder (sized to match the fixed-width
+``long_term_memory.embedding`` column — see ``_fake_embedder`` below) is pinned
+for both ingest and the retrieval gateway (the gateway embeds the query
+itself), and the goal text repeats the document's distinctive marker so the
+hybrid strategy's lexical leg matches regardless of the (non-semantic) fake
+vectors. A fresh tenant is used so the node's "auto-list the tenant's
+collections" path targets exactly the one collection ingested here.
 """
 
 from __future__ import annotations
@@ -46,10 +47,42 @@ class _CompletingProvider(FakeProvider):
         self.call_history.append(request)
         schema = getattr(request, "response_schema", None)
         props = (schema or {}).get("properties", {}) if isinstance(schema, dict) else {}
+        messages_text = "\n".join(
+            str(getattr(m, "content", "") or "") for m in getattr(request, "messages", [])
+        )
         if "steps" in props:
             content = '{"steps": ["Consult the knowledge base and answer"]}'
         elif "success" in props:
             content = '{"success": true, "reason": "answered from the knowledge base"}'
+        elif '"relevance"' in messages_text:
+            # The default runtime profile routes this factual-QA goal to the
+            # "corrective" RAG strategy (app/agent/pattern_assembler.py), whose
+            # grade_evidence (app/rag/agentic/patterns/corrective.py) grades
+            # retrieved passages via an un-schema'd completion request and
+            # expects back exactly {"relevance": [<one float per passage>]}.
+            # Score every passage fully relevant so the corrective loop's
+            # sufficiency check passes deterministically on the first attempt.
+            import re as _re
+
+            passage_count = len(_re.findall(r"^\[\d+\]", messages_text, flags=_re.MULTILINE))
+            content = json.dumps({"relevance": [1.0] * max(passage_count, 1)})
+        elif "Reformulate the query" in messages_text:
+            # corrective.reformulate_query (app/rag/agentic/patterns/corrective.py)
+            # is called when persisted evidence is thin (this fixture only ingests
+            # one short document, so corrective's "at least 2 relevant chunks"
+            # sufficiency bar is never met, and it always reformulates through all
+            # MAX_CORRECTIVE_RETRIES attempts before falling back to its
+            # best-effort return). It raises "query reformulation produced no
+            # change" unless each reply differs from the query it was given — a
+            # single fixed canned string breaks on the *second* call, since by
+            # then the query already equals the first call's output. Vary the
+            # reply by attempt number (parsed from the "Attempt N: <query>"
+            # prompt) so it's always distinct from its own input.
+            import re as _re2
+
+            attempt_match = _re2.search(r"Attempt (\d+):", messages_text)
+            attempt_label = attempt_match.group(1) if attempt_match else "1"
+            content = f"Zephyrine axolotl ledger audit (reformulated, attempt {attempt_label})"
         else:
             content = "According to the ledger, the Zephyrine axolotl audit is quarterly."
         return CompletionResponse(content=content, model="fake", input_tokens=6, output_tokens=6)
@@ -72,8 +105,34 @@ async def rag_client(app: Any, client: Any) -> AsyncIterator[Any]:
 
 @pytest.fixture
 def _fake_embedder(app: Any) -> Any:
-    """Pin a deterministic 768-dim embedder for ingest and the retrieval gateway."""
-    fake = FakeProvider(embed_dim=768)
+    """Pin a deterministic embedder for ingest and the retrieval gateway.
+
+    Sized to ``app.memory.long_term._LTM_EMBEDDING_DIM`` (2048) rather than an
+    arbitrary literal: RAG's ``knowledge_chunks_*`` tables are per-collection and
+    dynamically sized to whatever dimension the ingest embedder actually
+    produces (see ``app/rag/store.py::_persist_chunks``), so any of
+    ``app.rag.engine._SUPPORTED_EMBEDDING_DIMENSIONS`` works there. But this same
+    embedder is also used for ``long_term_memory`` recall/writes
+    (``app/memory/long_term.py``), and that table has a single FIXED-width
+    ``vector(2048)`` column sized by migration 0122 — there is no per-row
+    dimension to adapt to. A mismatched dimension here makes every LTM
+    write/recall fail with "expected N dimensions, not <other>" (pgvector
+    DataError), which is exactly the bug this fixture used to reproduce when it
+    was pinned to a hardcoded 768.
+
+    Deliberately NOT derived from ``settings.embedding_dim``: that setting picks
+    which *live* embedder gets wired up and is configured independently (this
+    repo's own ``.env`` ships ``EMBEDDING_DIM=1536``), while the LTM column's
+    actual width is fixed by whichever migration last resized it (2048, per
+    0122) — the two are allowed to drift, and in this checkout they do. Using
+    ``settings.embedding_dim`` here would just trade one mismatch (768 vs. 2048)
+    for another (1536 vs. 2048). Import the real constant so this fixture always
+    matches the schema `alembic upgrade head` actually produces, not whatever a
+    given deployment's env vars claim.
+    """
+    from app.memory.long_term import _LTM_EMBEDDING_DIM
+
+    fake = FakeProvider(embed_dim=_LTM_EMBEDDING_DIM)
     prev_embedder = getattr(app.state, "embedder", None)
     app.state.embedder = fake
     gw = getattr(app.state, "retrieval_gateway", None)
@@ -92,16 +151,67 @@ def _fake_embedder(app: Any) -> Any:
 
 @pytest.fixture
 def _inline_provider(app: Any) -> Any:
+    """Pin a deterministic LLM for goal execution AND the RAG gateway.
+
+    ``app.state._llm_provider_override`` only reaches the main agent loop
+    (planner/executor/verifier, via ``goal_service``) — the retrieval
+    gateway resolves its own LLM independently, per tenant, through
+    ``RetrievalDependencies.llm_resolver`` (wired in ``app/main.py`` as
+    ``_resolve_retrieval_llm``), which for a tenant with no stored LLM config
+    falls back to the process-wide default provider — a REAL Anthropic client
+    when ``ANTHROPIC_API_KEY`` is set, as it is on this machine. Without also
+    overriding the gateway's resolver, RAG strategies that call an LLM
+    directly (e.g. "corrective"'s evidence-grading/query-reformulation calls
+    in ``app/rag/agentic/patterns/corrective.py``) silently hit the real
+    model instead of the pinned fake, making the test's own "Determinism"
+    claim false and its outcome depend on real API responses (observed
+    failure: the real model's JSON reply didn't happen to include the
+    "relevance" key ``grade_evidence`` requires, raising
+    ``RetrievalStrategyExecutionError``). Replace the gateway's
+    ``llm_resolver`` too so every RAG strategy call is deterministic.
+
+    Also clear ``search_capability``: this fixture's single ingested chunk
+    never satisfies "corrective"'s "at least 2 relevant chunks" sufficiency
+    bar, so after exhausting its reformulation retries it falls back to a web
+    search (``app/rag/agentic/patterns/web_augmented.py``) — which, left
+    wired to the real (env-configured) SearXNG capability, tries to reach an
+    unreachable host and fails the whole strategy with "backend_outage"
+    instead of gracefully returning the persisted evidence it already has.
+    With no search capability at all, corrective takes the
+    "web_capability_unavailable" path and returns its best-effort persisted
+    results, which is what this test actually exercises.
+    """
     gs = app.state.goal_service
     prev_override = getattr(app.state, "_llm_provider_override", None)
     prev_queue = gs._task_queue
     app.state._llm_provider_override = _CompletingProvider()
     gs._task_queue = None
+
+    gw = getattr(app.state, "retrieval_gateway", None)
+    prev_deps = None
+    if gw is not None and hasattr(gw, "dependencies"):
+
+        async def _fake_llm_resolver(_tenant_ctx: Any, _strategy: Any) -> Any:
+            from app.rag.gateway import ResolvedLLM
+
+            return ResolvedLLM(
+                provider=_CompletingProvider(), model="fake-model", provider_type="fake"
+            )
+
+        prev_deps = gw.dependencies
+        with contextlib.suppress(Exception):
+            gw.dependencies = dataclasses.replace(
+                gw.dependencies,
+                llm_resolver=_fake_llm_resolver,
+                search_capability=None,
+            )
     try:
         yield
     finally:
         app.state._llm_provider_override = prev_override
         gs._task_queue = prev_queue
+        if gw is not None and prev_deps is not None:
+            gw.dependencies = prev_deps
 
 
 async def test_goal_retrieves_and_cites_ingested_document(

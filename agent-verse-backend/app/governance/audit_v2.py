@@ -406,7 +406,7 @@ class AuditFlusher:
                             COALESCE(e->>'prev_hash', ''),
                             COALESCE(e->>'event_hash', ''),
                             COALESCE((e->>'created_at')::timestamptz, now())
-                        FROM jsonb_array_elements(:events::jsonb) AS e
+                        FROM jsonb_array_elements(CAST(:events AS jsonb)) AS e
                         ON CONFLICT (id, created_at) DO NOTHING
                         """
                     ),

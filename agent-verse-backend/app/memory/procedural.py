@@ -133,7 +133,7 @@ class ProceduralMemoryStore:
                              use_count, success_rate, last_used_at, created_at)
                         VALUES
                             (:id, :tenant_id, :goal_pattern, :domain,
-                             :tool_sequence::jsonb, :use_count, :success_rate, NOW(), NOW())
+                             CAST(:tool_sequence AS jsonb), :use_count, :success_rate, NOW(), NOW())
                         ON CONFLICT DO NOTHING
                     """),
                         {

@@ -1737,7 +1737,7 @@ async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str,
                      is_active, created_at, updated_at)
                 VALUES
                     (:id, :tid, :idp_entity, :idp_sso, :idp_cert,
-                     :sp_entity, :mapping::jsonb, :role, :jit,
+                     :sp_entity, CAST(:mapping AS jsonb), :role, :jit,
                      TRUE, NOW(), NOW())
                 ON CONFLICT (tenant_id) DO UPDATE
                   SET idp_entity_id = EXCLUDED.idp_entity_id,

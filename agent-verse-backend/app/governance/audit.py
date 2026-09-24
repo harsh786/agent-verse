@@ -217,10 +217,10 @@ class AuditLog:
                 conditions.append("tool_name = :tname")
                 params["tname"] = tool_name
             if start_time:
-                conditions.append("created_at >= :start_time::timestamptz")
+                conditions.append("created_at >= CAST(:start_time AS timestamptz)")
                 params["start_time"] = start_time
             if end_time:
-                conditions.append("created_at <= :end_time::timestamptz")
+                conditions.append("created_at <= CAST(:end_time AS timestamptz)")
                 params["end_time"] = end_time
             if outcome:
                 conditions.append("outcome = :outcome")

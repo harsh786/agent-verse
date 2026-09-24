@@ -137,8 +137,8 @@ class EpisodicMemoryStore:
                              steps_count, tools_used, created_at)
                         VALUES
                             (:id, :tenant_id, :goal_id, :goal_text, :action_summary,
-                             :outcome, :lessons, :embedding::jsonb, :quality_score,
-                             :steps_count, :tools_used::jsonb, NOW())
+                             :outcome, :lessons, CAST(:embedding AS jsonb), :quality_score,
+                             :steps_count, CAST(:tools_used AS jsonb), NOW())
                     """),
                         {
                             "id": episode.episode_id,

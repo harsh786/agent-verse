@@ -1554,7 +1554,7 @@ async def rollback_policy(
                          rules, is_active, change_summary, changed_at)
                     VALUES
                         (:id, :tid, :pid, :ver, :name, :desc,
-                         :rules::jsonb, TRUE, :summary, now())
+                         CAST(:rules AS jsonb), TRUE, :summary, now())
                     """
                 ),
                 {

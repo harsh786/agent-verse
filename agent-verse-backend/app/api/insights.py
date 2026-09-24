@@ -144,13 +144,13 @@ async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, An
                             await session.execute(
                                 _t("""
                                 SELECT cost_usd, duration_s, iterations, status,
-                                       1 - (embedding <=> :vec::vector) AS similarity
+                                       1 - (embedding <=> CAST(:vec AS vector)) AS similarity
                                 FROM goals
                                 WHERE tenant_id = :tid
                                   AND status IN ('complete', 'failed')
                                   AND cost_usd IS NOT NULL
                                   AND embedding IS NOT NULL
-                                ORDER BY embedding <=> :vec::vector
+                                ORDER BY embedding <=> CAST(:vec AS vector)
                                 LIMIT 20
                             """),
                                 {"tid": tenant.tenant_id, "vec": vector_str},
