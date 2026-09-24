@@ -16,6 +16,17 @@ from typing import Any
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:  # pragma: no cover - guardrails_v2 always ships with the app
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
 # Width of the long_term_memory.embedding column as currently sized by
 # migration 0122 (app/db/migrations/versions/0122_ltm_embedding_2048.py). This
 # is a single fixed-width pgvector column (no per-row/per-collection dimension
@@ -298,6 +309,41 @@ class LongTermMemoryStore:
         ``long_term_memory``. Always updates the in-memory cache first so
         recall works even without a DB round-trip.
         """
+        # Guardrails 2.0: MEMORY_WRITE layer — declared in GuardrailLayer but
+        # never actually checked anywhere before this fix, so GDPR's "Block
+        # PII in outputs" bundle rule and the baseline PII/secrets rule
+        # (both of which already list "memory_write" in their ``layers``)
+        # had zero real effect: unvetted content — RPA-scraped page text,
+        # chat-authored memories, LLM-extracted goal summaries — flowed
+        # straight into this per-tenant, cross-session, cross-restart store
+        # with no gate at all. Single choke point: every write path
+        # (``extract_from_goal_async``, ``store_rpa_extraction``,
+        # ``create_user_memory_async``, and callers in
+        # app/chat/memory_adapter.py + app/civilization/learning.py) funnels
+        # through here. Mirrors the FINAL_OUTPUT block/redact pattern in
+        # verifier_mixin.py — applied before the in-memory cache write (not
+        # just the DB write) so a blocked/redacted memory never becomes
+        # visible even for same-session recall.
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None and tenant_ctx is not None:
+            try:
+                guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
+                _g2_mem_result = await guardrails_engine.evaluate(
+                    content=memory.content[:2000],
+                    layer=GuardrailLayer.MEMORY_WRITE,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=getattr(memory, "source_goal_id", None) or None,
+                )
+                if _g2_mem_result.get("blocked"):
+                    memory.content = "[Content redacted by guardrail policy]"
+                else:
+                    _g2_mem_redacted = _g2_mem_result.get("redacted_content")
+                    if _g2_mem_redacted and _g2_mem_redacted != memory.content[:2000]:
+                        memory.content = _g2_mem_redacted + memory.content[2000:]
+            except Exception as _g2_mem_exc:
+                get_logger(__name__).warning(
+                    "ltm_memory_write_guardrail_failed", error=str(_g2_mem_exc)
+                )
+
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
         if db is not None:
             try:
@@ -361,8 +407,6 @@ class LongTermMemoryStore:
                             },
                         )
             except Exception as exc:
-                from app.observability.logging import get_logger
-
                 get_logger(__name__).warning("ltm_db_write_failed", error=str(exc))
         return mid
 

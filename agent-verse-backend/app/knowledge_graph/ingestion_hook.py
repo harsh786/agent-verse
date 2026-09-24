@@ -34,7 +34,59 @@ if TYPE_CHECKING:
     from app.knowledge_graph.store import KnowledgeGraphStore
     from app.providers.base import LLMProvider
 
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:  # pragma: no cover - guardrails_v2 always ships with the app
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
 _log = logging.getLogger(__name__)
+
+
+async def _guardrail_gate_graph_extract(text: str, tenant_id: str, source_id: str) -> str | None:
+    """GRAPH_EXTRACT layer check shared by both entry points below.
+
+    GRAPH_EXTRACT was declared in GuardrailLayer but never actually checked
+    anywhere — an operator-authored rule targeting it (no built-in bundle
+    references this layer yet) had zero real effect, and the LLM extraction
+    path (``extract_entities_llm`` / ``extract_relationships_llm``) embeds
+    this exact text verbatim into a completion prompt, making it a real
+    prompt-injection surface in addition to a secret/PII leak risk into
+    persisted graph facts. Returns the (possibly redacted) text to extract
+    from, or ``None`` when the content is blocked and extraction must be
+    skipped entirely.
+    """
+    if not (_GUARDRAILS_AVAILABLE and guardrails_engine is not None):
+        return text
+    try:
+        guardrails_engine.ensure_default_rules(tenant_id)
+        result = await guardrails_engine.evaluate(
+            content=text,
+            layer=GuardrailLayer.GRAPH_EXTRACT,
+            tenant_id=tenant_id,
+        )
+        if result.get("blocked"):
+            _log.warning(
+                "graph_extract_blocked_by_guardrail tenant=%s source=%s", tenant_id, source_id
+            )
+            return None
+        redacted = result.get("redacted_content")
+        if redacted and redacted != text:
+            return redacted
+        return text
+    except Exception as exc:
+        _log.warning(
+            "graph_extract_guardrail_check_failed tenant=%s source=%s error=%s",
+            tenant_id,
+            source_id,
+            exc,
+        )
+        return text
 
 
 async def extract_and_store_graph(
@@ -81,6 +133,10 @@ async def extract_and_store_graph(
     blocked by a transient DB issue).
     """
     if not text or not text.strip():
+        return 0
+
+    text = await _guardrail_gate_graph_extract(text, tenant_id, source_id)
+    if text is None:
         return 0
 
     if provider is not None:
@@ -150,6 +206,9 @@ class KGIngestionHook:
             if not text or not text.strip():
                 continue
             source_id = f"{document_id}:{idx}"
+            text = await _guardrail_gate_graph_extract(text, tenant_id, source_id)
+            if text is None:
+                continue
             if provider is not None:
                 self._extractor.set_provider(provider)
                 nodes = await self._extractor.extract_entities_llm(text, tenant_id, source_id)

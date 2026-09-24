@@ -33,6 +33,7 @@ import contextlib
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
 from app.agent.nodes._helpers import (
+    _guardrail_should_fail_closed,
     _parse_json,
 )
 
@@ -584,6 +585,65 @@ class PlannerMixin:
             self._logger.warning("plan_tool_validation", warning=_warn)
 
         agent_state.plan = _plan_display
+
+        # Guardrails 2.0: PLAN layer — declared in GuardrailLayer but never
+        # actually checked anywhere before this fix, so a compliance rule an
+        # operator targets at "plan" (there is no built-in default; an
+        # operator-authored rule via POST /guardrails/rules or a future
+        # bundle) had zero real effect. Gate the assembled plan text here,
+        # after the planner produces it but before "execute" ever runs,
+        # mirroring the block behaviour already used for FINAL_OUTPUT /
+        # TOOL_ARGS. A block sets the same ``terminal_reason`` the GOAL-layer
+        # check in initialize_mixin.py uses, which ``RoutingMixin._route``
+        # already honours to stop the goal after this pass.
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+            _g2_plan_content = "\n".join(
+                str(s.get("description", s.get("id", ""))) if isinstance(s, dict) else str(s)
+                for s in _plan_display
+            ).strip()
+            if _g2_plan_content:
+                try:
+                    guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
+                    _g2_plan_result = await guardrails_engine.evaluate(
+                        content=_g2_plan_content[:2000],
+                        layer=GuardrailLayer.PLAN,
+                        tenant_id=tenant_ctx.tenant_id,
+                        goal_id=agent_state.goal_id,
+                    )
+                    if _g2_plan_result.get("blocked"):
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = "Plan rejected by guardrail policy"
+                        await self._emit(
+                            {"type": "plan_rejected", "reason": agent_state.error_message}
+                        )
+                        return {
+                            "agent_state": agent_state,
+                            "plan": [],
+                            "iteration": iteration,
+                            "terminal_reason": "guardrail_rejected",
+                        }
+                except Exception as _g2_plan_exc:
+                    # SAFE-4 (P0-15): an errored safety check must not read as
+                    # "allowed" on high-risk work — fail closed.
+                    if _guardrail_should_fail_closed(
+                        agent_state.goal, agent_state.context.get("_risk_level")
+                    ):
+                        agent_state.status = GoalStatus.FAILED
+                        agent_state.error_message = (
+                            "Plan guardrail check errored on high-risk goal; failing closed."
+                        )
+                        self._logger.warning(
+                            "planner_guardrail_failed_closed", error=str(_g2_plan_exc)
+                        )
+                        await self._emit(
+                            {"type": "plan_rejected", "reason": agent_state.error_message}
+                        )
+                        return {
+                            "agent_state": agent_state,
+                            "plan": [],
+                            "iteration": iteration,
+                            "terminal_reason": "guardrail_rejected",
+                        }
 
         # ── P5 adaptivity: record structured-plan reliability ──────────────────
         # When we asked for a structured (dependency-graph) plan, record whether

@@ -592,6 +592,40 @@ class ExecutorMixin:
         """Run the canonical governed per-step execution pipeline."""
         tool_name = self._extract_tool_name(step)
 
+        # Guardrail check: step (Guardrails 2.0). STEP was declared in
+        # GuardrailLayer but never actually checked anywhere before this fix
+        # (only GOAL/TOOL_ARGS shared the baseline injection rule's *layer
+        # list* — nothing ever evaluated against GuardrailLayer.STEP itself),
+        # so HIPAA's "PHI anywhere" rule and the baseline injection rule's
+        # STEP entry had zero real effect. Gate the step description itself
+        # before any safety-profile / HITL / tool-dispatch work begins,
+        # mirroring the tool_args block further down in this same function.
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+            try:
+                guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
+                _g2_step_result = await guardrails_engine.evaluate(
+                    content=step[:2000],
+                    layer=GuardrailLayer.STEP,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=getattr(state, "goal_id", None),
+                    step_description=step,
+                )
+                if _g2_step_result.get("blocked"):
+                    _g2_step_viol = (_g2_step_result.get("violations") or [{}])[0].get(
+                        "rule_name", "policy"
+                    )
+                    raise PermissionError(f"Step blocked by guardrail: {_g2_step_viol}")
+            except PermissionError:
+                raise
+            except Exception as _g2_step_exc:
+                # SAFE-4 (P0-15): fail closed on high-risk work when the
+                # guardrail engine errors instead of silently allowing.
+                if _guardrail_should_fail_closed(step, state.context.get("_risk_level")):
+                    raise PermissionError(
+                        f"Guardrail (step) errored on high-risk step '{step[:60]}'; "
+                        "failing closed."
+                    ) from _g2_step_exc
+
         # H23-H26: Action safety profile — assess per-tool risk
         _asp_hitl_required = False
         _asp_reason = ""

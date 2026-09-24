@@ -36,6 +36,17 @@ from typing import Any
 from app.agent.tokenizer import count_tokens
 from app.ingestion.source_config import PipelineResult, RawDocument, SourceConfig
 
+# Guardrails 2.0 integration
+try:
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.models import GuardrailLayer
+
+    _GUARDRAILS_AVAILABLE = True
+except ImportError:  # pragma: no cover - guardrails_v2 always ships with the app
+    _GUARDRAILS_AVAILABLE = False
+    guardrails_engine = None  # type: ignore[assignment]
+    GuardrailLayer = None  # type: ignore[assignment]
+
 _log = logging.getLogger(__name__)
 
 
@@ -253,6 +264,43 @@ class IngestionPipeline:
                 result.status = "skipped"
                 result.skip_reason = "pii_rejected"
                 return result
+
+            # ── Stage 6b: GUARDRAILS 2.0 — RAG_INGEST layer ───────────────────
+            # RAG_INGEST was declared in GuardrailLayer but never actually
+            # checked anywhere before this fix, so compliance-bundle rules
+            # that explicitly target it (GDPR's "Block PII in RAG ingest",
+            # PCI's "Block PCI data") had zero real effect: unvetted document
+            # content — including secrets, which Stage 6's Presidio-based PII
+            # scan does not cover — flowed straight into chunking/embedding/
+            # persistence. Gated here, before chunking, mirroring the block/
+            # redact pattern already used for FINAL_OUTPUT/TOOL_ARGS/
+            # TOOL_OUTPUT (see app/security_runtime/guardrail_enforcer.py).
+            # Scans the full parsed text (not truncated) — unlike the
+            # per-turn agent-loop layers, a document is evaluated once, so
+            # the cost of a full regex pass is negligible and truncating
+            # would let a secret past the halfway point of a long doc slip
+            # through untouched.
+            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+                try:
+                    guardrails_engine.ensure_default_rules(source_config.tenant_id)
+                    _g2_ingest_result = await guardrails_engine.evaluate(
+                        content=text,
+                        layer=GuardrailLayer.RAG_INGEST,
+                        tenant_id=source_config.tenant_id,
+                    )
+                    if _g2_ingest_result.get("blocked"):
+                        result.status = "skipped"
+                        result.skip_reason = "guardrail_blocked"
+                        return result
+                    _g2_ingest_redacted = _g2_ingest_result.get("redacted_content")
+                    if _g2_ingest_redacted and _g2_ingest_redacted != text:
+                        text = _g2_ingest_redacted
+                except Exception as _g2_ingest_exc:
+                    _log.warning(
+                        "pipeline_stage=guardrail_rag_ingest error doc=%s: %s",
+                        raw_doc.doc_id,
+                        _g2_ingest_exc,
+                    )
 
             # ── Stage 7: QUALITY GATE ─────────────────────────────────────────
             quality_score = self._quality_score(text)

@@ -25,6 +25,7 @@ except ImportError:
     GuardrailLayer = None  # type: ignore[assignment]
 
 from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+from app.agent.nodes._helpers import _guardrail_should_fail_closed
 
 
 class InitializeMixin:
@@ -69,6 +70,54 @@ class InitializeMixin:
                 agent_state.error_message = f"Goal rejected by guardrails: {'; '.join(goal_issues)}"
                 await self._emit({"type": "goal_rejected", "reason": agent_state.error_message})
                 return {"agent_state": agent_state, "terminal_reason": "guardrail_rejected"}
+
+        # Guardrails 2.0: GOAL layer — declared in GuardrailLayer but never
+        # actually checked anywhere before this fix, so a compliance-bundle
+        # rule targeting "goal" (e.g. HIPAA's PHI rule, the SOC2 prompt-
+        # injection rule) had zero real effect. Mirrors the FINAL_OUTPUT /
+        # TOOL_ARGS block pattern in guardrail_enforcer.py: seed baseline
+        # rules (idempotent), evaluate, and reject the goal before planning
+        # ever starts on a BLOCK verdict. Runs in addition to (not instead
+        # of) the legacy ``_guardrail_checker.check_goal`` above.
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+            try:
+                guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
+                _g2_goal_result = await guardrails_engine.evaluate(
+                    content=agent_state.goal[:2000],
+                    layer=GuardrailLayer.GOAL,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_id=agent_state.goal_id,
+                )
+                if _g2_goal_result.get("blocked"):
+                    agent_state.status = GoalStatus.FAILED
+                    agent_state.error_message = (
+                        "Goal rejected by guardrail policy (Guardrails 2.0)"
+                    )
+                    await self._emit(
+                        {"type": "goal_rejected", "reason": agent_state.error_message}
+                    )
+                    return {
+                        "agent_state": agent_state,
+                        "terminal_reason": "guardrail_rejected",
+                    }
+            except Exception as _g2_goal_exc:
+                # SAFE-4 (P0-15): an errored safety check must not read as
+                # "allowed" on high-risk work — fail closed.
+                if _guardrail_should_fail_closed(agent_state.goal, None):
+                    agent_state.status = GoalStatus.FAILED
+                    agent_state.error_message = (
+                        "Goal guardrail check errored on high-risk goal; failing closed."
+                    )
+                    self._logger.warning(
+                        "initialize_guardrail_failed_closed", error=str(_g2_goal_exc)
+                    )
+                    await self._emit(
+                        {"type": "goal_rejected", "reason": agent_state.error_message}
+                    )
+                    return {
+                        "agent_state": agent_state,
+                        "terminal_reason": "guardrail_rejected",
+                    }
 
         # H-2: SelfOptimizerV2 arm config injection — pick experiment arm for this run
         self_opt_v2 = (
