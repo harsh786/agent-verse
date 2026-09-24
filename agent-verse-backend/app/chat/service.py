@@ -9,6 +9,7 @@ This is the core orchestrator that:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib as _hashlib
 import re
@@ -20,6 +21,9 @@ from typing import Any
 
 from app.chat.context import ConversationContext
 from app.chat.intent import Intent, IntentRouter
+from app.observability.logging import get_logger
+
+_logger = get_logger(__name__)
 
 # Explicit "remember this" directives → the salient fact to persist.
 _MEMORY_DIRECTIVE = re.compile(
@@ -156,6 +160,40 @@ async def _split_reasoning_stream(source: Any) -> Any:
             break
     if buffer:
         yield (("reasoning" if mode in ("think_tag", "think_prose") else "answer"), buffer)
+
+
+_LLM_STALL_TIMEOUT_ENV = "AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS"
+_DEFAULT_LLM_STALL_TIMEOUT = 60.0
+
+
+def _llm_stall_timeout_seconds() -> float:
+    """Max seconds to wait for the next chunk/response from the LLM provider.
+
+    Reuses the same env var as the agent loop's circuit breaker
+    (``app.providers.circuit_breaker``) so operators tune one knob for both.
+    """
+    import os as _os
+
+    try:
+        return float(_os.getenv(_LLM_STALL_TIMEOUT_ENV, str(_DEFAULT_LLM_STALL_TIMEOUT)))
+    except ValueError:
+        return _DEFAULT_LLM_STALL_TIMEOUT
+
+
+async def _iter_with_stall_timeout(source: Any, timeout: float) -> AsyncIterator[Any]:
+    """Wrap an async iterator so a hung upstream can't keep a chat SSE connection
+    open forever. Raises ``TimeoutError`` if no new item arrives within
+    *timeout* seconds of the previous one (a per-chunk stall timeout, not an
+    overall deadline — a long-but-actively-streaming answer is fine)."""
+    it = source.__aiter__()
+    while True:
+        try:
+            # PEP 479: StopAsyncIteration must be caught here, not let escape
+            # this generator frame, or it will surface as a RuntimeError.
+            item = await asyncio.wait_for(it.__anext__(), timeout=timeout)
+        except StopAsyncIteration:
+            return
+        yield item
 
 
 def _strip_reasoning(text: str) -> str:
@@ -361,6 +399,11 @@ class ChatService:
         # Phase 3: (tenant, channel, channel_user_id) -> session_id, so a channel
         # user's messages continue one conversation across turns/channels.
         self._channel_sessions: dict[tuple[str, str, str], str] = {}
+        # Per-(tenant, channel, channel_user_id) lock guarding the get-or-create in
+        # aget_or_create_channel_session, so two concurrent inbound messages from the
+        # same external chat can't both miss the cache and each create their own
+        # session (forking the conversation in two).
+        self._channel_session_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         # Phase 3 (cross-channel continuity): principal_id -> session_id, so a thread
         # started on one channel continues on another as the SAME conversation once
         # identities are linked. Populated when an IdentityService is wired.
@@ -1306,29 +1349,54 @@ class ChatService:
 
         yield sse_event(ChatEventType.MESSAGE_STARTED, session_id=session_id, message_id=message_id)
         parts: list[str] = []
+        stall_timeout = _llm_stall_timeout_seconds()
+        stalled = False
         streamer = getattr(self._answer_generator, "stream_complete", None)
-        if callable(streamer):
-            # Split reasoning-model output: chain-of-thought → collapsible reasoning
-            # panel; only the clean answer streams as the message.
-            async for kind, chunk in _split_reasoning_stream(streamer(request)):
-                if kind == "reasoning":
-                    yield sse_event(
-                        ChatEventType.REASONING, token=chunk, message_id=message_id
-                    )
-                else:
-                    parts.append(chunk)
-                    yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
-        else:
-            # Provider without a streaming API — one-shot complete().
-            resp = await self._answer_generator.complete(request)
-            text = getattr(resp, "content", "") or ""
-            clean = _strip_reasoning(text)
-            parts.append(clean)
-            yield sse_event(ChatEventType.TOKEN, token=clean, message_id=message_id)
+        try:
+            if callable(streamer):
+                # Split reasoning-model output: chain-of-thought → collapsible
+                # reasoning panel; only the clean answer streams as the message.
+                # Wrapped in a per-chunk stall timeout so a hung provider can't
+                # keep this SSE connection (and the client waiting on it) open
+                # forever — there is no timeout at the provider-call layer for
+                # this path (unlike the agent loop's circuit breaker).
+                source = _iter_with_stall_timeout(streamer(request), stall_timeout)
+                async for kind, chunk in _split_reasoning_stream(source):
+                    if kind == "reasoning":
+                        yield sse_event(
+                            ChatEventType.REASONING, token=chunk, message_id=message_id
+                        )
+                    else:
+                        parts.append(chunk)
+                        yield sse_event(ChatEventType.TOKEN, token=chunk, message_id=message_id)
+            else:
+                # Provider without a streaming API — one-shot complete().
+                resp = await asyncio.wait_for(
+                    self._answer_generator.complete(request), timeout=stall_timeout
+                )
+                text = getattr(resp, "content", "") or ""
+                clean = _strip_reasoning(text)
+                parts.append(clean)
+                yield sse_event(ChatEventType.TOKEN, token=clean, message_id=message_id)
+        except TimeoutError:
+            stalled = True
+            _logger.warning(
+                "chat_qa_llm_stall_timeout", session_id=session_id, timeout=stall_timeout
+            )
+            yield sse_event(
+                ChatEventType.ERROR,
+                session_id=session_id,
+                message_id=message_id,
+                message=(
+                    "The language model took too long to respond, so I stopped "
+                    "waiting. Please try again."
+                ),
+            )
         answer = _strip_reasoning("".join(parts))
-        await self.asave_message(
-            session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
-        )
+        if answer or not stalled:
+            await self.asave_message(
+                session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
+            )
         yield sse_event(ChatEventType.DONE, session_id=session_id, message_id=message_id)
 
     async def _summarize_history(
@@ -1520,13 +1588,29 @@ class ChatService:
             if existing is not None:
                 return existing
 
-        session = await self.acreate_session(
-            tenant_id, title=title or f"{channel}:{channel_user_id}"
-        )
-        self._channel_sessions[key] = session.id
-        if principal_id is not None:
-            self._principal_sessions[principal_id] = session.id
-        return session
+        # Serialize session creation per (tenant, channel, channel_user_id). Without
+        # this lock, two inbound messages from the same external chat arriving
+        # concurrently (e.g. a user double-sending on Telegram, or two overlapping
+        # webhook deliveries) would both miss the ``_channel_sessions`` cache above
+        # and each create a NEW session; the second create's write to the dict would
+        # silently clobber the first, forking the conversation into two divergent
+        # sessions — one of them orphaned from all future messages. ``setdefault``
+        # on a plain dict is safe here since it has no ``await`` point.
+        lock = self._channel_session_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            existing_id = self._channel_sessions.get(key)
+            if existing_id is not None:
+                existing = await self.aget_session(existing_id, tenant_id)
+                if existing is not None:
+                    return existing
+
+            session = await self.acreate_session(
+                tenant_id, title=title or f"{channel}:{channel_user_id}"
+            )
+            self._channel_sessions[key] = session.id
+            if principal_id is not None:
+                self._principal_sessions[principal_id] = session.id
+            return session
 
     async def ahandle_channel_message(
         self,

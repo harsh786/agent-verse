@@ -189,8 +189,16 @@ class TelegramChannelAdapter(ChannelAdapter):
         self,
         request_headers: dict[str, str],
         raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
-        """Verify Telegram webhook secret token header."""
+        """Verify Telegram webhook secret token header.
+
+        ``raw_body`` is unused here — Telegram authenticates via a static
+        secret token header (``X-Telegram-Bot-Api-Secret-Token``), not an
+        HMAC over the request body, so there's nothing to verify it against.
+        Accepted for signature-compatibility with the shared dispatch call
+        site in ``app/gateway/router.py``.
+        """
         secret_token = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
         if not secret_token:
             return True  # no secret configured, allow all

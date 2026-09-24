@@ -7,7 +7,10 @@ deterministic FakeProvider.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+from unittest.mock import patch
 
 from app.chat.service import ChatService
 from app.providers.fake import FakeProvider
@@ -88,3 +91,70 @@ async def test_run_qa_works_with_complete_only_provider() -> None:
     assert any(e["type"] == "token" and "42" in e["token"] for e in events)
     msgs = svc.list_messages(session.id, "t1")
     assert any(m.role == "assistant" and "42" in m.content for m in msgs)
+
+
+async def test_run_qa_streaming_hang_times_out_instead_of_blocking_forever() -> None:
+    """Regression: a hung LLM stream must not keep the chat SSE connection (and
+    the client waiting on it) open forever. Before the stall timeout, this test
+    would hang until the surrounding test-runner timeout killed it; now it must
+    complete quickly with an explicit error + done."""
+
+    class _HangingProvider:
+        async def stream_complete(self, request):  # type: ignore[no-untyped-def]
+            # Long enough (>20 chars) for _split_reasoning_stream's detect mode
+            # to commit to the "answer" channel and emit it immediately.
+            yield "This is a partial answer before the stall.\n"
+            # Never yields again — simulates a stalled/hung upstream connection.
+            await asyncio.sleep(3600)
+            yield "unreachable"
+
+    svc = ChatService(answer_generator=_HangingProvider())
+    session = svc.create_session("t1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="hi")
+
+    with patch.dict(os.environ, {"AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS": "0.05"}):
+        events = await asyncio.wait_for(
+            _collect(
+                svc.run_qa(
+                    session_id=session.id, tenant_id="t1", message_id="m", user_message="hi"
+                )
+            ),
+            timeout=5,  # the test itself must never hang, even if the fix regresses
+        )
+
+    types = [e["type"] for e in events]
+    assert types[0] == "message_started"
+    assert "error" in types
+    assert types[-1] == "done"
+    # the partial answer received before the stall is still preserved/persisted
+    msgs = svc.list_messages(session.id, "t1")
+    assert any(m.role == "assistant" and "partial answer" in m.content for m in msgs)
+    answer_text = "".join(e["token"] for e in events if e["type"] == "token")
+    assert "partial answer" in answer_text
+
+
+async def test_run_qa_complete_only_hang_times_out() -> None:
+    """Same stall-timeout protection for the non-streaming complete() fallback."""
+
+    class _HangingCompleteOnly:
+        async def complete(self, request):  # type: ignore[no-untyped-def]
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+    svc = ChatService(answer_generator=_HangingCompleteOnly())
+    session = svc.create_session("t1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="q?")
+
+    with patch.dict(os.environ, {"AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS": "0.05"}):
+        events = await asyncio.wait_for(
+            _collect(
+                svc.run_qa(
+                    session_id=session.id, tenant_id="t1", message_id="m", user_message="q?"
+                )
+            ),
+            timeout=5,
+        )
+
+    types = [e["type"] for e in events]
+    assert "error" in types
+    assert types[-1] == "done"

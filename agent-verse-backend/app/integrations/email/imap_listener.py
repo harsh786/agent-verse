@@ -17,14 +17,46 @@ Emails are processed as follows:
 
 from __future__ import annotations
 
+import contextlib
 import email
+import hashlib
 import os
 from email.header import decode_header
 from typing import Any
 
 from app.observability.logging import get_logger
+from app.services.dedup import GoalDeduplicator
 
 logger = get_logger(__name__)
+
+# Long-lived, message-id-keyed dedup — independent of (and a safety net for) the
+# IMAP \Seen flag. The 60s default TTL on the shared goal-submission dedup is far
+# shorter than a typical mailbox poll interval, so it can't protect against the
+# same email being resubmitted across polls; this instance is dedicated to email
+# and kept for a full day.
+_EMAIL_DEDUP_TTL_SECONDS = 60 * 60 * 24
+_email_dedup = GoalDeduplicator(ttl=_EMAIL_DEDUP_TTL_SECONDS)
+
+
+def _wire_email_dedup_redis(goal_service: Any) -> None:
+    """Best-effort: share the goal service's Redis client so the email dedup
+    survives across replicas/restarts, like the goal-submission dedup does."""
+    redis = getattr(goal_service, "_redis", None)
+    if redis is not None and getattr(_email_dedup, "_redis", None) is None:
+        _email_dedup._redis = redis
+
+
+def _email_identity_key(msg: Any, raw_email: bytes) -> str:
+    """Stable per-email identity, independent of the IMAP \\Seen flag.
+
+    Prefers the ``Message-ID`` header (RFC 5322 — globally unique per message).
+    Falls back to a hash of the raw bytes for the rare malformed message that
+    lacks one, so every email still gets a stable key.
+    """
+    message_id = (msg.get("Message-ID") or "").strip()
+    if message_id:
+        return message_id
+    return "sha256:" + hashlib.sha256(raw_email).hexdigest()
 
 
 def _is_enabled() -> bool:
@@ -118,6 +150,26 @@ async def check_and_process_emails(goal_service: Any, tenant_ctx: Any) -> int:
             if body.strip():
                 goal_text += f"\n\nAdditional context from email:\n{body.strip()}"
 
+            # Identity independent of the \Seen flag: if marking the email read
+            # below fails (network blip, connection drop) or two overlapping
+            # poll cycles fetch the same still-UNSEEN email concurrently, this
+            # is what stops the email being resubmitted as a brand-new goal on
+            # the next poll — the \Seen flag alone isn't atomic with submission.
+            dedup_key = _email_identity_key(msg, raw_email)
+            _tenant_id = getattr(tenant_ctx, "tenant_id", None)
+            tenant_key = _tenant_id if isinstance(_tenant_id, str) and _tenant_id else "imap"
+            _wire_email_dedup_redis(goal_service)
+
+            if await _email_dedup.get_existing(tenant_key, dedup_key):
+                logger.info(
+                    "email_already_processed_skip_duplicate",
+                    from_addr=from_addr,
+                    subject=subject[:100],
+                )
+                with contextlib.suppress(Exception):
+                    await imap.store(email_id, "+FLAGS", r"(\Seen)")
+                continue
+
             try:
                 result = await goal_service.submit_goal(
                     goal=goal_text,
@@ -132,6 +184,11 @@ async def check_and_process_emails(goal_service: Any, tenant_ctx: Any) -> int:
                     subject=subject[:100],
                 )
                 processed += 1
+
+                # Record the submission BEFORE attempting to mark \Seen: if the
+                # store call fails and this email is re-fetched as still-UNSEEN
+                # on the next poll, the dedup check above will catch it there.
+                await _email_dedup.register(tenant_key, dedup_key, result["goal_id"])
 
                 # Mark as read
                 await imap.store(email_id, "+FLAGS", r"(\Seen)")

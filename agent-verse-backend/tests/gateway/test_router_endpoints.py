@@ -190,6 +190,29 @@ class TestWhatsAppWebhook:
         )
         assert r.status_code == 403
 
+    def test_accepts_genuinely_valid_signature_over_raw_body(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: verify_auth used to HMAC a re-serialized
+        json.dumps(raw_payload) instead of the actual raw request bytes Meta
+        signed -- which is never guaranteed byte-identical, so this check
+        could silently reject genuine, correctly-signed WhatsApp requests.
+        Compute the signature the same way Meta does (over the exact bytes
+        on the wire) and confirm it's accepted."""
+        monkeypatch.setattr(gw._whatsapp, "_app_secret", "shh")
+        mock = AsyncMock()
+        monkeypatch.setattr(gw, "_process_command", mock)
+        client = _client()
+        payload = {"entry": []}
+        body = json.dumps(payload).encode()
+        sig = "sha256=" + hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+        r = client.post(
+            "/v1/gateway/org1/whatsapp/webhook",
+            content=body,
+            headers={"content-type": "application/json", "x-hub-signature-256": sig},
+        )
+        assert r.status_code == 200
+
     def test_schedules_processing_for_valid_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -231,9 +254,28 @@ class TestTeamsMessages:
         )
         assert r.status_code == 403
 
+    def test_rejects_fake_bearer_token_that_merely_looks_right(self) -> None:
+        """Regression: verify_auth used to accept ANY string shaped like
+        "Bearer <20+ chars>" with no signature/issuer/audience check at all —
+        an attacker who knew (or guessed) an org_id could forge a Teams
+        activity with a fake token of sufficient length. Now it must
+        genuinely fail JWT validation (no app_id configured in this test, so
+        it fails closed rather than silently accepting)."""
+        client = _client()
+        r = client.post(
+            "/v1/gateway/org1/teams/messages",
+            json={"type": "message", "text": "hi", "from": {}, "conversation": {}},
+            headers={"authorization": "Bearer a-fairly-long-fake-jwt-token"},
+        )
+        assert r.status_code == 403
+
     def test_schedules_processing_for_valid_auth(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock = AsyncMock()
         monkeypatch.setattr(gw, "_process_command", mock)
+        # verify_auth now does real JWKS-backed JWT validation (network I/O) —
+        # mock it directly to exercise the endpoint's own success path without
+        # standing up a fake Bot Framework token issuer.
+        monkeypatch.setattr(gw._teams, "verify_auth", AsyncMock(return_value=True))
         client = _client()
         r = client.post(
             "/v1/gateway/org1/teams/messages",
@@ -254,6 +296,7 @@ class TestTeamsMessages:
     ) -> None:
         mock = AsyncMock()
         monkeypatch.setattr(gw, "_process_command", mock)
+        monkeypatch.setattr(gw._teams, "verify_auth", AsyncMock(return_value=True))
         client = _client()
         r = client.post(
             "/v1/gateway/org1/teams/messages",

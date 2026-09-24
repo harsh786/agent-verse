@@ -7,6 +7,7 @@ Webhook: POST /v1/gateway/{org_id}/teams/messages
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from typing import Any
 
@@ -18,6 +19,40 @@ from app.gateway.command import OrgCommand, OrgResponse
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+# Bot Framework's fixed OpenID metadata endpoint (not the tenant's own AAD —
+# Bot Framework issues its own bot-to-bot tokens via api.botframework.com,
+# separate from a user's Azure AD sign-in). Cache JWKS like app/auth/keycloak.py
+# does, to avoid a network round-trip on every inbound Teams message.
+_BOTFRAMEWORK_OPENID_CONFIG = "https://login.botframework.com/v1/.well-known/openidconfiguration"
+_BOTFRAMEWORK_ISSUER = "https://api.botframework.com"
+_jwks_cache: dict[str, Any] = {}
+_jwks_fetched_at = 0.0
+_jwks_cache_ttl = 3600.0
+
+
+async def _get_botframework_jwks() -> dict[str, Any]:
+    """Fetch and cache Bot Framework's public signing keys."""
+    global _jwks_cache, _jwks_fetched_at
+    import httpx
+
+    now = time.monotonic()
+    if _jwks_cache and (now - _jwks_fetched_at) < _jwks_cache_ttl:
+        return _jwks_cache
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            config = (await client.get(_BOTFRAMEWORK_OPENID_CONFIG)).json()
+            jwks_uri = config["jwks_uri"]
+            resp = await client.get(jwks_uri)
+            resp.raise_for_status()
+            _jwks_cache = resp.json()
+            _jwks_fetched_at = now
+            return _jwks_cache
+    except Exception as exc:
+        _log.warning("teams.jwks_fetch_failed", error=str(exc))
+        if _jwks_cache:
+            return _jwks_cache
+        raise
 
 
 class MicrosoftTeamsAdapter(ChannelAdapter):
@@ -108,7 +143,58 @@ class MicrosoftTeamsAdapter(ChannelAdapter):
         self,
         request_headers: dict[str, str],
         raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
-        # Bot Framework uses JWT token validation — simplified header check
+        """Verify the Bot Framework JWT bearer token on an inbound activity.
+
+        ``raw_body`` is unused — Bot Framework authenticates via a signed
+        JWT bearer token, not an HMAC over the request body. Accepted for
+        signature-compatibility with the base ``ChannelAdapter``.
+
+        The previous check only confirmed the Authorization header *looked
+        like* a bearer token (started with "Bearer " and was over 20 chars) —
+        any string matching that shape passed, with no signature, issuer, or
+        audience check at all. That's not authentication: an attacker who
+        knows (or guesses) an org_id can POST a forged activity with e.g.
+        "Bearer aaaaaaaaaaaaaaaaaaaaaaa" and it verifies. Actually validate
+        the JWT against Bot Framework's published signing keys, per
+        https://learn.microsoft.com/azure/bot-service/rest-api/bot-framework-rest-connector-authentication.
+        """
         auth = request_headers.get("authorization", "")
-        return auth.startswith("Bearer ") and len(auth) > 20
+        if not auth.startswith("Bearer "):
+            return False
+        token = auth[len("Bearer ") :].strip()
+        if not token:
+            return False
+        if not self._app_id:
+            _log.warning("teams.verify_auth.no_app_id_configured")
+            return False
+
+        try:
+            from jose import ExpiredSignatureError, JWTError
+            from jose import jwt as _jwt
+        except ImportError:
+            _log.error("teams.verify_auth.python_jose_missing")
+            return False
+
+        try:
+            jwks = await _get_botframework_jwks()
+            _jwt.decode(
+                token,
+                jwks,
+                algorithms=["RS256"],
+                audience=self._app_id,
+                issuer=_BOTFRAMEWORK_ISSUER,
+            )
+            return True
+        except ExpiredSignatureError:
+            _log.warning("teams.verify_auth.token_expired")
+            return False
+        except JWTError as exc:
+            _log.warning("teams.verify_auth.invalid_token", error=str(exc))
+            return False
+        except Exception as exc:
+            # JWKS fetch failure, malformed token structure, etc. — fail
+            # closed rather than let an unverifiable token through.
+            _log.warning("teams.verify_auth.error", error=str(exc))
+            return False

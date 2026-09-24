@@ -70,18 +70,28 @@ class WebhookChannelAdapter(ChannelAdapter):
         self,
         request_headers: dict[str, str],
         raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
+        """Verify the caller's HMAC-SHA256 signature over the raw body.
+
+        Reconstructing the signed bytes via ``json.dumps(raw_payload, ...)``
+        is never guaranteed byte-identical to what the caller actually sent
+        (key order, unicode escaping, float formatting), so that comparison
+        can silently reject genuine, correctly-signed requests — the same
+        bug already fixed for the Slack/WhatsApp adapters. Callers MUST pass
+        the untouched raw request body; without it we fail closed.
+        """
         if not self._secret:
             return True
+        if raw_body is None:
+            _log.warning("webhook.verify_auth.missing_raw_body")
+            return False
         signature = request_headers.get("x-webhook-signature", "")
-        import json as _json
-
-        body = _json.dumps(raw_payload, separators=(",", ":")).encode()
         computed = (
             "sha256="
             + hmac.new(
                 self._secret.encode(),
-                body,
+                raw_body,
                 hashlib.sha256,
             ).hexdigest()
         )

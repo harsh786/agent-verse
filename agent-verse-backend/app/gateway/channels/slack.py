@@ -135,18 +135,41 @@ class SlackChannelAdapter(ChannelAdapter):
         self,
         request_headers: dict[str, str],
         raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
+        """Verify Slack's HMAC request signature.
+
+        Slack signs the *exact raw bytes* of the request body (see
+        https://api.slack.com/authentication/verifying-requests-from-slack).
+        ``raw_payload`` is the already-JSON-decoded dict — ``str(dict)`` produces
+        Python repr syntax (single quotes, ``True``/``None``, dict re-ordering
+        quirks) which is never byte-identical to what Slack actually sent, so
+        reconstructing the signature base from it would make this check reject
+        every genuine Slack request. Callers MUST pass the untouched raw request
+        body via ``raw_body``; without it we fail closed rather than compare
+        against a reconstruction that can never match.
+        """
         if not self._signing_secret:
             return True
+        if raw_body is None:
+            _log.warning("slack.verify_auth.missing_raw_body")
+            return False
         timestamp = request_headers.get("x-slack-request-timestamp", "")
         signature = request_headers.get("x-slack-signature", "")
-        body = str(raw_payload)
-        sig_base = f"v0:{timestamp}:{body}"
+        # Reject stale requests (Slack recommends > 5 minutes = possible replay).
+        try:
+            import time as _time
+
+            if abs(_time.time() - int(timestamp)) > 300:
+                return False
+        except (ValueError, TypeError):
+            return False
+        sig_base = b"v0:" + timestamp.encode() + b":" + raw_body
         computed = (
             "v0="
             + hmac.new(
                 self._signing_secret.encode(),
-                sig_base.encode(),
+                sig_base,
                 hashlib.sha256,
             ).hexdigest()
         )

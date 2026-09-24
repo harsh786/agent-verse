@@ -286,6 +286,7 @@ class TestCheckAndProcessEmails:
         mock_imap.logout = AsyncMock()
 
         mock_goal_service = AsyncMock()
+        mock_goal_service._redis = None
         mock_goal_service.submit_goal = AsyncMock(return_value={"goal_id": "g-001"})
 
         mock_imap_module = MagicMock()
@@ -341,6 +342,7 @@ class TestCheckAndProcessEmails:
         mock_imap.logout = AsyncMock()
 
         mock_goal_service = AsyncMock()
+        mock_goal_service._redis = None
         mock_goal_service.submit_goal = AsyncMock(return_value={"goal_id": "g-002"})
 
         mock_imap_module = MagicMock()

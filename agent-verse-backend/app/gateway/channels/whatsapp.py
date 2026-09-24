@@ -106,18 +106,30 @@ class WhatsAppChannelAdapter(ChannelAdapter):
         self,
         request_headers: dict[str, str],
         raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
+        """Verify Meta's X-Hub-Signature-256 HMAC.
+
+        Meta signs the *exact raw bytes* of the request body (per
+        https://developers.facebook.com/docs/graph-api/webhooks/getting-started#validate-payloads).
+        Reconstructing the body via ``json.dumps(raw_payload, ...)`` is never
+        guaranteed byte-identical to what Meta actually sent (key order,
+        unicode escaping, and float formatting can all differ from the
+        original), so that comparison can silently reject genuine requests —
+        the same bug already fixed for the Slack adapter. Callers MUST pass
+        the untouched raw request body; without it we fail closed.
+        """
         if not self._app_secret:
             return True
+        if raw_body is None:
+            _log.warning("whatsapp.verify_auth.missing_raw_body")
+            return False
         signature = request_headers.get("x-hub-signature-256", "")
-        import json as _json
-
-        body = _json.dumps(raw_payload, separators=(",", ":"))
         computed = (
             "sha256="
             + hmac.new(
                 self._app_secret.encode(),
-                body.encode(),
+                raw_body,
                 hashlib.sha256,
             ).hexdigest()
         )

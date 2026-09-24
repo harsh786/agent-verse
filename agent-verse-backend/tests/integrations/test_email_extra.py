@@ -276,3 +276,129 @@ class TestCheckAndProcessEmailsHappyPath:
                 MagicMock(), MagicMock()
             )
         assert result == 0
+
+
+class TestCheckAndProcessEmailsDedup:
+    """Regression coverage for the message-id-keyed email dedup.
+
+    Marking an email \\Seen happens *after* submit_goal succeeds, and is not
+    atomic with it — a dropped connection, a server hiccup, or two overlapping
+    poll cycles can leave an already-submitted email still UNSEEN. Without a
+    dedup keyed on something stable (the Message-ID), the next poll would
+    refetch the same UNSEEN email and submit it as a brand-new goal — an
+    unbounded-cost duplicate-goal loop for as long as the flag never sticks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_store_failure_does_not_resubmit_same_email_on_next_poll(self):
+        from email.mime.text import MIMEText
+
+        msg = MIMEText("Investigate and roll back the bad deploy.")
+        msg["Subject"] = "Prod incident"
+        msg["From"] = "oncall@example.com"
+        msg["Message-ID"] = "<abc123@example.com>"
+        raw_bytes = msg.as_bytes()
+
+        mock_imap = AsyncMock()
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.search = AsyncMock(return_value=("OK", [b"1"]))
+        mock_imap.fetch = AsyncMock(return_value=("OK", [None, raw_bytes]))
+        # Simulate the \Seen flag never sticking (dropped connection, server
+        # hiccup, etc.) — on a real server the email would stay UNSEEN.
+        mock_imap.store = AsyncMock(side_effect=ConnectionError("store failed"))
+        mock_imap.logout = AsyncMock()
+
+        mock_aioimaplib = MagicMock()
+        mock_aioimaplib.IMAP4_SSL = MagicMock(return_value=mock_imap)
+
+        mock_goal_service = MagicMock()
+        mock_goal_service.submit_goal = AsyncMock(return_value={"goal_id": "g1"})
+        mock_goal_service._redis = None
+        tenant_ctx = MagicMock(tenant_id="tenant-x")
+
+        with patch.dict(os.environ, {
+            "IMAP_ENABLED": "true",
+            "IMAP_HOST": "mail.example.com",
+            "IMAP_USER": "user@example.com",
+            "IMAP_PASSWORD": "secret",
+            "IMAP_SSL": "true",
+        }), patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
+            import importlib
+
+            from app.integrations.email import imap_listener
+            importlib.reload(imap_listener)  # fresh dedup singleton for this test
+
+            # Poll cycle 1: submits the goal, then fails to mark \Seen.
+            result1 = await imap_listener.check_and_process_emails(
+                mock_goal_service, tenant_ctx
+            )
+            # Poll cycle 2: the (still-UNSEEN in our mock) same email is
+            # refetched — must NOT create a second goal.
+            result2 = await imap_listener.check_and_process_emails(
+                mock_goal_service, tenant_ctx
+            )
+
+        assert result1 == 1
+        assert result2 == 0
+        assert mock_goal_service.submit_goal.await_count == 1
+        # \Seen marking was retried on the second poll too (not abandoned).
+        assert mock_imap.store.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_different_emails_are_not_deduped_against_each_other(self):
+        from email.mime.text import MIMEText
+
+        msg1 = MIMEText("First incident body.")
+        msg1["Subject"] = "Incident A"
+        msg1["From"] = "oncall@example.com"
+        msg1["Message-ID"] = "<incident-a@example.com>"
+
+        msg2 = MIMEText("Second incident body.")
+        msg2["Subject"] = "Incident B"
+        msg2["From"] = "oncall@example.com"
+        msg2["Message-ID"] = "<incident-b@example.com>"
+
+        mock_imap = AsyncMock()
+        mock_imap.wait_hello_from_server = AsyncMock()
+        mock_imap.login = AsyncMock()
+        mock_imap.select = AsyncMock()
+        mock_imap.search = AsyncMock(return_value=("OK", [b"1 2"]))
+        mock_imap.fetch = AsyncMock(
+            side_effect=[
+                ("OK", [None, msg1.as_bytes()]),
+                ("OK", [None, msg2.as_bytes()]),
+            ]
+        )
+        mock_imap.store = AsyncMock()
+        mock_imap.logout = AsyncMock()
+
+        mock_aioimaplib = MagicMock()
+        mock_aioimaplib.IMAP4_SSL = MagicMock(return_value=mock_imap)
+
+        mock_goal_service = MagicMock()
+        mock_goal_service.submit_goal = AsyncMock(
+            side_effect=[{"goal_id": "g1"}, {"goal_id": "g2"}]
+        )
+        mock_goal_service._redis = None
+        tenant_ctx = MagicMock(tenant_id="tenant-x")
+
+        with patch.dict(os.environ, {
+            "IMAP_ENABLED": "true",
+            "IMAP_HOST": "mail.example.com",
+            "IMAP_USER": "user@example.com",
+            "IMAP_PASSWORD": "secret",
+            "IMAP_SSL": "true",
+        }), patch.dict(sys.modules, {"aioimaplib": mock_aioimaplib}):
+            import importlib
+
+            from app.integrations.email import imap_listener
+            importlib.reload(imap_listener)
+
+            result = await imap_listener.check_and_process_emails(
+                mock_goal_service, tenant_ctx
+            )
+
+        assert result == 2
+        assert mock_goal_service.submit_goal.await_count == 2
