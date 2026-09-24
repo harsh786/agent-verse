@@ -434,3 +434,69 @@ async def test_run_with_llm_judge_aggregates_disagreeing_scores_across_tasks():
     assert len(set(per_task_overall)) == 3
     # The suite-level aggregate is the mean of the disagreeing scores.
     assert output["aggregate_score"] == pytest.approx((0.9 + 0.2 + 0.5) / 3, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_run_with_llm_judge_fails_closed_when_a_judge_call_errors():
+    """A judge-model API failure (rate limit / timeout / malformed response) on
+    even ONE task must not let the suite report itself as cleanly
+    `llm_judged: True`.
+
+    Before this fix, `run_with_llm_judge`'s suite-level `llm_judged` flag was
+    just `self._llm_judge is not None` — "was a judge object configured" — so
+    a transient provider failure on task B here would silently fall back to
+    the (looser) heuristic score for that task, get blended into
+    `aggregate_score` right alongside the two genuine judge scores, and the
+    whole run would still be reported as `llm_judged: True`. A caller gating
+    promotion on that flag (e.g. RegressionGate) would trust a partially
+    heuristic-scored run as if every task had a real LLM judgment.
+    """
+    from app.intelligence.eval_suite import EvalSuiteRunner, GoldenTask, LLMJudge
+
+    responses = [
+        MagicMock(
+            content='{"correctness":0.9,"completeness":0.9,"coherence":0.9,'
+            '"safety":1.0,"overall":0.9,"reasoning":"excellent"}'
+        ),
+        RuntimeError("rate limited"),
+        MagicMock(
+            content='{"correctness":0.8,"completeness":0.8,"coherence":0.8,'
+            '"safety":1.0,"overall":0.8,"reasoning":"good"}'
+        ),
+    ]
+    mock_provider = MagicMock()
+    mock_provider.complete = AsyncMock(side_effect=responses)
+    mock_provider._default_model = ""
+
+    class _MockGoalService:
+        async def submit_goal(self, *, goal, priority, dry_run, tenant_ctx):
+            return {"goal_id": "mock-g"}
+
+        async def subscribe_events(self, *, goal_id, tenant_ctx):
+            yield {"type": "goal_complete"}
+
+    runner = EvalSuiteRunner()
+    runner.set_llm_judge(LLMJudge(provider=mock_provider))
+    runner.create_suite(
+        "flaky-judge-suite",
+        [
+            GoldenTask(goal="task A"),
+            GoldenTask(goal="task B"),
+            GoldenTask(goal="task C"),
+        ],
+    )
+
+    from app.tenancy.context import PlanTier, TenantContext
+
+    ctx = TenantContext(tenant_id="t-flaky", plan=PlanTier.PROFESSIONAL, api_key_id="k-f")
+    output = await runner.run_with_llm_judge("flaky-judge-suite", _MockGoalService(), ctx)
+
+    # Task B's judge call errored and fell back to the heuristic scorer —
+    # confirm that actually happened, so this test is exercising the failure
+    # path and not a fluke.
+    assert output["judge_results"][1]["scores"]["llm_judged"] is False
+
+    # The suite-level flag must fail closed: one degraded task means the run
+    # as a whole is NOT cleanly llm_judged, and the failure must be counted.
+    assert output["llm_judged"] is False
+    assert output["judge_failures"] == 1

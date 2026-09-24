@@ -51,6 +51,8 @@ class OrchestrationPersistence:
 
             from sqlalchemy import text
 
+            from app.db.rls import sqlalchemy_rls_context
+
             identity = ":".join(
                 (
                     profile.tenant_id,
@@ -59,7 +61,25 @@ class OrchestrationPersistence:
                     scorecard.evaluator_version,
                 )
             )
-            async with effective_db() as session, session.begin():
+            # Two bugs made this insert a 100%-failure no-op that was silently
+            # swallowed by the except-warning below, so eval scorecards were NEVER
+            # actually persisted despite the caller seeing no error:
+            #   1. eval_scorecards has FORCE ROW LEVEL SECURITY (migration 0099) —
+            #      without setting app.tenant_id here every insert violates the RLS
+            #      policy.
+            #   2. `:param::jsonb` is not valid inside a SQLAlchemy text() query:
+            #      its bind-parameter regex refuses to treat `:name` as a parameter
+            #      when immediately followed by another `:` (so it doesn't swallow
+            #      Postgres's `::` cast operator), which left `:scores::jsonb` etc.
+            #      as unsubstituted literal text and asyncpg failed to parse it.
+            #      `app/intelligence/eval_runner.py::score_and_persist` already
+            #      uses the correct `CAST(:param AS jsonb)` form for the same
+            #      reason — mirrored here.
+            async with (
+                effective_db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, profile.tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO eval_scorecards
@@ -71,11 +91,13 @@ class OrchestrationPersistence:
                              coverage, correlation_id, created_at)
                         VALUES
                             (:id, :goal_id, :tenant_id, :overall_score,
-                             :scores::jsonb, :suggestions::jsonb, :profile_id,
+                             CAST(:scores AS jsonb), CAST(:suggestions AS jsonb), :profile_id,
                              :profile_version, :primary_strategy_id,
-                             :primary_strategy_version, :auxiliary_strategy_versions::jsonb,
+                             :primary_strategy_version,
+                             CAST(:auxiliary_strategy_versions AS jsonb),
                              :strategy_execution_id, :evaluator_version,
-                             :dimension_status::jsonb, :evidence_references::jsonb,
+                             CAST(:dimension_status AS jsonb),
+                             CAST(:evidence_references AS jsonb),
                              :coverage, :correlation_id, NOW())
                         ON CONFLICT
                             (tenant_id, goal_id, strategy_execution_id, evaluator_version)
@@ -171,13 +193,16 @@ class OrchestrationPersistence:
 
             from sqlalchemy import text
 
+            from app.db.rls import sqlalchemy_rls_context
+
             strategy_id = str(regression_candidate.get("strategy_id", "unknown"))
             strategy_version = str(regression_candidate.get("strategy_version", "unknown"))
             profile_version = int(regression_candidate.get("profile_version", 0))
             evaluator_version = str(regression_candidate.get("evaluator_version", "unknown"))
+            tenant_id = str(regression_candidate.get("tenant_id", "unknown"))
             identity = ":".join(
                 (
-                    str(regression_candidate.get("tenant_id", "unknown")),
+                    tenant_id,
                     str(regression_candidate.get("goal_id", "")),
                     strategy_id,
                     strategy_version,
@@ -185,7 +210,15 @@ class OrchestrationPersistence:
                     evaluator_version,
                 )
             )
-            async with effective_db() as session, session.begin():
+            # Same two bugs as persist_scorecard above (see its comment): missing
+            # RLS context against regression_cases' FORCE ROW LEVEL SECURITY policy,
+            # plus an invalid `:evidence::jsonb` bind-parameter/cast collision that
+            # asyncpg could never parse. Both made this insert a silent no-op.
+            async with (
+                effective_db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO regression_cases
@@ -194,7 +227,7 @@ class OrchestrationPersistence:
                              evidence, created_at)
                         VALUES (:id, :tenant_id, :goal_id, :strategy_id,
                                 :strategy_version, :profile_version, :evaluator_version,
-                                :dataset_version, :evidence::jsonb, NOW())
+                                :dataset_version, CAST(:evidence AS jsonb), NOW())
                         ON CONFLICT
                             (tenant_id, goal_id, strategy_id, strategy_version,
                              profile_version, evaluator_version)

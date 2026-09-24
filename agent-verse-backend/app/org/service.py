@@ -2571,9 +2571,29 @@ class OrgService:
         # Approval-gate tasks (status 'approval_required') were being left behind, so
         # a finished mission kept inflating pending-approval counts with a gate that
         # has no live HITL request and can never be actioned from the inbox.
+        #
+        # Each task's status update (and the org_events insert it triggers via
+        # _emit_event) runs in its own SAVEPOINT. Postgres aborts the *entire*
+        # enclosing transaction on any single statement error until a ROLLBACK —
+        # without a savepoint here, one bad task (stale row, constraint
+        # violation, whatever) would poison every subsequent flush in this
+        # loop AND the mission-level writes below it (the report, mission
+        # status transition, mission.progress event), so a mission with
+        # dozens of tasks could get stuck "active" forever because task #7 of
+        # 50 failed to close. Mirrors the same fix already applied to
+        # app/scaling/tasks.py::_delete_expired_records.
         for t in all_tasks:
             if t.status not in ("completed", "failed", "cancelled", "expired"):
-                await self.update_task_status(str(t.id), new_task_status)
+                try:
+                    async with self._session.begin_nested():
+                        await self.update_task_status(str(t.id), new_task_status)
+                except Exception as exc:
+                    _log.warning(
+                        "org.finalize_mission.task_close_failed",
+                        mission_id=mission_id,
+                        task_id=str(t.id),
+                        error=str(exc)[:200],
+                    )
 
         report: dict[str, Any] = {
             "objective": mission.objective or mission.title,

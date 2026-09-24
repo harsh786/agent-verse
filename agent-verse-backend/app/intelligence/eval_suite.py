@@ -362,6 +362,7 @@ class EvalSuiteRunner:
         tasks = self._suites.get(suite_id, [])
 
         judge_results: list[dict[str, Any]] = []
+        judge_failures = 0
         for task, task_result in zip(tasks, suite_result.task_results, strict=False):
             scores: dict[str, Any] = {}
             if self._llm_judge is not None:
@@ -376,6 +377,17 @@ class EvalSuiteRunner:
                     tools_called=task_result.tools_called,
                     forbidden_tools=task.forbidden_tools,
                 )
+                # LLMJudge.score fails CLOSED on any provider error (rate limit,
+                # timeout, malformed JSON, ...) by falling back to a heuristic
+                # score and marking it `llm_judged: False` per-task — but that
+                # flag used to be dropped here: the suite-level `llm_judged`
+                # below only checked "was a judge object configured", so a
+                # batch of judge-call failures silently blended heuristic
+                # scores into `aggregate_score` while still reporting
+                # `llm_judged: True` for the whole run. Count failures so the
+                # suite-level flag can honestly reflect degraded judging.
+                if not scores.get("llm_judged", False):
+                    judge_failures += 1
             judge_results.append(
                 {
                     "task_id": task_result.task_id,
@@ -407,7 +419,13 @@ class EvalSuiteRunner:
             "pass_rate": suite_result.pass_rate,
             "aggregate_score": aggregate_score,
             "judge_results": judge_results,
-            "llm_judged": self._llm_judge is not None,
+            # True only when a judge was configured AND every task it scored
+            # actually got a real LLM judgment (no rate-limit/timeout/parse
+            # fallback). A caller gating promotion on `llm_judged` must not be
+            # able to mistake a run degraded by judge-call failures for a
+            # clean one.
+            "llm_judged": self._llm_judge is not None and judge_failures == 0,
+            "judge_failures": judge_failures,
         }
 
         if db is not None:
