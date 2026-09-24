@@ -2033,7 +2033,17 @@ class ExecutorMixin:
                                 raw_result_output = self._sanitize_tool_raw_output(result.output)
                                 raw_result_error = self._sanitize_tool_raw_output(result.error)
 
-                                # Guardrail check: tool_output (Guardrails 2.0)
+                                # Guardrail check: tool_output (Guardrails 2.0).
+                                #
+                                # This evaluated the result and discarded it outright — no
+                                # `.get("blocked")`/redacted-content handling at all, unlike
+                                # every other enforced layer in this file (STEP above,
+                                # TOOL_ARGS below) and the equivalent TOOL_OUTPUT check in
+                                # rag_mixin.py's RAG-retrieval path. A tool output containing
+                                # a genuine violation (a secret, PHI, an injection payload)
+                                # sailed straight into state.steps / the verifier / the SSE
+                                # stream regardless of what the engine said. Now actually acts
+                                # on the verdict, mirroring rag_mixin.py's block-or-redact.
                                 if (
                                     _GUARDRAILS_AVAILABLE
                                     and guardrails_engine is not None
@@ -2045,12 +2055,16 @@ class ExecutorMixin:
                                             if raw_result_output
                                             else ""
                                         )
-                                        await guardrails_engine.evaluate(
+                                        _g2_out_result = await guardrails_engine.evaluate(
                                             content=_g2_out_preview,
                                             layer=GuardrailLayer.TOOL_OUTPUT,
                                             tenant_id=tenant_ctx.tenant_id,
                                             goal_id=getattr(state, "goal_id", None),
                                         )
+                                        if _g2_out_result.get("blocked"):
+                                            raw_result_output = "[redacted by guardrail policy]"
+                                        elif _g2_out_result.get("redacted_content"):
+                                            raw_result_output = _g2_out_result["redacted_content"]
                                     except Exception:
                                         pass  # Guardrail errors must never break execution
 

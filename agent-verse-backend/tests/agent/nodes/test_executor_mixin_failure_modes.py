@@ -770,6 +770,51 @@ async def test_guardrails_v2_engine_blocks_tool_args() -> None:
     assert mcp.calls == []
 
 
+async def test_guardrails_v2_engine_redacts_tool_output() -> None:
+    """Regression: the TOOL_OUTPUT guardrail check in this function used to
+    call guardrails_engine.evaluate(...) and discard the result outright — no
+    `.get("blocked")`/redacted-content handling at all, unlike every other
+    enforced layer in this file. A tool output containing a genuine violation
+    (a secret, PHI, an injection payload) sailed straight into state.steps /
+    the verifier regardless of what the engine said. Now it must actually act
+    on the verdict."""
+    executor = FakeProvider(responses=['{"tool": "get_status", "arguments": {}}'])
+    mcp = _RecordingMCPClient(output={"content": "sk-live-totally-real-secret-key-12345"})
+    graph = _make_graph(executor=executor, mcp_client=mcp)
+    state = _make_state(step_desc="check status")
+    state.context["tool_context"] = _tool_context(("get_status", "Custom", {}))
+
+    async def fake_evaluate(*, content, layer, **_kwargs):
+        from app.guardrails_v2.models import GuardrailLayer
+
+        if layer == GuardrailLayer.TOOL_OUTPUT and "sk-live" in content:
+            return {"blocked": True, "violations": [{"rule_name": "secret_exfiltration"}]}
+        return {"blocked": False, "violations": []}
+
+    with patch("app.agent.nodes.executor_mixin.guardrails_engine") as mock_engine:
+        mock_engine.evaluate = AsyncMock(side_effect=fake_evaluate)
+        output = await graph._execute_step("check status", state, T)
+
+    assert "sk-live-totally-real-secret-key-12345" not in output
+    assert "[redacted by guardrail policy]" in output
+
+
+async def test_guardrails_v2_engine_allows_clean_tool_output() -> None:
+    """The redaction path must not fire on ordinary, non-violating output."""
+    executor = FakeProvider(responses=['{"tool": "get_status", "arguments": {}}'])
+    mcp = _RecordingMCPClient(output={"content": "service is healthy"})
+    graph = _make_graph(executor=executor, mcp_client=mcp)
+    state = _make_state(step_desc="check status")
+    state.context["tool_context"] = _tool_context(("get_status", "Custom", {}))
+
+    with patch("app.agent.nodes.executor_mixin.guardrails_engine") as mock_engine:
+        mock_engine.evaluate = AsyncMock(return_value={"blocked": False, "violations": []})
+        output = await graph._execute_step("check status", state, T)
+
+    assert "service is healthy" in output
+    assert "[redacted by guardrail policy]" not in output
+
+
 # ---------------------------------------------------------------------------
 # GuardrailEngine v2 (app_state-wired) blocks tool arguments pre-dispatch
 # ---------------------------------------------------------------------------
