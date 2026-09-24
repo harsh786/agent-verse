@@ -92,13 +92,28 @@ describe('EnterprisePage', () => {
     );
   });
 
-  test('shows download link when export returns a download_url', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+  test('download button fetches the export as an authenticated blob, not a bare anchor href', async () => {
+    // Regression: the download_url the backend returns is a bare relative
+    // path (e.g. "/enterprise/compliance/export/{id}/download") meant for
+    // the API origin, and its endpoint requires the same auth header every
+    // other API call attaches. A plain `<a href={download_url}>` resolved
+    // against the frontend's own origin (wrong) and could never send that
+    // header (a browser anchor can't) even if the origin were fixed. The
+    // fix routes the download through `downloadAuthenticated` (which
+    // attaches the API-key/Bearer header and hits API_BASE_URL) followed by
+    // `triggerBlobDownload` (blob URL + programmatic anchor), rendered as a
+    // <button>, not a navigable <a>.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
+      if (url.includes('/enterprise/compliance/export/') && url.includes('/download')) {
+        return new Response(new Blob(['{"exported":true}'], { type: 'application/json' }), {
+          status: 200,
+        });
+      }
       if (url.includes('/enterprise/compliance/export')) {
         return new Response(
           JSON.stringify({
-            download_url: 'https://example.com/export.zip',
+            download_url: '/enterprise/compliance/export/req-123/download',
             expires_at: '2026-12-31T00:00:00Z',
             size_bytes: 1024 * 1024,
           }),
@@ -111,10 +126,35 @@ describe('EnterprisePage', () => {
       );
     });
 
+    if (!URL.createObjectURL) (URL as unknown as { createObjectURL: unknown }).createObjectURL = () => 'blob:mock';
+    if (!URL.revokeObjectURL) (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    const revokeUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
     renderEnterprisePage();
     await userEvent.click(screen.getByRole('button', { name: /^export$/i }));
     await waitFor(() => expect(screen.getByText('Export ready')).toBeInTheDocument());
-    expect(screen.getByRole('link', { name: /download export/i })).toBeInTheDocument();
+
+    const downloadButton = screen.getByRole('button', { name: /download export/i });
+    await userEvent.click(downloadButton);
+
+    await waitFor(() => expect(createUrlSpy).toHaveBeenCalledTimes(1));
+    // The download itself must resolve against the API origin, not the
+    // frontend's own origin, and must carry an auth header.
+    const downloadCall = fetchSpy.mock.calls.find(([input]) =>
+      String(input).includes('/enterprise/compliance/export/req-123/download')
+    );
+    expect(downloadCall).toBeDefined();
+    const [calledUrl, calledInit] = downloadCall as [unknown, RequestInit | undefined];
+    expect(String(calledUrl)).toMatch(/^https?:\/\//);
+    const headers = calledInit?.headers as Record<string, string> | undefined;
+    expect(headers?.['X-API-Key'] || headers?.['Authorization']).toBeTruthy();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    clickSpy.mockRestore();
+    createUrlSpy.mockRestore();
+    revokeUrlSpy.mockRestore();
   });
 
   test('Delete button shows confirmation form when clicked', async () => {

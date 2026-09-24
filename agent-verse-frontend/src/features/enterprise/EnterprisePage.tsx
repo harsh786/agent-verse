@@ -5,7 +5,7 @@ import {
   Download, Trash2, Globe, AlertTriangle, Shield, CheckCircle2, XCircle,
   ChevronRight, Building,
 } from 'lucide-react';
-import { enterpriseApi, apiFetch } from '@/lib/api/client';
+import { enterpriseApi, apiFetch, downloadAuthenticated, triggerBlobDownload } from '@/lib/api/client';
 import type { DataResidencyInfo, EnterpriseExportResult } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { toast } from '@/stores/toast';
@@ -409,6 +409,7 @@ function ContractsSection(): JSX.Element {
 
 function ExportSection(): JSX.Element {
   const [result, setResult] = useState<EnterpriseExportResult | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const mutation = useMutation({
     mutationFn: () => enterpriseApi.exportData(),
@@ -418,6 +419,19 @@ function ExportSection(): JSX.Element {
     },
     onError: (e) => toast({ kind: 'error', message: `Failed: export data. ${String(e)}` }),
   });
+
+  const handleDownload = async (): Promise<void> => {
+    if (!result?.download_url) return;
+    setDownloading(true);
+    try {
+      const blob = await downloadAuthenticated(result.download_url);
+      triggerBlobDownload(blob, 'agentverse-export.json');
+    } catch (e) {
+      toast({ kind: 'error', message: `Download failed: ${String(e)}` });
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <div className="bg-card border border-border rounded-xl p-5">
@@ -450,14 +464,14 @@ function ExportSection(): JSX.Element {
                   Size: {(result.size_bytes / 1024 / 1024).toFixed(2)} MB
                 </p>
               )}
-              <a
-                href={result.download_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-block text-green-800 dark:text-green-300 underline text-xs"
+              <button
+                type="button"
+                onClick={handleDownload}
+                disabled={downloading}
+                className="inline-block text-green-800 dark:text-green-300 underline text-xs disabled:opacity-50"
               >
-                Download export →
-              </a>
+                {downloading ? 'Downloading…' : 'Download export →'}
+              </button>
             </div>
           ) : (
             <p className="text-green-800 dark:text-green-300">{result.message ?? 'Export completed.'}</p>

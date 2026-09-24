@@ -16,7 +16,7 @@ import {
   RefreshCw,
   X, Inbox,
 } from "lucide-react";
-import { complianceApi } from "@/lib/api/client";
+import { complianceApi, downloadAuthenticated, triggerBlobDownload } from "@/lib/api/client";
 import type { ComplianceFrameworkStatus, Contract } from "@/lib/api/client";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -382,6 +382,7 @@ function LegalHoldsTab() {
 
 function DataExportTab() {
   const [jobId, setJobId] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const exportStatus = useQuery({
     queryKey: ["gdpr-export", jobId],
@@ -406,6 +407,19 @@ function DataExportTab() {
   const job = exportStatus.data;
   const isTerminal = job ? TERMINAL_EXPORT.has(job.status) : false;
   const isInProgress = !!jobId && !!job && !isTerminal;
+
+  const handleDownload = async (): Promise<void> => {
+    if (!job?.download_url) return;
+    setDownloading(true);
+    try {
+      const blob = await downloadAuthenticated(job.download_url);
+      triggerBlobDownload(blob, `agentverse-export-${jobId ?? "data"}.json`);
+    } catch (e) {
+      toast({ kind: "error", message: `Download failed: ${String(e)}` });
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <section data-testid="gdpr-export-section" className="space-y-4">
@@ -481,14 +495,15 @@ function DataExportTab() {
             {(job?.status === "complete" || job?.status === "completed") && (
               <div className="space-y-2">
                 {job.download_url && (
-                  <a
-                    href={job.download_url}
-                    download
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors"
+                  <button
+                    type="button"
+                    onClick={handleDownload}
+                    disabled={downloading}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
                   >
                     <Download className="h-4 w-4" />
-                    Download Archive
-                  </a>
+                    {downloading ? "Downloading…" : "Download Archive"}
+                  </button>
                 )}
                 {job.completed_at && (
                   <p className="text-xs text-muted-foreground">

@@ -108,6 +108,50 @@ export class ApiError extends Error {
 export const apiFetch = request;
 
 /**
+ * Fetches a backend-authored path (e.g. a `download_url` returned by an
+ * export/report endpoint) as a Blob, attaching the same auth headers
+ * `request()` uses (SSO Bearer token or API-key header).
+ *
+ * A bare `<a href={download_url}>` is wrong for two independent reasons: (1)
+ * `download_url` is a backend-relative path, so the browser resolves it
+ * against the frontend's own origin, not `API_BASE_URL`; (2) even with the
+ * origin fixed, an anchor tag can't attach a custom Authorization/X-API-Key
+ * header, so a request to an auth-gated download endpoint would 401. Use
+ * this + `triggerBlobDownload` instead of rendering a raw anchor tag for any
+ * authenticated file download.
+ */
+export async function downloadAuthenticated(path: string): Promise<Blob> {
+  const { ssoMode, accessToken } = useAuthStore.getState();
+  const apiKey = getApiKey();
+  const headers: Record<string, string> = {};
+  if (ssoMode && accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  } else if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+  }
+  const res = await fetch(`${API_BASE_URL}${path}`, { headers });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError(res.status, text || `Download failed (${res.status})`, text);
+  }
+  return res.blob();
+}
+
+/** Saves a Blob to disk under `filename` via a transient object URL — the
+ * standard way to trigger a browser "Save As" for programmatically-fetched
+ * content (as opposed to a navigable URL an anchor tag could point at). */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+/**
  * Returns a cancelable version of request.
  * Call `.cancel()` to abort in-flight requests (e.g. on component unmount).
  *

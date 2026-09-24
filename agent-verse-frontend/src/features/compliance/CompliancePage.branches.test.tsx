@@ -123,14 +123,38 @@ describe('CompliancePage — branches', () => {
     );
   });
 
-  test('Data Export shows the Download Archive link when the job completes', async () => {
-    mockFetch();
+  test('Data Export downloads via an authenticated fetch, not a bare anchor href', async () => {
+    // Regression: job.download_url is a bare backend path (see
+    // app/scaling/tasks.py::run_gdpr_export) that resolves wrong against the
+    // frontend's own origin, and its endpoint requires the same auth header
+    // every API call attaches -- which a plain `<a href>` can never send.
+    // The button now downloads via `downloadAuthenticated` + `triggerBlobDownload`.
+    const spy = mockFetch();
+    if (!URL.createObjectURL) (URL as unknown as { createObjectURL: unknown }).createObjectURL = () => 'blob:mock';
+    if (!URL.revokeObjectURL) (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const createUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock');
+    const revokeUrlSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
     renderPage();
     await userEvent.click(screen.getByRole('button', { name: /data export/i }));
     await userEvent.click(await screen.findByTestId('start-export-btn'));
-    expect(await screen.findByRole('link', { name: /Download Archive/i })).toHaveAttribute(
-      'href', 'https://example.com/export.zip',
+    const downloadButton = await screen.findByRole('button', { name: /Download Archive/i });
+    await userEvent.click(downloadButton);
+
+    await waitFor(() => expect(createUrlSpy).toHaveBeenCalledTimes(1));
+    const downloadCall = spy.mock.calls.find(([input]) =>
+      String(input).includes('export.zip')
     );
+    expect(downloadCall).toBeDefined();
+    const [, calledInit] = downloadCall as [unknown, RequestInit | undefined];
+    const headers = calledInit?.headers as Record<string, string> | undefined;
+    expect(headers?.['X-API-Key'] || headers?.['Authorization']).toBeTruthy();
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    clickSpy.mockRestore();
+    createUrlSpy.mockRestore();
+    revokeUrlSpy.mockRestore();
   });
 
   test('Contracts empty state renders when no contracts exist', async () => {
