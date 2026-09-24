@@ -121,8 +121,19 @@ COMPLIANCE_BUNDLES: dict[ComplianceBundle, list[dict[str, Any]]] = {
     ],
     ComplianceBundle.SOC2: [
         {
+            # rule_type was "keyword_block", which GuardrailsEngine._check_keywords
+            # matches against ``rule.config["keywords"]`` — a list this bundle spec
+            # never supplies, and ``enable_compliance_bundle`` (app/api/
+            # guardrails_v2.py) never copies a bundle spec's ``config`` onto the
+            # GuardrailRule it constructs anyway. The rule could therefore never
+            # trigger for ANY content: enabling the SOC2 bundle silently gave zero
+            # secret redaction while claiming to "block secrets in outputs".
+            # "pii_detection" is the rule_type the baseline default rules and the
+            # PCI/GDPR bundles already use for this exact SECRETS category — it
+            # dispatches to _check_pii, which regex-matches real secret formats
+            # (AWS/OpenAI/Anthropic/GitHub/Google keys) via _SECRET_PATTERNS.
             "name": "Block secrets in outputs",
-            "rule_type": "keyword_block",
+            "rule_type": "pii_detection",
             "layers": ["final_output", "tool_output"],
             "action": "redact",
             "categories": ["secrets"],

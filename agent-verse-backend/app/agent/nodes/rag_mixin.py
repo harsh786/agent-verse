@@ -272,6 +272,91 @@ class RAGMixin:
                 for result in gateway_results
                 for trace in result.strategy_trace
             ]
+
+            # Guardrails 2.0: retrieval evidence is surfaced verbatim to the
+            # tenant via the knowledge_retrieved SSE event and
+            # ``agent_state.provenance`` — including any raw LLM-generated
+            # text a RAG strategy stashes for observability (fusion_rag's
+            # ``QueryExpander`` and corrective's ``reformulate_query`` both
+            # persist their query-expansion/reformulation completions
+            # verbatim, in FOUR places: each citation's
+            # ``metadata["fusion_queries"]``, each retrieval leg's ``query``
+            # and ``metadata["query"]``, and each strategy-trace entry's
+            # ``detail["query"]``). None of that path called into
+            # guardrails_v2 at all (the import at the top of this module was
+            # unused), so a secret or PII fragment the underlying LLM echoed
+            # while expanding/reformulating a query reached the tenant
+            # completely unredacted even with a compliance bundle enabled
+            # (e.g. SOC2's "Block secrets in outputs" rule, which already
+            # targets exactly this via
+            # ``layers=["final_output", "tool_output"]``). Gate retrieval
+            # evidence at TOOL_OUTPUT — the layer that rule already covers —
+            # mirroring the (block/redact) handling the verifier's
+            # FINAL_OUTPUT gate applies, rather than the executor's TOOL_OUTPUT
+            # check further down, which evaluates but never acts on the
+            # result. A single cache keyed by the raw string avoids
+            # re-evaluating the same query variant once per place it appears.
+            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+                # Seed the tenant's baseline rules first (idempotent — see
+                # verifier_mixin.py's identical call before its FINAL_OUTPUT
+                # check). Without this, an unconfigured-or-not-yet-verified
+                # tenant has zero rules at this point in the graph:
+                # rag_retrieval runs immediately after initialize, before
+                # verify (where ensure_default_rules was previously the ONLY
+                # call site) ever seeds the baseline "secret-regex" rule that
+                # actually covers TOOL_OUTPUT with a real credential regex
+                # (AWS/OpenAI/Anthropic/GitHub/Google) — a bundle-only rule is
+                # not enough on its own (e.g. SOC2's secrets rule only catches
+                # the categories `_check_pii` implements, which does not
+                # include AWS-style keys).
+                guardrails_engine.ensure_default_rules(tenant_ctx.tenant_id)
+                _sanitize_cache: dict[str, str] = {}
+
+                async def _sanitize(raw_text: Any) -> Any:
+                    if not isinstance(raw_text, str) or not raw_text:
+                        return raw_text
+                    if raw_text in _sanitize_cache:
+                        return _sanitize_cache[raw_text]
+                    try:
+                        result = await guardrails_engine.evaluate(
+                            content=raw_text[:2000],
+                            layer=GuardrailLayer.TOOL_OUTPUT,
+                            tenant_id=tenant_ctx.tenant_id,
+                            goal_id=agent_state.goal_id,
+                        )
+                        if result.get("blocked"):
+                            sanitized = "[redacted by guardrail policy]"
+                        else:
+                            sanitized = result.get("redacted_content", raw_text)
+                    except Exception as _rag_guardrail_exc:
+                        self._logger.warning(
+                            "rag_evidence_guardrail_failed",
+                            error=str(_rag_guardrail_exc)[:120],
+                        )
+                        sanitized = raw_text
+                    _sanitize_cache[raw_text] = sanitized
+                    return sanitized
+
+                for citation in knowledge_citations:
+                    citation["content"] = await _sanitize(citation.get("content"))
+                    citation_metadata = citation.get("metadata")
+                    if isinstance(citation_metadata, dict):
+                        fusion_queries = citation_metadata.get("fusion_queries")
+                        if isinstance(fusion_queries, list):
+                            citation_metadata["fusion_queries"] = [
+                                await _sanitize(fq) for fq in fusion_queries
+                            ]
+                for leg in retrieval_legs:
+                    if isinstance(leg, dict):
+                        if "query" in leg:
+                            leg["query"] = await _sanitize(leg.get("query"))
+                        leg_metadata = leg.get("metadata")
+                        if isinstance(leg_metadata, dict) and "query" in leg_metadata:
+                            leg_metadata["query"] = await _sanitize(leg_metadata.get("query"))
+                for trace in strategy_trace:
+                    detail = trace.get("detail") if isinstance(trace, dict) else None
+                    if isinstance(detail, dict) and "query" in detail:
+                        detail["query"] = await _sanitize(detail.get("query"))
             resolved_strategy_ids = sorted(
                 {result.resolved_strategy_id.value for result in gateway_results}
             )
