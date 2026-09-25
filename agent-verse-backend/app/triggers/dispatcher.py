@@ -22,6 +22,11 @@ from app.triggers.rbac import check_permission
 
 _log = logging.getLogger(__name__)
 
+# Redis dedup window. Short by design — the durable
+# `trigger_events` UNIQUE (tenant_id, idempotency_key) row is what
+# catches a replay after this expires.
+_DEDUP_TTL_SECONDS = 60
+
 
 class TriggerDispatcher:
     """Single entry point for all trigger dispatch operations."""
@@ -264,25 +269,75 @@ class TriggerDispatcher:
         }.get(plan, 64 * 1024)
 
     async def _is_duplicate(self, idempotency_key: str, tenant_id: str) -> bool:
-        # No Redis configured at all → test/dev in-memory build: cannot dedup, allow.
-        if self._redis is None:
+        """Two-layer dedup: Redis for the race, Postgres for the replay.
+
+        The Redis SET NX is atomic, so it settles concurrent dispatches across
+        replicas — but its key expires after `_DEDUP_TTL_SECONDS`. Anything that
+        re-delivers the SAME firing later than that (a consumer retry, a Celery
+        redelivery, a cron occurrence retried after a worker restart, a Redis
+        failover that drops keys) sailed straight through and created a second
+        goal.
+
+        `trigger_events` already carries UNIQUE (tenant_id, idempotency_key) for
+        exactly this, but it was only ever written AFTER the goal was created,
+        with `ON CONFLICT DO NOTHING` and the result discarded — an audit row,
+        not a gate. So a replayed firing produced two goals and ONE audit row,
+        which also makes the duplicate invisible after the fact.
+        """
+        if self._redis is not None:
+            try:
+                key = f"trigger_dedup:{tenant_id}:{idempotency_key}"
+                result = await self._redis.set(key, 1, ex=_DEDUP_TTL_SECONDS, nx=True)
+                if result is None:  # key already existed → duplicate
+                    return True
+            except Exception as exc:
+                # Redis is configured but transiently unavailable. FAIL CLOSED —
+                # treat this as a duplicate so a Redis blip cannot let each of the
+                # N pods (which all receive the same broadcast pub/sub event)
+                # launch the same autonomous goal. Missing one fire during an
+                # outage is far safer than N-fold execution; schedules re-fire on
+                # the next tick.
+                logging.getLogger(__name__).warning(
+                    "trigger_dedup_redis_unavailable_failing_closed: %s", str(exc)[:200]
+                )
+                return True
+
+        # Durable backstop for a firing replayed after the Redis key expired.
+        return await self._already_fired(idempotency_key, tenant_id)
+
+    async def _already_fired(self, idempotency_key: str, tenant_id: str) -> bool:
+        """Has this exact firing already been recorded in `trigger_events`?
+
+        Deliberately fails OPEN on a DB error, unlike the Redis gate above. Redis
+        is the primary gate and already failed closed; this only covers the
+        narrow post-TTL replay window. Failing closed here would halt every
+        trigger in the system on a Postgres blip, which is worse than the
+        duplicate it would prevent.
+        """
+        if self._db_factory is None:
             return False
         try:
-            key = f"trigger_dedup:{tenant_id}:{idempotency_key}"
-            result = await self._redis.set(key, 1, ex=60, nx=True)
-            return result is None  # None means key already existed → duplicate
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_factory() as session,  # type: ignore[operator]
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT 1 FROM trigger_events "
+                            "WHERE tenant_id = :t AND idempotency_key = :k LIMIT 1"
+                        ),
+                        {"t": tenant_id, "k": idempotency_key},
+                    )
+                ).fetchone()
+            return row is not None
         except Exception as exc:
-            # Redis is configured but transiently unavailable. FAIL CLOSED — treat
-            # this as a duplicate so a Redis blip cannot let each of the N pods
-            # (which all receive the same broadcast pub/sub event) launch the same
-            # autonomous goal. Missing one fire during an outage is far safer than
-            # N-fold execution; schedules re-fire on the next tick. (Previously this
-            # returned False → fail-open → the N-fold double-execution the audit
-            # flagged.)
-            logging.getLogger(__name__).warning(
-                "trigger_dedup_redis_unavailable_failing_closed: %s", str(exc)[:200]
-            )
-            return True
+            _log.warning("trigger_dedup_durable_check_failed: %s", str(exc)[:200])
+            return False
 
     def _evaluate_condition(self, expression: str, payload: dict) -> bool:
         """Evaluate a simple CEL-like condition.
@@ -383,7 +438,12 @@ class TriggerDispatcher:
         try:
             from sqlalchemy import text
 
-            async with self._db_factory() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_factory() as session,
+                sqlalchemy_rls_context(session, event.tenant_id),
+            ):
                 await session.execute(
                     text(
                         "INSERT INTO trigger_events "

@@ -33,7 +33,7 @@ export default defineConfig({
   reporter: [['html', { outputFolder: 'playwright-report' }], ['line']],
 
   use: {
-    baseURL: process.env.BASE_URL ?? 'http://localhost:5173',
+    baseURL: process.env.BASE_URL ?? 'http://localhost:5174',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -131,9 +131,22 @@ export default defineConfig({
     },
   ],
 
+  // Port 5174, NOT the dev default 5173.
+  //
+  // `reuseExistingServer` attaches to whatever already holds the port — it does
+  // not check that the thing listening is the server this config asked for. On
+  // a machine running the project's own docker-compose stack, 5173 is bound by
+  // the `frontend` container serving a PREVIOUSLY BUILT image, so e2e silently
+  // tested a stale bundle instead of local code. That is how a blank-page
+  // regression in the production bundle went unnoticed.
+  //
+  // A dedicated port means the only thing that can be reused is a dev server
+  // from an earlier e2e run of this same checkout, which is the intended
+  // behaviour. `--strictPort` makes a collision fail loudly rather than let
+  // Vite silently pick another port and leave Playwright pointed at nothing.
   webServer: {
-    command: 'npm run dev',
-    url: 'http://localhost:5173',
+    command: 'npm run dev -- --port 5174 --strictPort',
+    url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
   },
