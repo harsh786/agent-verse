@@ -154,7 +154,7 @@ export function PromptVariantsPage() {
                         )}
                       </div>
                       <p className="text-xs text-[#64748B] line-clamp-2 font-mono bg-[#0F1117] p-2 rounded border border-[#1E2535] mt-2">
-                        {v.prompt_text.slice(0, 120)}{v.prompt_text.length > 120 ? '…' : ''}
+                        {(v.prompt_text ?? '').slice(0, 120)}{(v.prompt_text ?? '').length > 120 ? '…' : ''}
                       </p>
                       <div className="flex items-center gap-3 mt-2 text-xs text-[#475569]">
                         {v.run_count !== undefined && <span>{v.run_count.toLocaleString()} uses</span>}

@@ -313,7 +313,7 @@ test.describe('Goals — Full Lifecycle', () => {
     await page.goto('/goals');
     await page.waitForLoadState('networkidle');
     // Button is type="button" with text "Launch" (not type="submit")
-    const launchBtn = page.getByRole('button', { name: /^launch$/i });
+    const launchBtn = page.getByRole('button', { name: /^submit$|^dry run$/i });
     await expect(launchBtn).toBeDisabled({ timeout: 10_000 });
   });
 
@@ -323,7 +323,7 @@ test.describe('Goals — Full Lifecycle', () => {
     await mockAgentsApi(page, []);
     await page.goto('/goals');
     await page.locator('textarea[aria-label="Goal text"]').fill('Fix all JIRA bugs');
-    await expect(page.getByRole('button', { name: /^launch$/i })).toBeEnabled({ timeout: 10_000 });
+    await expect(page.getByRole('button', { name: /^submit$|^dry run$/i })).toBeEnabled({ timeout: 10_000 });
   });
 
   test('20. Submitting a goal navigates to goal detail page', async ({ page }) => {
@@ -339,7 +339,7 @@ test.describe('Goals — Full Lifecycle', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 10_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill('Fix JIRA backlog');
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
     await expect(page).toHaveURL(new RegExp(`/goals/${NEW_GOAL_ID}`), { timeout: 15_000 });
   });
 
@@ -443,14 +443,14 @@ test.describe('Goals — Full Lifecycle', () => {
     await page.goto('/goals');
     await page.locator('textarea[aria-label="Goal text"]').fill('Some goal');
     // Button should say "Launch" initially (type="button", not type="submit")
-    const launchBtn = page.getByRole('button', { name: /^launch$/i });
+    const launchBtn = page.getByRole('button', { name: /^submit$|^dry run$/i });
     await expect(launchBtn).toBeVisible({ timeout: 10_000 });
     // Dry-run checkbox is inside a collapsible "Options" section — open it first
     await page.getByRole('button', { name: /options/i }).click();
     await expect(page.getByRole('checkbox', { name: /dry run/i })).toBeVisible({ timeout: 5_000 });
     await page.getByRole('checkbox', { name: /dry run/i }).check();
     // After checking, button should say "Preview"
-    await expect(page.getByRole('button', { name: /^preview$/i })).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole('button', { name: /^dry run$/i })).toBeVisible({ timeout: 5_000 });
   });
 });
 

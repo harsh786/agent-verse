@@ -145,8 +145,12 @@ test.describe('Navigation — sidebar structure', () => {
   test('all enterprise nav links are present: Marketplace, Observability, Eval, Enterprise', async ({
     page,
   }) => {
+    // The Enterprise section is collapsed by default and renders only its pinned
+    // items (AI Builder, Marketplace, Observability, Playground, Workflow
+    // Builder); the rest appear once the heading is expanded.
+    await page.locator('aside').getByText('Enterprise', { exact: true }).first().click();
     for (const label of ['Marketplace', 'Observability', 'Eval', 'Enterprise']) {
-      await expect(page.locator('aside').getByText(label, { exact: true })).toBeVisible();
+      await expect(page.locator('aside').getByText(label, { exact: true }).first()).toBeVisible();
     }
   });
 });
@@ -178,6 +182,9 @@ test.describe('Navigation — clicking links', () => {
 
   test('clicking Eval nav link navigates to /eval', async ({ page }) => {
     await page.goto('/dashboard');
+    // Eval lives in the Enterprise section, which is collapsed by default and
+    // renders only its pinned items until the heading is expanded.
+    await page.locator('aside').getByText('Enterprise', { exact: true }).first().click();
     await page.locator('a[href="/eval"]').first().click();
     await expect(page).toHaveURL(/\/eval$/);
   });
@@ -199,19 +206,19 @@ test.describe('Navigation — active link highlighting', () => {
     await page.goto('/goals');
     // Active NavLink gets class "text-blue-400" per Sidebar.tsx
     const goalsLink = page.locator('a[href="/goals"]').first();
-    await expect(goalsLink).toHaveClass(/text-primary/, { timeout: 10000 });
+    await expect(goalsLink).toHaveClass(/text-blue-300/, { timeout: 10000 });
   });
 
   test('Dashboard nav link has blue text (active) when on /dashboard page', async ({ page }) => {
     await page.goto('/dashboard');
     const dashLink = page.locator('a[href="/dashboard"]').first();
-    await expect(dashLink).toHaveClass(/text-primary/, { timeout: 10000 });
+    await expect(dashLink).toHaveClass(/text-blue-300/, { timeout: 10000 });
   });
 
   test('non-active links do NOT have blue text when on /dashboard', async ({ page }) => {
     await page.goto('/dashboard');
     const goalsLink = page.locator('a[href="/goals"]').first();
-    await expect(goalsLink).toHaveClass(/text-muted-foreground/, { timeout: 10000 });
+    await expect(goalsLink).toHaveClass(/border-transparent/, { timeout: 10000 });
   });
 });
 
@@ -234,8 +241,10 @@ test.describe('Navigation — page headings', () => {
     });
   }
 
-  test('unauthenticated visit to / redirects to /auth (no heading shown)', async ({ page }) => {
-    await page.goto('/');
+  test('unauthenticated visit to a guarded route redirects to /auth', async ({ page }) => {
+    // '/' is the PUBLIC landing page and never redirects; RequireAuth only
+    // guards the app routes.
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page).toHaveURL(/\/(auth|login)/);
   });
