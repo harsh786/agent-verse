@@ -394,7 +394,7 @@ test.describe('Real-World: Eval Scorecard', () => {
     await page.route(/localhost:8000\/evals/, (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
     );
-    await page.goto('/evals');
+    await page.goto('/eval');
     await expect(page.locator('body')).toBeVisible();
   });
 
@@ -699,7 +699,7 @@ test.describe('Real-World: Cost Monitoring', () => {
   test('23. Cost breakdown page renders without error', async ({ page }) => {
     await setupAuth(page);
     await mockCostApis(page);
-    await page.goto('/costs');
+    await page.goto('/observability/cost');
     await expect(page.locator('body')).toBeVisible();
     const text = await page.locator('body').textContent();
     expect(text).not.toContain('Uncaught Error');

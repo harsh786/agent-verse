@@ -938,7 +938,9 @@ export function LandingPage() {
 
       <NavBar onStart={go} />
 
-      <div className="relative z-10 max-w-7xl mx-auto px-6 md:px-10">
+      {/* Semantic <main> landmark: screen readers need a skip-to-content
+          target (WCAG 2.4.1) and the page previously had <nav> but no <main>. */}
+      <main className="relative z-10 max-w-7xl mx-auto px-6 md:px-10">
 
         {/* ── Hero ─────────────────────────────────────────────────────── */}
         <section className="pt-36 pb-16 text-center">
@@ -1027,7 +1029,7 @@ export function LandingPage() {
         {/* ── CTA ───────────────────────────────────────────────────────── */}
         <CTASection onStart={go} />
 
-      </div>
+      </main>
 
       <Footer />
     </JARVISStagger>

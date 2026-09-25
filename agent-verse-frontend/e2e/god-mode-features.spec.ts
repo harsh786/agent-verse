@@ -25,7 +25,7 @@ test.describe('God Mode Features', () => {
   });
 
   test('Phase 8: Guardrails v2 page loads', async ({ page }) => {
-    await page.goto('/guardrails');
+    await page.goto('/settings/guardrails');
     await expect(page.locator('body')).toBeVisible();
   });
 

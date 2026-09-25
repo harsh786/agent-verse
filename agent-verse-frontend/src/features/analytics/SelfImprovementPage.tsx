@@ -524,8 +524,15 @@ export function SelfImprovementPage(): JSX.Element {
               <div key={s.id} className="bg-card border border-border rounded-xl px-5 py-4 flex items-start justify-between gap-4">
                 <div className="space-y-2 min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium">{s.type.replace(/_/g, " ").toUpperCase()}</span>
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${SUGGESTION_STATUS_STYLES[s.status]}`}>
+                    {/* A suggestion row missing `type`/`status` used to throw
+                        (`.replace` of undefined) and take the ENTIRE page down
+                        through the error boundary — one malformed row from the
+                        optimizer blanked experiments, benchmarks and history
+                        too.  Degrade the row instead. */}
+                    <span className="text-sm font-medium">
+                      {(s.type ?? "suggestion").replace(/_/g, " ").toUpperCase()}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${SUGGESTION_STATUS_STYLES[s.status] ?? ""}`}>
                       {s.status}
                     </span>
                   </div>

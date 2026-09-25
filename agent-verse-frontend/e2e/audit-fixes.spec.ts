@@ -76,14 +76,14 @@ test.describe('Training Export — Date Filters', () => {
   });
 
   test('shows date range inputs (From and To)', async ({ page }) => {
-    await page.goto('/training');
+    await page.goto('/training-export');
     const dateInputs = page.locator('input[type="date"]');
     await expect(dateInputs.first()).toBeVisible({ timeout: 8_000 });
     await expect(dateInputs.nth(1)).toBeVisible();
   });
 
   test('shows validation error when end date is before start date', async ({ page }) => {
-    await page.goto('/training');
+    await page.goto('/training-export');
     const dateInputs = page.locator('input[type="date"]');
     await dateInputs.first().fill('2025-12-01');
     await dateInputs.nth(1).fill('2025-11-01'); // end before start
@@ -98,7 +98,7 @@ test.describe('Training Export — Date Filters', () => {
       callCount++;
       route.fulfill({ status: 200, body: JSON.stringify({ count: 5, avg_score: 0.9, score_range: [0.8, 1.0], format: 'openai' }) });
     });
-    await page.goto('/training');
+    await page.goto('/training-export');
     await page.waitForTimeout(500);
     const before = callCount;
     // Change date range

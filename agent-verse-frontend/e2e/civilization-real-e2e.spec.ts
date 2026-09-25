@@ -691,7 +691,7 @@ test.describe('Blackboard Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
 
     // Should show the Jira critical issues entry
     await expect(page.getByText('jira_critical_issues')).toBeVisible({ timeout: 8000 });
@@ -704,7 +704,7 @@ test.describe('Blackboard Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
 
     await expect(page.getByText('jira_critical_issues')).toBeVisible({ timeout: 8000 });
     await expect(page.getByText('routing_decision')).toBeVisible({ timeout: 5000 });
@@ -717,7 +717,7 @@ test.describe('Blackboard Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
 
     // Author agent IDs should be visible
     await expect(
@@ -731,7 +731,7 @@ test.describe('Blackboard Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
 
     // Confidence 0.95 or 95% should appear
     await expect(
@@ -752,7 +752,7 @@ test.describe('Learning Ledger', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
 
     await expect(
       page.getByText(/MTTR|promoted/i).first()
@@ -765,7 +765,7 @@ test.describe('Learning Ledger', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
 
     await expect(page.getByText('rejected').first()).toBeVisible({ timeout: 8000 });
     await expect(
@@ -779,7 +779,7 @@ test.describe('Learning Ledger', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
 
     await expect(page.getByText('promoted').first()).toBeVisible({ timeout: 8000 });
     await expect(page.getByText('rejected').first()).toBeVisible({ timeout: 5000 });
@@ -793,7 +793,7 @@ test.describe('Learning Ledger', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
 
     await expect(
       page.getByText(/0\.91|91%/i).first()
@@ -813,7 +813,7 @@ test.describe('Spawn Audit', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
 
     const approvedBadges = page.getByText('approved');
     await expect(approvedBadges.first()).toBeVisible({ timeout: 8000 });
@@ -827,7 +827,7 @@ test.describe('Spawn Audit', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
 
     await expect(page.getByText('denied').first()).toBeVisible({ timeout: 8000 });
     // Deploy denied because HITL required
@@ -842,7 +842,7 @@ test.describe('Spawn Audit', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
 
     // The depth limit denial should mention max_depth
     await expect(
@@ -856,7 +856,7 @@ test.describe('Spawn Audit', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
 
     await expect(
       page.getByText(/agent-coordinator-001|agent-github-001|coordinator/i).first()
@@ -876,7 +876,7 @@ test.describe('Debates Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    const debatesTab = page.getByText('⚖️ Debates');
+    const debatesTab = page.getByTitle('Debates');
     await expect(debatesTab).toBeVisible({ timeout: 8000 });
     await debatesTab.click();
 
@@ -891,7 +891,7 @@ test.describe('Debates Tab', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    const debatesTab = page.getByText('⚖️ Debates');
+    const debatesTab = page.getByTitle('Debates');
     if (await debatesTab.isVisible({ timeout: 5000 }).catch(() => false)) {
       await debatesTab.click();
       await expect(
@@ -913,7 +913,7 @@ test.describe('Constitution Editor', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    const constTab = page.getByText('⚙️ Constitution');
+    const constTab = page.getByTitle('Constitution');
     await expect(constTab).toBeVisible({ timeout: 8000 });
     await constTab.click();
 
@@ -939,7 +939,7 @@ test.describe('Constitution Editor', () => {
     await page.goto(`/civilization/${CIV_ID}`);
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
 
-    const constTab = page.getByText('⚙️ Constitution');
+    const constTab = page.getByTitle('Constitution');
     if (await constTab.isVisible({ timeout: 5000 }).catch(() => false)) {
       await constTab.click();
       const saveBtn = page.getByRole('button', { name: /save.*constitution|update.*const/i });
@@ -1119,17 +1119,17 @@ test.describe('Full Lifecycle: Jira Triage Civilization', () => {
     }
 
     // Step 3: Check Blackboard
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
     await expect(page.getByText('jira_critical_issues')).toBeVisible({ timeout: 8000 });
     await expect(page.getByText(/Found 8 P1 issues/i)).toBeVisible({ timeout: 5000 });
 
     // Step 4: Check Spawn Audit
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
     await expect(page.getByText('approved').first()).toBeVisible({ timeout: 8000 });
     await expect(page.getByText('denied').first()).toBeVisible({ timeout: 5000 });
 
     // Step 5: Check Learning Ledger
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
     await expect(page.getByText('promoted').first()).toBeVisible({ timeout: 8000 });
   });
 
@@ -1139,7 +1139,7 @@ test.describe('Full Lifecycle: Jira Triage Civilization', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
 
     // The HITL-denied spawn should be visible
     await expect(page.getByText('denied').first()).toBeVisible({ timeout: 8000 });
@@ -1167,7 +1167,7 @@ test.describe('Full Lifecycle: Jira Triage Civilization', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await page.getByTitle('Learnings').click();
 
     await expect(page.getByText('promoted').first()).toBeVisible({ timeout: 8000 });
     // The promoted learning about MTTR
@@ -1184,7 +1184,7 @@ test.describe('Full Lifecycle: Jira Triage Civilization', () => {
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
 
     // The spawn audit should show the depth-2 github spawn was approved
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
     await expect(
       page.getByText(/github.*linker|github_pr_link|depth.*2/i).first()
     ).toBeVisible({ timeout: 8000 });

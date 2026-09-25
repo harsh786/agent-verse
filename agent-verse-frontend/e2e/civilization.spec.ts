@@ -324,20 +324,20 @@ test.describe('Agent Civilization', () => {
   });
 
   test('blackboard tab shows topic and content', async ({ page }) => {
-    await page.getByText('📋 Blackboard').click();
+    await page.getByTitle('Blackboard').click();
     await expect(page.getByText('jira_analysis')).toBeVisible({ timeout: 3000 });
     await expect(page.getByText('Found 15 P1 issues')).toBeVisible({ timeout: 3000 });
   });
 
   test('learning ledger tab shows promoted and rejected entries', async ({ page }) => {
-    await expect(page.getByText('🧠 Learning Ledger')).toBeVisible({ timeout: 10000 });
-    await page.getByText('🧠 Learning Ledger').click();
+    await expect(page.getByTitle('Learnings')).toBeVisible({ timeout: 10000 });
+    await page.getByTitle('Learnings').click();
     await expect(page.getByText('promoted').first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('rejected').first()).toBeVisible({ timeout: 10000 });
   });
 
   test('spawn audit tab shows approved and denied entries', async ({ page }) => {
-    await page.getByText('🌱 Spawn Audit').click();
+    await page.getByTitle('Spawn Audit').click();
     await expect(page.getByText('approved')).toBeVisible({ timeout: 3000 });
     await expect(page.getByText('denied')).toBeVisible({ timeout: 3000 });
   });
