@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
 
 
@@ -256,7 +257,14 @@ class AgentRouter:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            # `evaluations` and `goals` are both FORCE ROW LEVEL SECURITY.
+            # Without the tenant GUC this join matched zero rows, so the
+            # history score silently returned 0.0 for EVERY agent and the
+            # router's historical-success signal was permanently dead.
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 row = (
                     await session.execute(
                         text("""
