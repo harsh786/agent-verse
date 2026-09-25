@@ -53,7 +53,7 @@ async def test_url_redirect_to_internal_is_blocked(monkeypatch: pytest.MonkeyPat
         def raise_for_status(self) -> None:  # pragma: no cover - not reached
             pass
 
-        async def __aenter__(self) -> "_Resp":
+        async def __aenter__(self) -> _Resp:
             return self
 
         async def __aexit__(self, *a: object) -> None:
@@ -63,7 +63,7 @@ async def test_url_redirect_to_internal_is_blocked(monkeypatch: pytest.MonkeyPat
         def __init__(self, *a: object, **k: object) -> None:
             pass
 
-        async def __aenter__(self) -> "_Client":
+        async def __aenter__(self) -> _Client:
             return self
 
         async def __aexit__(self, *a: object) -> None:

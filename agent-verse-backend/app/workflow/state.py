@@ -10,7 +10,6 @@ from __future__ import annotations
 import enum
 from typing import Annotated, Any, TypedDict
 
-
 # ── State reducers ────────────────────────────────────────────────────────────
 # LangGraph runs steps with no unmet dependency (and every `parallel` branch)
 # CONCURRENTLY. When two concurrent nodes write the same state key, LangGraph
@@ -36,8 +35,17 @@ def _add(a: float | int | None, b: float | int | None) -> float | int:
     return (a or 0) + (b or 0)
 
 
-class WorkflowRunControlSignal(Exception):
-    """Base for cooperative run-control halts raised between steps."""
+class WorkflowRunControlSignal(Exception):  # noqa: N818
+    """Base for cooperative run-control halts raised between steps.
+
+    Deliberately NOT named ``...Error``: this is a cooperative control-flow
+    signal, not a failure. Cancel and pause are operator actions on a healthy
+    run, and naming them errors would invite callers to treat a normal
+    lifecycle transition as a fault (and to log/alert on it). The stdlib draws
+    the same distinction with ``StopIteration`` and ``GeneratorExit``, which
+    likewise carry no ``Error`` suffix. N818 is suppressed here rather than
+    renamed for that reason.
+    """
 
 
 class WorkflowCancelled(WorkflowRunControlSignal):

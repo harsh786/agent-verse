@@ -98,7 +98,15 @@ class LegalHoldManager:
                         },
                     )
             except Exception as exc:
+                # A legal hold that was not persisted does not exist. Reporting
+                # success here produced the worst possible outcome: the API
+                # returned a hold id and logged `legal_hold_created`, an operator
+                # believed litigation data was protected, and `is_under_hold`
+                # then answered False forever so deletion proceeded.
+                # `release_hold` already signals failure (returns False); create
+                # must not be the one call in this class that lies.
                 logger.error("legal_hold_create_db_error", error=str(exc))
+                raise
 
         # Warm Redis cache
         if self._redis is not None and resource_ids:

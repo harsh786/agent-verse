@@ -9,10 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from alembic import op
-import sqlalchemy as sa
-
-
 revision: str = '6c850a1c4c09'
 down_revision: str | None = ('0131', '0132_org_brain_guardrail_trace')
 branch_labels: str | Sequence[str] | None = None

@@ -101,7 +101,7 @@ class TracedProvider:
         return getattr(self._inner, name)
 
 
-def traced_role_providers(provider: Any) -> dict[str, "TracedProvider"]:
+def traced_role_providers(provider: Any) -> dict[str, TracedProvider]:
     """Wrap a resolved provider as three role-tagged traced providers for the
     planner/executor/verifier slots of AgentGraph, so every agent LLM call emits a
     role-attributed GenAI span."""

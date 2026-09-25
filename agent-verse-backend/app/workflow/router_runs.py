@@ -195,7 +195,7 @@ async def resume_run(run_id: str, request: Request) -> dict[str, str]:
     if runner is not None and hasattr(runner, "resume"):
         try:
             await runner.resume(run_id, tenant_id)
-        except Exception as exc:  # noqa: BLE001 — surface as 202 with a note
+        except Exception as exc:
             return {
                 "run_id": run_id,
                 "status": WorkflowRunStatus.RUNNING.value,

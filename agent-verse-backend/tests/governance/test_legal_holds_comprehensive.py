@@ -80,7 +80,18 @@ class TestCreateHold:
         assert result["legal_matter_id"] == "matter-001"
         assert "u1" in result["resource_ids"]
 
-    async def test_create_hold_db_error_suppressed(self) -> None:
+    async def test_create_hold_db_error_is_surfaced_not_suppressed(self) -> None:
+        """A hold that was not persisted must not be reported as created.
+
+        This previously asserted the DB error was swallowed and a hold dict
+        still returned. That produced the worst possible outcome: the API
+        handed back a hold id and logged `legal_hold_created`, an operator
+        believed litigation data was protected, and `is_under_hold` then
+        answered False forever so deletion proceeded anyway.
+
+        `release_hold` already signals failure by returning False; create must
+        not be the one call in this class that lies about it.
+        """
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -92,10 +103,10 @@ class TestCreateHold:
             yield mock_session
 
         mgr = _make_legal_hold_manager(db=factory)
-        result = await mgr.create_hold(
-            tenant_id="t1", name="Hold D", resource_type="goal"
-        )
-        assert result["id"] is not None
+        with pytest.raises(RuntimeError, match="DB error"):
+            await mgr.create_hold(
+                tenant_id="t1", name="Hold D", resource_type="goal"
+            )
 
 
 # ── release_hold ──────────────────────────────────────────────────────────────

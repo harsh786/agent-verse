@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from app.ai_router.models import ModelCapability, ModelEndpoint, RoutingMode, TaskType
 from app.ai_router.registry import ModelRegistry
