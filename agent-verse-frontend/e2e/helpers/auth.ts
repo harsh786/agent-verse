@@ -275,3 +275,47 @@ export async function mockTemplatesApi(
     return route.continue();
   });
 }
+
+// ── Dev-asset-safe routing ───────────────────────────────────────────────────
+
+/**
+ * Vite serves the application's OWN source over HTTP in dev, under these
+ * pathname prefixes (plus `/assets/` for a production build).  None of them is
+ * ever API traffic.
+ */
+const DEV_ASSET_PREFIX = /^\/(?:src\/|node_modules\/|@|assets\/)/;
+
+/**
+ * `page.route` for API mocks, with the dev server's own modules excluded.
+ *
+ * A glob such as the double-star form of "/observability/" is intended to match
+ * `http://localhost:8000/observability/logs` — but it ALSO matches the module
+ * URL Vite serves for the page itself:
+ *
+ *     http://localhost:5174/src/features/observability/ObservabilityPage.tsx
+ *
+ * The mock then answers the browser's `import()` with JSON, the lazy route
+ * chunk fails to parse, and React's error boundary renders "Error in: X"
+ * instead of the page.  Every assertion in the spec then fails on a page that
+ * never rendered — which looks like dozens of unrelated UI regressions.
+ *
+ * Anchoring the globs to `localhost:8000` instead would be wrong: some mocks
+ * legitimately intercept `/api/v1/...` calls that go through the Vite proxy on
+ * the app's own origin.  So the rule is about the PATH, not the host.
+ *
+ * `route.fallback()` hands the request to the next matching handler (registered
+ * earlier, per Playwright's LIFO order) and ultimately to the network, so the
+ * real module is served.
+ */
+export async function apiRoute(
+  page: Page,
+  pattern: string | RegExp,
+  handler: (route: import('@playwright/test').Route, request: import('@playwright/test').Request) => unknown
+): Promise<void> {
+  await page.route(pattern, (route, request) => {
+    if (DEV_ASSET_PREFIX.test(new URL(request.url()).pathname)) {
+      return route.fallback();
+    }
+    return handler(route, request);
+  });
+}

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 test.describe('Security Smoke', () => {
   test('app does not expose API keys in page source', async ({ page }) => {
@@ -20,7 +21,7 @@ test.describe('Security Smoke', () => {
   });
 
   test('XSS: input fields sanitize dangerous content', async ({ page }) => {
-    await page.route('**/goals**', r => r.fulfill({ json: { goals: [] } }));
+    await apiRoute(page, '**/goals**', r => r.fulfill({ json: { goals: [] } }));
     await page.goto('/goals');
     // Find any text input and try to inject a script tag
     const inputs = page.locator('input[type="text"], textarea');

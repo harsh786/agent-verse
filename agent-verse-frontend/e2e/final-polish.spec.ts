@@ -3,7 +3,7 @@
  * Tests for all remaining fixes that push the platform to 10/10.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 async function authPage(page: Page) {
   await setupAuth(page);
@@ -17,7 +17,7 @@ async function authPage(page: Page) {
 test.describe('Admin Page — Security', () => {
   test('admin page does not expose VITE_PLATFORM_ADMIN_KEY', async ({ page }) => {
     await authPage(page);
-    await page.route('**/admin/**', route =>
+    await apiRoute(page, '**/admin/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ tenants: [], total: 0, active_goals: 0, total_tenants: 0 }) })
     );
     await page.goto('/admin');
@@ -32,7 +32,7 @@ test.describe('Admin Page — Security', () => {
   test('admin API uses tenant auth headers', async ({ page }) => {
     await authPage(page);
     const headers: Record<string, string>[] = [];
-    await page.route('**/admin/**', route => {
+    await apiRoute(page, '**/admin/**', route => {
       headers.push(route.request().headers());
       route.fulfill({ status: 200, body: JSON.stringify({ tenants: [], total: 0 }) });
     });
@@ -53,7 +53,7 @@ test.describe('GoalsListPage — Cache Invalidation', () => {
   test('goal submission triggers cache refresh', async ({ page }) => {
     await authPage(page);
     let listCallCount = 0;
-    await page.route('**/goals**', async route => {
+    await apiRoute(page, '**/goals**', async route => {
       const method = route.request().method();
       if (method === 'GET') {
         listCallCount++;
@@ -64,7 +64,7 @@ test.describe('GoalsListPage — Cache Invalidation', () => {
         await route.continue();
       }
     });
-    await page.route('**/agents**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
+    await apiRoute(page, '**/agents**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
     await page.route('**/insights/estimate**', route => route.fulfill({ status: 200, body: JSON.stringify({ estimated_cost_usd: { mean: 0.05 }, success_probability: 0.8 }) }));
 
     await page.goto('/goals');
@@ -119,7 +119,7 @@ test.describe('Settings — Session Revoke', () => {
 test.describe('TemplateLibraryPage — Empty State', () => {
   test('empty state shows "No templates found" not wrong i18n key', async ({ page }) => {
     await authPage(page);
-    await page.route('**/templates**', route =>
+    await apiRoute(page, '**/templates**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
     await page.goto('/templates');
@@ -134,7 +134,7 @@ test.describe('TemplateLibraryPage — Empty State', () => {
 test.describe('Schedules NL Scheduler — Response Format', () => {
   test('NL scheduler shows human-readable response not raw JSON', async ({ page }) => {
     await authPage(page);
-    await page.route('**/schedules**', route =>
+    await apiRoute(page, '**/schedules**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ schedules: [] }) })
     );
     await page.route('**/nl/schedule**', route =>
@@ -291,7 +291,7 @@ test.describe('Skills Page — Edit & Test', () => {
 
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/skills**', async route => {
+    await apiRoute(page, '**/skills**', async route => {
       if (route.request().method() === 'GET') {
         await route.fulfill({ status: 200, body: JSON.stringify([MOCK_SKILL]) });
       } else {
@@ -341,7 +341,7 @@ test.describe('Skills Page — Edit & Test', () => {
 test.describe('Enterprise SAML — Real Test', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/enterprise/**', async route => {
+    await apiRoute(page, '**/enterprise/**', async route => {
       const url = route.request().url();
       if (url.includes('/saml/test')) {
         await route.fulfill({
@@ -382,7 +382,7 @@ test.describe('Enterprise SAML — Real Test', () => {
 test.describe('Observability — Log Pipeline', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/observability/**', route =>
+    await apiRoute(page, '**/observability/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ logs: [
         { id: 'l1', timestamp: new Date().toISOString(), level: 'info', message: 'Goal completed successfully', source: 'goal_complete' },
         { id: 'l2', timestamp: new Date().toISOString(), level: 'error', message: 'Tool execution failed', source: 'tool_call_failed' },

@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 test.describe('Failure States', () => {
   test('API error shows error state not blank page', async ({ page }) => {
-    await page.route('**/goals**', route => route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } }));
+    await apiRoute(page, '**/goals**', route => route.fulfill({ status: 500, json: { detail: 'Internal Server Error' } }));
     await page.goto('/goals');
     await page.waitForTimeout(2000);
     // Page should show error state, not crash
@@ -27,7 +28,7 @@ test.describe('Failure States', () => {
   });
 
   test('slow API: loading spinner appears', async ({ page }) => {
-    await page.route('**/goals**', async route => {
+    await apiRoute(page, '**/goals**', async route => {
       await new Promise(r => setTimeout(r, 2000));
       await route.fulfill({ json: { goals: [] } });
     });

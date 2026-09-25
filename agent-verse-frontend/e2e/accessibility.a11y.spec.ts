@@ -1,12 +1,13 @@
 // Accessibility checks using Playwright's built-in a11y APIs
 // (No external axe import — use page.locator + ARIA roles)
 import { test, expect } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 test.describe('Accessibility', () => {
   test.beforeEach(async ({ page }) => {
     await page.route('**/health**', r => r.fulfill({ json: { status: 'healthy' } }));
-    await page.route('**/goals**', r => r.fulfill({ json: { goals: [] } }));
-    await page.route('**/agents**', r => r.fulfill({ json: { agents: [] } }));
+    await apiRoute(page, '**/goals**', r => r.fulfill({ json: { goals: [] } }));
+    await apiRoute(page, '**/agents**', r => r.fulfill({ json: { agents: [] } }));
   });
 
   test('page has no missing alt texts on images', async ({ page }) => {

@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 test.describe('Smoke: Critical Paths', () => {
   test.beforeEach(async ({ page }) => {
     // Mock auth
     await page.route('**/health', route => route.fulfill({ json: { status: 'healthy' } }));
-    await page.route('**/goals**', route => route.fulfill({ json: { goals: [] } }));
-    await page.route('**/agents**', route => route.fulfill({ json: { agents: [] } }));
+    await apiRoute(page, '**/goals**', route => route.fulfill({ json: { goals: [] } }));
+    await apiRoute(page, '**/agents**', route => route.fulfill({ json: { agents: [] } }));
   });
 
   test('app loads without crashing', async ({ page }) => {

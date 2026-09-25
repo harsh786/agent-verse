@@ -16,7 +16,7 @@
  * 11.  CRDT — Short-lived Token Authentication (2 tests)
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -199,7 +199,7 @@ test.describe('AgentDetailPage — Check Readiness', () => {
     await page.route('**/agents/agent-001/versions**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
   });
@@ -281,7 +281,7 @@ test.describe('AgentDetailPage — Check Readiness', () => {
 test.describe('GoalDiffPage — URL State & Errors', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({
@@ -392,7 +392,7 @@ test.describe('GoalDiffPage — URL State & Errors', () => {
 test.describe('GhostRunPage — Winner Algorithm', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', async route => {
+    await apiRoute(page, '**/goals**', async route => {
       if (route.request().method() === 'POST') {
         await route.fulfill({
           status: 201,
@@ -402,7 +402,7 @@ test.describe('GhostRunPage — Winner Algorithm', () => {
         await route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) });
       }
     });
-    await page.route('**/agents**', route =>
+    await apiRoute(page, '**/agents**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
   });
@@ -465,7 +465,7 @@ test.describe('GhostRunPage — Winner Algorithm', () => {
 test.describe('EvalPage — Suite Delete', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
     await page.route('**/intelligence/eval-suites**', async route => {
@@ -637,7 +637,7 @@ test.describe('ToolsPage — Theme & History', () => {
 test.describe('Sidebar — Collapsed Logout', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
   });
@@ -792,7 +792,7 @@ test.describe('Observability — Time-Series Charts', () => {
     await page.route('**/observability/timeseries**', route =>
       route.fulfill({ status: 200, body: JSON.stringify(MOCK_TIMESERIES) })
     );
-    await page.route('**/goals/**', route =>
+    await apiRoute(page, '**/goals/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({}) })
     );
   });
@@ -974,7 +974,7 @@ test.describe('CRDT — Short-lived Token Auth', () => {
         body: JSON.stringify({ token: 'crdt_token_abc123', expires_in: 3600 }),
       });
     });
-    await page.route('**/collaboration/**', route =>
+    await apiRoute(page, '**/collaboration/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ sessions: [] }) })
     );
     await page.routeWebSocket('**/collab/crdt/**', ws => {
@@ -1005,7 +1005,7 @@ test.describe('CRDT — Short-lived Token Auth', () => {
         body: JSON.stringify({ detail: 'Token service unavailable' }),
       })
     );
-    await page.route('**/collaboration/**', route =>
+    await apiRoute(page, '**/collaboration/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ sessions: [] }) })
     );
     await page.routeWebSocket('**/collab/crdt/**', ws => {

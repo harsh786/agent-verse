@@ -3,7 +3,7 @@
  * Tests all 17 phases of the AgentVerse God Mode plan.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 async function auth(page: Page) {
   await setupAuth(page);
@@ -45,7 +45,7 @@ test.describe('Phase 1: Provider Catalog', () => {
         }),
       })
     );
-    await page.route('**/goals**', (route) =>
+    await apiRoute(page, '**/goals**', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
     await page.goto('/settings?tab=llm');
@@ -57,10 +57,10 @@ test.describe('Phase 1: Provider Catalog', () => {
 
   test('multimodal goal attachment shows file picker', async ({ page }) => {
     await auth(page);
-    await page.route('**/goals**', (route) =>
+    await apiRoute(page, '**/goals**', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
-    await page.route('**/agents**', (route) =>
+    await apiRoute(page, '**/agents**', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
     await page.goto('/goals');
@@ -78,7 +78,7 @@ test.describe('Phase 1: Provider Catalog', () => {
 test.describe('Phase 2: Model Control Center', () => {
   test('renders model list with health indicators', async ({ page }) => {
     await auth(page);
-    await page.route('**/models**', (route) =>
+    await apiRoute(page, '**/models**', (route) =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({
@@ -128,7 +128,7 @@ test.describe('Phase 2: Model Control Center', () => {
 
   test('shows provider health strip', async ({ page }) => {
     await auth(page);
-    await page.route('**/models**', (route) =>
+    await apiRoute(page, '**/models**', (route) =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({ models: [], total: 0 }),
@@ -248,7 +248,7 @@ test.describe('Phase 12: Skills Runtime', () => {
 test.describe('Phase 13: AI Ops Center', () => {
   test('shows AI Ops dashboard with live KPIs', async ({ page }) => {
     await auth(page);
-    await page.route('**/goals**', (route) =>
+    await apiRoute(page, '**/goals**', (route) =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({
@@ -291,7 +291,7 @@ test.describe('Phase 13: AI Ops Center', () => {
         }),
       })
     );
-    await page.route('**/agents**', (route) =>
+    await apiRoute(page, '**/agents**', (route) =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
 
@@ -316,7 +316,7 @@ test.describe('Phase 13: AI Ops Center', () => {
 test.describe('Failure States', () => {
   test('model registry shows error when API returns 500', async ({ page }) => {
     await auth(page);
-    await page.route('**/models**', (route) =>
+    await apiRoute(page, '**/models**', (route) =>
       route.fulfill({ status: 500, body: JSON.stringify({ detail: 'Internal error' }) })
     );
     await page.route('**/models/health**', (route) =>
@@ -331,7 +331,7 @@ test.describe('Failure States', () => {
 
   test('knowledge graph handles empty state', async ({ page }) => {
     await auth(page);
-    await page.route('**/knowledge-graph/**', (route) =>
+    await apiRoute(page, '**/knowledge-graph/**', (route) =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({ nodes: [], total: 0 }),

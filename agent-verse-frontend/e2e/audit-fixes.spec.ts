@@ -6,7 +6,7 @@
  * CRDT cursor, Observability time-range, Billing Razorpay, and more.
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helpers
@@ -115,10 +115,10 @@ test.describe('Training Export — Date Filters', () => {
 test.describe('Eval Page — History Persistence', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [{ id: 'g1', goal: 'Test goal', status: 'complete' }] }) })
     );
-    await page.route('**/eval/**', route =>
+    await apiRoute(page, '**/eval/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ scores: { accuracy: 0.85 }, avg_score: 0.85, passed: true, iterations: 3, goal_id: 'g1' }) })
     );
   });
@@ -226,7 +226,7 @@ test.describe('App — Session Loading State', () => {
       responded = true;
       await route.fulfill({ status: 200, body: JSON.stringify({ tenant_id: 'tid', name: 'T', plan: 'professional' }) });
     });
-    await page.route('**/goals**', route => route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) }));
+    await apiRoute(page, '**/goals**', route => route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) }));
 
     await page.goto('/goals');
     // Should NOT be completely blank
@@ -380,7 +380,7 @@ test.describe('Artifacts Browser — Search & Copy', () => {
 
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/artifacts**', route =>
+    await apiRoute(page, '**/artifacts**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ items: [MOCK_ARTIFACT], total: 1 }) })
     );
   });
@@ -397,7 +397,7 @@ test.describe('Artifacts Browser — Search & Copy', () => {
 
   test('search does not fire API on every keystroke', async ({ page }) => {
     let apiCallCount = 0;
-    await page.route('**/artifacts**', route => {
+    await apiRoute(page, '**/artifacts**', route => {
       apiCallCount++;
       route.fulfill({ status: 200, body: JSON.stringify({ items: [], total: 0 }) });
     });
@@ -455,7 +455,7 @@ test.describe('Schedules — Delete & History', () => {
 
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/schedules**', async route => {
+    await apiRoute(page, '**/schedules**', async route => {
       if (route.request().method() === 'GET') {
         await route.fulfill({ status: 200, body: JSON.stringify({ schedules: [MOCK_SCHEDULE] }) });
       } else {
@@ -541,10 +541,10 @@ test.describe('Schedules — Delete & History', () => {
 test.describe('Sidebar — Keyboard & Accessibility', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/goals**', route =>
+    await apiRoute(page, '**/goals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ goals: [] }) })
     );
-    await page.route('**/approvals**', route =>
+    await apiRoute(page, '**/approvals**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
   });
@@ -641,7 +641,7 @@ test.describe('Governance Audit — Time Column', () => {
 test.describe('CRDT Editor — Cursor & Awareness', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/collaboration/**', route =>
+    await apiRoute(page, '**/collaboration/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ sessions: [], session: {} }) })
     );
     await page.routeWebSocket('**/collab/crdt/**', ws => {
@@ -733,10 +733,10 @@ test.describe('Scope Explorer — Last API Call', () => {
 test.describe('Observability — Time Range', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/observability/**', route =>
+    await apiRoute(page, '**/observability/**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ logs: [], total: 0, latency_percentiles: { p50: 0.3, p95: 0.9, p99: 2.1 } }) })
     );
-    await page.route('**/goals/**', route => route.fulfill({ status: 200, body: JSON.stringify({}) }));
+    await apiRoute(page, '**/goals/**', route => route.fulfill({ status: 200, body: JSON.stringify({}) }));
   });
 
   test('time range picker shows 5 presets', async ({ page }) => {
