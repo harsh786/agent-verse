@@ -178,6 +178,13 @@ async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
     approver_id = body.get("approver_id", "anonymous")
     note = body.get("note", "")
 
+    # Separation of duties: `required_approvers` counts DISTINCT approvers.
+    # Without this guard one person calling the endpoint N times — or a
+    # double-clicked / retried request — satisfied an N-approver requirement
+    # alone, since the completion check is `len(approvers) >= required`.
+    if any(a.get("approver_id") == approver_id for a in approval["approvers"]):
+        raise HTTPException(409, "approver has already approved this request")
+
     approval["approvers"].append(
         {
             "approver_id": approver_id,

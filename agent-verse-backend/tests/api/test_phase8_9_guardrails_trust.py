@@ -388,3 +388,65 @@ def test_audit_integrity_reports_an_intact_chain_from_an_async_verifier():
     assert data["verified"] is True, data
     assert data["status"] == "ok", data
     assert data["events_verified"] == 12, data
+
+
+# ── Trust: multi-approver separation of duties ───────────────────────────────
+
+
+def test_one_approver_cannot_satisfy_a_multi_approver_requirement():
+    """A 3-of-N approval must need three DISTINCT approvers.
+
+    Regression: `approve_request` appended to `approval["approvers"]` with no
+    check that the caller had already approved, and then compared
+    `len(approvers) >= required_approvers`. So one person calling the endpoint
+    three times — or a double-clicked / retried request — satisfied a
+    three-approver requirement alone, defeating the separation-of-duties control
+    the field exists to enforce.
+    """
+    client = TestClient(_make_app())
+    created = client.post(
+        "/trust/approvals",
+        json={"goal_id": "g1", "tool_name": "wire_transfer",
+              "risk_level": "high", "required_approvers": 3},
+        headers=_HEADERS,
+    ).json()
+    approval_id = created["approval_id"]
+
+    first = client.post(
+        f"/trust/approvals/{approval_id}/approve",
+        json={"approver_id": "alice"}, headers=_HEADERS,
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "pending"
+
+    # Same approver again — must not count a second time.
+    for _ in range(2):
+        again = client.post(
+            f"/trust/approvals/{approval_id}/approve",
+            json={"approver_id": "alice"}, headers=_HEADERS,
+        )
+        assert again.status_code == 409, again.json()
+
+    listed = client.get("/trust/approvals", headers=_HEADERS).json()
+    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
+    assert approval["status"] == "pending", approval
+    assert len(approval["approvers"]) == 1, approval["approvers"]
+
+
+def test_three_distinct_approvers_do_satisfy_the_requirement():
+    client = TestClient(_make_app())
+    approval_id = client.post(
+        "/trust/approvals",
+        json={"goal_id": "g2", "required_approvers": 3},
+        headers=_HEADERS,
+    ).json()["approval_id"]
+
+    for who in ("alice", "bob"):
+        r = client.post(f"/trust/approvals/{approval_id}/approve",
+                        json={"approver_id": who}, headers=_HEADERS)
+        assert r.json()["status"] == "pending", r.json()
+
+    final = client.post(f"/trust/approvals/{approval_id}/approve",
+                        json={"approver_id": "carol"}, headers=_HEADERS)
+    assert final.json()["status"] == "approved", final.json()
+    assert final.json()["approver_count"] == 3
