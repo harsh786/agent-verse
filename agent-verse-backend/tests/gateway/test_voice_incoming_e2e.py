@@ -128,3 +128,33 @@ def test_registry_from_env_seeds_bindings() -> None:
     b = reg.resolve("+15550002222")
     assert a is not None and a.tenant_id == "tenant_a"
     assert b is not None and b.tenant_id == "tenant_b" and b.org_id == "org_x"
+
+
+def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
+    """A caller speaking an SSN/card number must not have it persisted verbatim.
+
+    Regression: ``/voice/incoming`` called ``handle_voice_turn`` without a
+    ``retention_policy``, so ``apply_retention`` never ran on the live PSTN path
+    and the raw transcript was persisted straight into the durable chat session.
+
+    The WebSocket voice path (``app/voice/streaming.py``) defaults the policy on
+    (``self._retention = retention_policy or VoiceRetentionPolicy()``), and
+    ``app/voice/retention.py`` documents redaction as the default ("transcripts
+    are PII-redacted by default before they are kept or forwarded") — the phone
+    path was the one entry point that skipped it.
+    """
+    app, chat = _app()
+    client = TestClient(app)
+    r = _post(client, **{
+        "From": CALLER, "To": LINE, "CallSid": "CA-PII",
+        "SpeechResult": "my ssn is 123-45-6789 and my card is 4111111111111111",
+    })
+    assert r.status_code == 200
+
+    session = chat.get_or_create_channel_session(
+        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+    )
+    persisted = " ".join(m.content for m in chat.list_messages(session.id, TENANT))
+    assert "123-45-6789" not in persisted, f"SSN persisted verbatim: {persisted!r}"
+    assert "4111111111111111" not in persisted, f"card persisted verbatim: {persisted!r}"
+    assert "[REDACTED]" in persisted

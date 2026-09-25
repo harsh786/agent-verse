@@ -472,6 +472,7 @@ async def voice_incoming(request: Request) -> Response:
     provider speaks, with a ``<Gather>`` that loops the next turn back here.
     """
     from app.voice.chat_bridge import handle_voice_turn
+    from app.voice.retention import VoiceRetentionPolicy
 
     state = request.app.state
     adapter = getattr(state, "voice_phone_adapter", None) or _voice_phone
@@ -512,6 +513,16 @@ async def voice_incoming(request: Request) -> Response:
             caller_id=from_number,
             transcript=transcript,
             consent_policy=getattr(state, "voice_consent_policy", None),
+            # A caller can speak an SSN / card number. app/voice/retention.py
+            # documents PII redaction as the DEFAULT ("transcripts are
+            # PII-redacted by default before they are kept or forwarded") and
+            # the WebSocket path defaults it on the same way
+            # (app/voice/streaming.py: `retention_policy or VoiceRetentionPolicy()`).
+            # This phone path was the one entry point that passed nothing, so the
+            # raw transcript was persisted verbatim into the durable chat session.
+            retention_policy=(
+                getattr(state, "voice_retention_policy", None) or VoiceRetentionPolicy()
+            ),
         )
         reply = str(result.get("reply_text") or "Okay.")
     except Exception as exc:  # never drop the call — speak a safe fallback

@@ -139,11 +139,26 @@ async def handle_voice_turn(
         consent_policy.require(tenant_id, caller_id)
 
     # Retention: PII-redact the transcript before it is persisted / routed.
+    # The policy's verdict is authoritative — never fall back to the raw
+    # transcript. `retain_transcripts=False` is exactly the case that yields
+    # None ("drop it"), so the old `if outcome.transcript is not None` guard
+    # made the *strictest* policy the leakiest one: it routed the original,
+    # unredacted text. app/voice/streaming.py honours the same drop by
+    # stopping the turn on an empty result; do the same here.
     routed_transcript = transcript
     if retention_policy is not None:
         outcome = apply_retention(retention_policy, audio=None, transcript=transcript)
-        if outcome.transcript is not None:
-            routed_transcript = outcome.transcript
+        routed_transcript = (outcome.transcript or "").strip()
+        if not routed_transcript:
+            dropped: dict[str, Any] = {
+                "session_id": None,
+                "reply_text": _DEFAULT_ACK_REPLY,
+                "intent": None,
+                "transcript_dropped": True,
+            }
+            if tts is not None:
+                dropped["audio"] = await synthesize_reply(tts, _DEFAULT_ACK_REPLY)
+            return dropped
 
     dispatch = await chat_service.ahandle_channel_message(
         tenant_id=tenant_id,

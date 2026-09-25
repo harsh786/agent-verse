@@ -199,3 +199,33 @@ async def test_bridge_class_reuses_injectables() -> None:
     assert result["transcript"] == "call turn"
     assert chat.calls[0]["channel"] == "voice_phone"
     assert tts.synth_calls == [result["reply_text"]]
+
+
+async def test_retention_drop_never_falls_back_to_the_raw_transcript() -> None:
+    """``retain_transcripts=False`` must drop the turn, not route the original text.
+
+    Regression: the bridge only overrode ``routed_transcript`` when
+    ``apply_retention`` returned a non-``None`` transcript::
+
+        outcome = apply_retention(...)
+        if outcome.transcript is not None:
+            routed_transcript = outcome.transcript
+
+    but ``retain_transcripts=False`` is exactly the case that returns ``None`` —
+    so the *strictest* policy silently fell through to the ORIGINAL, unredacted
+    transcript and persisted it via ChatService. That made "don't keep
+    transcripts" strictly more leaky than the redacting default.
+    ``app/voice/streaming.py`` honours the same drop correctly
+    (``transcript = (retained.transcript or "").strip(); if not transcript: return``).
+    """
+    chat = _FakeChatService()
+    await handle_voice_turn(
+        chat_service=chat,
+        tenant_id=TENANT,
+        caller_id=CALLER,
+        transcript="my ssn is 123-45-6789",
+        retention_policy=VoiceRetentionPolicy(retain_transcripts=False),
+    )
+    routed = " ".join(c["text"] for c in chat.calls)
+    assert "123-45-6789" not in routed, f"raw transcript was routed: {routed!r}"
+    assert chat.calls == [], "a dropped transcript must not be persisted at all"
