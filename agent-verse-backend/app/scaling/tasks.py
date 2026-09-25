@@ -3656,9 +3656,44 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 )
                             )
                             if _alert_kw:
+                                # Claim the file atomically BEFORE firing.
+                                #
+                                # The `processed_files` blob above is a
+                                # read-modify-write (GET the JSON set, compute
+                                # new_files, SET it back at the end of the
+                                # cycle), so two beat ticks — or two replicas —
+                                # both read the same set, both see the same new
+                                # file, and both submit a goal for it. SET NX is
+                                # atomic, so exactly one claimant proceeds.
+                                #
+                                # It also fixes two re-fire bugs in that blob:
+                                # it is truncated to the last 500 names, so a
+                                # busy watch path silently forgets older files
+                                # and re-fires them; and it carries a 24h TTL,
+                                # so a directory whose files are not removed
+                                # re-fires in full every day.
+                                _claim_fd = f"filedrop:claimed:{key}:{_file_name}"
+                                if r is not None:
+                                    try:
+                                        if not r.set(
+                                            _claim_fd, "1", nx=True, ex=7 * 86400
+                                        ):
+                                            continue  # another tick/replica has it
+                                    except Exception as _claim_err:
+                                        logger.warning(
+                                            "file_drop_claim_failed",
+                                            file=_file_name,
+                                            error=str(_claim_err)[:120],
+                                        )
+                                # Keyed on the FILE, not on the evaluating
+                                # process's wall clock. `now.isoformat()` differs
+                                # between two racing evaluations, so the derived
+                                # goal id differed too and nothing downstream
+                                # could dedup them — the same recurring-key bug
+                                # already fixed for interval schedules.
                                 _goal_id_fd = _scheduled_goal_id(
                                     key,
-                                    fire_instance_id=f"filedrop:{_file_name}:{now.isoformat()}",
+                                    fire_instance_id=f"filedrop:{_file_name}",
                                 )
                                 run_goal.apply_async(
                                     kwargs={

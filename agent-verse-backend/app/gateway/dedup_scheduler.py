@@ -52,9 +52,22 @@ class CommandDeduplicator:
         channel: str,
         actor_id: str,
         text: str,
+        external_id: str | None = None,
     ) -> str:
-        bucket = int(time.time()) // self.WINDOW_SECONDS
-        raw = f"{tenant_id}:{org_id}:{channel}:{actor_id}:{text[:200]}:{bucket}"
+        """Key on the platform's own message id when we have one.
+
+        The time-bucket key below is a fallback, and a weak one: two deliveries
+        of the SAME message landing either side of a 30-second boundary hash
+        differently, so the replay it exists to stop gets through. Telegram,
+        WhatsApp and Slack all redeliver with a stable message id on any non-2xx
+        or timeout, so when that id is present it is the correct — and
+        time-independent — identity for the firing.
+        """
+        if external_id:
+            raw = f"{tenant_id}:{org_id}:{channel}:msg:{external_id}"
+        else:
+            bucket = int(time.time()) // self.WINDOW_SECONDS
+            raw = f"{tenant_id}:{org_id}:{channel}:{actor_id}:{text[:200]}:{bucket}"
         return "cmd_dedup:" + hashlib.sha256(raw.encode()).hexdigest()[:32]
 
     async def check_and_reserve(
@@ -65,13 +78,14 @@ class CommandDeduplicator:
         channel: str,
         actor_id: str,
         text: str,
+        external_id: str | None = None,
     ) -> bool:
         """
         Returns True if command is new (safe to process).
         Returns False if command was already seen (skip).
         """
         with _tracer.start_as_current_span("dedup.check") as span:
-            key = self._make_key(tenant_id, org_id, channel, actor_id, text)
+            key = self._make_key(tenant_id, org_id, channel, actor_id, text, external_id)
             span.set_attribute("dedup_key", key[:16])
 
             if self._redis:

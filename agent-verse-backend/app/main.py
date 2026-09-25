@@ -2192,6 +2192,19 @@ def create_app(
                 app.state.trust_approval_store = _TrustApprovalStore(db_factory)
                 app.state.ai_ops_store = _AIOpsStore(db_factory)
                 logger.info("trust_and_ai_ops_stores_wired")
+
+                # Redis-backed inbound-message dedup for the channel webhooks.
+                # app/gateway/router.py falls back to a process-local instance,
+                # which only protects a single replica — Telegram/WhatsApp
+                # redeliveries can land on any pod.
+                from app.gateway.dedup_scheduler import (
+                    CommandDeduplicator as _CommandDeduplicator,
+                )
+
+                app.state.command_deduplicator = _CommandDeduplicator(
+                    redis_client=redis_for_runtime
+                )
+                logger.info("command_deduplicator_wired")
             except Exception as _del_exc:
                 logger.warning("deletion_orchestrator_wire_failed", error=str(_del_exc))
 

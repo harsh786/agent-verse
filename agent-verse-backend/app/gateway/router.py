@@ -32,6 +32,7 @@ from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
 from app.gateway.channels.webhook import WebhookChannelAdapter
 from app.gateway.channels.whatsapp import WhatsAppChannelAdapter
 from app.gateway.command import OrgCommand, OrgResponse
+from app.gateway.dedup_scheduler import CommandDeduplicator
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -535,6 +536,40 @@ async def voice_incoming(request: Request) -> Response:
 
 # ── Unified messaging chat (Telegram / WhatsApp → ChatService) ────────────────
 
+
+def _external_message_id(channel: str, raw: dict[str, Any]) -> str:
+    """Best-effort stable id for an inbound platform message.
+
+    Telegram, WhatsApp and Slack all REDELIVER a webhook on any non-2xx or
+    timeout, carrying the same id. Without it a redelivery is indistinguishable
+    from a new message: the turn is persisted twice and, when the intent is
+    GOAL, two goals are submitted for one user message. Returns "" when the
+    payload has no usable id, in which case the deduplicator falls back to its
+    time-bucket key.
+    """
+    try:
+        if channel == "telegram":
+            msg = raw.get("message") or raw.get("edited_message") or {}
+            return str(msg.get("message_id") or raw.get("update_id") or "")
+        if channel == "whatsapp":
+            entry = (raw.get("entry") or [{}])[0]
+            change = (entry.get("changes") or [{}])[0]
+            messages = (change.get("value") or {}).get("messages") or [{}]
+            return str(messages[0].get("id") or "")
+        return str(
+            raw.get("message_id")
+            or raw.get("event_id")
+            or raw.get("id")
+            or ""
+        )
+    except Exception:  # a malformed payload must not break dispatch
+        return ""
+
+
+# Process-local fallback so redelivery protection works even before a Redis-backed
+# deduplicator is wired onto app.state during lifespan.
+_command_deduplicator = CommandDeduplicator()
+
 _CHAT_ADAPTERS: dict[str, Any] = {
     "telegram": _telegram,
     "whatsapp": _whatsapp,
@@ -585,6 +620,34 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
     command = await adapter.normalize(raw, tenant_id=tenant_id, org_id=_org)
     if not command.text:
         return {"status": "ok", "reason": "no text in message"}
+
+    # Drop a redelivered webhook. `CommandDeduplicator` existed for exactly this
+    # ("Critical for: button double-taps, network retries, webhook replay") but
+    # was wired into nothing, so a Telegram/WhatsApp retry persisted the turn
+    # twice and submitted a second goal for one user message.
+    #
+    # Only when the platform gave us a real message id. The deduplicator's
+    # fallback key is a 30-second bucket over (tenant, channel, actor, text),
+    # which would also swallow a user legitimately sending the same short reply
+    # ("yes", "ok") twice in half a minute. A redelivery always carries the
+    # original id, so keying strictly on it fixes the replay without inventing a
+    # false positive.
+    _external_id = _external_message_id(channel, raw)
+    if _external_id:
+        _dedup = (
+            getattr(request.app.state, "command_deduplicator", None)
+            or _command_deduplicator
+        )
+        if not await _dedup.check_and_reserve(
+            command.command_id,
+            tenant_id,
+            _org,
+            channel,
+            command.conversation_id or command.actor_id,
+            command.text,
+            external_id=_external_id,
+        ):
+            return {"status": "ok", "reason": "duplicate message ignored"}
 
     turn = await chat_service.achannel_turn(
         tenant_id=tenant_id, channel=channel,

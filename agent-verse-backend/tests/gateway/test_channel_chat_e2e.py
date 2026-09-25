@@ -101,3 +101,56 @@ def test_repeat_telegram_messages_continue_one_session() -> None:
     contents = [m.content for m in chat.list_messages(session.id, TENANT)]
     assert any("first message" in c for c in contents)
     assert any("second message" in c for c in contents)
+
+
+def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
+    """Telegram/WhatsApp/Slack redeliver on any non-2xx or timeout.
+
+    Regression: `channel_chat` had no dedup at all, so a redelivery was
+    indistinguishable from a new message — the turn was persisted twice and, for
+    a GOAL intent, two goals were submitted for one user message.
+    `CommandDeduplicator` was written for exactly this case ("Critical for:
+    button double-taps, network retries, webhook replay") but was wired into
+    nothing.
+    """
+    app, chat, _ = _app()
+    client = TestClient(app)
+    user_id = "tg-replay-1"
+    payload = _telegram_payload(user_id, "book me a meeting")
+    payload["message"]["message_id"] = 4242
+
+    first = client.post("/v1/gateway/telegram/chat", json=payload)
+    assert first.status_code == 200, first.text
+
+    # Identical redelivery — same platform message_id.
+    second = client.post("/v1/gateway/telegram/chat", json=payload)
+    assert second.status_code == 200, second.text
+    assert second.json().get("reason") == "duplicate message ignored", second.json()
+
+    session = chat.get_or_create_channel_session(
+        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
+    )
+    user_turns = [
+        m for m in chat.list_messages(session.id, TENANT)
+        if m.role == "user" and "book me a meeting" in m.content
+    ]
+    assert len(user_turns) == 1, f"redelivery persisted the turn twice: {user_turns}"
+
+
+def test_a_genuinely_new_message_from_the_same_user_still_goes_through() -> None:
+    app, chat, _ = _app()
+    client = TestClient(app)
+    user_id = "tg-replay-2"
+    for i, text in enumerate(("first question", "second question"), start=1):
+        payload = _telegram_payload(user_id, text)
+        payload["message"]["message_id"] = 9000 + i
+        resp = client.post("/v1/gateway/telegram/chat", json=payload)
+        assert resp.status_code == 200
+        assert resp.json().get("reason") != "duplicate message ignored", resp.json()
+
+    session = chat.get_or_create_channel_session(
+        tenant_id=TENANT, channel="telegram", channel_user_id=user_id
+    )
+    contents = [m.content for m in chat.list_messages(session.id, TENANT) if m.role == "user"]
+    assert any("first question" in c for c in contents), contents
+    assert any("second question" in c for c in contents), contents
