@@ -42,8 +42,14 @@ const GOAL_PENDING: GoalShape = {
   updated_at: new Date().toISOString(),
 };
 
+// A DISTINCT goal, not a restatement of GOAL_PENDING: the list mock returns
+// [GOAL_PENDING, GOAL_COMPLETE], and spreading the id and goal text produced two
+// rows with the same React key and the same label, so every getByText on the
+// goal text was a strict-mode violation.
 const GOAL_COMPLETE: GoalShape = {
   ...GOAL_PENDING,
+  id: 'goal-cp-02',
+  goal: 'Summarise last week incident reports',
   status: 'complete',
   result_artifact: {
     summary: 'No critical anomalies found. 3 warnings detected.',
@@ -206,7 +212,10 @@ async function mockApprovalsApi(page: Page): Promise<void> {
     return r.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ data: [APPROVAL_REQUEST], org_id: 'org-test' }),
+      // listApprovals() is typed ApprovalRequest[] — the consumers call
+      // .filter()/.find() straight on the response, so a { data: [...] }
+      // envelope crashed the page with "approvals.filter is not a function".
+      body: JSON.stringify([APPROVAL_REQUEST]),
     });
   });
 }
@@ -269,7 +278,9 @@ async function mockSettingsApi(page: Page): Promise<void> {
 
 test.describe('CP-01 — Auth Flow', () => {
   test('unauthenticated user is redirected to /auth', async ({ page }) => {
-    await page.goto('/');
+    // '/' is the PUBLIC landing page, so it never redirects. Use a guarded
+    // route to exercise RequireAuth.
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page).toHaveURL(/\/(auth|login)/);
   });
@@ -286,10 +297,14 @@ test.describe('CP-01 — Auth Flow', () => {
     await page.goto('/auth');
     await page.getByRole('button', { name: /sign in/i }).click();
     // At least one validation message appears
+    // The tenant/API-key inputs carry the HTML `required` attribute, so the
+    // browser blocks submission natively and the JS error string never renders.
+    // Native constraint validation IS the validation here — assert on it, and
+    // still accept an in-DOM message for the non-native path.
     const body = await page.locator('body').textContent();
     const hasValidation =
+      (await page.locator('input:invalid').count()) > 0 ||
       body?.toLowerCase().includes('required') ||
-      body?.toLowerCase().includes('enter') ||
       (await page.locator('[role="alert"], .error, .text-red').count()) > 0;
     expect(hasValidation).toBe(true);
   });
@@ -317,7 +332,7 @@ test.describe('CP-01 — Auth Flow', () => {
       sessionStorage.removeItem('av-auth');
       localStorage.removeItem('av_api_key');
     });
-    await page.goto('/');
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page).toHaveURL(/\/(auth|login)/);
   });
@@ -491,7 +506,8 @@ test.describe('CP-03 — Goal Submission', () => {
 
   test('goal detail page shows goal text, status and tabs', async ({ page }) => {
     await page.goto(`/goals/${GOAL_PENDING.id}`);
-    await expect(page.getByText(GOAL_PENDING.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_PENDING.goal).first()).toBeVisible({ timeout: 10_000 });
     // Should have tab navigation (Results / Execution / Dev Log)
     const tabs = page.getByRole('tablist');
     await expect(tabs).toBeVisible({ timeout: 5000 });
@@ -499,14 +515,16 @@ test.describe('CP-03 — Goal Submission', () => {
 
   test('cancel button visible for executing goals', async ({ page }) => {
     await page.goto(`/goals/${GOAL_PENDING.id}`);
-    await expect(page.getByText(GOAL_PENDING.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_PENDING.goal).first()).toBeVisible({ timeout: 10_000 });
     const cancelBtn = page.getByRole('button', { name: /cancel/i });
     await expect(cancelBtn).toBeVisible({ timeout: 5000 });
   });
 
   test('completed goal shows result artifact', async ({ page }) => {
     await page.goto(`/goals/${GOAL_COMPLETE.id}`);
-    await expect(page.getByText(GOAL_COMPLETE.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_COMPLETE.goal).first()).toBeVisible({ timeout: 10_000 });
     // Result artifact summary should be visible in the results tab
     const summary = (GOAL_COMPLETE.result_artifact as Record<string, string>).summary;
     await expect(page.getByText(summary)).toBeVisible({ timeout: 5000 });
@@ -514,7 +532,8 @@ test.describe('CP-03 — Goal Submission', () => {
 
   test('execution tab shows timeline of events', async ({ page }) => {
     await page.goto(`/goals/${GOAL_COMPLETE.id}`);
-    await expect(page.getByText(GOAL_COMPLETE.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_COMPLETE.goal).first()).toBeVisible({ timeout: 10_000 });
 
     const execTab = page.getByRole('tab', { name: /execution/i });
     if (await execTab.count() > 0) {
@@ -561,12 +580,13 @@ test.describe('CP-04 — HITL Approval Flow', () => {
       r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ data: [APPROVAL_REQUEST] }),
+        body: JSON.stringify([APPROVAL_REQUEST]),
       })
     );
 
     await page.goto(`/goals/${GOAL_PENDING.id}`);
-    await expect(page.getByText(GOAL_PENDING.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_PENDING.goal).first()).toBeVisible({ timeout: 10_000 });
 
     // HITL panel should appear
     const approveBtn = page.getByRole('button', { name: /approve/i });
@@ -591,7 +611,7 @@ test.describe('CP-04 — HITL Approval Flow', () => {
       return r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ data: [APPROVAL_REQUEST] }),
+        body: JSON.stringify([APPROVAL_REQUEST]),
       });
     });
 
@@ -604,7 +624,8 @@ test.describe('CP-04 — HITL Approval Flow', () => {
     );
 
     await page.goto(`/goals/${GOAL_PENDING.id}`);
-    await expect(page.getByText(GOAL_PENDING.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_PENDING.goal).first()).toBeVisible({ timeout: 10_000 });
 
     const approveBtn = page.getByRole('button', { name: /approve/i });
     if (await approveBtn.count() > 0) {
@@ -631,7 +652,7 @@ test.describe('CP-04 — HITL Approval Flow', () => {
       return r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ data: [APPROVAL_REQUEST] }),
+        body: JSON.stringify([APPROVAL_REQUEST]),
       });
     });
 
@@ -644,7 +665,8 @@ test.describe('CP-04 — HITL Approval Flow', () => {
     );
 
     await page.goto(`/goals/${GOAL_PENDING.id}`);
-    await expect(page.getByText(GOAL_PENDING.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_PENDING.goal).first()).toBeVisible({ timeout: 10_000 });
 
     const rejectBtn = page.getByRole('button', { name: /reject/i });
     if (await rejectBtn.count() > 0) {
@@ -891,7 +913,8 @@ test.describe('CP-07 — Keyboard Navigation', () => {
 
   test('arrow keys navigate tab panels in goal detail', async ({ page }) => {
     await page.goto(`/goals/${GOAL_COMPLETE.id}`);
-    await expect(page.getByText(GOAL_COMPLETE.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_COMPLETE.goal).first()).toBeVisible({ timeout: 10_000 });
 
     const tablist = page.getByRole('tablist');
     if (await tablist.count() === 0) return;
@@ -973,10 +996,9 @@ test.describe('CP-08 — Navigation & Routing', () => {
 
   test('404 page shows for unknown route', async ({ page }) => {
     await page.goto('/this-route-does-not-exist-xyz-abc');
-    await expect(page.locator('body')).toBeVisible({ timeout: 5000 });
-    const text = await page.locator('body').textContent() ?? '';
-    const has404 = text.includes('404') || text.toLowerCase().includes('not found');
-    expect(has404).toBe(true);
+    // Waiting on <body> and reading textContent immediately races React: body is
+    // visible before the route renders. Wait for the content itself.
+    await expect(page.getByText(/404|page not found/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('browser back/forward navigation works', async ({ page }) => {
@@ -1008,15 +1030,9 @@ test.describe('CP-09 — Error & Empty States', () => {
       r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([]) })
     );
     await page.goto('/agents');
-    await expect(page.locator('body')).toBeVisible({ timeout: 10_000 });
-    // Empty state text or "no agents" message
-    const text = await page.locator('body').textContent() ?? '';
-    const hasEmptyState =
-      text.toLowerCase().includes('no agent') ||
-      text.toLowerCase().includes('create') ||
-      text.toLowerCase().includes('empty') ||
-      text.toLowerCase().includes('get started');
-    expect(hasEmptyState).toBe(true);
+    await expect(
+      page.getByText(/no agents yet|deploy your first agent/i).first()
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test('goals page shows empty state when no goals', async ({ page }) => {
@@ -1027,15 +1043,7 @@ test.describe('CP-09 — Error & Empty States', () => {
       r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ goals: [] }) })
     );
     await page.goto('/goals');
-    await expect(page.locator('body')).toBeVisible({ timeout: 10_000 });
-    const text = await page.locator('body').textContent() ?? '';
-    const hasEmptyState =
-      text.toLowerCase().includes('no goal') ||
-      text.toLowerCase().includes('submit') ||
-      text.toLowerCase().includes('empty') ||
-      text.toLowerCase().includes('get started') ||
-      text.toLowerCase().includes('first goal');
-    expect(hasEmptyState).toBe(true);
+    await expect(page.getByText(/no goals yet/i).first()).toBeVisible({ timeout: 10_000 });
   });
 
   test('goal detail page shows not-found state for unknown goal', async ({ page }) => {
@@ -1047,13 +1055,9 @@ test.describe('CP-09 — Error & Empty States', () => {
       })
     );
     await page.goto('/goals/unknown-goal-999');
-    await expect(page.locator('body')).toBeVisible({ timeout: 10_000 });
-    const text = await page.locator('body').textContent() ?? '';
-    const hasNotFound =
-      text.toLowerCase().includes('not found') ||
-      text.toLowerCase().includes('goal not found') ||
-      text.toLowerCase().includes('404');
-    expect(hasNotFound).toBe(true);
+    await expect(
+      page.getByText(/goal not found|not found|404/i).first()
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test('network error shows graceful error boundary', async ({ page }) => {
@@ -1122,7 +1126,8 @@ test.describe('CP-10 — Mobile Viewport', () => {
 
   test('goal detail page tabs are accessible on mobile', async ({ page }) => {
     await page.goto(`/goals/${GOAL_COMPLETE.id}`);
-    await expect(page.getByText(GOAL_COMPLETE.goal)).toBeVisible({ timeout: 10_000 });
+    // The goal text appears more than once on the detail page (header + body).
+    await expect(page.getByText(GOAL_COMPLETE.goal).first()).toBeVisible({ timeout: 10_000 });
 
     const tablist = page.getByRole('tablist');
     if (await tablist.count() > 0) {
