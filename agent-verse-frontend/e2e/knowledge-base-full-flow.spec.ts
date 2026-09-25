@@ -550,7 +550,9 @@ test.describe('Knowledge Base — Collection Lifecycle', () => {
     const nameInput = page.locator('input[placeholder="my-knowledge-base"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     await nameInput.fill('platform-runbooks');
-    await page.getByRole('button', { name: 'Create' }).first().click();
+    // exact: true — a substring match also hits the sidebar quick action
+    // (aria-label "Create new goal"), which navigates away.
+    await page.getByRole('button', { name: 'Create', exact: true }).first().click();
     await expect(page.getByText('platform-runbooks')).toBeVisible({ timeout: 15_000 });
   });
 

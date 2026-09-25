@@ -93,8 +93,8 @@ test.describe('Memory Explorer — Page structure', () => {
     await page.goto('/memory');
     await expect(page.locator('h1').filter({ hasText: /memory explorer/i })).toBeVisible({ timeout: 15000 });
     await expect(page.getByText(/semantic recall/i).first()).toBeVisible();
-    await expect(page.getByText(/long-term memories/i)).toBeVisible();
-    await expect(page.getByText(/tool reliability/i)).toBeVisible();
+    await expect(page.getByText(/long-term memories/i).first()).toBeVisible();
+    await expect(page.getByText(/tool reliability/i).first()).toBeVisible();
     await expect(page.getByText(/execution memory/i)).toBeVisible();
   });
 });
@@ -194,7 +194,7 @@ test.describe('Memory Explorer — Long-term Memories', () => {
     await setupAuth(page);
     await mockMemoryApi(page);
     await page.goto('/memory');
-    await page.getByRole('button', { name: /^add$/i }).click();
+    await page.getByRole('button', { name: 'Add memory' }).click();
     await expect(page.getByRole('heading', { name: /add memory/i })).toBeVisible({ timeout: 5000 });
     await expect(page.getByLabel(/content/i)).toBeVisible();
     await expect(page.getByLabel(/type/i)).toBeVisible();
@@ -215,7 +215,7 @@ test.describe('Memory Explorer — Long-term Memories', () => {
     });
 
     await page.goto('/memory');
-    await page.getByRole('button', { name: /^add$/i }).click();
+    await page.getByRole('button', { name: 'Add memory' }).click();
     await page.getByLabel(/content/i).fill('Test memory content');
     await page.getByRole('button', { name: /create memory/i }).click();
 
@@ -226,6 +226,10 @@ test.describe('Memory Explorer — Long-term Memories', () => {
 
   test('deletes a memory and calls DELETE /memory/{id}', async ({ page }) => {
     let deleteUrl = '';
+    // The list mock has to honour the delete: it previously returned the same
+    // row on every GET, so the refetch after DELETE put it straight back and the
+    // disappearance could never be observed.
+    let deleted = false;
     await setupAuth(page);
     await page.route(/localhost:8000\/memory(.*)/, async (route) => {
       const url = route.request().url();
@@ -233,16 +237,23 @@ test.describe('Memory Explorer — Long-term Memories', () => {
       if (url.includes('/tool-reliability')) return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
       if (method === 'DELETE' && url.match(/\/memory\/mem-del/)) {
         deleteUrl = url;
+        deleted = true;
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted: 'mem-del', status: 'ok' }) });
       }
       if (method === 'GET')
-        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{ id: 'mem-del', content: 'To be deleted', memory_type: 'fact', confidence: 0.5, tags: [], created_at: '' }]) });
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(deleted ? [] : [{ id: 'mem-del', content: 'To be deleted', memory_type: 'fact', confidence: 0.5, tags: [], created_at: '' }]),
+        });
       return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     });
 
     await page.goto('/memory');
     await expect(page.getByText('To be deleted')).toBeVisible({ timeout: 10000 });
     await page.getByRole('button', { name: /delete memory/i }).first().click();
+    // The row button only opens a ConfirmModal; the DELETE fires on confirm.
+    await page.getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(page.getByText('To be deleted')).not.toBeVisible({ timeout: 10000 });
     expect(deleteUrl).toContain('mem-del');
   });

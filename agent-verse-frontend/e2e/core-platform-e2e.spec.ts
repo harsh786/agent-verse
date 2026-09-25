@@ -696,7 +696,9 @@ test.describe('Knowledge Base — CRUD & RAG', () => {
     await page.goto('/knowledge');
     await page.getByRole('button', { name: /new collection/i }).click();
     await page.locator('input[placeholder="my-knowledge-base"]').fill('platform-docs');
-    await page.getByRole('button', { name: 'Create' }).first().click();
+    // exact: true — a substring match also hits the sidebar quick action
+    // (aria-label "Create new goal"), which navigates away.
+    await page.getByRole('button', { name: 'Create', exact: true }).first().click();
 
     await expect(page.getByText('platform-docs')).toBeVisible({ timeout: 15_000 });
   });

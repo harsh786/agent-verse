@@ -176,7 +176,7 @@ test.describe('Schedules NL Scheduler — Response Format', () => {
 test.describe('GuardrailCenter — Violation Timestamps', () => {
   test('violations table shows real timestamps not ID prefix', async ({ page }) => {
     await authPage(page);
-    await page.route('**/guardrails**', route =>
+    await apiRoute(page, '**/guardrails**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
     await page.route('**/guardrails/violations**', route =>

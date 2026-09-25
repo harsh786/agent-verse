@@ -2,9 +2,10 @@
  * E2E: Rich output rendering — tables, diffs, images.
  */
 import { test, expect } from '@playwright/test';
+import { apiRoute } from '../helpers/auth';
 
 const stub = async (page: any) => {
-  await page.route('**/chat/**', async (route: any) => {
+  await apiRoute(page, '**/chat/**', async (route: any) => {
     const url = route.request().url();
     if (url.includes('/models')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ models: ['gpt-4o'] }) });
     if (url.includes('/folders')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ folders: [] }) });

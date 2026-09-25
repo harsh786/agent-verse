@@ -9,7 +9,7 @@
  *   4. POST /goals                (goalsApi.submit)
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 async function mockOnboardingApis(page: Page): Promise<void> {
   await page.route('**/tenants/me/llm', (route) => {
@@ -34,7 +34,7 @@ async function mockOnboardingApis(page: Page): Promise<void> {
     return route.continue();
   });
 
-  await page.route('**/agents/create', (route) =>
+  await apiRoute(page, '**/agents/create', (route) =>
     route.fulfill({
       status: 201,
       contentType: 'application/json',

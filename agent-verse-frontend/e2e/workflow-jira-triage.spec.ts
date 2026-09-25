@@ -17,6 +17,7 @@
  *  10. Load the saved workflow back
  */
 import { test, expect, type Page } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 // ── Auth + route helpers ───────────────────────────────────────────────────────
 
@@ -219,7 +220,7 @@ test.describe('Jira Triage Workflow — Full Lifecycle', () => {
     await mockWorkflowApi(page);
 
     // Mock goals endpoint to return a plan
-    await page.route('**/goals', (route) => {
+    await apiRoute(page, '**/goals', (route) => {
       if (route.request().method() === 'POST') {
         return route.fulfill({
           status: 202,

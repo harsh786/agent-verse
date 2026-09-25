@@ -10,6 +10,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { apiRoute } from '../helpers/auth';
 
 test.describe('Chat — Q&A Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -68,7 +69,7 @@ test.describe('Chat — Q&A Flow', () => {
   });
 
   test('chat input is visible when session is active', async ({ page }) => {
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       const url = route.request().url();
       if (url.includes('/messages')) {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ messages: [] }) });
@@ -83,7 +84,7 @@ test.describe('Chat — Q&A Flow', () => {
   });
 
   test('send button is disabled when input is empty', async ({ page }) => {
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ sessions: [], messages: [], folders: [], models: ['gpt-4o'] }) });
     });
     await page.goto('/chat/test-session');
@@ -92,7 +93,7 @@ test.describe('Chat — Q&A Flow', () => {
   });
 
   test('typing in input enables send button', async ({ page }) => {
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       const url = route.request().url();
       if (url.includes('/messages') && route.request().method() === 'GET') {
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ messages: [] }) });

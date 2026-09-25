@@ -882,7 +882,7 @@ test.describe('Observability — Time-Series Charts', () => {
 test.describe('ConnectorDetail — OAuth Popup', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/connectors/catalog**', route =>
+    await apiRoute(page, '**/connectors/catalog**', route =>
       route.fulfill({
         status: 200,
         body: JSON.stringify([

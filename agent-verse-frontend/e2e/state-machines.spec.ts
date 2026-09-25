@@ -10,7 +10,7 @@
  *   DELETE /state-machines/{id}
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
@@ -66,7 +66,7 @@ async function mockStateMachinesApi(
     });
   });
 
-  await page.route('**/state-machines', (route) => {
+  await apiRoute(page, '**/state-machines', (route) => {
     const method = route.request().method();
     if (method === 'POST') {
       const body = JSON.parse(route.request().postData() ?? '{}');
@@ -117,7 +117,7 @@ test.describe('State Machines — populated state', () => {
 
   test('3. Shows an error banner when the list request fails', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/state-machines', (route) =>
+    await apiRoute(page, '**/state-machines', (route) =>
       route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ detail: 'boom' }) })
     );
     await page.goto('/state-machines');

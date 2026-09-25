@@ -82,9 +82,11 @@ test.describe('Compliance', () => {
     await setupAuth(page);
     await mockComplianceApis(page);
     await page.goto('/compliance');
+    // CompliancePage is tabbed and opens on Frameworks.
+    await page.getByRole('button', { name: 'Data Export' }).click();
 
-    await expect(page.getByText('GDPR data export')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('button', { name: /start gdpr export/i })).toBeVisible();
+    await expect(page.getByText('GDPR Data Export')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('start-export-btn')).toBeVisible();
   });
 
   test('GDPR export button triggers export request', async ({ page }) => {
@@ -102,7 +104,8 @@ test.describe('Compliance', () => {
     });
 
     await page.goto('/compliance');
-    await page.getByRole('button', { name: /start gdpr export/i }).click();
+    await page.getByRole('button', { name: 'Data Export' }).click();
+    await page.getByTestId('start-export-btn').click();
 
     // After click the button state changes (pending state or confirmation)
     await page.waitForTimeout(500);
@@ -114,6 +117,7 @@ test.describe('Compliance', () => {
     await setupAuth(page);
     await mockComplianceApis(page, { legalHolds: [] });
     await page.goto('/compliance');
+    await page.getByRole('button', { name: 'Legal Holds' }).click();
 
     await expect(page.getByText('No active legal holds')).toBeVisible({ timeout: 15000 });
   });
@@ -130,6 +134,7 @@ test.describe('Compliance', () => {
     await setupAuth(page);
     await mockComplianceApis(page, { legalHolds: holds });
     await page.goto('/compliance');
+    await page.getByRole('button', { name: 'Legal Holds' }).click();
 
     await expect(page.getByText('Litigation hold for Q4 case')).toBeVisible({ timeout: 15000 });
   });

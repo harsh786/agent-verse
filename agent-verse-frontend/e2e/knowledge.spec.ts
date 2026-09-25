@@ -44,7 +44,7 @@ test.describe('Knowledge', () => {
     );
     await page.goto('/knowledge');
     await expect(
-      page.getByText('No collections yet. Create one to start ingesting documents.')
+      page.getByText(/No collections yet/)
     ).toBeVisible({ timeout: 15000 });
   });
 
@@ -55,8 +55,8 @@ test.describe('Knowledge', () => {
     );
     await page.goto('/knowledge');
 
-    await page.getByRole('button', { name: '+ New Collection' }).click();
-    await expect(page.getByText('New Collection')).toBeVisible({ timeout: 10000 });
+    await page.getByRole('button', { name: 'New Collection' }).click();
+    await expect(page.locator('input[placeholder="my-knowledge-base"]')).toBeVisible({ timeout: 10000 });
     await expect(page.locator('input[placeholder="my-knowledge-base"]')).toBeVisible();
   });
 
@@ -90,9 +90,11 @@ test.describe('Knowledge', () => {
     });
 
     await page.goto('/knowledge');
-    await page.getByRole('button', { name: '+ New Collection' }).click();
+    await page.getByRole('button', { name: 'New Collection' }).click();
     await page.locator('input[placeholder="my-knowledge-base"]').fill('my-docs');
-    await page.getByRole('button', { name: 'Create' }).click();
+    // exact: true — a substring match also hits the sidebar quick action
+    // (aria-label "Create new goal"), which navigates away.
+    await page.getByRole('button', { name: 'Create', exact: true }).first().click();
 
     await expect(page.getByText('my-docs')).toBeVisible({ timeout: 15000 });
   });
@@ -127,10 +129,12 @@ test.describe('Knowledge', () => {
 
     await page.goto('/knowledge');
     await expect(page.getByText('to-delete')).toBeVisible({ timeout: 15000 });
-    await page.getByRole('button', { name: /delete/i }).first().click();
+    await page.getByTestId('delete-collection-col-del').click();
+    // The row button opens a ConfirmModal; the DELETE fires on confirm.
+    await page.getByRole('button', { name: 'Delete Collection' }).click();
 
     await expect(
-      page.getByText('No collections yet. Create one to start ingesting documents.')
+      page.getByText(/No collections yet/)
     ).toBeVisible({ timeout: 10000 });
   });
 });

@@ -2,13 +2,14 @@
  * E2E: Scheduling flow — sends a schedule message, verifies SCHEDULE intent.
  */
 import { test, expect } from '@playwright/test';
+import { apiRoute } from '../helpers/auth';
 
 test.describe('Chat — Scheduling Flow', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test'));
 
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       const url = route.request().url();
       const method = route.request().method();
       if (url.includes('/models')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ models: ['gpt-4o'] }) });

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { apiRoute } from './helpers/auth';
 
 async function setupAuth(page: Page) {
   // Catch-all: block unmocked localhost:8000 requests from hitting the real backend
@@ -200,7 +201,7 @@ test.describe('Workflow Builder', () => {
   test('NL generate from goal creates workflow nodes', async ({ page }) => {
     await setupAuth(page);
     await setupWorkflowRoutes(page);
-    await page.route('**/goals', (route) => {
+    await apiRoute(page, '**/goals', (route) => {
       if (route.request().method() === 'POST') {
         return route.fulfill({
           status: 200,

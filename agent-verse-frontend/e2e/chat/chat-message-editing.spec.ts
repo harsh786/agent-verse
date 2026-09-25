@@ -3,6 +3,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { apiRoute } from '../helpers/auth';
 
 test.describe('Chat — Message Editing Flow', () => {
   test.beforeEach(async ({ page }) => {
@@ -13,7 +14,7 @@ test.describe('Chat — Message Editing Flow', () => {
   test('user message edit button calls edit API', async ({ page }) => {
     let editCalled = false;
 
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       const url = route.request().url();
       const method = route.request().method();
       if (url.includes('/models')) {
@@ -59,7 +60,7 @@ test.describe('Chat — Message Editing Flow', () => {
   });
 
   test('sidebar new chat button is accessible', async ({ page }) => {
-    await page.route('**/chat/**', async (route) => {
+    await apiRoute(page, '**/chat/**', async (route) => {
       const url = route.request().url();
       if (url.includes('/models')) {
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ models: ['gpt-4o'] }) });

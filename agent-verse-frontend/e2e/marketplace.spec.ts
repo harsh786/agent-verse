@@ -49,11 +49,11 @@ const MOCK_TEMPLATES = [
 test.describe('Marketplace', () => {
   test('shows Marketplace h1 heading', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/marketplace/browse', (route) =>
+    await page.route('**/marketplace/templates**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([]),
+        body: JSON.stringify({ templates: [], total: 0, page: 1, page_size: 20 }),
       })
     );
     await page.goto('/marketplace');
@@ -64,11 +64,11 @@ test.describe('Marketplace', () => {
 
   test('can browse agent templates', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/marketplace/browse', (route) =>
+    await page.route('**/marketplace/templates**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(MOCK_TEMPLATES),
+        body: JSON.stringify({ templates: MOCK_TEMPLATES, total: MOCK_TEMPLATES.length, page: 1, page_size: 20 }),
       })
     );
     await page.goto('/marketplace');
@@ -79,11 +79,11 @@ test.describe('Marketplace', () => {
 
   test('shows template descriptions', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/marketplace/browse', (route) =>
+    await page.route('**/marketplace/templates**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(MOCK_TEMPLATES),
+        body: JSON.stringify({ templates: MOCK_TEMPLATES, total: MOCK_TEMPLATES.length, page: 1, page_size: 20 }),
       })
     );
     await page.goto('/marketplace');
@@ -97,11 +97,11 @@ test.describe('Marketplace', () => {
     let deployed = false;
 
     await setupAuth(page);
-    await page.route('**/marketplace/browse', (route) =>
+    await page.route('**/marketplace/templates**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(MOCK_TEMPLATES),
+        body: JSON.stringify({ templates: MOCK_TEMPLATES, total: MOCK_TEMPLATES.length, page: 1, page_size: 20 }),
       })
     );
     await page.route(/localhost:8000\/marketplace\/.*\/deploy/, (route) => {
@@ -131,11 +131,11 @@ test.describe('Marketplace', () => {
 
   test('template search filter works', async ({ page }) => {
     await setupAuth(page);
-    await page.route('**/marketplace/browse', (route) =>
+    await page.route('**/marketplace/templates**', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(MOCK_TEMPLATES),
+        body: JSON.stringify({ templates: MOCK_TEMPLATES, total: MOCK_TEMPLATES.length, page: 1, page_size: 20 }),
       })
     );
     await page.goto('/marketplace');
@@ -143,7 +143,8 @@ test.describe('Marketplace', () => {
     await expect(page.getByText('GitHub PR Reviewer')).toBeVisible({ timeout: 15000 });
 
     // Search for "jira" - should filter results
-    await page.locator('input[placeholder="Template name"]').fill('jira');
+    // The search box is labelled, not placeholder-"Template name".
+    await page.getByLabel('Search marketplace').fill('jira');
     await page.waitForTimeout(300);
 
     // Jira template should be visible, GitHub template might be hidden

@@ -71,7 +71,8 @@ test.describe('Simulation', () => {
     await setupAuth(page);
     await page.goto('/simulation');
     await expect(
-      page.locator('textarea[placeholder*="Refund all failed payments"]')
+      // The placeholder example changed; match the stable part of the copy.
+      page.locator('textarea[placeholder*="Describe the goal to simulate"]')
     ).toBeVisible({ timeout: 15000 });
   });
 
@@ -100,11 +101,11 @@ test.describe('Simulation', () => {
 
     await page.goto('/simulation');
     await page
-      .locator('textarea[placeholder*="Refund all failed payments"]')
+      .locator('textarea[placeholder*="Describe the goal to simulate"]')
       .fill('Refund all failed payments from last week');
-    await page.getByRole('button', { name: /run simulation/i }).click();
-
-    await expect(page.getByText('Governance Policy Check')).toBeVisible({ timeout: 15000 });
+    // The Policy Preview panel renders off the debounced /governance/simulate
+    // call on the goal text; it is titled "Policy Preview".
+    await expect(page.getByText('Policy Preview')).toBeVisible({ timeout: 15000 });
   });
 
   test('shows policy check results after simulation', async ({ page }) => {
@@ -132,12 +133,11 @@ test.describe('Simulation', () => {
 
     await page.goto('/simulation');
     await page
-      .locator('textarea[placeholder*="Refund all failed payments"]')
+      .locator('textarea[placeholder*="Describe the goal to simulate"]')
       .fill('Refund failed payments');
-    await page.getByRole('button', { name: /run simulation/i }).click();
-
-    await expect(page.getByText('Governance Policy Check')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/execution allowed|execution blocked/i)).toBeVisible();
+    await expect(page.getByText('Policy Preview')).toBeVisible({ timeout: 15000 });
+    // The app renders "Execution allowed" or "Execution would be blocked".
+    await expect(page.getByText(/execution allowed|would be blocked/i)).toBeVisible();
   });
 
   test('shows planned execution steps after simulation', async ({ page }) => {
@@ -152,24 +152,28 @@ test.describe('Simulation', () => {
         }),
       })
     );
-    await page.route(/localhost:8000\/goals/, (route) => {
-      if (route.request().method() === 'POST') {
-        return route.fulfill({
-          status: 202,
-          contentType: 'application/json',
-          body: JSON.stringify({ plan: { steps: MOCK_SIMULATION_RESULT.plan.steps } }),
-        });
-      }
-      return route.continue();
-    });
+    // Steps do NOT come from a /goals POST: "Run Simulation" opens an SSE stream
+    // on /enterprise/simulation/stream and builds the list from step_started /
+    // step_completed events.
+    await page.route('**/enterprise/simulation/stream', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'text/event-stream',
+        body:
+          `data: ${JSON.stringify({ type: 'step_started', step_number: 1, description: 'Fetch failed payments' })}\n\n` +
+          `data: ${JSON.stringify({ type: 'step_completed', step_number: 1 })}\n\n` +
+          `data: ${JSON.stringify({ type: 'step_started', step_number: 2, description: 'Notify merchants' })}\n\n` +
+          `data: ${JSON.stringify({ type: 'step_completed', step_number: 2 })}\n\n`,
+      })
+    );
 
     await page.goto('/simulation');
     await page
-      .locator('textarea[placeholder*="Refund all failed payments"]')
+      .locator('textarea[placeholder*="Describe the goal to simulate"]')
       .fill('Refund failed payments and notify merchants');
     await page.getByRole('button', { name: /run simulation/i }).click();
 
-    // Planned steps come from the /goals POST response
-    await expect(page.getByText(/fetch failed payments|governance policy check/i).first()).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Fetch failed payments')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('Notify merchants').first()).toBeVisible();
   });
 });

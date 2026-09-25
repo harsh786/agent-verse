@@ -12,7 +12,7 @@
  *   POST   /skills/{id}/test
  */
 import { test, expect, type Page } from '@playwright/test';
-import { setupAuth } from './helpers/auth';
+import { setupAuth, apiRoute } from './helpers/auth';
 
 // ── Mock data ─────────────────────────────────────────────────────────────────
 
@@ -88,7 +88,7 @@ async function mockSkillsApi(
     return route.continue();
   });
 
-  await page.route('**/skills', (route) => {
+  await apiRoute(page, '**/skills', (route) => {
     const method = route.request().method();
     if (method === 'POST') {
       const body = JSON.parse(route.request().postData() ?? '{}');
@@ -117,7 +117,7 @@ test.describe('Skills — empty state', () => {
     await mockSkillsApi(page, { skills: [] });
     await page.goto('/skills');
 
-    await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Skills' }).first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(/platform skills \(0\)/i)).toBeVisible();
     await expect(page.getByText(/no platform skills available/i)).toBeVisible();
     await expect(page.getByText(/no custom skills yet/i)).toBeVisible();
@@ -130,7 +130,7 @@ test.describe('Skills — populated state', () => {
     await mockSkillsApi(page, { skills: [PLATFORM_SKILL, CUSTOM_SKILL] });
     await page.goto('/skills');
 
-    await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Skills' }).first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('web-research')).toBeVisible();
     await expect(page.getByText('Platform').first()).toBeVisible();
     await expect(page.getByText('my-research-skill')).toBeVisible();
@@ -157,7 +157,7 @@ test.describe('Skills — primary interaction', () => {
     await mockSkillsApi(page, { skills: [] });
     await page.goto('/skills');
 
-    await expect(page.getByRole('heading', { name: 'Skills' })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('heading', { name: 'Skills' }).first()).toBeVisible({ timeout: 10000 });
     await page.getByRole('button', { name: /create skill/i }).click();
 
     await page.getByPlaceholder('my-research-skill').fill('summarizer');
