@@ -186,10 +186,10 @@ test.describe('Eval Scorecard', () => {
     const runBtn = page.getByRole('button', { name: /run eval|score/i });
     if (await runBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await runBtn.click();
-      // Pass badge or score > 0.7 shown
-      await expect(
-        page.getByText(/pass|0\.9[0-9]/i).first()
-      ).toBeVisible({ timeout: 10000 });
+      // The scorecard renders the average on a 0-100 scale ("94.0"), with the
+      // caption "avg score out of 100" — there is no literal pass/fail badge.
+      await expect(page.getByText('avg score out of 100')).toBeVisible({ timeout: 10000 });
+      await expect(page.getByText('94.0')).toBeVisible();
     }
   });
 
@@ -344,12 +344,12 @@ test.describe('Optimization Suggestions', () => {
 
   test('suggestions section shows pending suggestion with apply and reject buttons', async ({ page }) => {
     const PENDING_SUGGESTION = {
-      suggestion_id: 'sug-001',
-      category: 'prompt',
+      id: 'sug-001',
+      type: 'prompt',
       description: 'Goal decomposition score is low — add more specific planning instructions',
       confidence: 0.7,
-      applied: false,
-      rejected: false,
+      status: 'pending',
+      created_at: new Date().toISOString(),
     };
 
     await setupAuth(page);
@@ -369,8 +369,10 @@ test.describe('Optimization Suggestions', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     );
 
-    await page.goto('/eval');
-    await expect(page.locator('h1').filter({ hasText: /eval/i })).toBeVisible({ timeout: 15000 });
+    // Optimization suggestions moved off the eval page: /intelligence/suggestions
+    // is rendered by SelfImprovementPage, behind its own tab.
+    await page.goto('/self-improvement');
+    await page.getByRole('tab', { name: /suggestions/i }).click();
 
     // Suggestions should appear
     await expect(
@@ -386,12 +388,12 @@ test.describe('Optimization Suggestions', () => {
   test('clicking apply suggestion sends POST to apply endpoint', async ({ page }) => {
     let applyCalled = false;
     const SUGGESTION = {
-      suggestion_id: 'sug-apply-001',
-      category: 'prompt',
+      id: 'sug-apply-001',
+      type: 'prompt',
       description: 'Improve planning prompt',
       confidence: 0.8,
-      applied: false,
-      rejected: false,
+      status: 'pending',
+      created_at: new Date().toISOString(),
     };
 
     await setupAuth(page);
@@ -418,8 +420,10 @@ test.describe('Optimization Suggestions', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     );
 
-    await page.goto('/eval');
-    await expect(page.locator('h1').filter({ hasText: /eval/i })).toBeVisible({ timeout: 15000 });
+    // Optimization suggestions moved off the eval page: /intelligence/suggestions
+    // is rendered by SelfImprovementPage, behind its own tab.
+    await page.goto('/self-improvement');
+    await page.getByRole('tab', { name: /suggestions/i }).click();
     await expect(page.getByText('Improve planning prompt')).toBeVisible({ timeout: 10000 });
 
     const applyBtn = page.getByRole('button', { name: /apply/i });
@@ -434,12 +438,12 @@ test.describe('Optimization Suggestions', () => {
   test('clicking reject suggestion sends POST to reject endpoint', async ({ page }) => {
     let rejectCalled = false;
     const SUGGESTION = {
-      suggestion_id: 'sug-reject-001',
-      category: 'retry_strategy',
+      id: 'sug-reject-001',
+      type: 'retry_strategy',
       description: 'Reduce max iterations',
       confidence: 0.6,
-      applied: false,
-      rejected: false,
+      status: 'pending',
+      created_at: new Date().toISOString(),
     };
 
     await setupAuth(page);
@@ -466,8 +470,10 @@ test.describe('Optimization Suggestions', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     );
 
-    await page.goto('/eval');
-    await expect(page.locator('h1').filter({ hasText: /eval/i })).toBeVisible({ timeout: 15000 });
+    // Optimization suggestions moved off the eval page: /intelligence/suggestions
+    // is rendered by SelfImprovementPage, behind its own tab.
+    await page.goto('/self-improvement');
+    await page.getByRole('tab', { name: /suggestions/i }).click();
     await expect(page.getByText('Reduce max iterations')).toBeVisible({ timeout: 10000 });
 
     const rejectBtn = page.getByRole('button', { name: /reject|dismiss/i });

@@ -3,12 +3,11 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { apiRoute } from '../helpers/auth';
+import { apiRoute, setupAuth } from '../helpers/auth';
 
 test.describe('Chat — Message Editing Flow', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test-key'));
+    await setupAuth(page);
   });
 
   test('user message edit button calls edit API', async ({ page }) => {

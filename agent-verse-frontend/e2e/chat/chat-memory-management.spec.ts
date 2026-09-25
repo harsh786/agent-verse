@@ -1,9 +1,9 @@
 /** E2E: Memory management */
 import { test, expect } from '@playwright/test';
+import { setupAuth } from '../helpers/auth';
 test.describe('Chat — Memory Management', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test'));
+    await setupAuth(page);
     await page.route('**/chat/memories**', async (r) => {
       const m = r.request().method();
       if (m === 'GET') return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ memories: [{ id: 'm1', content: 'Use snake_case', source: 'manual', created_at: new Date().toISOString(), updated_at: new Date().toISOString() }] }) });

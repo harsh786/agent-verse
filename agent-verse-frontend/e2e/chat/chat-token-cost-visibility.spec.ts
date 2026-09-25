@@ -1,10 +1,9 @@
 /** E2E: Token/cost visibility */
 import { test, expect } from '@playwright/test';
-import { apiRoute } from '../helpers/auth';
+import { apiRoute, setupAuth } from '../helpers/auth';
 test.describe('Chat — Token & Cost Visibility', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test'));
+    await setupAuth(page);
     await apiRoute(page, '**/chat/**', async (r) => {
       const u = r.request().url(); const m = r.request().method();
       if (u.includes('/models')) return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ models: ['gpt-4o'] }) });

@@ -2,7 +2,7 @@
  * E2E: Rich output rendering — tables, diffs, images.
  */
 import { test, expect } from '@playwright/test';
-import { apiRoute } from '../helpers/auth';
+import { apiRoute, setupAuth } from '../helpers/auth';
 
 const stub = async (page: any) => {
   await apiRoute(page, '**/chat/**', async (route: any) => {
@@ -17,8 +17,7 @@ const stub = async (page: any) => {
 
 test.describe('Chat — Rich Output', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test'));
+    await setupAuth(page);
     await stub(page);
   });
 

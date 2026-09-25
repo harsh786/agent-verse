@@ -10,15 +10,12 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { apiRoute } from '../helpers/auth';
+import { apiRoute, setupAuth } from '../helpers/auth';
 
 test.describe('Chat — Q&A Flow', () => {
   test.beforeEach(async ({ page }) => {
     // Inject a test API key so auth passes
-    await page.goto('/');
-    await page.evaluate(() => {
-      sessionStorage.setItem('agentverse_api_key', 'test-api-key');
-    });
+    await setupAuth(page);
     await page.goto('/chat');
   });
 

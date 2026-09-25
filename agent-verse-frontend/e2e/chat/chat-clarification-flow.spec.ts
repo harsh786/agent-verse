@@ -4,12 +4,11 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { apiRoute } from '../helpers/auth';
+import { apiRoute, setupAuth } from '../helpers/auth';
 
 test.describe('Chat — Clarification Flow', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => sessionStorage.setItem('agentverse_api_key', 'test-key'));
+    await setupAuth(page);
 
     // Stub all chat endpoints
     await apiRoute(page, '**/chat/**', async (route) => {

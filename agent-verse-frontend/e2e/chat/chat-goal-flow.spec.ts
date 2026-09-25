@@ -3,6 +3,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { setupAuth } from '../helpers/auth';
 
 const SESSION = {
   id: 'goal-session-1',
@@ -22,10 +23,7 @@ const SESSION = {
 
 test.describe('Chat — Goal Execution Flow', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    await page.evaluate(() => {
-      sessionStorage.setItem('agentverse_api_key', 'test-key');
-    });
+    await setupAuth(page);
 
     await page.route('**/chat/sessions', async (route) => {
       if (route.request().method() === 'POST') {

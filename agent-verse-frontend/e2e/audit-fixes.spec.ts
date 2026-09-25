@@ -38,11 +38,12 @@ test.describe('MFA — Rate Limiting', () => {
     );
     await page.goto('/auth/mfa');
     const input = page.locator('input[placeholder*="000000"]').first();
+    // Entering the 6th digit AUTO-SUBMITS (handleCodeChange fires the mutation),
+    // so by the time a click lands the button is already disabled and pending.
     await input.fill('123456');
-    await page.locator('button:has-text("Verify")').first().click();
     await expect(
       page.getByText(/Too many|try again|429/i).first()
-    ).toBeVisible({ timeout: 5_000 });
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test('MFA verify page renders correctly', async ({ page }) => {
@@ -67,7 +68,7 @@ test.describe('MFA — Rate Limiting', () => {
 test.describe('Training Export — Date Filters', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await page.route('**/training/preview**', route =>
+    await page.route('**/export-training-data/preview**', route =>
       route.fulfill({
         status: 200,
         body: JSON.stringify({ count: 10, avg_score: 0.85, score_range: [0.7, 0.95], format: 'openai' }),
@@ -94,7 +95,7 @@ test.describe('Training Export — Date Filters', () => {
 
   test('date filter in queryKey triggers refetch when changed', async ({ page }) => {
     let callCount = 0;
-    await page.route('**/training/preview**', route => {
+    await page.route('**/export-training-data/preview**', route => {
       callCount++;
       route.fulfill({ status: 200, body: JSON.stringify({ count: 5, avg_score: 0.9, score_range: [0.8, 1.0], format: 'openai' }) });
     });
@@ -265,7 +266,7 @@ test.describe('Governance — Policy Delete Confirmation', () => {
           : JSON.stringify([]),
       })
     );
-    await page.route('**/audit/events**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
+    await page.route('**/governance/audit**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
     await page.route('**/governance/cost**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({ total_cost_usd: 0 }) })
     );
@@ -351,21 +352,24 @@ test.describe('Tools Page — Keyboard Shortcut', () => {
     });
 
     await page.goto('/tools');
-    const editor = page.locator('.cm-editor, .cm-content').first();
+    // Click the CONTENTEDITABLE (.cm-content), not the wrapper, so the editor
+    // actually takes focus; and use insertText rather than type() because
+    // CodeMirror's closeBrackets would duplicate the bracket and quote.
+    const editor = page.locator('.cm-content').first();
     await editor.waitFor({ timeout: 8_000 });
     await editor.click();
-    await page.keyboard.type('print("hello world")');
-    await page.keyboard.press('Control+Enter');
+    await page.keyboard.insertText('print("hello world")');
+    await page.keyboard.press('ControlOrMeta+Enter');
     await page.waitForTimeout(800);
     expect(executed).toBeTruthy();
   });
 
   test('code execution shows output', async ({ page }) => {
     await page.goto('/tools');
-    const editor = page.locator('.cm-editor, .cm-content').first();
+    const editor = page.locator('.cm-content').first();
     await editor.waitFor({ timeout: 8_000 });
     await editor.click();
-    await page.keyboard.type('x = 42');
+    await page.keyboard.insertText('x = 42');
     await page.locator('button:has-text("Run"), button[aria-label*="Run"]').first().click();
     await expect(
       page.getByText(/Hello World|Success|stdout/i).first()
@@ -615,7 +619,7 @@ test.describe('Governance Audit — Time Column', () => {
           : JSON.stringify([]),
       })
     );
-    await page.route('**/audit/events**', route =>
+    await page.route('**/governance/audit**', route =>
       route.fulfill({
         status: 200,
         body: JSON.stringify([{
@@ -656,8 +660,30 @@ test.describe('Governance Audit — Time Column', () => {
 test.describe('CRDT Editor — Cursor & Awareness', () => {
   test.beforeEach(async ({ page }) => {
     await authPage(page);
-    await apiRoute(page, '**/collaboration/**', route =>
-      route.fulfill({ status: 200, body: JSON.stringify({ sessions: [], session: {} }) })
+    // The API is /collab/sessions and returns a BARE ARRAY — '**/collaboration/**'
+    // matched nothing (that is the app's own route path), so no session existed
+    // and the editor never mounted.
+    await apiRoute(page, '**/collab/sessions', route =>
+      route.fulfill({
+        status: 200,
+        body: JSON.stringify([
+          {
+            session_id: 'sess-audit-001',
+            name: 'Audit CRDT Session',
+            mode: 'review',
+            status: 'active',
+            participants: ['human:lead'],
+            participant_count: 1,
+            content: 'Seed content.',
+            created_at: new Date().toISOString(),
+            goal_id: null,
+            agent_id: null,
+          },
+        ]),
+      })
+    );
+    await apiRoute(page, '**/collab/sessions/**', route =>
+      route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
     await page.routeWebSocket('**/collab/crdt/**', ws => {
       ws.onMessage(msg => {
@@ -669,10 +695,9 @@ test.describe('CRDT Editor — Cursor & Awareness', () => {
 
   test('CRDT editor renders with connection indicator', async ({ page }) => {
     await page.goto('/collaboration');
-    const joinBtn = page.locator('button:has-text("Join"), button:has-text("Open")').first();
-    if (await joinBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await joinBtn.click();
-    }
+    const card = page.locator('[data-testid="session-card"]').first();
+    await card.waitFor({ timeout: 10_000 });
+    await card.click();
     // Should show some connection indicator
     await expect(
       page.getByText(/Live|Offline|Connecting|Only you here/i).first()
@@ -681,10 +706,9 @@ test.describe('CRDT Editor — Cursor & Awareness', () => {
 
   test('CRDT editor textarea has onSelect handler for cursor tracking', async ({ page }) => {
     await page.goto('/collaboration');
-    const joinBtn = page.locator('button:has-text("Join"), button:has-text("Open")').first();
-    if (await joinBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await joinBtn.click();
-    }
+    const card = page.locator('[data-testid="session-card"]').first();
+    await card.waitFor({ timeout: 10_000 });
+    await card.click();
     const editor = page.locator('textarea[aria-label="Collaborative editor"]').first();
     if (await editor.isVisible({ timeout: 8_000 }).catch(() => false)) {
       await editor.fill('Hello CRDT World');

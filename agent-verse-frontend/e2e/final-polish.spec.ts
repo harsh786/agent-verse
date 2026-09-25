@@ -471,7 +471,7 @@ test.describe('Governance Budget — Gauge Formula', () => {
           ? JSON.stringify({ pending: 0, approved: 0, denied: 0, timed_out: 0, escalated: 0, within_sla: 0, avg_resolution_seconds: 0 })
           : JSON.stringify([]),
       }));
-    await page.route('**/audit/events**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
+    await page.route('**/governance/audit**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
     await page.route('**/governance/cost**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({
         total_cost_usd: 5.00,

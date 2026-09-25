@@ -46,8 +46,10 @@ async function mockDashboardApis(page: Page) {
 test.describe('Authentication', () => {
   // ── Unauthenticated redirects ────────────────────────────────────────────────
 
-  test('redirects unauthenticated user from / to /auth', async ({ page }) => {
-    await page.goto('/');
+  test('redirects unauthenticated user from a guarded route to /auth', async ({ page }) => {
+    // '/' is the PUBLIC landing page and never redirects; RequireAuth guards the
+    // app routes.
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page).toHaveURL(/\/(auth|login)/);
   });
@@ -192,7 +194,7 @@ test.describe('Authentication', () => {
     await expect(page).toHaveURL(/\/(auth|login)/, { timeout: 10000 });
   });
 
-  test('after logout, visiting / redirects to /auth again', async ({ page }) => {
+  test('after logout, visiting a guarded route redirects to /auth again', async ({ page }) => {
     await page.addInitScript(() => {
       localStorage.setItem(
         'av-auth',
@@ -216,8 +218,8 @@ test.describe('Authentication', () => {
     });
     await page.getByRole('button', { name: /sign out/i }).first().click();
     await expect(page).toHaveURL(/\/(auth|login)/, { timeout: 10000 });
-    // Navigate to / and confirm redirect to /auth
-    await page.goto('/');
+    // Navigate to a guarded route and confirm the redirect ('/' is public).
+    await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
     await expect(page).toHaveURL(/\/(auth|login)/);
   });
