@@ -181,11 +181,15 @@ test.describe('CRDT Collaborative Editor', () => {
     await page.goto('/collaboration');
     await openSession(page);
     // One of: "Live" (green), "Offline" (amber), or "Connecting…" (spinner)
+    // Scope to the editor: "Live" and "Offline" also occur elsewhere on the
+    // page, so an unscoped text match is a strict-mode violation.
+    const editorPanel = page.locator('[data-testid="live-session"]');
     await expect(
-      page
+      editorPanel
         .locator('text=Live')
-        .or(page.locator('text=Offline'))
-        .or(page.locator('text=Connecting…')),
+        .or(editorPanel.locator('text=Offline'))
+        .or(editorPanel.locator('text=Connecting…'))
+        .first(),
     ).toBeVisible({ timeout: 8_000 });
   });
 
@@ -211,14 +215,17 @@ test.describe('CRDT Collaborative Editor', () => {
     await expect(page.getByText('Only you here')).toBeVisible({ timeout: 8_000 });
   });
 
-  test('char count starts at 0 and updates after typing', async ({ page }) => {
+  test('char count reflects the seeded document and updates after typing', async ({ page }) => {
     await setupCollabSession(page);
     await page.goto('/collaboration');
     await openSession(page);
     const editor = page.locator('textarea[aria-label="Collaborative editor"]');
     await editor.waitFor({ timeout: 5_000 });
-    // Initial char count text: "{n} chars"
-    await expect(page.getByText('0 chars')).toBeVisible({ timeout: 5_000 });
+    // MOCK_SESSION.content seeds the editor, so the counter starts at that
+    // length — not 0. Derive it from the fixture rather than hard-coding.
+    await expect(
+      page.getByText(`${MOCK_SESSION.content.length} chars`),
+    ).toBeVisible({ timeout: 5_000 });
     await editor.fill('Hello collaborative world!'); // 26 chars
     await expect(page.getByText('26 chars')).toBeVisible({ timeout: 3_000 });
   });
@@ -306,7 +313,7 @@ test.describe('CRDT Collaborative Editor', () => {
     await openSession(page);
     await expect(page.locator('[data-testid="consensus-card"]')).toBeVisible({ timeout: 5_000 });
     await expect(page.getByText('Consensus Status')).toBeVisible();
-    await expect(page.getByText('No consensus yet')).toBeVisible();
+    await expect(page.getByText('No consensus yet').first()).toBeVisible();
   });
 
   test('session insights panel has "Generate Insights" button', async ({ page }) => {
@@ -316,7 +323,7 @@ test.describe('CRDT Collaborative Editor', () => {
     await expect(
       page.locator('[data-testid="generate-insights-btn"]'),
     ).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText('Generate Insights')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Generate Insights' })).toBeVisible();
   });
 
   test('"Generate Insights" button calls insights endpoint and displays results', async ({
@@ -353,7 +360,10 @@ test.describe('CRDT Collaborative Editor', () => {
     await page.goto('/collaboration');
     await openSession(page);
     await expect(page.locator('[data-testid="live-session"]')).toBeVisible();
-    await page.getByRole('button', { name: 'Close' }).click();
+    await page
+      .locator('[data-testid="live-session"]')
+      .getByRole('button', { name: 'Close' })
+      .click();
     await expect(
       page.locator('[data-testid="live-session"]'),
     ).not.toBeVisible({ timeout: 3_000 });
