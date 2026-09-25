@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url, source_url_is_allowed
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -37,7 +38,10 @@ class WebCrawlConnector(BaseConnector):
             import httpx
 
             url = seed_urls[0]
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as c:
+            assert_source_url(url, context="web_crawl.validate", config=config)
+            # No automatic redirect following: a public seed that 302s to
+            # 169.254.169.254 would otherwise be fetched past the guard.
+            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as c:
                 r = await c.get(url)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
@@ -85,9 +89,13 @@ class WebCrawlConnector(BaseConnector):
             _log.error("httpx not installed")
             return
 
+        # follow_redirects=False on purpose: httpx would follow a 302 without
+        # re-checking the target, so a public page could bounce the crawler to a
+        # link-local/metadata address past the egress guard. Redirect targets go
+        # back onto the frontier below, where they are guarded like any other URL.
         async with httpx.AsyncClient(
             timeout=30,
-            follow_redirects=True,
+            follow_redirects=False,
             headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"},
         ) as client:
             while urls_to_visit and visited < max_pages:
@@ -101,9 +109,27 @@ class WebCrawlConnector(BaseConnector):
                 if exclude_re and exclude_re.search(url):
                     continue
 
+                # Guard EVERY url, not just the seeds: the frontier is fed by
+                # links discovered on fetched pages, so an attacker-controlled
+                # public page can otherwise steer the crawler at internal hosts.
+                if not source_url_is_allowed(url, context="web_crawl.fetch"):
+                    _log.warning("webcrawl_url_blocked url=%s", url[:200])
+                    new_seen.add(url_hash)
+                    continue
+
                 try:
                     await asyncio.sleep(crawl_delay)
                     response = await client.get(url)
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("location", "")
+                        if location:
+                            from urllib.parse import urljoin
+
+                            target = urljoin(url, location)
+                            if target not in urls_to_visit:
+                                urls_to_visit.append(target)
+                        new_seen.add(url_hash)
+                        continue
                     if response.status_code >= 400:
                         continue
                     response.headers.get("content-type", "text/html")

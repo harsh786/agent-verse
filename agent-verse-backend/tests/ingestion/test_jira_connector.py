@@ -9,7 +9,16 @@ from app.ingestion.connectors.jira_connector import JiraConnector, _extract_adf_
 from app.ingestion.source_config import SourceConfig
 
 
+_DEFAULT_BASE_URL = "https://acme.atlassian.net"
+
+
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
+    # Every override still gets a base_url. A Jira source without one cannot
+    # work at all (the connector would build relative "/rest/api/3/..." URLs),
+    # and since the egress guard fails closed on an empty URL, omitting it made
+    # these tests assert against a configuration production rejects.
+    if conn_config is not None:
+        conn_config = {"base_url": _DEFAULT_BASE_URL, **conn_config}
     return SourceConfig(
         source_id="src-j",
         tenant_id="t1",

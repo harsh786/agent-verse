@@ -12,12 +12,29 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _instance_base_url(instance: str) -> str:
+    """Return the absolute base URL for a ServiceNow ``instance`` setting.
+
+    ``instance`` is conventionally the bare subdomain (``acme``), but a full URL
+    is also accepted. Either way the *constructed* URL is what gets fetched and
+    therefore what the egress guard must see: a value like ``evil.com/#`` would
+    otherwise build ``https://evil.com/#.service-now.com/...``, whose real host
+    is ``evil.com`` — subdomain injection straight past a check on the raw
+    setting.
+    """
+    instance = (instance or "").strip().rstrip("/")
+    if instance.startswith(("http://", "https://")):
+        return instance
+    return f"https://{instance}.service-now.com"
 
 
 @register("servicenow", feature_flag="ingestion_connector_servicenow_enabled")
@@ -35,10 +52,12 @@ class ServiceNowConnector(BaseConnector):
         try:
             cc = config.connection_config
             instance = cc.get("instance", "").rstrip("/")
+            instance_base = _instance_base_url(instance)
+            assert_source_url(instance_base, context="servicenow.validate", config=config)
             auth = (cc.get("username", ""), cc.get("password", ""))
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
-                    f"https://{instance}.service-now.com/api/now/table/sys_user_role",
+                    f"{instance_base}/api/now/table/sys_user_role",
                     params={"sysparm_limit": 1},
                     auth=auth,
                     headers={"Accept": "application/json"},
@@ -58,10 +77,12 @@ class ServiceNowConnector(BaseConnector):
 
         cc = config.connection_config
         instance = cc.get("instance", "").rstrip("/")
+        instance_base = _instance_base_url(instance)
+        assert_source_url(instance_base, context="servicenow.get_delta", config=config)
         auth = (cc.get("username", ""), cc.get("password", ""))
         tables = cc.get("tables") or ["incident", "problem", "change_request", "kb_knowledge"]
         batch_size = int(cc.get("batch_size", 100))
-        base = f"https://{instance}.service-now.com/api/now/table"
+        base = f"{instance_base}/api/now/table"
         headers = {"Accept": "application/json"}
         new_cursor = cursor or ""
 

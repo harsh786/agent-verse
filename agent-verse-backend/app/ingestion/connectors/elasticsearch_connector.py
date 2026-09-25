@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ class ElasticsearchConnector(BaseConnector):
         try:
             cc = config.connection_config
             url = cc.get("url", "http://localhost:9200")
+            assert_source_url(url, context="elasticsearch", config=config)
             auth = (cc.get("username", ""), cc.get("password", "")) if cc.get("username") else None
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(url, auth=auth)
@@ -63,6 +65,7 @@ class ElasticsearchConnector(BaseConnector):
 
         cc = config.connection_config
         base_url = cc.get("url", "http://localhost:9200").rstrip("/")
+        assert_source_url(base_url, context="elasticsearch", config=config)
         index = cc.get("index", "_all")
         auth = (cc.get("username", ""), cc.get("password", "")) if cc.get("username") else None
         batch_size = int(cc.get("batch_size", 500))

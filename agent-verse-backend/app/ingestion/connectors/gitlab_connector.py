@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ class GitLabConnector(BaseConnector):
         try:
             cc = config.connection_config
             base = cc.get("base_url", "https://gitlab.com").rstrip("/")
+            assert_source_url(base, context="gitlab", config=config)
             token = cc.get("token", "")
             headers = {"PRIVATE-TOKEN": token}
             async with httpx.AsyncClient(timeout=10) as client:
@@ -60,6 +62,7 @@ class GitLabConnector(BaseConnector):
 
         cc = config.connection_config
         base = cc.get("base_url", "https://gitlab.com").rstrip("/")
+        assert_source_url(base, context="gitlab", config=config)
         token = cc.get("token", "")
         project_ids = cc.get("project_ids") or []
         ingest_types = cc.get("ingest_types") or ["issues", "merge_requests", "wiki"]

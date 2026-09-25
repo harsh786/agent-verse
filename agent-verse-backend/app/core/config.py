@@ -381,6 +381,20 @@ class Settings(BaseSettings):
     searxng_url: str = "http://searxng:8080"
     web_search_allowed_domains: str = ""
 
+    # --- ingestion egress (SSRF policy for tenant-configured source hosts) -----
+    # Connectors fetch hosts the tenant supplies (Jira/Confluence base_url, a
+    # self-hosted GitLab, a ServiceNow instance, an Elasticsearch url, web-crawl
+    # seed_urls). Whatever is fetched is indexed into that tenant's own
+    # knowledge collection, so an unguarded fetch of 169.254.169.254 hands them
+    # the platform's cloud credentials. Blocked by default.
+    #
+    # An on-prem deployment whose Jira really does live on a LAN turns this on
+    # AND names the hosts. Both are operator/env-only by design: an allowlist
+    # alone punches no hole, and nothing a tenant can put in connection_config
+    # reaches either setting.
+    ingestion_allow_internal_sources: bool = False
+    ingestion_internal_source_allowlist: str = ""  # comma-separated hostnames
+
     # --- SAML 2.0 ---
     saml_enabled: bool = False
     saml_idp_metadata_url: str = ""

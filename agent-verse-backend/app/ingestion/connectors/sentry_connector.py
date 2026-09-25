@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -35,9 +36,15 @@ class SentryConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             token = config.connection_config.get("auth_token", "")
+            # Validate the host the sync will actually use. Probing the hardcoded
+            # sentry.io while get_delta reads connection_config["base_url"] means
+            # validation passes for a self-hosted URL it never touched — and
+            # skips the egress guard entirely for that URL.
+            base_url = config.connection_config.get("base_url", _SENTRY_BASE)
+            assert_source_url(base_url, context="sentry.validate", config=config)
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
-                    f"{_SENTRY_BASE}/",
+                    f"{base_url}/",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 r.raise_for_status()
@@ -59,6 +66,7 @@ class SentryConnector(BaseConnector):
         project_slugs = cc.get("project_slugs") or []
         batch_size = int(cc.get("batch_size", 100))
         base_url = cc.get("base_url", _SENTRY_BASE)
+        assert_source_url(base_url, context="sentry", config=config)
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 

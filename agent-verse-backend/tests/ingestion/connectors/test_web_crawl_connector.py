@@ -268,8 +268,10 @@ class TestGetDelta:
         assert "Valid text content" in docs[0][0].content.decode()
 
     async def test_malformed_url_in_seed_list_is_skipped_not_fatal(self):
-        # A malformed seed URL fails at request time; the crawler must not
-        # let one bad URL abort the whole run.
+        # A malformed seed URL is now rejected by the egress guard *before* any
+        # request is made (it has no scheme, so it can never be shown to be
+        # public) — so no response is queued for it. The guarantee under test is
+        # unchanged: one bad URL must not abort the whole crawl.
         good_html = (
             b"<html><head><title>Good</title></head><body>"
             + b"Good content here for the page. " * 10
@@ -277,7 +279,6 @@ class TestGetDelta:
         )
         responses = iter(
             [
-                OSError("Invalid URL"),
                 MagicMock(status_code=200, content=good_html, headers={}),
             ]
         )

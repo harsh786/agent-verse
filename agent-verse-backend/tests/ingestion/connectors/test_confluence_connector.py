@@ -9,7 +9,15 @@ from app.ingestion.connectors.confluence_connector import ConfluenceConnector
 from app.ingestion.source_config import SourceConfig
 
 
+_DEFAULT_BASE_URL = "https://x.atlassian.net/wiki"
+
+
 def _make_config(conn_config: dict | None = None) -> SourceConfig:
+    # Overrides keep a base_url: a Confluence source without one builds relative
+    # "/rest/api/..." URLs that no HTTP client can send, and the egress guard
+    # (correctly) fails closed on an empty URL.
+    if conn_config is not None:
+        conn_config = {"base_url": _DEFAULT_BASE_URL, **conn_config}
     return SourceConfig(
         source_id="src-c",
         tenant_id="t1",

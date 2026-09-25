@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -113,6 +114,7 @@ class SalesforceConnector(BaseConnector):
 
         cc = config.connection_config
         login_url = cc.get("login_url", "https://login.salesforce.com")
+        assert_source_url(login_url, context="salesforce", config=config)
         async with httpx.AsyncClient() as client:
             r = await client.post(
                 f"{login_url}/services/oauth2/token",
@@ -126,7 +128,13 @@ class SalesforceConnector(BaseConnector):
             )
             r.raise_for_status()
             j = r.json()
-            return j["access_token"], j["instance_url"]
+            instance_url = str(j["instance_url"])
+            # instance_url comes back from the login response, i.e. from whatever
+            # host the tenant's login_url actually resolved to. Every subsequent
+            # request targets it, so it is a second attacker-influenced egress
+            # target and gets the same guard as login_url.
+            assert_source_url(instance_url, context="salesforce.instance", config=config)
+            return str(j["access_token"]), instance_url
 
     @staticmethod
     async def _get_fields(client, instance_url: str, token: str, sobject: str) -> list[str]:

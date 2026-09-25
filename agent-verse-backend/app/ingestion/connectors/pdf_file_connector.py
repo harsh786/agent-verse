@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -23,7 +24,18 @@ class PDFFileConnector(BaseConnector):
     source_type = "pdf_file"
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
-        return ConnectionHealth(ok=True, latency_ms=0.0, metadata={"type": "file"})
+        # These connectors fetch whatever URLs the tenant lists, so validation
+        # has to actually check them. It previously returned ok=True without
+        # looking at connection_config at all.
+        urls = config.connection_config.get("urls", []) or []
+        try:
+            for url in urls:
+                assert_source_url(str(url), context=f"{self.source_type}.validate", config=config)
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc))
+        return ConnectionHealth(
+            ok=True, latency_ms=0.0, metadata={"type": "file", "urls": len(urls)}
+        )
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
@@ -38,7 +50,10 @@ class PDFFileConnector(BaseConnector):
             try:
                 import httpx
 
-                async with httpx.AsyncClient(timeout=60) as c:
+                assert_source_url(
+                    str(url), context=f"{self.source_type}.get_delta", config=config
+                )
+                async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
                     r = await c.get(url)
                     r.raise_for_status()
                     content_bytes = r.content
@@ -63,7 +78,18 @@ class DOCXFileConnector(BaseConnector):
     source_type = "docx_file"
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
-        return ConnectionHealth(ok=True, latency_ms=0.0, metadata={"type": "file"})
+        # These connectors fetch whatever URLs the tenant lists, so validation
+        # has to actually check them. It previously returned ok=True without
+        # looking at connection_config at all.
+        urls = config.connection_config.get("urls", []) or []
+        try:
+            for url in urls:
+                assert_source_url(str(url), context=f"{self.source_type}.validate", config=config)
+        except Exception as exc:
+            return ConnectionHealth(ok=False, error=str(exc))
+        return ConnectionHealth(
+            ok=True, latency_ms=0.0, metadata={"type": "file", "urls": len(urls)}
+        )
 
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
@@ -75,7 +101,10 @@ class DOCXFileConnector(BaseConnector):
             try:
                 import httpx
 
-                async with httpx.AsyncClient(timeout=60) as c:
+                assert_source_url(
+                    str(url), context=f"{self.source_type}.get_delta", config=config
+                )
+                async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
                     r = await c.get(url)
                     r.raise_for_status()
                 raw = RawDocument(

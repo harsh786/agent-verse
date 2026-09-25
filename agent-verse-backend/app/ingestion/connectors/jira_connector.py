@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ class JiraConnector(BaseConnector):
 
             cc = config.connection_config
             base_url = cc.get("base_url", "").rstrip("/")
+            assert_source_url(base_url, context="jira", config=config)
             auth = (cc.get("username", ""), cc.get("api_token", ""))
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(f"{base_url}/rest/api/3/myself", auth=auth)
@@ -59,6 +61,7 @@ class JiraConnector(BaseConnector):
 
         cc = config.connection_config
         base_url = cc.get("base_url", "").rstrip("/")
+        assert_source_url(base_url, context="jira", config=config)
         auth = (cc.get("username", ""), cc.get("api_token", ""))
         project_keys = cc.get("project_keys") or []
         batch_size = int(cc.get("batch_size", 50))
