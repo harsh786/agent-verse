@@ -15,7 +15,8 @@
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:update-snapshots": "playwright test e2e/visual-regression.spec.ts --update-snapshots",
     "test:e2e:snapshots": "CI=true playwright test e2e/visual-regression.spec.ts",
-    "test:e2e:build": "playwright test --config=playwright.build.config.ts"
+    "test:e2e:build": "playwright test --config=playwright.build.config.ts",
+    "build:e2e": "tsc && vite build --mode e2e"
   },
   "dependencies": {
     "@codemirror/collab": "^6.1.1",
