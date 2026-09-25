@@ -28,30 +28,35 @@ const PENDING_APPROVAL = {
   requested_at: new Date().toISOString(),
 };
 
+// Matches the AuditEvent contract in lib/api/client.ts — the audit table renders
+// tool_name / action_level / outcome / goal_id / approver. The previous fixture
+// used an unrelated shape (event_type / actor / resource / details), so every row
+// rendered blank and no assertion on it could ever pass.
 const AUDIT_EVENTS = [
   {
     event_id: 'evt-001',
-    event_type: 'goal_submitted',
-    actor: 'test-tenant',
-    resource: 'g-gov-001',
-    timestamp: new Date(Date.now() - 3_600_000).toISOString(),
-    details: { goal: 'Deploy payment service' },
+    goal_id: 'g-gov-001',
+    tool_name: 'deploy_service',
+    action_level: 'allow',
+    outcome: 'success',
+    created_at: new Date(Date.now() - 3_600_000).toISOString(),
   },
   {
     event_id: 'evt-002',
-    event_type: 'hitl_approved',
-    actor: 'admin-user',
-    resource: 'req-gov-001',
-    timestamp: new Date(Date.now() - 1_800_000).toISOString(),
-    details: { action: 'Approved: deploy to staging' },
+    goal_id: 'req-gov-001',
+    tool_name: 'hitl_approval',
+    action_level: 'approval',
+    outcome: 'approved',
+    approver: 'admin-user',
+    created_at: new Date(Date.now() - 1_800_000).toISOString(),
   },
   {
     event_id: 'evt-003',
-    event_type: 'policy_created',
-    actor: 'test-tenant',
-    resource: 'policy-001',
-    timestamp: new Date().toISOString(),
-    details: { policy_name: 'No-delete-prod' },
+    goal_id: 'policy-001',
+    tool_name: 'create_policy',
+    action_level: 'deny',
+    outcome: 'blocked',
+    created_at: new Date().toISOString(),
   },
 ];
 
@@ -234,8 +239,8 @@ test.describe('Governance — Audit Log', () => {
       .first();
     if (await auditTab.isVisible({ timeout: 8_000 }).catch(() => false)) {
       await auditTab.click();
-      await expect(page.getByText('goal_submitted').or(page.getByText('Deploy payment service'))).toBeVisible({ timeout: 10_000 });
-      await expect(page.getByText('hitl_approved').or(page.getByText('Approved: deploy to staging'))).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByText('deploy_service')).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByText('hitl_approval')).toBeVisible({ timeout: 5_000 });
     }
     const body = await page.locator('body').textContent();
     expect(body).not.toContain('Uncaught Error');
@@ -417,7 +422,7 @@ test.describe('Governance — Cost Dashboard', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill('Trigger rate limit');
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     // Toast / notification should appear
     const toast = page.locator('[role="alert"], [data-testid*="toast"], .toast, .notification').first();
@@ -451,7 +456,7 @@ test.describe('Governance — Cost Dashboard', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill('This goal exceeds budget');
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     await page.waitForTimeout(800);
     const body = await page.locator('body').textContent();
@@ -598,7 +603,7 @@ test.describe('Governance — Policy Engine', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill('Delete the production database');
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     await page.waitForTimeout(800);
     const body = await page.locator('body').textContent();
@@ -678,7 +683,24 @@ test.describe('Governance — Runtime Decision Panel', () => {
       route.fulfill({ status: 200, contentType: 'text/event-stream', body: decisionSse })
     );
     await page.route(new RegExp(`localhost:8000/goals/${DECISION_GOAL_ID}/replay`), (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ timeline: [] }) })
+      // The goal is COMPLETE, so the page never opens the SSE stream — it reads
+      // the persisted log from /replay. Returning an empty timeline meant none
+      // of the decision events could ever render.
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          timeline: [
+            { type: 'goal_started', payload: { goal: 'Analyse and refactor auth module' } },
+            { type: 'domain_detected', payload: { domain: 'code' } },
+            { type: 'pattern_selected', payload: { pattern: 'reflexion', reason: 'code_domain' } },
+            { type: 'rag_strategy_selected', payload: { strategy: 'colbert', reason: 'code_domain' } },
+            { type: 'self_improvement_suggestion', payload: { suggestion: 'Consider using RAPTOR for large codebases', confidence: 0.74 } },
+            { type: 'step_complete', payload: { step: 'Analyse auth module', output: 'Found 3 issues' } },
+            { type: 'goal_complete', payload: {} },
+          ],
+        }),
+      })
     );
     await page.route(/localhost:8000\/governance\/approvals\/stream/, (route) =>
       route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' })
@@ -696,6 +718,11 @@ test.describe('Governance — Runtime Decision Panel', () => {
     await expect(page.getByText('Analyse and refactor auth module').first()).toBeVisible({
       timeout: 15_000,
     });
+    // The replay query only runs while the Dev Log tab is active.
+    await page.getByRole('tab', { name: /dev log/i }).click();
+    // The Dev Log humanises event types: "rag_strategy_selected" renders as
+    // "rag strategy selected".
+    await expect(page.getByText(/rag strategy selected/i).first()).toBeVisible({ timeout: 10_000 });
     const body = await page.locator('body').textContent();
     expect(body).not.toContain('Uncaught Error');
   });
@@ -708,6 +735,11 @@ test.describe('Governance — Runtime Decision Panel', () => {
     await expect(page.getByText('Analyse and refactor auth module').first()).toBeVisible({
       timeout: 15_000,
     });
+    // The replay query only runs while the Dev Log tab is active.
+    await page.getByRole('tab', { name: /dev log/i }).click();
+    // The Dev Log humanises event types: "rag_strategy_selected" renders as
+    // "rag strategy selected".
+    await expect(page.getByText(/rag strategy selected/i).first()).toBeVisible({ timeout: 10_000 });
     const body = await page.locator('body').textContent();
     expect(
       (body ?? '').toLowerCase().includes('reflexion') ||
@@ -724,6 +756,11 @@ test.describe('Governance — Runtime Decision Panel', () => {
     await expect(page.getByText('Analyse and refactor auth module').first()).toBeVisible({
       timeout: 15_000,
     });
+    // The replay query only runs while the Dev Log tab is active.
+    await page.getByRole('tab', { name: /dev log/i }).click();
+    // The Dev Log humanises event types: "rag_strategy_selected" renders as
+    // "rag strategy selected".
+    await expect(page.getByText(/rag strategy selected/i).first()).toBeVisible({ timeout: 10_000 });
     const body = await page.locator('body').textContent();
     expect(
       (body ?? '').toLowerCase().includes('colbert') ||
@@ -740,6 +777,11 @@ test.describe('Governance — Runtime Decision Panel', () => {
     await expect(page.getByText('Analyse and refactor auth module').first()).toBeVisible({
       timeout: 15_000,
     });
+    // The replay query only runs while the Dev Log tab is active.
+    await page.getByRole('tab', { name: /dev log/i }).click();
+    // The Dev Log humanises event types: "rag_strategy_selected" renders as
+    // "rag strategy selected".
+    await expect(page.getByText(/rag strategy selected/i).first()).toBeVisible({ timeout: 10_000 });
     const body = await page.locator('body').textContent();
     expect(
       (body ?? '').toLowerCase().includes('suggestion') ||
@@ -897,14 +939,11 @@ test.describe('Observability — Metrics & Charts', () => {
     await setupAuth(page);
     await mockObsApis(page);
     await page.goto('/analytics');
-    await page.waitForLoadState('networkidle');
-    const body = await page.locator('body').textContent();
-    // P99 or latency should appear somewhere on the analytics page
-    expect(
-      (body ?? '').toLowerCase().includes('latency') ||
-        (body ?? '').toLowerCase().includes('p99') ||
-        (body ?? '').toLowerCase().includes('4200')
-    ).toBeTruthy();
+    // Wait for the dashboard itself; networkidle does not mean React has painted.
+    await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible({ timeout: 15_000 });
+    // The latency KPI is labelled "Avg Duration" on this dashboard.
+    await expect(page.getByText('Avg Duration')).toBeVisible();
+    await expect(page.getByText('avg execution time')).toBeVisible();
   });
 
   // ── 23. Goal success rate over time ───────────────────────────────────────────
@@ -912,13 +951,8 @@ test.describe('Observability — Metrics & Charts', () => {
     await setupAuth(page);
     await mockObsApis(page);
     await page.goto('/analytics');
-    await page.waitForLoadState('networkidle');
-    const body = await page.locator('body').textContent();
-    expect(
-      (body ?? '').toLowerCase().includes('success') ||
-        (body ?? '').includes('87') ||
-        (body ?? '').includes('0.873')
-    ).toBeTruthy();
+    await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Success Rate').first()).toBeVisible();
   });
 
   // ── 24. Model usage breakdown chart ───────────────────────────────────────────

@@ -315,7 +315,7 @@ test.describe('Security — Input Sanitisation', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill(sqlPayload);
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     await page.waitForTimeout(600);
     // The payload should be transmitted as a JSON string (not causing a server 500)
@@ -409,7 +409,7 @@ test.describe('Security — Input Sanitisation', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill(promptInjection);
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     await page.waitForTimeout(800);
     const body = await page.locator('body').textContent();
@@ -458,7 +458,7 @@ test.describe('Security — Rate Limiting & Access Controls', () => {
     await page.goto('/goals');
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill('Trigger rate limit for tenant A');
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
 
     await page.waitForTimeout(800);
     const body = await page.locator('body').textContent();

@@ -238,7 +238,9 @@ export function AnalyticsDashboardPage() {
   const totalCost = costs?.total_cost_usd;
   const evalPassRate = evals?.pass_rate;
   const avgEvalScore = evals?.avg_score;
-  const activeAgents = agents?.agents.length ?? 0;
+  // `agents?.agents.length` guarded only the OUTER object: a payload without
+  // an `agents` array still threw on .length and took the page down.
+  const activeAgents = agents?.agents?.length ?? 0;
 
   // ── Funnel data ──
 
@@ -279,7 +281,7 @@ export function AnalyticsDashboardPage() {
 
   // ── Agent filter dropdown ──
 
-  const agentIds = ['all', ...(agents?.agents.map((a) => a.agent_id) ?? [])];
+  const agentIds = ['all', ...(agents?.agents?.map((a) => a.agent_id) ?? [])];
 
   const filteredEvalTrend = evalTrendData;
 
@@ -389,7 +391,10 @@ export function AnalyticsDashboardPage() {
         {/* Tool Performance Heatmap */}
         <div className="bg-card border border-border rounded-xl p-5">
           <h2 className="font-semibold text-sm mb-4">Tool Performance (Top 20)</h2>
-          {!tools || tools.tools.length === 0 ? (
+          {/* `tools.tools` is optional in practice: a payload without it (an
+              envelope, an empty object) made .length throw and took the whole
+              Analytics page down through the error boundary. */}
+          {!tools?.tools?.length ? (
             <div className="h-40 flex items-center justify-center text-sm text-muted-foreground">No tool data yet</div>
           ) : (
             <div className="overflow-auto max-h-64">

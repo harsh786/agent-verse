@@ -240,7 +240,9 @@ test.describe('Enterprise — SCIM / export / delete', () => {
 
     await expect(page.getByText('Export ready')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('Size: 2.00 MB')).toBeVisible();
-    await expect(page.getByRole('link', { name: /download export/i })).toBeVisible();
+    // The download is an authenticated fetch (downloadAuthenticated), so it is a
+    // <button>, not a plain <a> — an anchor could not carry the auth header.
+    await expect(page.getByRole('button', { name: /download export/i })).toBeVisible();
   });
 
   test('12. Deleting data requires typing the exact confirmation phrase', async ({ page }) => {

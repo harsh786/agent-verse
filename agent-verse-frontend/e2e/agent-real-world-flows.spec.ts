@@ -153,7 +153,7 @@ test.describe('Real-World: Jira Triage Flow', () => {
     await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({ timeout: 15_000 });
     await page.locator('textarea[aria-label="Goal text"]').fill(JIRA_GOAL.goal);
     // Button is type="button" with text "Launch" — not type="submit"
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
     await expect(page).toHaveURL(new RegExp(`/goals/${JIRA_GOAL_ID}`), { timeout: 15_000 });
   });
 

@@ -650,7 +650,7 @@ test.describe('Goal Execution — Multimodal & Attachments', () => {
       });
     }
 
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
     await expect(page).toHaveURL(/\/goals\/g-multimodal-001/, { timeout: 15_000 });
   });
 
@@ -691,7 +691,7 @@ test.describe('Goal Execution — Multimodal & Attachments', () => {
       });
     }
 
-    await page.getByRole('button', { name: /^launch$/i }).click();
+    await page.getByRole('button', { name: /^submit$|^dry run$/i }).click();
     // Either navigated to goal detail or ingestion was triggered
     await page.waitForTimeout(600);
     const didNavigate = page.url().includes('/goals/g-pdf-001');
