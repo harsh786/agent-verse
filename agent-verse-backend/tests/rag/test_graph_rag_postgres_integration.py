@@ -385,3 +385,87 @@ async def test_knowledge_graph_tables_declare_force_row_level_security(
         enabled, forced = status[table]
         assert enabled, f"{table}: RLS not enabled"
         assert forced, f"{table}: RLS enabled but not FORCEd (owner bypasses it)"
+
+
+# ── Scale: the lookup predicates must be index-backed ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_knowledge_graph_search_indexes_exist(factories: tuple) -> None:
+    """Graph RAG's WHERE clauses must be index-backed, not post-filters.
+
+    The entity/seed query filters on (tenant_id, source_id) and on a
+    `to_tsvector(...)` expression; the metadata filter uses
+    `CAST(extra_metadata AS jsonb) @>`. Only tenant_id was indexed, so at volume
+    Postgres fetched every node belonging to the tenant and discarded it with a
+    Filter, recomputing to_tsvector per row — O(nodes-per-tenant) per query.
+    """
+    owner_factory, _app = factories
+    async with owner_factory() as s:
+        names = {
+            r[0]
+            for r in (
+                await s.execute(
+                    text("SELECT indexname FROM pg_indexes WHERE tablename = 'knowledge_nodes'")
+                )
+            ).fetchall()
+        }
+    for expected in ("ix_kn_tenant_source", "ix_kn_content_fts", "ix_kn_metadata_gin"):
+        assert expected in names, f"{expected} missing; have {sorted(names)}"
+
+
+@pytest.mark.asyncio
+async def test_seed_chunk_lookup_uses_the_composite_index(factories: tuple) -> None:
+    """EXPLAIN must show source_id as an index condition, not a filter.
+
+    Measured before ix_kn_tenant_source at 40k nodes / 50 tenants: 717 heap
+    blocks read and 798 rows removed by filter to return 2. After: an Index Scan
+    touching 11 buffers.
+    """
+    owner_factory, _app = factories
+    scale_tenant = f"tenant-scale-{secrets.token_hex(4)}"
+    async with owner_factory() as s:
+        await s.execute(
+            text(
+                """
+                INSERT INTO knowledge_nodes
+                  (id, tenant_id, node_type, label, content, source_id,
+                   confidence, extra_metadata, created_at, updated_at)
+                SELECT :t || '-n' || g, :t, 'entity', 'Service ' || g,
+                       'routine deployment note ' || g, 'chunk-' || g,
+                       0.5, '{}'::json, NOW(), NOW()
+                FROM generate_series(1, 6000) g
+                """
+            ),
+            {"t": scale_tenant},
+        )
+        await s.commit()
+        await s.execute(text("ANALYZE knowledge_nodes"))
+        await s.commit()
+        try:
+            plan = "\n".join(
+                r[0]
+                for r in (
+                    await s.execute(
+                        text(
+                            """
+                            EXPLAIN
+                            SELECT id FROM knowledge_nodes
+                            WHERE tenant_id = :t
+                              AND node_type IN ('entity','concept')
+                              AND source_id = ANY(:seeds)
+                            LIMIT 5
+                            """
+                        ),
+                        {"t": scale_tenant, "seeds": ["chunk-107", "chunk-207"]},
+                    )
+                ).fetchall()
+            )
+        finally:
+            await s.execute(
+                text("DELETE FROM knowledge_nodes WHERE tenant_id = :t"),
+                {"t": scale_tenant},
+            )
+            await s.commit()
+
+    assert "ix_kn_tenant_source" in plan, plan
