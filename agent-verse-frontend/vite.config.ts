@@ -31,30 +31,24 @@ export default defineConfig(({ command, mode }) => {
     },
   },
   build: {
-    // Split heavy, independently-cacheable vendor libraries out of the main
-    // entry chunk so first paint downloads far less and returning visitors reuse
-    // cached vendor bundles. (The app itself is already route-level lazy-loaded.)
+    // NO hand-rolled `manualChunks`. The previous version grouped node_modules
+    // by substring match, which shipped a completely BLANK production app:
+    //
+    //   * `react-dom` and `scheduler` were routed to "vendor-react" while the
+    //     `react` package itself matched no rule and fell through to "vendor",
+    //     so react-dom initialised before React existed:
+    //       TypeError: Cannot set properties of undefined (setting 'Children')
+    //   * behind that, splitting the heavily inter-dependent `d3-*` / `@xyflow`
+    //     packages into "vendor-graph" produced a cross-chunk circular import:
+    //       ReferenceError: Cannot access 'El' before initialization
+    //
+    // Both are invisible in dev (unbundled ESM) and to vitest (jsdom, no
+    // bundling) — only a real production build shows them. Assigning modules to
+    // chunks by name cannot respect the initialisation order that circular
+    // dependencies require; Rollup's automatic splitting does. Route-level lazy
+    // loading still gives per-page chunks, and the largest chunk is now smaller
+    // than it was under the manual scheme.
     chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        manualChunks(id: string) {
-          if (!id.includes("node_modules")) return undefined;
-          if (id.includes("framer-motion") || id.includes("motion-dom") || id.includes("motion-utils"))
-            return "vendor-motion";
-          if (id.includes("@xyflow") || id.includes("reactflow") || id.includes("d3-"))
-            return "vendor-graph";
-          if (id.includes("codemirror") || id.includes("@uiw/react-codemirror"))
-            return "vendor-editor";
-          if (id.includes("/three/") || id.includes("@react-three")) return "vendor-three";
-          if (id.includes("yjs") || id.includes("y-websocket") || id.includes("y-protocols"))
-            return "vendor-collab";
-          if (id.includes("i18next") || id.includes("react-i18next")) return "vendor-i18n";
-          if (id.includes("@tanstack")) return "vendor-query";
-          if (id.includes("react-dom") || id.includes("/scheduler/")) return "vendor-react";
-          return "vendor";
-        },
-      },
-    },
   },
   server: {
     port: 5173,
