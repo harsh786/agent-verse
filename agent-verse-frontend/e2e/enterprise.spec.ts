@@ -107,7 +107,7 @@ test.describe('Enterprise — page load', () => {
     await page.goto('/enterprise');
 
     await expect(page.getByText('Data Residency')).toBeVisible({ timeout: 10000 });
-    await expect(page.getByText('us-east-1')).toBeVisible();
+    await expect(page.getByText('us-east-1').first()).toBeVisible();
     await expect(page.getByText('AWS us-east-1a')).toBeVisible();
     await expect(page.getByText('Data is stored and processed within the United States.')).toBeVisible();
   });
@@ -167,7 +167,7 @@ test.describe('Enterprise — SAML wizard', () => {
     await page.getByRole('button', { name: /continue/i }).click();
 
     await page.getByPlaceholder('https://idp.example.com/saml/sso').fill('https://idp.example.com/sso');
-    await page.getByPlaceholder('https://idp.example.com').fill('https://idp.example.com');
+    await page.getByPlaceholder('https://idp.example.com').first().fill('https://idp.example.com');
     await page.getByRole('button', { name: /continue/i }).click();
 
     await expect(page.getByText('Map SAML attributes to user fields')).toBeVisible({ timeout: 5000 });
@@ -182,7 +182,7 @@ test.describe('Enterprise — SAML wizard', () => {
     await page.getByRole('button', { name: 'Google Workspace' }).click();
     await page.getByRole('button', { name: /continue/i }).click();
     await page.getByPlaceholder('https://idp.example.com/saml/sso').fill('https://idp.example.com/sso');
-    await page.getByPlaceholder('https://idp.example.com').fill('https://idp.example.com');
+    await page.getByPlaceholder('https://idp.example.com').first().fill('https://idp.example.com');
     await page.getByRole('button', { name: /continue/i }).click();
     await page.getByRole('button', { name: /continue/i }).click();
 
@@ -201,7 +201,7 @@ test.describe('Enterprise — SAML wizard', () => {
     await page.getByRole('button', { name: 'OneLogin' }).click();
     await page.getByRole('button', { name: /continue/i }).click();
     await page.getByPlaceholder('https://idp.example.com/saml/sso').fill('https://idp.example.com/sso');
-    await page.getByPlaceholder('https://idp.example.com').fill('https://idp.example.com');
+    await page.getByPlaceholder('https://idp.example.com').first().fill('https://idp.example.com');
     await page.getByRole('button', { name: /continue/i }).click();
     await page.getByRole('button', { name: /continue/i }).click();
 

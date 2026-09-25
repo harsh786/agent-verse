@@ -68,7 +68,7 @@ test.describe('Model Registry — loading & rendering', () => {
 
     await expect(page.getByRole('heading', { name: /Model Registry/i })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('Reasoning')).toBeVisible();
-    await expect(page.getByText('Embeddings')).toBeVisible();
+    await expect(page.getByText('Embeddings').first()).toBeVisible();
     await expect(page.getByText('cheap-llm')).toBeVisible();
     await expect(page.getByText('pricey-llm')).toBeVisible();
   });

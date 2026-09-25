@@ -483,7 +483,7 @@ test.describe('Approvals — History tab', () => {
     });
     await page.goto('/approvals');
     await page.getByRole('tab', { name: /history/i }).click();
-    await expect(page.getByText('rejected')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('rejected').first()).toBeVisible({ timeout: 10000 });
   });
 
   test('history shows empty state when no resolved requests', async ({ page }) => {
@@ -510,7 +510,7 @@ test.describe('Approvals — Stats bar', () => {
     await page.goto('/approvals');
     await expect(page.getByTestId('approval-card').first()).toBeVisible({ timeout: 10000 });
     // Stats bar shows count per risk level
-    await expect(page.getByText('critical')).toBeVisible();
+    await expect(page.getByText('critical').first()).toBeVisible();
     await expect(page.getByText('high')).toBeVisible();
   });
 

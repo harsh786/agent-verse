@@ -125,7 +125,9 @@ test.describe('Eval Scorecard', () => {
     await setupAuth(page);
     await mockBaseApis(page);
     await page.goto('/eval');
-    await expect(page.getByText('Eval Scorer')).toBeVisible({ timeout: 15000 });
+    // EvalPage is tabbed now and opens on Scorecard; the old standalone
+    // "Eval Scorer" section no longer exists. Anchor on the tab's own control.
+    await expect(page.getByRole('button', { name: /run eval/i })).toBeVisible({ timeout: 15000 });
     // Goal dropdown (select) should be present — check the combobox is attached and an option is in it
     await expect(page.getByRole('combobox').first()).toBeVisible({ timeout: 10000 });
     await expect(
@@ -143,7 +145,9 @@ test.describe('Eval Scorecard', () => {
     );
 
     await page.goto('/eval');
-    await expect(page.getByText('Eval Scorer')).toBeVisible({ timeout: 15000 });
+    // EvalPage is tabbed now and opens on Scorecard; the old standalone
+    // "Eval Scorer" section no longer exists. Anchor on the tab's own control.
+    await expect(page.getByRole('button', { name: /run eval/i })).toBeVisible({ timeout: 15000 });
 
     // Select the goal from dropdown
     const goalSelect = page.locator('select').filter({ hasText: /select|goal/i }).first();
@@ -170,7 +174,9 @@ test.describe('Eval Scorecard', () => {
     );
 
     await page.goto('/eval');
-    await expect(page.getByText('Eval Scorer')).toBeVisible({ timeout: 15000 });
+    // EvalPage is tabbed now and opens on Scorecard; the old standalone
+    // "Eval Scorer" section no longer exists. Anchor on the tab's own control.
+    await expect(page.getByRole('button', { name: /run eval/i })).toBeVisible({ timeout: 15000 });
 
     // Select goal and run
     const goalSelect = page.locator('select').filter({ hasText: /select|goal/i }).first();
@@ -206,7 +212,9 @@ test.describe('Eval Scorecard', () => {
     });
 
     await page.goto('/eval');
-    await expect(page.getByText('Eval Scorer')).toBeVisible({ timeout: 15000 });
+    // EvalPage is tabbed now and opens on Scorecard; the old standalone
+    // "Eval Scorer" section no longer exists. Anchor on the tab's own control.
+    await expect(page.getByRole('button', { name: /run eval/i })).toBeVisible({ timeout: 15000 });
 
     const goalSelect = page.locator('select').filter({ hasText: /select|goal/i }).first();
     if (await goalSelect.isVisible({ timeout: 3000 }).catch(() => false)) {

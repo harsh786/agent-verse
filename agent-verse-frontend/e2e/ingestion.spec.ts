@@ -186,7 +186,7 @@ test.describe('Sources — populated state', () => {
 
     const slackCard = page.getByRole('article', { name: /Team Slack/i });
     await expect(slackCard).toBeVisible();
-    await expect(slackCard.getByText('slack')).toBeVisible();
+    await expect(slackCard.getByText('slack').first()).toBeVisible();
   });
 
   test('6. Family filter chip narrows the source list', async ({ page }) => {

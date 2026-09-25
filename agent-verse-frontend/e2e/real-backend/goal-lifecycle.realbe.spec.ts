@@ -50,7 +50,7 @@ test('real backend: authenticated dashboard renders and a goal enters live execu
   await page.goto('/dashboard');
 
   // The authenticated JARVIS shell renders (real backend, real tenant).
-  await expect(page.getByText('Mission Control')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Mission Control').first()).toBeVisible({ timeout: 20_000 });
 
   // Submit a goal through the real Quick Goal input.
   const goalInput = page.getByPlaceholder('What should your agents do? (Enter to submit)');

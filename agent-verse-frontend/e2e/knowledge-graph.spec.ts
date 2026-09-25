@@ -87,7 +87,7 @@ test.describe('Graph Explorer — page load', () => {
     await expect(page.getByRole('heading', { name: 'Graph Explorer' })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('2', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Nodes')).toBeVisible();
-    await expect(page.getByText('Edges')).toBeVisible();
+    await expect(page.getByText('Edges').first()).toBeVisible();
 
     await expect(page.getByText('Customer Onboarding')).toBeVisible();
     await expect(page.getByText('Acme Corp')).toBeVisible();
@@ -210,7 +210,7 @@ test.describe('Graph Explorer — extract from text', () => {
     await page.getByPlaceholder('Paste text to extract entities and relationships...').fill(
       'Acme Corp signed a new contract with Globex.'
     );
-    await page.getByRole('button', { name: 'Extract', exact: true }).click();
+    await page.getByRole('button', { name: 'Extract', exact: true }).first().click();
 
     await expect(
       page.getByText('Extracted 3 entities, 2 relationships')

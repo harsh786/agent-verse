@@ -696,7 +696,7 @@ test.describe('Knowledge Base — CRUD & RAG', () => {
     await page.goto('/knowledge');
     await page.getByRole('button', { name: /new collection/i }).click();
     await page.locator('input[placeholder="my-knowledge-base"]').fill('platform-docs');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.getByRole('button', { name: 'Create' }).first().click();
 
     await expect(page.getByText('platform-docs')).toBeVisible({ timeout: 15_000 });
   });

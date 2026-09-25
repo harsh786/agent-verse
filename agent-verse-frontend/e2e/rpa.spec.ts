@@ -147,7 +147,7 @@ test.describe('RPA Live — populated state', () => {
 
     await img.click({ position: { x: 50, y: 50 } });
 
-    await expect(page.getByText(/rpa_click/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/rpa_click/i).first()).toBeVisible({ timeout: 5000 });
   });
 });
 
@@ -176,7 +176,7 @@ test.describe('RPA Live — primary interactions', () => {
     await page.getByText('rpa_type').click();
 
     await page.getByRole('button', { name: /^execute$/i }).click();
-    await expect(page.getByText(/Executed rpa_type/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Executed rpa_type/i).first()).toBeVisible({ timeout: 5000 });
   });
 
   test('6. Takeover modal requests takeover with a reason', async ({ page }) => {

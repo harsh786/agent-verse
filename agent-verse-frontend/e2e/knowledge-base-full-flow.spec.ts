@@ -550,7 +550,7 @@ test.describe('Knowledge Base — Collection Lifecycle', () => {
     const nameInput = page.locator('input[placeholder="my-knowledge-base"]');
     await expect(nameInput).toBeVisible({ timeout: 5_000 });
     await nameInput.fill('platform-runbooks');
-    await page.getByRole('button', { name: 'Create' }).click();
+    await page.getByRole('button', { name: 'Create' }).first().click();
     await expect(page.getByText('platform-runbooks')).toBeVisible({ timeout: 15_000 });
   });
 

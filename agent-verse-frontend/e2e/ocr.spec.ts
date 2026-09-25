@@ -345,7 +345,7 @@ test.describe('OCR — History', () => {
     await expect(page.getByTestId('ocr-result')).toBeVisible({ timeout: 8_000 });
 
     // Save it
-    await page.getByRole('button', { name: /Save/i }).click();
+    await page.getByRole('button', { name: /Save/i }).first().click();
 
     // Switch to history and verify
     await page.getByTestId('tab-history').click();
@@ -448,7 +448,7 @@ test.describe('OCR — LLM Vision engine display', () => {
     });
     await page.getByTestId('extract-btn').click();
     await expect(page.getByTestId('ocr-result')).toBeVisible({ timeout: 8_000 });
-    await expect(page.getByText('LLM Vision')).toBeVisible();
+    await expect(page.getByText('LLM Vision').first()).toBeVisible();
     await expect(page.getByTestId('doc-type-badge')).toContainText('Invoice');
   });
 

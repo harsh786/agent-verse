@@ -159,7 +159,7 @@ test.describe('Playground — Run Simulation (primary interaction)', () => {
     await expect(page.getByText(/2 steps · \$0\.0030 simulated/i)).toBeVisible();
 
     // Session stats panel
-    await expect(page.getByText('Tool Calls')).toBeVisible();
+    await expect(page.getByText('Tool Calls').first()).toBeVisible();
     await expect(page.getByText('$0.0030')).toBeVisible();
   });
 

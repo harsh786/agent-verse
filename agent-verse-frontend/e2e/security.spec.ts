@@ -71,7 +71,8 @@ async function mockSecurityApis(page: Page) {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ policies: [], active_bundles: ['gdpr'] }),
+      // listGovernancePolicies() is GovernancePolicy[] — a bare array.
+      body: JSON.stringify([]),
     }),
   );
 
@@ -224,7 +225,7 @@ test.describe('Security Center — tab content', () => {
     // Default tab — agent identity content should be visible
     await expect(page.getByTestId('tab-content')).toBeVisible();
     // The panel heading text
-    await expect(page.getByText('Agent Identity')).toBeVisible();
+    await expect(page.getByText('Agent Identity').first()).toBeVisible();
   });
 
   test('Governance tab shows compliance bundles', async ({ page }) => {

@@ -187,7 +187,7 @@ test.describe('Authentication', () => {
       timeout: 15000,
     });
     // Click the Sign out button in the TopBar (aria-label="Sign out")
-    await page.getByRole('button', { name: /sign out/i }).click();
+    await page.getByRole('button', { name: /sign out/i }).first().click();
     // Should redirect to /auth
     await expect(page).toHaveURL(/\/(auth|login)/, { timeout: 10000 });
   });
@@ -214,7 +214,7 @@ test.describe('Authentication', () => {
     await expect(page.locator('h1').filter({ hasText: /mission control/i })).toBeVisible({
       timeout: 15000,
     });
-    await page.getByRole('button', { name: /sign out/i }).click();
+    await page.getByRole('button', { name: /sign out/i }).first().click();
     await expect(page).toHaveURL(/\/(auth|login)/, { timeout: 10000 });
     // Navigate to / and confirm redirect to /auth
     await page.goto('/');

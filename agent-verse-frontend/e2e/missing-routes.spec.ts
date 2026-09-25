@@ -80,7 +80,7 @@ test.describe('Agent Create', () => {
     await page.goto('/agents/create');
     await expect(page.locator('h1, h2').first()).toBeVisible({ timeout: 15000 });
     const createBtn = page.getByRole('button', { name: /create|save|submit/i });
-    await expect(createBtn).toBeVisible({ timeout: 5000 });
+    await expect(createBtn.first()).toBeVisible({ timeout: 5000 });
   });
 
   test('submitting create form calls POST /agents', async ({ page }) => {

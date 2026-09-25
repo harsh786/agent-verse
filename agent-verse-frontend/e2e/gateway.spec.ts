@@ -99,7 +99,7 @@ test.describe('Gateway Settings — /settings/gateway', () => {
     await expect(page.getByRole('heading', { name: /command gateway/i })).toBeVisible({ timeout: 10000 });
     // The hook's .catch() fallback exposes the 8 static channels, only REST API connected.
     await expect(page.getByText('1 channel active')).toBeVisible({ timeout: 5000 });
-    await expect(page.getByText('Telegram')).toBeVisible();
+    await expect(page.getByText('Telegram').first()).toBeVisible();
     await expect(page.getByText('WhatsApp')).toBeVisible();
   });
 

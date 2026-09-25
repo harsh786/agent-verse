@@ -49,7 +49,7 @@ test.describe('Artifacts Browser', () => {
     );
     await page.goto('/artifacts');
     await expect(page.getByText('report.json')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('report')).toBeVisible();
+    await expect(page.getByText('report').first()).toBeVisible();
   });
 
   test('search filters artifacts', async ({ page }) => {
@@ -87,7 +87,7 @@ test.describe('Artifacts Browser', () => {
     await page.getByTestId('artifact-card').click();
     await expect(page.getByRole('button', { name: /^delete$/i })).toBeVisible({ timeout: 5000 });
     await expect(page.getByRole('button', { name: /use as input/i })).toBeVisible();
-    await expect(page.getByRole('button', { name: /go to goal/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /go to goal/i }).first()).toBeVisible();
   });
 
   test('sort dropdown works', async ({ page }) => {
@@ -187,7 +187,7 @@ test.describe('A2A Network', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
     );
     await page.goto('/a2a');
-    await expect(page.getByText(/dispatch task/i)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/dispatch task/i).first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByLabel(/goal/i)).toBeVisible();
   });
 
@@ -218,7 +218,7 @@ test.describe('A2A Network', () => {
     );
     await page.goto('/a2a');
     await page.getByRole('tab', { name: /agent card/i }).click();
-    await expect(page.getByText('AgentVerse')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('AgentVerse').first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(/v2\.0/)).toBeVisible();
     await expect(page.getByText(/hmac-sha256/)).toBeVisible();
   });
@@ -343,7 +343,7 @@ test.describe('Budget Manager', () => {
     );
     await page.goto('/settings/budgets');
     await expect(page.getByText(/daily spend/i)).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/\$2\.50/)).toBeVisible();
+    await expect(page.getByText(/\$2\.50/).first()).toBeVisible();
   });
 
   test('shows no anomalies green state', async ({ page }) => {

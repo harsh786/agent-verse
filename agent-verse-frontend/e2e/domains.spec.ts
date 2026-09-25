@@ -172,7 +172,7 @@ test.describe('Domains — detail page', () => {
 
     await expect(page.getByRole('heading', { name: 'HR & Talent' })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText('hiring')).toBeVisible();
-    await expect(page.getByText('onboarding')).toBeVisible();
+    await expect(page.getByText('onboarding').first()).toBeVisible();
     await expect(page.getByText(/1\s+agent template/i)).toBeVisible({ timeout: 5000 });
     await expect(page.getByText(/1\s+goal template/i)).toBeVisible();
   });
@@ -222,6 +222,6 @@ test.describe('Domains — detail page', () => {
 
     await page.getByRole('button', { name: 'Deploy HR Onboarder' }).click();
 
-    await expect(page.getByText(/deployed/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/deployed/i).first()).toBeVisible({ timeout: 5000 });
   });
 });

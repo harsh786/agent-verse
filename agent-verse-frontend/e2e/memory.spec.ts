@@ -92,7 +92,7 @@ test.describe('Memory Explorer — Page structure', () => {
     await mockMemoryApi(page);
     await page.goto('/memory');
     await expect(page.locator('h1').filter({ hasText: /memory explorer/i })).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/semantic recall/i)).toBeVisible();
+    await expect(page.getByText(/semantic recall/i).first()).toBeVisible();
     await expect(page.getByText(/long-term memories/i)).toBeVisible();
     await expect(page.getByText(/tool reliability/i)).toBeVisible();
     await expect(page.getByText(/execution memory/i)).toBeVisible();
@@ -154,7 +154,7 @@ test.describe('Memory Explorer — Long-term Memories', () => {
     await mockMemoryApi(page, { memories: [mem] });
     await page.goto('/memory');
     await expect(page.getByText('Use async functions for all API calls')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('skill')).toBeVisible();
+    await expect(page.getByText('skill').first()).toBeVisible();
     await expect(page.getByText('#async')).toBeVisible();
     await expect(page.getByText('#api')).toBeVisible();
   });
@@ -303,7 +303,7 @@ test.describe('Memory Explorer — Tool Reliability', () => {
     await page.goto('/memory');
     await expect(page.getByText('jira_create_issue')).toBeVisible({ timeout: 15000 });
     await expect(page.getByText('10')).toBeVisible(); // total_calls
-    await expect(page.getByText('70%')).toBeVisible();
+    await expect(page.getByText('70%').first()).toBeVisible();
   });
 });
 

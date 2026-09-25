@@ -98,7 +98,7 @@ test.describe('Workflow Builder', () => {
     await setupWorkflowRoutes(page);
     await page.goto('/workflow-builder');
 
-    await expect(page.locator('input').filter({ hasValue: /my workflow/i })).toBeVisible({
+    await expect(page.locator('input').filter({ hasValue: /my workflow/i }).first()).toBeVisible({
       timeout: 15000,
     });
   });
@@ -252,7 +252,7 @@ test.describe('Workflow Builder', () => {
     await expect(page.getByText('Build your workflow')).not.toBeVisible({ timeout: 5000 });
 
     // Click New
-    await page.getByRole('button', { name: /New/i }).click();
+    await page.getByRole('button', { name: /New/i }).first().click();
 
     // Canvas should be empty again
     await expect(page.getByText('Build your workflow')).toBeVisible({ timeout: 5000 });

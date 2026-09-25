@@ -91,7 +91,7 @@ test.describe('Eval Suites — Page load', () => {
     await expect(page.getByRole('heading', { name: /eval suites/i })).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(/run automated evaluation suites/i)).toBeVisible();
     await expect(page.getByText('Total Suites')).toBeVisible();
-    await expect(page.getByText('Passed')).toBeVisible();
+    await expect(page.getByText('Passed').first()).toBeVisible();
     await expect(page.getByText('Failed')).toBeVisible();
   });
 
@@ -127,7 +127,7 @@ test.describe('Eval Suites — Populated state', () => {
     await expect(page.getByText('Jira Triage Suite')).toBeVisible();
     await expect(page.getByText('12 tasks')).toBeVisible();
     await expect(page.getByText('92% pass')).toBeVisible();
-    await expect(page.getByText('Passed', { exact: true })).toBeVisible();
+    await expect(page.getByText('Passed', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('Failed', { exact: true })).toBeVisible();
   });
 });

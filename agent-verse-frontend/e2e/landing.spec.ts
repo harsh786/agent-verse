@@ -22,14 +22,14 @@ test.describe('Landing Page — Content', () => {
     await expect(page.getByText(/every tool\. zero code\./i)).toBeVisible();
     await expect(page.getByText(/227 real-world connectors/i)).toBeVisible();
     await expect(page.getByText('227+')).toBeVisible();
-    await expect(page.getByText('connectors')).toBeVisible();
+    await expect(page.getByText('connectors').first()).toBeVisible();
   });
 
   test('2. Renders nav bar with brand and section links', async ({ page }) => {
     await page.goto('/');
 
     await expect(page.getByText('AgentVerse').first()).toBeVisible({ timeout: 10000 });
-    await expect(page.getByRole('link', { name: 'Platform' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Platform' }).first()).toBeVisible();
     await expect(page.getByRole('link', { name: 'Connectors' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Governance' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Use Cases' })).toBeVisible();
@@ -42,7 +42,7 @@ test.describe('Landing Page — Content', () => {
     await page.getByText(/© 2026 AgentVerse/i).scrollIntoViewIfNeeded();
     await expect(page.getByText(/© 2026 AgentVerse/i)).toBeVisible();
     await expect(page.getByText('Autonomous Agents')).toBeVisible();
-    await expect(page.getByText('HITL Approval')).toBeVisible();
+    await expect(page.getByText('HITL Approval').first()).toBeVisible();
     await expect(page.getByText('Python SDK')).toBeVisible();
   });
 });

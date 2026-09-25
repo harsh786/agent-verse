@@ -138,7 +138,7 @@ test.describe('Navigation — sidebar structure', () => {
 
   test('all governance nav links are present: Governance, Settings', async ({ page }) => {
     for (const label of ['Governance', 'Settings']) {
-      await expect(page.locator('aside').getByText(label, { exact: true })).toBeVisible();
+      await expect(page.locator('aside').getByText(label, { exact: true }).first()).toBeVisible();
     }
   });
 

@@ -8,6 +8,29 @@
  */
 import { test, expect, type Page } from '@playwright/test';
 
+/**
+ * The code editor is CodeMirror 6: a contenteditable, not a <textarea>.
+ * fill()/inputValue() do not apply to it, and the aria-label="Code" lands on
+ * both the wrapper and the inner editable, so getByLabel('Code') is a
+ * strict-mode violation.
+ *
+ * keyboard.insertText() is used rather than type(): CodeMirror has
+ * closeBrackets enabled, so typing "print('hi')" key-by-key would auto-insert
+ * the closing bracket and quote and produce "print('hi')')".
+ */
+async function setEditorCode(page: Page, code: string): Promise<void> {
+  const content = page.locator('.cm-content').first();
+  await content.click();
+  await page.keyboard.press('ControlOrMeta+A');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.insertText(code);
+}
+
+async function editorCode(page: Page): Promise<string> {
+  return (await page.locator('.cm-content').first().innerText()).trim();
+}
+
+
 // ── Auth helper ───────────────────────────────────────────────────────────────
 
 async function setupAuth(page: Page) {
@@ -52,7 +75,7 @@ test.describe('Tools — Code Runner', () => {
     await page.goto('/tools');
     await expect(page.getByRole('tab', { name: /code runner/i })).toBeVisible({ timeout: 15000 });
     await expect(page.getByRole('tab', { name: /code runner/i })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByLabel('Code')).toBeVisible();
+    await expect(page.locator('.cm-content').first()).toBeVisible();
   });
 
   test('all three language buttons are present', async ({ page }) => {
@@ -83,10 +106,10 @@ test.describe('Tools — Code Runner', () => {
     );
 
     await page.goto('/tools');
-    await page.getByLabel('Code').fill("print('Hello, World!')");
+    await setEditorCode(page, "print('Hello, World!')");
     await page.getByRole('button', { name: /run code/i }).click();
 
-    await expect(page.getByText('Hello, World!')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Hello, World!').first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(/exit 0/i)).toBeVisible();
     await expect(page.getByText(/35ms/)).toBeVisible();
   });
@@ -103,7 +126,7 @@ test.describe('Tools — Code Runner', () => {
     );
 
     await page.goto('/tools');
-    await page.getByLabel('Code').fill('foo');
+    await setEditorCode(page, 'foo');
     await page.getByRole('button', { name: /run code/i }).click();
 
     await expect(page.getByText(/NameError/)).toBeVisible({ timeout: 10000 });
@@ -122,9 +145,9 @@ test.describe('Tools — Code Runner', () => {
     );
 
     await page.goto('/tools');
-    await page.getByLabel('Code').fill('print("ok")');
+    await setEditorCode(page, 'print("ok")');
     await page.getByRole('button', { name: /run code/i }).click();
-    await page.getByText('ok').waitFor({ timeout: 10000 });
+    await page.getByText('ok').first().waitFor({ timeout: 10000 });
 
     await expect(page.getByText(/execution history/i)).toBeVisible();
   });
@@ -134,7 +157,7 @@ test.describe('Tools — Code Runner', () => {
     await mockFilesApi(page);
     await page.goto('/tools');
     await page.getByRole('button', { name: /template/i }).click();
-    const code = await page.getByLabel('Code').inputValue();
+    const code = await editorCode(page);
     expect(code.length).toBeGreaterThan(0);
   });
 
@@ -343,6 +366,6 @@ test.describe('Tools — Email', () => {
     await page.getByRole('button', { name: /send email/i }).click();
 
     // Should show error in some form (toast or inline)
-    await expect(page.getByText(/failed|error/i)).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText(/failed|error/i).first()).toBeVisible({ timeout: 10000 });
   });
 });

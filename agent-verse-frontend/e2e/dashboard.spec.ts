@@ -50,7 +50,8 @@ async function setupAuth(page: Page) {
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({ agents: [] }),
+      // agentsApi.list() is Agent[] — a bare array, not an envelope.
+      body: JSON.stringify([]),
     })
   );
   // Cost analytics — needed by cost KPI card

@@ -262,7 +262,7 @@ test.describe('Agent Lab — Prompt Lab', () => {
 
     await page.getByRole('tab', { name: /Prompt Lab/i }).click();
     await expect(page.getByText('Default Planner')).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText('CONTROL')).toBeVisible();
+    await expect(page.getByText('CONTROL').first()).toBeVisible();
     await expect(page.getByText('Concise Planner')).toBeVisible();
     await expect(page.getByText('CHALLENGER')).toBeVisible();
   });
@@ -323,7 +323,7 @@ test.describe('Agent Lab — Score & Benchmark', () => {
 
     await page.getByRole('tab', { name: /^Score$/i }).click();
     await expect(page.getByText(/Eval Suite Results/i)).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText(/Core Suite/i)).toBeVisible();
+    await expect(page.getByText(/Core Suite/i).first()).toBeVisible();
   });
 
   test('12. running red-team testing shows the security score and case results', async ({ page }) => {
@@ -338,6 +338,6 @@ test.describe('Agent Lab — Score & Benchmark', () => {
     await expect(page.getByText(/3 blocked/i)).toBeVisible();
     await expect(page.getByText(/1 leaked/i)).toBeVisible();
     await expect(page.getByText('leak-secrets')).toBeVisible();
-    await expect(page.getByText('LEAKED')).toBeVisible();
+    await expect(page.getByText('LEAKED').first()).toBeVisible();
   });
 });

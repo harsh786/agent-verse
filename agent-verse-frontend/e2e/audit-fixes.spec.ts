@@ -255,8 +255,15 @@ test.describe('Governance — Policy Delete Confirmation', () => {
         await route.continue();
       }
     });
+    // listApprovals() is ApprovalRequest[] — a bare array. The glob also catches
+    // /governance/approvals/sla-stats, which IS an object, so branch on the URL.
     await page.route('**/governance/approvals**', route =>
-      route.fulfill({ status: 200, body: JSON.stringify({ pending: [], sla_stats: {} }) })
+      route.fulfill({
+        status: 200,
+        body: route.request().url().includes('sla')
+          ? JSON.stringify({ pending: 0, approved: 0, denied: 0, timed_out: 0, escalated: 0, within_sla: 0, avg_resolution_seconds: 0 })
+          : JSON.stringify([]),
+      })
     );
     await page.route('**/audit/events**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
     await page.route('**/governance/cost**', route =>
@@ -457,7 +464,8 @@ test.describe('Schedules — Delete & History', () => {
     await authPage(page);
     await apiRoute(page, '**/schedules**', async route => {
       if (route.request().method() === 'GET') {
-        await route.fulfill({ status: 200, body: JSON.stringify({ schedules: [MOCK_SCHEDULE] }) });
+        // schedulesApi.list() is typed Schedule[] — a bare array, not an envelope.
+        await route.fulfill({ status: 200, body: JSON.stringify([MOCK_SCHEDULE]) });
       } else {
         await route.continue();
       }
@@ -597,8 +605,15 @@ test.describe('Governance Audit — Time Column', () => {
     await page.route('**/governance/policies**', route =>
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
+    // listApprovals() is ApprovalRequest[] — a bare array. The glob also catches
+    // /governance/approvals/sla-stats, which IS an object, so branch on the URL.
     await page.route('**/governance/approvals**', route =>
-      route.fulfill({ status: 200, body: JSON.stringify({ pending: [], sla_stats: {} }) })
+      route.fulfill({
+        status: 200,
+        body: route.request().url().includes('sla')
+          ? JSON.stringify({ pending: 0, approved: 0, denied: 0, timed_out: 0, escalated: 0, within_sla: 0, avg_resolution_seconds: 0 })
+          : JSON.stringify([]),
+      })
     );
     await page.route('**/audit/events**', route =>
       route.fulfill({

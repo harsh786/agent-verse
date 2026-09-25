@@ -141,7 +141,7 @@ test.describe('Obsidian Mode — Graph tab (default)', () => {
     await expect(page.getByText('Vault Explorer')).toBeVisible({ timeout: 10000 });
     await expect(page.getByLabel(/Knowledge graph view/i)).toBeVisible({ timeout: 8000 });
     await expect(page.getByRole('group', { name: /Filter by node type/i })).toBeVisible();
-    await expect(page.getByText('document', { exact: true })).toBeVisible();
+    await expect(page.getByText('document', { exact: true }).first()).toBeVisible();
     await expect(page.getByText('concept', { exact: true })).toBeVisible();
   });
 

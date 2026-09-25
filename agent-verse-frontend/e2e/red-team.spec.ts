@@ -148,7 +148,7 @@ test.describe('Red Team — Running tests', () => {
     await expect(page.getByText(/1 critical/i)).toBeVisible();
 
     // PASS/FAIL badges rendered per result
-    await expect(page.getByText('PASS')).toBeVisible();
+    await expect(page.getByText('PASS').first()).toBeVisible();
     await expect(page.getByText('FAIL').first()).toBeVisible();
 
     // Findings shown for failing cases

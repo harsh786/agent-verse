@@ -46,7 +46,7 @@ test('real backend: goal detail shows the auto-selected agent pattern', async ({
   );
 
   await page.goto('/dashboard');
-  await expect(page.getByText('Mission Control')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('Mission Control').first()).toBeVisible({ timeout: 20_000 });
 
   // Submit a non-trivial goal through the real Quick Goal input.
   const goalInput = page.getByPlaceholder('What should your agents do? (Enter to submit)');

@@ -135,7 +135,7 @@ test.describe('Schedules NL Scheduler — Response Format', () => {
   test('NL scheduler shows human-readable response not raw JSON', async ({ page }) => {
     await authPage(page);
     await apiRoute(page, '**/schedules**', route =>
-      route.fulfill({ status: 200, body: JSON.stringify({ schedules: [] }) })
+      route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
     await page.route('**/nl/schedule**', route =>
       route.fulfill({
@@ -464,7 +464,13 @@ test.describe('Governance Budget — Gauge Formula', () => {
   test('budget tab loads without crash', async ({ page }) => {
     await authPage(page);
     await page.route('**/governance/policies**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
-    await page.route('**/governance/approvals**', route => route.fulfill({ status: 200, body: JSON.stringify({ pending: [], sla_stats: {} }) }));
+    await page.route('**/governance/approvals**', route =>
+      route.fulfill({
+        status: 200,
+        body: route.request().url().includes('sla')
+          ? JSON.stringify({ pending: 0, approved: 0, denied: 0, timed_out: 0, escalated: 0, within_sla: 0, avg_resolution_seconds: 0 })
+          : JSON.stringify([]),
+      }));
     await page.route('**/audit/events**', route => route.fulfill({ status: 200, body: JSON.stringify([]) }));
     await page.route('**/governance/cost**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({

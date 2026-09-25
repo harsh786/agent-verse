@@ -29,7 +29,7 @@ test.describe('Integrations — page load', () => {
     await expect(page.getByRole('heading', { name: 'Integrations' })).toBeVisible({ timeout: 10000 });
 
     for (const name of ['Slack', 'Zapier', 'Alertmanager', 'Datadog']) {
-      await expect(page.getByRole('heading', { name, level: 2 })).toBeVisible();
+      await expect(page.getByRole('heading', { name, level: 2 }).first()).toBeVisible();
     }
 
     await expect(page.getByText('/integrations/slack/commands')).toBeVisible();

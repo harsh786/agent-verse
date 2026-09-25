@@ -461,7 +461,7 @@ test.describe('MFA Settings — Enrollment Wizard', () => {
     await expect(
       page.getByText('MFA Enabled — Save Your Recovery Codes'),
     ).not.toBeVisible({ timeout: 3_000 });
-    await expect(page.getByText('MFA Enabled')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('MFA Enabled').first()).toBeVisible({ timeout: 8_000 });
   });
 });
 
@@ -541,7 +541,7 @@ test.describe('MFA Settings — Disable Flow', () => {
     await page.locator('input[aria-label="TOTP code to disable MFA"]').fill('123456');
     await page.getByRole('button', { name: 'Disable MFA' }).last().click();
     await expect(page.getByText('MFA disabled.')).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText('MFA Disabled')).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText('MFA Disabled').first()).toBeVisible({ timeout: 8_000 });
   });
 
   test('invalid code on disable confirmation shows "Invalid code" error toast', async ({

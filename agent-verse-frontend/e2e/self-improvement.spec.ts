@@ -113,7 +113,7 @@ test.describe('Self-Improvement Page', () => {
     await page.goto('/self-improvement');
 
     await expect(page.getByText('Planner Prompt A/B — Jira Agent')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText('running')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText('running').first()).toBeVisible({ timeout: 5000 });
   });
 
   test('shows concluded experiment with lift percentage', async ({ page }) => {
@@ -151,7 +151,7 @@ test.describe('Self-Improvement Page', () => {
 
     await expect(page.getByText(/planning instructions.*jira|jira.*planning instructions/i)).toBeVisible({ timeout: 10000 });
     await expect(page.getByRole('button', { name: /apply/i })).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole('button', { name: /reject/i })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('button', { name: /reject/i }).first()).toBeVisible({ timeout: 5000 });
   });
 
   test('suggestions tab shows badge count for pending suggestions', async ({ page }) => {

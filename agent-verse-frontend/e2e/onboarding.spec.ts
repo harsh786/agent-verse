@@ -63,7 +63,7 @@ test.describe('Onboarding — Wizard Navigation', () => {
     await expect(page.getByRole('heading', { name: /configure your llm provider/i })).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText('AgentVerse')).toBeVisible();
+    await expect(page.getByText('AgentVerse').first()).toBeVisible();
     await expect(page.getByText('Configure LLM')).toBeVisible();
     await expect(page.getByText('Add Connector')).toBeVisible();
     await expect(page.getByText('Create Agent')).toBeVisible();
@@ -117,7 +117,7 @@ test.describe('Onboarding — Wizard Navigation', () => {
 
     await expect(page.getByText(/goal submitted!/i)).toBeVisible({ timeout: 5000 });
     await expect(page.getByText(/goal-onboard-1/i)).toBeVisible();
-    await expect(page.getByRole('button', { name: /go to dashboard/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: /go to dashboard/i }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: /watch goal/i })).toBeVisible();
   });
 
