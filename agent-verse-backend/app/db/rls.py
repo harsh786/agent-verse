@@ -59,10 +59,23 @@ async def system_session(session: AsyncSession) -> AsyncIterator[AsyncSession]:
     """Set session for system-level maintenance, bypassing tenant RLS.
 
     Issues ``SET LOCAL row_security = off`` so the calling transaction can
-    read/write rows across all tenants without RLS filtering.  Falls back to
-    setting a recognisable ``__system__`` marker if the DB role lacks the
-    ``BYPASSRLS`` privilege (the system marker can be matched by a permissive
-    superuser-equivalent RLS policy when BYPASSRLS is unavailable).
+    read/write rows across all tenants without RLS filtering.
+
+    **This requires a role with BYPASSRLS (or superuser).** Provision the
+    maintenance/Celery worker accordingly. Under a role without it, ``SET LOCAL
+    row_security = off`` still *succeeds* and every subsequent statement then
+    fails with ``InsufficientPrivilegeError: query would be affected by
+    row-level security``. That is the intended outcome: a maintenance job that
+    cannot see the rows must fail loudly rather than report success.
+
+    A previous version claimed to "fall back to a recognisable ``__system__``
+    marker if the DB role lacks BYPASSRLS". That fallback was unreachable — it
+    was keyed on the ``SET`` itself raising, which it never does (verified: the
+    SET succeeds and the *query* raises). It was also worse than failing: no
+    table's policy matches ``__system__``, so it would have turned a loud
+    permission error into every maintenance DELETE silently matching zero rows
+    and reporting ``{"status": "ok", "deleted": 0}``. It is removed rather than
+    repaired.
 
     Must be used **inside** an open transaction (i.e., after ``session.begin()``
     or inside an ``async with session.begin()`` block) so that ``SET LOCAL``
@@ -76,11 +89,5 @@ async def system_session(session: AsyncSession) -> AsyncIterator[AsyncSession]:
     """
     from sqlalchemy import text
 
-    try:
-        await session.execute(text("SET LOCAL row_security = off"))
-    except Exception:
-        # Fallback for roles without BYPASSRLS: set a recognisable system GUC.
-        # A corresponding permissive RLS policy on each table can allow this value.
-        with suppress(Exception):
-            await session.execute(text("SELECT set_config('app.tenant_id', '__system__', true)"))
+    await session.execute(text("SET LOCAL row_security = off"))
     yield session

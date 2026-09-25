@@ -396,14 +396,42 @@ class TestConcludeStaleExperiments:
 
 
 class TestExpireStaleDocuments:
-    def test_success_returns_deleted_count(self):
-        from app.scaling.tasks import expire_stale_documents
+    @pytest.mark.asyncio
+    async def test_success_deletes_documents_and_the_graph_extracted_from_them(self):
+        """Expiring a document must also reclaim its knowledge-graph rows.
 
-        session = _session(execute_side_effect=[MagicMock(fetchall=MagicMock(return_value=[(1,)]))])
+        `knowledge_nodes.source_id` holds the `documents.id` a node was
+        extracted from; before this, nothing ever deleted those nodes or their
+        edges (the only KG delete path was a whole-tenant wipe), so expired
+        documents left their extracted entities behind permanently and Graph RAG
+        kept citing deleted content.
+        """
+        from app.scaling.tasks import _expire_stale_documents
+
+        async def _execute(stmt=None, params=None):
+            sql = str(stmt) if stmt is not None else ""
+            result = MagicMock()
+            if "DELETE FROM documents" in sql:
+                result.fetchall = MagicMock(return_value=[("doc-1",)])
+            elif "SELECT id FROM knowledge_nodes" in sql:
+                result.fetchall = MagicMock(return_value=[("n1",), ("n2",)])
+            elif "DELETE FROM knowledge_edges" in sql:
+                result.rowcount = 1
+            elif "DELETE FROM knowledge_nodes" in sql:
+                result.rowcount = 2
+            return result
+
+        session = _session_with_begin(None)
+        session.execute = AsyncMock(side_effect=_execute)
         db_factory = _db_factory(session)
         with patch("app.db.session.get_session_factory", return_value=db_factory):
-            result = expire_stale_documents.run()
-        assert result == {"status": "ok", "deleted": 1}
+            result = await _expire_stale_documents(90)
+        assert result == {
+            "status": "ok",
+            "deleted": 1,
+            "graph_nodes_deleted": 2,
+            "graph_edges_deleted": 1,
+        }
 
     def test_error_returns_error_status(self):
         from app.scaling.tasks import expire_stale_documents

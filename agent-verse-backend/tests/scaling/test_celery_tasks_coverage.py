@@ -1961,7 +1961,15 @@ async def test_delete_expired_records_per_table_error() -> None:
 
     execute_call = [0]
 
-    async def _raise_for_events(*a: object, **kw: object) -> None:
+    async def _raise_for_events(stmt: object = None, *a: object, **kw: object) -> None:
+        # system_session's `SET LOCAL row_security = off` must succeed — this
+        # test is about isolating a failure on ONE TABLE's DELETE, not about a
+        # session that cannot bypass RLS at all (see
+        # tests/db/test_rls_system_session.py for that).
+        if "row_security" in (str(stmt) if stmt is not None else ""):
+            mock_set = MagicMock()
+            mock_set.rowcount = 0
+            return mock_set
         execute_call[0] += 1
         if execute_call[0] == 1:
             raise RuntimeError("table locked")

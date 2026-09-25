@@ -5029,31 +5029,105 @@ def conclude_stale_experiments() -> dict:
 
 @celery_app.task(name="app.scaling.tasks.expire_stale_documents", queue="maintenance")
 def expire_stale_documents() -> dict:
-    """Remove knowledge chunks whose freshness_ttl_hours has elapsed."""
+    """Expire documents past the retention window, and the graph derived from them."""
+    from app.core.config import get_settings
 
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
+    retention_days = getattr(get_settings(), "data_retention_days", 90)
+    return _run_async(_expire_stale_documents(retention_days))
 
-            from app.core.config import get_settings
-            from app.db.session import get_session_factory as _get_fresh_db
 
-            retention_days = getattr(get_settings(), "data_retention_days", 90)
-            db = _get_fresh_db()
-            async with db() as session:
-                result = await session.execute(
+async def _expire_stale_documents(retention_days: int) -> dict:
+    """Delete expired document chunks AND the knowledge-graph rows extracted from them.
+
+    Two bugs this replaces:
+
+    1. **The DELETE never ran.** ``documents`` is ENABLE + FORCE ROW LEVEL
+       SECURITY, and this task opened a plain session with no RLS context, so
+       under any real least-privilege (non-BYPASSRLS) role the statement matched
+       zero rows — and the task cheerfully reported ``{"status": "ok",
+       "deleted": 0}``. Maintenance tasks in this module are already required to
+       use ``system_session`` (see ``_delete_expired_records`` and
+       ``tests/scaling/test_maintenance_rls_fix.py``); this one was missed.
+
+    2. **The knowledge graph outlived its sources.** ``knowledge_nodes.source_id``
+       holds the ``documents.id`` the node was extracted from, but nothing ever
+       removed those nodes or their edges — the ONLY delete path for the KG
+       tables was ``KnowledgeGraphStore.delete_tenant_graph``, a whole-tenant
+       wipe. So expiring a document left the entities and relations extracted
+       from it in place forever: unbounded growth, and — worse — Graph RAG kept
+       returning evidence derived from content that retention had already
+       deleted, silently defeating the retention policy for anything that
+       reached the graph.
+
+    This is not age-expiry of curated knowledge for its own sake: it deletes
+    exactly the graph rows whose source document is being deleted by the
+    retention policy that already exists, and nothing else.
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+        from app.db.session import get_session_factory as _get_fresh_db
+
+        db = _get_fresh_db()
+        async with db() as session, session.begin(), system_session(session):
+            # make_interval(days => :days) rather than interpolating the value
+            # into the SQL string.
+            expired = (
+                await session.execute(
                     text(
-                        f"DELETE FROM documents WHERE created_at < NOW() - INTERVAL '{retention_days} days' "  # noqa: E501
+                        "DELETE FROM documents "
+                        "WHERE created_at < NOW() - make_interval(days => :days) "
                         "RETURNING id"
-                    )
+                    ),
+                    {"days": int(retention_days)},
                 )
-                deleted = len(result.fetchall())
-                await session.commit()
-                return {"status": "ok", "deleted": deleted}
-        except Exception as exc:
-            return {"status": "error", "error": str(exc)}
+            ).fetchall()
+            doc_ids = [row[0] for row in expired]
 
-    return _run_async(_run())
+            nodes_deleted = 0
+            edges_deleted = 0
+            if doc_ids:
+                node_ids = [
+                    row[0]
+                    for row in (
+                        await session.execute(
+                            text(
+                                "SELECT id FROM knowledge_nodes "
+                                "WHERE source_id = ANY(:ids)"
+                            ),
+                            {"ids": doc_ids},
+                        )
+                    ).fetchall()
+                ]
+                if node_ids:
+                    # Edges first: they reference the nodes by id (no FK, so
+                    # nothing would cascade for us).
+                    edges_deleted = (
+                        await session.execute(
+                            text(
+                                "DELETE FROM knowledge_edges "
+                                "WHERE source_node_id = ANY(:ids) "
+                                "   OR target_node_id = ANY(:ids)"
+                            ),
+                            {"ids": node_ids},
+                        )
+                    ).rowcount
+                    nodes_deleted = (
+                        await session.execute(
+                            text("DELETE FROM knowledge_nodes WHERE id = ANY(:ids)"),
+                            {"ids": node_ids},
+                        )
+                    ).rowcount
+
+        return {
+            "status": "ok",
+            "deleted": len(doc_ids),
+            "graph_nodes_deleted": nodes_deleted,
+            "graph_edges_deleted": edges_deleted,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 @celery_app.task(name="agentverse.process_dpdp_erasures", bind=True, max_retries=3)

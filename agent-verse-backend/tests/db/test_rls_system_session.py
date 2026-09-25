@@ -58,29 +58,33 @@ async def test_system_session_yields_the_same_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_system_session_fallback_on_permission_error() -> None:
-    """When SET LOCAL row_security = off fails, fall back to setting system GUC."""
+async def test_system_session_surfaces_a_failure_to_disable_row_security() -> None:
+    """A maintenance session that cannot bypass RLS must fail, not continue.
+
+    This previously asserted a fallback: on `SET LOCAL row_security = off`
+    failing, set `app.tenant_id = '__system__'` and carry on. Two problems:
+
+    * it was keyed on the SET *raising*, which is not how the real failure
+      presents. Verified against Postgres: for a role without BYPASSRLS the SET
+      SUCCEEDS and the subsequent statement raises
+      `InsufficientPrivilegeError: query would be affected by row-level
+      security`. So the fallback never ran in the case it was written for.
+    * had it run, it would have been worse than the error. No table's policy
+      matches `__system__`, so every maintenance DELETE would have matched zero
+      rows and the task would have reported `{"status": "ok", "deleted": 0}` —
+      turning a loud permission error into a silent no-op on a data-retention
+      job.
+
+    The fallback is removed. A maintenance job that cannot see the rows it is
+    meant to reclaim must fail loudly.
+    """
     from app.db.rls import system_session
 
     mock_session = AsyncMock(spec=AsyncSession)
-
-    call_count = 0
-
-    async def side_effect(stmt: object, *args: object, **kwargs: object) -> object:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            raise Exception("permission denied to set parameter row_security")
-        return AsyncMock()
-
-    mock_session.execute.side_effect = side_effect
-
-    # Must not raise — fallback should handle the error
-    async with system_session(mock_session) as yielded:
-        assert yielded is mock_session
-
-    # Both the failing call + the fallback call happened
-    assert call_count >= 2, (
-        "Expected at least 2 execute calls (primary SET + fallback), "
-        f"got {call_count}"
+    mock_session.execute.side_effect = Exception(
+        "permission denied to set parameter row_security"
     )
+
+    with pytest.raises(Exception, match="permission denied"):
+        async with system_session(mock_session):
+            pass  # pragma: no cover - the context manager raises on entry
