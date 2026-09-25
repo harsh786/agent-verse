@@ -1088,7 +1088,29 @@ def create_app(
                     # workflow run and agent execution. (It also needs the RediSearch
                     # module, which is exactly what just failed above.) MemorySaver
                     # fully supports async execution; it only lacks cross-replica
-                    # persistence, an acceptable dev/no-RediSearch degradation.
+                    # persistence — tolerable on a single-process dev box, and
+                    # nowhere else.
+                    #
+                    # In production that fallback is not a degradation, it is data
+                    # loss with a warning: agent state lives in one process's heap,
+                    # so a goal paused for HITL on replica 1 cannot be resumed on
+                    # replica 2 and a worker restart drops every in-flight
+                    # checkpoint. Nothing downstream can detect it. The only safe
+                    # behaviour is to refuse to start — a deployment that cannot
+                    # persist checkpoints must be fixed (run redis-stack-server, or
+                    # any Redis with the query engine, per infra/), not run blind.
+                    if settings.environment == "production":
+                        raise RuntimeError(
+                            "LangGraph Redis checkpointer unavailable "
+                            f"({_exc}). Refusing to start in production on an "
+                            "in-memory checkpointer: agent state would not survive "
+                            "a restart and would not be shared across replicas. "
+                            "REDIS_URL must point at a Redis with the query engine "
+                            "(RediSearch) — e.g. redis/redis-stack-server, as "
+                            "infra/docker-compose.prod.yml and the Helm chart now "
+                            "deploy."
+                        ) from _exc
+
                     from langgraph.checkpoint.memory import MemorySaver
 
                     app.state.langgraph_checkpointer = MemorySaver()

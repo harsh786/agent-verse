@@ -40,8 +40,16 @@ services:
       retries: 20
 
   redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    # redis-stack-server, NOT plain redis: the LangGraph AsyncRedisSaver
+    # checkpointer requires the RediSearch module (FT.* commands). On a
+    # module-less redis the lifespan's setup() raises and app.main falls back to
+    # an in-process MemorySaver, which silently destroys cross-replica agent
+    # state -- a goal paused on one replica cannot be resumed on another and a
+    # worker restart loses every in-flight checkpoint. Extra redis-server flags
+    # go through REDIS_ARGS; overriding `command:` would skip module loading.
+    image: redis/redis-stack-server:7.4.0-v0
+    environment:
+      REDIS_ARGS: "--save '' --appendonly no"
     ports:
       - "56379:6379"
     healthcheck:

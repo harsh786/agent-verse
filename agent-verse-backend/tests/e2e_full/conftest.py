@@ -64,9 +64,14 @@ def _backends() -> Iterator[tuple[str, str]]:
         return
 
     try:
+        # redis-stack-server, not redis:7-alpine: the LangGraph AsyncRedisSaver
+        # checkpointer needs the RediSearch module (FT.* commands). On a
+        # module-less Redis the lifespan silently falls back to an in-process
+        # MemorySaver, so this tier would "pass" while exercising exactly the
+        # non-distributed configuration it exists to rule out.
         with (
             PostgresContainer("pgvector/pgvector:pg16", driver="asyncpg") as pg,
-            RedisContainer("redis:7-alpine") as redis,
+            RedisContainer("redis/redis-stack-server:7.4.0-v0") as redis,
         ):
             redis_url = (
                 f"redis://{redis.get_container_host_ip()}:"
