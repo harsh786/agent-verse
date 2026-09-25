@@ -208,15 +208,45 @@ def test_audit_integrity_check():
     assert "status" in data
     assert "verified" in data
 
-def test_audit_export_returns_json_package():
+def test_audit_export_refuses_to_emit_an_empty_package_with_no_audit_source():
+    """An unreadable audit log must not render as "this tenant had no events".
+
+    This previously asserted a 200 with an empty `events` list when no audit
+    service was wired — a downloadable "evidence package" claiming
+    `event_count: 0`, indistinguishable from a tenant that genuinely had no
+    audit events. That difference matters when the file is filed as compliance
+    evidence, so the endpoint now fails loudly instead.
+    """
     client = TestClient(_make_app())
     resp = client.get("/trust/audit/export", headers=_HEADERS)
+    assert resp.status_code == 503, resp.json()
+
+
+def test_audit_export_returns_a_package_when_the_audit_log_is_wired():
+    class _AuditLog:
+        async def query(self, *, tenant_id, limit):
+            return {"events": [{"id": "e1", "action": "tool.call", "tenant_id": tenant_id}]}
+
+    app = _make_app()
+    app.state.audit_log = _AuditLog()
+    resp = TestClient(app).get("/trust/audit/export", headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert "tenant_id" in data
-    assert "exported_at" in data
-    assert "integrity_hash" in data
-    assert "events" in data
+    assert data["tenant_id"] == _CTX.tenant_id
+    assert data["event_count"] == 1
+    assert data["integrity_hash"]
+    assert data["events"][0]["id"] == "e1"
+
+
+def test_audit_export_surfaces_a_failing_audit_query():
+    class _BrokenAuditLog:
+        async def query(self, *, tenant_id, limit):
+            raise RuntimeError("audit store down")
+
+    app = _make_app()
+    app.state.audit_log = _BrokenAuditLog()
+    resp = TestClient(app).get("/trust/audit/export", headers=_HEADERS)
+    assert resp.status_code == 503, resp.json()
 
 def test_multi_approver_flow():
     client = TestClient(_make_app())

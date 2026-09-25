@@ -408,13 +408,15 @@ def test_safe_content_passes():
 # ─── Trust & Governance ───────────────────────────────────────────────────────
 
 
-def test_audit_export_signed():
+def test_audit_export_without_an_audit_source_is_an_error_not_an_empty_package():
+    """See test_audit_export_refuses_to_emit_an_empty_package_with_no_audit_source.
+
+    (Also: the package is integrity-*hashed*, not signed — `integrity_hash` is
+    an unkeyed SHA-256, so it detects corruption, not tampering.)
+    """
     client = _make_full_app()
     resp = client.get("/trust/audit/export", headers=_HDRS_A)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "integrity_hash" in data
-    assert data["integrity_hash"] is not None
+    assert resp.status_code == 503, resp.json()
 
 
 def test_multi_approver_flow():

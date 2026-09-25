@@ -2177,6 +2177,21 @@ def create_app(
                     audit=_audit_v3,
                 )
                 logger.info("deletion_orchestrator_wired")
+
+                # Durable trust-governance approvals + AI-Ops eval state. Both
+                # routers previously kept ALL their state in module-level dicts
+                # (app/api/trust_governance.py said "In-memory for demo;
+                # production uses DB" while being the production path), so
+                # approvals, eval datasets, judges, baselines and drift alerts
+                # were lost on restart and invisible across replicas.
+                from app.evals.ai_ops_store import AIOpsStore as _AIOpsStore
+                from app.governance.trust_approval_store import (
+                    TrustApprovalStore as _TrustApprovalStore,
+                )
+
+                app.state.trust_approval_store = _TrustApprovalStore(db_factory)
+                app.state.ai_ops_store = _AIOpsStore(db_factory)
+                logger.info("trust_and_ai_ops_stores_wired")
             except Exception as _del_exc:
                 logger.warning("deletion_orchestrator_wire_failed", error=str(_del_exc))
 

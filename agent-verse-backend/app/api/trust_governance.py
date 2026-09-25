@@ -22,9 +22,19 @@ def _require_tenant(request: Request):
     return ctx
 
 
-# In-memory for demo; production uses DB
-_approvals: dict[str, dict] = {}  # tenant → list
+# Legacy in-process fallback, used only when no durable store is wired (tests and
+# single-process dev). Production swaps in `app.state.trust_approval_store`
+# during lifespan — see app/governance/trust_approval_store.py. Before that store
+# existed these dicts WERE production: approvals vanished on every restart and an
+# approval granted on one replica did not exist for the next request served
+# elsewhere.
+_approvals: dict[str, dict] = {}  # tenant → {approval_id: approval}
 _approval_delegations: dict[str, list] = {}  # approval_id → list of approvers
+
+
+def _approval_store(request: Request) -> Any:
+    """Durable approval store (DB-backed in prod). None → in-memory fallback."""
+    return getattr(request.app.state, "trust_approval_store", None)
 
 
 @router.get("/audit/integrity")
@@ -105,17 +115,33 @@ async def get_audit_integrity(request: Request) -> dict[str, Any]:
 
 @router.get("/audit/export")
 async def export_audit_evidence(request: Request) -> Any:
-    """Export audit evidence as signed JSON package."""
+    """Export audit evidence as an integrity-hashed JSON package.
+
+    Note on `integrity_hash`: it is an UNKEYED SHA-256 over the events. It
+    detects accidental corruption in transit, but it is not a signature —
+    anyone who alters the events can recompute it. This endpoint previously
+    described the result as a "signed" package, which overstated that.
+
+    An unavailable or failing audit source is now an error rather than an empty
+    package. Returning `{"event_count": 0, "events": []}` when the audit log
+    simply could not be read is indistinguishable from "this tenant genuinely
+    had no audit events", and the difference matters when the file is filed as
+    compliance evidence.
+    """
     tenant = _require_tenant(request)
 
     audit_svc = getattr(request.app.state, "audit_log", None)
-    events = []
-    if audit_svc and hasattr(audit_svc, "query"):
-        try:
-            result = await audit_svc.query(tenant_id=tenant.tenant_id, limit=1000)
-            events = result.get("events", []) if isinstance(result, dict) else []
-        except Exception:
-            pass
+    if audit_svc is None or not hasattr(audit_svc, "query"):
+        raise HTTPException(
+            503, "audit log unavailable; refusing to emit an empty evidence package"
+        )
+    try:
+        result = await audit_svc.query(tenant_id=tenant.tenant_id, limit=1000)
+    except Exception as exc:
+        raise HTTPException(
+            503, f"audit log query failed; refusing to emit an empty package: {exc}"
+        ) from exc
+    events = result.get("events", []) if isinstance(result, dict) else []
 
     package = {
         "tenant_id": tenant.tenant_id,
@@ -154,7 +180,19 @@ async def submit_approval_request(request: Request) -> dict[str, Any]:
         "status": "pending",
         "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
-    _approvals.setdefault(tenant.tenant_id, {})[approval_id] = approval
+    store = _approval_store(request)
+    if store is not None:
+        await store.create(
+            tenant_id=tenant.tenant_id,
+            approval_id=approval_id,
+            goal_id=approval["goal_id"],
+            step_description=approval["step_description"],
+            tool_name=approval["tool_name"],
+            risk_level=approval["risk_level"],
+            required_approvers=approval["required_approvers"],
+        )
+    else:
+        _approvals.setdefault(tenant.tenant_id, {})[approval_id] = approval
 
     return {
         "approval_id": approval_id,
@@ -168,15 +206,44 @@ async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
     """Approve a pending request. Supports multi-approver."""
     tenant = _require_tenant(request)
     body = await request.json()
+    approver_id = body.get("approver_id", "anonymous")
+    note = body.get("note", "")
+
+    store = _approval_store(request)
+    if store is not None:
+        from app.governance.trust_approval_store import (
+            ApprovalNotFoundError,
+            ApprovalNotPendingError,
+            DuplicateApproverError,
+        )
+
+        try:
+            refreshed = await store.add_vote(
+                tenant_id=tenant.tenant_id,
+                approval_id=approval_id,
+                approver_id=approver_id,
+                note=note,
+            )
+        except ApprovalNotFoundError:
+            raise HTTPException(404, "Approval not found") from None
+        except ApprovalNotPendingError as exc:
+            raise HTTPException(400, f"Approval is already {exc.status}") from None
+        except DuplicateApproverError:
+            raise HTTPException(
+                409, "approver has already approved this request"
+            ) from None
+        return {
+            "approval_id": approval_id,
+            "status": refreshed["status"],
+            "approver_count": len(refreshed["approvers"]),
+            "required": refreshed["required_approvers"],
+        }
 
     approval = _approvals.get(tenant.tenant_id, {}).get(approval_id)
     if not approval:
         raise HTTPException(404, "Approval not found")
     if approval["status"] != "pending":
         raise HTTPException(400, f"Approval is already {approval['status']}")
-
-    approver_id = body.get("approver_id", "anonymous")
-    note = body.get("note", "")
 
     # Separation of duties: `required_approvers` counts DISTINCT approvers.
     # Without this guard one person calling the endpoint N times — or a
@@ -213,6 +280,21 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     body = await request.json()
 
+    store = _approval_store(request)
+    if store is not None:
+        from app.governance.trust_approval_store import ApprovalNotFoundError
+
+        try:
+            await store.reject(
+                tenant_id=tenant.tenant_id,
+                approval_id=approval_id,
+                reason=body.get("reason", ""),
+                rejected_by=body.get("approver_id", "anonymous"),
+            )
+        except ApprovalNotFoundError:
+            raise HTTPException(404, "Approval not found") from None
+        return {"approval_id": approval_id, "status": "rejected"}
+
     approval = _approvals.get(tenant.tenant_id, {}).get(approval_id)
     if not approval:
         raise HTTPException(404, "Approval not found")
@@ -229,6 +311,11 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
 async def list_approvals(request: Request, status: str | None = None) -> dict[str, Any]:
     """List approval requests for the tenant, optionally filtered by status."""
     tenant = _require_tenant(request)
+    store = _approval_store(request)
+    if store is not None:
+        approvals = await store.list(tenant.tenant_id, status)
+        return {"approvals": approvals, "total": len(approvals)}
+
     approvals = list(_approvals.get(tenant.tenant_id, {}).values())
     if status:
         approvals = [a for a in approvals if a["status"] == status]

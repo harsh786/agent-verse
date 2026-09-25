@@ -19,12 +19,22 @@ def _require_tenant(request: Request):
     return ctx
 
 
-# In-memory stores
+# Legacy in-process fallback, used only when no durable store is wired (tests and
+# single-process dev). Production swaps in `app.state.ai_ops_store` during
+# lifespan — see app/evals/ai_ops_store.py. Before that store existed these dicts
+# WERE production: datasets, results, judges, baselines and drift alerts were all
+# lost on restart and invisible to every other replica, so a baseline set on one
+# pod meant drift was computed against "no baseline" on the next request.
 _datasets: dict[str, dict] = {}
 _eval_results: dict[str, list] = {}  # tenant → results
 _drift_alerts: dict[str, list] = {}  # tenant → alerts
 _judges: dict[str, dict] = {}
 _baselines: dict[str, dict] = {}  # tenant → metric baselines
+
+
+def _store(request: Request) -> Any:
+    """Durable AI-Ops store (DB-backed in prod). None → in-memory fallback."""
+    return getattr(request.app.state, "ai_ops_store", None)
 
 
 class CreateDatasetRequest(BaseModel):
@@ -74,7 +84,17 @@ async def create_eval_dataset(request: Request, body: CreateDatasetRequest) -> d
         "created_at": now,
         "version": 1,
     }
-    _datasets[f"{tenant.tenant_id}:{dataset_id}"] = dataset
+    store = _store(request)
+    if store is not None:
+        await store.create_dataset(
+            tenant_id=tenant.tenant_id,
+            dataset_id=dataset_id,
+            name=body.name,
+            description=body.description,
+            golden_tasks=body.golden_tasks,
+        )
+    else:
+        _datasets[f"{tenant.tenant_id}:{dataset_id}"] = dataset
     return {"dataset_id": dataset_id, "task_count": len(body.golden_tasks), "status": "created"}
 
 
@@ -82,6 +102,10 @@ async def create_eval_dataset(request: Request, body: CreateDatasetRequest) -> d
 async def list_eval_datasets(request: Request) -> dict[str, Any]:
     """List evaluation datasets for the tenant."""
     tenant = _require_tenant(request)
+    store = _store(request)
+    if store is not None:
+        datasets = await store.list_datasets(tenant.tenant_id)
+        return {"datasets": datasets, "total": len(datasets)}
     datasets = [v for k, v in _datasets.items() if k.startswith(f"{tenant.tenant_id}:")]
     return {"datasets": datasets, "total": len(datasets)}
 
@@ -90,7 +114,11 @@ async def list_eval_datasets(request: Request) -> dict[str, Any]:
 async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> dict[str, Any]:
     """Run an evaluation suite against a dataset."""
     tenant = _require_tenant(request)
-    dataset = _datasets.get(f"{tenant.tenant_id}:{dataset_id}")
+    store = _store(request)
+    if store is not None:
+        dataset = await store.get_dataset(tenant.tenant_id, dataset_id)
+    else:
+        dataset = _datasets.get(f"{tenant.tenant_id}:{dataset_id}")
     if not dataset:
         raise HTTPException(404, "Dataset not found")
 
@@ -168,29 +196,48 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         "judge_model": body.judge_model,
         "created_at": now,
     }
-    _eval_results.setdefault(tenant.tenant_id, []).append(result)
+    metric = f"eval_{dataset_id}"
+    # `is None`, not truthiness: a legitimate baseline of 0.0 is falsy, which
+    # previously made every run look like a first run — the regression check was
+    # skipped and the baseline re-set on each eval.
+    if store is not None:
+        await store.add_eval_result(
+            tenant_id=tenant.tenant_id,
+            result_id=result_id,
+            dataset_id=dataset_id,
+            payload=result,
+        )
+        baseline = await store.get_baseline(tenant.tenant_id, metric)
+    else:
+        _eval_results.setdefault(tenant.tenant_id, []).append(result)
+        baseline = _baselines.get(tenant.tenant_id, {}).get(metric)
 
-    # Check regression
-    if _baselines.get(tenant.tenant_id, {}).get(f"eval_{dataset_id}"):
-        baseline = _baselines[tenant.tenant_id][f"eval_{dataset_id}"]
-        if avg_score < baseline - 0.05:  # 5% regression threshold
-            alert = {
-                "alert_id": str(uuid.uuid4()),
-                "tenant_id": tenant.tenant_id,
-                "drift_type": "model_output",
-                "severity": "warning",
-                "metric_name": f"eval_{dataset_id}",
-                "baseline_value": baseline,
-                "current_value": avg_score,
-                "drift_score": baseline - avg_score,
-                "message": f"Eval score regressed: {baseline:.2f} → {avg_score:.2f}",
-                "created_at": now,
-            }
+    if baseline is not None and avg_score < baseline - 0.05:  # 5% regression
+        alert = {
+            "alert_id": str(uuid.uuid4()),
+            "tenant_id": tenant.tenant_id,
+            "drift_type": "model_output",
+            "severity": "warning",
+            "metric_name": metric,
+            "baseline_value": baseline,
+            "current_value": avg_score,
+            "drift_score": baseline - avg_score,
+            "message": f"Eval score regressed: {baseline:.2f} → {avg_score:.2f}",
+            "created_at": now,
+        }
+        if store is not None:
+            await store.add_alert(tenant_id=tenant.tenant_id, alert=alert)
+        else:
             _drift_alerts.setdefault(tenant.tenant_id, []).append(alert)
 
-    # Auto-set baseline on first run
-    if not _baselines.get(tenant.tenant_id, {}).get(f"eval_{dataset_id}"):
-        _baselines.setdefault(tenant.tenant_id, {})[f"eval_{dataset_id}"] = avg_score
+    # Auto-set baseline on first run only; never clobber an existing one.
+    if baseline is None:
+        if store is not None:
+            await store.set_baseline_if_absent(
+                tenant_id=tenant.tenant_id, metric_name=metric, value=avg_score
+            )
+        else:
+            _baselines.setdefault(tenant.tenant_id, {})[metric] = avg_score
 
     return result
 
@@ -199,6 +246,10 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
 async def list_eval_results(request: Request) -> dict[str, Any]:
     """List evaluation results for the tenant."""
     tenant = _require_tenant(request)
+    store = _store(request)
+    if store is not None:
+        results = await store.list_eval_results(tenant.tenant_id, limit=50)
+        return {"results": results, "total": await store.count_eval_results(tenant.tenant_id)}
     results = list(reversed(_eval_results.get(tenant.tenant_id, [])))
     return {"results": results[:50], "total": len(results)}
 
@@ -221,7 +272,13 @@ async def create_llm_judge(request: Request, body: CreateJudgeRequest) -> dict[s
         "calibrated": False,
         "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
     }
-    _judges[f"{tenant.tenant_id}:{judge_id}"] = judge
+    store = _store(request)
+    if store is not None:
+        await store.create_judge(
+            tenant_id=tenant.tenant_id, judge_id=judge_id, payload=judge
+        )
+    else:
+        _judges[f"{tenant.tenant_id}:{judge_id}"] = judge
     return {"judge_id": judge_id, "status": "created"}
 
 
@@ -229,7 +286,13 @@ async def create_llm_judge(request: Request, body: CreateJudgeRequest) -> dict[s
 async def set_metric_baseline(request: Request, body: SetBaselineRequest) -> dict[str, Any]:
     """Set a baseline value for drift detection."""
     tenant = _require_tenant(request)
-    _baselines.setdefault(tenant.tenant_id, {})[body.metric_name] = body.value
+    store = _store(request)
+    if store is not None:
+        await store.set_baseline(
+            tenant_id=tenant.tenant_id, metric_name=body.metric_name, value=body.value
+        )
+    else:
+        _baselines.setdefault(tenant.tenant_id, {})[body.metric_name] = body.value
     return {"metric_name": body.metric_name, "baseline": body.value, "status": "set"}
 
 
@@ -237,7 +300,11 @@ async def set_metric_baseline(request: Request, body: SetBaselineRequest) -> dic
 async def compute_drift(request: Request, body: ComputeDriftRequest) -> dict[str, Any]:
     """Compute drift score relative to baseline."""
     tenant = _require_tenant(request)
-    baseline = _baselines.get(tenant.tenant_id, {}).get(body.metric_name)
+    store = _store(request)
+    if store is not None:
+        baseline = await store.get_baseline(tenant.tenant_id, body.metric_name)
+    else:
+        baseline = _baselines.get(tenant.tenant_id, {}).get(body.metric_name)
 
     if baseline is None:
         return {"status": "no_baseline", "metric_name": body.metric_name, "drift_score": 0.0}
@@ -264,7 +331,10 @@ async def compute_drift(request: Request, body: ComputeDriftRequest) -> dict[str
         "created_at": now,
     }
     if severity != "info":
-        _drift_alerts.setdefault(tenant.tenant_id, []).append(alert)
+        if store is not None:
+            await store.add_alert(tenant_id=tenant.tenant_id, alert=alert)
+        else:
+            _drift_alerts.setdefault(tenant.tenant_id, []).append(alert)
 
     return alert
 
@@ -277,6 +347,10 @@ async def list_drift_alerts(
 ) -> dict[str, Any]:
     """List drift and regression alerts for the tenant."""
     tenant = _require_tenant(request)
+    store = _store(request)
+    if store is not None:
+        alerts = await store.list_alerts(tenant.tenant_id, severity, limit)
+        return {"alerts": alerts, "total": len(alerts)}
     alerts = list(reversed(_drift_alerts.get(tenant.tenant_id, [])))
     if severity:
         alerts = [a for a in alerts if a.get("severity") == severity]
@@ -287,14 +361,24 @@ async def list_drift_alerts(
 async def get_regression_status(request: Request) -> dict[str, Any]:
     """Get overall regression status across all metrics."""
     tenant = _require_tenant(request)
-    alerts = _drift_alerts.get(tenant.tenant_id, [])
-    critical = sum(1 for a in alerts if a.get("severity") == "critical")
-    warnings = sum(1 for a in alerts if a.get("severity") == "warning")
+    store = _store(request)
+    if store is not None:
+        counts = await store.alert_severity_counts(tenant.tenant_id)
+        critical = counts.get("critical", 0)
+        warnings = counts.get("warning", 0)
+        total = sum(counts.values())
+        tracked = await store.count_baselines(tenant.tenant_id)
+    else:
+        alerts = _drift_alerts.get(tenant.tenant_id, [])
+        critical = sum(1 for a in alerts if a.get("severity") == "critical")
+        warnings = sum(1 for a in alerts if a.get("severity") == "warning")
+        total = len(alerts)
+        tracked = len(_baselines.get(tenant.tenant_id, {}))
 
     return {
         "status": "critical" if critical > 0 else "warning" if warnings > 0 else "ok",
         "critical_alerts": critical,
         "warning_alerts": warnings,
-        "total_alerts": len(alerts),
-        "baselines_tracked": len(_baselines.get(tenant.tenant_id, {})),
+        "total_alerts": total,
+        "baselines_tracked": tracked,
     }
