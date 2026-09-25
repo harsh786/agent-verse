@@ -34,7 +34,13 @@ export default defineConfig(({ command, mode }) => {
     // Proxy the collaboration WebSockets (org viewer presence, doc sessions)
     // same-origin so the browser connects to the Vite port and Vite forwards to
     // the backend — no separate WS host/port to configure, works in prod too.
-    '/collab': {
+    // NOTE the trailing slash. Vite matches proxy keys as a PREFIX, so a bare
+    // '/collab' also captured the app's own '/collaboration' route: navigating
+    // there in dev proxied the document to the backend and the browser rendered
+    // the API's 401 JSON instead of the app. Every real endpoint is '/collab/...'
+    // ('/collab/sessions', '/collab/crdt', '/collab/presence/org'), so the slash
+    // costs nothing and frees '/collaboration'.
+    '/collab/': {
       target: apiTarget,
       changeOrigin: true,
       ws: true,
