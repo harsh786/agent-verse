@@ -112,9 +112,17 @@ _used_totp_codes: dict[str, set[str]] = defaultdict(set)
 
 
 def _is_totp_replayed(tenant_id: str, code: str) -> bool:
-    """Return True if this exact TOTP code was already used in current window."""
-    now = time.monotonic()
-    key = f"{code}:{int(now // 30)}"  # time window bucket
+    """Return True if this exact TOTP code was already used in current window.
+
+    The bucket is epoch-based because that is how a TOTP window is defined
+    (``floor(unix_time / 30)``). This previously used ``time.monotonic()``,
+    whose origin is an arbitrary per-process reference point, so the remembered
+    window was offset from the window the code is actually valid for — a code
+    could be forgotten while it was still valid (allowing a replay), and two
+    processes bucketed the same instant differently.
+    """
+    now = time.time()
+    key = f"{code}:{int(now // 30)}"  # TOTP time-step bucket
     if key in _used_totp_codes[tenant_id]:
         return True
     # Clean old entries (keep current and previous window only)

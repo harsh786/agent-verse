@@ -336,6 +336,34 @@ def test_totp_replay_same_code_rejected():
     )
 
 
+def test_totp_replay_window_is_keyed_to_the_real_totp_window(monkeypatch):
+    """The replay bucket must derive from epoch time, not time.monotonic().
+
+    TOTP windows are defined as `floor(unix_time / 30)`. `_is_totp_replayed`
+    bucketed on `time.monotonic()`, whose origin is an arbitrary per-process
+    reference point, so the remembered window was offset from the window the
+    code is actually valid for — a code could be forgotten while still valid
+    (allowing a replay), and two processes bucketed differently for the same
+    instant.
+    """
+    import time as _time
+
+    from app.api import mfa as _mfa
+
+    tenant = "replay-window-tenant"
+    _mfa._used_totp_codes.pop(tenant, None)
+
+    fixed_epoch = 1_700_000_000.0  # floor(/30) == 56666666
+    # Deliberately diverge monotonic from epoch; the bucket must follow epoch.
+    monkeypatch.setattr(_time, "time", lambda: fixed_epoch)
+    monkeypatch.setattr(_time, "monotonic", lambda: 12345.0)
+
+    assert _mfa._is_totp_replayed(tenant, "654321") is False
+    expected_bucket = int(fixed_epoch // 30)
+    stored = _mfa._used_totp_codes[tenant]
+    assert stored == {f"654321:{expected_bucket}"}, stored
+
+
 # ===========================================================================
 # F-7 — INPUT VALIDATION
 # ===========================================================================
