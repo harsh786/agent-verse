@@ -148,7 +148,7 @@ test.describe('Phase 2: Model Control Center', () => {
     await page.goto('/models');
     await page.waitForTimeout(1000);
     await expect(
-      page.locator('text=anthropic, text=openai').first()
+      page.getByText(/anthropic|openai/i).first()
     ).toBeVisible({ timeout: 5_000 });
   });
 });
@@ -234,7 +234,7 @@ test.describe('Phase 12: Skills Runtime', () => {
     await page.goto('/skills');
     await page.waitForTimeout(500);
     await expect(
-      page.locator('text=Graphify, text=Code Review').first()
+      page.getByText(/Graphify|Code Review/i).first()
     )
       .toBeVisible({ timeout: 8_000 })
       .catch(() => {
@@ -305,7 +305,7 @@ test.describe('Phase 13: AI Ops Center', () => {
     }
     await expect(
       page
-        .locator('text=AI Operations Center, text=Active Goals')
+        .getByText(/AI Operations Center|Active Goals/i)
         .first()
     ).toBeVisible({ timeout: 8_000 });
   });
@@ -339,7 +339,7 @@ test.describe('Failure States', () => {
     );
     await page.goto('/knowledge-graph');
     await expect(
-      page.locator('text=No nodes yet, text=Extract text').first()
+      page.getByText(/No nodes yet|Extract text/i).first()
     ).toBeVisible({ timeout: 8_000 });
   });
 });

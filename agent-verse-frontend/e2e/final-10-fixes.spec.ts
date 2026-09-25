@@ -269,7 +269,7 @@ test.describe('AgentDetailPage — Check Readiness', () => {
     await btn.waitFor({ timeout: 8_000 });
     await btn.click();
     await expect(
-      page.locator('text=ready, text=Ready').first()
+      page.getByText(/ready|Ready/i).first()
     ).toBeVisible({ timeout: 5_000 });
   });
 });
@@ -344,7 +344,7 @@ test.describe('GoalDiffPage — URL State & Errors', () => {
     if (await compareBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
       await compareBtn.click();
       await expect(
-        page.locator('text=not found, text=Goal "nonexistent"').first()
+        page.getByText(/not found|Goal "nonexistent"/i).first()
       ).toBeVisible({ timeout: 5_000 });
     }
   });
@@ -528,7 +528,7 @@ test.describe('EvalPage — Suite Delete', () => {
       expect(browserConfirmCalled).toBe(false);
       expect(deleteCalled).toBe(false);
       await expect(
-        page.locator('text=Delete evaluation suite?, text=permanently deleted').first()
+        page.getByText(/Delete evaluation suite\?|permanently deleted/i).first()
       ).toBeVisible({ timeout: 3_000 });
     }
   });
@@ -700,7 +700,7 @@ test.describe('ScopeExplorer — Upgrade Flow', () => {
   });
 
   test('"Upgrade to unlock" button navigates to billing', async ({ page }) => {
-    await page.goto('/settings?tab=scopes');
+    await page.goto('/settings/scopes');
 
     const unlockBtn = page
       .locator(
@@ -746,7 +746,7 @@ test.describe('ScopeExplorer — Upgrade Flow', () => {
       route.fulfill({ status: 200, body: JSON.stringify([]) })
     );
 
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     // Inject history state as if navigated from scopes with a plan highlight hint
     await page.evaluate(() => {
       history.replaceState({ highlightPlan: 'professional' }, '', window.location.href);
@@ -805,7 +805,7 @@ test.describe('Observability — Time-Series Charts', () => {
       .click()
       .catch(() => {});
     await expect(
-      page.locator('text=Goal Throughput, text=Throughput').first()
+      page.getByText(/Goal Throughput|Throughput/i).first()
     ).toBeVisible({ timeout: 10_000 });
     await expect(
       page.locator('svg.recharts-surface, [class*="recharts"]').first()
@@ -820,7 +820,7 @@ test.describe('Observability — Time-Series Charts', () => {
       .click()
       .catch(() => {});
     await expect(
-      page.locator('text=Cost Over Time, text=Cost').first()
+      page.getByText(/Cost Over Time|Cost/i).first()
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -832,7 +832,7 @@ test.describe('Observability — Time-Series Charts', () => {
       .click()
       .catch(() => {});
     await expect(
-      page.locator('text=Latency Trend, text=Latency').first()
+      page.getByText(/Latency Trend|Latency/i).first()
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -851,7 +851,7 @@ test.describe('Observability — Time-Series Charts', () => {
       .catch(() => {});
     await expect(
       page
-        .locator('text=No activity in the selected, text=no activity, text=Run some goals')
+        .getByText(/No activity in the selected|no activity|Run some goals/i)
         .first()
     ).toBeVisible({ timeout: 8_000 });
   });

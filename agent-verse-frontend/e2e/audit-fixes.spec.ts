@@ -41,7 +41,7 @@ test.describe('MFA — Rate Limiting', () => {
     await input.fill('123456');
     await page.locator('button:has-text("Verify")').first().click();
     await expect(
-      page.locator('text=Too many, text=try again, text=429').first()
+      page.getByText(/Too many|try again|429/i).first()
     ).toBeVisible({ timeout: 5_000 });
   });
 
@@ -88,7 +88,7 @@ test.describe('Training Export — Date Filters', () => {
     await dateInputs.first().fill('2025-12-01');
     await dateInputs.nth(1).fill('2025-11-01'); // end before start
     await expect(
-      page.locator('text=End date must be after, text=after start date, text=invalid date').first()
+      page.getByText(/End date must be after|after start date|invalid date/i).first()
     ).toBeVisible({ timeout: 3_000 });
   });
 
@@ -125,7 +125,7 @@ test.describe('Eval Page — History Persistence', () => {
 
   test('eval page loads', async ({ page }) => {
     await page.goto('/eval');
-    await expect(page.locator('text=Scorecard, text=Simulation, text=Eval').first()).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText(/Scorecard|Simulation|Eval/i).first()).toBeVisible({ timeout: 8_000 });
   });
 
   test('history state initialises from localStorage', async ({ page }) => {
@@ -171,14 +171,14 @@ test.describe('NotFoundPage — Dashboard Navigation', () => {
     await authPage(page);
     await page.goto('/this-route-definitely-does-not-exist-audit-xyz');
     await expect(
-      page.locator('text=404, text=Page not found, text=not found').first()
+      page.getByText(/404|Page not found|not found/i).first()
     ).toBeVisible({ timeout: 10_000 });
   });
 
   test('Go to Dashboard link points to /dashboard', async ({ page }) => {
     await authPage(page);
     await page.goto('/nonexistent-route-audit-test-123');
-    await expect(page.locator('text=404, text=not found').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/404|not found/i).first()).toBeVisible({ timeout: 10_000 });
 
     // Check the link href
     const dashLink = page.locator('a[href*="dashboard"], a:has-text("Dashboard")').first();
@@ -289,7 +289,7 @@ test.describe('Governance — Policy Delete Confirmation', () => {
 
       // Must show ConfirmModal
       await expect(
-        page.locator('text=Delete policy?, text=Delete Policy, text=permanently').first()
+        page.getByText(/Delete policy\?|Delete Policy|permanently/i).first()
       ).toBeVisible({ timeout: 3_000 });
     }
   });
@@ -333,7 +333,7 @@ test.describe('Tools Page — Keyboard Shortcut', () => {
 
   test('shows Ctrl+Enter hint in footer', async ({ page }) => {
     await page.goto('/tools');
-    await expect(page.locator('text=Ctrl+Enter, text=Ctrl + Enter').first()).toBeVisible({ timeout: 8_000 });
+    await expect(page.getByText(/Ctrl\+Enter|Ctrl \+ Enter/i).first()).toBeVisible({ timeout: 8_000 });
   });
 
   test('Ctrl+Enter triggers code execution', async ({ page }) => {
@@ -361,7 +361,7 @@ test.describe('Tools Page — Keyboard Shortcut', () => {
     await page.keyboard.type('x = 42');
     await page.locator('button:has-text("Run"), button[aria-label*="Run"]').first().click();
     await expect(
-      page.locator('text=Hello World, text=Success, text=stdout').first()
+      page.getByText(/Hello World|Success|stdout/i).first()
     ).toBeVisible({ timeout: 5_000 });
   });
 });
@@ -483,7 +483,7 @@ test.describe('Schedules — Delete & History', () => {
       expect(browserDialogShown).toBe(false);
       expect(deleteFired).toBe(false);
       await expect(
-        page.locator('text=Delete schedule?, text=permanently removed, text=Delete').first()
+        page.getByText(/Delete schedule\?|permanently removed|Delete/i).first()
       ).toBeVisible({ timeout: 3_000 });
     }
   });
@@ -503,7 +503,7 @@ test.describe('Schedules — Delete & History', () => {
     if (await page.locator('text=Run History').first().isVisible({ timeout: 3_000 }).catch(() => false)) {
       // Should show error, NOT fake generated data with specific fake scheduleIds
       await expect(
-        page.locator('text=not available, text=not configured, text=endpoint').first()
+        page.getByText(/not available|not configured|endpoint/i).first()
       ).toBeVisible({ timeout: 5_000 });
     }
   });
@@ -528,8 +528,8 @@ test.describe('Schedules — Delete & History', () => {
     await row.click().catch(() => {});
 
     if (await page.locator('text=Run History').first().isVisible({ timeout: 5_000 }).catch(() => false)) {
-      await expect(page.locator('text=Succeeded, text=success').first()).toBeVisible({ timeout: 5_000 });
-      await expect(page.locator('text=Failed, text=failed').first()).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByText(/Succeeded|success/i).first()).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByText(/Failed|failed/i).first()).toBeVisible({ timeout: 3_000 });
     }
   });
 });
@@ -660,7 +660,7 @@ test.describe('CRDT Editor — Cursor & Awareness', () => {
     }
     // Should show some connection indicator
     await expect(
-      page.locator('text=Live, text=Offline, text=Connecting, text=Only you here').first()
+      page.getByText(/Live|Offline|Connecting|Only you here/i).first()
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -680,7 +680,7 @@ test.describe('CRDT Editor — Cursor & Awareness', () => {
       // Verify no error
       await expect(page.locator('text=Something went wrong').first()).not.toBeVisible();
       // Char count should update
-      await expect(page.locator('text=16 chars, text=chars').first()).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByText(/16 chars|chars/i).first()).toBeVisible({ timeout: 3_000 });
     }
   });
 });
@@ -703,7 +703,7 @@ test.describe('Scope Explorer — Last API Call', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ last_used: lastUsed }) })
     );
 
-    await page.goto('/settings?tab=scopes');
+    await page.goto('/settings/scopes');
     await expect(page.locator('text=Last API Call').first()).toBeVisible({ timeout: 8_000 });
 
     // Value should be relative time, NOT the old hardcoded "2h ago"
@@ -719,7 +719,7 @@ test.describe('Scope Explorer — Last API Call', () => {
     await page.route('**/auth/keys/activity**', route =>
       route.fulfill({ status: 200, body: JSON.stringify({}) })
     );
-    await page.goto('/settings?tab=scopes');
+    await page.goto('/settings/scopes');
     await expect(page.locator('text=Last API Call').first()).toBeVisible({ timeout: 8_000 });
     // Should not crash
     await expect(page.locator('text=Something went wrong').first()).not.toBeVisible();
@@ -813,27 +813,27 @@ test.describe('Billing — Razorpay & Invoices', () => {
   });
 
   test('shows invoice history with paid badges', async ({ page }) => {
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     await expect(page.locator('text=Invoice History').first()).toBeVisible({ timeout: 8_000 });
     await expect(page.locator('text=paid').first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('upgrade opens Razorpay checkout modal', async ({ page }) => {
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     await page.locator('button:has-text("Upgrade"), button:has-text("Select")').first().click();
     await expect(
-      page.locator('text=Upgrade to, text=billing cycle, text=Pay').first()
+      page.getByText(/Upgrade to|billing cycle|Pay/i).first()
     ).toBeVisible({ timeout: 8_000 });
   });
 
   test('checkout modal shows INR prices', async ({ page }) => {
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     await page.locator('button:has-text("Upgrade"), button:has-text("Select")').first().click();
     await expect(page.locator('text=₹').first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('annual plan shows Save 20% discount badge', async ({ page }) => {
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     await page.locator('button:has-text("Upgrade"), button:has-text("Select")').first().click();
     await expect(page.locator('text=Save 20%').first()).toBeVisible({ timeout: 5_000 });
   });
@@ -854,11 +854,11 @@ test.describe('Billing — Razorpay & Invoices', () => {
         body: JSON.stringify({ status: 'success', plan: 'professional', message: 'Upgraded to Professional!' }),
       })
     );
-    await page.goto('/settings?tab=billing');
+    await page.goto('/settings/billing');
     await page.locator('button:has-text("Upgrade"), button:has-text("Select")').first().click();
     await page.locator('button:has-text("Pay")').first().click();
     await expect(
-      page.locator('text=Payment Successful, text=Upgraded, text=success').first()
+      page.getByText(/Payment Successful|Upgraded|success/i).first()
     ).toBeVisible({ timeout: 10_000 });
   });
 });

@@ -161,7 +161,7 @@ test.describe('Schedules NL Scheduler — Response Format', () => {
       
       // Response should be human-readable
       await expect(
-        page.locator('text=Daily Report, text=Created schedule').first()
+        page.getByText(/Daily Report|Created schedule/i).first()
       ).toBeVisible({ timeout: 8_000 });
       
       // Should NOT show raw JSON
@@ -196,7 +196,7 @@ test.describe('GuardrailCenter — Violation Timestamps', () => {
       route.fulfill({ status: 200, body: JSON.stringify({ total_24h: 1, total_all_time: 1, risk_score_p95: 0.8, top_category: 'pii' }) })
     );
 
-    await page.goto('/settings?tab=guardrails');
+    await page.goto('/settings/guardrails');
     const violationsTab = page.locator('[role="tab"]:has-text("Violations"), button:has-text("Violations")').first();
     if (await violationsTab.isVisible({ timeout: 5_000 })) {
       await violationsTab.click();
@@ -262,8 +262,8 @@ test.describe('Builder Page — Full Wizard', () => {
     const textarea = page.locator('textarea[placeholder*="Describe"]').first();
     await textarea.fill('A modern landing page for a SaaS product with hero, features, and pricing sections');
     await page.locator('button:has-text("Build Project")').first().click();
-    await expect(page.locator('text=My Landing Page, text=generated').first()).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator('text=App.tsx, text=src').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText(/My Landing Page|generated/i).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/App\.tsx|src/i).first()).toBeVisible({ timeout: 5_000 });
   });
 
   test('done state shows View Execution link', async ({ page }) => {
@@ -406,7 +406,7 @@ test.describe('Observability — Log Pipeline', () => {
     await page.goto('/observability');
     await page.locator('[role="tab"]:has-text("Logs"), button:has-text("Logs")').first().click().catch(() => {});
     await expect(
-      page.locator('text=goal execution events, text=log shipping').first()
+      page.getByText(/goal execution events|log shipping/i).first()
     ).toBeVisible({ timeout: 8_000 });
   });
 
@@ -453,7 +453,7 @@ test.describe('ConnectorDetail — Connector-Filtered Usage', () => {
       // Should show the filtered goal
       await expect(page.locator('text=Fix JIRA bugs using GitHub').first()).toBeVisible({ timeout: 8_000 });
       // Should show the "filtered" label
-      await expect(page.locator('text=referenced this connector, text=Goals that').first()).toBeVisible({ timeout: 3_000 });
+      await expect(page.getByText(/referenced this connector|Goals that/i).first()).toBeVisible({ timeout: 3_000 });
     }
   });
 });
