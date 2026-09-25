@@ -18,7 +18,10 @@ export function PendingApprovalsBadge() {
     refetchInterval: 20_000,
   });
 
-  const pending = approvals.filter((a) => a.status === "pending").length;
+  // See Sidebar: a non-array 200 body must not take the shell down.
+  const pending = Array.isArray(approvals)
+    ? approvals.filter((a) => a.status === "pending").length
+    : 0;
   if (pending === 0) return null;
 
   return (

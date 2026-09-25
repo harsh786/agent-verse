@@ -323,18 +323,19 @@ test.describe('CP-01 — Auth Flow', () => {
     await setupAuth(page);
     await mockDashboard(page);
     await mockAgentsApi(page);
-    await page.goto('/');
-    await page.waitForLoadState('networkidle');
-
-    // Trigger logout via the auth store directly (simulate clear)
-    await page.evaluate(() => {
-      localStorage.removeItem('av-auth');
-      sessionStorage.removeItem('av-auth');
-      localStorage.removeItem('av_api_key');
-    });
+    // Start INSIDE the app shell: '/' is the public landing page and renders no
+    // header or sidebar, so it has no sign-out control at all.
     await page.goto('/dashboard');
     await page.waitForLoadState('networkidle');
-    await expect(page).toHaveURL(/\/(auth|login)/);
+
+    // setupAuth injects the session via addInitScript, which re-runs on EVERY
+    // navigation — clearing storage and navigating again just re-seeds it, so
+    // that can never log out. Drive the app's own control instead, which is
+    // also the path a user takes.
+    // Two sign-out controls exist (sidebar and top bar). Use the header one:
+    // it is unambiguous and is the control that clears the store and navigates.
+    await page.locator('header').getByRole('button', { name: 'Sign out' }).click();
+    await expect(page).toHaveURL(/\/(auth|login)/, { timeout: 10_000 });
   });
 });
 
@@ -357,8 +358,10 @@ test.describe('CP-02 — Agent Creation', () => {
     await expect(page.getByText(AGENT.name)).toBeVisible({ timeout: 10_000 });
 
     // Look for a Create / New Agent button
-    const createBtn = page.getByRole('button', { name: /create|new agent/i })
-      .or(page.getByRole('link', { name: /create|new agent/i }));
+    // Scope to the page body and match "new agent" only: the SIDEBAR's quick
+    // action has aria-label "Create new goal", which matches a bare /create/ and
+    // comes first in the DOM — clicking it navigated to /goals instead.
+    const createBtn = page.getByRole('main').getByRole('button', { name: /new agent/i });
     if (await createBtn.count() > 0) {
       await createBtn.first().click();
       // Should show a modal or navigate to /builder or /agents/new
@@ -417,16 +420,13 @@ test.describe('CP-02 — Agent Creation', () => {
     await page.goto('/agents');
     await expect(page.getByText(AGENT.name)).toBeVisible({ timeout: 10_000 });
 
-    const searchInput = page.getByRole('searchbox')
-      .or(page.locator('input[placeholder*="search" i]'))
-      .or(page.locator('input[type="search"]'));
-
-    if (await searchInput.count() > 0) {
-      await searchInput.first().fill('nonexistent-xyz-12345');
-      await page.waitForTimeout(500);
-      // Agent name should no longer be visible
-      await expect(page.getByText(AGENT.name)).not.toBeVisible({ timeout: 5000 });
-    }
+    // Must be the AGENTS page filter, not the global header search — a bare
+    // getByRole('searchbox') matches the header box first and typing there
+    // filters nothing.
+    const searchInput = page.locator('input[placeholder*="Search agents" i]');
+    await expect(searchInput).toBeVisible({ timeout: 5000 });
+    await searchInput.fill('nonexistent-xyz-12345');
+    await expect(page.getByText(AGENT.name)).not.toBeVisible({ timeout: 5000 });
   });
 });
 
@@ -527,7 +527,7 @@ test.describe('CP-03 — Goal Submission', () => {
     await expect(page.getByText(GOAL_COMPLETE.goal).first()).toBeVisible({ timeout: 10_000 });
     // Result artifact summary should be visible in the results tab
     const summary = (GOAL_COMPLETE.result_artifact as Record<string, string>).summary;
-    await expect(page.getByText(summary)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(summary).first()).toBeVisible({ timeout: 5000 });
   });
 
   test('execution tab shows timeline of events', async ({ page }) => {
@@ -689,13 +689,15 @@ test.describe('CP-05 — Chat Interaction', () => {
 
   test('chat page renders message history', async ({ page }) => {
     await page.goto('/chat');
-    await expect(page.locator('body')).toBeVisible({ timeout: 10_000 });
-    // Either shows messages or an empty state input
-    const hasChatUI =
-      await page.getByText('Hi! How can I help?').count() > 0 ||
-      await page.locator('textarea, input[type="text"]').count() > 0 ||
-      await page.getByText(/start.*conversation|no messages|send.*message/i).count() > 0;
-    expect(hasChatUI).toBe(true);
+    // Counting straight after <body> is visible races React. Wait for the chat
+    // UI itself: a message, a composer, or the empty state.
+    await expect(
+      page
+        .getByText('Hi! How can I help?')
+        .or(page.locator('textarea').first())
+        .or(page.getByText(/start.*conversation|no messages|send.*message/i))
+        .first()
+    ).toBeVisible({ timeout: 15_000 });
   });
 
   test('chat input accepts text and submit is enabled', async ({ page }) => {
@@ -934,14 +936,15 @@ test.describe('CP-07 — Keyboard Navigation', () => {
     await page.goto('/agents');
     await expect(page.getByText(AGENT.name)).toBeVisible({ timeout: 10_000 });
 
-    const searchInput = page.locator('input[type="search"], input[placeholder*="search" i]');
-    if (await searchInput.count() > 0) {
-      await searchInput.first().focus();
-      await expect(searchInput.first()).toBeFocused({ timeout: 2000 });
-      await searchInput.first().fill('bot');
-      // Filter works
-      expect(await page.locator('body').textContent()).toContain('bot');
-    }
+    const searchInput = page.locator('input[placeholder*="Search agents" i]');
+    await expect(searchInput).toBeVisible({ timeout: 5000 });
+    await searchInput.focus();
+    await expect(searchInput).toBeFocused({ timeout: 2000 });
+    await searchInput.fill('bot');
+    // The typed value lives in the input's value, not in body text.
+    await expect(searchInput).toHaveValue('bot');
+    // 'Critical Path Bot' matches 'bot', so it stays in the filtered list.
+    await expect(page.getByText(AGENT.name)).toBeVisible({ timeout: 5000 });
   });
 
   test('skip-to-content or main landmark is accessible', async ({ page }) => {
@@ -959,12 +962,16 @@ test.describe('CP-07 — Keyboard Navigation', () => {
 test.describe('CP-08 — Navigation & Routing', () => {
   test.beforeEach(async ({ page }) => {
     await setupAuth(page);
-    await mockAgentsApi(page);
-    await mockGoalsApi(page);
-    await mockDashboard(page);
+    // Registered BEFORE the specific mocks on purpose: Playwright matches the
+    // MOST RECENTLY registered handler first, so a catch-all added last silently
+    // overrode mockAgentsApi/mockGoalsApi/mockDashboard and answered every call
+    // with {} — which is also how /governance/approvals became a non-array.
     await page.route(/localhost:8000/, (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
     );
+    await mockAgentsApi(page);
+    await mockGoalsApi(page);
+    await mockDashboard(page);
   });
 
   test('dashboard page renders stats cards', async ({ page }) => {

@@ -60,7 +60,13 @@ export function Sidebar() {
     refetchInterval: 10_000,
     enabled: isAuthenticated,
   });
-  const pendingCount = approvals.filter((a) => a.status === "pending").length;
+  // Defensive: `data: approvals = []` only defaults when data is undefined, so a
+  // non-array 200 body (an envelope, an error object) reached .filter() and threw
+  // — inside the SIDEBAR, which renders on every route, so a single bad response
+  // from this badge endpoint replaced the whole app with the error boundary.
+  const pendingCount = Array.isArray(approvals)
+    ? approvals.filter((a) => a.status === "pending").length
+    : 0;
 
   const NAV_SECTIONS: NavSection[] = [
     {

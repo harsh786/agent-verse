@@ -286,8 +286,13 @@ export default function ChatPage() {
   const activeSession = sessions.find((s) => s.id === sessionId) ?? null;
   useEffect(() => {
     chatApi.listModels().then((r) => {
-      setAvailableModels(r.models);
-      setSelectedModel((cur) => cur || activeSession?.preferred_model || r.models[0] || '');
+      // `r.models[0]` used to run inside the setSelectedModel UPDATER, which React
+      // executes during the render phase — outside this promise's .catch() — so an
+      // unexpected payload threw straight into the error boundary and took the
+      // whole chat page down ("Cannot read properties of undefined (reading '0')").
+      const models = Array.isArray(r?.models) ? r.models : [];
+      setAvailableModels(models);
+      setSelectedModel((cur) => cur || activeSession?.preferred_model || models[0] || '');
     }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

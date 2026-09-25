@@ -223,13 +223,20 @@ export function AgentsListPage() {
         {/* Create modal */}
         {showCreate && (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-            <div className="bg-card border border-border rounded-xl p-6 w-full max-w-lg shadow-xl">
+            {/* role/aria-modal/aria-labelledby: this was a bare <div>, so screen
+                readers announced no dialog and nothing constrained focus to it. */}
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="deploy-agent-title"
+              className="bg-card border border-border rounded-xl p-6 w-full max-w-lg shadow-xl"
+            >
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-lg bg-primary/10 border border-primary/20">
                   <Bot className="h-4 w-4 text-primary" />
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-foreground">Deploy New Agent</h2>
+                  <h2 id="deploy-agent-title" className="text-lg font-semibold text-foreground">Deploy New Agent</h2>
                   <p className="text-muted-foreground text-xs mt-0.5">Describe the mission in plain English</p>
                 </div>
               </div>
