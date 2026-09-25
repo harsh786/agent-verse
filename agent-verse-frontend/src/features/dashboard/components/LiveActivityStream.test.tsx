@@ -82,7 +82,7 @@ describe('LiveActivityStream', () => {
     class ThrowingDate extends RealDate {
       constructor(...args: ConstructorParameters<typeof RealDate>) {
         if (args[0] === 'boom') throw new Error('malformed date payload');
-        super(...(args as []));
+        super(...args);
       }
       static now() { return RealDate.now(); }
     }
