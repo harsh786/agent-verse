@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -170,7 +171,10 @@ class CostTracker:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 row = (
                     await session.execute(
                         _t(
@@ -262,7 +266,10 @@ class CostTracker:
             try:
                 from sqlalchemy import text as _t
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         _t(
                             "INSERT INTO cost_ledger "
@@ -453,7 +460,10 @@ class CostTracker:
             try:
                 from sqlalchemy import text as _t
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     row = (
                         await session.execute(
                             _t("""
@@ -521,7 +531,10 @@ class CostTracker:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         _t("""
@@ -571,7 +584,10 @@ class CostTracker:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         _t("""
@@ -623,7 +639,10 @@ class CostTracker:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         _t("""
@@ -696,7 +715,10 @@ class CostTracker:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         _t("""
