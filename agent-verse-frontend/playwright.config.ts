@@ -145,7 +145,7 @@ export default defineConfig({
   // behaviour. `--strictPort` makes a collision fail loudly rather than let
   // Vite silently pick another port and leave Playwright pointed at nothing.
   webServer: {
-    command: 'npm run dev -- --port 5174 --strictPort',
+    command: 'npm run dev -- --port 5174 --strictPort --mode e2e',
     url: 'http://localhost:5174',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
