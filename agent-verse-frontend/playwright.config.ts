@@ -3,6 +3,16 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
 
+  // These specs are architecturally NOT runnable under this config: they talk to
+  // a real backend (Vite -> FastAPI -> Postgres/Redis) instead of intercepting
+  // with page.route, and they have their own config —
+  // playwright.real-e2e.config.ts, which documents the required
+  // `uvicorn app.main:app`. The mocked projects below use
+  // testMatch '**/*.spec.ts', which swept them in, so ~146 tests failed for no
+  // reason other than "no backend is listening". Run them with:
+  //   npx playwright test --config=playwright.real-e2e.config.ts
+  testIgnore: ['**/real-e2e/**'],
+
   /** Global per-test timeout (ms). Increase for slow CI runners. */
   timeout: 30_000,
 

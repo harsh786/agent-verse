@@ -13,7 +13,12 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './e2e/real-e2e',
-  testMatch: '**/*.real.spec.ts',
+  // Everything in this directory is a real-backend test, whatever it is named.
+  // The previous '**/*.real.spec.ts' missed differently-named siblings such as
+  // all-features-real.spec.ts (64 tests) and real-e2e-no-mock.spec.ts (28),
+  // which would have belonged to no config at all once the mocked projects
+  // stopped sweeping them in.
+  testMatch: '**/*.spec.ts',
 
   // All tests hit the real backend — allow longer timeouts
   timeout: 60_000,
