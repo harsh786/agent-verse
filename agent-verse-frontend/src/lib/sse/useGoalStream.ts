@@ -65,11 +65,19 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
   useEffect(() => {
     if (!goalId) return;
 
-    // Reset retry counter, streaming state, and last-event-id whenever we
-    // connect to a new goal.
+    // Reset retry counter, streaming state, last-event-id AND the event list
+    // whenever we connect to a new goal.
+    //
+    // `events` used to survive a goal change: the route is `goals/:goalId` with
+    // no `key={goalId}`, so React Router reuses the same GoalDetailPage
+    // instance and only this effect re-runs. Navigating from one goal to
+    // another therefore kept the first goal's execution steps in the array and
+    // appended the second goal's to them, showing another goal's steps in this
+    // goal's live feed.
     retryCountRef.current = 0;
     lastEventIdRef.current = '';
     setStreamingToken(null);
+    setEvents([]);
 
     const API_BASE_URL =
       (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";

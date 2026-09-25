@@ -42,6 +42,11 @@ export function useEventStream(
   useEffect(() => {
     if (!path || !enabled) return;
     retryCountRef.current = 0;
+    // Same reset as useGoalStream: `events` is keyed to `path`, so a path change
+    // must not leave the previous stream's events in the array for the next one
+    // to append to. Today's consumers pass a static path, but this is the
+    // generic sibling of useGoalStream, where that bleed was a live bug.
+    setEvents([]);
 
     const API_BASE_URL =
       (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "http://localhost:8000";

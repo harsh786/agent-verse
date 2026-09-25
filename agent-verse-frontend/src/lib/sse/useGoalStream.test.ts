@@ -476,3 +476,53 @@ describe('useGoalStream — auth failure short-circuit', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('useGoalStream — switching goals', () => {
+  beforeEach(() => {
+    localStorage.setItem('av_api_key', 'test-key');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    localStorage.clear();
+  });
+
+  test("switching to another goal does not keep the previous goal's events", async () => {
+    // Regression: the effect reset retryCount / lastEventId / streamingToken
+    // "whenever we connect to a new goal" but never reset `events`. The route
+    // is `goals/:goalId` with no `key={goalId}`, so React Router reuses the
+    // same GoalDetailPage instance across goals — navigating from goal A to
+    // goal B left A's execution steps in the array and appended B's to them,
+    // so the live feed showed another goal's steps interleaved with this one's.
+    const streams: Record<string, ReadableStream<Uint8Array>> = {
+      'goal-A': makeSseStream([sseFrame({ type: 'step_complete', step: 'A-only-step' })]),
+      'goal-B': makeSseStream([sseFrame({ type: 'step_complete', step: 'B-only-step' })]),
+    };
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
+      const id = String(input).includes('goal-A') ? 'goal-A' : 'goal-B';
+      return new Response(streams[id], {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    });
+
+    const { result, rerender } = renderHook(({ id }) => useGoalStream(id), {
+      initialProps: { id: 'goal-A' },
+    });
+
+    await waitFor(() => {
+      expect(result.current.events.some((e) => e.step === 'A-only-step')).toBe(true);
+    });
+
+    rerender({ id: 'goal-B' });
+
+    await waitFor(() => {
+      expect(result.current.events.some((e) => e.step === 'B-only-step')).toBe(true);
+    });
+
+    expect(
+      result.current.events.filter((e) => e.step === 'A-only-step'),
+    ).toHaveLength(0);
+  });
+});
