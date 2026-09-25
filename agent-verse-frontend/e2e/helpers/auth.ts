@@ -313,6 +313,15 @@ export async function apiRoute(
   handler: (route: import('@playwright/test').Route, request: import('@playwright/test').Request) => unknown
 ): Promise<void> {
   await page.route(pattern, (route, request) => {
+    // A top-level navigation is never an API call.  page.goto('/goals') issues
+    // a document request for http://localhost:5174/goals, which a glob such as
+    // the double-star form of "/goals" matches just as happily as the API call
+    // it was written for — the browser then renders `{"goals":[]}` as the whole
+    // document and every assertion fails against a page that is literally raw
+    // JSON.  API traffic is xhr/fetch, so excluding documents is safe.
+    if (request.resourceType() === 'document') {
+      return route.fallback();
+    }
     if (DEV_ASSET_PREFIX.test(new URL(request.url()).pathname)) {
       return route.fallback();
     }
