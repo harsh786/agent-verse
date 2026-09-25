@@ -17,6 +17,8 @@ import uuid
 from typing import Any
 
 import structlog
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from opentelemetry import trace
 
 from app.gateway.channels.base import ChannelAdapter
@@ -42,16 +44,46 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._public_key = public_key or os.getenv("DISCORD_PUBLIC_KEY", "")
 
     async def verify_auth(
-        self, request_headers: dict[str, str], raw_payload: dict[str, Any]
+        self,
+        request_headers: dict[str, str],
+        raw_payload: dict[str, Any],
+        raw_body: bytes | None = None,
     ) -> bool:
-        """Verify Discord Ed25519 signature on interaction payload."""
+        """Verify Discord's Ed25519 signature over ``timestamp + raw_body``.
+
+        Discord signs the concatenation of the ``X-Signature-Timestamp`` header
+        and the exact raw request body with the application's Ed25519 key, and
+        sends the hex signature in ``X-Signature-Ed25519`` (see
+        https://discord.com/developers/docs/interactions/overview
+        #setting-up-an-endpoint-validating-security-request-headers).
+
+        This previously carried a ``TODO: implement full Ed25519 verify`` and
+        returned ``bool(signature and timestamp and body)`` — i.e. ANY non-empty
+        header triple authenticated, the same complete bypass already fixed for
+        the Microsoft Teams adapter (which only checked the token *looked* like
+        ``Bearer <20+ chars>``). ``cryptography`` is already a first-class
+        dependency, so no PyNaCl is needed.
+
+        Fails closed on a missing public key, missing headers, a missing body, a
+        malformed key/signature, or a failed verification. ``raw_body`` is the
+        untouched request bytes; re-serialising the parsed payload is never
+        guaranteed byte-identical and would reject genuine requests.
+        """
         if not self._public_key:
             return False
-        signature = request_headers.get("X-Signature-Ed25519", "")
-        timestamp = request_headers.get("X-Signature-Timestamp", "")
-        body = raw_payload.get("_raw_body", "")
-        # TODO: implement full Ed25519 verify (requires PyNaCl)
-        return bool(signature and timestamp and body)
+        lowered = {k.lower(): v for k, v in request_headers.items()}
+        signature = lowered.get("x-signature-ed25519", "")
+        timestamp = lowered.get("x-signature-timestamp", "")
+        body = raw_body if raw_body is not None else str(raw_payload.get("_raw_body", "")).encode()
+        if not signature or not timestamp or not body:
+            return False
+        try:
+            key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(self._public_key))
+            key.verify(bytes.fromhex(signature), timestamp.encode() + body)
+        except (InvalidSignature, ValueError, TypeError) as exc:
+            _log.warning("discord.verify_auth.rejected", error=str(exc)[:120])
+            return False
+        return True
 
     async def normalize(
         self, raw_payload: dict[str, Any], tenant_id: str, org_id: str

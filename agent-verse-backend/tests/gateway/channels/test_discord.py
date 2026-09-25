@@ -7,6 +7,8 @@ Covers:
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from app.gateway.channels.discord import DiscordChannelAdapter
@@ -23,13 +25,20 @@ async def test_verify_auth_no_public_key_rejects():
 
 
 @pytest.mark.asyncio
-async def test_verify_auth_with_all_fields_present():
+async def test_verify_auth_with_all_fields_present_but_unsigned_rejects():
+    """Presence of the header triple is NOT authentication.
+
+    This test previously asserted ``ok is True`` for a literal ``"sig"`` against
+    a literal ``"pubkey"`` — it was encoding the bypass bug rather than testing
+    the documented contract ("Verify Discord Ed25519 signature"). Corrected to
+    assert the signature is actually verified; see the real-keypair tests below.
+    """
     adapter = DiscordChannelAdapter(bot_token="tok", public_key="pubkey")
     ok = await adapter.verify_auth(
         {"X-Signature-Ed25519": "sig", "X-Signature-Timestamp": "123"},
         {"_raw_body": "some-body"},
     )
-    assert ok is True
+    assert ok is False
 
 
 @pytest.mark.asyncio
@@ -216,3 +225,67 @@ def test_format_response_truncates_content_to_1990_chars():
 
 def test_channel_name_is_discord():
     assert DiscordChannelAdapter.channel_name == "discord"
+
+
+# ── verify_auth: real Ed25519 (regression) ───────────────────────────────────
+
+
+def _discord_keypair() -> tuple[str, Any]:
+    """Return (hex public key, private key) — mirrors a Discord application key."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    public_hex = private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    ).hex()
+    return public_hex, private
+
+
+@pytest.mark.asyncio
+async def test_verify_auth_rejects_a_forged_signature() -> None:
+    """A syntactically-plausible but unsigned request must be rejected.
+
+    Regression: verify_auth carried a `TODO: implement full Ed25519 verify` and
+    returned `bool(signature and timestamp and body)` — so ANY non-empty header
+    triple authenticated. Identical in shape to the Microsoft Teams auth bypass
+    (`Bearer ` + 20 chars) fixed earlier; anyone who knew an org_id could forge
+    a Discord interaction the moment this adapter was routed.
+    """
+    public_hex, _ = _discord_keypair()
+    adapter = DiscordChannelAdapter(bot_token="tok", public_key=public_hex)
+    ok = await adapter.verify_auth(
+        {"X-Signature-Ed25519": "ab" * 64, "X-Signature-Timestamp": "1700000000"},
+        {},
+        raw_body=b'{"type":1}',
+    )
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_verify_auth_accepts_a_genuine_signature() -> None:
+    public_hex, private = _discord_keypair()
+    adapter = DiscordChannelAdapter(bot_token="tok", public_key=public_hex)
+    timestamp, body = "1700000000", b'{"type":1}'
+    signature = private.sign(timestamp.encode() + body).hex()
+    ok = await adapter.verify_auth(
+        {"X-Signature-Ed25519": signature, "X-Signature-Timestamp": timestamp},
+        {},
+        raw_body=body,
+    )
+    assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_verify_auth_rejects_a_tampered_body() -> None:
+    """A signature genuinely issued for one body must not authenticate another."""
+    public_hex, private = _discord_keypair()
+    adapter = DiscordChannelAdapter(bot_token="tok", public_key=public_hex)
+    timestamp = "1700000000"
+    signature = private.sign(timestamp.encode() + b'{"type":1}').hex()
+    ok = await adapter.verify_auth(
+        {"X-Signature-Ed25519": signature, "X-Signature-Timestamp": timestamp},
+        {},
+        raw_body=b'{"type":2,"data":{"name":"org-approve"}}',
+    )
+    assert ok is False
