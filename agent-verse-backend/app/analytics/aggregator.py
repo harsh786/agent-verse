@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -77,7 +78,10 @@ class GoalAnalyticsAggregator:
         try:
             from sqlalchemy import text
 
-            async with db() as session:
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text("""
                         SELECT id, status, priority, agent_id, created_at, dry_run
@@ -234,7 +238,10 @@ class GoalAnalyticsAggregator:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text("""
                         SELECT
@@ -319,7 +326,10 @@ class GoalAnalyticsAggregator:
             from sqlalchemy import text
 
             trunc = "day" if bucket == "day" else "week"
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text(f"""
                         SELECT
@@ -352,7 +362,10 @@ class GoalAnalyticsAggregator:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text("""
                         SELECT
@@ -422,7 +435,10 @@ class GoalAnalyticsAggregator:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text("""
                         SELECT

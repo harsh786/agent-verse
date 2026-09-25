@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -432,19 +433,38 @@ class EvalSuiteRunner:
             try:
                 from sqlalchemy import text
 
-                async with db() as session, session.begin():
+                # This wrote to `evaluations`, which has none of these columns
+                # (it is goal_id/tenant_id/scores/average_score/passed) and
+                # requires a NOT NULL tenant_id and goal_id. Every insert raised
+                # UndefinedColumn straight into the except below, so eval-suite
+                # results have never been persisted. The correct table is
+                # `eval_suite_results` (migration 0021), which is exactly this
+                # shape — and it needs the tenant, which `tenant_ctx` already
+                # carries.
+                async with (
+                    db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
                     await session.execute(
                         text(
-                            """INSERT INTO evaluations
-                               (id, suite_id, run_id, pass_rate, results, evaluated_at)
-                               VALUES (:id, :suite_id, :run_id, :pass_rate,
-                                       CAST(:results AS jsonb), NOW())
+                            """INSERT INTO eval_suite_results
+                               (id, suite_id, tenant_id, run_id, total_tasks,
+                                passed_tasks, failed_tasks, pass_rate,
+                                task_results, run_at)
+                               VALUES (:id, :suite_id, :tenant_id, :run_id,
+                                       :total_tasks, :passed_tasks, :failed_tasks,
+                                       :pass_rate, CAST(:results AS json), NOW())
                                ON CONFLICT (id) DO NOTHING"""
                         ),
                         {
                             "id": suite_result.run_id,
                             "suite_id": suite_id,
+                            "tenant_id": tenant_ctx.tenant_id,
                             "run_id": suite_result.run_id,
+                            "total_tasks": suite_result.total_tasks,
+                            "passed_tasks": suite_result.passed_tasks,
+                            "failed_tasks": suite_result.failed_tasks,
                             "pass_rate": suite_result.pass_rate,
                             "results": _json.dumps(output),
                         },
@@ -471,7 +491,11 @@ async def add_golden_task(*, eval_suite_id: str, task: GoldenTask, tenant_id: st
     # expected_output_contains is stored internally as a list; join for TEXT column
     contains_str = task.expected_output_contains[0] if task.expected_output_contains else ""
 
-    async with db() as session, session.begin():
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
         tid = task.task_id or uuid.uuid4().hex
         await session.execute(
             text("""
@@ -501,7 +525,10 @@ async def get_golden_tasks(*, eval_suite_id: str, tenant_id: str, db: Any) -> li
     """Load golden tasks for a suite from DB."""
     from sqlalchemy import text
 
-    async with db() as session:
+    async with (
+        db() as session,
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
         rows = (
             await session.execute(
                 text("""
@@ -539,7 +566,10 @@ async def check_agent_rollout_gate(
     """Check if an agent meets the eval pass rate required for production rollout."""
     from sqlalchemy import text
 
-    async with db() as session:
+    async with (
+        db() as session,
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
         row = (
             await session.execute(
                 text("""

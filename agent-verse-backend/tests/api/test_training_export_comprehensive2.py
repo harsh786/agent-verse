@@ -54,59 +54,64 @@ def _make_service_with_goals(goals: dict) -> Any:
 
 
 def test_collect_memory_no_service_returns_empty() -> None:
-    result = _collect_training_examples_memory(None, 0.8, 100)
+    result = _collect_training_examples_memory(None, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_no_goals_attr_returns_empty() -> None:
     svc = MagicMock()
     svc._goals = {}
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_skips_incomplete_goals() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "running"
     g.eval_score = 0.9
     g.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_skips_low_score() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = 0.5
     g.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_skips_no_score() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = None
     g.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_skips_no_steps() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = 0.9
     g.events = [{"type": "other_event"}]  # no step_complete events
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert result == []
 
 
 def test_collect_memory_returns_qualifying_goal() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = 0.95
     g.goal = "Test goal"
@@ -114,7 +119,7 @@ def test_collect_memory_returns_qualifying_goal() -> None:
     g.model = "claude-opus-4-5"
     g.events = [{"type": "step_complete", "tool_name": "tool1", "output": "output1"}]
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert len(result) == 1
     assert result[0]["goal"] == "Test goal"
     assert result[0]["eval_score"] == 0.95
@@ -125,6 +130,7 @@ def test_collect_memory_respects_limit() -> None:
     goals = {}
     for i in range(10):
         g = MagicMock()
+        g.tenant_id = _CTX.tenant_id
         g.status = "complete"
         g.eval_score = 0.9
         g.goal = f"Goal {i}"
@@ -133,13 +139,14 @@ def test_collect_memory_respects_limit() -> None:
         g.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
         goals[f"g{i}"] = g
     svc = _make_service_with_goals(goals)
-    result = _collect_training_examples_memory(svc, 0.8, 3)
+    result = _collect_training_examples_memory(svc, 0.8, 3, _CTX.tenant_id)
     assert len(result) == 3
 
 
 def test_collect_memory_completed_status_variant() -> None:
     """Status 'completed' (past tense) should also qualify."""
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "completed"
     g.eval_score = 0.9
     g.goal = "Test"
@@ -147,7 +154,7 @@ def test_collect_memory_completed_status_variant() -> None:
     g.model = "test"
     g.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
     svc = _make_service_with_goals({"g1": g})
-    result = _collect_training_examples_memory(svc, 0.8, 100)
+    result = _collect_training_examples_memory(svc, 0.8, 100, _CTX.tenant_id)
     assert len(result) == 1
 
 
@@ -252,6 +259,7 @@ def test_export_empty_result_returns_empty_jsonl() -> None:
 
 def test_export_openai_format() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = 0.9
     g.goal = "Build API"
@@ -274,6 +282,7 @@ def test_export_openai_format() -> None:
 
 def test_export_anthropic_format() -> None:
     g = MagicMock()
+    g.tenant_id = _CTX.tenant_id
     g.status = "complete"
     g.eval_score = 0.9
     g.goal = "Refactor code"
@@ -297,6 +306,7 @@ def test_export_anthropic_format() -> None:
 def test_export_min_score_filter() -> None:
     """Goals below min_score should be excluded."""
     g_high = MagicMock()
+    g_high.tenant_id = _CTX.tenant_id
     g_high.status = "complete"
     g_high.eval_score = 0.95
     g_high.goal = "High score"
@@ -305,6 +315,7 @@ def test_export_min_score_filter() -> None:
     g_high.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
 
     g_low = MagicMock()
+    g_low.tenant_id = _CTX.tenant_id
     g_low.status = "complete"
     g_low.eval_score = 0.7  # below default 0.8
     g_low.goal = "Low score"
@@ -335,6 +346,7 @@ def test_export_limit_parameter() -> None:
     goals = {}
     for i in range(5):
         g = MagicMock()
+        g.tenant_id = _CTX.tenant_id
         g.status = "complete"
         g.eval_score = 0.9
         g.goal = f"Goal {i}"
@@ -363,3 +375,50 @@ def test_export_content_disposition_header() -> None:
     cd = resp.headers.get("Content-Disposition", "")
     assert "openai" in cd
     assert ".jsonl" in cd
+
+
+def test_export_never_includes_another_tenants_goals() -> None:
+    """The training export must not leak goals belonging to other tenants.
+
+    Regression: neither export endpoint resolved a tenant at all. The DB
+    collector selected from `goals`/`evaluations` with NO tenant predicate, and
+    the in-memory collector iterated every goal in the process cache — so the
+    export was cross-tenant by construction. RLS masked the DB half (it matched
+    zero rows with no GUC set, which is also why exports came back empty), but
+    nothing constrained the in-memory fallback.
+    """
+    mine = MagicMock()
+    mine.tenant_id = _CTX.tenant_id
+    mine.status = "complete"
+    mine.eval_score = 0.95
+    mine.goal = "My own goal"
+    mine.result = "Done"
+    mine.model = "test"
+    mine.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
+
+    theirs = MagicMock()
+    theirs.tenant_id = "some-other-tenant"
+    theirs.status = "complete"
+    theirs.eval_score = 0.99
+    theirs.goal = "OTHER TENANT SECRET GOAL"
+    theirs.result = "Leaked"
+    theirs.model = "test"
+    theirs.events = [{"type": "step_complete", "tool_name": "t", "output": "o"}]
+
+    svc = _make_service_with_goals({"mine": mine, "theirs": theirs})
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.post(
+        "/intelligence/export-training-data",
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 200
+    body = resp.content.decode()
+    assert "OTHER TENANT SECRET GOAL" not in body, body[:400]
+    assert "My own goal" in body
+    assert resp.headers.get("X-Training-Examples") == "1"
+
+
+def test_export_requires_a_tenant() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/intelligence/export-training-data")
+    assert resp.status_code in (401, 403), resp.status_code

@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -71,7 +72,10 @@ class Society:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
@@ -107,7 +111,10 @@ class Society:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text("""
@@ -207,7 +214,11 @@ class Society:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     await session.execute(
                         text("""
                         UPDATE civilization_agents
@@ -232,7 +243,11 @@ class Society:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     await session.execute(
                         text("""
                         UPDATE civilization_agents
@@ -388,7 +403,10 @@ class Society:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text(
@@ -412,7 +430,10 @@ class Society:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text(
@@ -434,7 +455,11 @@ class Society:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE civilization_agents

@@ -12,6 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +69,11 @@ class VerifierCalibrationStore:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         text("""
                             INSERT INTO verifier_calibration
@@ -97,25 +102,42 @@ class VerifierCalibrationStore:
         self,
         record_id: str,
         actual_success: bool,
+        tenant_id: str | None = None,
     ) -> None:
-        """Update a record with the actual outcome (from human eval or next replan)."""
+        """Update a record with the actual outcome (from human eval or next replan).
+
+        ``verifier_calibration`` is FORCE ROW LEVEL SECURITY, and this UPDATE
+        previously ran with no RLS context AND no tenant predicate — just
+        ``WHERE id = :id``. Under a real role it therefore matched zero rows and
+        the outcome was never persisted, leaving every calibration record's
+        ``actual_success`` permanently NULL (the whole point of the table).
+
+        ``tenant_id`` may be omitted by older callers; it is then recovered from
+        the in-process record. If neither is available the row cannot be scoped,
+        so the DB write is skipped rather than issued unscoped.
+        """
         for r in self._records:
             if r["id"] == record_id:
                 r["actual_outcome"] = actual_success
+                tenant_id = tenant_id or r.get("tenant_id")
                 break
 
-        if self._db is not None:
+        if self._db is not None and tenant_id:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         text("""
                             UPDATE verifier_calibration
                             SET actual_success = :outcome
-                            WHERE id = :id
+                            WHERE id = :id AND tenant_id = :tid
                         """),
-                        {"outcome": actual_success, "id": record_id},
+                        {"outcome": actual_success, "id": record_id, "tid": tenant_id},
                     )
             except Exception as exc:
                 logger.debug("calibration_update_failed", error=str(exc)[:60])

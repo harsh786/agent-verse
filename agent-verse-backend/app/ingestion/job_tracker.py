@@ -12,6 +12,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context, system_session
 from app.ingestion.source_config import IngestionJob, SourceConfig
 
 _log = logging.getLogger(__name__)
@@ -223,7 +224,11 @@ class IngestionJobTracker:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         UPDATE source_configs
@@ -298,7 +303,12 @@ class IngestionJobTracker:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            # load_config is scoped to one tenant — per-tenant RLS, not the
+            # cross-tenant system_session that get_due_sources needs.
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 row = await session.execute(
                     text("SELECT * FROM source_configs WHERE source_id = :id AND tenant_id = :tid"),
                     {"id": source_id, "tid": tenant_id},
@@ -315,7 +325,11 @@ class IngestionJobTracker:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                system_session(session),
+            ):
                 result = await session.execute(
                     text("""
                         SELECT source_id, tenant_id
@@ -339,7 +353,11 @@ class IngestionJobTracker:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(
                         "UPDATE source_configs SET consecutive_failures = COALESCE(consecutive_failures, 0) + 1 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501
@@ -354,7 +372,11 @@ class IngestionJobTracker:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(
                         "UPDATE source_configs SET consecutive_failures = 0 WHERE source_id = :id AND tenant_id = :tid"  # noqa: E501

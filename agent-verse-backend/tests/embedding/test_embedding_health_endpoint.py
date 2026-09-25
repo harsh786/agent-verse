@@ -46,6 +46,11 @@ class _FakeSession:
         self.param_bindings: list[dict[str, Any]] = []
 
     async def execute(self, _stmt: Any, params: dict[str, Any] | None = None) -> _Result:
+        # The endpoint now scopes its session with sqlalchemy_rls_context, which
+        # issues its own set_config statements. Those are not queries, so they
+        # must not consume a queued row or the rows below shift by one.
+        if "set_config" in str(_stmt):
+            return _Result(None)
         self.param_bindings.append(dict(params or {}))
         return _Result(self._rows.pop(0) if self._rows else None)
 

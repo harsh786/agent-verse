@@ -1133,7 +1133,9 @@ async def submit_goal_feedback(
             for record in _default_calibration_store._records:
                 if record["goal_id"] == goal_id and record["tenant_id"] == tenant_ctx.tenant_id:
                     await _default_calibration_store.record_actual_outcome(
-                        record["id"], actual_success=body.is_correct
+                        record["id"],
+                        actual_success=body.is_correct,
+                        tenant_id=tenant_ctx.tenant_id,
                     )
                     break
         except Exception:

@@ -7,6 +7,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.db.rls import sqlalchemy_rls_context
+
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
 
 
@@ -167,7 +169,10 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
         from app.db.session import get_session_factory
 
         db = get_session_factory()
-        async with db() as session:
+        async with (
+            db() as session,
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             # Every query is scoped to the caller's tenant — collection_id is a
             # client-supplied identifier, so an unscoped read would leak another
             # tenant's collection stats/model/drift (cross-tenant IDOR).

@@ -410,6 +410,11 @@ async def test_rollback_handles_string_control_config() -> None:
     execute_calls = [0]
 
     async def execute_side_effect(query, params=None):
+        # rollback() now scopes its session with sqlalchemy_rls_context, which
+        # issues its own set_config statements. Count only the real queries so
+        # "first call" still means the SELECT.
+        if "set_config" in str(query):
+            return MagicMock(fetchone=MagicMock(return_value=None))
         execute_calls[0] += 1
         if execute_calls[0] == 1:
             # First call: SELECT — return string JSON

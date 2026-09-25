@@ -8,6 +8,8 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.db.rls import sqlalchemy_rls_context
+
 router = APIRouter(prefix="/memory", tags=["memory"])
 
 
@@ -52,7 +54,11 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO long_term_memory
@@ -133,7 +139,10 @@ async def list_memories(
                 sql += " AND memory_type=:mt"
                 params["mt"] = memory_type
             sql += f" ORDER BY created_at DESC LIMIT {limit}"
-            async with db() as session:
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 rows = (await session.execute(text(sql), params)).fetchall()
             return [
                 {
@@ -331,7 +340,11 @@ async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 result = await session.execute(
                     text("DELETE FROM long_term_memory WHERE id=:id AND tenant_id=:tid"),
                     {"id": memory_id, "tid": tenant_ctx.tenant_id},
@@ -388,7 +401,11 @@ async def clear_all_memories(request: Request) -> None:
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 await session.execute(
                     text("DELETE FROM long_term_memory WHERE tenant_id=:tid"),
                     {"tid": tenant_ctx.tenant_id},

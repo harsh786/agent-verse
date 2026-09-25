@@ -14,6 +14,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.db.rls import sqlalchemy_rls_context
+
 if TYPE_CHECKING:
     from app.agent.state import AgentState
     from app.tenancy.context import TenantContext
@@ -125,7 +127,11 @@ class ProceduralMemoryStore:
 
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
                     await session.execute(
                         text("""
                         INSERT INTO procedural_memories
@@ -195,7 +201,10 @@ class ProceduralMemoryStore:
         from sqlalchemy import text
 
         where_domain = "AND domain = :domain" if domain else ""
-        async with self._db() as session:
+        async with (
+            self._db() as session,
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             rows = (
                 await session.execute(
                     text(f"""

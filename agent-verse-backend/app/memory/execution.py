@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
 
 
@@ -114,7 +115,11 @@ class ExecutionMemory:
 
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""INSERT INTO execution_memory
                         (id, tenant_id, goal_text, plan, success, created_at)
@@ -154,7 +159,11 @@ class ExecutionMemory:
 
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO execution_memory
@@ -189,7 +198,10 @@ class ExecutionMemory:
 
             from sqlalchemy import text
 
-            async with db() as session:
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
@@ -271,7 +283,10 @@ class ExecutionMemory:
         try:
             from sqlalchemy import text
 
-            async with db() as session:
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
@@ -346,7 +361,10 @@ class ExecutionMemory:
         try:
             from sqlalchemy import text
 
-            async with db() as session:
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""

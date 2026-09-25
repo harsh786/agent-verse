@@ -12,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
+from app.db.rls import sqlalchemy_rls_context
+
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 marketplace_router = APIRouter(prefix="/marketplace", tags=["marketplace"])
 intelligence_router = APIRouter(prefix="/intelligence", tags=["intelligence"])
@@ -880,7 +882,13 @@ async def get_benchmarks(
         try:
             from sqlalchemy import text as _t
 
-            async with db() as session:
+            # `goals` is FORCE ROW LEVEL SECURITY; without the tenant GUC this
+            # matched zero rows and the endpoint silently reported the hardcoded
+            # placeholder numbers below instead of the tenant's real figures.
+            async with (
+                db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 # Success rate
                 goal_row = (
                     await session.execute(
@@ -966,6 +974,17 @@ async def get_benchmarks(
         try:
             from sqlalchemy import text as _t
 
+            # DELIBERATELY NOT SCOPED, AND CURRENTLY INERT. This aggregates
+            # `goals` across every tenant to produce a "platform average" the
+            # caller is benchmarked against. `goals` is FORCE ROW LEVEL SECURITY,
+            # so with no GUC set it matches zero rows and the hardcoded platform
+            # defaults above are what actually get returned.
+            #
+            # Making it work needs `system_session` (a cross-tenant read), which
+            # would newly expose aggregate statistics over other tenants' data to
+            # any caller — de-anonymising at small tenant counts. That is a
+            # privacy decision, not a bug fix, so it is left inert and flagged
+            # rather than silently switched on.
             async with db() as session:
                 # Platform success rate across all tenants (anonymized)
                 plat_row = (

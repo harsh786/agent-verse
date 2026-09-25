@@ -12,10 +12,27 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from app.db.rls import sqlalchemy_rls_context
+
 router = APIRouter(prefix="/intelligence", tags=["intelligence"])
+
+
+def _require_tenant(request: Request) -> Any:
+    """Both export endpoints are tenant-scoped; neither used to resolve a tenant.
+
+    The DB collector selected from `goals`/`evaluations` with NO tenant
+    predicate, and the in-memory collector iterated every goal in the process
+    cache — so this endpoint was cross-tenant by construction. RLS masked the
+    DB half (zero rows with no GUC set, which is also why the export came back
+    empty), but the in-memory fallback had nothing stopping it.
+    """
+    ctx = getattr(request.state, "tenant", None)
+    if ctx is None:
+        raise HTTPException(401, "Unauthorized")
+    return ctx
 
 _MIN_EXPORT_SCORE = 0.8
 
@@ -31,13 +48,18 @@ async def preview_training_data(
     Returns count, score distribution, and up to 3 sample records so the
     operator can verify the filter settings before exporting.
     """
+    tenant = _require_tenant(request)
     goal_service = getattr(request.app.state, "goal_service", None)
     db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
 
     if db is not None:
-        examples = await _collect_training_examples_db(db, min_score, limit)
+        examples = await _collect_training_examples_db(
+            db, min_score, limit, tenant.tenant_id
+        )
     else:
-        examples = _collect_training_examples_memory(goal_service, min_score, limit)
+        examples = _collect_training_examples_memory(
+            goal_service, min_score, limit, tenant.tenant_id
+        )
 
     scores = [e["eval_score"] for e in examples]
     # Use ASCII hyphens in bucket keys (ruff RUF001)
@@ -96,14 +118,19 @@ async def export_training_data(
     Returns:
         Streaming JSONL download.
     """
+    tenant = _require_tenant(request)
     goal_service = getattr(request.app.state, "goal_service", None)
     db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
 
     # Prefer DB query; fall back to in-memory cache for no-DB environments
     if db is not None:
-        examples = await _collect_training_examples_db(db, min_score, limit)
+        examples = await _collect_training_examples_db(
+            db, min_score, limit, tenant.tenant_id
+        )
     else:
-        examples = _collect_training_examples_memory(goal_service, min_score, limit)
+        examples = _collect_training_examples_memory(
+            goal_service, min_score, limit, tenant.tenant_id
+        )
 
     if output_format == "openai":
         jsonl_lines = [_to_openai_format(ex) for ex in examples]
@@ -128,12 +155,16 @@ async def _collect_training_examples_db(
     db: Any,
     min_score: float,
     limit: int,
+    tenant_id: str,
 ) -> list[dict[str, Any]]:
     """Query completed, high-scoring goals from PostgreSQL via the evaluations table."""
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with (
+            db() as session,
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             rows = (
                 await session.execute(
                     text(
@@ -144,13 +175,15 @@ async def _collect_training_examples_db(
                                g.id AS goal_id
                         FROM goals g
                         INNER JOIN evaluations e ON e.goal_id = g.id
-                        WHERE g.status IN ('complete', 'completed')
+                        WHERE g.tenant_id = :tid
+                          AND e.tenant_id = :tid
+                          AND g.status IN ('complete', 'completed')
                           AND e.average_score >= :min_score
                         ORDER BY e.average_score DESC
                         LIMIT :limit
                         """
                     ),
-                    {"min_score": min_score, "limit": limit},
+                    {"min_score": min_score, "limit": limit, "tid": tenant_id},
                 )
             ).fetchall()
 
@@ -160,15 +193,19 @@ async def _collect_training_examples_db(
             # Fetch steps for this goal (best-effort; empty list on failure)
             steps: list[dict[str, Any]] = []
             try:
-                async with db() as step_session:
+                async with (
+                    db() as step_session,
+                    sqlalchemy_rls_context(step_session, tenant_id),
+                ):
                     step_rows = (
                         await step_session.execute(
                             text(
                                 "SELECT description, output, tool_calls "
-                                "FROM goal_steps WHERE goal_id = :gid "
+                                "FROM goal_steps "
+                                "WHERE goal_id = :gid AND tenant_id = :tid "
                                 "ORDER BY step_index ASC"
                             ),
-                            {"gid": goal_id},
+                            {"gid": goal_id, "tid": tenant_id},
                         )
                     ).fetchall()
                 for sr in step_rows:
@@ -203,6 +240,7 @@ def _collect_training_examples_memory(
     goal_service: Any,
     min_score: float,
     limit: int,
+    tenant_id: str,
 ) -> list[dict[str, Any]]:
     """Fallback: extract high-scoring goal executions from the GoalService in-memory cache."""
     if goal_service is None:
@@ -212,6 +250,8 @@ def _collect_training_examples_memory(
     examples: list[dict[str, Any]] = []
 
     for g in goals:
+        if str(getattr(g, "tenant_id", "")) != tenant_id:
+            continue
         status = str(getattr(g, "status", "")).lower()
         if status not in ("complete", "completed"):
             continue

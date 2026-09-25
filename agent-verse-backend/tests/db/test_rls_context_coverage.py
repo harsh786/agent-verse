@@ -55,22 +55,17 @@ _CALLER_SCOPED = {
 # scope at every session site and a blanket edit would raise NameError.
 #
 # Remove an entry as it is fixed. Do not add to this set.
-_KNOWN_BACKLOG = {
-    "analytics/aggregator.py",
-    "api/embeddings.py",
-    "api/enterprise.py",
-    "api/memory.py",
-    "api/memory_v2.py",
-    "api/training_export.py",
-    "civilization/orchestrator.py",
-    "civilization/society.py",
-    "ingestion/job_tracker.py",
-    "intelligence/eval_suite.py",
-    "intelligence/self_optimizer_v2.py",
-    "intelligence/verifier_calibration.py",
-    "memory/execution.py",
-    "memory/procedural.py",
-}
+_KNOWN_BACKLOG: set[str] = set()
+# Empty, and it must stay that way. Every module that once appeared here has been
+# scoped; `test_the_rls_backlog_only_shrinks` fails if an entry is added back and
+# then fixed without being removed, and the test above fails outright on any NEW
+# module that queries a FORCE-RLS table from a session it opened itself.
+#
+# One site is deliberately excluded rather than listed here: the cross-tenant
+# "platform average" aggregate in app/api/enterprise.py (get_benchmarks). It is
+# inert under RLS today, and switching it on would newly expose aggregate
+# statistics over other tenants' data — a privacy decision, not a bug fix. It is
+# documented in place.
 
 
 def _force_rls_tables() -> set[str]:

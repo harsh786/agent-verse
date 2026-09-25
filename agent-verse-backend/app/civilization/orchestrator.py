@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.civilization.events import CivEventType, emit_event
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -479,7 +480,10 @@ class CivilizationOrchestrator:
             from sqlalchemy import text
 
             # Get recent eval scores per agent (last 24h)
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""

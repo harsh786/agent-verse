@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from app.db.rls import sqlalchemy_rls_context
 from app.memory_v2.models import MemoryLifecycleState, MemoryPrivacyClass
 from app.observability.logging import get_logger
 
@@ -79,7 +80,10 @@ async def _ensure_loaded_from_db(
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with (
+            db() as session,
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             result = await session.execute(
                 text(
                     "SELECT content FROM long_term_memory "
@@ -109,7 +113,10 @@ async def _load_one_from_db(tenant_id: str, memory_id: str, db: Any) -> dict | N
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with (
+            db() as session,
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             row = (
                 await session.execute(
                     text(
@@ -163,7 +170,10 @@ async def _query_memories_page_from_db(
         f"WHERE {' AND '.join(clauses)} "
         "ORDER BY created_at DESC LIMIT :limit"
     )
-    async with db() as session:
+    async with (
+        db() as session,
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
         rows = (await session.execute(text(sql), params)).fetchall()
     out: list[dict] = []
     for r in rows:
@@ -179,7 +189,11 @@ async def _db_upsert_memory(db: Any, memory: dict) -> None:
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, memory["tenant_id"]),
+        ):
             await session.execute(
                 text(
                     """INSERT INTO long_term_memory
@@ -390,7 +404,10 @@ async def _stream_all_v2_from_db(tenant_id: str, db: Any) -> list[dict]:
     after_created: Any = None
     after_id: str | None = None
     max_pages = 10_000  # safety cap: max_pages * _V2_PAGE_SIZE rows
-    async with db() as session:
+    async with (
+        db() as session,
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
         for _ in range(max_pages):
             clause = ""
             params: dict[str, Any] = {"tid": tenant_id, "limit": _V2_PAGE_SIZE}

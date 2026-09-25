@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.db.rls import sqlalchemy_rls_context
 from app.memory.contracts import ImprovementActionRecord
 from app.observability.logging import get_logger
 
@@ -336,7 +337,10 @@ Respond with ONLY valid JSON:
         # The improved config is what the next agent run reads back — it must NOT
         # be rolled back by a failure in the history/experiment bookkeeping below.
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 current_config = await self._read_current_agent_config_with_session(
                     db, tenant_id, agent_id
                 )
@@ -365,7 +369,10 @@ Respond with ONLY valid JSON:
         # ── BEST-EFFORT: history + experiment bookkeeping (separate txn) ────────
         # A failure here is logged but never negates the already-applied config.
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 await db.execute(
                     _t("""
                         INSERT INTO agent_optimization_history
@@ -436,7 +443,10 @@ Respond with ONLY valid JSON:
         """
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
             row = (
                 await db.execute(
                     _t("""
@@ -481,7 +491,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 row = (
                     await db.execute(
                         _t("SELECT control_config FROM improvement_experiments WHERE id = :id"),
@@ -549,7 +562,10 @@ Respond with ONLY valid JSON:
 
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
             row = (
                 await db.execute(
                     _t("SELECT candidate_config FROM improvement_experiments WHERE id = :id"),
@@ -571,8 +587,20 @@ Respond with ONLY valid JSON:
         Was: before_prompt = "before" — literal string placeholder.
         """
 
-        async with self._db() as db:
-            return await self._read_current_agent_config_with_session(db, tenant_id, agent_id)
+        # The inner helper already returns None on a DB error; establishing the
+        # session and its RLS context has to be covered by the same contract, or
+        # an unreachable database turns an optional optimisation read into a
+        # crash.
+        try:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
+                return await self._read_current_agent_config_with_session(
+                    db, tenant_id, agent_id
+                )
+        except Exception:
+            return None
 
     async def _read_current_agent_config_with_session(
         self, db: Any, tenant_id: str, agent_id: str
@@ -720,7 +748,10 @@ Respond with ONLY valid JSON:
         candidate_config: dict[str, Any] | None = None
         agent_id_str: str | None = None
 
-        async with self._db() as db:
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
             row = (
                 await db.execute(
                     _t("""
@@ -870,7 +901,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 row = (
                     await db.execute(
                         _t("SELECT traffic_split_pct FROM improvement_experiments WHERE id = :id"),
@@ -902,7 +936,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 await db.execute(
                     _t("""
                         INSERT INTO improvement_results
@@ -935,7 +972,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 row = (
                     await db.execute(
                         _t("""
@@ -970,7 +1010,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         try:
-            async with self._db() as db:
+            async with (
+                self._db() as db,
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 row = (
                     await db.execute(
                         _t("""
@@ -1000,7 +1043,10 @@ Respond with ONLY valid JSON:
         from sqlalchemy import text as _t
 
         exp_id = uuid4().hex
-        async with self._db() as db:
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
             await db.execute(
                 _t("""
                     INSERT INTO improvement_experiments
@@ -1053,7 +1099,10 @@ Respond with ONLY valid JSON:
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         _t("""
