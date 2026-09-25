@@ -500,8 +500,10 @@ test.describe('Civilization Theater — Header & Core', () => {
     await setupCivilizationRoutes(page);
     await page.goto(`/civilization/${CIV_ID}`);
 
+    // The theater header renders {civ.name}; "Agent Civilization Theater"
+    // exists only in a source comment, never in the DOM.
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    await expect(page.getByText(/Agent Civilization Theater/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTitle('Overview')).toBeVisible({ timeout: 5000 });
   });
 
   test('8. Header shows live SSE connection badge', async ({ page }) => {
@@ -942,6 +944,13 @@ test.describe('Constitution Editor', () => {
     const constTab = page.getByTitle('Constitution');
     if (await constTab.isVisible({ timeout: 5000 }).catch(() => false)) {
       await constTab.click();
+      // "Save Constitution" is disabled={saving || !isDirty}, so clicking it
+      // without editing anything just hangs until the test times out. Move a
+      // slider first to make the draft dirty.
+      const slider = page.getByLabel('Max Spawn Depth');
+      if (await slider.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await slider.fill('4');
+      }
       const saveBtn = page.getByRole('button', { name: /save.*constitution|update.*const/i });
       if (await saveBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
         await saveBtn.click();
@@ -965,7 +974,7 @@ test.describe('Replay Tab & Live Events', () => {
     await page.goto(`/civilization/${CIV_ID}`);
 
     await expect(page.getByText('PineLabs Engineering Ops')).toBeVisible({ timeout: 15000 });
-    const replayTab = page.getByText('⏪ Replay');
+    const replayTab = page.getByTitle('Live Events');
     await expect(replayTab).toBeVisible({ timeout: 8000 });
     await replayTab.click();
 

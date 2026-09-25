@@ -338,8 +338,8 @@ test.describe('Agent Civilization', () => {
 
   test('spawn audit tab shows approved and denied entries', async ({ page }) => {
     await page.getByTitle('Spawn Audit').click();
-    await expect(page.getByText('approved')).toBeVisible({ timeout: 3000 });
-    await expect(page.getByText('denied')).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText('approved').first()).toBeVisible({ timeout: 3000 });
+    await expect(page.getByText('denied').first()).toBeVisible({ timeout: 3000 });
   });
 
   test('pause button calls controls/pause endpoint', async ({ page }) => {
@@ -357,7 +357,7 @@ test.describe('Agent Civilization', () => {
       }
     );
 
-    await page.locator('button').filter({ hasText: 'Pause Civilization' }).click();
+    await page.getByRole('button', { name: 'Pause civilization' }).click();
     await page.waitForTimeout(500);
     expect(pauseCalled).toBe(true);
   });
