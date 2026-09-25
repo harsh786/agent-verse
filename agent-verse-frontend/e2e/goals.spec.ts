@@ -137,14 +137,20 @@ test.describe('Goals', () => {
     await expect(page.getByText('Submit and track autonomous agent goals')).toBeVisible();
   });
 
-  test('shows "Submit a new goal" form section with goal textarea', async ({ page }) => {
+  test('shows the goal composer with its goal textarea', async ({ page }) => {
     await setupAuth(page);
     await mockGoalsApi(page);
     await mockAgentsApi(page);
     await page.goto('/goals');
 
-    await expect(page.getByText('Submit a new goal')).toBeVisible({ timeout: 15000 });
-    await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible();
+    // The composer has no "Submit a new goal" heading — it is identified by its
+    // labelled textarea and its submit control.
+    await expect(page.locator('textarea[aria-label="Goal text"]')).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(
+      page.getByRole('button', { name: /submit|dry run/i })
+    ).toBeVisible();
   });
 
   test('shows Agent selector dropdown defaulting to "Auto-select best agent"', async ({ page }) => {
@@ -166,7 +172,7 @@ test.describe('Goals', () => {
     await page.goto('/goals');
     await page.waitForLoadState('networkidle');
 
-    const submitBtn = page.locator('button[type="submit"]');
+    const submitBtn = page.getByRole('button', { name: /submit|dry run|launching/i });
     await expect(submitBtn).toBeDisabled({ timeout: 10000 });
   });
 
@@ -177,7 +183,7 @@ test.describe('Goals', () => {
     await page.goto('/goals');
 
     await page.locator('textarea[aria-label="Goal text"]').fill('Fix all JIRA bugs');
-    const submitBtn = page.locator('button[type="submit"]');
+    const submitBtn = page.getByRole('button', { name: /submit|dry run|launching/i });
     await expect(submitBtn).toBeEnabled({ timeout: 10000 });
   });
 
@@ -192,7 +198,7 @@ test.describe('Goals', () => {
     // Fill text so the button is enabled
     await page.locator('textarea[aria-label="Goal text"]').fill('Some goal');
 
-    const submitBtn = page.locator('button[type="submit"]');
+    const submitBtn = page.getByRole('button', { name: /submit|dry run|launching/i });
     await expect(submitBtn).toContainText(/submit/i, { timeout: 10000 });
 
     await page.getByRole('checkbox', { name: /dry run/i }).check();
@@ -215,7 +221,7 @@ test.describe('Goals', () => {
     await page.goto('/goals');
 
     await page.locator('textarea[aria-label="Goal text"]').fill('Fix the critical bug');
-    await page.locator('button[type="submit"]').click();
+    await page.getByRole('button', { name: /submit|dry run|launching/i }).click();
 
     // onSuccess navigates to /goals/${res.goal_id}
     await expect(page).toHaveURL(/\/goals\/g-created/, { timeout: 15000 });
@@ -256,7 +262,8 @@ test.describe('Goals', () => {
     await mockAgentsApi(page);
     await page.goto('/goals');
 
-    await expect(page.getByText('No goals found.')).toBeVisible({ timeout: 15000 });
+    // Actual empty-state copy in GoalsListPage.tsx.
+    await expect(page.getByText('No goals yet')).toBeVisible({ timeout: 15000 });
   });
 
   // ── Status filter ───────────────────────────────────────────────────────────
@@ -301,7 +308,7 @@ test.describe('Goals', () => {
     await expect(page.getByText('Planning goal text')).toBeVisible();
 
     // Apply "complete" filter (client-side)
-    await page.getByRole('button', { name: 'complete', exact: true }).click();
+    await page.getByRole('button', { name: /^complete/i }).click();
 
     await expect(page.getByText('Complete goal text')).toBeVisible();
     await expect(page.getByText('Planning goal text')).not.toBeVisible();
@@ -446,17 +453,23 @@ test.describe('Goals', () => {
     await mockGoalsApi(page, { goals: [completeGoal], goalDetail: completeGoal });
     await mockAgentsApi(page);
 
-    await page.goto('/goals/g-complete-dl');
+    // Register these BEFORE navigating — they were registered after page.goto,
+    // so the initial load raced them and hit the catch-all 404 instead.
     await page.route(/localhost:8000\/goals\/g-complete-dl\/stream/, (route) =>
       route.fulfill({ status: 200, contentType: 'text/event-stream', body: 'data: {"type":"goal_complete"}\n\n' })
     );
     await page.route(/localhost:8000\/goals\/g-complete-dl\/replay/, (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ timeline: [] }) })
     );
+    await page.goto('/goals/g-complete-dl');
 
-    await expect(page.getByRole('button', { name: /download json/i })).toBeVisible({ timeout: 15000 });
-    await expect(page.getByRole('button', { name: /download csv/i })).toBeVisible({ timeout: 10000 });
-    await expect(page.getByRole('button', { name: /download markdown/i })).toBeVisible({ timeout: 10000 });
+    // GoalDetailPage renders its own action bar with short labels
+    // (JSON / CSV / Markdown / Raw data / Print). The longer "Download JSON"
+    // wording lives in components/GoalResultActions.tsx, which this route does
+    // not use.
+    await expect(page.getByRole('button', { name: /^JSON$/ })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('button', { name: /^CSV$/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole('button', { name: /^Markdown$/ })).toBeVisible({ timeout: 10000 });
     await expect(page.getByRole('button', { name: /print/i })).toBeVisible({ timeout: 10000 });
   });
 });

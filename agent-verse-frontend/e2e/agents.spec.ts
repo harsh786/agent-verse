@@ -108,19 +108,23 @@ test.describe('Agents list page', () => {
     await mockAgents(page);
     await page.goto('/agents');
     // Wait for page to fully render before each test
-    await expect(page.locator('h1').filter({ hasText: /agents/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /agent/i })).toBeVisible({
       timeout: 15_000,
     });
   });
 
   // ── Page structure ──────────────────────────────────────────────────────────
 
-  test('shows "Agents" h1 heading', async ({ page }) => {
-    await expect(page.locator('h1').filter({ hasText: /^agents$/i })).toBeVisible();
+  test('shows the agent registry h1 heading', async ({ page }) => {
+    // The page heading is "Agent Registry"; the old /^agents$/i could never match.
+    await expect(page.locator('h1').filter({ hasText: /agent registry/i })).toBeVisible();
   });
 
-  test('shows "Manage autonomous agents" subtitle', async ({ page }) => {
-    await expect(page.getByText('Manage autonomous agents')).toBeVisible();
+  test('shows the autonomous-agents subtitle', async ({ page }) => {
+    // Actual copy: "{n} autonomous agents under mission control".
+    await expect(
+      page.getByText(/autonomous agents under mission control/i)
+    ).toBeVisible();
   });
 
   test('shows search input with correct placeholder', async ({ page }) => {
@@ -164,9 +168,12 @@ test.describe('Agents list page', () => {
   });
 
   test('shows human-readable autonomy mode labels in table rows', async ({ page }) => {
-    await expect(page.getByText('Bounded Autonomous')).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText('Supervised')).toBeVisible();
-    await expect(page.getByText('Fully Autonomous')).toBeVisible();
+    // Each label also names a filter pill above the table, so scope to rows —
+    // an unscoped getByText is a strict-mode violation (2 matches).
+    const rows = page.locator('tbody');
+    await expect(rows.getByText('Bounded Autonomous')).toBeVisible({ timeout: 10_000 });
+    await expect(rows.getByText('Supervised')).toBeVisible();
+    await expect(rows.getByText('Fully Autonomous')).toBeVisible();
   });
 
   test('shows goal template text for each agent', async ({ page }) => {
@@ -279,43 +286,43 @@ test.describe('Agents list page', () => {
 
   test('clicking New Agent opens the create modal', async ({ page }) => {
     await page.locator('button').filter({ hasText: /new agent/i }).click();
-    await expect(page.getByText('Create Agent with Natural Language')).toBeVisible({
+    await expect(page.getByText('Deploy New Agent')).toBeVisible({
       timeout: 5_000,
     });
-    await expect(page.locator('textarea[placeholder*="Describe your agent"]')).toBeVisible();
+    await expect(page.locator('textarea[placeholder*="Create an agent that"]')).toBeVisible();
   });
 
   test('Create button is disabled when the textarea is empty', async ({ page }) => {
     await page.locator('button').filter({ hasText: /new agent/i }).click();
-    await expect(page.getByRole('button', { name: /^Create$/ })).toBeDisabled({ timeout: 5_000 });
+    await expect(page.getByRole('button', { name: /^Deploy Agent$/ })).toBeDisabled({ timeout: 5_000 });
   });
 
   test('Create button becomes enabled once textarea has text', async ({ page }) => {
     await page.locator('button').filter({ hasText: /new agent/i }).click();
     await page
-      .locator('textarea[placeholder*="Describe your agent"]')
+      .locator('textarea[placeholder*="Create an agent that"]')
       .fill('Monitor all GitHub repos for critical security alerts');
-    await expect(page.getByRole('button', { name: /^Create$/ })).toBeEnabled({ timeout: 5_000 });
+    await expect(page.getByRole('button', { name: /^Deploy Agent$/ })).toBeEnabled({ timeout: 5_000 });
   });
 
   test('Cancel button in create modal closes it without navigating', async ({ page }) => {
     await page.locator('button').filter({ hasText: /new agent/i }).click();
-    await expect(page.getByText('Create Agent with Natural Language')).toBeVisible({
+    await expect(page.getByText('Deploy New Agent')).toBeVisible({
       timeout: 5_000,
     });
     await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.getByText('Create Agent with Natural Language')).not.toBeVisible();
+    await expect(page.getByText('Deploy New Agent')).not.toBeVisible();
     // Still on /agents
     await expect(page).toHaveURL(/\/agents$/);
   });
 
   test('Escape key closes the create modal', async ({ page }) => {
     await page.locator('button').filter({ hasText: /new agent/i }).click();
-    await expect(page.getByText('Create Agent with Natural Language')).toBeVisible({
+    await expect(page.getByText('Deploy New Agent')).toBeVisible({
       timeout: 5_000,
     });
     await page.keyboard.press('Escape');
-    await expect(page.getByText('Create Agent with Natural Language')).not.toBeVisible({
+    await expect(page.getByText('Deploy New Agent')).not.toBeVisible({
       timeout: 3_000,
     });
   });
@@ -357,7 +364,7 @@ test.describe('Agents list page — empty state', () => {
       })
     );
     await page.goto('/agents');
-    await expect(page.locator('h1').filter({ hasText: /agents/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /agent/i })).toBeVisible({
       timeout: 15_000,
     });
     // i18n: agents.noAgents → "No agents yet"
@@ -374,11 +381,11 @@ test.describe('Agents list page — empty state', () => {
       })
     );
     await page.goto('/agents');
-    await expect(page.locator('h1').filter({ hasText: /agents/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /agent/i })).toBeVisible({
       timeout: 15_000,
     });
     await expect(
-      page.getByText('No agents found. Create your first agent using the button above.')
+      page.getByText('Deploy your first agent using the button above.')
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -392,7 +399,7 @@ test.describe('Agents list page — empty state', () => {
       })
     );
     await page.goto('/agents');
-    await expect(page.locator('h1').filter({ hasText: /agents/i })).toBeVisible({
+    await expect(page.locator('h1').filter({ hasText: /agent/i })).toBeVisible({
       timeout: 15_000,
     });
     await expect(

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
@@ -66,6 +66,21 @@ export function AgentsListPage() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [nlCommand, setNlCommand] = useState('');
+
+  // Escape closes the create dialog. A modal that traps the user until they
+  // locate the Cancel button is a standard accessibility failure; the e2e suite
+  // asserted this behaviour long before it existed.
+  useEffect(() => {
+    if (!showCreate) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreate(false);
+        setNlCommand('');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showCreate]);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // ── URL-backed filter/search/sort/page state ──────────────────────────────
