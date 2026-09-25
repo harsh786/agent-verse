@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 warnings.warn(
@@ -341,35 +342,55 @@ class AuditFlusher:
         if not raw_events:
             return 0
 
-        events_to_insert: list[dict[str, Any]] = []
-        async with self._db() as db:
-            for raw in raw_events:
-                try:
-                    event_dict = json.loads(raw)
-                    tenant_id = str(event_dict.get("tenant_id", ""))
-
-                    # H15: seed chain tip from DB on first encounter per tenant
-                    await self._ensure_chain_initialized(tenant_id, db)
-
-                    prev_hash = self._chain_cache.get(tenant_id, "")
-                    ae = AuditEvent(**event_dict)
-                    ae.prev_hash = prev_hash
-                    ae.event_hash = ae.compute_hash(prev_hash)
-                    self._chain_cache[tenant_id] = ae.event_hash
-
-                    events_to_insert.append(ae.to_dict())
-                except Exception as exc:
-                    logger.error("audit_flush_deserialize_error", error=str(exc))
-
-            if not events_to_insert:
-                return 0
-
+        # audit_events is FORCE ROW LEVEL SECURITY (migration 0057), and this
+        # flusher runs inside the API process (started from app/main.py's
+        # lifespan) under the API's own least-privilege role -- not a
+        # maintenance role with BYPASSRLS. A single cross-tenant batch INSERT is
+        # therefore rejected outright ("new row violates row-level security
+        # policy"), the broad except below dead-letters the whole batch, and the
+        # audit trail never reaches Postgres at all.
+        #
+        # So group the drained WAL by tenant and write each tenant's slice inside
+        # that tenant's RLS context. This needs no special DB privileges, which
+        # is the point: the audit writer must work as the ordinary API role.
+        # `_ensure_chain_initialized` reads audit_events too, so it has to run
+        # inside the same context or the chain tip re-seeds as "" every restart.
+        by_tenant: dict[str, list[dict[str, Any]]] = {}
+        for raw in raw_events:
             try:
-                from sqlalchemy import text
+                event_dict = json.loads(raw)
+                by_tenant.setdefault(str(event_dict.get("tenant_id", "")), []).append(
+                    event_dict
+                )
+            except Exception as exc:
+                logger.error("audit_flush_deserialize_error", error=str(exc))
 
-                await db.execute(
-                    text(
-                        """
+        if not by_tenant:
+            return 0
+
+        from sqlalchemy import text
+
+        flushed = 0
+        for tenant_id, tenant_events in by_tenant.items():
+            events_to_insert: list[dict[str, Any]] = []
+            # Remember the tip so a failed batch does not leave the in-process
+            # chain advanced past rows that were never committed -- the next
+            # flush would then chain onto a hash Postgres has never seen.
+            tip_before = self._chain_cache.get(tenant_id)
+            try:
+                async with self._db() as db, sqlalchemy_rls_context(db, tenant_id):
+                    await self._ensure_chain_initialized(tenant_id, db)
+                    for event_dict in tenant_events:
+                        prev_hash = self._chain_cache.get(tenant_id, "")
+                        ae = AuditEvent(**event_dict)
+                        ae.prev_hash = prev_hash
+                        ae.event_hash = ae.compute_hash(prev_hash)
+                        self._chain_cache[tenant_id] = ae.event_hash
+                        events_to_insert.append(ae.to_dict())
+
+                    await db.execute(
+                        text(
+                            """
                         INSERT INTO audit_events (
                             id, tenant_id, user_id, api_key_id, actor_type, actor_label,
                             event_type, resource_type, resource_id, resource_label,
@@ -408,22 +429,29 @@ class AuditFlusher:
                             COALESCE((e->>'created_at')::timestamptz, now())
                         FROM jsonb_array_elements(CAST(:events AS jsonb)) AS e
                         ON CONFLICT (id, created_at) DO NOTHING
-                        """
-                    ),
-                    {"events": json.dumps(events_to_insert, default=str)},
-                )
-                await db.commit()
-                logger.info("audit_flushed", count=len(events_to_insert))
-                return len(events_to_insert)
+                            """
+                        ),
+                        {"events": json.dumps(events_to_insert, default=str)},
+                    )
+                    await db.commit()
+                flushed += len(events_to_insert)
             except Exception as exc:
-                await db.rollback()
+                if tip_before is None:
+                    self._chain_cache.pop(tenant_id, None)
+                    self._chain_initialized.pop(tenant_id, None)
+                else:
+                    self._chain_cache[tenant_id] = tip_before
                 logger.error(
                     "audit_flush_db_error",
+                    tenant_id=tenant_id,
                     count=len(events_to_insert),
                     error=str(exc),
                 )
-                await self._send_to_dlq(events_to_insert)
-                return 0
+                await self._send_to_dlq(events_to_insert or tenant_events)
+
+        if flushed:
+            logger.info("audit_flushed", count=flushed)
+        return flushed
 
     async def run(self) -> None:
         """Background loop: flush WAL every WAL_FLUSH_INTERVAL seconds.
