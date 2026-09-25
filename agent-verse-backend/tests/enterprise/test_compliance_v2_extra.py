@@ -142,15 +142,28 @@ async def test_check_hipaa_no_baa():
 
 
 @pytest.mark.asyncio
-async def test_check_hipaa_exception_in_check():
-    """Exception in DB queries is handled gracefully."""
+async def test_check_hipaa_surfaces_a_db_outage_instead_of_reporting_non_compliant():
+    """A database outage must not be reported as a compliance *verdict*.
+
+    This previously asserted that a total DB failure still "returns result with
+    controls" — which meant an unreachable database produced a confident
+    `non_compliant` report whose per-control notes ("Audit logging not active
+    for this tenant", "Enterprise plan required...") named specific, fabricated
+    remediations for a tenant that may well be fully compliant. Nothing was
+    actually checked.
+
+    Each `_check_*` helper still degrades individually, but the tenant-scoping
+    step (`sqlalchemy_rls_context`) is not optional: if the GUC cannot be set,
+    every subsequent read is unscoped or empty and no verdict is meaningful. It
+    now propagates, so the API surfaces an infrastructure error rather than a
+    false compliance answer.
+    """
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB down"))
 
     checker = ComplianceChecker(_make_db_factory(mock_session))
-    result = await checker.check_hipaa("tid-exc")
-    # Even on exception, should return result with controls
-    assert "controls" in result
+    with pytest.raises(RuntimeError, match="DB down"):
+        await checker.check_hipaa("tid-exc")
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +238,11 @@ async def test_check_gdpr_partial_controls():
     call_count = [0]
 
     async def _execute(stmt, params=None):
+        # check_gdpr now scopes its session with sqlalchemy_rls_context, which
+        # issues its own set_config statements. Count only the real queries so
+        # the branch indices below stay pinned to them.
+        if "set_config" in str(stmt):
+            return MagicMock()
         call_count[0] += 1
         n = call_count[0]
         mock_result = MagicMock()

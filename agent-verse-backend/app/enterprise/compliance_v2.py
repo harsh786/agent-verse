@@ -22,6 +22,7 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -81,7 +82,11 @@ class ComplianceChecker:
         """HIPAA compliance: all required controls must pass."""
         controls: dict[str, dict[str, Any]] = {}
 
-        async with self._db() as db:
+        # audit_events (0057) and policy_versions (0056) are FORCE ROW LEVEL
+        # SECURITY. Without the app.tenant_id GUC these reads match zero rows
+        # under any real least-privilege (non-BYPASSRLS) role, so the control
+        # reports a compliance gap that does not exist.
+        async with self._db() as db, sqlalchemy_rls_context(db, tenant_id):
             # 1. BAA must be signed
             baa = await self._get_signed_contract(db, tenant_id, "baa")
             controls["baa_signed"] = {
@@ -154,7 +159,11 @@ class ComplianceChecker:
         """
         controls: dict[str, dict[str, Any]] = {}
 
-        async with self._db() as db:
+        # audit_events (0057) and policy_versions (0056) are FORCE ROW LEVEL
+        # SECURITY. Without the app.tenant_id GUC these reads match zero rows
+        # under any real least-privilege (non-BYPASSRLS) role, so the control
+        # reports a compliance gap that does not exist.
+        async with self._db() as db, sqlalchemy_rls_context(db, tenant_id):
             from sqlalchemy import text as _t
 
             # 1. Data Processing Agreement must be signed
@@ -249,7 +258,11 @@ class ComplianceChecker:
         """SOC 2 Type II — audit completeness check."""
         controls: dict[str, dict[str, Any]] = {}
 
-        async with self._db() as db:
+        # audit_events (0057) and policy_versions (0056) are FORCE ROW LEVEL
+        # SECURITY. Without the app.tenant_id GUC these reads match zero rows
+        # under any real least-privilege (non-BYPASSRLS) role, so the control
+        # reports a compliance gap that does not exist.
+        async with self._db() as db, sqlalchemy_rls_context(db, tenant_id):
             audit_active = await self._check_audit_active(db, tenant_id)
             controls["audit_logging"] = {
                 "pass": audit_active,
@@ -369,7 +382,7 @@ class ComplianceChecker:
         try:
             row = (
                 await db.execute(
-                    _t("SELECT plan FROM tenants WHERE id = :tid"),
+                    _t("SELECT plan_tier FROM tenants WHERE id = :tid"),
                     {"tid": tenant_id},
                 )
             ).fetchone()
