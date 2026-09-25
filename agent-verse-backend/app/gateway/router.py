@@ -107,6 +107,71 @@ def _tenant_ctx_for(command: OrgCommand) -> Any:
     return TenantContext(tenant_id=tenant_id, api_key_id="gateway", plan=PlanTier.FREE), tenant_id
 
 
+_CREDENTIAL_QUERY_KEYS = frozenset(
+    {
+        "token",
+        "access_token",
+        "api_key",
+        "apikey",
+        "key",
+        "secret",
+        "sig",
+        "signature",
+        "password",
+        "x-amz-signature",
+        "x-amz-credential",
+        "x-amz-security-token",
+        "se",
+        "sp",
+        "sv",
+    }
+)
+
+
+def redact_url_credentials(url: str) -> str:
+    """Strip embedded credentials from a file-download URL before persisting it.
+
+    Chat channels hand out download URLs that carry the credential inline:
+    Telegram's is ``https://api.telegram.org/file/bot<BOT_TOKEN>/<path>``,
+    pre-signed object-store links put it in the query string, and a plain URL can
+    put it in userinfo. That URL becomes ``RawDocument.source_url``, which is
+    persisted on the document and copied into every chunk's metadata — and read
+    back out as the ``source_url`` of a RAG citation. Persisting it unredacted
+    writes the bot token to Postgres in plaintext and shows it to the tenant on
+    every citation; rotating the token cannot un-write it.
+
+    The URL is kept recognisable (host and path survive) because it is the
+    document's provenance record.
+    """
+    if not url or "://" not in url:
+        return url
+    import re
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:  # pragma: no cover - defensive
+        return "[redacted-url]"
+
+    netloc = parts.netloc
+    if "@" in netloc:
+        netloc = "[redacted]@" + netloc.rsplit("@", 1)[1]
+
+    # Telegram embeds the bot token as a path segment: /bot<token>/...
+    path = re.sub(r"/bot[^/]+", "/bot[redacted]", parts.path)
+
+    query = parts.query
+    if query:
+        query = urlencode(
+            [
+                (k, "[redacted]" if k.lower() in _CREDENTIAL_QUERY_KEYS else v)
+                for k, v in parse_qsl(query, keep_blank_values=True)
+            ]
+        )
+
+    return urlunsplit((parts.scheme, netloc, path, query, parts.fragment))
+
+
 async def _download_command_file(cf: Any) -> bytes | None:
     if getattr(cf, "data", None):
         return cf.data
@@ -189,7 +254,11 @@ async def _ingest_command_files(command: OrgCommand, state: Any, ctx: Any, tenan
             content=data,
             content_type=getattr(cf, "content_type", "application/octet-stream"),
             title=getattr(cf, "filename", ""),
-            source_url=getattr(cf, "url", "") or "",
+            # Never the raw URL: it carries the channel's credential (the
+            # Telegram bot token is a path segment of it) and source_url is
+            # persisted on the document, copied into chunk metadata, and echoed
+            # back to the tenant as a RAG citation.
+            source_url=redact_url_credentials(getattr(cf, "url", "") or ""),
         )
         try:
             result = await pipeline.ingest(raw, source)

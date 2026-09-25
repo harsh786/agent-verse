@@ -1225,33 +1225,45 @@ class KnowledgeStore:
             if dimension_row is None:
                 return 0
             table = _chunk_table(int(dimension_row[0]))
-            result = await session.execute(
-                text(
-                    f"DELETE FROM {table} WHERE document_id = :did "
-                    "AND collection_id = :cid AND tenant_id = :tid"
-                ),
-                {
-                    "did": document_id,
-                    "cid": collection_id,
-                    "tid": tenant_ctx.tenant_id,
-                },
-            )
-            deleted = result.rowcount or 0
-            if deleted:
+            removed = (
                 await session.execute(
-                    text(f"""
+                    text(
+                        f"DELETE FROM {table} WHERE document_id = :did "
+                        "AND collection_id = :cid AND tenant_id = :tid "
+                        "RETURNING octet_length(content)"
+                    ),
+                    {
+                        "did": document_id,
+                        "cid": collection_id,
+                        "tid": tenant_ctx.tenant_id,
+                    },
+                )
+            ).fetchall()
+            deleted = len(removed)
+            if deleted:
+                # Incremental, like the ingest path — the recompute this replaces
+                # scanned the whole collection on every delete. It also never
+                # touched total_size_bytes at all, so a collection's reported
+                # size only ever grew: delete every document and the tenant was
+                # still billed/quota'd for the bytes. One document, one row
+                # lock, exact deltas.
+                await session.execute(
+                    text("""
                         UPDATE knowledge_collections
-                        SET chunk_count = (
-                                SELECT count(*) FROM {table} WHERE collection_id = :cid
-                            ),
-                            document_count = (
-                                SELECT count(DISTINCT document_id) FROM {table}
-                                WHERE collection_id = :cid
+                        SET chunk_count = GREATEST(chunk_count - :d_chunks, 0),
+                            document_count = GREATEST(document_count - 1, 0),
+                            total_size_bytes = GREATEST(
+                                COALESCE(total_size_bytes, 0) - :d_bytes, 0
                             ),
                             updated_at = now()
                         WHERE id = :cid AND tenant_id = :tid
                     """),
-                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                    {
+                        "cid": collection_id,
+                        "tid": tenant_ctx.tenant_id,
+                        "d_chunks": deleted,
+                        "d_bytes": sum(int(r[0] or 0) for r in removed),
+                    },
                 )
 
         memory_deleted = self.delete_document(
@@ -1349,10 +1361,20 @@ class KnowledgeStore:
                 strategy_metadata=strategy_metadata,
             )
 
-        store = self._data.get((tenant_ctx.tenant_id, collection_id))
-        if store is not None:
-            store.chunks.append(chunk)
-            store.collection.document_count = len({item.document_id for item in store.chunks})
+        # In-memory mirror only when there is no database. With a DB the chunk
+        # rows are the source of truth for both search (hybrid_search_db) and the
+        # collection counters, and nothing reads this mirror back — while
+        # extending it kept every chunk this process ever ingested on the heap
+        # (an unbounded per-replica leak at corpus scale) and recomputed
+        # document_count with a set comprehension over the whole list, making a
+        # bulk load O(n^2) in Python on top of the O(n^2) it was doing in SQL.
+        if self._db is None:
+            store = self._data.get((tenant_ctx.tenant_id, collection_id))
+            if store is not None:
+                store.chunks.append(chunk)
+                store.collection.document_count = len(
+                    {item.document_id for item in store.chunks}
+                )
 
         return chunk_id
 
@@ -1676,10 +1698,20 @@ class KnowledgeStore:
             tenant_id=tenant_ctx.tenant_id,
         )
 
-        cached = self._data.get((tenant_ctx.tenant_id, collection_id))
-        if cached is not None:
-            cached.chunks.extend(chunks)
-            cached.collection.document_count = len({chunk.document_id for chunk in cached.chunks})
+        # In-memory mirror only when there is no database. With a DB the chunk
+        # rows are the source of truth for both search (hybrid_search_db) and the
+        # collection counters, and nothing reads this mirror back — while
+        # extending it kept every chunk this process ever ingested on the heap
+        # (an unbounded per-replica leak at corpus scale) and recomputed
+        # document_count with a set comprehension over the whole list, making a
+        # bulk load O(n^2) in Python on top of the O(n^2) it was doing in SQL.
+        if self._db is None:
+            cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+            if cached is not None:
+                cached.chunks.extend(chunks)
+                cached.collection.document_count = len(
+                    {chunk.document_id for chunk in cached.chunks}
+                )
         return [chunk.chunk_id for chunk in chunks]
 
     async def ingest_repository_chunks_async(
@@ -1767,10 +1799,20 @@ class KnowledgeStore:
             completion_source_hash=hashlib.sha256(source_url.encode()).hexdigest(),
             completion_lease_owner=lease_owner,
         )
-        cached = self._data.get((tenant_ctx.tenant_id, collection_id))
-        if cached is not None:
-            cached.chunks.extend(chunks)
-            cached.collection.document_count = len({chunk.document_id for chunk in cached.chunks})
+        # In-memory mirror only when there is no database. With a DB the chunk
+        # rows are the source of truth for both search (hybrid_search_db) and the
+        # collection counters, and nothing reads this mirror back — while
+        # extending it kept every chunk this process ever ingested on the heap
+        # (an unbounded per-replica leak at corpus scale) and recomputed
+        # document_count with a set comprehension over the whole list, making a
+        # bulk load O(n^2) in Python on top of the O(n^2) it was doing in SQL.
+        if self._db is None:
+            cached = self._data.get((tenant_ctx.tenant_id, collection_id))
+            if cached is not None:
+                cached.chunks.extend(chunks)
+                cached.collection.document_count = len(
+                    {chunk.document_id for chunk in cached.chunks}
+                )
         return [chunk.chunk_id for chunk in chunks]
 
     async def _persist_chunk(
@@ -1902,20 +1944,29 @@ class KnowledgeStore:
                     {"dimension": dimension, "id": collection_id, "tid": tenant_id},
                 )
 
+            removed_chunks = 0
+            removed_bytes = 0
             if replacement_document_id is not None:
-                await session.execute(
-                    text(f"""
-                        DELETE FROM {table}
-                        WHERE collection_id = :collection_id
-                          AND tenant_id = :tenant_id
-                          AND document_id = :document_id
-                    """),
-                    {
-                        "collection_id": collection_id,
-                        "tenant_id": tenant_id,
-                        "document_id": replacement_document_id,
-                    },
-                )
+                # RETURNING the byte sizes lets the counter update below be an
+                # exact delta instead of a full-collection recompute.
+                removed = (
+                    await session.execute(
+                        text(f"""
+                            DELETE FROM {table}
+                            WHERE collection_id = :collection_id
+                              AND tenant_id = :tenant_id
+                              AND document_id = :document_id
+                            RETURNING octet_length(content)
+                        """),
+                        {
+                            "collection_id": collection_id,
+                            "tenant_id": tenant_id,
+                            "document_id": replacement_document_id,
+                        },
+                    )
+                ).fetchall()
+                removed_chunks = len(removed)
+                removed_bytes = sum(int(r[0] or 0) for r in removed)
             else:
                 # TOCTOU guard: an earlier ``exists_by_hash`` dedup check (pipeline
                 # Stage 3, RPA/OCR pre-checks) ran in its own, now-closed
@@ -1954,6 +2005,29 @@ class KnowledgeStore:
                             f"(doc_content_hash={doc_hash[:12]}...)"
                         )
 
+            # How many of this batch's documents are *new* to the collection —
+            # computed before the INSERT so the counter update below can be a
+            # delta. One indexed probe per distinct document_id (the
+            # uq_chunk_<dim> UNIQUE (collection_id, document_id, chunk_index)
+            # index covers it); a batch is one document in every current caller.
+            batch_document_ids = {str(record["document_id"]) for record in records}
+            already_present = 0
+            for document_id in batch_document_ids:
+                seen = (
+                    await session.execute(
+                        text(
+                            f"SELECT 1 FROM {table} WHERE collection_id = :cid "
+                            "AND tenant_id = :tid AND document_id = :did LIMIT 1"
+                        ),
+                        {"cid": collection_id, "tid": tenant_id, "did": document_id},
+                    )
+                ).scalar_one_or_none()
+                if seen is not None:
+                    already_present += 1
+            added_documents = len(batch_document_ids) - already_present
+            added_chunks = len(parameters)
+            added_bytes = sum(len(str(record["content"]).encode("utf-8")) for record in records)
+
             await session.execute(
                 text(f"""
                     INSERT INTO {table}
@@ -1975,27 +2049,38 @@ class KnowledgeStore:
                 """),
                 parameters,
             )
+            # Incremental, not recomputed. The previous version ran three
+            # correlated aggregates over the collection's entire chunk table on
+            # every single document — including sum(octet_length(content)), which
+            # detoasts every chunk — making a bulk load O(N²). At a million
+            # documents (~10M chunks) one further ingest read 30M rows. These
+            # deltas are exact because the collection row is held under FOR
+            # UPDATE for this whole transaction, so no concurrent ingest or
+            # delete can interleave between the counts above and this update.
             await session.execute(
-                text(f"""
+                text("""
                     UPDATE knowledge_collections
-                    SET chunk_count = (
-                            SELECT count(*) FROM {table}
-                            WHERE collection_id = :id AND tenant_id = :tid
-                        ),
-                        document_count = (
-                            SELECT count(DISTINCT document_id) FROM {table}
-                            WHERE collection_id = :id AND tenant_id = :tid
-                        ),
-                        total_size_bytes = (
-                            SELECT COALESCE(sum(octet_length(content)), 0)
-                            FROM {table}
-                            WHERE collection_id = :id AND tenant_id = :tid
+                    SET chunk_count = GREATEST(chunk_count + :d_chunks, 0),
+                        document_count = GREATEST(document_count + :d_documents, 0),
+                        total_size_bytes = GREATEST(
+                            COALESCE(total_size_bytes, 0) + :d_bytes, 0
                         ),
                         last_indexed_at = now(),
                         updated_at = now()
                     WHERE id = :id AND tenant_id = :tid
                 """),
-                {"id": collection_id, "tid": tenant_id},
+                {
+                    "id": collection_id,
+                    "tid": tenant_id,
+                    "d_chunks": added_chunks - removed_chunks,
+                    # A replaced document was deleted just above, so the probe
+                    # counted it as new again; it is the same document, so net 0.
+                    # Only discount it when the delete actually removed rows —
+                    # replacing a document the collection never had really is an
+                    # addition.
+                    "d_documents": added_documents - (1 if removed_chunks else 0),
+                    "d_bytes": added_bytes - removed_bytes,
+                },
             )
             if completion_job_id is not None:
                 completed = await session.execute(

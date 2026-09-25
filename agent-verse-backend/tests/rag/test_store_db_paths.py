@@ -75,6 +75,14 @@ class _ScriptedSession:
         self.calls.append((sql, params))
         if "set_config" in sql:
             return _Result()
+        # _persist_chunks probes, once per distinct document_id, whether that
+        # document is already in the collection so it can increment
+        # document_count by a delta instead of recomputing it with a
+        # full-collection aggregate. Answer it out-of-band (default: not
+        # present) rather than making every scripted test thread an extra
+        # positional _Result through for it.
+        if "document_id = :did LIMIT 1" in sql:
+            return _Result(scalar=None)
         if self._results:
             return self._results.pop(0)
         return _Result()
@@ -930,7 +938,13 @@ class TestDeleteDocument:
     async def test_delete_document_async_db_success_updates_counts(self):
         from app.rag.store import _CollectionStore
 
-        db = _ScriptedDB(_Result(rows=[(768,)]), _Result(rowcount=2), _Result())
+        # The DELETE now uses RETURNING octet_length(content) so the counter
+        # update can subtract exact deltas (including total_size_bytes, which
+        # the old full-recompute never touched at all) — the deleted count comes
+        # from the returned rows, not rowcount.
+        db = _ScriptedDB(
+            _Result(rows=[(768,)]), _Result(rows=[(1,), (2,)], rowcount=2), _Result()
+        )
         store = KnowledgeStore(db_session_factory=db)
         store._data[(_CTX.tenant_id, "c1")] = _CollectionStore(
             collection=KnowledgeCollection(name="a", collection_id="c1")
@@ -942,7 +956,7 @@ class TestDeleteDocument:
         assert deleted == 2
 
     async def test_delete_document_async_explicit_db_param(self):
-        db = _ScriptedDB(_Result(rows=[(768,)]), _Result(rowcount=0))
+        db = _ScriptedDB(_Result(rows=[(768,)]), _Result(rows=[], rowcount=0))
         store = KnowledgeStore()
         deleted = await store.delete_document_async(
             "doc1", collection_id="c1", tenant_ctx=_CTX, db=db
@@ -980,11 +994,19 @@ class TestIngestDocumentDbBranches:
                 collection_id="c1", content="text", tenant_ctx=_CTX, embedder=object()
             )
 
-    async def test_db_success_persists_and_caches(self):
+    async def test_db_success_persists_without_mirroring_the_chunk_in_process(self):
+        """A DB-backed ingest writes to Postgres and keeps nothing on the heap.
+
+        This used to also append the chunk to the in-process ``_data`` mirror and
+        bump its ``document_count``. Nothing in the DB path ever read that mirror
+        back — searches go through ``hybrid_search_db`` and the counters through
+        ``knowledge_collections`` — while it grew without bound, holding every
+        chunk a replica ever ingested in RAM and recomputing ``document_count``
+        with a set comprehension over the whole list on each ingest.
+        """
         row = (2048, 0)
         db = _ScriptedDB(_Result(rows=[row]), _Result(), _Result())
         store = KnowledgeStore(db_session_factory=db)
-        store._data[(_CTX.tenant_id, "c1")] = None
         from app.rag.store import _CollectionStore
 
         store._data[(_CTX.tenant_id, "c1")] = _CollectionStore(
@@ -997,8 +1019,12 @@ class TestIngestDocumentDbBranches:
                 collection_id="c1", content="text", tenant_ctx=_CTX, embedder=object()
             )
         assert chunk_id
-        col = store.get_collection("c1", tenant_ctx=_CTX)
-        assert col.document_count == 1
+        assert any(
+            "INSERT INTO knowledge_chunks_2048" in sql for sql, _ in db.session.calls
+        ), "the chunk never reached Postgres"
+        assert store._data[(_CTX.tenant_id, "c1")].chunks == [], (
+            "DB-backed ingest mirrored the chunk onto the heap"
+        )
 
 
 # ── persist_index_records ────────────────────────────────────────────────────

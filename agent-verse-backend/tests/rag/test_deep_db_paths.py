@@ -79,8 +79,13 @@ class _SimpleMockDB:
         class _Sess:
             async def execute(self, *a, **kw):
                 class R:
+                    rowcount = len(rows)
                     def fetchall(self): return rows
                     def fetchone(self): return rows[0] if rows else None
+                    # _persist_chunks' per-document "already present?" probe
+                    # (which replaced a full-collection aggregate) reads this.
+                    def scalar_one_or_none(self): return None
+                    def scalar_one(self): return rows[0][0] if rows else None
                     def scalars(self):
                         class S:
                             def all(self): return rows
