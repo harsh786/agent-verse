@@ -112,6 +112,17 @@ jobs:
       - name: Run smoke tests
         run: npm run test:e2e -- --project=smoke-live --reporter=line
 
+      # The step above runs against `npm run dev` (unbundled ESM), and vitest
+      # runs in jsdom with no bundling — so nothing in CI ever LOADED the
+      # production bundle the `frontend` job builds. A manualChunks defect
+      # shipped a completely blank app past a fully green pipeline. Build it and
+      # run the same specs against the real artifact.
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Run smoke tests against the production build
+        run: npm run test:e2e:build -- --project=smoke-live --reporter=line
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
