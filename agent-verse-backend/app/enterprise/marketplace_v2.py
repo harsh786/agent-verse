@@ -1701,9 +1701,58 @@ class MarketplaceV2:
                         _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
-                    # ATOMIC: create agent row (B.2: include connector_ids + system_prompt)
                     connector_ids = template.get("required_connectors", [])
                     system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
+                    # The install record goes FIRST and is the authority on which
+                    # agent this (template, tenant) pair owns.
+                    #
+                    # `marketplace_installs` is UNIQUE (template_id,
+                    # installer_tenant_id), so a re-install can only ever update
+                    # the existing row. Creating a fresh uuid4 agent on every call
+                    # and then pointing the install record at it (the previous
+                    # `SET agent_id = EXCLUDED.agent_id`) orphaned the agent the
+                    # record used to reference — a dead row still listed by
+                    # `GET /agents` and still counting against the tenant's quota,
+                    # with no `uninstall` path anywhere to reclaim it.
+                    #
+                    # Keeping the incumbent agent_id on conflict also makes this
+                    # safe under concurrent installs (a double-clicked "Install", a
+                    # retried request): the unique constraint serialises them, and
+                    # the loser's DO UPDATE returns the winner's agent_id, so both
+                    # callers converge on one agent instead of each leaking one.
+                    # COALESCE heals a historic row whose agent_id was NULL.
+                    owned = (
+                        await session.execute(
+                            _t("""
+                            INSERT INTO marketplace_installs
+                                (id, template_id, installer_tenant_id, agent_id,
+                                 parameters, installed_at)
+                            VALUES
+                                (:id, :tid, :installer, :agent,
+                                 CAST(:params AS jsonb), NOW())
+                            ON CONFLICT (template_id, installer_tenant_id) DO UPDATE
+                                SET agent_id = COALESCE(
+                                        marketplace_installs.agent_id, EXCLUDED.agent_id
+                                    ),
+                                    parameters = EXCLUDED.parameters,
+                                    installed_at = NOW(),
+                                    uninstalled_at = NULL
+                            RETURNING agent_id
+                        """),
+                            {
+                                "id": install_id,
+                                "tid": template_id,
+                                "installer": tenant_ctx.tenant_id,
+                                "agent": agent_id,
+                                "params": json.dumps(params),
+                            },
+                        )
+                    ).scalar_one()
+                    agent_id = str(owned)
+
+                    # ATOMIC: create or refresh THAT agent (B.2: connector_ids +
+                    # system_prompt). A re-install re-applies the template's config
+                    # to the agent it already owns instead of spawning another one.
                     await session.execute(
                         _t("""
                             INSERT INTO agents
@@ -1711,6 +1760,12 @@ class MarketplaceV2:
                                  connector_ids, system_prompt)
                             VALUES (:id, :tenant, :name, :goal, :mode,
                                     CAST(:connector_ids AS jsonb), :system_prompt)
+                            ON CONFLICT (id) DO UPDATE
+                                SET name = EXCLUDED.name,
+                                    goal_template = EXCLUDED.goal_template,
+                                    autonomy_mode = EXCLUDED.autonomy_mode,
+                                    connector_ids = EXCLUDED.connector_ids,
+                                    system_prompt = EXCLUDED.system_prompt
                         """),
                         {
                             "id": agent_id,
@@ -1723,29 +1778,6 @@ class MarketplaceV2:
                             "mode": config.get("autonomy_mode", "bounded-autonomous"),
                             "connector_ids": json.dumps(connector_ids),
                             "system_prompt": system_prompt,
-                        },
-                    )
-                    # ATOMIC: create install record
-                    await session.execute(
-                        _t("""
-                            INSERT INTO marketplace_installs
-                                (id, template_id, installer_tenant_id, agent_id,
-                                 parameters, installed_at)
-                            VALUES
-                                (:id, :tid, :installer, :agent,
-                                 CAST(:params AS jsonb), NOW())
-                            ON CONFLICT (template_id, installer_tenant_id) DO UPDATE
-                                SET agent_id = EXCLUDED.agent_id,
-                                    parameters = EXCLUDED.parameters,
-                                    installed_at = NOW(),
-                                    uninstalled_at = NULL
-                        """),
-                        {
-                            "id": install_id,
-                            "tid": template_id,
-                            "installer": tenant_ctx.tenant_id,
-                            "agent": agent_id,
-                            "params": json.dumps(params),
                         },
                     )
                     # Increment install count
