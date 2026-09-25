@@ -321,3 +321,70 @@ def test_enable_unknown_compliance_bundle_returns_400():
     client = TestClient(_make_app())
     resp = client.post("/trust/compliance-bundles/not-a-real-bundle/enable", headers=_HEADERS)
     assert resp.status_code == 400
+
+
+# ── Trust: audit-integrity must never fabricate an attestation ───────────────
+
+
+def test_audit_integrity_does_not_attest_when_nothing_was_verified():
+    """No wired chain verifier must NOT produce `verified: True`.
+
+    Regression: the endpoint fell through to a hardcoded
+
+        {"status": "ok", "verified": True,
+         "chain_tip_hash": sha256(f"{tenant_id}:chain-tip")[:16], ...}
+
+    whenever `app.state.audit_log` lacked `verify_chain` — which is always, since
+    the wired `AuditLog` (app/governance/audit.py) has no such method. A
+    tamper-detection endpoint therefore always reported the chain intact, with a
+    "chain tip hash" derived from nothing but the tenant id. The pre-existing
+    test only asserted the keys were present, so it never caught this.
+    """
+    client = TestClient(_make_app())
+    resp = client.get("/trust/audit/integrity", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verified"] is False, data
+    assert data["status"] == "unavailable", data
+    # The fabricated hash must be gone, not merely different.
+    assert not data.get("chain_tip_hash"), data
+
+
+def test_audit_integrity_reports_tampering_from_a_sync_verifier():
+    """A synchronous `verify_chain` must be honoured, not swallowed.
+
+    Regression: the endpoint did `await audit_svc.verify_chain(...)`, but
+    `AuditV3.verify_chain` is a plain `def` returning a dict. Awaiting a dict
+    raises TypeError, which `except Exception: pass` swallowed — so even with a
+    real verifier reporting a BROKEN chain, the response was the hardcoded
+    `verified: True`.
+    """
+    class _SyncVerifier:
+        def verify_chain(self, tenant_id):
+            return {"valid": False, "records_checked": 7, "broken_at": "evt-42",
+                    "reason": "Chain break at sequence 3"}
+
+    app = _make_app()
+    app.state.audit_v3 = _SyncVerifier()
+    resp = TestClient(app).get("/trust/audit/integrity", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verified"] is False, data
+    assert data["status"] == "tampered", data
+    assert data["tampered_event"] == "evt-42", data
+    assert data["events_verified"] == 7, data
+
+
+def test_audit_integrity_reports_an_intact_chain_from_an_async_verifier():
+    class _AsyncVerifier:
+        async def verify_chain(self, tenant_id):
+            return {"valid": True, "records_checked": 12, "broken_at": None}
+
+    app = _make_app()
+    app.state.audit_v3 = _AsyncVerifier()
+    resp = TestClient(app).get("/trust/audit/integrity", headers=_HEADERS)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["verified"] is True, data
+    assert data["status"] == "ok", data
+    assert data["events_verified"] == 12, data

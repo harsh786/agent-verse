@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import inspect
 import json
 import uuid
 from typing import Any
@@ -28,25 +29,77 @@ _approval_delegations: dict[str, list] = {}  # approval_id → list of approvers
 
 @router.get("/audit/integrity")
 async def get_audit_integrity(request: Request) -> dict[str, Any]:
-    """Check audit log hash chain integrity."""
+    """Check audit log hash chain integrity.
+
+    This endpoint is a tamper-detection attestation, so it must never claim a
+    chain was verified when no verification happened. It previously fell through
+    to a hardcoded ``{"status": "ok", "verified": True, "chain_tip_hash":
+    sha256(tenant_id + ":chain-tip")}`` — a "chain tip" derived from nothing but
+    the tenant id — in two situations that were both permanent:
+
+      * ``app.state.audit_log`` is an ``AuditLog`` (app/governance/audit.py),
+        which has no ``verify_chain`` at all, so the ``hasattr`` guard never
+        passed; and
+      * even where a verifier existed, the call was ``await
+        audit_svc.verify_chain(...)`` while ``AuditV3.verify_chain`` is a plain
+        ``def`` returning a dict — awaiting a dict raises TypeError, which the
+        bare ``except Exception: pass`` swallowed straight into the same fake
+        "verified" response.
+
+    So a broken chain and an unwired service were both reported as intact.
+    """
     tenant = _require_tenant(request)
 
-    # Try to use real audit service if available
-    audit_svc = getattr(request.app.state, "audit_log", None)
-    if audit_svc and hasattr(audit_svc, "verify_chain"):
-        try:
-            result = await audit_svc.verify_chain(tenant.tenant_id)
-            return result
-        except Exception:
-            pass
+    # Prefer an explicitly wired chain verifier; only fall back to the audit
+    # service when it genuinely exposes verify_chain.
+    candidates = (
+        getattr(request.app.state, "audit_v3", None),
+        getattr(request.app.state, "audit_log", None),
+    )
+    target = next((c for c in candidates if c is not None and hasattr(c, "verify_chain")), None)
 
+    if target is None:
+        return {
+            "status": "unavailable",
+            "verified": False,
+            "chain_tip_hash": None,
+            "events_verified": 0,
+            "tampered_event": None,
+            "message": "Audit chain verification is not available on this deployment.",
+        }
+
+    try:
+        result: Any = target.verify_chain(tenant.tenant_id)
+        if inspect.isawaitable(result):
+            result = await result
+    except Exception as exc:
+        # An integrity check that errored is not an integrity guarantee.
+        return {
+            "status": "error",
+            "verified": False,
+            "chain_tip_hash": None,
+            "events_verified": 0,
+            "tampered_event": None,
+            "message": f"Audit chain verification failed: {exc}",
+        }
+
+    if isinstance(result, bool):
+        result = {"valid": result}
+    if not isinstance(result, dict):
+        result = {"valid": False, "reason": f"unexpected verifier result: {type(result).__name__}"}
+
+    valid = bool(result.get("valid", result.get("verified", False)))
     return {
-        "status": "ok",
-        "verified": True,
-        "chain_tip_hash": hashlib.sha256(f"{tenant.tenant_id}:chain-tip".encode()).hexdigest()[:16],
-        "events_verified": 0,
-        "tampered_event": None,
-        "message": "No events to verify" if True else "Chain intact",
+        "status": "ok" if valid else "tampered",
+        "verified": valid,
+        "chain_tip_hash": result.get("chain_tip_hash"),
+        "events_verified": int(
+            result.get("records_checked", result.get("verified_events", 0)) or 0
+        ),
+        "tampered_event": result.get("broken_at", result.get("broken_chain_at")),
+        "message": (
+            "Chain intact" if valid else (result.get("reason") or "Chain integrity check failed")
+        ),
     }
 
 

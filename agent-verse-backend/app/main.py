@@ -2167,9 +2167,14 @@ def create_app(
                     DeletionOrchestrator as _DeletionOrch,
                 )
 
+                _audit_v3 = _AuditV3(db_factory=db_factory, redis=redis_for_runtime)
+                # Also expose the chain verifier to the trust API. Without this
+                # /trust/audit/integrity finds no object with verify_chain (the
+                # wired AuditLog has none) and can only report "unavailable".
+                app.state.audit_v3 = _audit_v3
                 app.state.deletion_orchestrator = _DeletionOrch(
                     db_factory=db_factory,
-                    audit=_AuditV3(db_factory=db_factory, redis=redis_for_runtime),
+                    audit=_audit_v3,
                 )
                 logger.info("deletion_orchestrator_wired")
             except Exception as _del_exc:
