@@ -358,10 +358,20 @@ def test_list_dlq_no_db(client):
     assert resp.json() == []
 
 
-def test_retry_dlq_entry(client):
+def test_retry_dlq_entry_without_storage_is_not_a_fake_success(client):
+    """Retry must never report ``queued`` for an id it cannot even look up.
+
+    The endpoint used to return ``202 {"status": "queued"}`` unconditionally —
+    for a nonexistent id, for another tenant's id, and with no DLQ storage wired
+    at all — while doing nothing whatsoever. With no ``db_session_factory`` on
+    app.state there is no DLQ to re-queue from, so the honest answer is 503.
+    (The DB-backed retry path, including the 404 for unknown/foreign ids, is
+    covered end-to-end in
+    ``tests/e2e_full/test_trigger_isolation_and_dlq_e2e.py``.)
+    """
     resp = client.post("/triggers/dlq/fake-dlq-id/retry")
-    assert resp.status_code == 202
-    assert resp.json()["status"] == "queued"
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "DLQ storage unavailable"
 
 
 # ── 2.W-10: unsupported trigger types are rejected at registration ────────────

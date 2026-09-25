@@ -282,28 +282,105 @@ async def list_dlq(request: Request) -> list[dict[str, Any]]:
     db = _get_db(request)
     if db is None:
         return []
-    try:
-        from sqlalchemy import text
+    from sqlalchemy import text
 
-        async with db() as session:
-            rows = await session.execute(
-                text(
-                    "SELECT id, trigger_id, failure_type, error_message, retry_count, "
-                    "next_retry_at, created_at FROM trigger_dlq "
-                    "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT 100"
-                ),
-                {"tid": tenant_ctx.tenant_id},
-            )
-            return [dict(r._mapping) for r in rows]
-    except Exception:
-        return []
+    from app.db.rls import sqlalchemy_rls_context
+
+    # RLS context is required, not optional: trigger_dlq is FORCE-protected, so
+    # without app.tenant_id every row is filtered out under the app's own role.
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
+        rows = await session.execute(
+            text(
+                "SELECT id, trigger_id, failure_type, error_message, retry_count, "
+                "next_retry_at, created_at, resolved_at FROM trigger_dlq "
+                "WHERE tenant_id = :tid ORDER BY created_at DESC LIMIT 100"
+            ),
+            {"tid": tenant_ctx.tenant_id},
+        )
+        return [dict(r._mapping) for r in rows]
 
 
 @router.post("/dlq/{dlq_id}/retry", status_code=202)
-async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, str]:
-    """Re-queue a DLQ entry for immediate retry."""
-    _require_tenant(request)
-    return {"status": "queued", "dlq_id": dlq_id}
+async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
+    """Re-queue a DLQ entry for another delivery attempt.
+
+    Records the attempt on the entry itself (``retry_count`` + ``next_retry_at``
+    from :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored
+    ``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by
+    ``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible
+    and answers 404 rather than reporting a retry that never happened.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.triggers.dlq import RETRY_DELAYS
+
+    tenant_ctx = _require_tenant(request)
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(status_code=503, detail="DLQ storage unavailable")
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
+        row = (
+            await session.execute(
+                text(
+                    "SELECT trigger_id, raw_payload, retry_count FROM trigger_dlq "
+                    "WHERE id = :id AND tenant_id = :tid AND resolved_at IS NULL "
+                    "FOR UPDATE"
+                ),
+                {"id": dlq_id, "tid": tenant_ctx.tenant_id},
+            )
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="DLQ entry not found")
+
+        trigger_id = str(row[0])
+        raw_payload = row[1] if isinstance(row[1], dict) else {}
+        attempt = int(row[2] or 0) + 1
+        # Exponential backoff; attempts past the table stay on the last delay.
+        delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS)) - 1]
+        next_retry_at = datetime.now(UTC) + timedelta(seconds=delay)
+
+        await session.execute(
+            text(
+                "UPDATE trigger_dlq SET retry_count = :n, next_retry_at = :next "
+                "WHERE id = :id AND tenant_id = :tid"
+            ),
+            {"n": attempt, "next": next_retry_at, "id": dlq_id, "tid": tenant_ctx.tenant_id},
+        )
+
+    dispatched = False
+    dispatcher = _get_dispatcher(request)
+    store = _get_store(request)
+    if dispatcher is not None and store is not None:
+        rec = store.get(trigger_id, tenant_ctx=tenant_ctx)
+        if rec is not None:
+            with contextlib.suppress(Exception):
+                await dispatcher.dispatch(
+                    _spec_for_dispatch(rec),
+                    tenant_id=tenant_ctx.tenant_id,
+                    payload=raw_payload,
+                )
+                dispatched = True
+
+    return {
+        "status": "queued",
+        "dlq_id": dlq_id,
+        "trigger_id": trigger_id,
+        "retry_count": attempt,
+        "next_retry_at": next_retry_at.isoformat(),
+        "dispatched": dispatched,
+    }
 
 
 # ── Per-trigger routes ────────────────────────────────────────────────────────
@@ -411,27 +488,40 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
 async def list_trigger_events(
     schedule_id: str, request: Request, limit: int = 50
 ) -> list[dict[str, Any]]:
-    """Return recent trigger events from the audit table."""
-    _require_tenant(request)
+    """Return recent trigger events from the audit table, scoped to the tenant.
+
+    The ``tenant_id`` predicate is load-bearing, not belt-and-braces: this query
+    used to filter on ``trigger_id`` alone with no RLS context, so any
+    authenticated caller who knew another tenant's trigger id read that tenant's
+    firing history — including the raw inbound webhook ``payload``. Both the
+    explicit predicate and the RLS GUC are now in place.
+    """
+    tenant_ctx = _require_tenant(request)
     db = _get_db(request)
     if db is None:
         return []
-    try:
-        from sqlalchemy import text
+    limit = max(1, min(limit, 500))
 
-        async with db() as session:
-            rows = await session.execute(
-                text(
-                    "SELECT id AS event_id, trigger_id, trigger_type, idempotency_key, "
-                    "payload, goal_id, goal_created, skip_reason, fired_at "
-                    "FROM trigger_events WHERE trigger_id = :tid "
-                    "ORDER BY fired_at DESC LIMIT :lim"
-                ),
-                {"tid": schedule_id, "lim": limit},
-            )
-            return [dict(r._mapping) for r in rows]
-    except Exception:
-        return []
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
+        rows = await session.execute(
+            text(
+                "SELECT id AS event_id, trigger_id, trigger_type, idempotency_key, "
+                "payload, goal_id, goal_created, skip_reason, fired_at "
+                "FROM trigger_events "
+                "WHERE trigger_id = :tid AND tenant_id = :tenant "
+                "ORDER BY fired_at DESC LIMIT :lim"
+            ),
+            {"tid": schedule_id, "tenant": tenant_ctx.tenant_id, "lim": limit},
+        )
+        return [dict(r._mapping) for r in rows]
 
 
 # ── PATCH (partial update) ────────────────────────────────────────────────────

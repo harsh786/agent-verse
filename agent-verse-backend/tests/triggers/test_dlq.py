@@ -9,6 +9,31 @@ import pytest
 from app.triggers.dlq import FAILURE_TYPES, RETRY_DELAYS, write_to_dlq
 
 
+def _insert_call(session: AsyncMock) -> tuple[str, dict]:
+    """Return ``(sql, params)`` for the INSERT among a session's execute calls.
+
+    ``write_to_dlq`` wraps its INSERT in ``sqlalchemy_rls_context``, so the call
+    list is ``set_config(app.tenant_id) → INSERT → set_config('')``. Picking
+    ``call_args`` (the *last* call) would inspect the reset, not the write.
+    """
+    for call in session.execute.await_args_list:
+        args = call.args
+        if len(args) >= 2 and "INSERT INTO trigger_dlq" in str(args[0]):
+            return str(args[0]), args[1]
+    raise AssertionError(
+        f"no trigger_dlq INSERT among calls: {[str(c.args[0])[:60] for c in session.execute.await_args_list]}"
+    )
+
+
+def _rls_tenant(session: AsyncMock) -> str | None:
+    """Return the tenant id bound to the ``app.tenant_id`` GUC, if it was set."""
+    for call in session.execute.await_args_list:
+        args = call.args
+        if len(args) >= 2 and "set_config" in str(args[0]) and args[1].get("tid"):
+            return str(args[1]["tid"])
+    return None
+
+
 class TestConstants:
     def test_failure_types_contains_expected_values(self) -> None:
         for expected in [
@@ -59,10 +84,11 @@ class TestWriteToDlq:
             retry_count=2,
         )
 
-        session.execute.assert_awaited_once()
         session.commit.assert_awaited_once()
-        args, kwargs = session.execute.call_args
-        params = args[1]
+        # trigger_dlq is FORCE-RLS protected: the INSERT only matches a policy
+        # when app.tenant_id is set for the statement.
+        assert _rls_tenant(session) == "tenant-1"
+        _sql, params = _insert_call(session)
         assert params["tenant_id"] == "tenant-1"
         assert params["trigger_id"] == "trig-1"
         assert params["failure_type"] == "SIGNATURE_INVALID"
@@ -85,8 +111,7 @@ class TestWriteToDlq:
             raw_payload={},
         )
 
-        args, _ = session.execute.call_args
-        params = args[1]
+        _sql, params = _insert_call(session)
         assert len(params["error_message"]) == 2048
 
     @pytest.mark.asyncio
@@ -120,5 +145,8 @@ class TestWriteToDlq:
             error_message="over quota",
             raw_payload={},
         )
-        args, _ = session.execute.call_args
-        assert args[1]["retry_count"] == 0
+        _sql, params = _insert_call(session)
+        assert params["retry_count"] == 0
+        # created_at must be populated: GET /triggers/dlq orders by it and the
+        # column is NOT NULL.
+        assert params["created_at"] is not None

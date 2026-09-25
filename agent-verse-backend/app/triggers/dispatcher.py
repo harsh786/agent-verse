@@ -5,10 +5,12 @@ Every trigger firing, regardless of type, goes through this single dispatcher.
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import time
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from app.triggers.bulkhead import TriggerBulkhead
 from app.triggers.circuit_breaker import CircuitBreakerRegistry
@@ -26,6 +28,29 @@ _log = logging.getLogger(__name__)
 # `trigger_events` UNIQUE (tenant_id, idempotency_key) row is what
 # catches a replay after this expires.
 _DEDUP_TTL_SECONDS = 60
+
+# Cap on the inbound payload copy kept in the trigger_events audit row. A webhook
+# body is attacker-sized; the audit trail needs enough to explain *what* fired,
+# not an unbounded blob replicated into an append-only table that a busy tenant
+# writes to on every single firing.
+_AUDIT_PAYLOAD_MAX_BYTES = 16_384
+
+
+def _payload_for_audit(payload: Any) -> dict[str, Any]:
+    """Return a JSON-serialisable, size-capped copy of an inbound payload."""
+    if not isinstance(payload, dict):
+        return {"_value": str(payload)[:_AUDIT_PAYLOAD_MAX_BYTES]}
+    try:
+        encoded = _json.dumps(payload)
+    except (TypeError, ValueError):
+        return {"_unserializable": str(payload)[:_AUDIT_PAYLOAD_MAX_BYTES]}
+    if len(encoded) <= _AUDIT_PAYLOAD_MAX_BYTES:
+        return payload
+    return {
+        "_truncated": True,
+        "_original_bytes": len(encoded),
+        "_preview": encoded[:_AUDIT_PAYLOAD_MAX_BYTES],
+    }
 
 
 class TriggerDispatcher:
@@ -448,10 +473,11 @@ class TriggerDispatcher:
                     text(
                         "INSERT INTO trigger_events "
                         "(id, tenant_id, trigger_id, trigger_type, idempotency_key, "
-                        " fired_at, goal_created, goal_id, skip_reason, processing_ms) "
+                        " fired_at, payload, goal_created, goal_id, skip_reason, "
+                        " processing_ms) "
                         "VALUES (:id, :tenant_id, :trigger_id, :trigger_type, "
-                        "        :idempotency_key, :fired_at, :goal_created, "
-                        "        :goal_id, :skip_reason, :processing_ms) "
+                        "        :idempotency_key, :fired_at, CAST(:payload AS json), "
+                        "        :goal_created, :goal_id, :skip_reason, :processing_ms) "
                         "ON CONFLICT (tenant_id, idempotency_key) DO NOTHING"
                     ),
                     {
@@ -460,6 +486,11 @@ class TriggerDispatcher:
                         "trigger_id": event.trigger_id,
                         "trigger_type": event.trigger_type,
                         "idempotency_key": event.idempotency_key,
+                        # The column is NOT NULL with a '{}' default and is read
+                        # back by GET /triggers/{id}/events; leaving it out made
+                        # every firing's payload permanently '{}' — the audit row
+                        # recorded that something fired but never what.
+                        "payload": _json.dumps(_payload_for_audit(event.payload)),
                         # trigger_events.fired_at is a naive timestamp column; bind
                         # a naive UTC value so asyncpg does not reject the tz-aware one
                         # (which silently dropped every trigger audit row).
