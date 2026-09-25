@@ -78,8 +78,8 @@ test.describe('A2A — Tasks tab', () => {
     await expect(page.getByRole('tab', { name: 'Tasks' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Agent Card' })).toBeVisible();
     await expect(page.getByRole('tab', { name: 'Remote Agents' })).toBeVisible();
-    await expect(page.getByText('Dispatch Task')).toBeVisible();
-    await expect(page.getByLabel('Goal')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Dispatch Task' })).toBeVisible();
+    await expect(page.getByLabel('Goal', { exact: true })).toBeVisible();
   });
 
   test('2. Empty state shown when there are no tasks', async ({ page }) => {
@@ -115,7 +115,13 @@ test.describe('A2A — Tasks tab', () => {
 
     const row = page.getByTestId('task-row');
     await expect(row).toBeVisible({ timeout: 10000 });
-    await row.getByLabel(/copy/i).waitFor({ state: 'attached' }).catch(() => {});
+    // Best-effort settle. Without an explicit timeout this waits the default
+    // 30s for an element that need not exist, which consumed the whole test
+    // budget before the toggle below was ever clicked.
+    await row
+      .getByLabel(/copy/i)
+      .waitFor({ state: 'attached', timeout: 1000 })
+      .catch(() => {});
     // The chevron toggle button (only rendered because task.result is set)
     const toggle = row.locator('button').first();
     await toggle.click();
@@ -130,8 +136,8 @@ test.describe('A2A — Tasks tab', () => {
     });
     await page.goto('/a2a');
 
-    await expect(page.getByLabel('Goal')).toBeVisible({ timeout: 10000 });
-    await page.getByLabel('Goal').fill('Analyze competitor pricing pages');
+    await expect(page.getByLabel('Goal', { exact: true })).toBeVisible({ timeout: 10000 });
+    await page.getByLabel('Goal', { exact: true }).fill('Analyze competitor pricing pages');
     await page.getByRole('button', { name: /dispatch task/i }).click();
 
     await expect(page.getByText('Task dispatched!')).toBeVisible({ timeout: 5000 });
@@ -212,7 +218,8 @@ test.describe('A2A — Remote Agents tab', () => {
     await expect(page.getByText('Register Remote Agent')).toBeVisible({ timeout: 5000 });
     await page.getByLabel('Agent Card URL').fill('https://remote.example.com/.well-known/agent.json');
     await page.getByLabel('Display Name (optional)').fill('My Remote Agent');
-    await page.getByRole('button', { name: 'Register' }).click();
+    // "Register Agent" (the opener) also contains "Register" — match exactly.
+    await page.getByRole('button', { name: 'Register', exact: true }).click();
 
     await expect(page.getByText('My Remote Agent')).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('v2.1.0')).toBeVisible();

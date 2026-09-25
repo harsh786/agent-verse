@@ -447,13 +447,13 @@ function RemoteAgentsTab({ onDispatch }: { onDispatch: (endpoint: string) => voi
             <h2 className="text-base font-semibold">Register Remote Agent</h2>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium mb-1">Agent Card URL</label>
-                <input value={regUrl} onChange={(e) => setRegUrl(e.target.value)} placeholder="https://agent.example.com/.well-known/agent.json"
+                <label className="block text-xs font-medium mb-1" htmlFor="a2a-reg-url">Agent Card URL</label>
+                <input id="a2a-reg-url" value={regUrl} onChange={(e) => setRegUrl(e.target.value)} placeholder="https://agent.example.com/.well-known/agent.json"
                   className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary" />
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1">Display Name (optional)</label>
-                <input value={regName} onChange={(e) => setRegName(e.target.value)} placeholder="My Agent"
+                <label className="block text-xs font-medium mb-1" htmlFor="a2a-reg-name">Display Name (optional)</label>
+                <input id="a2a-reg-name" value={regName} onChange={(e) => setRegName(e.target.value)} placeholder="My Agent"
                   className="w-full px-3 py-2 text-sm border border-input rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary" />
               </div>
             </div>
