@@ -508,11 +508,18 @@ async def test_fire_due_schedules_redis_dedup_claims_and_fires(
 
 
 @pytest.mark.asyncio
-async def test_fire_due_schedules_redis_set_raises_is_caught_and_fires_anyway(
+async def test_fire_due_schedules_redis_set_raises_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The redis SETNX failing (e.g. connection error) must not block firing —
-    it's a best-effort dedup, not a correctness requirement."""
+    """A dedup failure must SKIP the occurrence, not fire it unguarded.
+
+    This previously asserted the opposite ("fires anyway — best-effort dedup").
+    The SETNX is not best-effort: it is the only thing making a cron occurrence
+    fire exactly once across beat replicas. With it failing open, one Redis blip
+    while two beat replicas are scanning runs the workflow twice — and a
+    duplicate run is not recoverable, whereas a skipped tick is retried 60
+    seconds later against the same occurrence key.
+    """
     runner = MagicMock()
     runner.run = AsyncMock(return_value="run-123")
     monkeypatch.setattr(ct, "_get_runner", lambda: runner)
@@ -530,8 +537,8 @@ async def test_fire_due_schedules_redis_set_raises_is_caught_and_fires_anyway(
 
     result = ct.fire_due_workflow_schedules.run()
 
-    assert result == {"scanned": 1, "fired": 1}
-    runner.run.assert_awaited_once()
+    assert result == {"scanned": 1, "fired": 0}
+    runner.run.assert_not_awaited()
 
 
 @pytest.mark.asyncio

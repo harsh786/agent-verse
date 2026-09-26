@@ -330,44 +330,65 @@ def _cron_bounds(cron: str, now: datetime, tz_name: str) -> tuple[datetime, date
     return prev, nxt
 
 
-@celery_app.task(name="workflow.fire_due_workflow_schedules")
-def fire_due_workflow_schedules() -> dict[str, int]:
-    """Beat task (every 60s): fire published workflows whose cron schedule is due.
+# Rows pulled per schedule-scan page. Bounds the beat worker's memory
+# independently of how many published workflows the fleet holds.
+_SCHEDULE_SCAN_PAGE = 500
 
-    Activates item-4 recurring triggers. Scans every published workflow with a
-    ``trigger.type == "schedule"`` across all tenants (RLS-bypassed system scan),
-    and for each cron occurrence that just came due, dispatches one run. A Redis
-    SETNX keyed on the occurrence timestamp makes each occurrence fire exactly
-    once even with overlapping scans or multiple beat replicas.
+# Both on-disk trigger shapes (see app.workflow.trigger_extract): the visual
+# builder's plural ``triggers`` list and the DSL's singular ``trigger`` object.
+# Expressed as JSONB containment so Postgres answers them from a GIN index
+# instead of the beat pulling every published workflow in the fleet and testing
+# them in Python.
+_SCHEDULE_TRIGGER_PREDICATE = (
+    "(definition @> '{\"trigger\": {\"type\": \"schedule\"}}'::jsonb "
+    " OR definition @> '{\"triggers\": [{\"type\": \"schedule\"}]}'::jsonb)"
+)
+
+
+async def fire_due_workflow_schedules_async() -> dict[str, int]:
+    """Fire published workflows whose cron schedule just came due.
+
+    Scans only workflows that actually declare a schedule trigger, in bounded
+    pages, across all tenants (RLS-bypassed system scan). A Redis SETNX keyed on
+    the occurrence timestamp makes each occurrence fire exactly once even with
+    overlapping scans or multiple beat replicas.
     """
+    from sqlalchemy import text as sa_text
 
-    async def _scan_and_fire() -> dict[str, int]:
-        from sqlalchemy import text as sa_text
+    from app.db.rls import system_session
+    from app.db.session import get_session_factory
+    from app.workflow.trigger_extract import extract_triggers, schedule_cron
 
-        from app.db.rls import system_session
-        from app.db.session import get_session_factory
+    runner = _get_runner()
+    if runner is None:
+        _log.error("workflow_schedule_runner_unavailable")
+        return {"scanned": 0, "fired": 0}
 
-        runner = _get_runner()
-        if runner is None:
-            _log.error("workflow_schedule_runner_unavailable")
-            return {"scanned": 0, "fired": 0}
+    now = datetime.now(UTC)
+    db_factory = get_session_factory()
+    redis = _sched_redis()
+    scanned = 0
+    fired = 0
+    cursor: str | None = None
 
-        now = datetime.now(UTC)
-        db_factory = get_session_factory()
+    while True:
         async with db_factory() as session, session.begin(), system_session(session):
-            result = await session.execute(
-                sa_text(
-                    "SELECT id, tenant_id, definition FROM workflows "
-                    "WHERE status = 'published'"
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id, tenant_id, definition FROM workflows "
+                        "WHERE status = 'published' "
+                        f"AND {_SCHEDULE_TRIGGER_PREDICATE} "
+                        "AND (CAST(:after AS text) IS NULL OR id > CAST(:after AS text)) "
+                        "ORDER BY id LIMIT :lim"
+                    ),
+                    {"after": cursor, "lim": _SCHEDULE_SCAN_PAGE},
                 )
-            )
-            rows = result.fetchall()
+            ).fetchall()
+        if not rows:
+            break
+        cursor = str(rows[-1][0])
 
-        from app.workflow.trigger_extract import extract_triggers, schedule_cron
-
-        redis = _sched_redis()
-        scanned = 0
-        fired = 0
         for row in rows:
             wf_id, tenant_id, definition = str(row[0]), str(row[1]), (row[2] or {})
             # Pick the first schedule trigger (builder plural or DSL singular).
@@ -400,10 +421,16 @@ def fire_due_workflow_schedules() -> dict[str, int]:
             key = f"wf:sched:{wf_id}:{int(prev.timestamp())}"
             if redis is not None:
                 try:
-                    if not redis.set(key, "1", nx=True, ex=ttl):
-                        continue  # already claimed by another scan / replica
+                    claimed = redis.set(key, "1", nx=True, ex=ttl)
                 except Exception as exc:
+                    # Fail CLOSED. This used to log and fall through into the
+                    # dispatch, so one Redis blip with two beat replicas ran the
+                    # occurrence twice. A missed tick is recovered 60 seconds
+                    # later; a duplicate workflow run is not recoverable.
                     _log.warning("workflow_schedule_dedup_failed", error=str(exc)[:120])
+                    continue
+                if not claimed:
+                    continue  # already claimed by another scan / replica
             try:
                 run_id = await runner.run(
                     workflow_id=wf_id,
@@ -421,11 +448,19 @@ def fire_due_workflow_schedules() -> dict[str, int]:
                 )
             except Exception as exc:
                 _log.error("workflow_schedule_fire_failed", workflow_id=wf_id, error=str(exc))
-        _log.info("workflow_schedules_scanned", scanned=scanned, fired=fired)
-        return {"scanned": scanned, "fired": fired}
 
+        if len(rows) < _SCHEDULE_SCAN_PAGE:
+            break
+
+    _log.info("workflow_schedules_scanned", scanned=scanned, fired=fired)
+    return {"scanned": scanned, "fired": fired}
+
+
+@celery_app.task(name="workflow.fire_due_workflow_schedules")
+def fire_due_workflow_schedules() -> dict[str, int]:
+    """Beat task (every 60s) — see :func:`fire_due_workflow_schedules_async`."""
     try:
-        return _run_async(_scan_and_fire())
+        return _run_async(fire_due_workflow_schedules_async())
     except Exception as exc:
         _log.error("fire_due_workflow_schedules_failed", error=str(exc))
         return {"scanned": 0, "fired": 0}
