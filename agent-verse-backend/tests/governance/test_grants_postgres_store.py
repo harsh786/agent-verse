@@ -45,6 +45,9 @@ def _row_dict(grant: Grant, *, scopes_as_str=False, meta_as_str=False):
         "not_before": grant.not_before,
         "expires_at": grant.expires_at,
         "max_cost_usd": grant.max_cost_usd,
+        # Cumulative spend under this grant — max_cost_usd is a budget, not a
+        # per-call ceiling, so the row carries the running total.
+        "spent_usd": grant.spent_usd,
         "revoked": grant.revoked,
         "parent_grant_id": grant.parent_grant_id,
         "metadata": json.dumps(grant.metadata) if meta_as_str else grant.metadata,
@@ -162,7 +165,7 @@ async def test_revoke_updates_and_returns_revoked_grant():
     async def fake_execute(query, params=None):
         sql = str(query)
         if "UPDATE agent_grants SET revoked" in sql:
-            update_called.append(params)
+            update_called.append((sql, params))
             return _Result()
         return _Result(mapping_one=_row_dict(grant))
 
@@ -170,7 +173,15 @@ async def test_revoke_updates_and_returns_revoked_grant():
     result = await store.revoke("t1", grant.grant_id)
     assert result is not None
     assert result.revoked is True
-    assert update_called[0] == {"gid": grant.grant_id}
+    sql, params = update_called[0]
+    assert params == {"gid": grant.grant_id, "tid": "t1"}
+    # Revocation cascades to everything delegated from this grant: a single-row
+    # UPDATE left every sub-agent the revoked agent had delegated to holding the
+    # same scopes until their own expiry.
+    assert "WITH RECURSIVE" in sql
+    assert "parent_grant_id" in sql
+    # …and only downwards: the walk joins children to parents, never the reverse.
+    assert "JOIN chain c ON g.parent_grant_id = c.grant_id" in sql
 
 
 # ── list_for_agent / active_for_agent ───────────────────────────────────

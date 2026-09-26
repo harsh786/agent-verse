@@ -1292,6 +1292,35 @@ class ExecutorMixin:
                 )
             except Exception as _ct_exc:
                 self._logger.warning("cost_tracker_record_failed", error=str(_ct_exc))
+
+        # 1c. Charge this step's spend to the grant that authorised the agent.
+        # Grant.max_cost_usd is documented as the spend a grant authorises, but
+        # nothing ever recorded spend against a grant, so the cap could not bind
+        # — the tool gate below passes no cost_usd (it cannot know one in
+        # advance), leaving the comparison permanently 0.0 > cap. Recording the
+        # step's real LLM cost here is what makes the budget deny later calls.
+        if self._enforce_grants and self._grant_store is not None:
+            _step_cost = 0.0
+            if "_real_cost" in locals():
+                _step_cost = float(_real_cost)
+            elif "_actual_cost" in locals():
+                _step_cost = float(_actual_cost)
+            if _step_cost > 0.0:
+                with contextlib.suppress(Exception):
+                    from datetime import UTC as _UTC
+                    from datetime import datetime as _dt
+
+                    _covering = await self._grant_store.list_for_agent(
+                        tenant_ctx.tenant_id, self._agent_id or ""
+                    )
+                    _now_utc = _dt.now(_UTC)
+                    for _g in _covering:
+                        if _g.is_active(_now_utc) and _g.max_cost_usd is not None:
+                            await self._grant_store.record_spend(
+                                tenant_ctx.tenant_id, _g.grant_id, _step_cost
+                            )
+                            break
+
         # 2.3: Per-goal executor cost tracking
         try:
             from app.observability.cost_breakdown import record_role_cost as _rrc

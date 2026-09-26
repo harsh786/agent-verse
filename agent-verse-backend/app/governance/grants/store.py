@@ -19,6 +19,9 @@ class GrantStore(Protocol):
     async def get(self, tenant_id: str, grant_id: str) -> Grant | None: ...
     async def revoke(self, tenant_id: str, grant_id: str) -> Grant | None: ...
     async def list_for_agent(self, tenant_id: str, agent_id: str) -> tuple[Grant, ...]: ...
+    async def record_spend(
+        self, tenant_id: str, grant_id: str, cost_usd: float
+    ) -> float: ...
 
 
 class InMemoryGrantStore:
@@ -41,14 +44,55 @@ class InMemoryGrantStore:
         return self._grants.get((tenant_id, grant_id))
 
     async def revoke(self, tenant_id: str, grant_id: str) -> Grant | None:
+        """Revoke a grant **and every grant delegated from it, transitively**.
+
+        Delegation is the mechanism by which a supervisor hands narrowed
+        authority to sub-agents; revocation that stopped at the named row left
+        every one of those sub-agents holding the revoked agent's scopes until
+        their own expiry, which is exactly the situation revocation exists to
+        end. The cascade walks ``parent_grant_id`` downwards only — revoking a
+        child never touches its parent.
+        """
         async with self._lock:
             key = (tenant_id, grant_id)
             grant = self._grants.get(key)
             if grant is None:
                 return None
-            revoked = Grant(**{**grant.__dict__, "revoked": True})
-            self._grants[key] = revoked
-            return revoked
+
+            children: dict[str, list[str]] = {}
+            for (tid, gid), g in self._grants.items():
+                if tid == tenant_id and g.parent_grant_id:
+                    children.setdefault(g.parent_grant_id, []).append(gid)
+
+            to_revoke: list[str] = []
+            frontier = [grant_id]
+            seen = {grant_id}
+            while frontier:
+                current = frontier.pop()
+                to_revoke.append(current)
+                for child_id in children.get(current, []):
+                    if child_id not in seen:  # cycles cannot happen, but be safe
+                        seen.add(child_id)
+                        frontier.append(child_id)
+
+            for gid in to_revoke:
+                existing = self._grants.get((tenant_id, gid))
+                if existing is not None:
+                    self._grants[(tenant_id, gid)] = Grant(
+                        **{**existing.__dict__, "revoked": True}
+                    )
+            return self._grants[key]
+
+    async def record_spend(self, tenant_id: str, grant_id: str, cost_usd: float) -> float:
+        """Add ``cost_usd`` to the grant's cumulative spend; return the new total."""
+        async with self._lock:
+            key = (tenant_id, grant_id)
+            grant = self._grants.get(key)
+            if grant is None:
+                return 0.0
+            total = float(grant.spent_usd) + float(cost_usd)
+            self._grants[key] = Grant(**{**grant.__dict__, "spent_usd": total})
+            return total
 
     async def list_for_agent(self, tenant_id: str, agent_id: str) -> tuple[Grant, ...]:
         return tuple(

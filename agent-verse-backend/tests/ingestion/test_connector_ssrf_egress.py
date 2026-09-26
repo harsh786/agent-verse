@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from app.ingestion.connector_egress import (
-    ConnectorEgressBlocked,
+    ConnectorEgressBlockedError,
     assert_source_url,
     source_url_is_allowed,
 )
@@ -41,13 +41,13 @@ _LINK_LOCAL = "http://169.254.0.7/"
 class TestEgressPolicy:
     @pytest.mark.parametrize("url", [_METADATA, _LOOPBACK, _PRIVATE, _LINK_LOCAL])
     def test_internal_targets_are_blocked(self, url: str) -> None:
-        with pytest.raises(ConnectorEgressBlocked):
+        with pytest.raises(ConnectorEgressBlockedError):
             assert_source_url(url, context="test")
         assert source_url_is_allowed(url, context="test") is False
 
     @pytest.mark.parametrize("url", ["", "file:///etc/passwd", "gopher://x/", "not-a-url"])
     def test_non_http_and_malformed_are_blocked(self, url: str) -> None:
-        with pytest.raises(ConnectorEgressBlocked):
+        with pytest.raises(ConnectorEgressBlockedError):
             assert_source_url(url, context="test")
 
     def test_tenant_config_cannot_widen_the_policy(self) -> None:
@@ -64,7 +64,7 @@ class TestEgressPolicy:
                 "ssrf_bypass": True,
             },
         )
-        with pytest.raises(ConnectorEgressBlocked):
+        with pytest.raises(ConnectorEgressBlockedError):
             assert_source_url(_METADATA, context="test", config=config)
 
     def test_operator_allowlist_needs_both_halves(
@@ -77,7 +77,7 @@ class TestEgressPolicy:
         monkeypatch.delenv("INGESTION_ALLOW_INTERNAL_SOURCES", raising=False)
         get_settings.cache_clear()
         try:
-            with pytest.raises(ConnectorEgressBlocked):
+            with pytest.raises(ConnectorEgressBlockedError):
                 assert_source_url(_PRIVATE, context="test")
 
             monkeypatch.setenv("INGESTION_ALLOW_INTERNAL_SOURCES", "true")
@@ -210,8 +210,9 @@ async def test_get_delta_yields_nothing_for_internal_hosts(
     try:
         async for doc, _cursor in connector.get_delta(config, None):
             produced.append(doc)
-    except (ConnectorEgressBlocked, Exception) as exc:  # noqa: BLE001
-        # Raising is an acceptable fail-closed outcome; silently producing is not.
+    except Exception as exc:
+        # Raising (the guard, or a connection failure) is an acceptable
+        # fail-closed outcome; silently producing documents is not.
         assert not isinstance(exc, AssertionError)
     assert produced == [], (
         f"{source_type} fetched and yielded {len(produced)} document(s) from an "

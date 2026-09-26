@@ -35,10 +35,10 @@ if TYPE_CHECKING:
 
 _log = get_logger(__name__)
 
-__all__ = ["ConnectorEgressBlocked", "assert_source_url", "source_url_is_allowed"]
+__all__ = ["ConnectorEgressBlockedError", "assert_source_url", "source_url_is_allowed"]
 
 
-class ConnectorEgressBlocked(SSRFError):
+class ConnectorEgressBlockedError(SSRFError):
     """A connector tried to fetch a URL the egress policy forbids."""
 
 
@@ -57,7 +57,7 @@ def _operator_allowlist() -> tuple[bool, list[str]]:
 
 
 def assert_source_url(url: str, *, context: str, config: SourceConfig | None = None) -> None:
-    """Raise :class:`ConnectorEgressBlocked` unless ``url`` is safe to fetch.
+    """Raise :class:`ConnectorEgressBlockedError` unless ``url`` is safe to fetch.
 
     Call this before *any* outbound request a connector makes to a host derived
     from ``connection_config`` — in ``validate_connection`` as well as
@@ -66,7 +66,7 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
     """
     del config  # tenant config must never widen the policy; kept for call-site clarity
     if not url:
-        raise ConnectorEgressBlocked(f"SSRF guard [{context}]: empty URL")
+        raise ConnectorEgressBlockedError(f"SSRF guard [{context}]: empty URL")
 
     allow_internal, allowed_domains = _operator_allowlist()
     # The allowlist is only honoured when the operator has *also* turned the
@@ -77,7 +77,7 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
         assert_public_url(url, allowed_domains=effective_allowlist, context=context)
     except (SSRFError, ValueError) as exc:
         _log.warning("connector_egress_blocked", context=context, error=str(exc)[:200])
-        raise ConnectorEgressBlocked(str(exc)) from exc
+        raise ConnectorEgressBlockedError(str(exc)) from exc
 
 
 def source_url_is_allowed(url: str, *, context: str) -> bool:
@@ -85,5 +85,5 @@ def source_url_is_allowed(url: str, *, context: str) -> bool:
     try:
         assert_source_url(url, context=context)
         return True
-    except (ConnectorEgressBlocked, SSRFError, ValueError):
+    except (ConnectorEgressBlockedError, SSRFError, ValueError):
         return False

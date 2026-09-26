@@ -55,9 +55,7 @@ async def check_grant(
             return GrantDecision(True, "covered", grant_id=grant.grant_id)
 
     # A grant exists and is active but none covers this tool/cost.
-    over_cost = any(
-        g.max_cost_usd is not None and cost_usd > g.max_cost_usd for g in active
-    )
+    over_cost = any(g.budget_exhausted(cost_usd) for g in active)
     reason = "cost_cap_exceeded" if over_cost else "tool_out_of_scope"
     return GrantDecision(False, reason)
 

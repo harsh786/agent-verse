@@ -37,6 +37,11 @@ class Grant:
     not_before: datetime
     expires_at: datetime
     max_cost_usd: float | None = None
+    # Cumulative USD already spent under this grant. ``max_cost_usd`` is a
+    # *budget*, not a per-call ceiling: without this, a $10 grant authorised
+    # unbounded spend in $9.99 increments, because each call was compared to the
+    # cap in isolation.
+    spent_usd: float = 0.0
     revoked: bool = False
     parent_grant_id: str | None = None  # set for delegated (narrowed) grants
     metadata: dict[str, str] = field(default_factory=dict)
@@ -44,11 +49,24 @@ class Grant:
     def is_active(self, now: datetime) -> bool:
         return (not self.revoked) and self.not_before <= now < self.expires_at
 
+    def budget_exhausted(self, cost_usd: float = 0.0) -> bool:
+        """True if ``cost_usd`` would take cumulative spend past the cap.
+
+        A cap with spend already at or over it denies even a zero-cost call —
+        which matters because the executor's tool gate cannot know a call's cost
+        in advance and passes 0.0, and an exhausted grant must still deny there.
+        """
+        if self.max_cost_usd is None:
+            return False
+        if self.spent_usd >= self.max_cost_usd:
+            return True  # budget consumed: nothing further, not even a free call
+        return (self.spent_usd + cost_usd) > self.max_cost_usd
+
     def covers(self, tool_name: str, now: datetime, *, cost_usd: float = 0.0) -> bool:
-        """True if this grant currently authorizes ``tool_name`` within its cost cap."""
+        """True if this grant currently authorizes ``tool_name`` within its budget."""
         if not self.is_active(now):
             return False
-        if self.max_cost_usd is not None and cost_usd > self.max_cost_usd:
+        if self.budget_exhausted(cost_usd):
             return False
         return scope_matches(self.scopes, tool_name)
 
