@@ -1286,6 +1286,13 @@ def create_app(
                 from app.governance.grants import InMemoryGrantStore
 
                 app.state.grant_store = InMemoryGrantStore()
+            # Per-tenant compliance-bundle enablement. Postgres-backed because a
+            # posture kept in one replica's heap is invisible to every other
+            # replica and to every Celery worker -- which is exactly where the
+            # autonomy ceiling it implies has to bind.
+            from app.governance.compliance_bundles import PostgresComplianceBundleStore
+
+            app.state.compliance_bundle_store = PostgresComplianceBundleStore(db_factory)
             # Tamper-evident audit chain for governance mutations (issue/revoke).
             try:
                 from app.governance.audit_chain_store import PersistentAuditChain
@@ -2466,6 +2473,11 @@ def create_app(
     from app.governance.grants import InMemoryGrantStore
 
     app.state.grant_store = InMemoryGrantStore()
+    # Compliance-bundle enablement: in-memory here, swapped for the Postgres
+    # store in the lifespan (same two-phase pattern as every other service).
+    from app.governance.compliance_bundles import _bundle_manager
+
+    app.state.compliance_bundle_store = _bundle_manager
     # No DB session factory in the in-memory app → audit chain wired in lifespan only.
     app.state.audit_chain = None
     from app.coordination.auction.repository import (

@@ -373,33 +373,84 @@ async def list_compliance_bundles(request: Request) -> dict[str, Any]:
     }
 
 
+def _bundle_store(request: Request) -> Any:
+    """The tenant compliance-bundle store wired onto app.state.
+
+    In-memory before the lifespan runs, ``PostgresComplianceBundleStore`` after
+    it — the same two-phase swap as every other service. Reading it from
+    app.state (rather than importing the module singleton, as this module used
+    to) is what makes an enablement visible to other replicas and to the Celery
+    workers that actually execute agents.
+
+    An app assembled without the wiring (a router mounted directly in a test)
+    falls back to the process-local manager, which is what ``create_app`` puts on
+    app.state anyway before the lifespan upgrades it.
+    """
+    store = getattr(request.app.state, "compliance_bundle_store", None)
+    if store is None:
+        from app.governance.compliance_bundles import _bundle_manager
+
+        return _bundle_manager
+    return store
+
+
+async def _bundle_state(request: Request, tenant_id: str) -> dict[str, Any]:
+    from app.governance.compliance_bundles import (
+        active_bundle_ids_for,
+        effective_max_autonomy_for,
+    )
+
+    store = _bundle_store(request)
+    return {
+        "active": list(await active_bundle_ids_for(store, tenant_id)),
+        "effective_max_autonomy": await effective_max_autonomy_for(store, tenant_id),
+    }
+
+
 @router.get("/compliance-bundles/active")
 async def get_active_compliance_bundles(request: Request) -> dict[str, Any]:
     """List the compliance bundles this tenant has enabled, and the resulting
     effective (most restrictive) autonomy cap across all of them."""
     tenant = _require_tenant(request)
-    from app.governance.compliance_bundles import _bundle_manager
-
-    return {
-        "active": [b.id for b in _bundle_manager.get_active(tenant.tenant_id)],
-        "effective_max_autonomy": _bundle_manager.get_effective_max_autonomy(tenant.tenant_id),
-    }
+    return await _bundle_state(request, tenant.tenant_id)
 
 
 @router.post("/compliance-bundles/{bundle_id}/enable")
 async def enable_compliance_bundle_for_tenant(request: Request, bundle_id: str) -> dict[str, Any]:
     """Enable a compliance bundle for this tenant (governance/autonomy effects —
     distinct from POST /guardrails-v2/bundles/{name}, which materializes a
-    bundle's guardrail rules)."""
+    bundle's guardrail rules).
+
+    The resulting ``effective_max_autonomy`` is a real ceiling: every goal this
+    tenant submits is clamped to it (see
+    ``app.services.goal_service.resolve_effective_autonomy_mode``). It used to be
+    a number this endpoint computed and nothing ever read.
+    """
     tenant = _require_tenant(request)
-    from app.governance.compliance_bundles import _bundle_manager
+    from app.governance.compliance_bundles import enable_bundle
 
     try:
-        _bundle_manager.enable(tenant.tenant_id, bundle_id)
+        await enable_bundle(
+            _bundle_store(request),
+            tenant.tenant_id,
+            bundle_id,
+            actor=str(getattr(tenant, "api_key_id", "") or ""),
+        )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
-    return {
-        "active": [b.id for b in _bundle_manager.get_active(tenant.tenant_id)],
-        "effective_max_autonomy": _bundle_manager.get_effective_max_autonomy(tenant.tenant_id),
-    }
+    return await _bundle_state(request, tenant.tenant_id)
+
+
+@router.delete("/compliance-bundles/{bundle_id}")
+async def disable_compliance_bundle_for_tenant(request: Request, bundle_id: str) -> dict[str, Any]:
+    """Disable a compliance bundle for this tenant, lifting its autonomy ceiling."""
+    tenant = _require_tenant(request)
+    from app.governance.compliance_bundles import disable_bundle
+
+    try:
+        await disable_bundle(_bundle_store(request), tenant.tenant_id, bundle_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    return await _bundle_state(request, tenant.tenant_id)

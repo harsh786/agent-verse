@@ -16,6 +16,7 @@ Bundles are additive — a tenant can enable multiple.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from app.observability.logging import get_logger
 
@@ -123,21 +124,24 @@ class ComplianceBundleManager:
     def disable(self, tenant_id: str, bundle_id: str) -> None:
         self._tenant_bundles.get(tenant_id, set()).discard(bundle_id)
 
+    def active_bundle_ids(self, tenant_id: str) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                bid
+                for bid in self._tenant_bundles.get(tenant_id, set())
+                if bid in COMPLIANCE_BUNDLES
+            )
+        )
+
     def get_active(self, tenant_id: str) -> list[ComplianceBundle]:
-        bundle_ids = self._tenant_bundles.get(tenant_id, set())
-        return [COMPLIANCE_BUNDLES[bid] for bid in bundle_ids if bid in COMPLIANCE_BUNDLES]
+        return [COMPLIANCE_BUNDLES[bid] for bid in self.active_bundle_ids(tenant_id)]
 
     def get_effective_max_autonomy(self, tenant_id: str) -> str:
         """Return the most restrictive autonomy mode across all active bundles."""
         bundles = self.get_active(tenant_id)
         if not bundles:
             return "fully-autonomous"
-        modes = [b.max_autonomy_mode for b in bundles]
-        if "supervised" in modes:
-            return "supervised"
-        if "bounded-autonomous" in modes:
-            return "bounded-autonomous"
-        return "fully-autonomous"
+        return _most_restrictive([b.max_autonomy_mode for b in bundles])
 
     def requires_hitl_for_tool(self, tenant_id: str, tool_name: str) -> bool:
         """Check if any active bundle requires HITL for this tool."""
@@ -152,3 +156,162 @@ class ComplianceBundleManager:
 
 # Module singleton
 _bundle_manager = ComplianceBundleManager()
+
+
+def _most_restrictive(modes: list[str]) -> str:
+    """Return the most restrictive autonomy mode in ``modes``."""
+    if "supervised" in modes:
+        return "supervised"
+    if "bounded-autonomous" in modes:
+        return "bounded-autonomous"
+    return "fully-autonomous"
+
+
+class PostgresComplianceBundleStore:
+    """Durable per-tenant compliance-bundle enablement.
+
+    The in-memory :class:`ComplianceBundleManager` is fine for a single-process
+    development run, but a compliance posture that lives in one replica's heap is
+    not a posture: it is invisible to every other replica and to every Celery
+    worker — which is where agents actually execute and therefore where an
+    autonomy ceiling has to bind — and it disappears on restart.
+
+    Same method names as the in-memory manager (plus async), so the lifespan can
+    swap one for the other the way it does for every other service.
+    """
+
+    def __init__(self, session_factory: Any) -> None:
+        self._sf = session_factory
+
+    async def enable(self, tenant_id: str, bundle_id: str, *, actor: str = "") -> None:
+        if bundle_id not in COMPLIANCE_BUNDLES:
+            raise ValueError(f"Unknown compliance bundle: {bundle_id}")
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._sf() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO tenant_compliance_bundles "
+                    "(tenant_id, bundle_id, enabled_by) "
+                    "VALUES (:tid, :bid, :actor) "
+                    "ON CONFLICT (tenant_id, bundle_id) DO NOTHING"
+                ),
+                {"tid": tenant_id, "bid": bundle_id, "actor": actor},
+            )
+        logger.info("compliance_bundle_enabled", tenant=tenant_id, bundle=bundle_id)
+
+    async def disable(self, tenant_id: str, bundle_id: str) -> None:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._sf() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "DELETE FROM tenant_compliance_bundles "
+                    "WHERE tenant_id = :tid AND bundle_id = :bid"
+                ),
+                {"tid": tenant_id, "bid": bundle_id},
+            )
+        logger.info("compliance_bundle_disabled", tenant=tenant_id, bundle=bundle_id)
+
+    async def active_bundle_ids(self, tenant_id: str) -> tuple[str, ...]:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._sf() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT bundle_id FROM tenant_compliance_bundles "
+                        "WHERE tenant_id = :tid ORDER BY bundle_id"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchall()
+        return tuple(str(r[0]) for r in rows if str(r[0]) in COMPLIANCE_BUNDLES)
+
+    async def get_active(self, tenant_id: str) -> list[ComplianceBundle]:
+        return [COMPLIANCE_BUNDLES[bid] for bid in await self.active_bundle_ids(tenant_id)]
+
+    async def effective_max_autonomy(self, tenant_id: str) -> str:
+        bundles = await self.get_active(tenant_id)
+        if not bundles:
+            return "fully-autonomous"
+        return _most_restrictive([b.max_autonomy_mode for b in bundles])
+
+    async def requires_hitl_for_tool(self, tenant_id: str, tool_name: str) -> bool:
+        for bundle in await self.get_active(tenant_id):
+            for pattern in bundle.required_hitl_for:
+                if (
+                    pattern.endswith("*") and tool_name.startswith(pattern[:-1])
+                ) or tool_name == pattern:
+                    return True
+        return False
+
+
+# ── Store-agnostic helpers ────────────────────────────────────────────────────
+#
+# ``app.state.compliance_bundle_store`` is the in-memory manager before the
+# lifespan runs and ``PostgresComplianceBundleStore`` after it, exactly like
+# every other two-phase service. The Postgres methods are async and the
+# in-memory ones are not, so callers go through these instead of caring which
+# one they hold.
+
+
+async def _maybe_await(value: Any) -> Any:
+    import inspect
+
+    return await value if inspect.isawaitable(value) else value
+
+
+async def enable_bundle(store: Any, tenant_id: str, bundle_id: str, *, actor: str = "") -> None:
+    """Enable ``bundle_id`` for ``tenant_id`` on whichever store is wired."""
+    if store is None:
+        raise ValueError("compliance bundle store unavailable")
+    try:
+        await _maybe_await(store.enable(tenant_id, bundle_id, actor=actor))
+    except TypeError:
+        # In-memory manager takes no ``actor``.
+        await _maybe_await(store.enable(tenant_id, bundle_id))
+
+
+async def disable_bundle(store: Any, tenant_id: str, bundle_id: str) -> None:
+    if store is None:
+        raise ValueError("compliance bundle store unavailable")
+    await _maybe_await(store.disable(tenant_id, bundle_id))
+
+
+async def active_bundle_ids_for(store: Any, tenant_id: str) -> tuple[str, ...]:
+    if store is None:
+        return ()
+    return tuple(await _maybe_await(store.active_bundle_ids(tenant_id)))
+
+
+async def effective_max_autonomy_for(store: Any, tenant_id: str) -> str:
+    """Most restrictive autonomy mode across the tenant's enabled bundles."""
+    if store is None:
+        return "fully-autonomous"
+    getter = getattr(store, "effective_max_autonomy", None) or store.get_effective_max_autonomy
+    return str(await _maybe_await(getter(tenant_id)))
+
+
+async def requires_hitl_for_tool_on(store: Any, tenant_id: str, tool_name: str) -> bool:
+    if store is None:
+        return False
+    return bool(await _maybe_await(store.requires_hitl_for_tool(tenant_id, tool_name)))

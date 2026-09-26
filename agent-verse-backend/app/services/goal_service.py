@@ -359,6 +359,65 @@ def _build_dedup_cache(redis: Any) -> Any:
     return _DedupCache()
 
 
+# Ordered least- to most-autonomous. A compliance ceiling clamps downwards only.
+_AUTONOMY_ORDER = ("supervised", "bounded-autonomous", "fully-autonomous")
+
+
+def clamp_autonomy_mode(requested: str, ceiling: str) -> str:
+    """Return the more restrictive of ``requested`` and ``ceiling``."""
+    mode = requested if requested in _AUTONOMY_ORDER else "bounded-autonomous"
+    if ceiling not in _AUTONOMY_ORDER:
+        return mode
+    return min(mode, ceiling, key=_AUTONOMY_ORDER.index)
+
+
+async def compliance_autonomy_ceiling(app_state: Any, *, tenant_id: str) -> str:
+    """The most restrictive autonomy mode the tenant's compliance bundles allow.
+
+    ``ComplianceBundle.max_autonomy_mode`` (HIPAA and SOX cap at ``supervised``,
+    GDPR/PCI at ``bounded-autonomous``) was computed by
+    ``GET /trust-governance/compliance-bundles/active`` and read by nothing else
+    in the codebase — enabling HIPAA told the operator the ceiling was
+    ``supervised`` while every agent kept running at whatever its own config
+    said.
+
+    Never raises: if the store is missing or errors, this reports no ceiling, so
+    compliance lookup can never break goal submission.
+    """
+    # ``app_state`` is the FastAPI *app* on GoalService (see self._app_state) but
+    # ``app.state`` at most other call sites; normalise like the cost-controller
+    # lookup above rather than silently reading an attribute the app object does
+    # not have — which would report "no ceiling" for every tenant.
+    resolved: Any = app_state
+    try:
+        from starlette.applications import Starlette as _Starlette
+
+        if isinstance(app_state, _Starlette):
+            resolved = app_state.state
+    except Exception:  # pragma: no cover - starlette always importable here
+        pass
+
+    store = getattr(resolved, "compliance_bundle_store", None)
+    if store is None:
+        return "fully-autonomous"
+    try:
+        from app.governance.compliance_bundles import effective_max_autonomy_for
+
+        ceiling = await effective_max_autonomy_for(store, tenant_id)
+    except Exception:
+        return "fully-autonomous"
+    return ceiling if ceiling in _AUTONOMY_ORDER else "fully-autonomous"
+
+
+async def resolve_effective_autonomy_mode(
+    app_state: Any, *, tenant_id: str, requested: str
+) -> str:
+    """``requested``, clamped by the tenant's compliance ceiling. Never widens."""
+    return clamp_autonomy_mode(
+        requested, await compliance_autonomy_ceiling(app_state, tenant_id=tenant_id)
+    )
+
+
 # ── service ───────────────────────────────────────────────────────────────────
 
 
@@ -1081,9 +1140,19 @@ class GoalService:
             # takes precedence over the agent's own configured autonomy_mode, so
             # a mission-level HITL requirement cannot be silently downgraded by
             # whatever agent auto-routing happens to pick.
-            "autonomy_mode": (
+            # …then clamped by the tenant's compliance ceiling, resolved at
+            # submission and carried on execution_context. The clamp belongs here
+            # rather than at submission because this is where the requested mode
+            # is finally assembled from BOTH the execution context and the
+            # agent's own config — an agent configured "fully-autonomous" under a
+            # bundle capping at "bounded-autonomous" is only visible at this point.
+            "autonomy_mode": clamp_autonomy_mode(
                 (execution_context or {}).get("autonomy_mode")
-                or _agent_config.get("autonomy_mode", "bounded-autonomous")
+                or _agent_config.get("autonomy_mode", "bounded-autonomous"),
+                str(
+                    (execution_context or {}).get("compliance_autonomy_ceiling")
+                    or "fully-autonomous"
+                ),
             ),
             # N1: pattern flags passed at construction so _build() includes them in the graph
             "enable_self_refine": _enable_self_refine,
@@ -2729,6 +2798,26 @@ class GoalService:
                 execution_context=execution_context or {},
             )
             self._goals[goal_id] = record
+
+            # Compliance autonomy ceiling. ComplianceBundle.max_autonomy_mode
+            # (HIPAA/SOX cap at "supervised", GDPR/PCI at "bounded-autonomous")
+            # was computed by the trust-governance endpoint and read nowhere
+            # else, so enabling a bundle changed how the platform *described*
+            # itself and nothing about how agents actually ran.
+            #
+            # The ceiling is resolved here (submission is async and has the
+            # tenant) and recorded on the goal, so a Celery worker that picks the
+            # goal up on another replica runs under the same ceiling. The clamp
+            # itself is applied in _make_agent_loop_for_tenant, where the
+            # requested mode is finally assembled from execution_context *and*
+            # the agent's own config — stamping a mode here instead would miss an
+            # agent configured more permissively than a looser-but-still-binding
+            # ceiling. Clamps downwards only; never widens what was asked for.
+            _ceiling = await compliance_autonomy_ceiling(
+                self._app_state, tenant_id=tenant_ctx.tenant_id
+            )
+            if _ceiling != "fully-autonomous":
+                record.execution_context["compliance_autonomy_ceiling"] = _ceiling
 
             # AI Router model selection — record in execution_context for observability
             try:
