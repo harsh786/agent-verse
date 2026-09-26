@@ -106,13 +106,19 @@ async def get_embedding_usage(request: Request) -> dict[str, Any]:
 
 
 async def _collection_avg_similarity(
-    session: Any, collection_id: str, tenant_id: str
+    session: Any, collection_id: str, tenant_id: str, table: str
 ) -> float | None:
     """Average cosine similarity of a collection's chunk embeddings to their
     centroid (a semantic-drift signal: low similarity ⇒ the collection's vectors
     have spread out / drifted). Scoped to ``tenant_id`` so it never reads another
     tenant's vectors. Returns ``None`` when there are no embeddings or pgvector is
     unavailable, so callers degrade gracefully.
+
+    ``table`` is the collection's dimension-specific chunk table, resolved by the
+    caller via :func:`app.rag.store._chunk_table`. There is no bare
+    ``knowledge_chunks`` table in this schema and never has been — querying one
+    raised UndefinedTable into the caller's ``except Exception`` and made this
+    signal permanently unavailable.
     """
     from sqlalchemy import text as _t
 
@@ -121,14 +127,12 @@ async def _collection_avg_similarity(
             await session.execute(
                 _t(
                     "WITH c AS ("
-                    "  SELECT AVG(embedding) AS centroid FROM knowledge_chunks "
-                    "  WHERE collection_id = :cid AND tenant_id = :tid "
-                    "        AND embedding IS NOT NULL"
+                    f"  SELECT AVG(embedding) AS centroid FROM {table} "
+                    "  WHERE collection_id = :cid AND tenant_id = :tid"
                     ") "
                     "SELECT AVG(1 - (k.embedding <=> c.centroid)) "
-                    "FROM knowledge_chunks k, c "
-                    "WHERE k.collection_id = :cid AND k.tenant_id = :tid "
-                    "      AND k.embedding IS NOT NULL"
+                    f"FROM {table} k, c "
+                    "WHERE k.collection_id = :cid AND k.tenant_id = :tid"
                 ),
                 {"cid": collection_id, "tid": tenant_id},
             )
@@ -176,20 +180,13 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
             # Every query is scoped to the caller's tenant — collection_id is a
             # client-supplied identifier, so an unscoped read would leak another
             # tenant's collection stats/model/drift (cross-tenant IDOR).
-            row = (
-                await session.execute(
-                    _t(
-                        "SELECT COUNT(*), COUNT(embedding), MAX(updated_at) "
-                        "FROM knowledge_chunks "
-                        "WHERE collection_id = :cid AND tenant_id = :tid"
-                    ),
-                    {"cid": collection_id, "tid": tenant_id},
-                )
-            ).fetchone()
-            if row:
-                total_chunks = int(row[0] or 0)
-                embedded_chunks = int(row[1] or 0)
-                last_embedded_at = row[2].isoformat() if row[2] else None
+            #
+            # The collection is read FIRST because its embedding_dim names the
+            # chunk table to count. Chunks live in knowledge_chunks_<dim>; the
+            # bare "knowledge_chunks" this used to query has never existed, so
+            # every call raised UndefinedTable into the except below and this
+            # endpoint reported 0 chunks / 0% coverage / needs_reembed for every
+            # collection in the system.
             crow = (
                 await session.execute(
                     _t(
@@ -202,10 +199,31 @@ async def get_embedding_health(request: Request, collection_id: str) -> dict[str
             if crow:
                 model = str(crow[0] or model)
                 embedding_dim = int(crow[1]) if crow[1] is not None else None
-            if embedded_chunks > 0:
-                avg_similarity = await _collection_avg_similarity(
-                    session, collection_id, tenant_id
-                )
+
+            if embedding_dim is not None:
+                from app.rag.store import _chunk_table
+
+                table = _chunk_table(embedding_dim)
+                row = (
+                    await session.execute(
+                        _t(
+                            # embedding is NOT NULL on these tables, so the row
+                            # count IS the embedded count; created_at is the
+                            # timestamp they carry (there is no updated_at).
+                            f"SELECT COUNT(*), MAX(created_at) FROM {table} "
+                            "WHERE collection_id = :cid AND tenant_id = :tid"
+                        ),
+                        {"cid": collection_id, "tid": tenant_id},
+                    )
+                ).fetchone()
+                if row:
+                    total_chunks = int(row[0] or 0)
+                    embedded_chunks = total_chunks
+                    last_embedded_at = row[1].isoformat() if row[1] else None
+                if embedded_chunks > 0:
+                    avg_similarity = await _collection_avg_similarity(
+                        session, collection_id, tenant_id, table
+                    )
     except Exception:
         pass  # DB unavailable — degrade to coverage-only signal below
 

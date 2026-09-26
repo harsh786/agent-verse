@@ -39,7 +39,13 @@ class _Result:
 
 
 class _FakeSession:
-    """Returns queued rows in call order: stats, collection, avg_similarity."""
+    """Returns queued rows in call order: collection, stats, avg_similarity.
+
+    The collection comes FIRST because its ``embedding_dim`` names the
+    dimension-specific chunk table (``knowledge_chunks_<dim>``) the stats query
+    has to count. The endpoint used to query a bare ``knowledge_chunks``, which
+    has never existed in this schema.
+    """
 
     def __init__(self, rows: list[Any]) -> None:
         self._rows = list(rows)
@@ -74,8 +80,8 @@ async def test_health_reports_real_drift_severity_and_trigger() -> None:
     # 200 chunks, all embedded, updated recently; centroid similarity 0.62 → MEDIUM
     recent = _dt.datetime.now(_dt.UTC)
     rows = [
-        (200, 200, recent),          # chunk stats
-        ("voyage-3-large", 1024),    # collection embedder + dim
+        ("voyage-3-large", 1024),    # collection embedder + dim (names the table)
+        (200, recent),               # chunk count + newest created_at
         (0.62,),                     # avg similarity to centroid
     ]
     app = _make_app()
@@ -104,8 +110,8 @@ async def test_health_reports_real_drift_severity_and_trigger() -> None:
 async def test_health_stable_collection_needs_no_reembed() -> None:
     recent = _dt.datetime.now(_dt.UTC)
     rows = [
-        (150, 150, recent),
         ("voyage-3-large", 1024),
+        (150, recent),
         (0.93,),  # high similarity → STABLE, low drift
     ]
     app = _make_app()
@@ -123,7 +129,7 @@ async def test_health_scopes_every_query_to_the_caller_tenant() -> None:
     """Security: collection_id is client-supplied — every query must be scoped to
     the caller's tenant so it cannot read another tenant's collection (IDOR)."""
     recent = _dt.datetime.now(_dt.UTC)
-    rows = [(10, 10, recent), ("voyage-3-large", 1024), (0.9,)]
+    rows = [("voyage-3-large", 1024), (10, recent), (0.9,)]
     sink: list[_FakeSession] = []
     app = _make_app()
     with patch("app.db.session.get_session_factory", return_value=_factory(rows, sink)):

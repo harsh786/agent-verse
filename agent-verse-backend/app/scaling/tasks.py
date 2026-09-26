@@ -5287,75 +5287,168 @@ def discover_and_tick_civilizations() -> dict:
     return _run_async(_run())
 
 
+async def re_embed_collection_async(
+    tenant_id: str,
+    collection_id: str,
+    model_key: str = "openai/text-embedding-3-small",
+) -> dict:
+    """Re-embed every chunk in a collection with ``model_key``.
+
+    Four things were wrong with the previous implementation, and all four were
+    invisible because the whole body sat inside ``except Exception: return
+    {"error": ...}`` — which Celery records as a *successful* task:
+
+    * It queried ``knowledge_chunks``, a table that has never existed in this
+      schema. Chunks live in ``knowledge_chunks_<dim>`` (migration 0062), so
+      every invocation raised UndefinedTable and this task has never re-embedded
+      a single chunk.
+    * It never set the RLS GUC, so even against the right table it would match
+      zero rows under the app's own least-privilege role.
+    * It loaded the entire collection with one ``fetchall()``. At a million
+      documents that is an OOM, not a backfill. Now keyset-paginated by ``id``
+      and committed per batch, so an interrupted run resumes cheaply and a
+      partial run leaves consistent rows behind.
+    * Its UPDATE matched on bare ``id`` with no tenant or collection predicate.
+
+    A model whose dimension differs from the collection's is refused rather than
+    half-applied: the rows would belong in a different table entirely, which is a
+    migration, not a backfill.
+    """
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory as _get_fresh_db
+    from app.embedding.router import embedding_router
+    from app.rag.store import _chunk_table
+
+    batch_size = 50
+
+    try:
+        # Inside the try: building the session factory can itself fail (no DB
+        # configured), and that has to come back as the same error dict rather
+        # than escaping as an unhandled task exception.
+        db = _get_fresh_db()
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            crow = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_id},
+                )
+            ).fetchone()
+        if crow is None:
+            return {"collection_id": collection_id, "re_embedded": 0, "model": model_key}
+        dimension = int(crow[0])
+        table = _chunk_table(dimension)
+
+        parts = model_key.split("/", 1)
+        provider = parts[0] if len(parts) == 2 else "openai"
+        model = parts[1] if len(parts) == 2 else model_key
+
+        count = 0
+        cursor: str | None = None
+        while True:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                # Keyset pagination: stable under concurrent writes and needs no
+                # growing OFFSET scan as the collection gets large.
+                rows = (
+                    await session.execute(
+                        text(
+                            f"SELECT id, content FROM {table} "
+                            "WHERE collection_id = :cid AND tenant_id = :tid "
+                            # id is TEXT on these tables (migration 0068
+                            # recreated them), so the keyset compares as text.
+                            "  AND (CAST(:after AS text) IS NULL OR id > CAST(:after AS text)) "
+                            "ORDER BY id LIMIT :lim"
+                        ),
+                        {
+                            "cid": collection_id,
+                            "tid": tenant_id,
+                            "after": cursor,
+                            "lim": batch_size,
+                        },
+                    )
+                ).fetchall()
+                if not rows:
+                    break
+
+                texts = [str(row[1] or "") for row in rows]
+                embeddings = await embedding_router.embed_texts(
+                    texts, provider=provider, model=model
+                )
+                if len(embeddings) != len(rows):
+                    raise RuntimeError(
+                        f"embedder returned {len(embeddings)} vectors for {len(rows)} chunks"
+                    )
+                for row, vec in zip(rows, embeddings, strict=True):
+                    if len(vec) != dimension:
+                        raise RuntimeError(
+                            f"model {model_key} produces {len(vec)}-dim vectors but "
+                            f"collection {collection_id} is {dimension}-dim; "
+                            "re-embedding to a new dimension is a migration, not a backfill"
+                        )
+                    await session.execute(
+                        text(
+                            f"UPDATE {table} SET embedding = CAST(:vec AS vector) "
+                            "WHERE id = :id AND collection_id = :cid AND tenant_id = :tid"
+                        ),
+                        {
+                            "vec": "[" + ",".join(f"{v:.9g}" for v in vec) + "]",
+                            "id": row[0],
+                            "cid": collection_id,
+                            "tid": tenant_id,
+                        },
+                    )
+                    count += 1
+                cursor = str(rows[-1][0])
+
+        if count:
+            # Record the model the vectors were actually produced with, so a
+            # later ReembeddingPolicy.should_reembed comparison is meaningful.
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        "UPDATE knowledge_collections SET embedder = :m, updated_at = now() "
+                        "WHERE id = :cid AND tenant_id = :tid"
+                    ),
+                    {"m": model_key, "cid": collection_id, "tid": tenant_id},
+                )
+
+        return {"collection_id": collection_id, "re_embedded": count, "model": model_key}
+    except Exception as exc:
+        logger.error(
+            "re_embed_collection_failed",
+            collection_id=collection_id,
+            tenant_id=tenant_id,
+            error=str(exc),
+        )
+        return {"error": str(exc), "collection_id": collection_id, "re_embedded": 0}
+
+
 @celery_app.task(name="app.scaling.tasks.re_embed_collection", queue="maintenance")
 def re_embed_collection(
     tenant_id: str,
     collection_id: str,
     model_key: str = "openai/text-embedding-3-small",
 ) -> dict:
-    """Re-embed all chunks in a collection with a new model.
-
-    Queries all knowledge_chunks for the collection, embeds them in batches
-    of 50, updates each chunk's embedding vector in the DB, and returns a
-    summary dict.  Returns ``{"error": ...}`` on failure.
-    """
-
-    async def _run() -> dict:
-        try:
-            from sqlalchemy import text
-
-            from app.db.session import get_session_factory as _get_fresh_db
-            from app.embedding.router import embedding_router
-
-            db = _get_fresh_db()
-
-            # Load all chunks for this collection
-            async with db() as session:
-                rows = (
-                    await session.execute(
-                        text(
-                            "SELECT id, content FROM knowledge_chunks "
-                            "WHERE collection_id = :cid AND tenant_id = :tid"
-                        ),
-                        {"cid": collection_id, "tid": tenant_id},
-                    )
-                ).fetchall()
-
-            if not rows:
-                return {"collection_id": collection_id, "re_embedded": 0, "model": model_key}
-
-            # Parse provider/model from model_key (e.g. "openai/text-embedding-3-small")
-            parts = model_key.split("/", 1)
-            provider = parts[0] if len(parts) == 2 else "openai"
-            model = parts[1] if len(parts) == 2 else model_key
-
-            batch_size = 50
-            count = 0
-
-            async with db() as session, session.begin():
-                for i in range(0, len(rows), batch_size):
-                    batch = rows[i : i + batch_size]
-                    texts = [str(row[1] or "") for row in batch]
-                    embeddings = await embedding_router.embed_texts(
-                        texts, provider=provider, model=model
-                    )
-                    for row, vec in zip(batch, embeddings, strict=False):
-                        await session.execute(
-                            text("UPDATE knowledge_chunks SET embedding = :vec WHERE id = :id"),
-                            {"vec": str(vec), "id": row[0]},
-                        )
-                        count += 1
-
-            return {"collection_id": collection_id, "re_embedded": count, "model": model_key}
-
-        except Exception as exc:
-            return {"error": str(exc)}
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+    """Celery entry point for :func:`re_embed_collection_async`."""
+    return _run_async(
+        re_embed_collection_async(tenant_id, collection_id, model_key)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5730,7 +5823,7 @@ def org_brain_loop() -> dict[str, int]:
                 span.set_attribute("blocked", blocked_total)
                 _log.info("org_brain.loop_done", processed=processed, triggered=triggered)
             except Exception as exc:
-                _log.error("org_brain.loop_failed", error=str(exc))
+                logger.error("org_brain.loop_failed", error=str(exc))
         return {
             "processed": processed,
             "triggered": triggered,
@@ -5941,7 +6034,7 @@ def org_collaboration_loop() -> dict[str, int]:
                     messages_emitted=messages_emitted,
                 )
             except Exception as exc:
-                _log.error("org_collaboration.loop_failed", error=str(exc))
+                logger.error("org_collaboration.loop_failed", error=str(exc))
         return {
             "processed": processed,
             "orgs_with_chatter": orgs_with_chatter,

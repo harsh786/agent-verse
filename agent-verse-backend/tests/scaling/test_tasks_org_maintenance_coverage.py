@@ -611,40 +611,123 @@ class TestRenderPublishArgs:
 
 
 class TestReEmbedCollection:
-    def test_no_chunks_returns_zero(self):
+    """re_embed_collection queried ``knowledge_chunks``, a table that has never
+    existed (chunks live in ``knowledge_chunks_<dim>``), ran without RLS context,
+    updated by bare ``id``, and slurped the whole collection with one
+    ``fetchall()`` — all inside a broad except that returned an error dict while
+    Celery recorded the task as successful. These pin the corrected contract.
+    """
+
+    @staticmethod
+    def _routing_session(*, dim=1536, pages):
+        """A session that answers the collection lookup, then paginated batches.
+
+        ``pages`` is a list of row-lists; each is returned by one keyset query,
+        and an empty final page ends the loop.
+        """
+        page_iter = iter([*pages, []])
+        statements = []
+
+        async def _execute(stmt, params=None):
+            sql = str(stmt)
+            statements.append((sql, dict(params or {})))
+            if "set_config" in sql:
+                return MagicMock()
+            if "FROM knowledge_collections" in sql:
+                return MagicMock(fetchone=MagicMock(return_value=(dim,)))
+            if sql.strip().startswith("SELECT id, content"):
+                return MagicMock(fetchall=MagicMock(return_value=next(page_iter)))
+            return MagicMock()
+
+        session = _make_session(execute_side_effect=None)
+        session.execute = AsyncMock(side_effect=_execute)
+        session.statements = statements
+        return session
+
+    def test_unknown_collection_returns_zero(self):
         from app.scaling.tasks import re_embed_collection
 
-        session = _make_session(execute_side_effect=[MagicMock(fetchall=MagicMock(return_value=[]))])
-        db_factory = _make_db_factory(session)
+        async def _execute(stmt, params=None):
+            if "set_config" in str(stmt):
+                return MagicMock()
+            return MagicMock(fetchone=MagicMock(return_value=None))
 
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
+        session = _make_session(execute_side_effect=None)
+        session.execute = AsyncMock(side_effect=_execute)
+
+        with patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)):
             result = re_embed_collection(tenant_id="t1", collection_id="c1")
 
-        assert result == {"collection_id": "c1", "re_embedded": 0, "model": "openai/text-embedding-3-small"}
+        assert result == {
+            "collection_id": "c1",
+            "re_embedded": 0,
+            "model": "openai/text-embedding-3-small",
+        }
 
-    def test_success_re_embeds_all_chunks(self):
+    def test_success_re_embeds_all_chunks_under_rls_and_tenant_scope(self):
         from app.scaling.tasks import re_embed_collection
 
-        rows = [(1, "hello"), (2, "world")]
-        session = _make_session(
-            execute_side_effect=[
-                MagicMock(fetchall=MagicMock(return_value=rows)),
-                MagicMock(),
-                MagicMock(),
-            ]
-        )
-        db_factory = _make_db_factory(session)
+        session = self._routing_session(pages=[[("id-1", "hello"), ("id-2", "world")]])
 
         with (
-            patch("app.db.session.get_session_factory", return_value=db_factory),
+            patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)),
             patch(
                 "app.embedding.router.embedding_router.embed_texts",
-                new=AsyncMock(return_value=[[0.1, 0.2], [0.3, 0.4]]),
+                new=AsyncMock(return_value=[[0.1] * 1536, [0.3] * 1536]),
             ),
         ):
-            result = re_embed_collection(tenant_id="t1", collection_id="c1", model_key="openai/text-embedding-3-small")
+            result = re_embed_collection(
+                tenant_id="t1", collection_id="c1", model_key="openai/text-embedding-3-small"
+            )
 
-        assert result == {"collection_id": "c1", "re_embedded": 2, "model": "openai/text-embedding-3-small"}
+        assert result == {
+            "collection_id": "c1",
+            "re_embedded": 2,
+            "model": "openai/text-embedding-3-small",
+        }
+
+        sql_by_kind = {"rls": [], "select": [], "update": []}
+        for sql, params in session.statements:
+            if "set_config" in sql:
+                sql_by_kind["rls"].append(params)
+            elif sql.strip().startswith("SELECT id, content"):
+                sql_by_kind["select"].append((sql, params))
+            elif sql.strip().startswith("UPDATE knowledge_chunks_"):
+                sql_by_kind["update"].append((sql, params))
+
+        assert any(p.get("tid") == "t1" for p in sql_by_kind["rls"]), (
+            "no RLS context set — under the app's own least-privilege role this "
+            "matches zero rows and still reports success"
+        )
+        assert sql_by_kind["select"], "never read the dimension-specific chunk table"
+        for sql, _params in sql_by_kind["select"]:
+            assert "knowledge_chunks_1536" in sql
+            assert "LIMIT" in sql, "reads the whole collection in one go"
+        assert len(sql_by_kind["update"]) == 2
+        for sql, params in sql_by_kind["update"]:
+            assert "knowledge_chunks_1536" in sql
+            assert params["tid"] == "t1" and params["cid"] == "c1", (
+                "UPDATE is not scoped to the tenant and collection"
+            )
+
+    def test_dimension_mismatch_is_refused_not_half_applied(self):
+        from app.scaling.tasks import re_embed_collection
+
+        session = self._routing_session(pages=[[("id-1", "hello")]])
+
+        with (
+            patch("app.db.session.get_session_factory", return_value=_make_db_factory(session)),
+            patch(
+                "app.embedding.router.embedding_router.embed_texts",
+                # 384-d vectors for a 1536-d collection: those rows belong in a
+                # different table entirely.
+                new=AsyncMock(return_value=[[0.1] * 384]),
+            ),
+        ):
+            result = re_embed_collection(tenant_id="t1", collection_id="c1")
+
+        assert result["re_embedded"] == 0
+        assert "-dim" in result["error"]
 
     def test_exception_returns_error_dict(self):
         from app.scaling.tasks import re_embed_collection
@@ -653,6 +736,7 @@ class TestReEmbedCollection:
             result = re_embed_collection(tenant_id="t1", collection_id="c1")
 
         assert "error" in result
+        assert result["re_embedded"] == 0
 
 
 # ── process_feedback_batch ───────────────────────────────────────────────────
