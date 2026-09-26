@@ -488,7 +488,10 @@ async def list_approvals(
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
-    pending = gateway.list_pending(tenant_ctx=tenant_ctx)
+    # DB-backed: the gateway's in-process dict only holds approvals THIS replica
+    # created or hydrated at startup, so a listing served by a different replica
+    # than the one that raised the gate silently omitted it.
+    pending = await gateway.alist_pending(tenant_ctx=tenant_ctx)
 
     # G-10: optionally filter by org_id by resolving each approval's goal
     # execution_context["org_id"]. We keep the lookup best-effort and skip
@@ -687,7 +690,12 @@ async def approve_request(
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
-    ok = gateway.approve(request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx)
+    # DB-resolving: the sync approve() looks the request up in this replica's
+    # own dict, so an operator routed to a different replica than the one that
+    # raised the gate got a false 'not found' for a live approval.
+    ok = await gateway.approve_async(
+        request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+    )
     # Not a live gateway request — maybe a durable org approval gate.
     if not ok and not await _resolve_org_gate(
         request, tenant_ctx, request_id, "approve", body.approver, body.note

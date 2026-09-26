@@ -114,17 +114,41 @@ class ApprovalRequest:
         return hash(self.request_id)
 
 
+# Cap on the fleet-wide pending-approval hydration at startup. The cache is a
+# warm-start optimisation; correctness comes from the DB-backed reads, so there
+# is nothing to gain from pulling every tenant's queue into every replica.
+_STARTUP_HYDRATION_LIMIT = 5000
+
+# approval_requests.status values → ApprovalStatus.
+_STATUS_BY_DB_VALUE = {
+    "pending": ApprovalStatus.PENDING,
+    "approved": ApprovalStatus.APPROVED,
+    "rejected": ApprovalStatus.REJECTED,
+    "timed_out": ApprovalStatus.TIMED_OUT,
+    "expired": ApprovalStatus.TIMED_OUT,
+}
+
+
 class HITLGateway:
     """Async-capable HITL gateway with blocking wait and timeout escalation."""
 
     DEFAULT_TIMEOUT = 300.0  # 5 minutes default
 
-    def __init__(self, timeout_seconds: float = DEFAULT_TIMEOUT) -> None:
-        # Key: (tenant_id, request_id) -> ApprovalRequest
+    def __init__(
+        self,
+        timeout_seconds: float = DEFAULT_TIMEOUT,
+        *,
+        db_session_factory: Any = None,
+    ) -> None:
+        # Warm cache only — NOT the source of truth. ``approval_requests`` in
+        # Postgres is, and the ``a*`` read methods below consult it, because a
+        # process-local dict is invisible to every other replica: an approval
+        # created on replica B could not be found or listed on replica A, and one
+        # resolved on B still read as pending on A until A restarted.
         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
         self._timeout = timeout_seconds
         self._notification_service: Any = None
-        self._db_session_factory: Any = None
+        self._db_session_factory: Any = db_session_factory
         # Redis client for publishing rejection notes (set by create_app lifespan)
         self._redis: Any = None
 
@@ -221,7 +245,13 @@ class HITLGateway:
         try:
             from sqlalchemy import text
 
-            async with self._db_session_factory() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     text(
                         "UPDATE approval_requests "
@@ -250,7 +280,13 @@ class HITLGateway:
         try:
             from sqlalchemy import text
 
-            async with self._db_session_factory() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 row = (
                     await session.execute(
                         text(
@@ -334,7 +370,17 @@ class HITLGateway:
         try:
             from sqlalchemy import text
 
-            async with self._db_session_factory() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            # approval_requests is FORCE-RLS protected: without app.tenant_id the
+            # INSERT matches no policy under the app's own least-privilege role,
+            # and this whole method is fire-and-forget behind a broad except —
+            # so the approval would silently never persist at all.
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(
                         """INSERT INTO approval_requests
@@ -434,7 +480,203 @@ class HITLGateway:
         return req.status
 
     def get_request(self, request_id: str, *, tenant_ctx: TenantContext) -> ApprovalRequest | None:
+        """Process-local lookup. Prefer :meth:`aget_request` on any request path.
+
+        This sees only what THIS process created or hydrated at startup, so it
+        cannot find an approval another replica raised. It is kept for the
+        in-process agent paths that look up a request they just created
+        themselves, where a database round-trip would be pure latency.
+        """
         return self._requests.get((tenant_ctx.tenant_id, request_id))
+
+    async def aget_request(
+        self, request_id: str, *, tenant_ctx: TenantContext
+    ) -> ApprovalRequest | None:
+        """Look the request up in Postgres, falling back to the local cache.
+
+        ``approval_requests`` is the source of truth; ``self._requests`` is one
+        process's view of it. Reading only the dict meant an approval created on
+        another replica answered 404 on this one, and one resolved elsewhere
+        still read as pending here until restart.
+        """
+        cached = self._requests.get((tenant_ctx.tenant_id, request_id))
+        if self._db_session_factory is None:
+            return cached
+        row = await self._db_fetch_request(request_id, tenant_ctx.tenant_id)
+        if row is None:
+            return None
+        return self._merge_row(row, tenant_ctx.tenant_id, cached)
+
+    async def alist_pending(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        goal_id: str | None = None,
+        limit: int = 200,
+    ) -> list[ApprovalRequest]:
+        """Pending approvals for the tenant, read from Postgres.
+
+        Scoped by ``tenant_id`` and bounded, so one tenant's queue depth cannot
+        become another's latency (or this replica's memory).
+        """
+        if self._db_session_factory is None:
+            return self.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        clause = " AND goal_id = :gid" if goal_id else ""
+        params: dict[str, Any] = {
+            "tid": tenant_ctx.tenant_id,
+            "lim": max(1, min(int(limit), 500)),
+        }
+        if goal_id:
+            params["gid"] = goal_id
+        try:
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, tenant_id, goal_id, action, risk_level, status "
+                            "FROM approval_requests "
+                            "WHERE tenant_id = :tid AND status = 'pending'"
+                            f"{clause} "
+                            "ORDER BY created_at DESC LIMIT :lim"
+                        ),
+                        params,
+                    )
+                ).mappings().all()
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_list_pending_db_failed", error=str(exc))
+            return self.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
+
+        return [
+            self._merge_row(
+                row,
+                tenant_ctx.tenant_id,
+                self._requests.get((tenant_ctx.tenant_id, row["id"])),
+            )
+            for row in rows
+        ]
+
+    async def approve_async(
+        self,
+        request_id: str,
+        *,
+        approver: str,
+        note: str = "",
+        tenant_ctx: TenantContext,
+    ) -> bool:
+        """Approve, resolving the request against Postgres, and await the write.
+
+        Two things the sync :meth:`approve` cannot do on a request this replica
+        did not raise:
+
+        * find it at all — ``approve`` looks the request up in the process-local
+          dict, so an operator whose call is load-balanced to a different replica
+          than the one that raised the gate got ``False`` for a live approval;
+        * make the decision durable before returning — the DB compare-and-swap is
+          scheduled fire-and-forget, so an immediately following read on another
+          replica still saw ``pending``.
+
+        This resolves through the database first (populating the cache) and then
+        awaits the resolution write, so when it returns the decision is committed
+        and visible fleet-wide.
+        """
+        await self.aget_request(request_id, tenant_ctx=tenant_ctx)
+        ok = bool(self.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx))
+        if ok and self._db_session_factory is not None:
+            await self._reconcile_after_db_resolution(
+                request_id, tenant_ctx.tenant_id, "approved", approver, note
+            )
+        return ok
+
+    async def request_approval_async(
+        self,
+        *,
+        goal_id: str,
+        action: str = "",
+        step_description: str = "",
+        risk_level: str = "high",
+        tenant_ctx: TenantContext,
+        required_approvers: int = 1,
+        context: dict[str, Any] | None = None,
+    ) -> str:
+        """Create an approval and **await** its persistence; return the request id.
+
+        :meth:`request_approval` persists fire-and-forget, so the row may not
+        exist yet when the caller returns — another replica asked about it
+        immediately afterwards would legitimately not find it. Callers that need
+        the gate to be durable and visible before they proceed use this.
+        """
+        req = self.request_approval(
+            goal_id=goal_id,
+            action=action,
+            step_description=step_description,
+            risk_level=risk_level,
+            tenant_ctx=tenant_ctx,
+            required_approvers=required_approvers,
+            context=context,
+        )
+        await self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+        return str(req.request_id)
+
+    async def _db_fetch_request(self, request_id: str, tenant_id: str) -> Any:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        try:
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                return (
+                    await session.execute(
+                        text(
+                            "SELECT id, tenant_id, goal_id, action, risk_level, status "
+                            "FROM approval_requests WHERE id = :id AND tenant_id = :tid"
+                        ),
+                        {"id": request_id, "tid": tenant_id},
+                    )
+                ).mappings().first()
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_db_fetch_failed", error=str(exc))
+            return None
+
+    def _merge_row(
+        self, row: Any, tenant_id: str, cached: ApprovalRequest | None
+    ) -> ApprovalRequest:
+        """Return the cached request updated from ``row``, or one built from it.
+
+        Reusing the cached object matters: an in-process ``wait_for_approval``
+        holds a reference to it and is waiting on its ``_event``.
+        """
+        status = _STATUS_BY_DB_VALUE.get(str(row["status"] or ""), ApprovalStatus.PENDING)
+        if cached is not None:
+            if cached.status != status:
+                cached.status = status
+                cached._event.set()
+            return cached
+        req = ApprovalRequest(
+            goal_id=row["goal_id"],
+            action=row["action"] or "unknown",
+            risk_level=row["risk_level"] or "unknown",
+            request_id=row["id"],
+            status=status,
+        )
+        self._requests[(tenant_id, row["id"])] = req
+        return req
 
     def approve(
         self,
@@ -719,8 +961,15 @@ class HITLGateway:
                     await session.execute(
                         text(
                             "SELECT id, tenant_id, goal_id, action, risk_level "
-                            "FROM approval_requests WHERE status = 'pending'"
-                        )
+                            "FROM approval_requests WHERE status = 'pending' "
+                            # Warm cache, not the source of truth: the a*
+                            # read methods fall back to the DB, so an
+                            # unbounded fleet-wide read here would only buy
+                            # O(fleet) startup time and every replica holding
+                            # every tenant's pending approvals in RAM.
+                            "ORDER BY created_at DESC LIMIT :lim"
+                        ),
+                        {"lim": _STARTUP_HYDRATION_LIMIT},
                     )
                 ).mappings().all()
 
