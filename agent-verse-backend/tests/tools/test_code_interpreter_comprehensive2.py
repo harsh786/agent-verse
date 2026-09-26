@@ -4,7 +4,7 @@ subprocess fallback, Docker path (mocked), and get_interpreter factory.
 from __future__ import annotations
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -171,46 +171,119 @@ async def test_subprocess_fallback_unsupported_language():
 
 # ── 8. Docker path (mocked) ───────────────────────────────────────────────────
 
+def _fake_docker_client(
+    *,
+    exit_code: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+    wait_exc: Exception | None = None,
+    create_exc: Exception | None = None,
+) -> tuple[MagicMock, MagicMock]:
+    """A docker client whose container runs the real lifecycle code paths.
+
+    These tests used to mock ``run_in_executor`` itself and return canned bytes,
+    so ``_execute_docker``'s container code never ran under test — which is how a
+    ``timeout=`` kwarg that docker-py does not accept broke every real sandbox
+    execution without a single test noticing.
+    """
+    container = MagicMock()
+    sock = MagicMock()
+    container.attach_socket.return_value = sock
+    if wait_exc is not None:
+        container.wait.side_effect = wait_exc
+    else:
+        container.wait.return_value = {"StatusCode": exit_code}
+
+    out_bytes, err_bytes = stdout, stderr
+
+    def _logs(stdout: bool = True, stderr: bool = True) -> bytes:
+        if stdout and not stderr:
+            return out_bytes
+        if stderr and not stdout:
+            return err_bytes
+        return out_bytes + err_bytes
+
+    container.logs.side_effect = _logs
+
+    client = MagicMock()
+    if create_exc is not None:
+        client.containers.create.side_effect = create_exc
+    else:
+        client.containers.create.return_value = container
+    return client, container
+
+
 @pytest.mark.asyncio
 async def test_docker_execute_success():
     interp = CodeInterpreter()
-    # Mock asyncio.get_event_loop to return a mock that runs the lambda
-    mock_loop = MagicMock()
-    mock_loop.run_in_executor = AsyncMock(return_value=b"docker output")
-
-    with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", True), \
-         patch("app.tools.code_interpreter.asyncio.get_event_loop", return_value=mock_loop), \
-         patch("docker.from_env"):
+    client, container = _fake_docker_client(stdout=b"docker output\n")
+    with patch("docker.from_env", return_value=client):
         result = await interp._execute_docker('print("hi")', "python", None)
+
     assert result.exit_code == 0
     assert "docker output" in result.stdout
+    assert result.timed_out is False
+    kwargs = client.containers.create.call_args.kwargs
+    assert "timeout" not in kwargs, "docker-py create()/run() has no timeout argument"
+    assert kwargs["network_mode"] == "none"
+    assert kwargs["read_only"] is True
+    assert kwargs["stdin_open"] is True
+    # The program is streamed over stdin, never bind-mounted from a host path.
+    assert "volumes" not in kwargs
+    container.attach_socket.return_value._sock.sendall.assert_called_once_with(b'print("hi")')
+    container.remove.assert_called_once_with(force=True)
+
+
+@pytest.mark.asyncio
+async def test_docker_nonzero_exit_keeps_real_stderr():
+    interp = CodeInterpreter()
+    client, container = _fake_docker_client(exit_code=3, stderr=b"Traceback: boom\n")
+    with patch("docker.from_env", return_value=client):
+        result = await interp._execute_docker("raise SystemExit(3)", "python", None)
+    assert result.exit_code == 3
+    assert "Traceback: boom" in result.stderr
+    assert result.timed_out is False
+    container.remove.assert_called_once_with(force=True)
 
 
 @pytest.mark.asyncio
 async def test_docker_execute_exception_returns_error():
+    """An infrastructure failure is an error, and it is NOT reported as a timeout."""
     interp = CodeInterpreter()
-    mock_loop = MagicMock()
-    mock_loop.run_in_executor = AsyncMock(side_effect=Exception("container failed"))
-
-    with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", True), \
-         patch("app.tools.code_interpreter.asyncio.get_event_loop", return_value=mock_loop), \
-         patch("docker.from_env"):
+    client, _ = _fake_docker_client(create_exc=RuntimeError("container failed: timed out pulling"))
+    with patch("docker.from_env", return_value=client):
         result = await interp._execute_docker('print("hi")', "python", None)
     assert result.exit_code == 1
     assert "container failed" in result.stderr
+    # The old heuristic grepped "timed out" in the message and misreported
+    # infrastructure errors (including the TypeError) as timeouts.
+    assert result.timed_out is False
 
 
 @pytest.mark.asyncio
 async def test_docker_execute_timeout_detected():
-    interp = CodeInterpreter()
-    mock_loop = MagicMock()
-    mock_loop.run_in_executor = AsyncMock(side_effect=Exception("timed out after 1s"))
+    """A wait() deadline expiry kills the container and reports timed_out."""
+    import requests
 
-    with patch("app.tools.code_interpreter._DOCKER_AVAILABLE", True), \
-         patch("app.tools.code_interpreter.asyncio.get_event_loop", return_value=mock_loop), \
-         patch("docker.from_env"):
-        result = await interp._execute_docker('import time; time.sleep(100)', "python", 1)
+    interp = CodeInterpreter()
+    client, container = _fake_docker_client(wait_exc=requests.exceptions.ReadTimeout("deadline"))
+    with patch("docker.from_env", return_value=client):
+        result = await interp._execute_docker("while True: pass", "python", 1)
     assert result.timed_out is True
+    assert result.exit_code == 124
+    container.kill.assert_called_once()
+    container.remove.assert_called_once_with(force=True)
+
+
+@pytest.mark.asyncio
+async def test_docker_failed_start_still_removes_the_container():
+    interp = CodeInterpreter()
+    client, container = _fake_docker_client()
+    container.start.side_effect = RuntimeError("invalid tmpfs option")
+    with patch("docker.from_env", return_value=client):
+        result = await interp._execute_docker("print(1)", "python", None)
+    assert result.exit_code == 1
+    container.remove.assert_called_once_with(force=True)
 
 
 # ── 9. _check_docker ─────────────────────────────────────────────────────────

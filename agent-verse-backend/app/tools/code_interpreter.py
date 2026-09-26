@@ -146,78 +146,105 @@ class CodeInterpreter:
 
         effective_timeout = timeout if timeout is not None else self._timeout
         image = _DOCKER_IMAGES[language]
-        ext = _FILE_EXTENSIONS[language]
-        suffix = f".{ext}"
-
-        container_path = f"/sandbox/code{suffix}"
+        # The program is fed on stdin, not bind-mounted from a host temp file.
+        # A bind mount only works when this process and the Docker daemon share
+        # a filesystem; when the API runs in a container talking to the host
+        # daemon over the socket (the normal deployment) or through a VM, the
+        # temp path does not exist daemon-side and Docker silently mounts an
+        # empty DIRECTORY in its place — every program failed with "can't find
+        # '__main__' module". stdin has no such dependency and no size limit.
         cmd = {
-            "python": ["python3", container_path],
-            "javascript": ["node", container_path],
-            "bash": ["sh", container_path],
-        }.get(language, ["python3", container_path])
+            "python": ["python3", "-"],
+            "javascript": ["node", "-"],
+            "bash": ["sh", "-s"],
+        }.get(language, ["python3", "-"])
 
         t0 = time.monotonic()
 
-        # Write code to a host-side temp file; volume-mount it read-only.
-        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False) as f:
-            f.write(code)
-            tmp_path = f.name
+        def _run_in_container() -> CodeResult:
+            """Blocking container lifecycle, run in a worker thread.
+
+            docker-py's ``containers.run()`` has no ``timeout`` argument — passing
+            one raised TypeError on every call, so the real (isolated) sandbox
+            path never executed anything. And with ``detach=False`` there is no
+            way to bound wall-clock time at all: a ``while True:`` would pin this
+            thread forever. So: start detached, ``wait()`` with the deadline, kill
+            on expiry, read stdout/stderr separately (a non-zero exit used to
+            raise ContainerError and lose the program's own stderr), and always
+            remove the container.
+            """
+            import requests
+
+            client = docker.from_env()
+            # create + start (not run): run() creates then starts, and a failed
+            # start leaves the created container behind with nothing to remove it.
+            container = client.containers.create(
+                image,
+                command=cmd,
+                # stdin_open without detach makes docker-py set StdinOnce, so
+                # closing our write side delivers EOF to the program.
+                stdin_open=True,
+                network_mode="none",
+                mem_limit=self._memory_limit,
+                cpu_quota=self._cpu_quota,
+                read_only=True,
+                # "noexec=off" (the previous value) is not a mount option, so the
+                # daemon refused to start every container. "exec" is what it
+                # meant; nosuid/nodev are plain hardening.
+                tmpfs={"/tmp": "size=64m,exec,nosuid,nodev"},
+                user="1000:1000",
+                environment={"PYTHONDONTWRITEBYTECODE": "1"},
+            )
+            timed_out = False
+            exit_code = 1
+            try:
+                import socket as _socket
+
+                attached = container.attach_socket(params={"stdin": 1, "stream": 1})
+                container.start()
+                raw = getattr(attached, "_sock", attached)
+                try:
+                    raw.sendall(code.encode("utf-8"))
+                    with contextlib.suppress(OSError):
+                        raw.shutdown(_socket.SHUT_WR)
+                finally:
+                    with contextlib.suppress(Exception):
+                        attached.close()
+                try:
+                    status = container.wait(timeout=effective_timeout)
+                    exit_code = int(status.get("StatusCode", 1))
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                    timed_out = True
+                    with contextlib.suppress(Exception):
+                        container.kill()
+                out = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+                err = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            finally:
+                with contextlib.suppress(Exception):
+                    container.remove(force=True)
+            if timed_out:
+                err = (err + f"\nExecution exceeded {effective_timeout}s and was killed.").strip()
+            return CodeResult(
+                stdout=out,
+                stderr=err,
+                exit_code=exit_code if not timed_out else 124,
+                timed_out=timed_out,
+                execution_time_ms=(time.monotonic() - t0) * 1000,
+            )
 
         try:
-            client = docker.from_env()
-
-            result = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: client.containers.run(
-                    image,
-                    command=cmd,
-                    volumes={tmp_path: {"bind": container_path, "mode": "ro"}},
-                    remove=True,
-                    network_mode="none",
-                    mem_limit=self._memory_limit,
-                    cpu_quota=self._cpu_quota,
-                    read_only=True,
-                    tmpfs={"/tmp": "size=64m,noexec=off"},
-                    user="1000:1000",
-                    environment={"PYTHONDONTWRITEBYTECODE": "1"},
-                    stdout=True,
-                    stderr=True,
-                    timeout=effective_timeout,
-                    detach=False,
-                ),
-            )
-            elapsed = (time.monotonic() - t0) * 1000
-            if isinstance(result, bytes):
-                stdout = result.decode("utf-8", errors="replace")
-                stderr = ""
-                exit_code = 0
-            else:
-                stdout = ""
-                stderr = str(result)
-                exit_code = 1
-
-            return CodeResult(
-                stdout=stdout,
-                stderr=stderr,
-                exit_code=exit_code,
-                timed_out=False,
-                execution_time_ms=elapsed,
-            )
-
+            return await asyncio.get_running_loop().run_in_executor(None, _run_in_container)
         except Exception as exc:
-            elapsed = (time.monotonic() - t0) * 1000
-            error_str = str(exc)
-            timed_out = "timeout" in error_str.lower() or "timed out" in error_str.lower()
+            # Infrastructure failure (image pull, daemon error) — NOT a timeout.
+            # The old heuristic pattern-matched "timeout" in the message and so
+            # reported the TypeError above as timed_out=True.
             return CodeResult(
                 stdout="",
-                stderr=error_str,
+                stderr=f"sandbox error: {exc}",
                 exit_code=1,
-                timed_out=timed_out,
-                execution_time_ms=elapsed,
+                timed_out=False,
+                execution_time_ms=(time.monotonic() - t0) * 1000,
             )
-        finally:
-            with contextlib.suppress(Exception):
-                os.unlink(tmp_path)
 
     async def _execute_subprocess_fallback(
         self,
