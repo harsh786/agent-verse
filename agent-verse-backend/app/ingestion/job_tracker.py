@@ -15,6 +15,12 @@ from typing import Any
 from app.db.rls import sqlalchemy_rls_context, system_session
 from app.ingestion.source_config import IngestionJob, SourceConfig
 
+# Bounded batch for the due-source beat scan, most-overdue first. An unbounded
+# scan is fine in steady state but returns EVERY source at once after an outage,
+# when they are all simultaneously due — the one moment the scheduler must not
+# also be the thing that falls over. The remainder is picked up next tick.
+_DUE_SCAN_LIMIT = 500
+
 _log = logging.getLogger(__name__)
 
 
@@ -341,7 +347,10 @@ class IngestionJobTracker:
                                OR last_synced_at + (sync_interval_seconds || ' seconds')::interval
                                   <= NOW()
                            )
-                    """)
+                         ORDER BY last_synced_at ASC NULLS FIRST
+                         LIMIT :lim
+                    """),
+                    {"lim": _DUE_SCAN_LIMIT},
                 )
                 return [(row.source_id, row.tenant_id) for row in result]
         except Exception as exc:

@@ -19,6 +19,11 @@ from typing import Any
 from app.ingestion.source_config import SourceConfig, SourceFamily
 from app.observability.logging import get_logger
 
+# Bounded batch for the due-source beat scan (see IngestionJobTracker for the
+# rationale): after an outage every source is due at once, and the scheduler
+# must not be the thing that falls over at that moment.
+_DUE_SCAN_LIMIT = 500
+
 _log = get_logger(__name__)
 
 # Every persisted SourceConfig field, in one place (column == attribute name).
@@ -347,7 +352,10 @@ class SourceConfigStore:
                     "WHERE enabled IS TRUE AND sync_mode <> 'streaming' AND ("
                     "  last_synced_at IS NULL OR "
                     "  last_synced_at + (sync_interval_seconds || ' seconds')::interval <= now()"
-                    ")"
-                )
+                    ") "
+                    # Bounded batch, most-overdue first — see _DUE_SCAN_LIMIT.
+                    "ORDER BY last_synced_at ASC NULLS FIRST LIMIT :lim"
+                ),
+                {"lim": _DUE_SCAN_LIMIT},
             )
             return [(r.source_id, r.tenant_id) for r in rows]
