@@ -69,6 +69,32 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return _session_factory
 
 
+_system_engine: AsyncEngine | None = None
+_system_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def get_system_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Session factory for cross-tenant SYSTEM work only (never request paths).
+
+    Bound to ``MAINTENANCE_DATABASE_URL`` — a role with BYPASSRLS — when set,
+    otherwise the regular factory. ``app.db.rls.system_session`` must be used on
+    sessions from this factory: under the NOBYPASSRLS application role it fails
+    loudly ("query would be affected by row-level security"), which is exactly
+    what previously broke every beat scan and startup warm-up once the API ran
+    least-privilege.
+    """
+    global _system_engine, _system_session_factory
+    url = (get_settings().maintenance_database_url or "").strip()
+    if not url:
+        return get_session_factory()
+    if _system_session_factory is None:
+        _system_engine = _make_engine(url)
+        _system_session_factory = async_sessionmaker(
+            _system_engine, expire_on_commit=False, class_=AsyncSession
+        )
+    return _system_session_factory
+
+
 async def dispose_task_engine() -> None:
     """Dispose all pooled asyncpg connections owned by the module-level engine.
 
@@ -82,9 +108,13 @@ async def dispose_task_engine() -> None:
         loop.run_until_complete(dispose_task_engine())
         loop.close()
     """
-    global _engine, _session_factory
+    global _engine, _session_factory, _system_engine, _system_session_factory
     if _engine is not None:
         await _engine.dispose()
+    if _system_engine is not None:
+        await _system_engine.dispose()
+    _system_engine = None
+    _system_session_factory = None
     # Drop the references so the NEXT event loop builds a fresh engine instead of
     # reusing this one. A Celery worker runs each task on its own loop (see
     # _run_async), and asyncpg connections are loop-bound: reusing a disposed

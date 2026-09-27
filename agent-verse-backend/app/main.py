@@ -1175,6 +1175,11 @@ def create_app(
 
             db_factory = get_session_factory()
             app.state.db_session_factory = db_factory
+            # Cross-tenant system work (never request paths) — see
+            # app.db.session.get_system_session_factory.
+            from app.db.session import get_system_session_factory
+
+            app.state.system_db_session_factory = get_system_session_factory()
             event_store = EventStore(db_factory)
 
             # P1-4: bind the guardrails engine to a durable, RLS-scoped repository

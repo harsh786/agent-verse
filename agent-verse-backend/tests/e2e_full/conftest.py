@@ -110,15 +110,28 @@ def _migrated_backends(_backends: tuple[str, str]) -> tuple[str, str]:
             f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
     if os.getenv("E2E_LEAST_PRIVILEGE", "").lower() in ("1", "true", "yes"):
+        # Production posture: the API is a NOBYPASSRLS role; the few cross-tenant
+        # system jobs use a separate BYPASSRLS maintenance role.
+        os.environ["MAINTENANCE_DATABASE_URL"] = _least_privilege_url(
+            database_url, role=_MAINT_ROLE, password=_MAINT_PASSWORD, bypass_rls=True
+        )
         return _least_privilege_url(database_url), redis_url
     return database_url, redis_url
 
 
 _LP_ROLE = "agentverse_app_rls"
 _LP_PASSWORD = "agentverse-app-rls-e2e"
+_MAINT_ROLE = "agentverse_maint"
+_MAINT_PASSWORD = "agentverse-maint-e2e"
 
 
-def _least_privilege_url(owner_url: str) -> str:
+def _least_privilege_url(
+    owner_url: str,
+    *,
+    role: str = _LP_ROLE,
+    password: str = _LP_PASSWORD,
+    bypass_rls: bool = False,
+) -> str:
     """Create a NOBYPASSRLS application role and return a DSN that uses it.
 
     The testcontainer's default user is a SUPERUSER, which bypasses row-level
@@ -138,23 +151,24 @@ def _least_privilege_url(owner_url: str) -> str:
     async def _provision() -> None:
         conn = await asyncpg.connect(raw)
         try:
-            exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", _LP_ROLE)
+            exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role)
             if not exists:
                 await conn.execute(
-                    f"CREATE ROLE {_LP_ROLE} LOGIN PASSWORD '{_LP_PASSWORD}' "
-                    "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+                    f"CREATE ROLE {role} LOGIN PASSWORD '{password}' "
+                    "NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    + ("BYPASSRLS" if bypass_rls else "NOBYPASSRLS")
                 )
             db = await conn.fetchval("SELECT current_database()")
-            await conn.execute(f'GRANT CONNECT, TEMPORARY ON DATABASE "{db}" TO {_LP_ROLE}')
-            await conn.execute(f"GRANT USAGE ON SCHEMA public TO {_LP_ROLE}")
+            await conn.execute(f'GRANT CONNECT, TEMPORARY ON DATABASE "{db}" TO {role}')
+            await conn.execute(f"GRANT USAGE ON SCHEMA public TO {role}")
             await conn.execute(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {_LP_ROLE}"
+                f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {role}"
             )
             await conn.execute(
-                f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {_LP_ROLE}"
+                f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {role}"
             )
             await conn.execute(
-                f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {_LP_ROLE}"
+                f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {role}"
             )
         finally:
             await conn.close()
@@ -164,7 +178,7 @@ def _least_privilege_url(owner_url: str) -> str:
 
     parts = urlsplit(owner_url)
     host = parts.netloc.rsplit("@", 1)[-1]
-    return urlunsplit(parts._replace(netloc=f"{_LP_ROLE}:{_LP_PASSWORD}@{host}"))
+    return urlunsplit(parts._replace(netloc=f"{role}:{password}@{host}"))
 
 
 # ── The booted application ────────────────────────────────────────────────────

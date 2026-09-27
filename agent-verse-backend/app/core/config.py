@@ -44,6 +44,12 @@ class Settings(BaseSettings):
 
     # --- infrastructure DSNs ---
     database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"
+    # Separate DSN for cross-tenant system work (beat scanners, retention and
+    # partition maintenance, startup warm-up). Production runs the API as a
+    # NOBYPASSRLS role so every request is tenant-isolated by the database; the
+    # few legitimate cross-tenant jobs use this BYPASSRLS maintenance role via
+    # get_system_session_factory(). Empty = same as database_url (dev/superuser).
+    maintenance_database_url: str = ""
     redis_url: str = "redis://localhost:6379/0"
 
     # --- Redis HA settings ---
