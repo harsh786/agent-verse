@@ -255,7 +255,7 @@ def test_publish_template_with_agent_id() -> None:
     """Lines 349-353: publish_template enriches connector_ids from agent_store."""
     agent = {"name": "pub-agent", "connector_ids": ["github"]}
     agent_store = MagicMock()
-    agent_store.get = MagicMock(return_value=agent)
+    agent_store.get_async = AsyncMock(return_value=agent)
 
     mp = _default_marketplace()
     client = TestClient(_make_app(marketplace=mp, agent_store=agent_store), raise_server_exceptions=False)
@@ -270,12 +270,14 @@ def test_publish_template_with_agent_id() -> None:
         headers=_headers(),
     )
     assert resp.status_code == 201
+    assert resp.json()["connectors"] == ["github"]
 
 
 def test_publish_template_agent_store_miss() -> None:
-    """Lines 361-362: agent not found in store — continues without enrichment."""
+    """Publishing from an agent the caller does not own is a 404 (it used to
+    silently publish without the agent)."""
     agent_store = MagicMock()
-    agent_store.get = MagicMock(return_value=None)
+    agent_store.get_async = AsyncMock(return_value=None)
 
     mp = _default_marketplace()
     client = TestClient(_make_app(marketplace=mp, agent_store=agent_store), raise_server_exceptions=False)
@@ -289,7 +291,7 @@ def test_publish_template_agent_store_miss() -> None:
         },
         headers=_headers(),
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +301,7 @@ def test_publish_template_agent_store_miss() -> None:
 def test_get_template_v2_not_found() -> None:
     """Line 404-406: get_template_v2 returns 404 when svc.get_template returns None."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.get_template = AsyncMock(return_value=None)
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -310,6 +313,7 @@ def test_get_template_v2_not_found() -> None:
 def test_get_template_v2_found() -> None:
     """Lines 412-413: get_template_v2 returns 200 with data."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.get_template = AsyncMock(return_value={"template_id": "t1", "name": "Demo"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -325,6 +329,7 @@ def test_get_template_v2_found() -> None:
 def test_deploy_template_v2_missing_connectors() -> None:
     """Line 421: deploy raises 400 for missing_connectors."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.install = AsyncMock(return_value={"success": False, "missing_connectors": ["jira", "github"]})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -340,6 +345,7 @@ def test_deploy_template_v2_missing_connectors() -> None:
 def test_deploy_template_v2_install_failed() -> None:
     """Lines 446, 461: deploy raises 422 for generic install failure."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.install = AsyncMock(return_value={"success": False, "error": "provider unavailable"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -355,6 +361,7 @@ def test_deploy_template_v2_install_failed() -> None:
 def test_deploy_template_v2_success() -> None:
     """Happy path for deploy_template_v2."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.install = AsyncMock(return_value={"success": True, "agent_id": "ag1"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -374,6 +381,7 @@ def test_deploy_template_v2_success() -> None:
 def test_add_review_v2_failure() -> None:
     """Lines 469-481: add_review returns 400 on failure."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.add_review = AsyncMock(return_value={"success": False, "error": "already reviewed"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -388,6 +396,7 @@ def test_add_review_v2_failure() -> None:
 def test_add_review_v2_success() -> None:
     """add_review_v2 happy path."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.add_review = AsyncMock(return_value={"success": True, "review_id": "rv1"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -406,6 +415,7 @@ def test_add_review_v2_success() -> None:
 def test_list_reviews_v2() -> None:
     """Lines 492-494: list_reviews_v2 returns list."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.list_reviews = AsyncMock(return_value=[{"review_id": "rv1", "rating": 5}])
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -422,6 +432,7 @@ def test_list_reviews_v2() -> None:
 def test_search_templates_v2() -> None:
     """Lines 520-530: search_templates_v2 proxies to svc.search_templates."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.search_templates = AsyncMock(return_value=[{"template_id": "t1", "name": "MyAgent"}])
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -1198,6 +1209,7 @@ def test_provision_scim_token_with_db() -> None:
 def test_list_templates_v2() -> None:
     """Lines 390-400: list_templates_v2 proxies to marketplace_v2."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.list_templates = AsyncMock(return_value={"templates": [], "total": 0})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -1208,6 +1220,7 @@ def test_list_templates_v2() -> None:
 def test_publish_template_v2() -> None:
     """Lines 400-409: publish_template_v2 runs security review."""
     mv2 = MagicMock()
+    mv2.get_template = AsyncMock(return_value={"id": "t1"})
     mv2.publish_template = AsyncMock(return_value={"template_id": "t-new", "status": "under_review"})
 
     client = TestClient(_make_app(marketplace_v2=mv2), raise_server_exceptions=False)
@@ -1339,11 +1352,14 @@ def test_rerun_compliance_check_soc2() -> None:
 def test_get_template_versions_fallback() -> None:
     """Lines 520-530: template exists, no version history → returns current version."""
     mp = _default_marketplace()
-    mp.get_template = MagicMock(return_value={"template_id": "t1", "name": "Demo", "version": "2.0.0"})
     mp.get_version_history = AsyncMock(return_value=[])  # Empty → fallback
+    v2 = MagicMock()
+    v2.get_template = AsyncMock(return_value={"id": "t1", "name": "Demo", "version": "2.0.0"})
 
     with patch("app.api.enterprise._get_db", return_value=None):
-        client = TestClient(_make_app(marketplace=mp), raise_server_exceptions=False)
+        app = _make_app(marketplace=mp)
+        app.state.marketplace_v2 = v2
+        client = TestClient(app, raise_server_exceptions=False)
         resp = client.get("/marketplace/t1/versions", headers=_headers())
         assert resp.status_code == 200
         data = resp.json()

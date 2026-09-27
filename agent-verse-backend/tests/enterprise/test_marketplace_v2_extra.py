@@ -514,12 +514,16 @@ class TestMarketplaceV2DbPaths:
         assert result is not None
 
     @pytest.mark.asyncio
-    async def test_publish_template_db_exception_falls_back_to_memory(self):
-        """Lines 1394-1438: DB exception on publish → stored in memory."""
+    async def test_publish_template_db_exception_is_raised_not_faked(self):
+        """A failed DB write must fail the publish.
+
+        It used to be swallowed: the record went into this replica's memory and
+        was returned as if saved — lost on restart, invisible to other replicas.
+        """
         mp = MarketplaceV2(db_factory=_make_mock_db(raise_on_execute=True))
-        record = await mp.publish_template(data=_SAFE, tenant_ctx=TA, run_security_review=False)
-        assert record["name"] == _SAFE["name"]
-        assert record[list(record.keys())[0]] is not None
+        with pytest.raises(RuntimeError):
+            await mp.publish_template(data=_SAFE, tenant_ctx=TA, run_security_review=False)
+        assert not [t for t in mp._cache.values() if t.get("tenant_id") == TA.tenant_id]
 
     @pytest.mark.asyncio
     async def test_install_db_exception_returns_error(self):

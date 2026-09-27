@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-router = APIRouter(prefix="/agents/{agent_id}/keys", tags=["agent-identity"])
+from app.api._deps import require_owned_agent
+
+# Every route acts on the path's agent, so ownership is checked once for all.
+router = APIRouter(
+    prefix="/agents/{agent_id}/keys",
+    tags=["agent-identity"],
+    dependencies=[Depends(require_owned_agent)],
+)
 
 
 class AgentKeyCreateRequest(BaseModel):
@@ -73,22 +80,16 @@ async def revoke_agent_key(agent_id: str, key_id: str, request: Request) -> dict
 
 
 @router.get("/manifest")
-async def get_agent_manifest(agent_id: str, request: Request) -> dict:
-    """Return signed capability manifest for this agent."""
-    tenant_ctx = getattr(request.state, "tenant", None)
-    app_state = request.app.state
-    agent_store = getattr(app_state, "agent_store", None)
+async def get_agent_manifest(
+    agent_id: str, request: Request, agent: dict = Depends(require_owned_agent)
+) -> dict:
+    """Return the signed capability manifest for one of the caller's agents.
 
-    agent: dict = {}
-    if agent_store is not None:
-        try:
-            agent_dict = await agent_store.get_agent(agent_id, tenant_ctx=tenant_ctx)
-            if agent_dict:
-                agent = agent_dict
-        except Exception:
-            pass
-
+    It used to sign a manifest for ANY agent id — falling back to a bare
+    ``{"id": agent_id}`` when the agent was not the caller's — which made the
+    platform a signing oracle for agents the caller does not own.
+    """
     from app.auth.agent_manifest import build_manifest, sign_manifest
 
-    manifest = build_manifest(agent or {"id": agent_id}, tenant_ctx)
+    manifest = build_manifest(agent, request.state.tenant)
     return sign_manifest(manifest)

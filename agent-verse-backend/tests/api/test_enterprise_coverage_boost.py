@@ -218,6 +218,7 @@ def test_get_template_versions_returns_db_history_when_present() -> None:
         return_value=[{"version": "2.0.0", "template_id": "t1", "is_current": True}]
     )
     app = _make_app(marketplace=marketplace)
+    app.state.marketplace_v2 = _v2_with({"id": "t1", "version": "1.0.0", "tenant_id": "x"})
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/marketplace/t1/versions", headers=_headers())
     assert resp.status_code == 200
@@ -226,12 +227,21 @@ def test_get_template_versions_returns_db_history_when_present() -> None:
     marketplace.get_version_history.assert_awaited_once()
 
 
+def _v2_with(template: dict[str, Any] | None) -> Any:
+    v2 = MagicMock()
+    v2.get_template = AsyncMock(return_value=template)
+    return v2
+
+
 def test_publish_template_version() -> None:
+    """Only the template's owner may snapshot a new version."""
     marketplace = MagicMock()
     marketplace.publish_version = AsyncMock(
         return_value={"version": "1.1.0", "template_id": "t1", "changelog": "fixes"}
     )
     app = _make_app(marketplace=marketplace)
+    owned = {"id": "t1", "tenant_id": _CTX.tenant_id}
+    app.state.marketplace_v2 = _v2_with(owned)
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/marketplace/t1/publish",
@@ -240,9 +250,16 @@ def test_publish_template_version() -> None:
     )
     assert resp.status_code == 201
     assert resp.json()["version"] == "1.1.0"
-    marketplace.publish_version.assert_awaited_once_with(
-        template_id="t1", version="1.1.0", changelog="fixes", db=marketplace.publish_version.await_args.kwargs["db"]
+    kwargs = marketplace.publish_version.await_args.kwargs
+    assert kwargs["template_id"] == "t1" and kwargs["template"] == owned
+
+    # A template the caller can see but does not own (e.g. a public one).
+    app.state.marketplace_v2 = _v2_with({"id": "t1", "tenant_id": "someone-else"})
+    denied = client.post(
+        "/marketplace/t1/publish", json={"version": "9.9.9"}, headers=_headers()
     )
+    assert denied.status_code == 404
+    assert marketplace.publish_version.await_count == 1
 
 
 # ---------------------------------------------------------------------------

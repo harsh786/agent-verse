@@ -26,7 +26,19 @@ def _make_app() -> FastAPI:
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(credentials_router)
+    app.state.agent_store = _agent_store({"agent-1": {"id": "agent-1", "name": "My Agent"}})
     return app
+
+
+def _agent_store(agents: dict[str, dict[str, Any]]) -> Any:
+    """Tenant-scoped agent lookup, as the real AgentStore.get_async provides."""
+    store = AsyncMock()
+
+    async def _get(agent_id: str, *, tenant_ctx: Any = None) -> dict[str, Any] | None:
+        return agents.get(agent_id) if tenant_ctx is _CTX else None
+
+    store.get_async = AsyncMock(side_effect=_get)
+    return store
 
 
 @pytest.fixture
@@ -149,47 +161,39 @@ def test_revoke_agent_key_not_found(client: TestClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_get_agent_manifest_without_agent_store_uses_bare_id(client: TestClient) -> None:
+def test_get_agent_manifest_signs_the_owned_agent(client: TestClient) -> None:
     resp = client.get("/agents/agent-1/keys/manifest", headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert data["agent_id"] == "agent-1"
+    assert data["name"] == "My Agent"
     assert data["_signed"] is True
     assert "_signature" in data
 
 
-def test_get_agent_manifest_uses_agent_store_when_present() -> None:
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/agents/foreign-agent/keys/manifest", None),
+        ("POST", "/agents/foreign-agent/keys", {"name": "k"}),
+        ("GET", "/agents/foreign-agent/keys", None),
+        ("DELETE", "/agents/foreign-agent/keys/key-1", None),
+    ],
+)
+def test_foreign_or_unknown_agent_is_404(
+    client: TestClient, method: str, path: str, body: dict[str, Any] | None
+) -> None:
+    """Regression: keys could be minted, and manifests signed, for any agent id."""
+    store = _patched_store()
+    with patch("app.auth.agent_credentials._agent_credential_store", store):
+        resp = client.request(method, path, json=body, headers=_HEADERS)
+    assert resp.status_code == 404
+    store.create_key_async.assert_not_called()
+    store.revoke_async.assert_not_called()
+
+
+def test_no_agent_store_is_404() -> None:
     app = _make_app()
-    agent_store = AsyncMock()
-    agent_store.get_agent = AsyncMock(return_value={"id": "agent-1", "name": "My Agent"})
-    app.state.agent_store = agent_store
+    app.state.agent_store = None
     client = TestClient(app, raise_server_exceptions=False)
-
-    resp = client.get("/agents/agent-1/keys/manifest", headers=_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["name"] == "My Agent"
-    agent_store.get_agent.assert_awaited_once()
-
-
-def test_get_agent_manifest_agent_store_exception_falls_back() -> None:
-    app = _make_app()
-    agent_store = AsyncMock()
-    agent_store.get_agent = AsyncMock(side_effect=RuntimeError("boom"))
-    app.state.agent_store = agent_store
-    client = TestClient(app, raise_server_exceptions=False)
-
-    resp = client.get("/agents/agent-1/keys/manifest", headers=_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["agent_id"] == "agent-1"
-
-
-def test_get_agent_manifest_agent_store_returns_falsy_dict_falls_back() -> None:
-    app = _make_app()
-    agent_store = AsyncMock()
-    agent_store.get_agent = AsyncMock(return_value=None)
-    app.state.agent_store = agent_store
-    client = TestClient(app, raise_server_exceptions=False)
-
-    resp = client.get("/agents/agent-1/keys/manifest", headers=_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["agent_id"] == "agent-1"
+    assert client.get("/agents/agent-1/keys/manifest", headers=_HEADERS).status_code == 404

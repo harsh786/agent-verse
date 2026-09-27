@@ -275,7 +275,7 @@ async def test_scope_check_requires_both_conditions() -> None:
 async def test_parameter_schema_validation() -> None:
     """install() rejects params that violate the template's parameters_schema."""
     svc = MarketplaceV2(db_factory=None)
-    await svc.publish_template(data=_SAFE_TEMPLATE, tenant_ctx=T_A, run_security_review=False)
+    await svc.publish_template(data=_SAFE_TEMPLATE, tenant_ctx=T_A, run_security_review=True)
 
     # test_name is required (string), count must be >= 1 if present
     result_missing_required = await svc.install(
@@ -323,7 +323,7 @@ async def test_template_search_by_domain() -> None:
     testing_tpl = _SAFE_TEMPLATE  # domain="testing"
 
     for tpl in [legal_tpl, finance_tpl, testing_tpl]:
-        await svc.publish_template(data=tpl, tenant_ctx=T_A, run_security_review=False)
+        await svc.publish_template(data=tpl, tenant_ctx=T_A, run_security_review=True)
 
     # Filter by domain=legal
     result = await svc.list_templates(domain="legal")
@@ -415,7 +415,7 @@ async def test_tenant_isolation_private_templates() -> None:
     # Publish private template owned by T_A
     await svc.publish_template(data=private_tpl, tenant_ctx=T_A, run_security_review=False)
     # Publish public template owned by T_B
-    await svc.publish_template(data=public_tpl, tenant_ctx=T_B, run_security_review=False)
+    await svc.publish_template(data=public_tpl, tenant_ctx=T_B, run_security_review=True)
 
     # T_A can see their own private template
     result_a = await svc.list_templates(tenant_id=T_A.tenant_id)

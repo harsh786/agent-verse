@@ -314,10 +314,17 @@ class Marketplace:
         }
 
     async def publish_version(
-        self, *, template_id: str, version: str, changelog: str, db: Any = None
+        self,
+        *,
+        template_id: str,
+        version: str,
+        changelog: str,
+        db: Any = None,
+        template: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Save a version snapshot of a template to DB."""
-        template = self.get_template(template_id=template_id) or {}
+        """Save a version snapshot of a template to DB (``template``: the resolved record)."""
+        if template is None:
+            template = self.get_template(template_id=template_id) or {}
         if db is not None:
             try:
                 import json
@@ -337,7 +344,7 @@ class Marketplace:
                             "tid": template_id,
                             "ver": version,
                             "log": changelog,
-                            "data": json.dumps(dict(template)),
+                            "data": json.dumps(dict(template), default=str),
                         },
                     )
             except Exception as exc:

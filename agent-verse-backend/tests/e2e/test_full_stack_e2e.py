@@ -464,10 +464,19 @@ async def test_marketplace_browse_and_deploy(client_and_key):
     assert r.status_code == 200
     templates = r.json()
     assert len(templates) >= 6
-    tpl_id = templates[0]["template_id"]
+    # Params that satisfy the chosen template's own schema.
+    tpl = templates[0]
+    schema = tpl.get("parameters_schema") or {}
+    props = schema.get("properties") or {}
+    params = {
+        name: (props.get(name, {}).get("enum") or ["x"])[0]
+        if props.get(name, {}).get("type", "string") == "string"
+        else 1
+        for name in schema.get("required", [])
+    }
     r2 = await c.post(
-        f"/marketplace/{tpl_id}/deploy",
-        json={"params": {"repo": "acme/app", "label": "prod-down"}},
+        f"/marketplace/{tpl['template_id']}/deploy",
+        json={"params": params},
         headers={"X-API-Key": key},
     )
     assert r2.status_code == 201

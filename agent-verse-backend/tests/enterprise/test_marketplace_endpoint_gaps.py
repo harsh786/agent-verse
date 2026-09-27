@@ -303,5 +303,5 @@ def test_get_template_versions_marketplace_exception_returns_empty() -> None:
         _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
     )
     resp = client.get("/marketplace/tpl-1/versions", headers=_HDR)
-    # Either the exception propagates to a 500 or it's caught and returns []
-    assert resp.status_code in (200, 500)
+    # tpl-1 is not a template this tenant can see: 404 before any version lookup.
+    assert resp.status_code == 404

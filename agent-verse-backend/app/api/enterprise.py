@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, model_validator
@@ -66,11 +66,14 @@ def _marketplace_v2(request: Request) -> Any:
     v2 = getattr(request.app.state, "marketplace_v2", None)
     if v2 is not None:
         return v2
-    # Lazy import fallback: return an un-wired MarketplaceV2 for environments
-    # that haven't run the lifespan yet (e.g. some test setups).
+    # Apps built without the lifespan (some test setups): one instance per app,
+    # on the app's DB when it has one. A fresh instance per request forgot every
+    # publish between calls.
     from app.enterprise.marketplace_v2 import MarketplaceV2
 
-    return MarketplaceV2(db_factory=None)
+    v2 = MarketplaceV2(db_factory=getattr(request.app.state, "db_session_factory", None))
+    request.app.state.marketplace_v2 = v2
+    return v2
 
 
 def _self_optimizer(request: Request) -> Any:
@@ -320,7 +323,7 @@ class PublishTemplateRequest(BaseModel):
     connectors: list[str] = []
     autonomy_mode: str = "bounded-autonomous"
     agent_id: str | None = None  # Optional: publish from existing agent
-    visibility: str = "community"  # private | team | community (default: community)
+    visibility: Literal["private", "team", "community", "public"] = "community"
 
 
 class BundleDeployRequest(BaseModel):
@@ -344,7 +347,7 @@ class PublishTemplateV2Request(BaseModel):
     required_connectors: list[str] = []
     optional_connectors: list[str] = []
     author_name: str = ""
-    visibility: str = "private"
+    visibility: Literal["private", "team", "community", "public"] = "private"
     version: str = "1.0.0"
 
 
@@ -377,20 +380,56 @@ class SearchRequest(BaseModel):
 
 @marketplace_router.post("/publish", status_code=201)
 async def publish_template(request: Request, body: PublishTemplateRequest) -> dict[str, Any]:
-    """Publish an agent template to the community marketplace."""
+    """Publish an agent template to the marketplace.
+
+    Stored through the DB-backed marketplace (with security review). It used to
+    go into a per-process dict: gone on restart, invisible on other replicas,
+    and never security-reviewed.
+    """
     ctx = _require_tenant(request)
 
-    template_data = body.model_dump()
-
-    # If agent_id provided, enrich with agent config
+    connectors = list(body.connectors)
     if body.agent_id:
         store = getattr(request.app.state, "agent_store", None)
-        if store:
-            agent = store.get(body.agent_id, tenant_ctx=ctx)
-            if agent:
-                template_data.setdefault("connectors", agent.get("connector_ids", []))
+        if store is not None:
+            agent = await store.get_async(body.agent_id, tenant_ctx=ctx)
+            if not agent:
+                raise HTTPException(status_code=404, detail=f"Agent {body.agent_id} not found")
+            connectors = connectors or list(agent.get("connector_ids", []))
 
-    return _marketplace(request).publish(template=template_data, tenant_ctx=ctx)
+    record = await _publish_v2(
+        request,
+        ctx,
+        {
+            "name": body.name,
+            "domain": body.domain,
+            "description": body.description,
+            "required_connectors": connectors,
+            "template_config": {"autonomy_mode": body.autonomy_mode},
+            "visibility": body.visibility,
+        },
+    )
+    return {
+        **record,
+        "template_id": record["id"],
+        "connectors": connectors,
+        "autonomy_mode": body.autonomy_mode,
+        "author": ctx.tenant_id,
+        "published_by": ctx.tenant_id,
+        "is_community": body.visibility == "community",
+    }
+
+
+async def _publish_v2(request: Request, ctx: Any, data: dict[str, Any]) -> dict[str, Any]:
+    from app.enterprise.marketplace_v2 import TemplateSlugTakenError
+
+    try:
+        record: dict[str, Any] = await _marketplace_v2(request).publish_template(
+            data=data, tenant_ctx=ctx, run_security_review=True
+        )
+    except TemplateSlugTakenError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return record
 
 
 @marketplace_router.post("/bundles", status_code=201)
@@ -407,7 +446,19 @@ async def browse_marketplace(
     request: Request, q: str = "", domain: str = ""
 ) -> list[dict[str, Any]]:
     ctx = _require_tenant(request)
-    return _marketplace(request).browse(query=q, domain=domain, tenant_ctx=ctx)
+    # Backed by the DB marketplace (same visibility rules as /templates), so a
+    # template published on any replica shows up here.
+    result = await _marketplace_v2(request).list_templates(
+        search=q, domain=domain, tenant_id=ctx.tenant_id, page=1, page_size=100
+    )
+    return [
+        {
+            **t,
+            "template_id": t.get("id") or t.get("template_id"),
+            "is_community": t.get("visibility") == "community",
+        }
+        for t in result.get("templates", [])
+    ]
 
 
 # ── V2: paginated template list ───────────────────────────────────────────────
@@ -450,20 +501,15 @@ async def list_templates_v2(
 async def publish_template_v2(request: Request, body: PublishTemplateV2Request) -> dict[str, Any]:
     """Publish a template using the V2 DB-backed service (triggers security review)."""
     ctx = _require_tenant(request)
-    svc = _marketplace_v2(request)
-    return await svc.publish_template(
-        data=body.model_dump(),
-        tenant_ctx=ctx,
-        run_security_review=True,
-    )
+    return await _publish_v2(request, ctx, body.model_dump())
 
 
 @marketplace_router.get("/templates/{template_id}")
 async def get_template_v2(request: Request, template_id: str) -> dict[str, Any]:
-    """Get a template by ID from the V2 DB-backed service."""
-    _require_tenant(request)
+    """Get a template the caller may see (own, or shared and security-approved)."""
+    ctx = _require_tenant(request)
     svc = _marketplace_v2(request)
-    t = await svc.get_template(template_id=template_id)
+    t = await svc.get_template(template_id=template_id, tenant_id=ctx.tenant_id)
     if t is None:
         raise HTTPException(status_code=404, detail="Template not found")
     return t
@@ -516,6 +562,8 @@ async def add_review_v2(
     """Add a rating/review to a template. One review per tenant."""
     ctx = _require_tenant(request)
     svc = _marketplace_v2(request)
+    if await svc.get_template(template_id=template_id, tenant_id=ctx.tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Template not found")
     result = await svc.add_review(
         template_id=template_id,
         tenant_ctx=ctx,
@@ -539,6 +587,8 @@ async def list_reviews_v2(
     """List reviews for a template (verified installs first)."""
     ctx = _require_tenant(request)
     svc = _marketplace_v2(request)
+    if await svc.get_template(template_id=template_id, tenant_id=ctx.tenant_id) is None:
+        raise HTTPException(status_code=404, detail="Template not found")
     return await svc.list_reviews(
         template_id=template_id,
         page=page,
@@ -635,9 +685,11 @@ async def list_installs(request: Request) -> dict[str, Any]:
 
 @marketplace_router.get("/{template_id}/versions")
 async def get_template_versions(request: Request, template_id: str) -> list[dict[str, Any]]:
-    """Return version history for a template."""
-    _require_tenant(request)
-    t = _marketplace(request).get_template(template_id=template_id)
+    """Return version history for a template the caller may see."""
+    ctx = _require_tenant(request)
+    t = await _marketplace_v2(request).get_template(
+        template_id=template_id, tenant_id=ctx.tenant_id
+    )
     if t is None:
         raise HTTPException(status_code=404, detail="Template not found")
     # Try DB-backed version history first
@@ -660,20 +712,30 @@ async def get_template_versions(request: Request, template_id: str) -> list[dict
 async def publish_template_version(
     request: Request, template_id: str, body: dict[str, Any]
 ) -> dict[str, Any]:
-    """Publish a versioned snapshot of a template."""
-    _require_tenant(request)
+    """Publish a versioned snapshot of one of the caller's own templates.
+
+    Any tenant could previously snapshot any template id as a new "version".
+    """
+    ctx = _require_tenant(request)
+    t = await _marketplace_v2(request).get_template(
+        template_id=template_id, tenant_id=ctx.tenant_id
+    )
+    if t is None or t.get("tenant_id") != ctx.tenant_id:
+        raise HTTPException(status_code=404, detail="Template not found")
     db = _get_db(request)
     version = str(body.get("version", "1.0.0"))
     changelog = str(body.get("changelog", ""))
     return await _marketplace(request).publish_version(
-        template_id=template_id, version=version, changelog=changelog, db=db
+        template_id=template_id, version=version, changelog=changelog, db=db, template=t
     )
 
 
 @marketplace_router.get("/{template_id}")
 async def get_template(request: Request, template_id: str) -> dict[str, Any]:
-    _require_tenant(request)
-    t = _marketplace(request).get_template(template_id=template_id)
+    ctx = _require_tenant(request)
+    t = await _marketplace_v2(request).get_template(
+        template_id=template_id, tenant_id=ctx.tenant_id
+    )
     if t is None:
         raise HTTPException(status_code=404, detail="Template not found")
     return t
@@ -687,18 +749,30 @@ class DeployRequest(BaseModel):
 async def deploy_template(
     request: Request, template_id: str, body: DeployRequest
 ) -> dict[str, Any]:
+    """Legacy deploy route — same atomic, visibility-checked install as
+    ``POST /templates/{id}/deploy`` (it used to deploy from a separate
+    in-memory catalogue that did not include DB-published templates)."""
     ctx = _require_tenant(request)
-    try:
-        dep = await _marketplace(request).deploy(
-            template_id=template_id, params=body.params, tenant_ctx=ctx
-        )
-        return {
-            "deployment_id": dep.deployment_id,
-            "agent_id": dep.agent_id,
-            "template_id": template_id,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    result = await _marketplace_v2(request).install(
+        template_id=template_id,
+        params=body.params,
+        tenant_ctx=ctx,
+        agent_store=getattr(request.app.state, "agent_store", None),
+    )
+    if not result.get("success"):
+        if result.get("missing_connectors"):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "MISSING_CONNECTORS",
+                        "missing_connectors": result["missing_connectors"]},
+            )
+        status_code = 404 if result.get("error") == "Template not found" else 422
+        raise HTTPException(status_code=status_code, detail=result.get("error", "Deploy failed"))
+    return {
+        "deployment_id": result.get("install_id"),
+        "agent_id": result.get("agent_id"),
+        "template_id": template_id,
+    }
 
 
 # --- Intelligence / Self-optimization ---

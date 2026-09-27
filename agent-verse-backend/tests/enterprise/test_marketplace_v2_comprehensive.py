@@ -299,7 +299,7 @@ async def test_publish_and_get_template_by_id() -> None:
     result = await marketplace.publish_template(data=data, tenant_ctx=T_A, run_security_review=False)
     assert result["review_status"] == "unreviewed"
 
-    found = await marketplace.get_template(template_id="tpl-test-1")
+    found = await marketplace.get_template(template_id="tpl-test-1", tenant_id=T_A.tenant_id)
     assert found is not None
     assert found["name"] == "My Template"
 
@@ -317,7 +317,7 @@ async def test_get_template_by_slug() -> None:
         "required_connectors": [],
     }
     await marketplace.publish_template(data=data, tenant_ctx=T_A, run_security_review=False)
-    found = await marketplace.get_template(slug="slug-test-template")
+    found = await marketplace.get_template(slug="slug-test-template", tenant_id=T_A.tenant_id)
     assert found is not None
     assert found["slug"] == "slug-test-template"
 
@@ -352,7 +352,7 @@ async def test_list_templates_filter_by_domain() -> None:
                 "visibility": "public",  # must be public to appear in unpersonalised listing
             },
             tenant_ctx=T_A,
-            run_security_review=False,
+            run_security_review=True,
         )
     result = await marketplace.list_templates(domain="sales")
     sales_templates = [t for t in result["templates"] if t.get("id", "").startswith("tpl-domain-")]
@@ -378,7 +378,7 @@ async def test_list_templates_filter_by_search() -> None:
             "visibility": "public",
         },
         tenant_ctx=T_A,
-        run_security_review=False,
+        run_security_review=True,
     )
     await marketplace.publish_template(
         data={
@@ -393,7 +393,7 @@ async def test_list_templates_filter_by_search() -> None:
             "visibility": "public",
         },
         tenant_ctx=T_A,
-        run_security_review=False,
+        run_security_review=True,
     )
     result = await marketplace.list_templates(search="invoice")
     assert result["total"] == 1
@@ -418,7 +418,7 @@ async def test_list_templates_pagination() -> None:
                 "visibility": "public",
             },
             tenant_ctx=T_A,
-            run_security_review=False,
+            run_security_review=True,
         )
     page1 = await marketplace.list_templates(page=1, page_size=2)
     page2 = await marketplace.list_templates(page=2, page_size=2)
@@ -452,7 +452,7 @@ async def test_install_template_in_memory_success() -> None:
             "parameters_schema": {},
         },
         tenant_ctx=T_A,
-        run_security_review=False,
+        run_security_review=True,
     )
     result = await marketplace.install(
         template_id="tpl-install-test",
@@ -492,7 +492,7 @@ async def test_install_increments_install_count() -> None:
             "required_connectors": [],
         },
         tenant_ctx=T_A,
-        run_security_review=False,
+        run_security_review=True,
     )
     await marketplace.install(template_id="tpl-count", params={}, tenant_ctx=T_B)
     await marketplace.install(template_id="tpl-count", params={}, tenant_ctx=T_A)

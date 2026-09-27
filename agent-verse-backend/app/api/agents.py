@@ -7,9 +7,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, model_validator
 
+from app.api._deps import require_owned_agent
 from app.intelligence.meta_agent import MetaAgentPlanner
 from app.tenancy.context import TenantContext
 
@@ -1238,7 +1239,9 @@ class IssueCredentialRequest(BaseModel):
 
 
 @router.get("/{agent_id}/credentials")
-async def list_agent_credentials(agent_id: str, request: Request) -> list[dict[str, Any]]:
+async def list_agent_credentials(
+    agent_id: str, request: Request, _owned: dict[str, Any] = Depends(require_owned_agent)
+) -> list[dict[str, Any]]:
     """List service-account credentials for an agent (public keys only — private keys never returned)."""  # noqa: E501
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "agent_identity_service", None)
@@ -1252,7 +1255,10 @@ async def list_agent_credentials(agent_id: str, request: Request) -> list[dict[s
 
 @router.post("/{agent_id}/credentials", status_code=status.HTTP_201_CREATED)
 async def issue_agent_credential(
-    agent_id: str, request: Request, body: IssueCredentialRequest
+    agent_id: str,
+    request: Request,
+    body: IssueCredentialRequest,
+    _owned: dict[str, Any] = Depends(require_owned_agent),
 ) -> dict[str, Any]:
     """Issue a new RS256 service-account credential for an agent.
 
@@ -1298,7 +1304,12 @@ async def issue_agent_credential(
 
 
 @router.delete("/{agent_id}/credentials/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def revoke_agent_credential(agent_id: str, key_id: str, request: Request) -> None:
+async def revoke_agent_credential(
+    agent_id: str,
+    key_id: str,
+    request: Request,
+    _owned: dict[str, Any] = Depends(require_owned_agent),
+) -> None:
     """Immediately revoke a service-account credential by key_id."""
     tenant = _require_tenant(request)
     svc = getattr(request.app.state, "agent_identity_service", None)
@@ -1310,7 +1321,9 @@ async def revoke_agent_credential(agent_id: str, key_id: str, request: Request) 
 
 
 @router.post("/{agent_id}/token")
-async def exchange_agent_token(agent_id: str, request: Request) -> dict[str, Any]:
+async def exchange_agent_token(
+    agent_id: str, request: Request, _owned: dict[str, Any] = Depends(require_owned_agent)
+) -> dict[str, Any]:
     """Exchange a service-account key for a short-lived RS256 JWT (15 minutes).
 
     Provide the key_id in the X-Agent-Key-Id header, query param, or request body.

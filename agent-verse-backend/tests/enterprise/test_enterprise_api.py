@@ -382,8 +382,9 @@ def test_api_marketplace_publish() -> None:
     }, headers=_HDR)
     assert resp.status_code == 201
     data = resp.json()
-    assert data["template_id"].startswith("tpl-custom-")
+    assert data["template_id"] == data["id"]
     assert data["published_by"] == _CTX.tenant_id
+    assert data["review_status"] in ("approved", "pending")  # security-reviewed now
 
 
 def test_api_marketplace_publish_appears_in_browse() -> None:

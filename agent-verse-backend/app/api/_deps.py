@@ -241,3 +241,30 @@ def get_budget_config(request: Request) -> Any:
 
 def get_cache_stats(request: Request) -> Any:
     return getattr(request.app.state, "_cache_stats", None)
+
+
+# ---------------------------------------------------------------------------
+# Ownership guards
+# ---------------------------------------------------------------------------
+
+
+async def require_owned_agent(request: Request, agent_id: str) -> dict[str, Any]:
+    """Dependency: the path's ``agent_id`` must be one of the caller's agents.
+
+    Credential, key, token and manifest routes used to act on any ``agent_id``:
+    another tenant could mint service-account credentials and API keys for an
+    agent it does not own, and have the platform sign a capability manifest for
+    it. A foreign or unknown agent now answers 404, like an absent one.
+    """
+    from fastapi import HTTPException
+
+    tenant_ctx = getattr(request.state, "tenant", None)
+    if tenant_ctx is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+    store = getattr(request.app.state, "agent_store", None)
+    agent = None
+    if store is not None:
+        agent = await store.get_async(agent_id, tenant_ctx=tenant_ctx)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
+    return dict(agent)

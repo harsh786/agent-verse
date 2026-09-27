@@ -1269,6 +1269,35 @@ def _normalize_domain_filter(domain: str) -> str:
     return _DOMAIN_ALIASES.get(normalized, normalized)
 
 
+# A template is visible to its owner in any state, and to everyone else only
+# when shared (public/community) AND it passed security review.
+from app.observability.logging import get_logger  # noqa: E402
+
+logger = get_logger(__name__)
+
+_VISIBLE_SQL = (
+    "((visibility IN ('public','community') AND review_status = 'approved') "
+    "OR tenant_id = :vis_tid)"
+)
+
+
+def _visible_to(template: dict[str, Any], tenant_id: str | None) -> bool:
+    if tenant_id and template.get("tenant_id") == tenant_id:
+        return True
+    return (
+        template.get("visibility") in ("public", "community")
+        and template.get("review_status") == "approved"
+    )
+
+
+class TemplateSlugTakenError(Exception):
+    """The slug belongs to another tenant's template."""
+
+    def __init__(self, slug: str) -> None:
+        super().__init__(f"Template slug {slug!r} is already taken")
+        self.slug = slug
+
+
 class MarketplaceV2:
     """DB-backed marketplace with atomic install, security review, and search.
 
@@ -1377,60 +1406,57 @@ class MarketplaceV2:
     # ------------------------------------------------------------------
 
     async def get_template(
-        self, *, template_id: str | None = None, slug: str | None = None
+        self,
+        *,
+        template_id: str | None = None,
+        slug: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """Fetch a single template by id or slug. Returns None if not found.
+        """Fetch a template the caller may see, by id or slug; None otherwise.
 
-        Lookup order:
-        1. DB (when available) — returns immediately if found.
-        2. In-memory cache (YAML-loaded agents + hard-coded built-ins) — used
-           when DB is unavailable OR when the template hasn't been seeded yet.
-           This prevents "Template not found" 422s for YAML-defined agents that
-           exist in the cache but haven't been persisted to DB yet.
+        Visible means: the caller's own template (any visibility or review
+        state), or a public/community template that PASSED security review.
+        This used to return any template to anyone — including other tenants'
+        private ones, and public ones still pending or failing review — and
+        ``install`` used it, so a foreign private template could be deployed.
+
+        Lookup order: DB first; then the in-memory cache, which holds only the
+        built-in catalogue (YAML agents + hard-coded templates) so a built-in
+        that has not been seeded into the DB yet is still deployable.
         """
+        if not template_id and not slug:
+            return None
         if self._db is not None:
+            key_sql = "id = :key" if template_id else "slug = :key"
             try:
                 async with self._db() as session:
-                    if template_id:
-                        row = (
-                            await session.execute(
-                                _t("SELECT * FROM marketplace_templates WHERE id = :id"),
-                                {"id": template_id},
-                            )
-                        ).fetchone()
-                    elif slug:
-                        row = (
-                            await session.execute(
-                                _t("SELECT * FROM marketplace_templates WHERE slug = :slug"),
-                                {"slug": slug},
-                            )
-                        ).fetchone()
-                    else:
-                        return None
-                    # ── KEY FIX ──────────────────────────────────────────────
-                    # If found in DB return immediately; if NOT found, fall
-                    # through to the in-memory cache below instead of returning
-                    # None, so YAML-loaded agents that haven't been DB-seeded
-                    # yet are still deployable.
-                    if row is not None:
-                        return dict(row._mapping)
-                    # Not in DB → fall through to in-memory cache
-            except Exception:
-                pass
+                    await session.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                        {"tid": tenant_id or ""},
+                    )
+                    row = (
+                        await session.execute(
+                            _t(
+                                f"SELECT * FROM marketplace_templates WHERE {key_sql} "
+                                f"AND {_VISIBLE_SQL}"
+                            ),
+                            {"key": template_id or slug, "vis_tid": tenant_id or ""},
+                        )
+                    ).fetchone()
+                if row is not None:
+                    return dict(row._mapping)
+            except Exception as exc:
+                # Degraded read: only the built-in catalogue below can answer —
+                # in DB mode the cache never holds tenant-published templates.
+                logger.warning("marketplace_get_template_db_failed", error=str(exc))
 
-        # In-memory fallback — ensure full YAML cache is populated.
-        # Use _builtin_cache_populated flag instead of `if not self._cache`
-        # because seed_builtins() may have added only the hard-coded templates,
-        # leaving the cache non-empty but missing YAML-loaded agents.
         if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
         if template_id:
-            return self._cache.get(template_id)
-        if slug:
-            for t in self._cache.values():
-                if t.get("slug") == slug:
-                    return t
-        return None
+            found = self._cache.get(template_id)
+        else:
+            found = next((t for t in self._cache.values() if t.get("slug") == slug), None)
+        return found if found is not None and _visible_to(found, tenant_id) else None
 
     async def list_templates(
         self,
@@ -1452,8 +1478,8 @@ class MarketplaceV2:
                         await session.execute(
                             _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
                         )
-                    clauses = ["(visibility IN ('public','community') OR tenant_id = :tid)"]
-                    params: dict[str, Any] = {"tid": tenant_id or ""}
+                    clauses = [_VISIBLE_SQL]
+                    params: dict[str, Any] = {"tid": tenant_id or "", "vis_tid": tenant_id or ""}
                     if domain:
                         clauses.append("domain = :domain")
                         params["domain"] = domain
@@ -1498,11 +1524,7 @@ class MarketplaceV2:
         # public/community templates are visible to all; private templates only to their owner.
         if not self._builtin_cache_populated:
             self._ensure_builtin_cache()
-        templates = [
-            t
-            for t in self._cache.values()
-            if t.get("visibility") in ("public", "community") or t.get("tenant_id") == tenant_id
-        ]
+        templates = [t for t in self._cache.values() if _visible_to(t, tenant_id)]
         if domain:
             templates = [t for t in templates if t.get("domain") == domain]
         if category:
@@ -1566,13 +1588,31 @@ class MarketplaceV2:
             "version": data.get("version", "1.0.0"),
         }
 
-        if self._db is not None:
-            try:
-                async with self._db() as session:
-                    await session.execute(
-                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
-                        {"tid": tenant_ctx.tenant_id},
-                    )
+        if self._db is None:
+            # No database (dev/tests): the process cache is the store. Slugs are
+            # still owned — another tenant cannot take over an existing one.
+            existing = next(
+                (t for t in self._cache.values() if t.get("slug") == slug), None
+            )
+            if existing is not None:
+                if existing.get("tenant_id") != tenant_ctx.tenant_id:
+                    raise TemplateSlugTakenError(slug)
+                record["id"] = existing["id"]
+            self._cache[record["id"]] = record
+            return record
+
+        # Upsert by slug, but only ever UPDATE the caller's own row. It used to
+        # be a bare ``ON CONFLICT (slug) DO UPDATE`` — any tenant publishing a
+        # slug another tenant owned overwrote that tenant's template (config,
+        # prompt, connectors) — and every DB error was swallowed, the record was
+        # put in this replica's memory and returned as if saved.
+        try:
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    _t("SELECT set_config('app.tenant_id', :tid, true)"),
+                    {"tid": tenant_ctx.tenant_id},
+                )
+                saved = (
                     await session.execute(
                         _t("""
                             INSERT INTO marketplace_templates
@@ -1596,24 +1636,30 @@ class MarketplaceV2:
                                 template_config=EXCLUDED.template_config,
                                 parameters_schema=EXCLUDED.parameters_schema,
                                 required_connectors=EXCLUDED.required_connectors,
+                                optional_connectors=EXCLUDED.optional_connectors,
+                                visibility=EXCLUDED.visibility,
                                 review_status=EXCLUDED.review_status,
                                 version=EXCLUDED.version,
                                 updated_at=NOW()
+                            WHERE marketplace_templates.tenant_id = EXCLUDED.tenant_id
+                            RETURNING id
                         """),
                         {
                             **record,
-                            "tags": record["tags"],
                             "template_config": json.dumps(record["template_config"]),
                             "parameters_schema": json.dumps(record["parameters_schema"]),
-                            "required_connectors": record["required_connectors"],
-                            "optional_connectors": record["optional_connectors"],
                         },
                     )
-                    await session.commit()
-            except Exception:
-                pass
-
-        self._cache[template_id] = record
+                ).first()
+        except Exception as exc:
+            # Under RLS the foreign row is not updatable and Postgres refuses the
+            # upsert outright instead of skipping it.
+            if "row-level security" in str(exc):
+                raise TemplateSlugTakenError(slug) from exc
+            raise
+        if saved is None:
+            raise TemplateSlugTakenError(slug)
+        record["id"] = saved[0]
         return record
 
     # ------------------------------------------------------------------
@@ -1635,7 +1681,7 @@ class MarketplaceV2:
           OR
           {"success": False, "error": "...", "missing_connectors": [...]}
         """
-        template = await self.get_template(template_id=template_id)
+        template = await self.get_template(template_id=template_id, tenant_id=tenant_ctx.tenant_id)
         if template is None:
             return {"success": False, "error": "Template not found", "template_id": template_id}
 
