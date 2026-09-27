@@ -576,18 +576,10 @@ class VerifierMixin:
                             if "STORE_REFLEXION_LESSON" in _action_type:
                                 pass  # handled by reflexion_wirer in failure branch
                             elif "UPDATE_PROMPT_VARIANT" in _action_type:
-                                _po = (
-                                    getattr(self._app_state, "prompt_optimizer", None)
-                                    if self._app_state
-                                    else None
-                                )
-                                if _po is not None and hasattr(_po, "record_result"):
-                                    _variant_id = agent_state.context.get("planner_variant_id")
-                                    if _variant_id:
-                                        _po.record_result(
-                                            variant_id=_variant_id,
-                                            eval_score=_scorecard_result.overall_score,
-                                        )
+                                # The variant's outcome is recorded exactly once, by
+                                # the A/B feedback block after scoring. Recording it
+                                # here as well counted every run twice.
+                                pass
                             elif (
                                 "SWITCH_MODEL" in _action_type
                                 or "UPDATE_MODEL_ROUTING" in _action_type
@@ -851,16 +843,33 @@ class VerifierMixin:
             _avg_score = scorecard.average_score()
             _won = _avg_score >= 0.7
             if self._prompt_optimizer is not None and _planner_variant_id:
+                _cost = agent_state.context.get("total_cost_usd")
+                _latency = agent_state.context.get("_latency_ms")
                 try:
-                    self._prompt_optimizer.record_result(
-                        variant_id=_planner_variant_id,
-                        eval_score=_avg_score,
-                    )
-                    _po_task = asyncio.create_task(
-                        self._prompt_optimizer.persist_outcome(
-                            _planner_variant_id, won=_won, db=self._db_session_factory
+                    if getattr(self._prompt_optimizer, "db_mode", False) is True:
+                        # One atomic UPDATE of the variant's aggregates, then a
+                        # promotion decision gated on quality AND cost/latency.
+                        _po_task = asyncio.create_task(
+                            self._prompt_optimizer.arecord_result(
+                                _planner_variant_id,
+                                tenant_id=tenant_ctx.tenant_id,
+                                eval_score=_avg_score,
+                                cost_usd=float(_cost) if _cost is not None else None,
+                                latency_ms=float(_latency) if _latency is not None else None,
+                            )
                         )
-                    )
+                    else:
+                        self._prompt_optimizer.record_result(
+                            variant_id=_planner_variant_id,
+                            eval_score=_avg_score,
+                            cost_usd=float(_cost) if _cost is not None else None,
+                            latency_ms=float(_latency) if _latency is not None else None,
+                        )
+                        _po_task = asyncio.create_task(
+                            self._prompt_optimizer.persist_outcome(
+                                _planner_variant_id, won=_won, db=self._db_session_factory
+                            )
+                        )
                     self._background_tasks.add(_po_task)
                     _po_task.add_done_callback(self._background_tasks.discard)
                 except Exception:

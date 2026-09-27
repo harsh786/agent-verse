@@ -1085,75 +1085,84 @@ async def get_benchmarks(
 
 
 class CreateEvalSuiteRequest(BaseModel):
-    suite_id: str | None = None
-    name: str = ""
-    description: str = ""
+    # Caller-chosen ids are stored in a VARCHAR(32) key; restrict to a safe slug.
+    suite_id: str | None = Field(default=None, min_length=1, max_length=32,
+                                 pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(default="", max_length=200)
+    description: str = Field(default="", max_length=2000)
 
 
 class AddGoldenTaskRequest(BaseModel):
-    goal: str
+    goal: str = Field(min_length=1, max_length=10_000)
     expected_tools: list[str] = []
     forbidden_tools: list[str] = []
     expected_output_contains: list[str] = []
-    max_iterations: int = 15
+    max_iterations: int = Field(default=15, ge=1, le=100)
     tags: list[str] = []
+
+
+def _eval_store(request: Request) -> Any:
+    """The caller's eval-suite store (Postgres under RLS; tenant-keyed dicts without a DB)."""
+    from app.intelligence.eval_suite_store import EvalSuiteStore
+
+    ctx = _require_tenant(request)
+    return EvalSuiteStore(getattr(request.app.state, "db_session_factory", None), ctx.tenant_id)
+
+
+def _eval_runner(request: Request) -> Any:
+    runner = getattr(request.app.state, "eval_suite_runner", None)
+    if runner is None:
+        raise HTTPException(503, "Eval suite runner not configured")
+    return runner
 
 
 @intelligence_router.post("/eval-suites", status_code=201)
 async def create_eval_suite(request: Request, body: CreateEvalSuiteRequest) -> dict[str, Any]:
     """Create a new eval suite for golden task testing."""
-    _require_tenant(request)
     import uuid as _uuid
 
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        raise HTTPException(503, "Eval suite runner not configured")
+    _eval_runner(request)
     suite_id = body.suite_id or _uuid.uuid4().hex
-    runner.create_suite(suite_id, name=body.name or suite_id, description=body.description)
-    return {
-        "suite_id": suite_id,
-        "name": body.name or suite_id,
-        "description": body.description,
-        "task_count": 0,
-        "created_at": (
-            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-        ),
-    }
+    created = await _eval_store(request).create(
+        suite_id, name=body.name or suite_id, description=body.description
+    )
+    if created is None:
+        raise HTTPException(409, f"Eval suite {suite_id} already exists")
+    return created
 
 
 @intelligence_router.get("/eval-suites")
 async def list_eval_suites(request: Request) -> list[dict[str, Any]]:
-    """List all eval suites with metadata."""
-    _require_tenant(request)
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        return []
-    return runner.list_suites_with_metadata()
+    """List the caller's eval suites with metadata."""
+    result: list[dict[str, Any]] = await _eval_store(request).list()
+    return result
 
 
 @intelligence_router.get("/eval-suites/{suite_id}")
 async def get_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
-    """Get a single eval suite by ID."""
-    _require_tenant(request)
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        raise HTTPException(503, "Eval suite runner not configured")
-    suites = runner.list_suites()
-    if suite_id not in suites:
+    """Get one of the caller's eval suites, including its golden tasks."""
+    suite: dict[str, Any] | None = await _eval_store(request).get(suite_id)
+    if suite is None:
         raise HTTPException(404, f"Eval suite {suite_id} not found")
-    return {"suite_id": suite_id, "task_count": len(runner._suites.get(suite_id, []))}
+    return suite
+
+
+@intelligence_router.delete("/eval-suites/{suite_id}", status_code=204)
+async def delete_eval_suite(request: Request, suite_id: str) -> Response:
+    """Delete one of the caller's eval suites and its run history."""
+    if not await _eval_store(request).delete(suite_id):
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    return Response(status_code=204)
 
 
 @intelligence_router.post("/eval-suites/{suite_id}/tasks", status_code=201)
 async def add_golden_task(
     request: Request, suite_id: str, body: AddGoldenTaskRequest
 ) -> dict[str, Any]:
-    """Add a golden task to an eval suite."""
-    _require_tenant(request)
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        raise HTTPException(503, "Eval suite runner not configured")
+    """Add a golden task to one of the caller's eval suites."""
+    _eval_runner(request)
     from app.intelligence.eval_suite import GoldenTask
+    from app.intelligence.eval_suite_store import task_to_dict
 
     task = GoldenTask(
         suite_id=suite_id,
@@ -1164,58 +1173,82 @@ async def add_golden_task(
         max_iterations=body.max_iterations,
         tags=body.tags,
     )
-    runner.add_task(suite_id, task)
+    if not await _eval_store(request).add_task(suite_id, task_to_dict(task)):
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
     return {"task_id": task.task_id, "suite_id": suite_id, "goal": body.goal}
 
 
-@intelligence_router.post("/eval-suites/{suite_id}/run")
-async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
-    """Run an eval suite against the live agent."""
-    ctx = _require_tenant(request)
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        raise HTTPException(503, "Eval suite runner not configured")
-    from app.api._deps import get_goal_service as _ggs
+async def _execute_eval_run(
+    store: Any, runner: Any, goal_service: Any, ctx: Any, suite_id: str, run_id: str,
+    tasks: list[Any],
+) -> None:
+    """Background body of a suite run: execute, then record the outcome durably.
 
-    goal_service = _ggs(request)
-    result = await runner.run_suite(suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx)
-    return {
-        "run_id": result.run_id,
-        "suite_id": suite_id,
-        "total": result.total_tasks,
-        "passed": result.passed_tasks,
-        "failed": result.failed_tasks,
-        "pass_rate": result.pass_rate,
-        "run_at": result.run_at,
-        "task_results": [
-            {
-                "task_id": r.task_id,
-                "passed": r.passed,
-                "failure_reasons": r.failure_reasons,
-                "duration_seconds": round(r.duration_seconds, 2),
-            }
-            for r in result.task_results
-        ],
-    }
+    If this replica dies mid-run the row stays ``running`` and reads report it
+    ``abandoned`` after ``STALE_RUN_AFTER`` — it never claims a result it lacks.
+    """
+    from app.observability.logging import get_logger
+
+    log = get_logger(__name__)
+    try:
+        result = await runner.run_suite(
+            suite_id=suite_id, goal_service=goal_service, tenant_ctx=ctx,
+            tasks=tasks, run_id=run_id,
+        )
+        await store.finish_run(suite_id, run_id, result=result)
+    except Exception as exc:
+        log.warning("eval_suite_run_failed", suite_id=suite_id, run_id=run_id, error=str(exc))
+        try:
+            await store.finish_run(suite_id, run_id, result=None, error=str(exc)[:2000])
+        except Exception as store_exc:
+            log.error("eval_suite_run_status_lost", run_id=run_id, error=str(store_exc))
+
+
+@intelligence_router.post("/eval-suites/{suite_id}/run", status_code=202)
+async def run_eval_suite(request: Request, suite_id: str) -> dict[str, Any]:
+    """Start a run of one of the caller's eval suites against the live agent.
+
+    Returns 202 immediately with a ``run_id``; poll ``GET .../results`` for the
+    outcome. Every golden task is a real goal that may take up to a minute, so
+    the run no longer executes inside the request (which held the connection
+    for the whole suite and was cut off by any proxy timeout).
+    """
+    import uuid as _uuid
+
+    from app.intelligence.eval_suite_store import task_from_dict
+
+    ctx = _require_tenant(request)
+    runner = _eval_runner(request)
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        raise HTTPException(503, "Goal service not configured")
+    store = _eval_store(request)
+    suite = await store.get(suite_id)
+    if suite is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    tasks = [task_from_dict(suite_id, t) for t in suite["tasks"]]
+    run_id = _uuid.uuid4().hex
+    await store.start_run(suite_id, run_id, len(tasks))
+
+    running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
+        "_eval_run_tasks", set()
+    )
+    task = asyncio.create_task(
+        _execute_eval_run(store, runner, goal_service, ctx, suite_id, run_id, tasks)
+    )
+    running.add(task)  # keep a strong reference until it finishes
+    task.add_done_callback(running.discard)
+    return {"run_id": run_id, "suite_id": suite_id, "status": "running", "total": len(tasks)}
 
 
 @intelligence_router.get("/eval-suites/{suite_id}/results")
 async def get_suite_results(request: Request, suite_id: str) -> list[dict[str, Any]]:
-    """Get historical results for an eval suite."""
-    _require_tenant(request)
-    runner = getattr(request.app.state, "eval_suite_runner", None)
-    if runner is None:
-        return []
-    return [
-        {
-            "run_id": r.run_id,
-            "pass_rate": r.pass_rate,
-            "passed": r.passed_tasks,
-            "failed": r.failed_tasks,
-            "run_at": r.run_at,
-        }
-        for r in runner.get_results(suite_id)
-    ]
+    """Newest-first run history of one of the caller's eval suites."""
+    store = _eval_store(request)
+    if await store.get(suite_id) is None:
+        raise HTTPException(404, f"Eval suite {suite_id} not found")
+    runs: list[dict[str, Any]] = await store.list_runs(suite_id)
+    return runs
 
 
 @intelligence_router.get("/eval/dimensions")
@@ -1245,34 +1278,49 @@ class CreateVariantRequest(BaseModel):
     prompt_text: str = Field(..., min_length=1)
 
 
+def _variant_json(opt: Any, v: Any) -> dict[str, Any]:
+    from app.intelligence.prompt_optimizer import VariantStats
+
+    stats = VariantStats.of(v)
+    return {
+        "id": v.variant_id,
+        "key": v.prompt_key,
+        "name": v.name,
+        "prompt_text": v.prompt_text,
+        "is_control": v.is_control,
+        "run_count": v.run_count,
+        "mean_score": round(stats.mean, 4) if v.run_count else None,
+        # Per-run samples are only kept in memory; the DB keeps aggregates.
+        "p95_score": opt._percentile(v.eval_scores, 95) if v.eval_scores else None,
+        "mean_cost_usd": round(stats.mean_cost_usd, 6) if stats.cost_samples else None,
+        "p95_latency_ms": stats.p95_latency_ms if sum(v.latency_hist) else None,
+        "promoted_at": v.promoted_at.isoformat() if v.promoted_at else None,
+    }
+
+
+def _db_mode(opt: Any) -> bool:
+    return getattr(opt, "db_mode", False) is True
+
+
+def _own_variant(opt: Any, tenant_id: str, variant_id: str) -> Any:
+    """In-memory lookup restricted to the caller's own scope."""
+    return opt._variants.get(tenant_id, {}).get(variant_id)
+
+
 @intelligence_router.get("/prompt-variants")
 async def list_prompt_variants(request: Request, key: str = "") -> list[dict[str, Any]]:
-    """List prompt variants for the tenant, optionally filtered by key."""
+    """List the tenant's prompt variants (the shared "global" ones when it has none)."""
     ctx = _require_tenant(request)
-    import statistics as _stats
-
     opt = _prompt_optimizer_svc(request)
-    tenant_id = ctx.tenant_id
-    # prefer tenant-scoped variants, fall back to "global"
-    variants = list(opt._variants.get(tenant_id, {}).values())
-    if not variants:
-        variants = list(opt._variants.get("global", {}).values())
-    if key:
-        variants = [v for v in variants if v.prompt_key == key]
-    return [
-        {
-            "id": v.variant_id,
-            "key": v.prompt_key,
-            "name": v.name,
-            "prompt_text": v.prompt_text,
-            "is_control": v.is_control,
-            "run_count": v.run_count,
-            "mean_score": (round(_stats.mean(v.eval_scores), 4) if v.eval_scores else None),
-            "p95_score": opt._percentile(v.eval_scores, 95) if v.eval_scores else None,
-            "promoted_at": v.promoted_at.isoformat() if v.promoted_at else None,
-        }
-        for v in variants
-    ]
+    if _db_mode(opt):
+        variants = await opt.alist(ctx.tenant_id, key)
+    else:
+        variants = list(opt._variants.get(ctx.tenant_id, {}).values())
+        if not variants:
+            variants = list(opt._variants.get("global", {}).values())
+        if key:
+            variants = [v for v in variants if v.prompt_key == key]
+    return [_variant_json(opt, v) for v in variants]
 
 
 @intelligence_router.post("/prompt-variants", status_code=201)
@@ -1280,120 +1328,90 @@ async def create_prompt_variant(request: Request, body: CreateVariantRequest) ->
     """Register a new challenger prompt variant for A/B testing."""
     ctx = _require_tenant(request)
     opt = _prompt_optimizer_svc(request)
-    variant = opt.register_variant(
-        body.key,
-        body.name,
-        body.prompt_text,
-        tenant_id=ctx.tenant_id,
-        is_control=False,
-    )
-    return {
-        "id": variant.variant_id,
-        "key": variant.prompt_key,
-        "name": variant.name,
-        "prompt_text": variant.prompt_text,
-        "is_control": False,
-        "run_count": 0,
-        "mean_score": None,
-        "p95_score": None,
-        "promoted_at": None,
-    }
+    if _db_mode(opt):
+        variant = await opt.aregister(
+            body.key, body.name, body.prompt_text, tenant_id=ctx.tenant_id, is_control=False
+        )
+        if variant is None:
+            raise HTTPException(409, f"A variant named {body.name!r} already exists for this key")
+    else:
+        variant = opt.register_variant(
+            body.key, body.name, body.prompt_text, tenant_id=ctx.tenant_id, is_control=False
+        )
+    return _variant_json(opt, variant)
 
 
 @intelligence_router.post("/prompt-variants/{variant_id}/promote")
 async def promote_prompt_variant(request: Request, variant_id: str) -> dict[str, Any]:
-    """Manually promote a challenger variant to control."""
+    """Manually promote one of the caller's own variants to control.
+
+    Used to search every tenant's variants and promote whatever matched — one
+    tenant could flip another tenant's live planner prompt — and to demote the
+    caller's control while promoting a foreign row. Only the caller's own
+    variants are eligible now; shared "global" variants are read-only.
+    """
     ctx = _require_tenant(request)
     from datetime import UTC
     from datetime import datetime as _dt
 
     opt = _prompt_optimizer_svc(request)
     tenant_id = ctx.tenant_id
-
-    # Find the variant across all tenant scopes (variant_ids are globally unique UUIDs)
-    target_variant = None
-    for tv in opt._variants.values():
-        if variant_id in tv:
-            target_variant = tv[variant_id]
-            break
-    if target_variant is None:
-        raise HTTPException(status_code=404, detail="Variant not found")
-
-    # Demote existing control variants for the same key + tenant
-    key_variants = [
-        v
-        for v in opt._variants.get(tenant_id, {}).values()
-        if v.prompt_key == target_variant.prompt_key
-    ]
-    for v in key_variants:
-        if v.is_control and v.variant_id != variant_id:
-            v.is_control = False
-            v.is_active = False
-
-    # Promote the target
-    target_variant.is_control = True
-    target_variant.is_active = True
-    target_variant.promoted_at = _dt.now(UTC)
-    opt._active.setdefault(tenant_id, {})[target_variant.prompt_key] = variant_id
-
+    if _db_mode(opt):
+        promoted = await opt.apromote(variant_id, tenant_id)
+        if promoted is None:
+            raise HTTPException(status_code=404, detail="Variant not found")
+        target = promoted
+    else:
+        target = _own_variant(opt, tenant_id, variant_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Variant not found")
+        for v in opt._variants[tenant_id].values():
+            if v.prompt_key == target.prompt_key and v.is_control and v.variant_id != variant_id:
+                v.is_control = False
+                v.is_active = False
+        target.is_control = True
+        target.is_active = True
+        target.promoted_at = _dt.now(UTC)
+        opt._active.setdefault(tenant_id, {})[target.prompt_key] = variant_id
     return {
         "id": variant_id,
-        "key": target_variant.prompt_key,
+        "key": target.prompt_key,
         "promoted": True,
-        "promoted_at": target_variant.promoted_at.isoformat(),
+        "promoted_at": target.promoted_at.isoformat() if target.promoted_at else None,
     }
 
 
 @intelligence_router.delete("/prompt-variants/{variant_id}", status_code=204)
 async def delete_prompt_variant(request: Request, variant_id: str) -> Response:
-    """Delete a prompt variant. Returns 204 No Content."""
+    """Delete one of the caller's own variants (shared "global" ones are read-only)."""
     ctx = _require_tenant(request)
     opt = _prompt_optimizer_svc(request)
-    tenant_id = ctx.tenant_id
-    tenant_variants = opt._variants.get(tenant_id, {})
-    if variant_id not in tenant_variants:
-        # also check global scope
-        global_variants = opt._variants.get("global", {})
-        if variant_id not in global_variants:
-            raise HTTPException(status_code=404, detail="Variant not found")
-        del global_variants[variant_id]
+    if _db_mode(opt):
+        deleted = await opt.adelete(variant_id, ctx.tenant_id)
     else:
-        del tenant_variants[variant_id]
+        deleted = opt._variants.get(ctx.tenant_id, {}).pop(variant_id, None) is not None
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Variant not found")
     return Response(status_code=204)
 
 
 @intelligence_router.get("/prompt-variants/{variant_id}/report")
 async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any]:
-    """Get score report for a specific prompt variant."""
-    _require_tenant(request)
-    import statistics as _stats
-
+    """Score, cost and latency report for a variant the caller can see."""
+    ctx = _require_tenant(request)
     opt = _prompt_optimizer_svc(request)
-
-    target_variant = None
-    for tv in opt._variants.values():
-        if variant_id in tv:
-            target_variant = tv[variant_id]
-            break
-    if target_variant is None:
+    if _db_mode(opt):
+        found = await opt.aget(variant_id, ctx.tenant_id)
+        target = found[1] if found is not None else None
+    else:
+        target = _own_variant(opt, ctx.tenant_id, variant_id) or _own_variant(
+            opt, "global", variant_id
+        )
+    if target is None:
         raise HTTPException(status_code=404, detail="Variant not found")
-
-    return {
-        "id": variant_id,
-        "key": target_variant.prompt_key,
-        "name": target_variant.name,
-        "mean_score": (
-            round(_stats.mean(target_variant.eval_scores), 4)
-            if target_variant.eval_scores
-            else None
-        ),
-        "p95_score": (
-            opt._percentile(target_variant.eval_scores, 95) if target_variant.eval_scores else None
-        ),
-        "run_count": target_variant.run_count,
-        "win_rate": None,
-        "statistical_significance": None,
-    }
+    body = _variant_json(opt, target)
+    body.pop("prompt_text", None)
+    return {**body, "win_rate": None, "statistical_significance": None}
 
 
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────

@@ -1063,7 +1063,19 @@ class ExecutorMixin:
         _executor_prompt = EXECUTOR_SYSTEM
         _exec_optimizer = getattr(self, "_prompt_optimizer", None)
         if _exec_optimizer is not None:
-            _exec_variant = _exec_optimizer.select_variant("executor")
+            # Scoped to the goal's tenant (it used to read only the "global"
+            # scope, so a tenant's own executor variants were never used).
+            try:
+                if getattr(_exec_optimizer, "db_mode", False) is True:
+                    _exec_variant = await _exec_optimizer.aselect_variant(
+                        "executor", tenant_id=tenant_ctx.tenant_id
+                    )
+                else:
+                    _exec_variant = _exec_optimizer.select_variant(
+                        "executor", tenant_id=tenant_ctx.tenant_id
+                    )
+            except Exception:
+                _exec_variant = None
             if _exec_variant is not None:
                 _executor_prompt = _exec_variant.prompt_text
 

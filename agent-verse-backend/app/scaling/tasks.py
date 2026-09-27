@@ -108,30 +108,6 @@ def _setup_worker_checkpointer(**kwargs: Any) -> None:
     # _WORKER_CHECKPOINTER stays None → AgentGraph will use MemorySaver()
 
 
-@_worker_init.connect
-def _load_worker_prompt_variants(**kwargs: Any) -> None:
-    """Load persisted A/B prompt variants into the worker's PromptOptimizer.
-
-    The Celery worker runs real goals through the module-global
-    ``_default_optimizer`` (see ``run_goal``). That instance starts empty in a
-    fresh worker process and, without this hook, ``select_variant()`` only ever
-    returns the control prompt — the A/B variants persisted to
-    ``prompt_variants`` by the API/self-optimizer would never be exercised on
-    the path that actually executes goals. Loading them once at worker start
-    closes that gap. Best-effort: a DB error just leaves the optimizer empty
-    (control-only), exactly as before.
-    """
-    try:
-        from app.db.session import get_session_factory
-        from app.intelligence.prompt_optimizer import _default_optimizer
-
-        db_factory = get_session_factory()
-        loaded = _run_async(_default_optimizer.load_from_db(db_factory))
-        logger.info("celery_worker_prompt_variants_loaded count=%s", loaded)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("worker_prompt_variant_load_failed: %s", exc)
-
-
 class _SyncGoalLock:
     """Synchronous Redis-based distributed lock for Celery tasks.
 
@@ -1927,6 +1903,13 @@ def run_goal(
                 if db_factory is not None:
                     _self_opt._db = db_factory
                 _agent_runner._self_optimizer = _self_opt
+                # Prompt variants are read from ``prompt_variants`` per tenant (DB
+                # mode). The factory is per task loop (see dispose_task_engine),
+                # so it is bound here rather than once at worker start — which
+                # also replaces the old worker_init hook that loaded every
+                # tenant's variants into each worker process.
+                if db_factory is not None:
+                    _prompt_opt.set_db(db_factory)
                 _agent_runner._prompt_optimizer = _prompt_opt
             except Exception as _opt_exc:
                 logger.warning("optimizer_wire_failed: %s", _opt_exc)

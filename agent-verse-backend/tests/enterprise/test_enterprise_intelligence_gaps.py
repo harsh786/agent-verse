@@ -14,7 +14,7 @@ analysis pass:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -94,43 +94,35 @@ def test_get_eval_dimensions_success() -> None:
 # ── GET /intelligence/eval-suites/{suite_id}/results ─────────────────────────
 
 
-def test_get_suite_results_no_runner_returns_empty_list() -> None:
-    """When eval_suite_runner is None, get_suite_results returns []."""
+def test_get_suite_results_unknown_suite_is_404() -> None:
+    """Results of a suite the caller does not have are 404, not an empty list."""
     client = TestClient(_make_app(eval_suite_runner=None), raise_server_exceptions=False)
-    resp = client.get(
-        "/intelligence/eval-suites/suite-xyz/results", headers=_HDR
-    )
-    assert resp.status_code == 200
-    assert resp.json() == []
+    resp = client.get("/intelligence/eval-suites/suite-xyz/results", headers=_HDR)
+    assert resp.status_code == 404
 
 
-def test_get_suite_results_with_runner_returns_serialized_runs() -> None:
-    """When eval_suite_runner is set, get_suite_results returns serialized runs."""
-    mock_runner = MagicMock()
-    run_result = MagicMock()
-    run_result.run_id = "run-1"
-    run_result.pass_rate = 0.92
-    run_result.passed_tasks = 9
-    run_result.failed_tasks = 1
-    run_result.run_at = "2026-01-15T00:00:00Z"
-    mock_runner.get_results = MagicMock(return_value=[run_result])
+def test_get_suite_results_returns_persisted_runs() -> None:
+    """A finished run is read back from the store with its outcome."""
+    from app.intelligence.eval_suite import EvalSuiteResult
 
-    client = TestClient(
-        _make_app(eval_suite_runner=mock_runner), raise_server_exceptions=False
+    runner = MagicMock()
+    runner.run_suite = AsyncMock(
+        return_value=EvalSuiteResult(suite_id="suite-xyz", total_tasks=0)
     )
-    resp = client.get(
-        "/intelligence/eval-suites/suite-xyz/results", headers=_HDR
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    assert len(body) == 1
-    assert body[0]["run_id"] == "run-1"
-    assert body[0]["pass_rate"] == 0.92
-    assert body[0]["passed"] == 9
-    assert body[0]["failed"] == 1
-    # get_results should have been called with the suite id
-    mock_runner.get_results.assert_called_once_with("suite-xyz")
+    app = _make_app(eval_suite_runner=runner)
+    app.state.goal_service = MagicMock()
+    client = TestClient(app, raise_server_exceptions=False)
+    assert client.post(
+        "/intelligence/eval-suites", json={"suite_id": "suite-xyz"}, headers=_HDR
+    ).status_code == 201
+    started = client.post("/intelligence/eval-suites/suite-xyz/run", headers=_HDR)
+    assert started.status_code == 202
+    run_id = started.json()["run_id"]
+
+    body = client.get("/intelligence/eval-suites/suite-xyz/results", headers=_HDR).json()
+    assert [r["run_id"] for r in body] == [run_id]
+    assert body[0]["status"] == "completed"
+    assert body[0]["total"] == 0
 
 
 # ── GET /intelligence/experiments ────────────────────────────────────────────

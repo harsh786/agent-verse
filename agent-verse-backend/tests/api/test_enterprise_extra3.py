@@ -680,13 +680,16 @@ def test_create_eval_suite_with_runner() -> None:
 
 
 def test_list_eval_suites_with_runner() -> None:
-    """Lines 785-787: lists suites from runner."""
+    """Lists the caller's suites from the store."""
     runner = _make_eval_runner()
     client = TestClient(_make_app(eval_suite_runner=runner), raise_server_exceptions=False)
+    for sid in ("suite-1", "suite-2"):
+        assert client.post(
+            "/intelligence/eval-suites", json={"suite_id": sid, "name": sid}, headers=_headers()
+        ).status_code == 201
     resp = client.get("/intelligence/eval-suites", headers=_headers())
     assert resp.status_code == 200
-    suites = resp.json()
-    assert len(suites) == 2
+    assert sorted(s["suite_id"] for s in resp.json()) == ["suite-1", "suite-2"]
 
 
 def test_get_eval_suite_not_found() -> None:
@@ -698,12 +701,17 @@ def test_get_eval_suite_not_found() -> None:
 
 
 def test_get_eval_suite_found() -> None:
-    """Lines 802-803: returns suite metadata."""
+    """Returns suite metadata and tasks."""
     runner = _make_eval_runner()
     client = TestClient(_make_app(eval_suite_runner=runner), raise_server_exceptions=False)
+    for sid in ("suite-1", "suite-2"):
+        assert client.post(
+            "/intelligence/eval-suites", json={"suite_id": sid, "name": sid}, headers=_headers()
+        ).status_code == 201
     resp = client.get("/intelligence/eval-suites/suite-1", headers=_headers())
     assert resp.status_code == 200
     assert resp.json()["suite_id"] == "suite-1"
+    assert resp.json()["tasks"] == []
 
 
 def test_add_golden_task_no_runner() -> None:
@@ -718,9 +726,13 @@ def test_add_golden_task_no_runner() -> None:
 
 
 def test_add_golden_task_with_runner() -> None:
-    """Lines 813-826: adds task to suite."""
+    """Adds a task to the caller's suite; an unknown suite is 404."""
     runner = _make_eval_runner()
     client = TestClient(_make_app(eval_suite_runner=runner), raise_server_exceptions=False)
+    for sid in ("suite-1", "suite-2"):
+        assert client.post(
+            "/intelligence/eval-suites", json={"suite_id": sid, "name": sid}, headers=_headers()
+        ).status_code == 201
     resp = client.post(
         "/intelligence/eval-suites/suite-1/tasks",
         json={"goal": "do Y", "expected_tools": ["jira.search"], "max_iterations": 5},
@@ -728,20 +740,26 @@ def test_add_golden_task_with_runner() -> None:
     )
     assert resp.status_code == 201
     assert resp.json()["suite_id"] == "suite-1"
+    suite = client.get("/intelligence/eval-suites/suite-1", headers=_headers()).json()
+    assert suite["task_count"] == 1 and suite["tasks"][0]["expected_tools"] == ["jira.search"]
+    missing = client.post(
+        "/intelligence/eval-suites/nope/tasks", json={"goal": "x"}, headers=_headers()
+    )
+    assert missing.status_code == 404
 
 
 def test_get_suite_results_with_runner() -> None:
-    """Lines 847-849: get suite results."""
+    """Run history of a suite with no runs is an empty list."""
     runner = _make_eval_runner()
     client = TestClient(_make_app(eval_suite_runner=runner), raise_server_exceptions=False)
+    for sid in ("suite-1", "suite-2"):
+        assert client.post(
+            "/intelligence/eval-suites", json={"suite_id": sid, "name": sid}, headers=_headers()
+        ).status_code == 201
     resp = client.get("/intelligence/eval-suites/suite-1/results", headers=_headers())
     assert resp.status_code == 200
-    assert isinstance(resp.json(), list)
+    assert resp.json() == []
 
-
-# ---------------------------------------------------------------------------
-# Lines 856-869 — compliance router: start GDPR export (no DB path)
-# ---------------------------------------------------------------------------
 
 def test_start_gdpr_export_no_db() -> None:
     """Lines 856-869: no DB → still returns job_id with pending status."""

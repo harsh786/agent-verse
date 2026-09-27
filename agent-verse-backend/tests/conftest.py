@@ -218,3 +218,30 @@ async def signed_up_client(app):
         r = await c.post("/tenants/signup", json={"name": "Test", "email": "b@b.com"})
         c.headers["X-API-Key"] = r.json()["api_key"]
         yield c
+
+
+@pytest.fixture(autouse=True)
+def _reset_no_db_store_fallbacks():
+    """Clear the process-local fallbacks the DB-backed stores use without a database.
+
+    Also unbinds the module-global PromptOptimizer from any test's database.
+
+    ``app.org.runtime_store`` and ``app.intelligence.eval_suite_store`` keep
+    tenant-keyed dicts for the no-DB path; test apps reuse fixed tenant ids, so
+    without this one test's suites/roles/commands would appear in the next.
+    """
+    yield
+    from app.intelligence import eval_suite_store
+    from app.intelligence.prompt_optimizer import _default_optimizer
+    from app.org import runtime_store
+
+    # A lifespan test binds the process-global optimizer to its (fake) DB.
+    _default_optimizer.__dict__.pop("_db", None)
+
+    for store in (
+        eval_suite_store._MEM_SUITES,
+        eval_suite_store._MEM_RUNS,
+        runtime_store._MEM_ROLES,
+        runtime_store._MEM_COMMANDS,
+    ):
+        store.clear()

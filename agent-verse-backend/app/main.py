@@ -2067,14 +2067,19 @@ def create_app(
                 except Exception as _obs_exc:
                     logger.warning("observability_log_store_wire_failed", error=str(_obs_exc))
 
-            # ── PromptOptimizer: load variants from DB (all replicas on startup) ──
+            # ── PromptOptimizer: Postgres is the source of truth ─────────────────
+            # It used to load EVERY tenant's variants into each replica here (an
+            # unbounded fleet-wide read that diverged across replicas and, under
+            # RLS, would only have seen the "global" rows). It now queries
+            # ``prompt_variants`` per tenant on demand.
             try:
                 from app.intelligence.prompt_optimizer import _default_optimizer as _opt_db
 
-                loaded_variants = await _opt_db.load_from_db(db_factory)
-                logger.info("prompt_variants_loaded_from_db", count=loaded_variants)
+                _opt_db.set_db(db_factory)
+                app.state.prompt_optimizer = _opt_db
+                logger.info("prompt_optimizer_db_mode")
             except Exception as _pv_exc:
-                logger.warning("prompt_variants_load_failed", error=str(_pv_exc))
+                logger.warning("prompt_optimizer_db_wire_failed", error=str(_pv_exc))
 
             # ── HITLGateway: restore pending approvals from DB on startup ──────────
             try:

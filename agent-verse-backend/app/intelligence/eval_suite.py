@@ -274,12 +274,36 @@ class EvalSuiteRunner:
     def get_results(self, suite_id: str) -> list[EvalSuiteResult]:
         return self._results.get(suite_id, [])
 
-    async def run_suite(self, suite_id: str, goal_service: Any, tenant_ctx: Any) -> EvalSuiteResult:
-        tasks = self._suites.get(suite_id, [])
-        result = EvalSuiteResult(suite_id=suite_id, total_tasks=len(tasks))
+    async def run_suite(
+        self,
+        suite_id: str,
+        goal_service: Any,
+        tenant_ctx: Any,
+        *,
+        tasks: list[GoldenTask] | None = None,
+        run_id: str | None = None,
+        concurrency: int = 4,
+    ) -> EvalSuiteResult:
+        """Run golden tasks and score them.
 
-        for task in tasks:
-            task_result = await self._run_task(task, goal_service, tenant_ctx)
+        ``tasks`` are the suite's tasks as loaded by the caller (the API reads
+        them from the tenant's ``eval_suites`` row); when omitted the runner's
+        own in-process registry is used (library/test use). Tasks run with
+        bounded concurrency — each one waits up to 60 s for its goal, so running
+        them one after another made a suite's wall time the sum of all of them.
+        """
+        if tasks is None:
+            tasks = self._suites.get(suite_id, [])
+        result = EvalSuiteResult(suite_id=suite_id, total_tasks=len(tasks))
+        if run_id:
+            result.run_id = run_id
+        gate = asyncio.Semaphore(max(1, concurrency))
+
+        async def _one(task: GoldenTask) -> GoldenTaskResult:
+            async with gate:
+                return await self._run_task(task, goal_service, tenant_ctx)
+
+        for task_result in await asyncio.gather(*(_one(t) for t in tasks)):
             result.task_results.append(task_result)
             if task_result.passed:
                 result.passed_tasks += 1
@@ -455,7 +479,7 @@ class EvalSuiteRunner:
                                VALUES (:id, :suite_id, :tenant_id, :run_id,
                                        :total_tasks, :passed_tasks, :failed_tasks,
                                        :pass_rate, CAST(:results AS json), NOW())
-                               ON CONFLICT (id) DO NOTHING"""
+                               ON CONFLICT (tenant_id, id) DO NOTHING"""
                         ),
                         {
                             "id": suite_result.run_id,

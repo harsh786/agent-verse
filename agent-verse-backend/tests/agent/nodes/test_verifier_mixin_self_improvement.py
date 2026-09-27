@@ -270,11 +270,11 @@ async def test_low_score_dispatches_reflexion_prompt_variant_and_blacklist_actio
     assert "blacklist_tool_pattern" in actions
     assert "update_prompt_variant" in actions
 
-    # UPDATE_PROMPT_VARIANT dispatch: prompt_optimizer.record_result invoked
-    # with the runtime scorecard's overall_score.
-    prompt_optimizer.record_result.assert_called_once()
-    _, po_kwargs = prompt_optimizer.record_result.call_args
-    assert po_kwargs["variant_id"] == "variant-42"
+    # UPDATE_PROMPT_VARIANT dispatch must NOT record the outcome itself: in
+    # production app_state.prompt_optimizer IS graph._prompt_optimizer, and the
+    # A/B feedback block already records each run once — recording here too
+    # counted every run twice.
+    prompt_optimizer.record_result.assert_not_called()
 
     # BLACKLIST_TOOL_PATTERN dispatch: failed tools recorded as unreliable.
     assert tool_reliability_store.record.await_count == 2
@@ -567,7 +567,7 @@ async def test_prompt_optimizer_records_and_persists_winning_outcome() -> None:
     await asyncio.sleep(0)
 
     prompt_optimizer.record_result.assert_called_once_with(
-        variant_id="variant-win", eval_score=0.9
+        variant_id="variant-win", eval_score=0.9, cost_usd=None, latency_ms=None
     )
     prompt_optimizer.persist_outcome.assert_called_once()
     _, po_kwargs = prompt_optimizer.persist_outcome.call_args

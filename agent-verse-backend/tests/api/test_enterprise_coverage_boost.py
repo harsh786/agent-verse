@@ -405,33 +405,58 @@ def test_benchmarks_db_query_exceptions_fall_back_to_defaults() -> None:
 
 
 def test_run_eval_suite_success() -> None:
-    result = MagicMock()
-    result.run_id = "run-42"
-    result.total_tasks = 3
-    result.passed_tasks = 2
-    result.failed_tasks = 1
-    result.pass_rate = 0.667
-    result.run_at = "2026-01-01T00:00:00"
-    task_result = MagicMock()
-    task_result.task_id = "task-1"
-    task_result.passed = True
-    task_result.failure_reasons = []
-    task_result.duration_seconds = 1.2345
-    result.task_results = [task_result]
+    """POST /run answers 202 at once; the outcome is recorded by the background run."""
+    from app.intelligence.eval_suite import EvalSuiteResult, GoldenTaskResult
 
+    result = EvalSuiteResult(suite_id="suite-1", total_tasks=1, passed_tasks=1)
+    result.task_results = [
+        GoldenTaskResult(task_id="task-1", goal="g", passed=True, duration_seconds=1.2345)
+    ]
     runner = MagicMock()
     runner.run_suite = AsyncMock(return_value=result)
-    goal_service = MagicMock()
-    app = _make_app(eval_suite_runner=runner, goal_service=goal_service)
+    app = _make_app(eval_suite_runner=runner, goal_service=MagicMock())
     client = TestClient(app, raise_server_exceptions=False)
+    assert client.post(
+        "/intelligence/eval-suites", json={"suite_id": "suite-1"}, headers=_headers()
+    ).status_code == 201
+    client.post(
+        "/intelligence/eval-suites/suite-1/tasks", json={"goal": "g"}, headers=_headers()
+    )
+
     resp = client.post("/intelligence/eval-suites/suite-1/run", headers=_headers())
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.json()
-    assert body["run_id"] == "run-42"
-    assert body["total"] == 3
-    assert body["passed"] == 2
-    assert body["task_results"][0]["duration_seconds"] == 1.23
+    assert body["status"] == "running" and body["total"] == 1
     runner.run_suite.assert_awaited_once()
+    kwargs = runner.run_suite.await_args.kwargs
+    assert kwargs["run_id"] == body["run_id"]
+    assert [t.goal for t in kwargs["tasks"]] == ["g"]
+
+    runs = client.get("/intelligence/eval-suites/suite-1/results", headers=_headers()).json()
+    assert runs[0]["run_id"] == body["run_id"]
+    assert runs[0]["status"] == "completed" and runs[0]["passed"] == 1
+    assert runs[0]["task_results"][0]["duration_seconds"] == 1.23
+
+
+def test_run_eval_suite_failure_is_recorded() -> None:
+    runner = MagicMock()
+    runner.run_suite = AsyncMock(side_effect=RuntimeError("provider down"))
+    client = TestClient(
+        _make_app(eval_suite_runner=runner, goal_service=MagicMock()),
+        raise_server_exceptions=False,
+    )
+    client.post("/intelligence/eval-suites", json={"suite_id": "s-f"}, headers=_headers())
+    assert client.post("/intelligence/eval-suites/s-f/run", headers=_headers()).status_code == 202
+    runs = client.get("/intelligence/eval-suites/s-f/results", headers=_headers()).json()
+    assert runs[0]["status"] == "failed" and "provider down" in runs[0]["error"]
+
+
+def test_run_unknown_eval_suite_is_404() -> None:
+    client = TestClient(
+        _make_app(eval_suite_runner=MagicMock(), goal_service=MagicMock()),
+        raise_server_exceptions=False,
+    )
+    assert client.post("/intelligence/eval-suites/nope/run", headers=_headers()).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -471,9 +496,8 @@ class TestPromptVariantsCRUD:
 
         # Record a couple of eval scores directly on the optimizer, then
         # confirm the report reflects them.
-        target = optimizer._variants["tid-boost"][variant_id]
-        target.eval_scores.extend([0.8, 0.9])
-        target.run_count = 2
+        optimizer.record_result(variant_id, 0.8, cost_usd=0.02, latency_ms=900)
+        optimizer.record_result(variant_id, 0.9, cost_usd=0.04, latency_ms=1800)
 
         report_resp = client.get(
             f"/intelligence/prompt-variants/{variant_id}/report", headers=_headers()
@@ -482,6 +506,8 @@ class TestPromptVariantsCRUD:
         report = report_resp.json()
         assert report["mean_score"] == 0.85
         assert report["run_count"] == 2
+        assert report["mean_cost_usd"] == 0.03
+        assert report["p95_latency_ms"] == 2500  # upper edge of the 1.8 s bucket
 
         # Promote the challenger to control.
         promote_resp = client.post(
@@ -523,17 +549,37 @@ class TestPromptVariantsCRUD:
         )
         assert resp.status_code == 404
 
-    def test_delete_variant_stored_in_global_scope(self) -> None:
-        """A variant registered without an explicit tenant lands in "global"."""
+    def test_shared_global_variant_is_read_only_for_tenants(self) -> None:
+        """Regression: any tenant could delete or promote the shared "global" variants."""
         optimizer = PromptOptimizer()
         variant = optimizer.register_variant("k", "Global V", "text", tenant_id="global")
         app = _make_app(prompt_optimizer=optimizer)
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.delete(
-            f"/intelligence/prompt-variants/{variant.variant_id}", headers=_headers()
-        )
-        assert resp.status_code == 204
-        assert variant.variant_id not in optimizer._variants.get("global", {})
+        vid = variant.variant_id
+        assert client.delete(f"/intelligence/prompt-variants/{vid}", headers=_headers()).status_code == 404
+        assert client.post(
+            f"/intelligence/prompt-variants/{vid}/promote", headers=_headers()
+        ).status_code == 404
+        assert vid in optimizer._variants["global"]
+        assert optimizer._variants["global"][vid].is_control is False
+        # Reading the shared variant's report is allowed.
+        assert client.get(
+            f"/intelligence/prompt-variants/{vid}/report", headers=_headers()
+        ).status_code == 200
+
+    def test_other_tenants_variant_is_invisible(self) -> None:
+        """Regression: promote/report found variants across ALL tenants."""
+        optimizer = PromptOptimizer()
+        foreign = optimizer.register_variant("planner", "Theirs", "t", tenant_id="other-tenant")
+        client = TestClient(_make_app(prompt_optimizer=optimizer), raise_server_exceptions=False)
+        fid = foreign.variant_id
+        for method, path in [
+            ("POST", f"/intelligence/prompt-variants/{fid}/promote"),
+            ("GET", f"/intelligence/prompt-variants/{fid}/report"),
+            ("DELETE", f"/intelligence/prompt-variants/{fid}"),
+        ]:
+            assert client.request(method, path, headers=_headers()).status_code == 404
+        assert optimizer._variants["other-tenant"][fid].is_control is False
 
 
 # ---------------------------------------------------------------------------

@@ -338,18 +338,28 @@ class PlannerMixin:
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
             user_content += "\n\n" + "\n\n".join(extra_parts)
-        # Use PromptOptimizer variant when wired (Task 7)
+        # Use a PromptOptimizer variant when one exists for this tenant (Task 7).
+        # With no variant the planner falls through to strategy selection below —
+        # merely having an optimizer wired used to force the plain planner and
+        # silently disable structured planning for every goal.
         _plan_optimizer = getattr(self, "_prompt_optimizer", None)
+        _plan_variant = None
         if _plan_optimizer is not None:
-            _plan_variant = _plan_optimizer.select_variant(
-                "planner", tenant_id=tenant_ctx.tenant_id
-            )
-            _planner_prompt = (
-                _plan_variant.prompt_text if _plan_variant is not None else PLANNER_SYSTEM
-            )
+            try:
+                if getattr(_plan_optimizer, "db_mode", False) is True:
+                    _plan_variant = await _plan_optimizer.aselect_variant(
+                        "planner", tenant_id=tenant_ctx.tenant_id
+                    )
+                else:
+                    _plan_variant = _plan_optimizer.select_variant(
+                        "planner", tenant_id=tenant_ctx.tenant_id
+                    )
+            except Exception as _pv_exc:  # a variant lookup must never fail planning
+                self._logger.warning("planner_variant_lookup_failed", error=str(_pv_exc))
+        if _plan_variant is not None:
+            _planner_prompt = _plan_variant.prompt_text
             # Store variant ID for A/B feedback in verify node (BUG 4 fix)
-            if _plan_variant is not None:
-                agent_state.context["planner_variant_id"] = _plan_variant.variant_id
+            agent_state.context["planner_variant_id"] = _plan_variant.variant_id
         else:
             # Strategy A: use the structured (dependency-graph) planner when the
             # resolved strategy says so — decoupled from goal-tree decomposition,
