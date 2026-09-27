@@ -41,6 +41,8 @@ def _make_app(
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
     app.include_router(civ_router)
+    # WebSocket routes bypass HTTP middleware and resolve keys from app.state.
+    app.state._tenant_key_resolver = _resolve
 
     settings = MagicMock()
     settings.civilization_enabled = civilization_enabled
@@ -771,14 +773,28 @@ def test_NullCtx_helper() -> None:
 # ---------------------------------------------------------------------------
 
 def test_civilization_ws_no_redis() -> None:
-    """Lines 876-888: WebSocket without Redis sends stream_ready ping."""
+    """WebSocket without Redis sends stream_ready ping."""
     from fastapi.testclient import TestClient
     client = TestClient(_make_app(), raise_server_exceptions=False)
 
-    with client.websocket_connect("/civilizations/civ-1/ws") as ws:
+    with client.websocket_connect("/civilizations/civ-1/ws", headers=H) as ws:
         data = ws.receive_text()
         msg = json.loads(data)
         assert msg.get("type") in ("stream_ready", "ping")
+
+
+@pytest.mark.parametrize("query", ["", "?api_key=wrong-key"])
+def test_civilization_ws_rejects_unauthenticated(query: str) -> None:
+    """Regression: the socket accepted anyone, as tenant "unknown"."""
+    from starlette.websockets import WebSocketDisconnect
+
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    with (
+        pytest.raises(WebSocketDisconnect) as exc,
+        client.websocket_connect(f"/civilizations/civ-1/ws{query}"),
+    ):
+        pass
+    assert exc.value.code == 4401
 
 
 def test_civilization_ws_with_api_key_tenant_resolution() -> None:

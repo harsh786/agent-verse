@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import uuid as uuid_mod
 from collections.abc import AsyncGenerator
 from dataclasses import asdict
 from typing import Any
@@ -33,6 +34,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.requests import HTTPConnection
 
 from app.org.brain_settings import resolve_autonomy_settings
 from app.org.brain_store import BrainDecisionStore
@@ -59,7 +61,72 @@ from app.org.schemas import (
 )
 from app.org.service import OrgService, resolve_llm_provider
 
-router = APIRouter(prefix="/v1/org", tags=["org"])
+
+async def _org_owned(app: Any, org_id: str, tenant_id: str) -> bool:
+    """Whether ``org_id`` exists and belongs to ``tenant_id`` (Postgres, under RLS)."""
+    session_factory = getattr(app.state, "db_session_factory", None)
+    if session_factory is None:
+        return True  # no database: nothing persisted to leak (dev/in-memory mode)
+    try:
+        uuid_mod.UUID(str(org_id))
+        uuid_mod.UUID(str(tenant_id))
+    except (ValueError, TypeError):
+        # Orgs are keyed by UUID and owned by UUID tenants; anything else cannot
+        # own this org.
+        return False
+
+    from sqlalchemy import text as _t
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        session_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        owned = (
+            await session.execute(
+                _t(
+                    "SELECT 1 FROM organizations "
+                    "WHERE id = CAST(:oid AS uuid) AND tenant_id = CAST(:tid AS uuid)"
+                ),
+                {"oid": str(org_id), "tid": str(tenant_id)},
+            )
+        ).scalar_one_or_none()
+    return owned is not None
+
+
+async def _verify_org_ownership(request: HTTPConnection) -> None:
+    """Router-wide guard: any ``{org_id}`` in the path must be the caller's org.
+
+    Many org handlers acted on the path's ``org_id`` without checking who owns
+    it — keyed a module-level dict by it, subscribed to its Redis channel, or
+    passed it on — so a tenant that knew another tenant's org id could stream
+    that org's live events (approvals, missions, agent activity), read and
+    create its custom roles, read its command history, and more. Checking per
+    handler would leave gaps across 70+ routes; this runs before every one of
+    them. A foreign or unknown org answers 404, indistinguishable from absent.
+
+    WebSocket routes authenticate inside the handler (HTTP middleware never runs
+    for them, so there is no tenant on the connection yet) and call
+    :func:`_org_owned` themselves before accepting.
+    """
+    if request.scope.get("type") == "websocket":
+        return
+    org_id = request.path_params.get("org_id")
+    if not org_id:
+        return
+    tenant = getattr(request.state, "tenant", None)
+    if tenant is None:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+    tenant_id = str(getattr(tenant, "tenant_id", "") or "")
+    if not await _org_owned(request.app, str(org_id), tenant_id):
+        raise _not_found("Organization", str(org_id))
+
+
+router = APIRouter(
+    prefix="/v1/org", tags=["org"], dependencies=[Depends(_verify_org_ownership)]
+)
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -1780,8 +1847,21 @@ _BUILT_IN_ROLES: list[_OrgRoleResponse] = [
     _OrgRoleResponse(id="observer", name="Observer", description="View only.", is_built_in=True),
 ]
 
-# In-memory store per org (swapped for DB in lifespan when available)
-_CUSTOM_ROLES: dict[str, list[_OrgRoleResponse]] = {}
+def _role_store(request: Request, org_id: str) -> Any:
+    from app.org.runtime_store import OrgRoleStore
+
+    ctx = _require_tenant(request)
+    return OrgRoleStore(
+        getattr(request.app.state, "db_session_factory", None),
+        str(getattr(ctx, "tenant_id", ctx)),
+        org_id,
+    )
+
+
+def _command_store(app_state: Any, tenant_id: str, org_id: str) -> Any:
+    from app.org.runtime_store import OrgCommandStore
+
+    return OrgCommandStore(getattr(app_state, "db_session_factory", None), tenant_id, org_id)
 
 
 @router.get(
@@ -1799,10 +1879,9 @@ async def org_list_roles(
     from opentelemetry import trace as _trace
 
     with _trace.get_tracer(__name__).start_as_current_span("org.list_roles") as span:
-        _require_tenant(request)
         span.set_attribute("org_id", org_id)
-        custom = _CUSTOM_ROLES.get(org_id, [])
-        return [*_BUILT_IN_ROLES, *custom]
+        custom = await _role_store(request, org_id).list()
+        return [*_BUILT_IN_ROLES, *(_OrgRoleResponse(**r) for r in custom)]
 
 
 @router.post(
@@ -1823,11 +1902,10 @@ async def org_create_role(
     from opentelemetry import trace as _trace
 
     with _trace.get_tracer(__name__).start_as_current_span("org.create_role") as span:
-        _require_tenant(request)
         span.set_attribute("org_id", org_id)
         span.set_attribute("role_name", body.name)
         role = _OrgRoleResponse(id=str(uuid4()), is_built_in=False, **body.model_dump())
-        _CUSTOM_ROLES.setdefault(org_id, []).append(role)
+        await _role_store(request, org_id).create(role.model_dump(exclude={"is_built_in"}))
         return role
 
 
@@ -1846,13 +1924,11 @@ async def org_update_role(
     service: OrgService = Depends(get_org_service),
 ) -> _OrgRoleResponse:
     """Update permissions on a custom role."""
-    _require_tenant(request)
-    roles = _CUSTOM_ROLES.get(org_id, [])
-    for i, r in enumerate(roles):
-        if r.id == role_id:
-            updated = _OrgRoleResponse(id=role_id, is_built_in=False, **body.model_dump())
-            roles[i] = updated
-            return updated
+    updated = _OrgRoleResponse(id=role_id, is_built_in=False, **body.model_dump())
+    if await _role_store(request, org_id).update(
+        role_id, updated.model_dump(exclude={"is_built_in"})
+    ):
+        return updated
     raise _not_found("Role", role_id, x_request_id)
 
 
@@ -1870,11 +1946,7 @@ async def org_delete_role(
     service: OrgService = Depends(get_org_service),
 ) -> None:
     """Delete a custom role (built-in roles cannot be deleted)."""
-    _require_tenant(request)
-    roles = _CUSTOM_ROLES.get(org_id, [])
-    orig = len(roles)
-    _CUSTOM_ROLES[org_id] = [r for r in roles if r.id != role_id]
-    if len(_CUSTOM_ROLES[org_id]) == orig:
+    if not await _role_store(request, org_id).delete(role_id):
         raise _not_found("Role", role_id, x_request_id)
 
 
@@ -2109,9 +2181,9 @@ async def org_universal_command(
             "submitted_at": _dt.now(UTC).isoformat(),
             "result": None,
         }
-        _COMMAND_HISTORY.setdefault(org_id, []).insert(0, record)
-        # Cap history at 200 per org
-        _COMMAND_HISTORY[org_id] = _COMMAND_HISTORY[org_id][:200]
+        # Persisted (not a module dict) so every replica can poll it; the store
+        # keeps the newest COMMAND_HISTORY_CAP per org.
+        await _command_store(request.app.state, tenant_id, org_id).add(record)
 
         # Route to agent loop (fire-and-forget) when not high-risk. Pass the full
         # TenantContext (not just the id) — GoalService.submit_goal requires it.
@@ -2177,11 +2249,9 @@ async def _route_command_to_agent(
         )
         goal_id = result.get("goal_id") if isinstance(result, dict) else None
         # Update command status + surface the created goal id for polling/SSE.
-        for cmd in _COMMAND_HISTORY.get(org_id, []):
-            if cmd.get("command_id") == command_id:
-                cmd["status"] = "routed"
-                cmd["goal_id"] = goal_id
-                break
+        await _command_store(app_state, tenant_id, org_id).update(
+            command_id, status="routed", goal_id=goal_id
+        )
         _log.info(
             "org.command_routed",
             command_id=command_id,
@@ -2197,11 +2267,14 @@ async def _route_command_to_agent(
             org_id=org_id,
             error=str(exc),
         )
-        for cmd in _COMMAND_HISTORY.get(org_id, []):
-            if cmd.get("command_id") == command_id:
-                cmd["status"] = "routing_failed"
-                cmd["error"] = str(exc)
-                break
+        try:
+            await _command_store(app_state, tenant_id, org_id).update(
+                command_id, status="routing_failed", error=str(exc)
+            )
+        except Exception as store_exc:
+            _log.warning(
+                "org.command_status_write_failed", command_id=command_id, error=str(store_exc)
+            )
 
 
 # ── N2: Org Composer — NL to Organisation ────────────────────────────────────
@@ -2382,9 +2455,6 @@ async def org_team_lifecycle_get(
 
 # ── Q2/Q3 Command History ─────────────────────────────────────────────────────
 
-# In-memory command store per org (swapped for DB in production)
-_COMMAND_HISTORY: dict[str, list[dict[str, object]]] = {}
-
 
 @router.get(
     "/{org_id}/commands",
@@ -2403,15 +2473,10 @@ async def org_list_commands(
     Supports filtering by channel (``rest``, ``telegram``, ``slack``, …).
     Commands are ordered newest-first.
     """
-    _require_tenant(request)
-    history = _COMMAND_HISTORY.get(org_id, [])
-    if channel:
-        history = [c for c in history if c.get("channel") == channel]
-    return {
-        "org_id": org_id,
-        "commands": history[:limit],
-        "total": len(history),
-    }
+    ctx = _require_tenant(request)
+    store = _command_store(request.app.state, str(getattr(ctx, "tenant_id", ctx)), org_id)
+    commands, total = await store.list(limit=limit, channel=channel)
+    return {"org_id": org_id, "commands": commands, "total": total}
 
 
 @router.get(
@@ -2427,12 +2492,12 @@ async def org_get_command(
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
     """Return the status and result of a previously submitted UCG command."""
-    _require_tenant(request)
-    history = _COMMAND_HISTORY.get(org_id, [])
-    for cmd in history:
-        if cmd.get("command_id") == command_id:
-            return cmd
-    raise _not_found("Command", command_id, x_request_id)
+    ctx = _require_tenant(request)
+    store = _command_store(request.app.state, str(getattr(ctx, "tenant_id", ctx)), org_id)
+    cmd = await store.get(command_id)
+    if cmd is None:
+        raise _not_found("Command", command_id, x_request_id)
+    return cmd
 
 
 # ── SUPP-H: Digital Twin endpoints ───────────────────────────────────────────
@@ -3022,15 +3087,23 @@ async def org_mcp_websocket(
 
     from app.gateway.mcp_server import OrgMCPServer
 
+    # Authenticate BEFORE accepting. HTTP middleware never runs for WebSocket
+    # connections, and this handler used to accept everyone and take the tenant
+    # from an attacker-controlled X-Tenant-Id header (default "system") — while
+    # OrgMCPServer never validated the key. Anyone could connect, name any
+    # tenant, and read org status or START MISSIONS in it. The tenant now comes
+    # only from a verified API key, and the org must belong to that tenant.
+    from app.tenancy.ws_auth import resolve_ws_tenant
+
+    tenant_ctx = await resolve_ws_tenant(websocket, allow_query_key=True)
+    if tenant_ctx is None:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+    tenant_id = str(tenant_ctx.tenant_id)
+    if not await _org_owned(websocket.app, org_id, tenant_id):
+        await websocket.close(code=4404, reason="Organization not found")
+        return
     await websocket.accept()
-
-    # Resolve auth header → extract api_key and tenant_id
-    auth_header = websocket.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        api_key = auth_header[7:].strip()
-
-    # Resolve tenant_id from X-Tenant-Id header or default
-    tenant_id = websocket.headers.get("x-tenant-id", "system")
 
     # Attach the request's app.state (lifespan-wired services) for live service
     # injection — not the module-level app.main.app singleton.

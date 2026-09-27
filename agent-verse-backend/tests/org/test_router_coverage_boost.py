@@ -1161,11 +1161,10 @@ class TestMorningBriefAndCommand:
     async def test_list_commands_and_get_command(
         self, client: AsyncClient, test_app: FastAPI
     ) -> None:
-        import sys
+        from app.org import runtime_store
 
-        router_mod = sys.modules["app.org.router"]
-
-        router_mod._COMMAND_HISTORY[ORG_ID] = [
+        key = (TENANT_ID, ORG_ID)
+        runtime_store._MEM_COMMANDS[key] = [
             {"command_id": "c1", "channel": "rest", "status": "queued"},
             {"command_id": "c2", "channel": "telegram", "status": "routed"},
         ]
@@ -1184,7 +1183,7 @@ class TestMorningBriefAndCommand:
         r4 = await client.get(f"/v1/org/{ORG_ID}/commands/does-not-exist")
         assert r4.status_code == 404
 
-        router_mod._COMMAND_HISTORY.pop(ORG_ID, None)
+        runtime_store._MEM_COMMANDS.pop(key, None)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1628,16 +1627,29 @@ class TestValidateUuid:
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+_WS_KEYS = {"secret-token", "abc", "ws-test-key"}
+_WS_AUTH = {"X-API-Key": "ws-test-key"}
+
+
 def _ws_app() -> FastAPI:
+    from app.tenancy.context import PlanTier, TenantContext
+
     app = FastAPI()
     app.include_router(org_router)
+
+    async def _resolve(key: str) -> TenantContext | None:
+        if key in _WS_KEYS:
+            return TenantContext(tenant_id=uuid.uuid4().hex, plan=PlanTier.FREE, api_key_id="k")
+        return None
+
+    app.state._tenant_key_resolver = _resolve
     return app
 
 
 class TestMcpWebSocket:
     def test_initialize_tools_list_and_ping(self) -> None:
         client = TestClient(_ws_app())
-        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp") as ws:
+        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", headers=_WS_AUTH) as ws:
             ws.send_json({"id": 1, "method": "initialize"})
             resp = ws.receive_json()
             assert resp["id"] == 1
@@ -1657,21 +1669,21 @@ class TestMcpWebSocket:
 
     def test_unknown_method_returns_error(self) -> None:
         client = TestClient(_ws_app())
-        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp") as ws:
+        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", headers=_WS_AUTH) as ws:
             ws.send_json({"id": 1, "method": "bogus/method"})
             resp = ws.receive_json()
             assert resp["result"]["error"]["code"] == -32601
 
     def test_invalid_json_returns_parse_error(self) -> None:
         client = TestClient(_ws_app())
-        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp") as ws:
+        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", headers=_WS_AUTH) as ws:
             ws.send_text("not json{{{")
             resp = ws.receive_json()
             assert resp["error"]["code"] == -32700
 
     def test_tools_call_unknown_tool(self) -> None:
         client = TestClient(_ws_app())
-        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp") as ws:
+        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", headers=_WS_AUTH) as ws:
             ws.send_json(
                 {"id": 5, "method": "tools/call", "params": {"name": "nope", "arguments": {}}}
             )
@@ -1697,6 +1709,40 @@ class TestMcpWebSocket:
             ws.send_json({"id": 1, "method": "ping"})
             resp = ws.receive_json()
             assert resp["result"] == {}
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {},  # no credentials at all
+            {"headers": {"X-Tenant-Id": "victim-tenant"}},  # the old spoofable path
+            {"headers": {"Authorization": "Bearer not-a-real-key"}},
+        ],
+    )
+    def test_unauthenticated_socket_is_refused(self, kwargs: dict[str, Any]) -> None:
+        """Regression: the socket accepted anyone and took its tenant from X-Tenant-Id."""
+        from starlette.websockets import WebSocketDisconnect
+
+        client = TestClient(_ws_app())
+        with (
+            pytest.raises(WebSocketDisconnect) as exc,
+            client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", **kwargs),
+        ):
+            pass
+        assert exc.value.code == 4401
+
+    def test_foreign_org_socket_is_refused(self) -> None:
+        """An authenticated caller cannot open another tenant's org socket."""
+        from starlette.websockets import WebSocketDisconnect
+
+        app = _ws_app()
+        with patch("app.org.router._org_owned", AsyncMock(return_value=False)):
+            client = TestClient(app)
+            with (
+                pytest.raises(WebSocketDisconnect) as exc,
+                client.websocket_connect(f"/v1/org/{ORG_ID}/mcp", headers=_WS_AUTH),
+            ):
+                pass
+        assert exc.value.code == 4404
 
 
 # ══════════════════════════════════════════════════════════════════════════════

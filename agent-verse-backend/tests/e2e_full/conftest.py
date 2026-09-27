@@ -109,7 +109,62 @@ def _migrated_backends(_backends: tuple[str, str]) -> tuple[str, str]:
             "alembic upgrade head failed for e2e_full:\n"
             f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
         )
+    if os.getenv("E2E_LEAST_PRIVILEGE", "").lower() in ("1", "true", "yes"):
+        return _least_privilege_url(database_url), redis_url
     return database_url, redis_url
+
+
+_LP_ROLE = "agentverse_app_rls"
+_LP_PASSWORD = "agentverse-app-rls-e2e"
+
+
+def _least_privilege_url(owner_url: str) -> str:
+    """Create a NOBYPASSRLS application role and return a DSN that uses it.
+
+    The testcontainer's default user is a SUPERUSER, which bypasses row-level
+    security even on FORCE'd tables — so by default this tier cannot see a code
+    path that forgets to set ``app.tenant_id``: it passes here and silently
+    reads/writes nothing in production, where the API connects as a
+    least-privilege role. With ``E2E_LEAST_PRIVILEGE=1`` the whole booted app
+    runs as exactly that kind of role (DML only, no BYPASSRLS, not the owner),
+    so RLS is enforced for real on every request the suite makes.
+    """
+    import asyncio
+
+    import asyncpg
+
+    raw = owner_url.replace("postgresql+asyncpg://", "postgresql://")
+
+    async def _provision() -> None:
+        conn = await asyncpg.connect(raw)
+        try:
+            exists = await conn.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", _LP_ROLE)
+            if not exists:
+                await conn.execute(
+                    f"CREATE ROLE {_LP_ROLE} LOGIN PASSWORD '{_LP_PASSWORD}' "
+                    "NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS"
+                )
+            db = await conn.fetchval("SELECT current_database()")
+            await conn.execute(f'GRANT CONNECT, TEMPORARY ON DATABASE "{db}" TO {_LP_ROLE}')
+            await conn.execute(f"GRANT USAGE ON SCHEMA public TO {_LP_ROLE}")
+            await conn.execute(
+                f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {_LP_ROLE}"
+            )
+            await conn.execute(
+                f"GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO {_LP_ROLE}"
+            )
+            await conn.execute(
+                f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {_LP_ROLE}"
+            )
+        finally:
+            await conn.close()
+
+    asyncio.run(_provision())
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(owner_url)
+    host = parts.netloc.rsplit("@", 1)[-1]
+    return urlunsplit(parts._replace(netloc=f"{_LP_ROLE}:{_LP_PASSWORD}@{host}"))
 
 
 # ── The booted application ────────────────────────────────────────────────────

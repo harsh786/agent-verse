@@ -1033,24 +1033,24 @@ class _NullCtx:
 
 @router.websocket("/{civ_id}/ws")
 async def civilization_ws(websocket: WebSocket, civ_id: str) -> None:
-    """Live graph updates via WebSocket (pub/sub fan-out)."""
+    """Live graph updates via WebSocket (pub/sub fan-out).
+
+    Authenticated before ``accept()``: HTTP middleware never runs for WebSocket
+    connections, and this handler used to accept anyone as tenant "unknown".
+    The Redis channel is scoped by the verified tenant, so a caller can only
+    ever receive its own civilization's events.
+    """
+    from app.tenancy.ws_auth import resolve_ws_tenant
+
+    tenant_ctx = await resolve_ws_tenant(websocket, allow_query_key=True)
+    if tenant_ctx is None:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+    tenant_id = str(tenant_ctx.tenant_id)
     await websocket.accept()
 
     app_state = getattr(websocket, "app", None)
     redis = getattr(app_state.state, "_policy_pubsub_redis", None) if app_state else None
-
-    # Best-effort tenant resolution from query param or header
-    api_key = websocket.query_params.get("api_key", "")
-    tenant_id = "unknown"
-    if api_key:
-        resolver = getattr(app_state.state, "_tenant_key_resolver", None) if app_state else None
-        if resolver is not None:
-            try:
-                ctx = await resolver(api_key)
-                if ctx is not None:
-                    tenant_id = ctx.tenant_id
-            except Exception:
-                pass
 
     try:
         if redis is not None:

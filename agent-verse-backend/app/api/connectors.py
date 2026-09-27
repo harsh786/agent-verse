@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
-from app.mcp.registry import MCPRegistry, MCPServerConfig
+from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
 from app.net.ssrf_guard import SSRFError, assert_public_url
 from app.providers.vault import (
     connector_secret_ref,
@@ -83,7 +83,11 @@ def _get_builtin_config_for_name(connector_name: str) -> dict | None:
 class RegisterConnectorRequest(BaseModel):
     name: str
     url: str
-    auth_type: str
+    # The enum, not ``str``: an unknown value used to pass request validation and
+    # then blow up constructing MCPServerConfig inside the registry — an
+    # unhandled pydantic error, i.e. HTTP 500 on ordinary bad input. Now a 422
+    # that names the accepted values, which the schema also advertises.
+    auth_type: AuthType
     auth_config: dict[str, Any] = {}
     description: str = ""
     priority: int = 0
@@ -1539,6 +1543,7 @@ class OpenAPIImportRequest(BaseModel):
     openapi_spec: str
     base_url: str
     name: str = ""
+    # Deliberately ``str``: an unknown value is normalised to bearer below.
     auth_type: str = "bearer"
     auth_config: dict[str, Any] = {}
     description: str = ""

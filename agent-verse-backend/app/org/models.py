@@ -527,3 +527,51 @@ __all__ = [
     "OrgWorkstream",
     "Organization",
 ]
+
+
+# ── Custom roles & UCG command history (replaced per-process dicts) ──────────
+# Written/read by app/org/runtime_store.py. Both were module-level dicts in the
+# org router, so they diverged across replicas and vanished on restart.
+
+
+class OrgCustomRole(Base):
+    __tablename__ = "org_custom_roles"
+    __table_args__ = (
+        Index("ix_org_custom_roles_tenant_org", "tenant_id", "org_id", "created_at"),
+        {"schema": None},
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=_uuid7)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    org_id = Column(
+        PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    name = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False, server_default="")
+    permissions = Column(JSONB, nullable=False, server_default="[]")
+    member_count = Column(Integer, nullable=False, server_default="0")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class OrgCommand(Base):
+    __tablename__ = "org_commands"
+    __table_args__ = (
+        Index("ix_org_commands_tenant_org_submitted", "tenant_id", "org_id", "submitted_at"),
+        {"schema": None},
+    )
+
+    command_id = Column(PG_UUID(as_uuid=True), primary_key=True)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    org_id = Column(
+        PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    command = Column(Text, nullable=False)
+    channel = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False)
+    requires_2fa = Column(Boolean, nullable=False, server_default="false")
+    conversation_id = Column(String(200), nullable=True)
+    goal_id = Column(String(64), nullable=True)
+    error = Column(Text, nullable=True)
+    result = Column(JSONB, nullable=True)
+    submitted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -7,6 +7,7 @@ reverted when the transaction ends — no explicit cleanup needed.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
@@ -48,6 +49,19 @@ async def sqlalchemy_rls_context(
     )
     try:
         yield session
+        # Flush pending ORM writes WHILE the GUC is still set. The usual shape is
+        #   async with (db() as s, s.begin(), sqlalchemy_rls_context(s, tid)):
+        #       s.add(obj)
+        # where this context exits BEFORE s.begin() commits — and ORM adds are
+        # only flushed at that commit. Without this flush they ran after the
+        # reset below, with app.tenant_id = '', so every such INSERT violated its
+        # table's policy under a least-privilege (NOBYPASSRLS) role. A superuser
+        # connection bypasses RLS entirely, which is why no test ever saw it.
+        flush = getattr(session, "flush", None)
+        if flush is not None:
+            pending = flush()
+            if inspect.isawaitable(pending):
+                await pending
     finally:
         # SET LOCAL auto-resets when transaction ends, but reset explicitly for safety
         with suppress(Exception):

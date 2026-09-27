@@ -300,7 +300,10 @@ def test_register_with_oauth_auth_type() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 201, 500, 503)
+    # "oauth" is not an AuthType (oauth_ac / oauth_cc / pkce are). It used to pass
+    # validation and crash in the registry (500); now it is rejected up front.
+    assert resp.status_code == 422
+    assert "oauth_ac" in resp.text
 
 
 def test_register_with_basic_auth_type() -> None:

@@ -407,7 +407,8 @@ async def test_ucg_command_routes_to_goal_service_with_correct_signature() -> No
     """
     from types import SimpleNamespace
 
-    from app.org.router import _COMMAND_HISTORY, _route_command_to_agent
+    from app.org import runtime_store
+    from app.org.router import _route_command_to_agent
 
     org_id = str(uuid.uuid4())
     command_id = str(uuid.uuid4())
@@ -416,9 +417,8 @@ async def test_ucg_command_routes_to_goal_service_with_correct_signature() -> No
     app_state = SimpleNamespace(goal_service=SimpleNamespace(submit_goal=submit_goal))
 
     # Seed the command history the way the endpoint does before dispatching.
-    _COMMAND_HISTORY.setdefault(org_id, []).insert(
-        0, {"command_id": command_id, "status": "queued"}
-    )
+    key = (TENANT_ID, org_id)
+    runtime_store._MEM_COMMANDS[key] = [{"command_id": command_id, "status": "queued"}]
 
     await _route_command_to_agent(command_id, org_id, tenant_ctx, "Do the thing", app_state)
 
@@ -433,10 +433,10 @@ async def test_ucg_command_routes_to_goal_service_with_correct_signature() -> No
     assert "tenant_id" not in kwargs
     assert "metadata" not in kwargs
 
-    record = _COMMAND_HISTORY[org_id][0]
+    record = runtime_store._MEM_COMMANDS[key][0]
     assert record["status"] == "routed"
     assert record["goal_id"] == "goal-123"
-    _COMMAND_HISTORY.pop(org_id, None)
+    runtime_store._MEM_COMMANDS.pop(key, None)
 
 
 @pytest.mark.anyio

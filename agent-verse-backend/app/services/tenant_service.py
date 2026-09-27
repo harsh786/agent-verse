@@ -464,20 +464,33 @@ class TenantService:
             return None
 
     async def _db_resolve_by_hash(self, key_hash: str) -> dict[str, Any] | None:
-        """Authoritative single-key lookup by hash, bypassing RLS (this runs BEFORE
-        a tenant context exists — it is what establishes it). Returns the active,
-        non-expired key + tenant plan, or None. This makes auth DB-authoritative so
-        a key revoked on one pod is honoured cluster-wide (the DB is the source of
-        truth; the Redis cache in front is cleared on revoke)."""
+        """Authoritative single-key lookup by hash. Returns the active, non-expired
+        key + tenant plan, or None. This makes auth DB-authoritative so a key
+        revoked on one pod is honoured cluster-wide (the DB is the source of truth;
+        the Redis cache in front is cleared on revoke).
+
+        This runs BEFORE any tenant context exists — it is what establishes it —
+        so it cannot scope by ``app.tenant_id``. It used to switch RLS off
+        (``system_session``), which a least-privilege NOBYPASSRLS role is not
+        allowed to do: under the role production is meant to run as, every
+        authenticated request failed with "query would be affected by row-level
+        security" and answered 401. Instead it presents the key's hash as
+        ``app.api_key_hash``; the ``api_keys_by_presented_hash`` policy (migration
+        b8c9d0e1f2a3) makes exactly the row with that hash visible and nothing
+        else. Knowing a key's SHA-256 is equivalent to holding the key, so this
+        grants nothing the caller does not already possess.
+        """
         if self._db is None:
             return None
         try:
-            from sqlalchemy import select
+            from sqlalchemy import select, text
 
             from app.db.models.tenant import ApiKey, Tenant
-            from app.db.rls import system_session
 
-            async with self._db() as session, session.begin(), system_session(session):
+            async with self._db() as session, session.begin():
+                await session.execute(
+                    text("SELECT set_config('app.api_key_hash', :h, true)"), {"h": key_hash}
+                )
                 row = (
                     await session.execute(
                         select(ApiKey, Tenant)
