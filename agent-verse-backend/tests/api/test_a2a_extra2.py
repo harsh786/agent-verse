@@ -28,6 +28,9 @@ _CTX = TenantContext(tenant_id="tid-a2a2", plan=PlanTier.ENTERPRISE, api_key_id=
 _VALID_KEY = "av_a2a_test2"
 
 
+_A2A_TID = "a2a-test-caller"
+
+
 def _make_app(goal_service=None) -> FastAPI:
     app = FastAPI()
 
@@ -36,6 +39,21 @@ def _make_app(goal_service=None) -> FastAPI:
 
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
+    # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
+    # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
+    @app.middleware("http")
+    async def _inject_caller(request, call_next):  # type: ignore[no-untyped-def]
+        import os as _os
+
+        from app.tenancy.context import PlanTier, TenantContext
+
+        request.state.tenant = TenantContext(
+            tenant_id=_os.getenv("A2A_TENANT_ID") or "a2a-test-caller",
+            plan=PlanTier.FREE,
+            api_key_id="test-key",
+        )
+        return await call_next(request)
+
     app.include_router(a2a_router)
     if goal_service is not None:
         app.state.goal_service = goal_service
@@ -65,7 +83,7 @@ class TestUpdateTaskStatusWithDb:
         mock_session.execute = AsyncMock(side_effect=fake_execute)
         mock_db = MagicMock(return_value=mock_session)
 
-        await _update_task_status("task-db-1", "complete", "Goal done", db=mock_db)
+        await _update_task_status("task-db-1", _A2A_TID, "complete", "Goal done", db=mock_db)
         assert any("UPDATE" in s or "a2a_tasks" in s for s in executed_sql)
 
     @pytest.mark.asyncio
@@ -82,7 +100,7 @@ class TestUpdateTaskStatusWithDb:
         mock_session.execute = AsyncMock(side_effect=RuntimeError("db error"))
         mock_db = MagicMock(return_value=mock_session)
 
-        await _update_task_status("task-x", "failed", "error", db=mock_db)
+        await _update_task_status("task-x", _A2A_TID, "failed", "error", db=mock_db)
         # Should not raise
 
     @pytest.mark.asyncio
@@ -107,7 +125,7 @@ class TestUpdateTaskStatusWithDb:
         mock_db = MagicMock(return_value=mock_session)
 
         long_result = "x" * 20000
-        await _update_task_status("task-long", "complete", long_result, db=mock_db)
+        await _update_task_status("task-long", _A2A_TID, "complete", long_result, db=mock_db)
         # Verify result was truncated
         if executed_params:
             assert len(executed_params[-1].get("result", "")) <= 10000
@@ -115,84 +133,82 @@ class TestUpdateTaskStatusWithDb:
 
 # ── _get_task with DB ─────────────────────────────────────────────────────────
 
+def _db_returning(*, row=None, exc=None):
+    """A session factory whose transaction yields one row (or raises).
+
+    Reads now run inside ``session.begin()`` + ``sqlalchemy_rls_context`` —
+    they used to run with no RLS scope at all.
+    """
+    result = MagicMock()
+    result.fetchone = MagicMock(return_value=row)
+
+    async def _execute(stmt, params=None):
+        if "set_config" in str(stmt):
+            return MagicMock()
+        if exc is not None:
+            raise exc
+        return result
+
+    session = MagicMock()
+    session.execute = AsyncMock(side_effect=_execute)
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock(return_value=None)
+    tx.__aexit__ = AsyncMock(return_value=False)
+    session.begin = MagicMock(return_value=tx)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return MagicMock(return_value=cm), session
+
+
 class TestGetTaskWithDb:
     @pytest.mark.asyncio
     async def test_get_task_from_db_found(self):
-        """Lines 105-118: DB returns a row → dict returned."""
         from datetime import UTC, datetime
-        now = datetime.now(UTC)
-        row = ("task-db-get", "Fix the bug", "complete", "result text", "http://cb.url", now)
 
-        mock_result = MagicMock()
-        mock_result.fetchone = MagicMock(return_value=row)
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_db = MagicMock(return_value=mock_session)
-
-        result = await _get_task("task-db-get", db=mock_db)
+        row = ("task-db-get", "Fix the bug", "complete", "result text", "http://cb.url",
+               datetime.now(UTC))
+        db, session = _db_returning(row=row)
+        result = await _get_task("task-db-get", db=db, tenant_id=_A2A_TID)
         assert result is not None
         assert result["task_id"] == "task-db-get"
         assert result["goal"] == "Fix the bug"
         assert result["status"] == "complete"
+        # Scoped by tenant both by predicate and by RLS GUC.
+        sql_calls = [c.args for c in session.execute.await_args_list]
+        assert any("tenant_id=:tid" in str(a[0]) and a[1]["tid"] == _A2A_TID
+                   for a in sql_calls if len(a) > 1 and "SELECT id" in str(a[0]))
+        assert any("set_config" in str(a[0]) for a in sql_calls)
 
     @pytest.mark.asyncio
-    async def test_get_task_from_db_not_found_falls_back_to_memory(self):
-        """Lines 119-121: DB returns None → in-memory fallback."""
+    async def test_get_task_not_in_db_does_not_fall_back_to_process_memory(self):
+        """A DB miss is authoritative: the task is not this tenant's (or absent).
+
+        This used to fall back to a process-local dict, i.e. answer from one
+        replica's memory instead of the database every replica shares.
+        """
         _tasks.clear()
-        _tasks["mem-task"] = {"goal": "memory goal", "status": "pending"}
-
-        mock_result = MagicMock()
-        mock_result.fetchone = MagicMock(return_value=None)
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_db = MagicMock(return_value=mock_session)
-
-        result = await _get_task("mem-task", db=mock_db)
-        assert result is not None
-        assert result["goal"] == "memory goal"
+        _tasks["mem-task"] = {"goal": "memory goal", "status": "pending", "tenant_id": _A2A_TID}
+        db, _ = _db_returning(row=None)
+        assert await _get_task("mem-task", db=db, tenant_id=_A2A_TID) is None
         _tasks.clear()
 
     @pytest.mark.asyncio
-    async def test_get_task_db_exception_falls_back_to_memory(self):
-        """Lines 119: DB exception → in-memory fallback."""
+    async def test_get_task_db_error_surfaces(self):
         _tasks.clear()
-        _tasks["exc-task"] = {"goal": "exception fallback", "status": "pending"}
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(side_effect=RuntimeError("db boom"))
-        mock_db = MagicMock(return_value=mock_session)
-
-        result = await _get_task("exc-task", db=mock_db)
-        assert result is not None
+        _tasks["exc-task"] = {"goal": "x", "status": "pending", "tenant_id": _A2A_TID}
+        db, _ = _db_returning(exc=RuntimeError("db boom"))
+        with pytest.raises(RuntimeError, match="db boom"):
+            await _get_task("exc-task", db=db, tenant_id=_A2A_TID)
         _tasks.clear()
 
     @pytest.mark.asyncio
     async def test_get_task_created_at_none_handled(self):
-        """created_at=None → empty string in dict."""
-        row = ("task-no-ts", "goal", "pending", None, None, None)
-        mock_result = MagicMock()
-        mock_result.fetchone = MagicMock(return_value=row)
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_db = MagicMock(return_value=mock_session)
-
-        result = await _get_task("task-no-ts", db=mock_db)
+        db, _ = _db_returning(row=("task-no-ts", "goal", "pending", None, None, None))
+        result = await _get_task("task-no-ts", db=db, tenant_id=_A2A_TID)
         assert result is not None
         assert result["created_at"] == ""
 
-
-# ── receive_a2a_task endpoint ─────────────────────────────────────────────────
 
 class TestReceiveA2aTaskEndpoint:
     def test_task_accepted_without_secret_and_tenant(self):

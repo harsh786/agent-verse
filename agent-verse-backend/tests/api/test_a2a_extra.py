@@ -25,6 +25,9 @@ _CTX = TenantContext(tenant_id="tid-a2a", plan=PlanTier.ENTERPRISE, api_key_id="
 _VALID_KEY = "av_a2a_test"
 
 
+_A2A_TID = "a2a-test-caller"
+
+
 def _make_app(goal_service=None) -> FastAPI:
     app = FastAPI()
 
@@ -33,6 +36,21 @@ def _make_app(goal_service=None) -> FastAPI:
 
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
+    # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
+    # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
+    @app.middleware("http")
+    async def _inject_caller(request, call_next):  # type: ignore[no-untyped-def]
+        import os as _os
+
+        from app.tenancy.context import PlanTier, TenantContext
+
+        request.state.tenant = TenantContext(
+            tenant_id=_os.getenv("A2A_TENANT_ID") or "a2a-test-caller",
+            plan=PlanTier.FREE,
+            api_key_id="test-key",
+        )
+        return await call_next(request)
+
     app.include_router(a2a_router)
     if goal_service is not None:
         app.state.goal_service = goal_service
@@ -89,10 +107,13 @@ class TestPersistTask:
         mock_db = MagicMock(return_value=mock_session)
 
         task_id = "task-fallback"
-        data = {"goal": "fallback", "status": "pending"}
-        await _persist_task(task_id, data, db=mock_db)
-        # Should fall back to memory
-        assert _tasks[task_id] == data
+        data = {"goal": "fallback", "status": "pending", "tenant_id": _A2A_TID}
+        # A DB failure now surfaces instead of silently parking the task in this
+        # process's memory, where no other replica could see it and a restart
+        # would lose it — while the caller was told it was accepted.
+        with pytest.raises(RuntimeError, match="db error"):
+            await _persist_task(task_id, data, db=mock_db)
+        assert task_id not in _tasks
         _tasks.clear()
 
 
@@ -100,8 +121,8 @@ class TestUpdateTaskStatus:
     @pytest.mark.asyncio
     async def test_updates_memory_when_no_db(self):
         _tasks.clear()
-        _tasks["t1"] = {"status": "pending", "result": ""}
-        await _update_task_status("t1", "completed", "success", db=None)
+        _tasks["t1"] = {"status": "pending", "result": "", "tenant_id": _A2A_TID}
+        await _update_task_status("t1", _A2A_TID, "completed", "success", db=None)
         assert _tasks["t1"]["status"] == "completed"
         _tasks.clear()
 
@@ -109,21 +130,21 @@ class TestUpdateTaskStatus:
     async def test_noop_when_task_not_in_memory_no_db(self):
         _tasks.clear()
         # Should not raise
-        await _update_task_status("nonexistent", "completed", "", db=None)
+        await _update_task_status("nonexistent", _A2A_TID, "completed", "", db=None)
 
 
 class TestGetTask:
     @pytest.mark.asyncio
     async def test_returns_none_when_not_found(self):
         _tasks.clear()
-        result = await _get_task("nonexistent", db=None)
+        result = await _get_task("nonexistent", db=None, tenant_id=_A2A_TID)
         assert result is None
 
     @pytest.mark.asyncio
     async def test_returns_from_memory(self):
         _tasks.clear()
-        _tasks["task1"] = {"goal": "test", "status": "pending"}
-        result = await _get_task("task1", db=None)
+        _tasks["task1"] = {"goal": "test", "status": "pending", "tenant_id": _A2A_TID}
+        result = await _get_task("task1", db=None, tenant_id=_A2A_TID)
         assert result is not None
         assert result["goal"] == "test"
         _tasks.clear()

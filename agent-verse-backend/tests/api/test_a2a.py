@@ -14,6 +14,21 @@ def _make_app() -> FastAPI:
     # Wire minimal state
     app.state.db_session_factory = None
     app.state.goal_service = None
+    # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
+    # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
+    @app.middleware("http")
+    async def _inject_caller(request, call_next):  # type: ignore[no-untyped-def]
+        import os as _os
+
+        from app.tenancy.context import PlanTier, TenantContext
+
+        request.state.tenant = TenantContext(
+            tenant_id=_os.getenv("A2A_TENANT_ID") or "a2a-test-caller",
+            plan=PlanTier.FREE,
+            api_key_id="test-key",
+        )
+        return await call_next(request)
+
     app.include_router(a2a_router)
     return app
 

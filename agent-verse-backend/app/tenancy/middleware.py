@@ -134,6 +134,27 @@ def _stream_token_context(request: Request, claims: dict[str, Any]) -> TenantCon
     )
 
 
+# Last path segments of the endpoints EventSource connects to.
+_STREAM_SEGMENTS = frozenset({"stream", "events"})
+
+
+def _stream_token_allowed(request: Request) -> bool:
+    """Whether a ``?token=`` stream token may authenticate this request.
+
+    The token exists because EventSource cannot send headers, so it travels in
+    the URL — and therefore into access logs, proxy logs and browser history. It
+    was documented as read-only but authenticated ANY method on ANY path, with
+    ``roles=()`` as the only restraint; every endpoint that checks just for a
+    tenant (most of them) accepted it for writes. It is now honoured only for
+    safe methods on streaming endpoints — exactly what EventSource needs — and
+    ignored everywhere else, so normal authentication applies.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return False
+    last = request.url.path.rstrip("/").rsplit("/", 1)[-1]
+    return last in _STREAM_SEGMENTS
+
+
 def _is_cors_preflight(request: Request) -> bool:
     return (
         request.method == "OPTIONS"
@@ -241,7 +262,7 @@ class TenantMiddleware(BaseHTTPMiddleware):
         # access logs, and proxy caches. A valid token authenticates the tenant
         # directly; an invalid/expired one falls through to normal auth (→ 401).
         stream_token = request.query_params.get("token")
-        if stream_token:
+        if stream_token and _stream_token_allowed(request):
             from app.auth.stream_tokens import verify_stream_token
 
             claims = verify_stream_token(stream_token)

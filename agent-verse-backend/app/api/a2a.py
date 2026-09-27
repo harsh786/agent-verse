@@ -42,105 +42,122 @@ def _get_a2a_secret() -> str:
 def _verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     """Verify HMAC-SHA256 signature of incoming A2A task.
 
-    When ``A2A_SHARED_SECRET`` is not set the check is bypassed in dev mode.
-    A warning is logged at import time (see module-level check below) so operators
-    are always aware when auth is disabled.
+    With no ``A2A_SHARED_SECRET`` the check is skipped — but only outside
+    production; :func:`receive_a2a_task` refuses to accept tasks at all in
+    production without a secret (fail closed), rather than silently running
+    unsigned.
     """
     if not secret:
-        return True  # Disabled in dev
+        return True  # dev only — production is gated in receive_a2a_task
     if not signature:
         return False
     expected = _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return _hmac.compare_digest(f"sha256={expected}", signature)
 
 
+def _is_production() -> bool:
+    try:
+        from app.core.config import get_settings
+
+        return get_settings().environment == "production"
+    except Exception:  # pragma: no cover - settings unavailable: assume the strict case
+        return True
+
+
+# Every a2a_tasks statement runs under the caller's RLS scope AND carries an
+# explicit tenant predicate. The table is RLS-protected; without the GUC these
+# statements match nothing under a least-privilege role, and the old code then
+# fell back to a process-local dict — so tasks silently lived in one replica's
+# memory and vanished on restart.
+
+
 async def _persist_task(task_id: str, data: dict[str, Any], db: Any) -> None:
-    """Write A2A task to DB."""
+    """Write A2A task to DB (dev/no-DB: process-local dict)."""
     if db is None:
         _tasks[task_id] = data
         return
-    try:
-        from sqlalchemy import text
+    from sqlalchemy import text
 
-        async with db() as session, session.begin():
-            await session.execute(
-                text("""INSERT INTO a2a_tasks
-                    (id, tenant_id, goal_text, status, callback_url, requester_id, created_at)
-                    VALUES (:id, :tid, :goal, :status, :cb, :req, NOW())
-                    ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status"""),
-                {
-                    "id": task_id,
-                    "tid": data.get("tenant_id", "a2a-default"),
-                    "goal": data.get("goal", ""),
-                    "status": data.get("status", "pending"),
-                    "cb": data.get("callback_url", ""),
-                    "req": data.get("requester_agent_id", ""),
-                },
-            )
-    except Exception as exc:
-        logger.warning("a2a_task_persist_failed", error=str(exc))
-        _tasks[task_id] = data
+    from app.db.rls import sqlalchemy_rls_context
+
+    tenant_id = str(data["tenant_id"])
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            text("""INSERT INTO a2a_tasks
+                (id, tenant_id, goal_text, status, callback_url, requester_id, created_at)
+                VALUES (:id, :tid, :goal, :status, :cb, :req, NOW())
+                ON CONFLICT (id) DO UPDATE SET status=EXCLUDED.status"""),
+            {
+                "id": task_id,
+                "tid": tenant_id,
+                "goal": data.get("goal", ""),
+                "status": data.get("status", "pending"),
+                "cb": data.get("callback_url", ""),
+                "req": data.get("requester_agent_id", ""),
+            },
+        )
 
 
-async def _update_task_status(task_id: str, status: str, result: str, db: Any) -> None:
-    """Update A2A task status in DB."""
+async def _update_task_status(
+    task_id: str, tenant_id: str, status: str, result: str, db: Any
+) -> None:
+    """Update A2A task status in DB (scoped to the owning tenant)."""
     if db is None:
-        if task_id in _tasks:
+        if task_id in _tasks and _tasks[task_id].get("tenant_id") == tenant_id:
             _tasks[task_id]["status"] = status
             _tasks[task_id]["result"] = result
         return
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             await session.execute(
                 text(
-                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() WHERE id=:id"  # noqa: E501
+                    "UPDATE a2a_tasks SET status=:status, result=:result, updated_at=NOW() "
+                    "WHERE id=:id AND tenant_id=:tid"
                 ),
-                {"id": task_id, "status": status, "result": result[:10000] if result else ""},
+                {
+                    "id": task_id,
+                    "tid": tenant_id,
+                    "status": status,
+                    "result": result[:10000] if result else "",
+                },
             )
     except Exception as exc:
         logger.warning("a2a_task_update_failed", error=str(exc))
 
 
-async def _get_task(task_id: str, db: Any, tenant_id: str | None = None) -> dict[str, Any] | None:
-    """Fetch A2A task from DB or in-memory dict.
+async def _get_task(task_id: str, db: Any, tenant_id: str) -> dict[str, Any] | None:
+    """Fetch one A2A task owned by *tenant_id* (never another tenant's)."""
+    if db is None:
+        task = _tasks.get(task_id)
+        return task if task is not None and task.get("tenant_id") == tenant_id else None
+    from sqlalchemy import text
 
-    When *tenant_id* is provided the query is filtered to that tenant so one
-    tenant cannot enumerate another tenant's tasks (H2 — cross-tenant IDOR).
-    """
-    if db is not None:
-        try:
-            from sqlalchemy import text
+    from app.db.rls import sqlalchemy_rls_context
 
-            async with db() as session:
-                result = await session.execute(
-                    text(
-                        "SELECT id, goal_text, status, result, callback_url, created_at"
-                        " FROM a2a_tasks WHERE id=:id"
-                        + (" AND tenant_id=:tid" if tenant_id else "")
-                    ),
-                    {"id": task_id, **({"tid": tenant_id} if tenant_id else {})},
-                )
-                row = result.fetchone()
-            if row:
-                return {
-                    "task_id": row[0],
-                    "goal": row[1],
-                    "status": row[2],
-                    "result": row[3],
-                    "callback_url": row[4],
-                    "created_at": row[5].isoformat() if row[5] else "",
-                }
-        except Exception:
-            pass
-    # In-memory fallback: filter by tenant_id when provided
-    task = _tasks.get(task_id)
-    if task is None:
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id, goal_text, status, result, callback_url, created_at "
+                    "FROM a2a_tasks WHERE id=:id AND tenant_id=:tid"
+                ),
+                {"id": task_id, "tid": tenant_id},
+            )
+        ).fetchone()
+    if row is None:
         return None
-    if tenant_id and task.get("tenant_id") != tenant_id:
-        return None  # Cross-tenant access denied
-    return task
+    return {
+        "task_id": row[0],
+        "goal": row[1],
+        "status": row[2],
+        "result": row[3],
+        "callback_url": row[4],
+        "created_at": row[5].isoformat() if row[5] else "",
+    }
 
 
 async def _send_callback(callback_url: str, task_id: str, status: str, result: str) -> None:
@@ -148,7 +165,15 @@ async def _send_callback(callback_url: str, task_id: str, status: str, result: s
     if not callback_url:
         return
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # Re-checked at send time, not just at submission: the goal can run for
+        # minutes, and a hostname validated then can resolve somewhere internal
+        # now (DNS rebinding). Redirects are not followed for the same reason.
+        assert_public_url(callback_url, context="A2A callback (send)")
+    except SSRFError as exc:
+        logger.warning("a2a_callback_blocked", task_id=task_id, error=str(exc)[:200])
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
             await client.post(
                 callback_url,
                 json={
@@ -205,10 +230,23 @@ async def receive_a2a_task(
     body: A2ATaskRequest,
 ) -> dict[str, Any]:
     """Receive a task from another agent via A2A protocol."""
-    # Verify HMAC signature
+    # The task runs as the AUTHENTICATED caller — never as a fixed tenant.
+    # This handler used to ignore request.state.tenant and execute every inbound
+    # goal as the A2A_TENANT_ID tenant on the PROFESSIONAL plan, so any tenant
+    # holding a valid API key (including a free one) could run goals inside
+    # another tenant's context — its knowledge, tools, connectors and budget —
+    # at an escalated plan. It could not even see its own task afterwards.
+    caller = getattr(request.state, "tenant", None)
+    if caller is None:
+        raise HTTPException(401, "Not authenticated")
+
     raw_body = await request.body()
     signature = request.headers.get("X-A2A-Signature", "")
     secret = _get_a2a_secret()
+    if not secret and _is_production():
+        # Fail closed: an unsigned A2A inbound is a dev convenience, never a
+        # production posture.
+        raise HTTPException(503, "A2A inbound is disabled: A2A_SHARED_SECRET is not configured")
     if not _verify_hmac(raw_body, signature, secret):
         raise HTTPException(401, "Invalid A2A signature")
 
@@ -223,17 +261,8 @@ async def receive_a2a_task(
     db = getattr(request.app.state, "db_session_factory", None)
     goal_service = getattr(request.app.state, "goal_service", None)
 
-    # Get tenant context for A2A tasks
-    from app.tenancy.context import PlanTier, TenantContext
-
-    a2a_tenant_id = os.getenv("A2A_TENANT_ID", "")
-    if not a2a_tenant_id:
-        raise HTTPException(503, "A2A integration requires A2A_TENANT_ID env var to be set.")
-    tenant_ctx = TenantContext(
-        tenant_id=a2a_tenant_id,
-        plan=PlanTier.PROFESSIONAL,
-        api_key_id="a2a-inbound",
-    )
+    tenant_ctx = caller
+    a2a_tenant_id = str(caller.tenant_id)
 
     task_data = {
         "task_id": task_id,
@@ -285,7 +314,7 @@ async def receive_a2a_task(
                 final_status = "error"
                 final_result = str(exc)
 
-            await _update_task_status(task_id, final_status, final_result, db)
+            await _update_task_status(task_id, a2a_tenant_id, final_status, final_result, db)
             await _send_callback(body.callback_url or "", task_id, final_status, final_result)
 
         asyncio.create_task(execute_and_callback())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
@@ -299,51 +328,58 @@ async def receive_a2a_task(
 
 @router.get("/a2a/tasks")
 async def list_a2a_tasks(request: Request, limit: int = 50) -> list[dict[str, Any]]:
-    """List recent A2A tasks for this tenant."""
-    db = getattr(request.app.state, "db_session_factory", None)
-    tenant_ctx = getattr(request.state, "tenant", None)
-    tid = tenant_ctx.tenant_id if tenant_ctx else None
-    if db is None:
-        # In-memory fallback: always filter by tenant_id to prevent IDOR
-        tenant_tasks = [t for t in _tasks.values() if tid is None or t.get("tenant_id") == tid]
-        return tenant_tasks[-limit:][::-1]
-    try:
-        from sqlalchemy import text as _t
+    """List recent A2A tasks for the authenticated tenant.
 
-        q = "SELECT id, goal_text, status, callback_url, requester_id, created_at, result FROM a2a_tasks"  # noqa: E501
-        params: dict[str, Any] = {}
-        if tid:
-            q += " WHERE tenant_id = :tid"
-            params["tid"] = tid
-        q += f" ORDER BY created_at DESC LIMIT {min(limit, 200)}"
-        async with db() as session:
-            rows = (await session.execute(_t(q), params)).fetchall()
-        return [
-            {
-                "task_id": r[0],
-                "goal": r[1],
-                "status": r[2],
-                "callback_url": r[3],
-                "requester_agent_id": r[4],
-                "created_at": r[5].isoformat() if r[5] else "",
-                "result": r[6],
-            }
-            for r in rows
-        ]
-    except Exception:
-        # DB-down fallback: filter by tenant_id to prevent IDOR
-        tenant_tasks = [t for t in _tasks.values() if tid is None or t.get("tenant_id") == tid]
-        return tenant_tasks[-limit:][::-1]
+    Always tenant-scoped: the previous version dropped the WHERE clause entirely
+    when no tenant was resolved, and fell back to a process-local dict on any DB
+    error.
+    """
+    caller = getattr(request.state, "tenant", None)
+    if caller is None:
+        raise HTTPException(401, "Not authenticated")
+    tid = str(caller.tenant_id)
+    limit = max(1, min(int(limit), 200))
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return [t for t in _tasks.values() if t.get("tenant_id") == tid][-limit:][::-1]
+
+    from sqlalchemy import text as _t
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tid):
+        rows = (
+            await session.execute(
+                _t(
+                    "SELECT id, goal_text, status, callback_url, requester_id, created_at, "
+                    "result FROM a2a_tasks WHERE tenant_id = :tid "
+                    "ORDER BY created_at DESC LIMIT :lim"
+                ),
+                {"tid": tid, "lim": limit},
+            )
+        ).fetchall()
+    return [
+        {
+            "task_id": r[0],
+            "goal": r[1],
+            "status": r[2],
+            "callback_url": r[3],
+            "requester_agent_id": r[4],
+            "created_at": r[5].isoformat() if r[5] else "",
+            "result": r[6],
+        }
+        for r in rows
+    ]
 
 
 @router.get("/a2a/tasks/{task_id}")
 async def get_a2a_task(request: Request, task_id: str) -> dict[str, Any]:
-    """Get A2A task status and result."""
+    """Get A2A task status and result (the caller's own tasks only)."""
+    caller = getattr(request.state, "tenant", None)
+    if caller is None:
+        raise HTTPException(401, "Not authenticated")
     db = getattr(request.app.state, "db_session_factory", None)
-    # H2: filter by tenant to prevent cross-tenant IDOR
-    tenant_ctx = getattr(request.state, "tenant", None)
-    tid = tenant_ctx.tenant_id if tenant_ctx else None
-    task = await _get_task(task_id, db, tenant_id=tid)
+    task = await _get_task(task_id, db, tenant_id=str(caller.tenant_id))
     if task is None:
         raise HTTPException(404, f"Task {task_id} not found")
     return task

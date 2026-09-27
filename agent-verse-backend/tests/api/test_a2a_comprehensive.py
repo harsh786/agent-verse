@@ -22,10 +22,28 @@ from app.api.a2a import (
 )
 
 
+_A2A_TID = "a2a-test-caller"
+
+
 def _make_app() -> FastAPI:
     app = FastAPI()
     app.state.db_session_factory = None
     app.state.goal_service = None
+    # The real app puts /a2a behind TenantMiddleware; inbound tasks now run as
+    # that authenticated caller (they used to run as the fixed A2A_TENANT_ID).
+    @app.middleware("http")
+    async def _inject_caller(request, call_next):  # type: ignore[no-untyped-def]
+        import os as _os
+
+        from app.tenancy.context import PlanTier, TenantContext
+
+        request.state.tenant = TenantContext(
+            tenant_id=_os.getenv("A2A_TENANT_ID") or "a2a-test-caller",
+            plan=PlanTier.FREE,
+            api_key_id="test-key",
+        )
+        return await call_next(request)
+
     app.include_router(a2a_router)
     return app
 
@@ -80,15 +98,22 @@ async def test_persist_task_db_none_stores_in_memory() -> None:
 
 async def test_update_task_status_db_none_updates_in_memory() -> None:
     task_id = "task-upd-001"
-    _tasks[task_id] = {"status": "accepted", "result": ""}
-    await _update_task_status(task_id, "complete", "done", db=None)
+    _tasks[task_id] = {"status": "accepted", "result": "", "tenant_id": _A2A_TID}
+    await _update_task_status(task_id, _A2A_TID, "complete", "done", db=None)
     assert _tasks[task_id]["status"] == "complete"
     assert _tasks[task_id]["result"] == "done"
 
 
+async def test_update_task_status_ignores_another_tenants_task() -> None:
+    """Status updates are scoped to the owning tenant."""
+    _tasks["task-foreign"] = {"status": "accepted", "result": "", "tenant_id": "someone-else"}
+    await _update_task_status("task-foreign", _A2A_TID, "complete", "hijacked", db=None)
+    assert _tasks["task-foreign"]["status"] == "accepted"
+
+
 async def test_update_task_status_missing_task_noop() -> None:
     """Update for a nonexistent task should not raise."""
-    await _update_task_status("nonexistent", "failed", "error", db=None)
+    await _update_task_status("nonexistent", _A2A_TID, "failed", "error", db=None)
 
 
 # ── _send_callback ────────────────────────────────────────────────────────────
@@ -133,11 +158,25 @@ def test_receive_task_no_hmac_secret_accepted(monkeypatch) -> None:
     assert resp.json()["status"] == "accepted"
 
 
-def test_receive_task_missing_tenant_id_returns_503(monkeypatch) -> None:
+def test_receive_task_no_longer_depends_on_a2a_tenant_id(monkeypatch) -> None:
+    """Tasks run as the authenticated caller, so A2A_TENANT_ID is irrelevant.
+
+    It used to be *required* (503 without it) because every inbound goal ran as
+    that one fixed tenant, regardless of who authenticated.
+    """
     monkeypatch.delenv("A2A_TENANT_ID", raising=False)
     client = TestClient(_make_app())
     resp = client.post("/a2a/tasks", json={"goal": "Do X"})
-    assert resp.status_code == 503
+    assert resp.status_code == 202
+
+
+def test_receive_task_without_an_authenticated_caller_is_401() -> None:
+    app = FastAPI()
+    app.state.db_session_factory = None
+    app.state.goal_service = None
+    app.include_router(a2a_router)
+    resp = TestClient(app).post("/a2a/tasks", json={"goal": "Do X"})
+    assert resp.status_code == 401
 
 
 def test_receive_task_bad_hmac_returns_401(monkeypatch) -> None:
