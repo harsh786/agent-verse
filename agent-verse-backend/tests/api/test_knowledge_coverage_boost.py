@@ -585,23 +585,33 @@ def test_delete_document_success_via_real_store() -> None:
     assert resp.json()["status"] == "deleted"
 
 
-def test_delete_document_not_implemented() -> None:
-    class _FakeStore:
-        pass
+def _collection_with_doc(client: TestClient, content: str, **meta: str) -> tuple[str, str]:
+    coll_id = client.post(
+        "/knowledge/collections", json={"name": f"c-{content[:6]}"}, headers=_auth()
+    ).json()["collection_id"]
+    resp = client.post(
+        "/knowledge/ingest",
+        json={"collection_id": coll_id, "source_type": "text", "content": content},
+        headers=_auth(),
+    )
+    assert resp.status_code in (200, 201)
+    store: KnowledgeStore = client.app.state.knowledge_store  # type: ignore[attr-defined]
+    chunks = store._data[(_CTX.tenant_id, coll_id)].chunks
+    for chunk in chunks:
+        chunk.metadata = {**(chunk.metadata or {}), **meta}
+    return coll_id, chunks[0].document_id
 
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.delete("/knowledge/collections/col-1/documents/doc-1", headers=_auth())
-    assert resp.status_code == 501
 
-
-def test_delete_document_exception_returns_500() -> None:
-    class _FakeStore:
-        async def delete_document_async(self, **kwargs: Any) -> int:
-            raise RuntimeError("delete failed")
-
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.delete("/knowledge/collections/col-1/documents/doc-1", headers=_auth())
-    assert resp.status_code == 500
+def test_delete_document_unknown_collection_or_document_is_404() -> None:
+    """Deleting in a collection the caller does not have (or a missing doc) is 404."""
+    client = _client(embedder=_make_embedder())
+    assert client.delete(
+        "/knowledge/collections/not-mine/documents/doc-1", headers=_auth()
+    ).status_code == 404
+    coll_id, _ = _collection_with_doc(client, "some content here")
+    assert client.delete(
+        f"/knowledge/collections/{coll_id}/documents/missing-doc", headers=_auth()
+    ).status_code == 404
 
 
 # ---------------------------------------------------------------------------
@@ -627,53 +637,61 @@ def test_reingest_document_no_store() -> None:
     assert resp.status_code == 503
 
 
-def test_reingest_document_native_method() -> None:
-    class _FakeStore:
-        async def reingest_document(self, **kwargs: Any) -> None:
-            return None
+def test_reingest_unknown_collection_or_document_is_404() -> None:
+    client = _client(embedder=_make_embedder())
+    assert client.post(
+        "/knowledge/collections/not-mine/documents/d/reingest", headers=_auth()
+    ).status_code == 404
+    coll_id, _ = _collection_with_doc(client, "uploaded text body")
+    assert client.post(
+        f"/knowledge/collections/{coll_id}/documents/missing/reingest", headers=_auth()
+    ).status_code == 404
 
-    client = _client(knowledge_store=_FakeStore())
+
+def test_reingest_uploaded_document_is_409() -> None:
+    """Uploaded content has no source to re-fetch; say so instead of faking "queued"."""
+    client = _client(embedder=_make_embedder())
+    coll_id, doc_id = _collection_with_doc(client, "uploaded text body")
     resp = client.post(
-        "/knowledge/collections/col-1/documents/doc-1/reingest", headers=_auth()
+        f"/knowledge/collections/{coll_id}/documents/{doc_id}/reingest", headers=_auth()
     )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "reingested"
+    assert resp.status_code == 409
 
 
-def test_reingest_document_db_fallback_queued() -> None:
-    session = _FakeSession(rows=[], total=0)
-
-    class _FakeStore:
-        _db = staticmethod(lambda: _FakeSessionCM(session))
-
-    with patch("app.db.rls.sqlalchemy_rls_context", new=_rls_noop()):
-        client = _client(knowledge_store=_FakeStore())
+def test_reingest_url_document_replaces_it() -> None:
+    client = _client(embedder=_make_embedder())
+    coll_id, doc_id = _collection_with_doc(
+        client, "old page text", source_url="https://example.com/page", source_type="web"
+    )
+    fetched = ("fresh page text with new facts", {"source_url": "https://example.com/page"})
+    with patch("app.api.knowledge._fetch_url_content", new=AsyncMock(return_value=fetched)):
         resp = client.post(
-            "/knowledge/collections/col-1/documents/doc-1/reingest", headers=_auth()
+            f"/knowledge/collections/{coll_id}/documents/{doc_id}/reingest", headers=_auth()
         )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "queued"
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "reingested" and body["previous_document_id"] == doc_id
+    store: KnowledgeStore = client.app.state.knowledge_store  # type: ignore[attr-defined]
+    chunks = store._data[(_CTX.tenant_id, coll_id)].chunks
+    assert {c.document_id for c in chunks} == {body["document_id"]}
+    assert "fresh page text" in chunks[0].content
 
 
-def test_reingest_document_unsupported() -> None:
-    client = _client()  # real in-memory KnowledgeStore, no _db
-    resp = client.post(
-        "/knowledge/collections/col-1/documents/doc-1/reingest", headers=_auth()
+def test_reingest_fetch_failure_keeps_the_old_document() -> None:
+    from fastapi import HTTPException as _HTTPException
+
+    client = _client(embedder=_make_embedder())
+    coll_id, doc_id = _collection_with_doc(
+        client, "old page text", source_url="https://example.com/p", source_type="web"
     )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "unsupported"
-
-
-def test_reingest_document_exception_returns_500() -> None:
-    class _FakeStore:
-        async def reingest_document(self, **kwargs: Any) -> None:
-            raise RuntimeError("reingest failed")
-
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.post(
-        "/knowledge/collections/col-1/documents/doc-1/reingest", headers=_auth()
-    )
+    boom = AsyncMock(side_effect=_HTTPException(500, "Failed to fetch"))
+    with patch("app.api.knowledge._fetch_url_content", new=boom):
+        resp = client.post(
+            f"/knowledge/collections/{coll_id}/documents/{doc_id}/reingest", headers=_auth()
+        )
     assert resp.status_code == 500
+    store: KnowledgeStore = client.app.state.knowledge_store  # type: ignore[attr-defined]
+    assert {c.document_id for c in store._data[(_CTX.tenant_id, coll_id)].chunks} == {doc_id}
 
 
 # ---------------------------------------------------------------------------
@@ -697,34 +715,46 @@ def test_sync_collection_no_store() -> None:
     assert resp.status_code == 503
 
 
-def test_sync_collection_native_method() -> None:
-    class _FakeStore:
-        async def sync_collection(self, **kwargs: Any) -> dict[str, Any]:
-            return {"documents_synced": 3}
+def test_sync_unknown_collection_is_404() -> None:
+    client = _client(embedder=_make_embedder())
+    assert client.post("/knowledge/collections/not-mine/sync", headers=_auth()).status_code == 404
 
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.post("/knowledge/collections/col-1/sync", headers=_auth())
-    assert resp.status_code == 200
+
+def test_sync_without_ingestion_framework_is_503() -> None:
+    client = _client(embedder=_make_embedder())
+    coll_id, _ = _collection_with_doc(client, "text")
+    client.app.state.source_store = None  # type: ignore[attr-defined]
+    client.app.state.ingestion_tracker = None  # type: ignore[attr-defined]
+    with patch("app.api.ingestion._get_source_store", return_value=None):
+        resp = client.post(f"/knowledge/collections/{coll_id}/sync", headers=_auth())
+    assert resp.status_code == 503
+
+
+def test_sync_queues_each_source_of_the_collection() -> None:
+    from types import SimpleNamespace
+
+    client = _client(embedder=_make_embedder())
+    coll_id, _ = _collection_with_doc(client, "text")
+    mine = SimpleNamespace(source_id="s1", collection_id=coll_id)
+    busy = SimpleNamespace(source_id="s2", collection_id=coll_id)
+    other = SimpleNamespace(source_id="s3", collection_id="another-collection")
+    source_store = SimpleNamespace(list=AsyncMock(return_value=[mine, busy, other]))
+    tracker = SimpleNamespace(
+        acquire_lock=AsyncMock(side_effect=lambda sid, tid: None if sid == "s2" else f"job-{sid}")
+    )
+    run_sync = AsyncMock()
+    with (
+        patch("app.api.ingestion._get_source_store", return_value=source_store),
+        patch("app.api.ingestion._get_tracker", return_value=tracker),
+        patch("app.api.ingestion._get_pipeline", return_value=object()),
+        patch("app.api.ingestion._run_sync", new=run_sync),
+    ):
+        resp = client.post(f"/knowledge/collections/{coll_id}/sync", headers=_auth())
+    assert resp.status_code == 202
     body = resp.json()
-    assert body["status"] == "syncing"
-    assert body["documents_synced"] == 3
-
-
-def test_sync_collection_unsupported() -> None:
-    client = _client()
-    resp = client.post("/knowledge/collections/col-1/sync", headers=_auth())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "unsupported"
-
-
-def test_sync_collection_exception_returns_500() -> None:
-    class _FakeStore:
-        async def sync_collection(self, **kwargs: Any) -> dict[str, Any]:
-            raise RuntimeError("sync failed")
-
-    client = _client(knowledge_store=_FakeStore())
-    resp = client.post("/knowledge/collections/col-1/sync", headers=_auth())
-    assert resp.status_code == 500
+    assert body["queued"] == [{"source_id": "s1", "job_id": "job-s1"}]
+    assert body["already_running"] == ["s2"]
+    assert run_sync.await_count == 1
 
 
 # ---------------------------------------------------------------------------

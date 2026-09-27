@@ -1187,6 +1187,52 @@ class KnowledgeStore:
             store.collection.document_count = len({c.document_id for c in store.chunks})
         return deleted
 
+    async def get_document_source_async(
+        self, document_id: str, *, collection_id: str, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """Metadata of a document's first chunk (its source), or None if absent."""
+        if self._db is None:
+            store = self._data.get((tenant_ctx.tenant_id, collection_id))
+            chunks = [c for c in (store.chunks if store else []) if c.document_id == document_id]
+            if not chunks:
+                return None
+            return dict(min(chunks, key=lambda c: c.chunk_index).metadata or {})
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dim = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :cid AND tenant_id = :tid AND is_active IS TRUE"
+                    ),
+                    {"cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).scalar_one_or_none()
+            if dim is None:
+                return None
+            row = (
+                await session.execute(
+                    text(
+                        f"SELECT metadata FROM {_chunk_table(int(dim))} "
+                        "WHERE document_id = :did AND collection_id = :cid AND tenant_id = :tid "
+                        "ORDER BY chunk_index LIMIT 1"
+                    ),
+                    {"did": document_id, "cid": collection_id, "tid": tenant_ctx.tenant_id},
+                )
+            ).first()
+        if row is None:
+            return None
+        meta = row[0]
+        return dict(json.loads(meta) if isinstance(meta, str) else (meta or {}))
+
     async def delete_document_async(
         self,
         document_id: str,

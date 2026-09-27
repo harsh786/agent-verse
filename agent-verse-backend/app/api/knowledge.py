@@ -10,7 +10,17 @@ import uuid as _uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
@@ -1236,18 +1246,18 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 # ---------------------------------------------------------------------------
 
 
-@router.post("/ingest/url", status_code=201)
-async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
-    """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
-    tenant_ctx = _require_tenant(request)
-    store = _knowledge_store(request)
+async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str, Any]]:
+    """SSRF-check and fetch a web/github URL; return (text content, metadata).
 
+    Shared by ``/ingest/url`` and document re-ingestion, which re-validates the
+    stored URL at fetch time (DNS may have changed since the first ingest).
+    """
     content = ""
-    metadata: dict[str, Any] = {"source_url": body.url, "source_type": body.source_type}
+    metadata: dict[str, Any] = {"source_url": url, "source_type": source_type}
 
     # SSRF guard — reject internal/metadata URLs before fetching
     try:
-        assert_public_url(body.url, context="/ingest/url")
+        assert_public_url(url, context="/ingest/url")
     except SSRFError as exc:
         raise HTTPException(
             status_code=400,
@@ -1255,11 +1265,11 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         ) from exc
 
     try:
-        if body.source_type == "web":
+        if source_type == "web":
             import httpx
 
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(body.url, headers={"User-Agent": "AgentVerse/1.0"})
+                resp = await client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
                 resp.raise_for_status()
                 raw = resp.text
                 import re
@@ -1267,10 +1277,10 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
                 content = re.sub(r"<[^>]+>", " ", raw)
                 content = re.sub(r"\s+", " ", content).strip()[:50000]
                 title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE)
-                metadata["title"] = title_match.group(1) if title_match else body.url
+                metadata["title"] = title_match.group(1) if title_match else url
 
-        elif body.source_type == "github":
-            raw_url = body.url.replace("github.com", "raw.githubusercontent.com").replace(
+        elif source_type == "github":
+            raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(
                 "/blob/", "/"
             )
             import httpx
@@ -1284,12 +1294,12 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
                 resp = await client.get(raw_url, headers=headers)
                 resp.raise_for_status()
                 content = resp.text[:100000]
-            metadata["filename"] = body.url.split("/")[-1]
+            metadata["filename"] = url.split("/")[-1]
 
         else:
             raise HTTPException(
                 400,
-                f"Source type '{body.source_type}' not yet supported for URL ingestion. "
+                f"Source type '{source_type}' not yet supported for URL ingestion. "
                 "Supported: web, github",
             )
 
@@ -1301,6 +1311,16 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         _logging.getLogger(__name__).warning("ingest_url_fetch_failed: %s", exc)
         raise HTTPException(500, "Failed to fetch content from the requested URL") from exc
 
+    return content, metadata
+
+
+@router.post("/ingest/url", status_code=201)
+async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str, Any]:
+    """Ingest content from a URL (web page, GitHub file, Confluence page, etc.)."""
+    tenant_ctx = _require_tenant(request)
+    store = _knowledge_store(request)
+
+    content, metadata = await _fetch_url_content(body.url, body.source_type)
     if not content.strip():
         raise HTTPException(422, "No content extracted from URL")
 
@@ -2232,32 +2252,34 @@ async def list_documents(
     return {"documents": [], "total": 0}
 
 
+async def _owned_collection_or_404(request: Request, collection_id: str, tenant: Any) -> Any:
+    store = getattr(request.app.state, "knowledge_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+    collection = await store.get_collection_async(collection_id, tenant_ctx=tenant)
+    if collection is None:
+        raise HTTPException(status_code=404, detail=f"Collection {collection_id} not found")
+    return store
+
+
 @router.delete("/collections/{collection_id}/documents/{document_id}")
 async def delete_document(
     collection_id: str,
     document_id: str,
     request: Request,
 ) -> dict[str, Any]:
-    """Delete a document from a knowledge collection."""
+    """Delete a document from one of the caller's collections (404 if absent)."""
     tenant = _require_tenant(request)
-    knowledge_store = getattr(request.app.state, "knowledge_store", None)
+    knowledge_store = await _owned_collection_or_404(request, collection_id, tenant)
+    count = await knowledge_store.delete_document_async(
+        document_id=document_id, collection_id=collection_id, tenant_ctx=tenant
+    )
+    if not count:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    return {"status": "deleted", "document_id": document_id, "chunks_deleted": count}
 
-    if knowledge_store is None:
-        raise HTTPException(status_code=503, detail="Knowledge store not available")
 
-    try:
-        if hasattr(knowledge_store, "delete_document_async"):
-            count = await knowledge_store.delete_document_async(
-                document_id=document_id,
-                collection_id=collection_id,
-                tenant_ctx=tenant,
-            )
-            return {"status": "deleted", "document_id": document_id, "chunks_deleted": count}
-        raise HTTPException(status_code=501, detail="Document deletion not implemented")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+_REFETCHABLE_SOURCE_TYPES = {"web", "github"}
 
 
 @router.post("/collections/{collection_id}/documents/{document_id}/reingest")
@@ -2266,80 +2288,107 @@ async def reingest_document(
     document_id: str,
     request: Request,
 ) -> dict[str, Any]:
-    """Re-ingest a document (re-fetch source URL, re-chunk, re-embed)."""
+    """Re-fetch a URL-sourced document, re-chunk and re-embed it.
+
+    The new version is persisted before the old one is removed, so a failed
+    fetch or embed leaves the existing document intact. This used to flip a
+    status nothing ever processed (and crash on the table's status values),
+    reporting "queued" for work that never happened.
+    """
     tenant = _require_tenant(request)
-    knowledge_store = getattr(request.app.state, "knowledge_store", None)
-
-    if knowledge_store is None:
-        raise HTTPException(status_code=503, detail="Knowledge store not available")
-
-    try:
-        if hasattr(knowledge_store, "reingest_document"):
-            await knowledge_store.reingest_document(
-                document_id=document_id,
-                collection_id=collection_id,
-                tenant_ctx=tenant,
-            )
-            return {"status": "reingested", "document_id": document_id}
-
-        # Fallback: mark document for re-indexing in DB
-        db = getattr(knowledge_store, "_db", None) or getattr(
-            knowledge_store, "_session_factory", None
+    store = await _owned_collection_or_404(request, collection_id, tenant)
+    source = await store.get_document_source_async(
+        document_id, collection_id=collection_id, tenant_ctx=tenant
+    )
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+    url = str(source.get("source_url") or "")
+    source_type = str(source.get("source_type") or "")
+    if not url or source_type not in _REFETCHABLE_SOURCE_TYPES:
+        raise HTTPException(
+            status_code=409,
+            detail="This document has no re-fetchable source (e.g. an uploaded file); "
+            "upload it again to replace it.",
         )
-        if db:
-            from sqlalchemy import text as _t
 
-            from app.db.rls import sqlalchemy_rls_context
+    content, metadata = await _fetch_url_content(url, source_type)
+    if not content.strip():
+        raise HTTPException(422, "No content extracted from URL")
 
-            async with (
-                db() as session,
-                sqlalchemy_rls_context(session, tenant.tenant_id),
-            ):
-                await session.execute(
-                    _t(
-                        "UPDATE knowledge_documents SET status = 'pending_reingest',"
-                        " updated_at = NOW() WHERE id = :id AND collection_id = :cid"
-                        " AND tenant_id = :tid"
-                    ),
-                    {"id": document_id, "cid": collection_id, "tid": tenant.tenant_id},
-                )
-                await session.commit()
-            return {"status": "queued", "document_id": document_id, "message": "Re-ingest queued"}
+    from app.knowledge.chunker_v2 import chunk_by_tokens
+    from app.rag.models import Chunk as RagChunk
 
-        return {
-            "status": "unsupported",
-            "message": "Re-ingest not implemented for this storage backend",
-        }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    pieces = [p for p in chunk_by_tokens(content, max_tokens=512, overlap_tokens=64) if p.strip()]
+    pieces = pieces or [content.strip()]
+    embedder = getattr(request.app.state, "embedder", None)
+    embeddings = await _embed_texts_or_http(pieces, embedder)
+    new_id = _uuid.uuid4().hex
+    chunks = [
+        RagChunk(
+            document_id=new_id,
+            content=piece,
+            embedding=embedding,
+            chunk_index=i,
+            metadata={
+                **{k: str(v) for k, v in metadata.items()},
+                "source_type": source_type,
+                "reingested_from": document_id,
+            },
+        )
+        for i, (piece, embedding) in enumerate(zip(pieces, embeddings, strict=True))
+    ]
+    await _persist_chunks_or_http(store, chunks, collection_id=collection_id, tenant_ctx=tenant)
+    await store.delete_document_async(
+        document_id=document_id, collection_id=collection_id, tenant_ctx=tenant
+    )
+    return {
+        "status": "reingested",
+        "document_id": new_id,
+        "previous_document_id": document_id,
+        "chunks_ingested": len(chunks),
+    }
 
 
-@router.post("/collections/{collection_id}/sync")
+@router.post("/collections/{collection_id}/sync", status_code=202)
 async def sync_collection(
     collection_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
-    """Sync all documents in a collection from their source URLs."""
+    """Sync every ingestion source that feeds one of the caller's collections.
+
+    Each source goes through the same locked sync as ``POST
+    /ingestion/sources/{id}/sync``. It used to answer 200 "unsupported" for any
+    collection id, the caller's or not.
+    """
+    from app.api.ingestion import _get_pipeline, _get_source_store, _get_tracker, _run_sync
+
     tenant = _require_tenant(request)
-    knowledge_store = getattr(request.app.state, "knowledge_store", None)
-
-    if knowledge_store is None:
-        raise HTTPException(status_code=503, detail="Knowledge store not available")
-
-    try:
-        if hasattr(knowledge_store, "sync_collection"):
-            result = await knowledge_store.sync_collection(
-                collection_id=collection_id,
-                tenant_ctx=tenant,
-            )
-            return {"status": "syncing", "collection_id": collection_id, **(result or {})}
-        return {"status": "unsupported", "message": "Sync not implemented for this storage backend"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    await _owned_collection_or_404(request, collection_id, tenant)
+    source_store = _get_source_store(request)
+    tracker = _get_tracker(request)
+    if source_store is None or tracker is None:
+        raise HTTPException(status_code=503, detail="Ingestion framework not configured")
+    sources = [
+        s for s in await source_store.list(tenant.tenant_id)
+        if str(getattr(s, "collection_id", "")) == collection_id
+    ]
+    queued: list[dict[str, str]] = []
+    already_running: list[str] = []
+    pipeline = _get_pipeline(request)
+    for source in sources:
+        job_id = await tracker.acquire_lock(source.source_id, tenant.tenant_id)
+        if job_id is None:
+            already_running.append(source.source_id)
+            continue
+        background_tasks.add_task(_run_sync, source, pipeline, tracker, job_id, source_store)
+        queued.append({"source_id": source.source_id, "job_id": job_id})
+    return {
+        "status": "queued" if queued else ("already_running" if already_running else "no_sources"),
+        "collection_id": collection_id,
+        "queued": queued,
+        "already_running": already_running,
+    }
 
 
 # ---------------------------------------------------------------------------
