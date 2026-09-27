@@ -39,6 +39,26 @@ except ImportError:  # pragma: no cover - guardrails_v2 always ships with the ap
 _LTM_EMBEDDING_DIM = 2048
 
 
+def _fit_ltm_vector(vec: list[float]) -> list[float] | None:
+    """Fit an embedding into the fixed-width column, or None if it cannot fit.
+
+    A narrower vector (e.g. a 1024-d Qwen3-Embedding) is zero-padded: padding
+    leaves dot products and norms — hence cosine similarity — unchanged, so it
+    ranks exactly as it would in a column of its own width and still uses the
+    halfvec HNSW index. Every such write used to fail with "expected 2048
+    dimensions, not 1024", i.e. long-term memory was dead for any deployment
+    whose embedder is not 2048-d. A wider vector cannot be shrunk without
+    changing its geometry, so it is stored without a vector (text-recall only).
+    Rows record their embedding model so recall compares like with like.
+    """
+    n = len(vec)
+    if n == _LTM_EMBEDDING_DIM:
+        return list(vec)
+    if 0 < n < _LTM_EMBEDDING_DIM:
+        return [*vec, *([0.0] * (_LTM_EMBEDDING_DIM - n))]
+    return None
+
+
 @dataclass
 class LongTermMemory:
     """A single cross-session learning entry."""
@@ -351,32 +371,51 @@ class LongTermMemoryStore:
 
                 from sqlalchemy import text
 
+                from app.db.rls import sqlalchemy_rls_context
+
                 # Compute embedding when an embedder is provided
                 embedding_str: str | None = None
+                embedding_model: str | None = None
+                embedding_dim: int | None = None
                 if embedder is not None:
                     try:
                         from app.providers.base import EmbedRequest
 
                         resp = await embedder.embed(EmbedRequest(texts=[memory.content]))
                         if resp.embeddings:
-                            vec = resp.embeddings[0]
-                            embedding_str = "[" + ",".join(str(v) for v in vec) + "]"
+                            raw_vec = resp.embeddings[0]
+                            fitted = _fit_ltm_vector(raw_vec)
+                            if fitted is not None:
+                                embedding_str = "[" + ",".join(str(v) for v in fitted) + "]"
+                                embedding_model = str(getattr(resp, "model", "") or "")
+                                embedding_dim = len(raw_vec)
                     except Exception:
                         pass  # Embedding failure is non-fatal
 
-                async with db() as session, session.begin():
+                # Under RLS like every other tenant write: without the tenant GUC a
+                # least-privilege role rejects the INSERT.
+                async with (
+                    db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
                     if embedding_str is not None:
                         await session.execute(
                             text(
                                 """INSERT INTO long_term_memory
                                     (id, tenant_id, content, memory_type, confidence,
-                                     source_goal_id, tags, embedding)
+                                     source_goal_id, tags, embedding, embedding_model,
+                                     embedding_dim)
                                     VALUES (:id, :tid, :content, :mtype, :conf, :sgid,
-                                            :tags, CAST(:emb AS vector))
+                                            :tags, CAST(:emb AS vector), :emodel, :edim)
                                     ON CONFLICT (id) DO UPDATE SET
-                                        embedding = EXCLUDED.embedding"""
+                                        embedding = EXCLUDED.embedding,
+                                        embedding_model = EXCLUDED.embedding_model,
+                                        embedding_dim = EXCLUDED.embedding_dim"""
                             ),
                             {
+                                "emodel": embedding_model,
+                                "edim": embedding_dim,
                                 "id": mid,
                                 "tid": tenant_ctx.tenant_id,
                                 "content": memory.content,
@@ -503,8 +542,10 @@ class LongTermMemoryStore:
 
                 # Embed the query
                 resp = await embedder.embed(EmbedRequest(texts=[query]))
-                if resp.embeddings:
-                    query_vec = resp.embeddings[0]
+                query_vec = _fit_ltm_vector(resp.embeddings[0]) if resp.embeddings else None
+                if query_vec is not None:
+                    query_dim = len(resp.embeddings[0])
+                    query_model = str(getattr(resp, "model", "") or "")
                     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
 
                     # long_term_memory.embedding is a FIXED-width vector(_LTM_EMBEDDING_DIM)
@@ -541,6 +582,8 @@ class LongTermMemoryStore:
                                 FROM long_term_memory
                                 WHERE tenant_id = :tid
                                   AND embedding IS NOT NULL
+                                  AND (embedding_model = :qmodel
+                                       OR (embedding_model IS NULL AND :qdim = 2048))
                                 ORDER BY {vector_expr}
                                          <=> {qvec_expr}
                                 LIMIT :k
@@ -550,6 +593,8 @@ class LongTermMemoryStore:
                                 "qvec": vec_str,
                                 "tid": tenant_ctx.tenant_id,
                                 "k": top_k,
+                                "qmodel": query_model,
+                                "qdim": query_dim,
                             },
                         )
                         rows = result.fetchall()
@@ -583,5 +628,65 @@ class LongTermMemoryStore:
 
                 get_logger(__name__).warning("pgvector_recall_failed", error=str(exc))
 
-        # Fallback: in-memory keyword search
+        # Fallback: keyword search in the tenant's persisted memories. It used to
+        # search only this process's cache — memories written on another replica
+        # (or before a restart) were invisible whenever vector recall was
+        # unavailable. The cache is used only when there is no database at all.
+        if db is not None:
+            persisted = await self._db_keyword_recall(query, tenant_ctx, top_k, db)
+            if persisted is not None:
+                return persisted
         return self.recall(query=query, tenant_ctx=tenant_ctx, top_k=top_k)
+
+    async def _db_keyword_recall(
+        self, query: str, tenant_ctx: Any, top_k: int, db: Any
+    ) -> list[LongTermMemory] | None:
+        import json as _json
+        import re as _re
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        terms = _re.findall(r"\w{3,}", query.lower())[:8]
+        if not terms:
+            return []
+        clauses = " OR ".join(f"content ILIKE :t{i}" for i in range(len(terms)))
+        score = " + ".join(f"(content ILIKE :t{i})::int" for i in range(len(terms)))
+        params: dict[str, Any] = {f"t{i}": f"%{t}%" for i, t in enumerate(terms)}
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text(
+                            "SELECT id, content, memory_type, confidence, source_goal_id, "
+                            f"tags, created_at FROM long_term_memory WHERE tenant_id = :tid "
+                            f"AND ({clauses}) ORDER BY ({score}) DESC, created_at DESC LIMIT :k"
+                        ),
+                        {**params, "tid": tenant_ctx.tenant_id, "k": top_k},
+                    )
+                ).fetchall()
+        except Exception as exc:
+            get_logger(__name__).warning("ltm_keyword_recall_failed", error=str(exc))
+            return None
+        out: list[LongTermMemory] = []
+        for row in rows:
+            tags = row[5]
+            if isinstance(tags, str):
+                try:
+                    tags = _json.loads(tags)
+                except ValueError:
+                    tags = []
+            out.append(
+                LongTermMemory(
+                    memory_id=row[0], content=row[1], memory_type=row[2],
+                    confidence=float(row[3]) if row[3] is not None else 1.0,
+                    source_goal_id=row[4] or "", tags=list(tags or []),
+                    created_at=row[6].isoformat() if row[6] else "",
+                )
+            )
+        return out

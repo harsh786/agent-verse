@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -63,7 +64,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
                     text("""
                         INSERT INTO long_term_memory
                             (id, tenant_id, content, memory_type, confidence, tags, created_at)
-                        VALUES (:id, :tid, :content, :mt, :conf, :tags, NOW())
+                        VALUES (:id, :tid, :content, :mt, :conf, CAST(:tags AS json), NOW())
                     """),
                     {
                         "id": memory_id,
@@ -71,7 +72,9 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
                         "content": body.content,
                         "mt": body.memory_type,
                         "conf": body.confidence,
-                        "tags": body.tags,
+                        # JSON column: a raw Python list failed every insert
+                        # ("invalid input for query argument $6: []").
+                        "tags": json.dumps(body.tags),
                     },
                 )
             return {
@@ -86,6 +89,12 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
             import logging
 
             logging.getLogger(__name__).warning("create_memory_db_failed: %s", exc)
+            # With a database the write must be durable. It used to fall through
+            # to the per-process cache below and answer 201 — the memory was
+            # never persisted, and invisible to every other replica.
+            raise HTTPException(
+                status_code=503, detail="Memory store unavailable; memory was not saved"
+            ) from exc
 
     # In-memory fallback
     ltm = _get_ltm(request)

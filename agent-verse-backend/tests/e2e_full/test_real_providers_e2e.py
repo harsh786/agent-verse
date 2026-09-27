@@ -110,7 +110,48 @@ async def test_real_semantic_search_ranks_the_right_document_first(real_client: 
     assert "refunded within 7 business days" in hits[0]["content"]
 
 
-async def test_real_goal_answers_from_the_knowledge_base(app: Any, real_client: Any) -> None:
+@pytest.fixture
+def llm_call_log(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Record every real completion: model, endpoint, seconds, outcome."""
+    from app.providers.openai_compatible import OpenAICompatibleProvider
+
+    import traceback
+
+    calls: list[tuple[str, str, float, str]] = []
+    original = OpenAICompatibleProvider._complete_once
+
+    def _origin() -> str:
+        for frame in reversed(traceback.extract_stack()[:-2]):
+            path = frame.filename
+            if "/app/" in path and "/providers/" not in path and "traced_provider" not in path:
+                return f"{path.split('/app/')[-1]}:{frame.lineno}:{frame.name}"
+        return "?"
+
+    async def _timed(self: Any, request: Any) -> Any:
+        t0 = time.monotonic()
+        model = request.model or self._default_model
+        base = _origin()
+        try:
+            resp = await original(self, request)
+        except BaseException as exc:
+            calls.append((model, base, time.monotonic() - t0, type(exc).__name__))
+            raise
+        calls.append((model, base, time.monotonic() - t0, "ok"))
+        return resp
+
+    monkeypatch.setattr(OpenAICompatibleProvider, "_complete_once", _timed)
+    yield calls
+    by_model: dict[str, list[float]] = {}
+    for model, base, secs, outcome in calls:
+        print(f"[real] llm call {model:28s} {secs:7.1f}s {outcome:22s} {base}")
+        by_model.setdefault(model, []).append(secs)
+    for model, secs in by_model.items():
+        print(f"[real] llm total {model:28s} calls={len(secs)} sum={sum(secs):.1f}s")
+
+
+async def test_real_goal_answers_from_the_knowledge_base(
+    app: Any, real_client: Any, llm_call_log: Any
+) -> None:
     await _ingest_corpus(real_client)
     gs = app.state.goal_service
     prev_queue = gs._task_queue

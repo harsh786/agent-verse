@@ -1491,7 +1491,41 @@ class ExecutorMixin:
                     if tool_context is not None and hasattr(tool_context, "find_tool")
                     else None
                 )
-                if tool_ref is None:
+                # Grantex governance gate (mandatory, opt-in): an agent may only
+                # run a tool it holds a covering, active, unrevoked grant for.
+                # Pass-through until enforcement is enabled for the deploy.
+                _grant_denial = None
+                if tool_ref is not None:
+                    _grant_decision = await enforce_tool_call(
+                        self._grant_store,
+                        tenant_id=tenant_ctx.tenant_id,
+                        agent_id=self._agent_id or "",
+                        tool_name=tool_ref.name,
+                        enabled=self._enforce_grants,
+                    )
+                    if not _grant_decision.allowed:
+                        _grant_denial = _grant_decision
+                if _grant_denial is not None:
+                    # The tool is NOT run. The refusal used to raise and fail the
+                    # whole goal — a real model that reached for an ungranted tool
+                    # (with the answer already in its retrieved context) killed an
+                    # otherwise answerable goal. It is now an observation the model
+                    # can act on, like "Tool not found" below.
+                    await self._emit(
+                        {
+                            "type": "tool_call_blocked_by_grant",
+                            "tool": tool_ref.name,
+                            "reason": _grant_denial.reason,
+                        }
+                    )
+                    record_tool_call(tool_ref.name, "grant", "denied", 0.0)
+                    raw_output = self._sanitize_tool_raw_output(
+                        f"Tool call denied: '{tool_ref.name}' is not granted to this agent "
+                        f"({_grant_denial.reason}). Do not call it again; complete the step "
+                        "with the information already available or other permitted tools."
+                    )
+                    raw_output_sanitized = True
+                elif tool_ref is None:
                     # Tracks whether the civilization spawn branch already handled
                     # this call, so the RPA / "tool not found" fallthrough below
                     # does not clobber its result with a spurious failure.
@@ -1762,27 +1796,6 @@ class ExecutorMixin:
                             time.monotonic() - tool_call_started,
                         )
                 else:
-                    # Grantex governance gate (mandatory, opt-in): an agent may
-                    # only run a tool it holds a covering, active, unrevoked grant
-                    # for. Pass-through until enforcement is enabled for the deploy.
-                    _grant_decision = await enforce_tool_call(
-                        self._grant_store,
-                        tenant_id=tenant_ctx.tenant_id,
-                        agent_id=self._agent_id or "",
-                        tool_name=tool_ref.name,
-                        enabled=self._enforce_grants,
-                    )
-                    if not _grant_decision.allowed:
-                        await self._emit(
-                            {
-                                "type": "tool_call_blocked_by_grant",
-                                "tool": tool_ref.name,
-                                "reason": _grant_decision.reason,
-                            }
-                        )
-                        raise PermissionError(
-                            f"blocked by grant guard [{tool_ref.name}]: {_grant_decision.reason}"
-                        )
                     tool_risk = classify_tool_risk(tool_ref.name, tool_ref.server_name)
                     # Gate write_high bypass behind an explicit env flag (default-secure).
                     import os as _os

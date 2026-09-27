@@ -121,22 +121,36 @@ def _tool_context(*specs: tuple[str, str, dict]) -> ToolContext:
 
 async def test_grant_enforcement_denies_call_with_no_covering_grant() -> None:
     """A tenant that opted into grant enforcement but never issued a grant for
-    this agent must have the tool call denied — fail-closed, not fail-open."""
+    this agent must have the tool call denied — fail-closed, not fail-open.
+
+    The tool never reaches MCP. The refusal is returned to the model as an
+    observation instead of failing the goal (a real model that reached for an
+    ungranted tool used to kill an otherwise answerable goal).
+    """
     executor = FakeProvider(
         responses=['{"tool": "get_status", "arguments": {}}']
     )
     tc = _tool_context(("get_status", "Custom", {}))
+    mcp = _RecordingMCPClient()
+    events: list[dict[str, object]] = []
     graph = _make_graph(
         executor=executor,
-        mcp_client=_RecordingMCPClient(),
+        mcp_client=mcp,
         grant_store=InMemoryGrantStore(),
         enforce_grants=True,
     )
+    async def _collect(event: dict[str, object]) -> None:
+        events.append(event)
+
+    graph._event_callback = _collect  # type: ignore[assignment]
     state = _make_state(step_desc="check status")
     state.context["tool_context"] = tc
 
-    with pytest.raises(PermissionError, match="blocked by grant guard"):
-        await graph._execute_step("check status", state, T)
+    output = await graph._execute_step("check status", state, T)
+    assert mcp.calls == []  # fail-closed: the tool never ran
+    assert "Tool call denied" in str(output) or any(
+        e.get("type") == "tool_call_blocked_by_grant" for e in events
+    )
 
 
 async def test_grant_enforcement_allows_call_with_covering_grant() -> None:
