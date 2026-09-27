@@ -899,9 +899,9 @@ class ExecutorMixin:
         # what we already learned. Recall itself is wired in PlannerMixin via
         # KnowledgeGraphFactsSource; here we close the population gap. Best-effort.
         try:
-            from app.agent.entity_memory_wiring import record_entities_from_steps
+            from app.agent.entity_memory_wiring import arecord_entities_from_steps
 
-            record_entities_from_steps(
+            await arecord_entities_from_steps(
                 self._knowledge_graph_store,
                 tenant_ctx.tenant_id,
                 state.steps,

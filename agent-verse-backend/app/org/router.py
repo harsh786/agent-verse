@@ -2857,7 +2857,12 @@ async def org_graph_snapshot(
 
         from app.knowledge_graph.store import kg_store
 
-        node_ids = list(kg_store._tenant_nodes.get(tenant_id, set()))
+        # Read through the store, not its private dicts: with a database wired
+        # the graph is not held in process, and reading _tenant_nodes snapshotted
+        # whatever subset this replica happened to have (often nothing).
+        page = await kg_store.aexport(tenant_id, limit=200)
+        sample_ids = [n.node_id for n in page["nodes"]]
+        node_total = await kg_store.acount_nodes(tenant_id)
 
         from app.org.decision_intelligence import get_version_store
 
@@ -2866,7 +2871,7 @@ async def org_graph_snapshot(
             entity_type="knowledge_graph",
             entity_id=org_id,
             tenant_id=tenant_id,
-            snapshot={"node_ids": node_ids[:200], "node_count": len(node_ids)},
+            snapshot={"node_ids": sample_ids, "node_count": node_total},
             changed_by="api",
             change_reason="manual snapshot",
         )
@@ -2875,7 +2880,7 @@ async def org_graph_snapshot(
             "org_id": org_id,
             "version_id": rec.version_id,
             "version_num": rec.version_num,
-            "node_count": len(node_ids),
+            "node_count": node_total,
             "content_hash": rec.content_hash,
             "created_at": rec.created_at,
         }

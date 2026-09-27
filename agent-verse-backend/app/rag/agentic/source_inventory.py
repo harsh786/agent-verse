@@ -66,8 +66,14 @@ class SourceInventory:
         kg_nodes = 0
         if self._kg is not None:
             try:
-                nodes = self._kg.query_nodes(tenant_ctx.tenant_id, limit=1000)
-                kg_nodes = len(nodes)
+                # A real count from the database. This used to read up to 1000
+                # nodes and report len() — capped at 1000 and an unnecessary
+                # 1000-row read for what is a number.
+                acount = getattr(self._kg, "acount_nodes", None)
+                if callable(acount):
+                    kg_nodes = int(await acount(tenant_ctx.tenant_id))
+                else:
+                    kg_nodes = len(self._kg.query_nodes(tenant_ctx.tenant_id, limit=1000))
             except Exception:
                 pass
 

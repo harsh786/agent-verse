@@ -5,18 +5,25 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 
-def test_knowledge_graph_store_has_hydrated_at_ttl_map():
-    """KnowledgeGraphStore must track per-tenant hydration recency (with a TTL),
-    not a one-shot "seen it" set — a one-shot set means a replica that hydrates
-    a tenant once never observes another replica's later writes/deletes for the
-    rest of the process lifetime."""
+def test_knowledge_graph_store_holds_no_graph_when_db_backed():
+    """With a database wired, the store keeps no graph state in process.
+
+    This replaced a per-tenant hydration TTL: each replica used to load the
+    tenant's ENTIRE graph into dicts and re-load it every 30s so it would
+    eventually see other replicas' writes. Reads now go to Postgres directly, so
+    there is nothing to hydrate, nothing to go stale, and nothing to hold.
+    """
+    from app.knowledge_graph.models import GraphNode, NodeType
     from app.knowledge_graph.store import KnowledgeGraphStore
+
     store = KnowledgeGraphStore()
-    assert hasattr(store, "_hydrated_at"), "Missing _hydrated_at TTL map"
-    assert isinstance(store._hydrated_at, dict)
-    assert not hasattr(store, "_hydrated_tenants"), (
-        "_hydrated_tenants (one-shot set) should have been replaced by the TTL map"
+    store.add_node(GraphNode("pre", "t", NodeType.ENTITY, "dev-mode node"))
+    store.set_db(MagicMock())
+    assert store._nodes == {} and store._tenant_nodes == {}, (
+        "wiring a database must drop dev-mode state so modes cannot mix"
     )
+    assert not hasattr(store, "_hydrated_at")
+    assert not hasattr(store, "load_from_db"), "whole-graph hydration must not exist"
 
 
 def test_reflexion_store_accepts_db_factory():
@@ -107,65 +114,22 @@ async def test_orchestration_persistence_wildcard_loads_all():
     assert len(history) >= 1, "jira.search must be loaded from wildcard query"
 
 
-def test_kg_lazy_hydration_triggers_on_first_miss():
-    """query_nodes() for unknown tenant must schedule DB load."""
-
-    from app.knowledge_graph.store import KnowledgeGraphStore
-
-    store = KnowledgeGraphStore()
-    store._db = MagicMock()  # simulate DB being wired
-
-    tasks_scheduled = []
-
-    def capture_future(coro, **kwargs):
-        tasks_scheduled.append(coro)
-        # Don't actually run it in unit test
-        try:
-            coro.close()
-        except Exception:
-            pass
-        return MagicMock()
-
-    import unittest.mock as _um
-    with _um.patch("asyncio.ensure_future", side_effect=capture_future):
-        result = store.query_nodes(tenant_id="new_tenant_xyz")
-
-    assert len(tasks_scheduled) > 0, "No async task scheduled for lazy hydration"
-    assert "new_tenant_xyz" in store._hydrated_at
-
-
-def test_kg_lazy_hydration_refreshes_after_ttl():
-    """A second query_nodes() call after the TTL window must re-hydrate — this is
-    what lets a replica observe another replica's writes/deletes without a
-    restart. Immediately re-querying inside the TTL window must NOT re-hydrate
-    (that would defeat the point of caching / thunder the DB on every call)."""
+def test_kg_sync_read_on_db_backed_store_refuses_instead_of_hydrating():
+    """A sync read cannot consult Postgres, so it refuses rather than answering
+    from an empty (or stale) in-process copy — and schedules no hydration."""
     import unittest.mock as _um
 
-    from app.knowledge_graph.store import KnowledgeGraphStore, _REHYDRATE_INTERVAL_SECONDS
+    import pytest
+
+    from app.knowledge_graph.store import KnowledgeGraphStore, PersistedGraphRequiresAsyncError
 
     store = KnowledgeGraphStore()
-    store._db = MagicMock()
+    store.set_db(MagicMock())
+    with (
+        _um.patch("asyncio.ensure_future") as ensure_future,
+        pytest.raises(PersistedGraphRequiresAsyncError),
+    ):
+        store.query_nodes(tenant_id="new_tenant_xyz")
+    ensure_future.assert_not_called()
 
-    tasks_scheduled = []
 
-    def capture_future(coro, **kwargs):
-        tasks_scheduled.append(coro)
-        try:
-            coro.close()
-        except Exception:
-            pass
-        return MagicMock()
-
-    with _um.patch("asyncio.ensure_future", side_effect=capture_future):
-        store.query_nodes(tenant_id="replica_test_tenant")
-        assert len(tasks_scheduled) == 1
-
-        # Still fresh — must not re-hydrate.
-        store.query_nodes(tenant_id="replica_test_tenant")
-        assert len(tasks_scheduled) == 1
-
-        # Simulate the TTL having elapsed (another replica may have written or
-        # deleted data for this tenant in the meantime).
-        store._hydrated_at["replica_test_tenant"] -= _REHYDRATE_INTERVAL_SECONDS + 1
-        store.query_nodes(tenant_id="replica_test_tenant")
-        assert len(tasks_scheduled) == 2, "Did not re-hydrate after the TTL elapsed"

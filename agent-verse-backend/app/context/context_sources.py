@@ -29,9 +29,34 @@ class KnowledgeGraphFactsSource:
     def get_facts(
         self, query: str, tenant_id: str | None = None, top_k: int = 5
     ) -> list[dict[str, Any]]:
+        """Sync lookup — in-memory stores only. Async callers use :meth:`aget_facts`.
+
+        A DB-backed store refuses sync reads (the graph is not held in process);
+        the pipeline treats graph facts as best-effort, so that degrades to none.
+        """
         if not tenant_id:
             return []
-        nodes = self._store.query_nodes(tenant_id=tenant_id, search=query, limit=top_k)
+        try:
+            nodes = self._store.query_nodes(tenant_id=tenant_id, search=query, limit=top_k)
+        except Exception:
+            return []
+        return self._to_facts(nodes)
+
+    async def aget_facts(
+        self, query: str, tenant_id: str | None = None, top_k: int = 5
+    ) -> list[dict[str, Any]]:
+        """Graph facts from the store's SQL-backed query path."""
+        if not tenant_id:
+            return []
+        aquery = getattr(self._store, "aquery_nodes", None)
+        if callable(aquery):
+            nodes = await aquery(tenant_id=tenant_id, search=query, limit=top_k)
+        else:
+            nodes = self._store.query_nodes(tenant_id=tenant_id, search=query, limit=top_k)
+        return self._to_facts(nodes)
+
+    @staticmethod
+    def _to_facts(nodes: Any) -> list[dict[str, Any]]:
         facts: list[dict[str, Any]] = []
         for node in nodes or []:
             content = getattr(node, "content", "") or getattr(node, "label", "")

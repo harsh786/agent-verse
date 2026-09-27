@@ -31,6 +31,32 @@ class KGQueryEngine:
     def __init__(self, kg_store: KnowledgeGraphStore | None = None) -> None:
         self._kg = kg_store
 
+    # The store is SQL-backed when a database is wired; its async ``a*`` methods
+    # are the only ones that consult it. Duck-typed stores without them (test
+    # doubles) fall back to the sync API.
+    async def _query_nodes(self, tenant_id: str, search: str, limit: int) -> list[Any]:
+        fn = getattr(self._kg, "aquery_nodes", None)
+        if callable(fn):
+            return list(await fn(tenant_id=tenant_id, search=search, limit=limit) or [])
+        return list(self._kg.query_nodes(tenant_id=tenant_id, search=search, limit=limit) or [])
+
+    async def _edges_for_node(self, node_id: str, tenant_id: str) -> list[Any]:
+        fn = getattr(self._kg, "aget_edges_for_node", None)
+        if callable(fn):
+            return list(await fn(node_id, tenant_id) or [])
+        return list(self._kg.get_edges_for_node(node_id=node_id, tenant_id=tenant_id) or [])
+
+    async def _nodes_by_id(self, node_ids: list[str], tenant_id: str) -> dict[str, Any]:
+        fn = getattr(self._kg, "aget_nodes", None)
+        if callable(fn):
+            return dict(await fn(node_ids, tenant_id))
+        out: dict[str, Any] = {}
+        for nid in node_ids:
+            node = self._kg.get_node(nid, tenant_id)
+            if node is not None:
+                out[nid] = node
+        return out
+
     def select_strategy(self, query: str) -> str:
         if _RELATIONSHIP_RE.search(query):
             return "entity"
@@ -60,7 +86,7 @@ class KGQueryEngine:
             return KGQueryResult(strategy_used=strategy, facts=[], confidence=0.0)
 
     async def _entity_expansion(self, query: str, tenant_id: str) -> KGQueryResult:
-        nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=10)
+        nodes = await self._query_nodes(tenant_id, query[:100], 10)
         facts = [
             {
                 "entity": n.label,
@@ -78,7 +104,7 @@ class KGQueryEngine:
 
     async def _path_traversal(self, query: str, tenant_id: str) -> KGQueryResult:
         """Real edge traversal using get_edges_for_node()."""
-        source_nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=5) or []
+        source_nodes = await self._query_nodes(tenant_id, query[:100], 5)
 
         if not source_nodes:
             return KGQueryResult(strategy_used="path", facts=[], confidence=0.0)
@@ -87,35 +113,41 @@ class KGQueryEngine:
         node_name_cache: dict[str, str] = {n.node_id: n.label for n in source_nodes}
 
         facts: list[dict[str, Any]] = []
+        hops: list[tuple[Any, Any, str]] = []
         for node in source_nodes[:3]:
-            edges = self._kg.get_edges_for_node(node_id=node.node_id, tenant_id=tenant_id) or []
+            edges = await self._edges_for_node(node.node_id, tenant_id)
             for edge in edges[:5]:
-                # Determine the neighbour (the other end of the edge)
                 neighbour_id = (
                     edge.target_node_id
                     if edge.source_node_id == node.node_id
                     else edge.source_node_id
                 )
-                # Resolve neighbour name (look up in cache or query)
-                if neighbour_id not in node_name_cache:
-                    all_nodes = (
-                        self._kg.query_nodes(tenant_id=tenant_id, search="", limit=200) or []
-                    )
-                    node_name_cache.update({n.node_id: n.label for n in all_nodes})
-                neighbour_name = node_name_cache.get(neighbour_id, neighbour_id)
-                edge_type_str = (
-                    edge.edge_type.value
-                    if hasattr(edge.edge_type, "value")
-                    else str(edge.edge_type)
-                )
-                facts.append(
-                    {
-                        "from": node.label,
-                        "relation": edge_type_str,
-                        "to": neighbour_name,
-                        "confidence": getattr(edge, "confidence", 0.65),
-                    }
-                )
+                hops.append((node, edge, neighbour_id))
+
+        # Resolve every neighbour's name with ONE batched id lookup. This used to
+        # pull the tenant's first 200 nodes (by confidence) and hope the
+        # neighbour was among them — a wrong answer (raw id) for any graph
+        # larger than 200 nodes, and a 200-row read per miss.
+        missing = [nid for _n, _e, nid in hops if nid not in node_name_cache]
+        if missing:
+            node_name_cache.update(
+                {nid: n.label for nid, n in (await self._nodes_by_id(missing, tenant_id)).items()}
+            )
+        for node, edge, neighbour_id in hops:
+            neighbour_name = node_name_cache.get(neighbour_id, neighbour_id)
+            edge_type_str = (
+                edge.edge_type.value
+                if hasattr(edge.edge_type, "value")
+                else str(edge.edge_type)
+            )
+            facts.append(
+                {
+                    "from": node.label,
+                    "relation": edge_type_str,
+                    "to": neighbour_name,
+                    "confidence": getattr(edge, "confidence", 0.65),
+                }
+            )
 
         return KGQueryResult(
             strategy_used="path",
@@ -125,6 +157,6 @@ class KGQueryEngine:
         )
 
     async def _neighbourhood(self, query: str, tenant_id: str, strategy: str) -> KGQueryResult:
-        nodes = self._kg.query_nodes(tenant_id=tenant_id, search=query[:100], limit=8)
+        nodes = await self._query_nodes(tenant_id, query[:100], 8)
         facts = [{"entity": n.label, "strategy": strategy} for n in (nodes or [])]
         return KGQueryResult(strategy_used=strategy, facts=facts, confidence=0.6 if facts else 0.0)

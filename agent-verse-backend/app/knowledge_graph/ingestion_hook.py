@@ -27,7 +27,7 @@ touching ``app/ingestion/*``.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from app.knowledge_graph.extractor import EntityExtractor
@@ -89,6 +89,24 @@ async def _guardrail_gate_graph_extract(text: str, tenant_id: str, source_id: st
         return text
 
 
+async def _upsert(store: Any, nodes: list[Any], edges: list[Any]) -> None:
+    """Persist one chunk's extraction as a single awaited, batched upsert.
+
+    The previous per-element ``add_node``/``add_edge`` calls each opened their
+    own session fire-and-forget — at bulk-ingestion scale a connection storm
+    whose failures were logged at DEBUG and lost. Duck-typed stores without
+    ``aupsert`` (test doubles) still get the per-element calls.
+    """
+    upsert = getattr(store, "aupsert", None)
+    if callable(upsert):
+        await upsert(nodes, edges)
+        return
+    for node in nodes:
+        store.add_node(node)
+    for edge in edges:
+        store.add_edge(edge)
+
+
 async def extract_and_store_graph(
     text: str,
     tenant_id: str,
@@ -147,13 +165,8 @@ async def extract_and_store_graph(
         nodes = extractor.extract_entities_deterministic(text, tenant_id, source_id)
         edges = []
 
-    added = 0
-    for node in nodes:
-        store.add_node(node)
-        added += 1
-    for edge in edges:
-        store.add_edge(edge)
-        added += 1
+    await _upsert(store, nodes, edges)
+    added = len(nodes) + len(edges)
 
     _log.debug(
         "KG ingestion: stored %d nodes + %d edges for tenant=%s source=%s",
@@ -218,10 +231,7 @@ class KGIngestionHook:
             else:
                 nodes = self._extractor.extract_entities_deterministic(text, tenant_id, source_id)
                 edges = []
-            for node in nodes:
-                self._store.add_node(node)
-                entities += 1
-            for edge in edges:
-                self._store.add_edge(edge)
-                relations += 1
+            await _upsert(self._store, nodes, edges)
+            entities += len(nodes)
+            relations += len(edges)
         return {"entities": entities, "relations": relations}

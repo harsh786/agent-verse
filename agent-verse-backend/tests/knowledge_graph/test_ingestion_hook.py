@@ -120,7 +120,10 @@ async def test_store_failure_surfaces_not_swallowed() -> None:
     """A persistence error must propagate — no silent bare-except over real logic."""
 
     class BrokenStore(KnowledgeGraphStore):
-        def add_node(self, node: object) -> None:  # type: ignore[override]
+        # The hook persists through the batched, awaited ``aupsert`` (it used to
+        # call ``add_node`` once per element, fire-and-forget) — so that is where
+        # a persistence failure now originates, and it must still propagate.
+        async def aupsert(self, nodes: object, edges: object) -> int:  # type: ignore[override]
             raise RuntimeError("db down")
 
     with pytest.raises(RuntimeError, match="db down"):

@@ -720,21 +720,31 @@ async def test_graph_store_persists_and_loads_inside_restricted_rls_scope(
     store = KnowledgeGraphStore()
     store.set_db(postgres_database.runtime_factory)
 
-    await store._persist_node_to_db(node_a)
-    await store._persist_node_to_db(node_b)
-    await store._persist_edge_to_db(edge)
+    assert await store.aupsert([node_a, node_b], [edge]) == 3
 
+    # A fresh instance (a restart / another replica) reads straight from
+    # Postgres under the restricted role — there is no hydration step any more.
     restarted = KnowledgeGraphStore()
     restarted.set_db(postgres_database.runtime_factory)
-    assert await restarted.load_from_db(tenant.tenant_id) == 2
-    loaded_node = restarted.get_node(node_a.node_id, tenant.tenant_id)
+    assert await restarted.acount_nodes(tenant.tenant_id) == 2
+    loaded_node = await restarted.aget_node(node_a.node_id, tenant.tenant_id)
     assert loaded_node is not None
     assert loaded_node.tenant_id == tenant.tenant_id
     assert loaded_node.label == node_a.label
-    loaded_edges = restarted.get_edges_for_node(node_a.node_id, tenant.tenant_id)
+    loaded_edges = await restarted.aget_edges_for_node(node_a.node_id, tenant.tenant_id)
     assert len(loaded_edges) == 1
     assert loaded_edges[0].edge_id == edge.edge_id
     assert loaded_edges[0].tenant_id == tenant.tenant_id
+    assert restarted._nodes == {} and restarted._edges == {}
+
+    # In-database community detection (a transaction-scoped temp table) and the
+    # SQL path search must also work under the least-privilege role.
+    communities = await restarted.adetect_communities(tenant.tenant_id)
+    assert [c["size"] for c in communities] == [2]
+    assert sorted(communities[0]["node_ids"]) == [node_a.node_id, node_b.node_id]
+    assert await restarted.afind_path(node_a.node_id, node_b.node_id, tenant.tenant_id) == [
+        [node_a.node_id, node_b.node_id]
+    ]
 
 
 async def test_policy_engine_strict_loads_tenant_web_deny_and_domains(

@@ -122,12 +122,14 @@ class _GraphAccumulator:
     def edge_count(self) -> int:
         return len(self._edges)
 
-    def flush(self) -> None:
-        """Write everything accumulated so far into the tenant store (upsert)."""
-        for node in self._nodes.values():
-            kg_store.add_node(node)
-        for edge in self._edges.values():
-            kg_store.add_edge(edge)
+    async def flush(self) -> None:
+        """Write everything accumulated so far into the tenant store (upsert).
+
+        Awaited and batched: the community detection and stats that follow read
+        the stored graph, so the writes must have landed first. (They used to be
+        fire-and-forget per element, racing the reads that came right after.)
+        """
+        await kg_store.aupsert(list(self._nodes.values()), list(self._edges.values()))
 
 
 async def build_org_knowledge_graph(
@@ -353,15 +355,15 @@ async def build_org_knowledge_graph(
 
     # ── Phase 4 + 5: persist, then detect communities on the stored graph ────
     await _phase(4)
-    acc.flush()
+    await acc.flush()
     try:
-        communities = kg_store.detect_communities(tenant_id)
+        communities = await kg_store.adetect_communities(tenant_id)
         community_count = len(communities)
     except Exception:
         community_count = 0
 
     await _phase(5)
-    stats = kg_store.get_graph_stats(tenant_id)
+    stats = await kg_store.aget_graph_stats(tenant_id)
     final = {
         "nodes": int(stats.get("total_nodes", acc.node_count)),
         "edges": int(stats.get("total_edges", acc.edge_count)),

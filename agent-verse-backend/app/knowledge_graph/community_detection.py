@@ -86,7 +86,10 @@ class CommunityDetector:
             if len(members) < 2:
                 continue  # skip isolated singletons
 
-            central_node = max(members, key=lambda nid: degree.get(nid, 0))
+            # Highest degree, ties broken by smallest id. max() alone picked the
+            # first tied member in list order, which derives from set iteration
+            # order — i.e. it could change between processes (PYTHONHASHSEED).
+            central_node = min(members, key=lambda nid: (-degree.get(nid, 0), nid))
             n = len(members)
             possible_edges = n * (n - 1) / 2.0  # undirected
             edges_in = intra_edge_count.get(root, 0)

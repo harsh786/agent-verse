@@ -495,13 +495,23 @@ async def test_batch_missions_rejects_over_20(client: AsyncClient) -> None:
 @pytest.mark.anyio
 async def test_graph_snapshot_creates_version(client: AsyncClient) -> None:
     """POST /v1/org/{id}/graph/version creates a versioned snapshot."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    # The snapshot reads through the store's API (it used to reach into the
+    # private _tenant_nodes dict, which a DB-backed store never populates).
     with patch("app.knowledge_graph.store.kg_store") as mock_kg:
-        mock_kg._tenant_nodes = {TENANT_ID: {"node-1", "node-2"}}
+        mock_kg.aexport = AsyncMock(
+            return_value={"nodes": [SimpleNamespace(node_id="node-1"), SimpleNamespace(node_id="node-2")]}
+        )
+        mock_kg.acount_nodes = AsyncMock(return_value=2)
         resp = await client.post(f"/v1/org/{ORG_ID}/graph/version")
     assert resp.status_code == 201
     data = resp.json()
     assert "version_id" in data
     assert data["version_num"] == 1
+    assert data["node_count"] == 2
+    mock_kg.aexport.assert_awaited_once()
 
 
 @pytest.mark.anyio

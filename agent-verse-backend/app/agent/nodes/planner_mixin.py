@@ -95,10 +95,17 @@ class PlannerMixin:
                 # before (empty graph_facts / semantic_cache_hits branches).
                 _graph_source = None
                 _semantic_cache_source = None
+                _prefetched_graph_facts: list[dict[str, Any]] | None = None
                 if self._knowledge_graph_store is not None:
                     from app.context.context_sources import KnowledgeGraphFactsSource
 
-                    _graph_source = KnowledgeGraphFactsSource(self._knowledge_graph_store)
+                    # Fetched here, asynchronously, from the SQL-backed store:
+                    # ContextPipeline.run is synchronous, and a persisted graph
+                    # is not held in process for a sync read to consult.
+                    with contextlib.suppress(Exception):
+                        _prefetched_graph_facts = await KnowledgeGraphFactsSource(
+                            self._knowledge_graph_store
+                        ).aget_facts(agent_state.goal, tenant_id=tenant_ctx.tenant_id, top_k=5)
                 if self._semantic_cache is not None:
                     from app.context.context_sources import SemanticCacheHitsSource
 
@@ -119,6 +126,8 @@ class PlannerMixin:
                 _exec_mem = agent_state.context.get("_execution_memory_records", [])
                 _ltm = agent_state.context.get("_long_term_memory_records", [])
                 _graph_facts = agent_state.context.get("_graph_facts")
+                if not isinstance(_graph_facts, list) and _prefetched_graph_facts is not None:
+                    _graph_facts = _prefetched_graph_facts
                 _sem_cache_hits = agent_state.context.get("_semantic_cache_hits")
                 pipeline_result = pipeline.run(
                     chunks=retrieved_chunks,

@@ -115,3 +115,58 @@ def record_entities_from_steps(
             if count >= max_per_run:
                 return count
     return count
+
+
+def _entity_nodes(
+    tenant_id: str, steps: Sequence[Any], source_id: str | None, max_per_run: int
+) -> list[GraphNode]:
+    nodes: dict[str, GraphNode] = {}
+    for step in steps:
+        output = (getattr(step, "output", "") or "").strip()
+        if not output:
+            continue
+        for label, kind in extract_entities(output):
+            node_id = _node_id(tenant_id, label)
+            if node_id in nodes:
+                continue
+            nodes[node_id] = GraphNode(
+                node_id=node_id,
+                tenant_id=tenant_id,
+                node_type=NodeType.ENTITY,
+                label=label,
+                content=label,
+                source_id=source_id,
+                confidence=0.6,
+                metadata={"kind": kind, "origin": "agent_run"},
+            )
+            if len(nodes) >= max_per_run:
+                return list(nodes.values())
+    return list(nodes.values())
+
+
+async def arecord_entities_from_steps(
+    store: Any,
+    tenant_id: str,
+    steps: Sequence[Any],
+    *,
+    source_id: str | None = None,
+    max_per_run: int = 50,
+) -> int:
+    """Async form of :func:`record_entities_from_steps`: one awaited batch upsert.
+
+    Used by the executor. The sync form issues one fire-and-forget write per
+    entity against a DB-backed store; this lands them in a single transaction
+    and only reports what was actually written.
+    """
+    if store is None or not tenant_id:
+        return 0
+    nodes = _entity_nodes(tenant_id, steps, source_id, max_per_run)
+    if not nodes:
+        return 0
+    upsert = getattr(store, "aupsert", None)
+    if callable(upsert):
+        await upsert(nodes, [])
+        return len(nodes)
+    return record_entities_from_steps(
+        store, tenant_id, steps, source_id=source_id, max_per_run=max_per_run
+    )

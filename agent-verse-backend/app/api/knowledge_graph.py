@@ -66,11 +66,10 @@ async def extract_from_text(request: Request, body: ExtractRequest) -> dict[str,
         body.text, entities, tenant.tenant_id, body.source_id
     )
 
-    # Store everything
-    for node in entities:
-        kg_store.add_node(node)
-    for edge in edges:
-        kg_store.add_edge(edge)
+    # One awaited, batched upsert: the response reports these as extracted, so
+    # they must be durable when it returns (the old per-element fire-and-forget
+    # writes could still be in flight — or have silently failed).
+    await kg_store.aupsert(entities, edges)
 
     return {
         "entities_extracted": len(entities),
@@ -116,7 +115,7 @@ async def query_nodes(
         except ValueError as _b904_exc:
             raise HTTPException(400, f"Invalid node_type: {node_type}") from _b904_exc
 
-    nodes = kg_store.query_nodes(
+    nodes = await kg_store.aquery_nodes(
         tenant.tenant_id,
         node_type=nt,
         search=search,
@@ -148,11 +147,11 @@ async def get_node(request: Request, node_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    node = kg_store.get_node(node_id, tenant.tenant_id)
+    node = await kg_store.aget_node(node_id, tenant.tenant_id)
     if not node:
         raise HTTPException(404, "Node not found")
 
-    edges = kg_store.get_edges_for_node(node_id, tenant.tenant_id)
+    edges = await kg_store.aget_edges_for_node(node_id, tenant.tenant_id)
 
     return {
         "node": {
@@ -204,7 +203,7 @@ async def add_node(request: Request, body: AddNodeRequest) -> dict[str, Any]:
         metadata=body.metadata,
         created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
-    kg_store.add_node(node)
+    await kg_store.aupsert([node], [])
     return {"node_id": node.node_id, "status": "added"}
 
 
@@ -234,7 +233,7 @@ async def add_edge(request: Request, body: AddEdgeRequest) -> dict[str, Any]:
         evidence=body.evidence,
         created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
-    kg_store.add_edge(edge)
+    await kg_store.aupsert([], [edge])
     return {"edge_id": edge.edge_id, "status": "added"}
 
 
@@ -249,7 +248,7 @@ async def find_path(
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    paths = kg_store.find_path(source_id, target_id, tenant.tenant_id, max_hops)
+    paths = await kg_store.afind_path(source_id, target_id, tenant.tenant_id, max_hops)
     return {
         "source_id": source_id,
         "target_id": target_id,
@@ -264,7 +263,7 @@ async def get_graph_stats(request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    return kg_store.get_graph_stats(tenant.tenant_id)
+    return await kg_store.aget_graph_stats(tenant.tenant_id)
 
 
 @router.delete("/rebuild")
@@ -283,24 +282,33 @@ async def get_communities(request: Request) -> dict[str, Any]:
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    communities = kg_store.detect_communities(tenant.tenant_id)
+    communities = await kg_store.adetect_communities(tenant.tenant_id)
     return {"communities": communities, "total": len(communities)}
 
 
 @router.get("/export")
-async def export_graph(request: Request) -> dict[str, Any]:
-    """Export the tenant's knowledge graph as JSON."""
+async def export_graph(
+    request: Request,
+    limit: int = Query(default=1000, ge=1, le=5000),
+    node_cursor: str | None = Query(default=None),
+    edge_cursor: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Export the tenant's knowledge graph as JSON, one keyset page at a time.
+
+    Used to dump every node and edge in a single response built from the
+    replica's in-memory copy of the graph. Pass ``next_node_cursor`` /
+    ``next_edge_cursor`` back to fetch the next page; both are ``null`` on the
+    last one.
+    """
     import datetime
 
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
 
-    node_ids = kg_store._tenant_nodes.get(tenant.tenant_id, set())
-    edge_ids = kg_store._tenant_edges.get(tenant.tenant_id, set())
-
-    nodes = [kg_store._nodes[nid] for nid in node_ids if nid in kg_store._nodes]
-    edges = [kg_store._edges[eid] for eid in edge_ids if eid in kg_store._edges]
-
+    page = await kg_store.aexport(
+        tenant.tenant_id, limit=limit, node_cursor=node_cursor, edge_cursor=edge_cursor
+    )
+    nodes, edges = page["nodes"], page["edges"]
     return {
         "tenant_id": tenant.tenant_id,
         "exported_at": datetime.datetime.now(datetime.UTC).isoformat(),
@@ -325,5 +333,7 @@ async def export_graph(request: Request) -> dict[str, Any]:
             for e in edges
         ],
         "stats": {"nodes": len(nodes), "edges": len(edges)},
+        "next_node_cursor": page["next_node_cursor"],
+        "next_edge_cursor": page["next_edge_cursor"],
         "format": "agentverse_kg_v1",
     }
