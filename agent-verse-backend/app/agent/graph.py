@@ -806,6 +806,24 @@ class AgentGraph(
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _role_fallback_models(self) -> list[str]:
+        """Other configured models an LLM role may fail over to, in preference order.
+
+        The execution model first (on a mixed deployment typically the fast local
+        model), then the verification model, then the executor's own default.
+        ``complete_with_failover`` skips whichever one is the primary.
+        """
+        candidates: list[str] = []
+        router = getattr(self, "_model_router", None)
+        if router is not None:
+            for task in ("execution", "verification"):
+                try:
+                    candidates.append(router.model_for(task) or "")
+                except Exception:
+                    continue
+        candidates.append(getattr(getattr(self, "_executor", None), "_default_model", "") or "")
+        return [m for i, m in enumerate(candidates) if m and m not in candidates[:i]]
+
     async def _emit(self, event: dict[str, Any]) -> None:
         from datetime import UTC, datetime
 

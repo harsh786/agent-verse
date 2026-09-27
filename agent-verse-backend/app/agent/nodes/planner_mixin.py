@@ -15,7 +15,7 @@ from app.observability.metrics import (
     record_plan_duration,
 )
 from app.providers.base import CompletionRequest, Message
-from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.providers.circuit_breaker import complete_with_failover
 from app.tenancy.context import TenantContext
 
 # Guardrails 2.0 integration
@@ -536,11 +536,11 @@ class PlannerMixin:
                 span.set_attribute("tenant.id", tenant_ctx.tenant_id)
                 _plan_start = time.monotonic()
                 try:
-                    resp = await call_with_circuit_breaker(
-                        self._planner,
-                        "complete",
-                        req,
-                        provider_name=type(self._planner).__name__,
+                    # Fall back to the route's execution model when the planning
+                    # model times out / fails (e.g. a hosted reasoning model that
+                    # takes longer than the call timeout) instead of failing the goal.
+                    resp = await complete_with_failover(
+                        self._planner, req, fallback_models=self._role_fallback_models()
                     )
                 except (RuntimeError, TimeoutError) as cb_exc:
                     raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc

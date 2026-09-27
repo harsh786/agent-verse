@@ -106,7 +106,7 @@ async def test_node_reflect_with_model_router() -> None:
     state = {"agent_state": agent_state, "tenant_ctx": T}
     result = await graph._node_reflect(state)
 
-    mock_router.model_for.assert_called_with("reflection")
+    mock_router.model_for.assert_any_call("reflection")
     assert result["agent_state"].verification_feedback == (
         "Reflection identified categories: quality"
     )

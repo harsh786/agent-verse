@@ -192,7 +192,46 @@ class OpenAICompatibleProvider:
         }
     )
 
+    # Upper bound when retrying a reasoning model that spent its budget thinking.
+    _EMPTY_RETRY_MAX_TOKENS = 8192
+
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        """Complete, never returning an empty answer as if it were one.
+
+        A real endpoint can return no text and no tool call: a reasoning model
+        that spent its whole ``max_tokens`` thinking (``finish_reason=length``,
+        everything in ``reasoning_content``), or a degenerate generation. That
+        used to come back as ``content=""``, which the agent took as the answer.
+        Now: retry once (with double the budget when truncated), then raise
+        ``ExternalServiceError`` so fallback routing / circuit breakers engage.
+        """
+        response = await self._complete_once(request)
+        if response.content.strip() or response.tool_calls:
+            return response
+        import dataclasses
+        import logging as _log
+
+        retry = request
+        if response.stop_reason == "length":
+            retry = dataclasses.replace(
+                request,
+                max_tokens=min(max(request.max_tokens, 256) * 2, self._EMPTY_RETRY_MAX_TOKENS),
+            )
+        _log.getLogger(__name__).warning(
+            "llm_empty_completion_retrying model=%s stop_reason=%s max_tokens=%s",
+            response.model, response.stop_reason, retry.max_tokens,
+        )
+        response = await self._complete_once(retry)
+        if response.content.strip() or response.tool_calls:
+            return response
+        from app.core.errors import ExternalServiceError
+
+        raise ExternalServiceError(
+            f"LLM returned an empty completion twice (model={response.model}, "
+            f"stop_reason={response.stop_reason})"
+        )
+
+    async def _complete_once(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._default_model
         messages = self._normalize_messages(request)
 

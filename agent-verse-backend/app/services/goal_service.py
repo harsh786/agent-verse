@@ -895,7 +895,21 @@ class GoalService:
                     default_model=tenant_cfg.get("default_model", "gpt-5.2"),
                 )
 
-        # 2. Fall back to env-var provider
+        # 2. The app-wide provider resolved at startup from EVERY configured
+        # backend (on-prem vLLM dispatcher, NVIDIA NIM, Ollama, OpenRouter,
+        # Anthropic, OpenAI, …). This step was missing: resolution went straight
+        # from tenant config to an Anthropic/OpenAI env check, so a deployment
+        # configured with on-prem models or NVIDIA ran EVERY goal on the canned
+        # FakeProvider — plan "Complete the requested task", answer "Task
+        # executed successfully", verdict "Goal achieved" — and reported success.
+        if provider is None and app_state is not None:
+            from app.providers.fake import FakeProvider as _FakeProviderType
+
+            _app_provider = getattr(app_state, "_app_provider", None)
+            if _app_provider is not None and not isinstance(_app_provider, _FakeProviderType):
+                provider = _app_provider
+
+        # 3. Fall back to env-var provider
         if provider is None:
             anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
             openai_key = get_provider_env("OPENAI_API_KEY")
@@ -914,8 +928,17 @@ class GoalService:
                 except Exception:
                     pass
 
-        # 3. Final fallback: FakeProvider (with explicit warning)
-        if provider is None:
+        # 4. Final fallback: FakeProvider — development only, and always flagged.
+        simulated = provider is None
+        if simulated:
+            import os as _os
+
+            if _os.getenv("ENVIRONMENT", "development").lower() == "production":
+                # Never fabricate a "successful" goal in production.
+                raise RuntimeError(
+                    "No LLM provider is configured; refusing to simulate goal execution "
+                    "in production."
+                )
             from app.providers.fake import FakeProvider as _FakeProvider
 
             provider = _FakeProvider(
@@ -1216,6 +1239,9 @@ class GoalService:
             graph = AgentGraph(**graph_services)
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
+        # Survives role/trace/circuit-breaker wrapping, unlike a type check on
+        # graph._planner (which is a wrapper, so the old check never fired).
+        graph._simulated_provider = simulated
         # Store agent system prompt so callers can inject it into initial_context
         graph._agent_system_prompt = _system_prompt
         graph._prompt_optimizer = _prompt_optimizer
@@ -2272,10 +2298,9 @@ class GoalService:
                         _agent_collection_ids = list(_agent_rec.get("allowed_collection_ids", []))
             loop._agent_collection_ids = _agent_collection_ids
             # Detect FakeProvider so get_goal() can surface a warning to callers
-            if (
-                hasattr(loop, "_planner")
-                and type(loop._planner).__name__ == "FakeProvider"
-                and record is not None
+            if record is not None and (
+                getattr(loop, "_simulated_provider", False) is True
+                or type(getattr(loop, "_planner", None)).__name__ == "FakeProvider"
             ):
                 record.execution_context["provider_warning"] = (
                     "No real LLM provider configured. Results are simulated."

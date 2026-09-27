@@ -246,7 +246,7 @@ async def test_node_think_with_model_router() -> None:
     state = _make_state(agent_state=agent_state)
     result = await graph._node_think(state)
     assert "reasoning_evidence" in result
-    graph._model_router.model_for.assert_called_with("think")
+    graph._model_router.model_for.assert_any_call("think")
 
 
 # ---------------------------------------------------------------------------

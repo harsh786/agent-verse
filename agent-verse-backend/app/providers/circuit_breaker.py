@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from collections import defaultdict
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderCircuitBreaker:
@@ -103,3 +106,60 @@ async def call_with_circuit_breaker(
     except Exception:
         _provider_cb.record_failure(provider_name)
         raise
+
+
+def breaker_key(provider: Any, request: Any = None) -> str:
+    """Circuit identity for one model/endpoint.
+
+    Callers used to pass ``type(provider).__name__`` — always "TracedProvider"
+    for the agent roles — so a few timeouts on ONE slow model opened the circuit
+    for every model, every role and every tenant in the process.
+    """
+    model = (getattr(request, "model", "") or getattr(provider, "_default_model", "") or "").strip()
+    return f"llm:{model}" if model else f"llm:{type(provider).__name__}"
+
+
+async def complete_with_failover(
+    provider: Any,
+    request: Any,
+    *,
+    fallback_models: Any = (),
+    timeout_seconds: float | None = None,
+) -> Any:
+    """``provider.complete(request)`` with per-model circuits and ordered failover.
+
+    Tries ``request.model`` first, then each distinct entry of
+    ``fallback_models`` (the provider routes by ``request.model``, e.g. the
+    on-prem dispatcher sends each model to its own endpoint). A slow or broken
+    model — a hosted reasoning model that exceeds the call timeout, an endpoint
+    that is down, an empty completion — no longer fails the goal while another
+    configured model is healthy. The last error is re-raised unchanged, so
+    callers keep their existing error handling.
+    """
+    import dataclasses
+
+    models = [getattr(request, "model", "") or ""]
+    for m in fallback_models or ():
+        if m and m not in models:
+            models.append(m)
+    last_exc: BaseException | None = None
+    for i, model in enumerate(models):
+        req = request if i == 0 else dataclasses.replace(request, model=model)
+        try:
+            return await call_with_circuit_breaker(
+                provider,
+                "complete",
+                req,
+                provider_name=breaker_key(provider, req),
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            last_exc = exc
+            if i + 1 < len(models):
+                logger.warning(
+                    "llm_model_failover from=%s to=%s error=%s",
+                    model, models[i + 1], str(exc)[:200],
+                )
+    if last_exc is None:  # pragma: no cover - models always has one entry
+        raise RuntimeError("no model to call")
+    raise last_exc

@@ -296,7 +296,16 @@ async def test_complete_no_usage_returns_zero_tokens() -> None:
 
 
 @pytest.mark.asyncio
-async def test_complete_empty_content_defaults_to_empty_string() -> None:
+async def test_complete_empty_content_is_retried_then_raised() -> None:
+    """An empty completion (no text, no tool call) is not an answer.
+
+    Seen against a real reasoning model (kimi-k3 on NVIDIA): content=None with
+    everything in reasoning_content. It used to be returned as "" and taken as
+    the agent's answer; now it is retried once and then raised so the caller's
+    fallback routing can take over.
+    """
+    from app.core.errors import ExternalServiceError
+
     mock_openai, mock_client = _make_openai_module()
     mock_resp = _make_chat_response(content=None)  # type: ignore[arg-type]
     mock_resp.choices[0].message.content = None
@@ -305,11 +314,33 @@ async def test_complete_empty_content_defaults_to_empty_string() -> None:
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(api_key="key")
-        result = await provider.complete(
-            CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
-        )
+        with pytest.raises(ExternalServiceError):
+            await provider.complete(
+                CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
+            )
+    assert mock_client.chat.completions.create.await_count == 2
 
-    assert result.content == ""
+
+@pytest.mark.asyncio
+async def test_truncated_reasoning_is_retried_with_a_bigger_budget() -> None:
+    mock_openai, mock_client = _make_openai_module()
+    empty = _make_chat_response(content=None)  # type: ignore[arg-type]
+    empty.choices[0].message.content = None
+    empty.choices[0].finish_reason = "length"
+    ok = _make_chat_response(content="391")
+    mock_client.chat.completions.create = AsyncMock(side_effect=[empty, ok])
+
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+        provider = OpenAICompatibleProvider(api_key="key")
+        result = await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="17*23?")], model="m", max_tokens=300
+            )
+        )
+    assert result.content == "391"
+    second = mock_client.chat.completions.create.await_args_list[1].kwargs
+    assert second["max_tokens"] == 600
 
 
 # ---------------------------------------------------------------------------

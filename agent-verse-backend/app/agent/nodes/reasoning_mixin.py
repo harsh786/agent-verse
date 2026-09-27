@@ -10,7 +10,7 @@ from app.agent.prompts import (
 )
 from app.agent.state import AgentState, StepStatus
 from app.providers.base import CompletionRequest, Message
-from app.providers.circuit_breaker import call_with_circuit_breaker
+from app.providers.circuit_breaker import complete_with_failover
 
 # Guardrails 2.0 integration
 try:
@@ -115,11 +115,8 @@ class ReasoningMixin:
             model=(self._model_router.model_for("think") if self._model_router is not None else ""),
         )
         try:
-            resp = await call_with_circuit_breaker(
-                self._planner,
-                "complete",
-                req,
-                provider_name=type(self._planner).__name__,
+            resp = await complete_with_failover(
+                self._planner, req, fallback_models=self._role_fallback_models()
             )
         except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
@@ -176,11 +173,8 @@ class ReasoningMixin:
             model=_reflect_model,
         )
         try:
-            resp = await call_with_circuit_breaker(
-                self._planner,
-                "complete",
-                req,
-                provider_name=type(self._planner).__name__,
+            resp = await complete_with_failover(
+                self._planner, req, fallback_models=self._role_fallback_models()
             )
         except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc

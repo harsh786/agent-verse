@@ -161,7 +161,7 @@ async def test_verify_circuit_breaker_open_raises_permission_error() -> None:
     agent_state.steps.append(_completed_step())
 
     with patch(
-        "app.agent.nodes.verifier_mixin.call_with_circuit_breaker",
+        "app.agent.nodes.verifier_mixin.complete_with_failover",
         AsyncMock(side_effect=RuntimeError("circuit open for verifier")),
     ):
         with pytest.raises(PermissionError, match="Verification unavailable"):
@@ -181,7 +181,7 @@ async def test_verify_timeout_converts_to_permission_error() -> None:
     agent_state.steps.append(_completed_step())
 
     with patch(
-        "app.agent.nodes.verifier_mixin.call_with_circuit_breaker",
+        "app.agent.nodes.verifier_mixin.complete_with_failover",
         AsyncMock(side_effect=TimeoutError("verifier call timed out")),
     ):
         with pytest.raises(PermissionError, match="Verification unavailable"):
