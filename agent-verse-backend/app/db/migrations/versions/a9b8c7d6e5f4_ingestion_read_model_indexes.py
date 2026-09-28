@@ -15,7 +15,7 @@ so none of them scans at corpus scale:
   expiry purge of the write-through cache.
 
 Revision ID: a9b8c7d6e5f4
-Revises: e8f9a0b1c2d3
+Revises: a8b9c0d1e2f3
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "a9b8c7d6e5f4"
-down_revision = "e8f9a0b1c2d3"
+down_revision = "a8b9c0d1e2f3"
 branch_labels = None
 depends_on = None
 
