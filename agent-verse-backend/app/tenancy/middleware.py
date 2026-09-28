@@ -46,7 +46,7 @@ async def _check_rate_limit_with_fallback(tenant_id: str, redis: Any, rpm_limit:
 
             store = TenantScopedStore(redis=redis, tenant_id=tenant_id)
             limiter = SlidingWindowRateLimiter(store=store)
-            allowed, _, _ = await limiter.check_and_record("api", limit=rpm_limit)
+            allowed, _, _ = await limiter.check_and_record(_TENANT_RATE_BUCKET, limit=rpm_limit)
             return allowed
         except Exception:
             pass  # Redis error — fall through to in-process fallback
@@ -107,6 +107,42 @@ _BYPASS_PREFIXES = (
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]
+
+# Rate-limit bucket name: the plan limit is per tenant (TenantScopedStore already
+# namespaces the key by tenant), shared by every path the tenant calls.
+_TENANT_RATE_BUCKET = "api"
+
+
+def _key_scope_denial(request: Request, ctx: TenantContext) -> JSONResponse | None:
+    """403 when the endpoint's scope is outside the API key's OWN scopes.
+
+    A key created with explicit scopes may use only those scopes. Its roles are
+    still enforced by ScopeEnforcementMiddleware (which runs after this one), so
+    the effective permission is the intersection of the two. Previously the key's
+    scopes never reached ``TenantContext`` and a key minted with
+    ``scopes=["goals:read"]`` had its role's full rights. Keys without explicit
+    scopes (``ctx.scopes == ()``) are unaffected; endpoints with no registered
+    scope and the scope-exempt paths follow ScopeEnforcementMiddleware's rules.
+    """
+    if not ctx.scopes:
+        return None
+    from app.auth.scope_enforcement import EXEMPT_PATH_PREFIXES, ScopeEnforcementMiddleware
+
+    path = request.url.path
+    if any(path.startswith(p) for p in EXEMPT_PATH_PREFIXES):
+        return None
+    required = ScopeEnforcementMiddleware._required_scope(request.method, path)
+    if required is None or required in ctx.scopes:
+        return None
+    return JSONResponse(
+        status_code=403,
+        content={
+            "error": "INSUFFICIENT_SCOPE",
+            "detail": f"Insufficient scope: requires {required} (not granted to this API key)",
+            "required_scope": required,
+            "granted_scopes": sorted(ctx.scopes),
+        },
+    )
 
 
 def _extract_key(request: Request) -> str | None:
@@ -379,7 +415,12 @@ class TenantMiddleware(BaseHTTPMiddleware):
             limits = PLAN_LIMITS[tenant_ctx.plan]
             rl_limit = limits.requests_per_minute
 
-            allowed, remaining, reset_at = await limiter.check_and_record(path, limit=rl_limit)
+            # One bucket per TENANT. This was keyed by the request path, so every
+            # distinct URL (/goals/1, /goals/2, ...) got its own fresh plan-sized
+            # bucket and a tenant could multiply its quota without bound.
+            allowed, remaining, reset_at = await limiter.check_and_record(
+                _TENANT_RATE_BUCKET, limit=rl_limit
+            )
             rl_remaining = remaining
             rl_reset = reset_at
 
@@ -397,6 +438,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 tenant_ctx.tenant_id, None, rpm_limit=rl_limit
             ):
                 return _rate_limit_response(_time.time() + 60)
+
+        denied = _key_scope_denial(request, tenant_ctx)
+        if denied is not None:
+            return denied
 
         response = await call_next(request)
 

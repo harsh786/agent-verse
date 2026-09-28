@@ -273,7 +273,9 @@ class DeletionOrchestrator:
                             """
                             SELECT name FROM legal_holds
                             WHERE tenant_id = :tid AND status = 'active'
-                              AND (resource_ids @> CAST(:subj AS jsonb)
+                              AND (expires_at IS NULL OR expires_at > now())
+                              AND (resource_type = 'tenant'
+                                   OR resource_ids @> CAST(:subj AS jsonb)
                                    OR user_ids @> CAST(:subj AS jsonb))
                             LIMIT 1
                             """

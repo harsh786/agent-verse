@@ -287,7 +287,10 @@ class TestIsUnderHold:
         result = await mgr.is_under_hold("t1", "resource-1")
         assert result is False
 
-    async def test_db_error_returns_false(self) -> None:
+    async def test_db_error_fails_closed(self) -> None:
+        """"Could not check" must never be reported as "not held"."""
+        from app.governance.legal_holds import LegalHoldCheckError
+
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=Exception("DB error"))
 
@@ -296,8 +299,8 @@ class TestIsUnderHold:
             yield mock_session
 
         mgr = _make_legal_hold_manager(db=factory)
-        result = await mgr.is_under_hold("t1", "resource-1")
-        assert result is False
+        with pytest.raises(LegalHoldCheckError):
+            await mgr.is_under_hold("t1", "resource-1")
 
 
 # ── list_holds ────────────────────────────────────────────────────────────────
@@ -334,7 +337,8 @@ class TestListHolds:
         assert holds[0]["id"] == "hold-id"
         assert holds[0]["name"] == "Hold A"
 
-    async def test_list_holds_error_returns_empty(self) -> None:
+    async def test_list_holds_error_is_raised_not_empty(self) -> None:
+        """An empty list reads as "no holds" — a query failure must surface."""
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=Exception("DB error"))
 
@@ -343,8 +347,8 @@ class TestListHolds:
             yield mock_session
 
         mgr = _make_legal_hold_manager(db=factory)
-        result = await mgr.list_holds("t1")
-        assert result == []
+        with pytest.raises(Exception, match="DB error"):
+            await mgr.list_holds("t1")
 
 
 # ── sync_cache ────────────────────────────────────────────────────────────────

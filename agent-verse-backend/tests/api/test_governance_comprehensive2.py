@@ -319,7 +319,8 @@ def test_batch_approve_exceeds_limit_returns_422() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_create_legal_hold_no_db() -> None:
+def test_create_legal_hold_no_db(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.governance._get_db", lambda _r: None)
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/governance/legal-hold",
@@ -329,7 +330,8 @@ def test_create_legal_hold_no_db() -> None:
     assert resp.status_code in (200, 201, 503, 500)
 
 
-def test_list_legal_holds_no_db() -> None:
+def test_list_legal_holds_no_db(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.governance._get_db", lambda _r: None)
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/governance/legal-holds", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code in (200, 503, 500)

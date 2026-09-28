@@ -152,7 +152,7 @@ async def test_db_resolve_returns_none_for_unknown_hash() -> None:
 async def test_db_resolve_accepts_valid_active_key() -> None:
     """Sanity check: a valid, non-expired key on an active tenant does resolve,
     so the rejection tests above aren't vacuously true."""
-    key = SimpleNamespace(id="key-ok", expires_at=None, roles=["operator"])
+    key = SimpleNamespace(id="key-ok", expires_at=None, roles=["operator"], scopes=[])
     tenant = SimpleNamespace(id="tenant-ok", plan_tier="starter", is_active=True)
 
     session_cls = _make_db_row_session((key, tenant))

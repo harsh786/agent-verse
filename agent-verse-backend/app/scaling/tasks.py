@@ -4473,17 +4473,32 @@ _RETENTION_BATCH = 5000
 _RETENTION_MAX_BATCHES = 2000  # per table per run; the next run continues
 
 
+# Tenants under a tenant-wide legal hold (POST /governance/legal-hold) are
+# exempt from retention deletion. The sweeps below are fleet-wide and never
+# consulted legal_holds, so a hold placed "to prevent retention deletion"
+# prevented nothing.
+_TENANT_HOLD_EXEMPT = (
+    " AND tenant_id NOT IN (SELECT lh.tenant_id FROM legal_holds lh"
+    " WHERE lh.status = 'active' AND lh.resource_type = 'tenant'"
+    " AND (lh.expires_at IS NULL OR lh.expires_at > NOW()))"
+)
+_ANY_TENANT_HOLD_SQL = (
+    "SELECT EXISTS (SELECT 1 FROM legal_holds WHERE status = 'active' "
+    "AND resource_type = 'tenant' AND (expires_at IS NULL OR expires_at > NOW()))"
+)
+
 # (label, batched DELETE). Each selects at most :lim victims by an indexed column.
 _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
     (
         "goal_events",
         "DELETE FROM goal_events WHERE (id, created_at) IN ("
-        "SELECT id, created_at FROM goal_events WHERE created_at < :c LIMIT :lim)",
+        f"SELECT id, created_at FROM goal_events WHERE created_at < :c{_TENANT_HOLD_EXEMPT} "
+        "LIMIT :lim)",
     ),
     (
         "decision_traces",
         "DELETE FROM decision_traces WHERE id IN ("
-        "SELECT id FROM decision_traces WHERE created_at < :c LIMIT :lim)",
+        f"SELECT id FROM decision_traces WHERE created_at < :c{_TENANT_HOLD_EXEMPT} LIMIT :lim)",
     ),
     (
         # The trigger audit/idempotency log had no retention at all. Its
@@ -4492,14 +4507,15 @@ _RETENTION_DELETES: tuple[tuple[str, str], ...] = (
         # far beyond any real redelivery horizon.
         "trigger_events",
         "DELETE FROM trigger_events WHERE id IN ("
-        "SELECT id FROM trigger_events WHERE fired_at < :c_naive LIMIT :lim)",
+        f"SELECT id FROM trigger_events WHERE fired_at < :c_naive{_TENANT_HOLD_EXEMPT} "
+        "LIMIT :lim)",
     ),
     (
         # D-18: each memory record carries its own deadline in expires_at.
         "memory_records",
         "DELETE FROM memory_records WHERE id IN ("
-        "SELECT id FROM memory_records WHERE expires_at IS NOT NULL AND expires_at < NOW() "
-        "LIMIT :lim)",
+        "SELECT id FROM memory_records WHERE expires_at IS NOT NULL AND expires_at < NOW()"
+        f"{_TENANT_HOLD_EXEMPT} LIMIT :lim)",
     ),
 )
 
@@ -4526,6 +4542,8 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     counts: dict[str, Any] = {}
     try:
+        from sqlalchemy import text
+
         from app.db.rls import system_session
         from app.db.session import get_system_session_factory
 
@@ -4537,8 +4555,17 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         # DEFAULT partition.
         try:
             async with db() as session, session.begin(), system_session(session):
-                dropped = await _drop_expired_partitions(session, "goal_events", cutoff)
-            if dropped:
+                # A dropped partition holds every tenant's rows for that month, so
+                # it cannot exempt a held tenant: skip the drop while any
+                # tenant-wide hold is in force (the batched DELETE below still
+                # trims the non-held tenants).
+                held = bool((await session.execute(text(_ANY_TENANT_HOLD_SQL))).scalar())
+                dropped = (
+                    [] if held else await _drop_expired_partitions(session, "goal_events", cutoff)
+                )
+            if held:
+                counts["goal_events_partitions_dropped"] = "skipped: tenant legal hold active"
+            elif dropped:
                 counts["goal_events_partitions_dropped"] = dropped
         except Exception as exc:
             counts["goal_events_partitions_dropped"] = f"error: {exc}"
@@ -5494,7 +5521,8 @@ async def _expire_stale_documents(retention_days: int) -> dict:
                 await session.execute(
                     text(
                         "DELETE FROM documents "
-                        "WHERE created_at < NOW() - make_interval(days => :days) "
+                        "WHERE created_at < NOW() - make_interval(days => :days)"
+                        f"{_TENANT_HOLD_EXEMPT} "
                         "RETURNING id"
                     ),
                     {"days": int(retention_days)},
