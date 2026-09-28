@@ -2685,15 +2685,6 @@ class GoalService:
             # skipped ("Step skipped: budget exceeded.") mid-run.
             await self._check_budget_preflight(tenant_ctx)
 
-            # Check and atomically increment the concurrent-goal counter.
-            # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
-            from app.tenancy.limits import check_and_increment_concurrent_goals
-
-            await check_and_increment_concurrent_goals(
-                tenant_ctx=tenant_ctx,
-                redis=getattr(self, "_redis", None),
-            )
-
             # ── Goal-level deduplication ────────────────────────────────────────
             # If an identical goal is already in-flight for this tenant, return
             # the existing goal_id rather than spawning a duplicate Celery task.
@@ -2714,6 +2705,19 @@ class GoalService:
                     }
             except Exception as _dd_exc:
                 _svc_logger.debug("goal_dedup_skipped", error=str(_dd_exc)[:60])
+
+            # Take a concurrency slot only for a goal that will actually run. It
+            # used to be taken BEFORE the dedup check, and the dedup early-return
+            # never released it: every duplicate submission leaked a slot until
+            # the tenant was locked out with 429s.
+            # Check and atomically increment the concurrent-goal counter.
+            # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
+            from app.tenancy.limits import check_and_increment_concurrent_goals
+
+            await check_and_increment_concurrent_goals(
+                tenant_ctx=tenant_ctx,
+                redis=getattr(self, "_redis", None),
+            )
 
             goal_id = uuid.uuid4().hex
 
