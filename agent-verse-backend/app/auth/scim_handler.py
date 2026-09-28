@@ -29,6 +29,7 @@ explicit ``tenant_id`` predicate as defence in depth.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -198,20 +199,34 @@ class SCIMHandler:
         count: int = 100,
         filter_str: str = "",
     ) -> dict[str, Any]:
-        """List tenant users in SCIM ListResponse format."""
+        """List tenant users in SCIM ListResponse format.
+
+        ``filter`` supports the equality form IdPs use to look a user up before
+        provisioning (``userName eq "a@b.c"``, ``id eq "..."``, ``emails eq`` /
+        ``emails.value eq``). It used to be ignored, so such a lookup returned
+        EVERY user and the IdP linked or updated the wrong account. Any other
+        filter is a 400 ``invalidFilter`` (RFC 7644 §3.4.2.2), never "all users".
+        """
         from sqlalchemy import func, select
 
         from app.db.models.user import TenantMembership, User
 
         start_index = max(start_index, 1)
         count = max(count, 0)
+        conditions: list[Any] = [TenantMembership.tenant_id == self._tenant_id]
+        if filter_str and filter_str.strip():
+            attr, value = _parse_scim_eq_filter(filter_str)
+            if attr == "id":
+                conditions.append(User.id == value)
+            else:  # userName / emails → the account e-mail, case-insensitive
+                conditions.append(func.lower(User.email) == value.lower())
         try:
             async with self._tenant_tx() as db:
                 rows = (
                     await db.execute(
                         select(User, TenantMembership)
                         .join(TenantMembership, TenantMembership.user_id == User.id)
-                        .where(TenantMembership.tenant_id == self._tenant_id)
+                        .where(*conditions)
                         .order_by(TenantMembership.created_at.desc(), User.id)
                         .offset(start_index - 1)
                         .limit(count)
@@ -221,7 +236,8 @@ class SCIMHandler:
                     await db.execute(
                         select(func.count())
                         .select_from(TenantMembership)
-                        .where(TenantMembership.tenant_id == self._tenant_id)
+                        .join(User, TenantMembership.user_id == User.id)
+                        .where(*conditions)
                     )
                 ).scalar_one()
                 resources = [_to_scim_user(u, m) for u, m in rows]
@@ -469,6 +485,26 @@ def _to_scim_user(user: Any, membership: Any) -> dict[str, Any]:
             "location": f"/scim/v2/Users/{uid}",
         },
     }
+
+
+_SCIM_EQ_FILTER = re.compile(
+    r'^\s*(userName|id|emails|emails\.value|emails\[type eq "work"\]\.value)'
+    r'\s+eq\s+"((?:[^"\\]|\\.)*)"\s*$',
+    re.IGNORECASE,
+)
+
+
+def _parse_scim_eq_filter(filter_str: str) -> tuple[str, str]:
+    """``(attr, value)`` for a supported ``<attr> eq "<value>"`` filter, else 400."""
+    m = _SCIM_EQ_FILTER.match(filter_str)
+    if m is None:
+        raise HTTPException(
+            status_code=400,
+            detail=_scim_error(f"Unsupported filter: {filter_str[:200]}", "invalidFilter"),
+        )
+    attr = m.group(1).lower()
+    value = m.group(2).replace('\\"', '"').replace("\\\\", "\\")
+    return ("id" if attr == "id" else "userName"), value
 
 
 def _scim_error(detail: str, scim_type: str = "invalidValue") -> dict[str, Any]:

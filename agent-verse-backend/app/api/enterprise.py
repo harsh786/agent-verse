@@ -9,7 +9,7 @@ import json
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
@@ -2146,10 +2146,13 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
 
 @scim_router.get("/Users")
 async def scim_list_users(
-    request: Request, startIndex: int = 1, count: int = 100  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
+    request: Request,
+    startIndex: int = 1,  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
+    count: int = 100,
+    filter_: str = Query("", alias="filter", max_length=1000),
 ) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
-    return await handler.list_users(start_index=startIndex, count=count)
+    return await handler.list_users(start_index=startIndex, count=count, filter_str=filter_)
 
 
 @scim_router.get("/Users/{scim_id}")
