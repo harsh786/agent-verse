@@ -25,7 +25,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from app.auth.ip_allowlist import IPAllowlistCache, is_ip_allowed
+from app.auth.ip_allowlist import IPAllowlistCache, IPAllowlistUnavailableError, is_ip_allowed
 from app.auth.permission_cache import PermissionCache
 from app.observability.logging import get_logger
 
@@ -138,7 +138,10 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("DELETE", "/guardrails"): "guardrails:write",
 }
 
-# Paths that bypass scope enforcement entirely
+# Paths that bypass scope enforcement entirely. These are the public (pre-auth)
+# endpoints; TenantMiddleware never attaches a tenant to them. "/auth/" used to
+# be exempt as a whole, which also skipped the scope check AND the tenant IP
+# allowlist for the authenticated /auth/* routes (MFA enrol/disable, sessions).
 EXEMPT_PATH_PREFIXES: frozenset[str] = frozenset(
     {
         "/health",
@@ -147,11 +150,32 @@ EXEMPT_PATH_PREFIXES: frozenset[str] = frozenset(
         "/docs",
         "/redoc",
         "/openapi.json",
-        "/auth/",
+        "/auth/login",
+        "/auth/callback",
+        "/auth/config",
+        "/auth/token",
+        "/auth/refresh",
+        "/auth/userinfo",
+        "/auth/google/",
         "/tenants/signup",
         "/integrations/",  # webhook receivers use their own auth
     }
 )
+
+# Scope-neutral endpoints any authenticated key may call, including a key minted
+# with a narrow explicit scope list: they only manage the caller's own session.
+SCOPE_NEUTRAL_ENDPOINTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("GET", "/tenants/stream-token"),  # read-only SSE token for the same key
+        ("POST", "/auth/mfa/verify"),  # the second factor itself
+        ("GET", "/auth/mfa/status"),
+    }
+)
+
+
+class ScopeLookupUnavailableError(Exception):
+    """The key's explicit scopes / role assignments could not be read."""
+
 
 # ---------------------------------------------------------------------------
 # Role → scope mapping: fallback when no api_key_scopes rows exist
@@ -500,58 +524,14 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         # Read Redis per-request so the lifespan upgrade is always current
         redis = getattr(request.app.state, "_rate_limiter_redis", None)
 
-        # 3. IP allowlist check
-        if redis is not None:
-            ip_cache = IPAllowlistCache(redis)
-            tenant_svc = getattr(request.app.state, "tenant_service", None)
-            db_factory = getattr(tenant_svc, "_db", None) if tenant_svc else None
-            cidrs = await ip_cache.get_cidrs(tenant_id, db_factory=db_factory)
-            # H4: also populate local cache so we can enforce when Redis goes down
-            if cidrs:
-                import time as _time
+        # 3. IP allowlist check (fail closed: an unreadable allowlist is a 503,
+        #    never "no allowlist")
+        blocked = await self._ip_allowlist_denial(request, tenant_id, redis)
+        if blocked is not None:
+            return blocked
 
-                _local_ip_allowlist_cache[tenant_id] = (cidrs, _time.monotonic())
-            if cidrs:
-                client_ip = _get_client_ip(request)
-                if not is_ip_allowed(client_ip, cidrs):
-                    logger.warning(
-                        "ip_blocked",
-                        tenant_id=tenant_id,
-                        ip=client_ip,
-                        path=path,
-                    )
-                    return JSONResponse(
-                        status_code=403,
-                        content={
-                            "error": "IP_NOT_ALLOWED",
-                            "message": (f"Source IP {client_ip} is not permitted for this tenant"),
-                        },
-                    )
-        else:
-            # H4: Redis unavailable — enforce from local in-process cache if populated
-            import time as _time
-
-            cached = _local_ip_allowlist_cache.get(tenant_id)
-            if cached:
-                cidrs, ts = cached
-                if _time.monotonic() - ts < _LOCAL_ALLOWLIST_TTL and cidrs:
-                    client_ip = _get_client_ip(request)
-                    if not is_ip_allowed(client_ip, cidrs):
-                        logger.warning(
-                            "ip_blocked_local_cache",
-                            tenant_id=tenant_id,
-                            ip=client_ip,
-                            path=path,
-                        )
-                        return JSONResponse(
-                            status_code=403,
-                            content={
-                                "error": "IP_NOT_ALLOWED",
-                                "message": (
-                                    f"Source IP {client_ip} is not permitted for this tenant"
-                                ),
-                            },
-                        )
+        if (request.method, path.rstrip("/") or "/") in SCOPE_NEUTRAL_ENDPOINTS:
+            return await call_next(request)
 
         # 4. Backward-compat guard: skip scope enforcement for legacy / test keys
         #    that carry no role assignments.  Keys without roles were issued before
@@ -617,12 +597,22 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
             # Cache miss (or Redis unavailable) → load from DB + role fallback
             tenant_svc = getattr(request.app.state, "tenant_service", None)
             db_factory = getattr(tenant_svc, "_db", None) if tenant_svc else None
-            granted = await self._load_scopes(
-                db_factory=db_factory,
-                tenant_id=tenant_id,
-                key_id=key_id,
-                roles=getattr(tenant, "roles", ()),
-            )
+            try:
+                granted = await self._load_scopes(
+                    db_factory=db_factory,
+                    tenant_id=tenant_id,
+                    key_id=key_id,
+                    roles=getattr(tenant, "roles", ()),
+                )
+            except ScopeLookupUnavailableError:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "SCOPE_LOOKUP_UNAVAILABLE",
+                        "detail": "Could not verify this API key's permissions; retry shortly.",
+                    },
+                    headers={"Retry-After": "5"},
+                )
             if redis is not None:
                 perm_cache = PermissionCache(redis)
                 await perm_cache.set(tenant_id, key_id, granted)
@@ -647,6 +637,59 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
             )
 
         return await call_next(request)
+
+    @staticmethod
+    async def _ip_allowlist_denial(
+        request: Request, tenant_id: str, redis: Any | None
+    ) -> JSONResponse | None:
+        """Return a 403/503 response when the request must not proceed, else None.
+
+        Lookup order: Redis cache → DB (and, without Redis, a fresh in-process
+        copy in front of the DB). On a DB error the last good in-process copy is
+        enforced while fresh; with none, the request is refused (503) — the
+        allowlist used to fail open, turning every tenant's allowlist off for
+        the duration of a DB outage.
+        """
+        import time as _time
+
+        tenant_svc = getattr(request.app.state, "tenant_service", None)
+        db_factory = getattr(tenant_svc, "_db", None) if tenant_svc else None
+        cached = _local_ip_allowlist_cache.get(tenant_id)
+        fresh = cached is not None and _time.monotonic() - cached[1] < _LOCAL_ALLOWLIST_TTL
+
+        cidrs: list[str]
+        if redis is None and fresh and cached is not None:
+            cidrs = cached[0]
+        else:
+            try:
+                cidrs = await IPAllowlistCache(redis).get_cidrs(tenant_id, db_factory=db_factory)
+                _local_ip_allowlist_cache[tenant_id] = (cidrs, _time.monotonic())
+            except IPAllowlistUnavailableError:
+                if not (fresh and cached is not None):
+                    logger.warning("ip_allowlist_unavailable_fail_closed", tenant_id=tenant_id)
+                    return JSONResponse(
+                        status_code=503,
+                        content={
+                            "error": "IP_ALLOWLIST_UNAVAILABLE",
+                            "message": "Could not verify the tenant IP allowlist; retry shortly.",
+                        },
+                        headers={"Retry-After": "5"},
+                    )
+                cidrs = cached[0]
+
+        if not cidrs:
+            return None
+        client_ip = _get_client_ip(request)
+        if is_ip_allowed(client_ip, cidrs):
+            return None
+        logger.warning("ip_blocked", tenant_id=tenant_id, ip=client_ip, path=request.url.path)
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "IP_NOT_ALLOWED",
+                "message": f"Source IP {client_ip} is not permitted for this tenant",
+            },
+        )
 
     @staticmethod
     def _client_ip(request: Request) -> str:
@@ -732,8 +775,12 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
                     for (perms,) in role_rows.fetchall():
                         if perms:
                             scopes.update(perms)
-            except Exception:
-                pass  # DB unavailable — fall through to role-based fallback
+            except Exception as exc:
+                # Explicit key scopes / role assignments REPLACE the role
+                # fallback below, so granting the (possibly broader) role scopes
+                # on a DB error would fail open. Fail closed instead.
+                logger.warning("scope_lookup_failed", tenant_id=tenant_id, error=str(exc))
+                raise ScopeLookupUnavailableError(str(exc)) from exc
 
         # Fallback: derive scopes from TenantContext.roles (backward compat)
         if not scopes and roles:

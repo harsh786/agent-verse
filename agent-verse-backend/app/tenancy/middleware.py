@@ -79,6 +79,8 @@ _BYPASS_PREFIXES = (
     "/auth/callback",  # SSO OAuth2 callback
     "/auth/config",  # frontend SSO config discovery
     "/auth/token",  # authorization code exchange
+    "/auth/refresh",  # refresh-token exchange: the (expired) access token cannot auth it
+    "/auth/userinfo",  # validates the Keycloak JWT itself (401 on an invalid one)
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
@@ -118,27 +120,41 @@ def _key_scope_denial(request: Request, ctx: TenantContext) -> JSONResponse | No
 
     A key created with explicit scopes may use only those scopes. Its roles are
     still enforced by ScopeEnforcementMiddleware (which runs after this one), so
-    the effective permission is the intersection of the two. Previously the key's
-    scopes never reached ``TenantContext`` and a key minted with
-    ``scopes=["goals:read"]`` had its role's full rights. Keys without explicit
-    scopes (``ctx.scopes == ()``) are unaffected; endpoints with no registered
-    scope and the scope-exempt paths follow ScopeEnforcementMiddleware's rules.
+    the effective permission is the intersection of the two. Keys without
+    explicit scopes (``ctx.scopes == ()``) are unaffected.
+
+    An endpoint with NO registered scope is denied to a scoped key (fail
+    closed): it used to be allowed, so a key minted with ``scopes=["goals:read"]``
+    could call every unregistered route (/grants, /trust, /billing, /skills, ...)
+    with its role's full rights. Only the scope-neutral session endpoints
+    (``SCOPE_NEUTRAL_ENDPOINTS``) stay open to every key.
     """
     if not ctx.scopes:
         return None
-    from app.auth.scope_enforcement import EXEMPT_PATH_PREFIXES, ScopeEnforcementMiddleware
+    from app.auth.scope_enforcement import (
+        EXEMPT_PATH_PREFIXES,
+        SCOPE_NEUTRAL_ENDPOINTS,
+        ScopeEnforcementMiddleware,
+    )
 
     path = request.url.path
     if any(path.startswith(p) for p in EXEMPT_PATH_PREFIXES):
         return None
-    required = ScopeEnforcementMiddleware._required_scope(request.method, path)
-    if required is None or required in ctx.scopes:
+    if (request.method, path.rstrip("/") or "/") in SCOPE_NEUTRAL_ENDPOINTS:
         return None
+    required = ScopeEnforcementMiddleware._required_scope(request.method, path)
+    if required is not None and required in ctx.scopes:
+        return None
+    detail = (
+        f"Insufficient scope: requires {required} (not granted to this API key)"
+        if required is not None
+        else "This endpoint has no scope that an API key with explicit scopes can hold."
+    )
     return JSONResponse(
         status_code=403,
         content={
             "error": "INSUFFICIENT_SCOPE",
-            "detail": f"Insufficient scope: requires {required} (not granted to this API key)",
+            "detail": detail,
             "required_scope": required,
             "granted_scopes": sorted(ctx.scopes),
         },
