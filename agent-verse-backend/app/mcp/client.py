@@ -1317,8 +1317,18 @@ class MCPClient:
                     error=f"Tool call blocked by data exfiltration guard: {_reason}",
                     server_id=server_id,
                 )
-        except Exception:
-            pass  # exfil guard must never block execution on error
+        except Exception as _exfil_exc:
+            # Fail closed: an error in the exfiltration guard used to let the
+            # (possibly exfiltrating) write call through unchecked.
+            logger.warning(
+                "exfil_guard_error_blocking: tool=%s, error=%s", tool_name, str(_exfil_exc)[:100]
+            )
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error="Tool call blocked: the data exfiltration guard could not evaluate it",
+                server_id=server_id,
+            )
 
         try:
             result = await self._call_tool_impl(cfg, server_id, tool_name, arguments, tenant_ctx)

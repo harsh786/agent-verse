@@ -1587,9 +1587,9 @@ async def test_dispatch_builtin_tool_handler_signature_not_inspectable():
 
 
 @pytest.mark.asyncio
-async def test_call_tool_exfil_guard_check_raises_is_swallowed():
-    """A bug in the exfiltration guard itself must never block legitimate
-    tool calls — only an explicit (blocked, reason) result should."""
+async def test_call_tool_exfil_guard_check_raises_fails_closed():
+    """An error inside the exfiltration guard blocks the call: it used to be
+    swallowed, letting a possibly exfiltrating write through unchecked."""
     cfg = MCPServerConfig(server_id="srv-1", name="Srv", url="http://api.example.com")
     registry = MCPRegistry(redis=None)
     client = _make_client(registry)
@@ -1601,12 +1601,14 @@ async def test_call_tool_exfil_guard_check_raises_is_swallowed():
             "app.agent.exfil_guard.check_tool_args_for_exfil",
             side_effect=RuntimeError("guard crashed"),
         ),
-        patch.object(client, "_call_tool_impl", AsyncMock(return_value=real_result)),
+        patch.object(client, "_call_tool_impl", AsyncMock(return_value=real_result)) as impl,
     ):
         result = await client.call_tool(
             server_id="srv-1", tool_name="search", arguments={}, tenant_ctx=_ctx()
         )
-    assert result.success is True
+    assert result.success is False
+    assert "exfiltration guard" in (result.error or "")
+    impl.assert_not_called()
 
 
 @pytest.mark.asyncio
