@@ -2606,17 +2606,45 @@ class GoalService:
                 except Exception:
                     pass
 
-        # Resolve scoped LLM key from tenant config store (best-effort)
+        # Resolve the tenant's scoped (BYOK) LLM key. The store persists only the
+        # vault ciphertext (``encrypted_key``); this read ``api_key`` — a field it
+        # never writes — so the key was always "" (errors swallowed too) and the
+        # isolated runner fell back to the platform key. A tenant WITH a BYOK
+        # config whose key cannot be read/decrypted now fails the goal instead.
         scoped_llm_key = ""
         try:
             from app.services.llm_config_store import get_llm_config_store
 
             _config_store = get_llm_config_store()
             if _config_store is not None:
-                _cfg = await _config_store.get_config(tenant_ctx.tenant_id) or {}
-                scoped_llm_key = str(_cfg.get("api_key", ""))
-        except Exception:
-            pass
+                _cfg = await _config_store.get_config(tenant_ctx.tenant_id, strict=True) or {}
+                _enc = str(_cfg.get("encrypted_key") or "")
+                if _enc:
+                    from app.providers.vault import get_vault
+
+                    scoped_llm_key = str(get_vault().decrypt(_enc) or "")
+                    if not scoped_llm_key:
+                        raise ValueError("tenant LLM API key decrypted to an empty value")
+                elif _cfg:
+                    scoped_llm_key = str(_cfg.get("api_key") or "")
+        except Exception as _scoped_exc:
+            _svc_logger.warning(
+                "isolated_scoped_llm_key_unavailable", error=type(_scoped_exc).__name__
+            )
+            if record is not None:
+                record.status = GoalStatus.FAILED
+                record.error_message = "tenant LLM key unavailable for isolated execution"
+            await self._dispatch_event(
+                goal_id,
+                {
+                    "type": "goal_failed",
+                    "reason": "tenant LLM configuration could not be read or decrypted; "
+                    "the goal was not run on the platform key in its place",
+                    "failure_reason": "tenant_llm_provider_unavailable",
+                },
+                tenant_ctx=tenant_ctx,
+            )
+            return
 
         # Collect runtime_profile and feature_flags snapshots for the envelope
         _runtime_profile: dict[str, Any] = {}

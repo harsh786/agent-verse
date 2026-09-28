@@ -173,7 +173,7 @@ class _Store:
     def __init__(self, cfg: dict[str, Any]) -> None:
         self._cfg = cfg
 
-    async def get_config(self, tenant_id: str) -> dict[str, Any]:
+    async def get_config(self, tenant_id: str, **_kw: Any) -> dict[str, Any]:
         return self._cfg
 
 

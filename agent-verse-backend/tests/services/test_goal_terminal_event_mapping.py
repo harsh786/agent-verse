@@ -217,3 +217,57 @@ async def test_isolated_waiting_human_suspends_without_terminal_event() -> None:
     )
     svc._suspend_for_approval.assert_awaited_once()
     assert rec.status != GoalStatus.FAILED
+
+
+class _CapturingScheduler:
+    def __init__(self) -> None:
+        self.envelopes: list[Any] = []
+
+    async def schedule(self, envelope: Any, **__: Any) -> Any:
+        self.envelopes.append(envelope)
+        return _iso_result(True, "complete")
+
+
+class _ConfigStore:
+    def __init__(self, cfg: Any = None, exc: Exception | None = None) -> None:
+        self._cfg = cfg
+        self._exc = exc
+        self.kwargs: dict[str, Any] = {}
+
+    async def get_config(self, tenant_id: str, **kwargs: Any) -> Any:
+        self.kwargs = kwargs
+        if self._exc is not None:
+            raise self._exc
+        return self._cfg
+
+
+@pytest.mark.asyncio
+async def test_isolated_scoped_key_is_decrypted_from_encrypted_key() -> None:
+    """The store holds only ``encrypted_key``; reading ``api_key`` always gave ""."""
+    sched = _CapturingScheduler()
+    svc = GoalService(app_state=SimpleNamespace(execution_scheduler=sched))
+    _inject(svc)
+    vault = SimpleNamespace(decrypt=lambda enc: "tenant-real-key" if enc == "ct" else "")
+    store = _ConfigStore({"provider": "openai", "encrypted_key": "ct"})
+    with (
+        patch("app.services.llm_config_store.get_llm_config_store", return_value=store),
+        patch("app.providers.vault.get_vault", return_value=vault),
+    ):
+        await svc._run_agent_loop_isolated("g1", "do it", _ctx())
+    assert sched.envelopes, "goal must still run"
+    assert store.kwargs == {"strict": True}
+    assert sched.envelopes[0].scoped_llm_api_key == "tenant-real-key"
+
+
+@pytest.mark.asyncio
+async def test_isolated_unreadable_byok_fails_goal_instead_of_platform_key() -> None:
+    sched = _CapturingScheduler()
+    svc = GoalService(app_state=SimpleNamespace(execution_scheduler=sched))
+    rec = _inject(svc)
+    store = _ConfigStore(exc=RuntimeError("db down"))
+    with patch("app.services.llm_config_store.get_llm_config_store", return_value=store):
+        await svc._run_agent_loop_isolated("g1", "do it", _ctx())
+    assert sched.envelopes == []
+    assert rec.events[-1]["type"] == "goal_failed"
+    assert rec.events[-1]["failure_reason"] == "tenant_llm_provider_unavailable"
+    assert rec.status == GoalStatus.FAILED

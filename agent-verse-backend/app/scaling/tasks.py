@@ -446,15 +446,20 @@ def _get_llm_provider(tenant_id: str) -> Any:
     """Load the tenant's configured LLM provider from Redis.
 
     Uses a synchronous Redis client since Celery tasks run in a regular
-    (non-async) thread.  Returns *None* if Redis is unavailable, not
-    configured, or the tenant has no stored provider config.
+    (non-async) thread.  Returns *None* only when the tenant verifiably has no
+    stored provider config. When the config cannot be READ (Redis cache error
+    with no durable store to confirm, or a durable-store read failure) it raises
+    TenantProviderError: treating "unknown" as "no BYOK" silently ran the tenant's
+    goal on the platform provider, at platform cost.
     """
+    import json
     import os
 
-    try:
-        import json
+    from app.providers.tenant_provider import TenantProviderError
 
-        config: dict[str, Any] | None = None
+    config: dict[str, Any] | None = None
+    cache_error: Exception | None = None
+    try:
         redis_url = os.getenv("REDIS_URL", "")
         if redis_url:
             import redis as sync_redis
@@ -463,18 +468,27 @@ def _get_llm_provider(tenant_id: str) -> Any:
             r = redis_from_url(redis_url, decode_responses=True)
             raw = r.get(f"llm_config:{tenant_id}")
             config = json.loads(raw) if raw is not None else None
-        if config is None:
-            # Redis is only a cache: the config is durable in tenant_llm_configs.
-            # Reading Redis alone lost the tenant's provider whenever the key was
-            # evicted/expired (or Redis was flushed).
+    except Exception as exc:
+        # Redis is only a cache; the durable store below is authoritative.
+        logger.warning("Could not load tenant LLM config from Redis: %s", exc)
+        cache_error = exc
+    if config is None:
+        # Redis is only a cache: the config is durable in tenant_llm_configs.
+        # Reading Redis alone lost the tenant's provider whenever the key was
+        # evicted/expired (or Redis was flushed).
+        try:
             from app.services.llm_config_store import get_or_create_worker_llm_config_store
 
             store = get_or_create_worker_llm_config_store()
             if store is not None:
-                config = _run_async(store.get_config(tenant_id))
-    except Exception as exc:
-        logger.warning("Could not load tenant LLM config from Redis: %s", exc)
-        return None
+                config = _run_async(store.get_config(tenant_id, strict=True))
+            elif cache_error is not None:
+                raise RuntimeError(f"cache read failed and no durable store: {cache_error}")
+        except Exception as exc:
+            raise TenantProviderError(
+                f"tenant LLM config could not be read ({type(exc).__name__}); the goal "
+                "is not run on the platform provider in its place"
+            ) from exc
     if config is None:
         return None
 
