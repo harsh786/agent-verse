@@ -141,6 +141,20 @@ def test_replay_goal_success_returns_full_structure() -> None:
     assert data["timeline"][0]["type"] == "goal_created"
 
 
+def test_replay_flags_history_removed_by_retention() -> None:
+    """Regression: past DATA_RETENTION_DAYS the events are deleted and replay
+    returned a silently partial 200."""
+    from datetime import timedelta
+
+    old = datetime.now(UTC) - timedelta(days=400)
+    recent = datetime.now(UTC) - timedelta(days=1)
+    for created, expired in ((old, True), (recent, False)):
+        row = ("goal-1", "g", "complete", created, created)
+        app = _make_app(db_factory=_make_db_factory(goal_row=row))
+        data = TestClient(app).get("/goals/goal-1/replay", headers=_HEADERS).json()
+        assert data["history_expired"] is expired
+
+
 def test_replay_goal_with_events() -> None:
     goal_row = _make_goal_row()
     events = [

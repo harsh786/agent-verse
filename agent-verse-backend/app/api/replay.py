@@ -182,12 +182,30 @@ async def replay_goal(
                 }
             )
 
+        # The retention task deletes goal_events / decision_traces after
+        # DATA_RETENTION_DAYS; a replay of an older goal used to come back as a
+        # silently partial 200. Flag it so callers know the timeline is gone.
+        import os as _os
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+
+        _retention_days = int(_os.getenv("DATA_RETENTION_DAYS", "90"))
+        _created = goal_row[3]
+        if _created is not None and getattr(_created, "tzinfo", None) is None:
+            _created = _created.replace(tzinfo=_UTC)
+        history_expired = bool(
+            _created is not None
+            and _created < _dt.now(_UTC) - _td(days=_retention_days)
+        )
         return {
             "goal_id": goal_id,
             "goal_text": goal_row[1],
             "status": goal_row[2],
             "created_at": goal_row[3].isoformat() if goal_row[3] else "",
             "completed_at": goal_row[4].isoformat() if goal_row[4] else None,
+            "history_expired": history_expired,
+            "retention_days": _retention_days,
             "event_count": len(events),
             "step_count": len(steps),
             "timeline": timeline,
@@ -204,7 +222,8 @@ async def replay_goal(
         raise HTTPException(503, "Replay service temporarily unavailable") from exc
     except Exception as exc:
         logger.warning("goal_replay_failed", goal_id=goal_id, error=str(exc))
-        raise HTTPException(500, f"Replay failed: {exc}") from exc
+        # Generic: the exception text (SQL, DSNs) used to be returned to callers.
+        raise HTTPException(500, "Replay failed") from exc
 
 
 @router.get("/{goal_id}/timeline")
