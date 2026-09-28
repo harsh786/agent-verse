@@ -1071,9 +1071,10 @@ class TestOrgRoles:
 
 class TestEmergencyStop:
     async def test_emergency_stop_no_redis(self, client: AsyncClient) -> None:
+        # Without Redis the flag cannot be persisted, so nothing would ever read
+        # it: must not claim "stopped".
         r = await client.post(f"/v1/org/{ORG_ID}/emergency-stop")
-        assert r.status_code == 200
-        assert r.json()["status"] == "stopped"
+        assert r.status_code == 503
 
     async def test_emergency_stop_with_redis(self, client: AsyncClient, test_app: FastAPI) -> None:
         redis = MagicMock()

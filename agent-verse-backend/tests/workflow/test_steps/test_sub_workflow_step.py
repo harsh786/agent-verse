@@ -27,17 +27,15 @@ def _state(**kwargs) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_sub_workflow_step_no_runner_returns_mock_output() -> None:
+async def test_sub_workflow_step_no_runner_fails_in_real_run() -> None:
+    """A real run with no runner used to report a mock success; it must fail."""
     step = StepDefinition(
         id="sub1", type="sub_workflow", workflow_id="child-wf",
         workflow_inputs={"x": 1},
     )
     node = SubWorkflowStepNode(step, _ctx())
-    result = await node.execute(_state())  # type: ignore[arg-type]
-    out = result["step_outputs"]["sub1"]
-    assert out["_sub_workflow"] == "child-wf"
-    assert out["inputs"] == {"x": 1}
-    assert out["_mock"] is True
+    with pytest.raises(RuntimeError, match="no workflow runner"):
+        await node.execute(_state())  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -65,7 +63,7 @@ async def test_sub_workflow_step_calls_real_runner() -> None:
     result = await node.execute(_state(tenant_id="t-1"))  # type: ignore[arg-type]
 
     out = result["step_outputs"]["sub1"]
-    assert out == {"run_id": "run-child-1", "workflow_id": "child-wf"}
+    assert out == {"run_id": "run-child-1", "workflow_id": "child-wf", "inline": True}
     runner.run.assert_awaited_once_with(
         workflow_id="child-wf",
         tenant_id="t-1",
@@ -122,7 +120,9 @@ async def test_sub_workflow_step_falls_back_to_input_when_no_workflow_inputs() -
 @pytest.mark.asyncio
 async def test_sub_workflow_step_preserves_existing_step_outputs() -> None:
     step = StepDefinition(id="sub1", type="sub_workflow", workflow_id="child-wf")
-    node = SubWorkflowStepNode(step, _ctx())
+    runner = AsyncMock()
+    runner.run.return_value = "run-child-4"
+    node = SubWorkflowStepNode(step, _ctx(), workflow_runner=runner)
     state = _state(step_outputs={"prior": {"a": 1}})
     result = await node.execute(state)  # type: ignore[arg-type]
     assert result["step_outputs"]["prior"] == {"a": 1}

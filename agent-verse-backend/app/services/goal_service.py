@@ -1947,7 +1947,7 @@ class GoalService:
                     scorecard = await eval_runner.score_and_persist(
                         agent_state,
                         tenant_ctx_for_record,
-                        provider=getattr(self._app_state, "_app_provider", None),
+                        provider=getattr(_eval_aps, "_app_provider", None),  # on app.state
                         db=self._db,
                     )
                     self._eval_scores[goal_id] = scorecard

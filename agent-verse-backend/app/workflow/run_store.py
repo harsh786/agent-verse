@@ -733,6 +733,124 @@ class PostgresWorkflowRunStore:
             )
             await session.commit()
 
+    # ── Durable event waits (wait-on-event / emit_event) ─────────────────────
+    # A waiting run records ``run_metadata.event_waits[step_id] = channel`` plus
+    # a timer wait at its timeout deadline, and suspends as ``waiting_timer``.
+    # ``deliver_event`` stores the payload in ``event_deliveries[step_id]`` and
+    # makes the run due NOW, so the existing timer beat re-dispatches it. Both
+    # run under the tenant GUC: an emit can only wake the same tenant's runs.
+    async def register_event_wait(
+        self, tenant_id: str, run_id: str, step_id: str, channel: str, deadline: datetime
+    ) -> None:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            await session.execute(
+                sa_text(
+                    "UPDATE workflow_runs SET "
+                    " run_metadata = COALESCE(run_metadata, '{}'::jsonb) || jsonb_build_object("
+                    "   'event_waits', COALESCE(run_metadata -> 'event_waits', '{}'::jsonb) "
+                    "     || jsonb_build_object(CAST(:step_id AS text), CAST(:ch AS text)), "
+                    "   'timer_waits', COALESCE(run_metadata -> 'timer_waits', '{}'::jsonb) "
+                    "     || jsonb_build_object(CAST(:step_id AS text), CAST(:iso AS text))), "
+                    " wake_at = LEAST(COALESCE(wake_at, :ts), :ts) "
+                    "WHERE id = CAST(:rid AS uuid)"
+                ),
+                {
+                    "rid": run_id,
+                    "step_id": step_id,
+                    "ch": channel,
+                    "iso": deadline.isoformat(),
+                    "ts": deadline,
+                },
+            )
+            await session.commit()
+
+    async def get_event_delivery(
+        self, tenant_id: str, run_id: str, step_id: str
+    ) -> dict[str, Any] | None:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT run_metadata -> 'event_deliveries' -> :step_id "
+                        "FROM workflow_runs WHERE id = CAST(:rid AS uuid)"
+                    ),
+                    {"rid": run_id, "step_id": step_id},
+                )
+            ).first()
+        if not row or row[0] is None:
+            return None
+        val = _as_obj(row[0])
+        return val if isinstance(val, dict) else {"value": val}
+
+    async def clear_event_wait(self, tenant_id: str, run_id: str, step_id: str) -> None:
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            await session.execute(
+                sa_text(
+                    "UPDATE workflow_runs SET run_metadata = jsonb_set("
+                    " COALESCE(run_metadata, '{}'::jsonb), '{event_waits}', "
+                    " COALESCE(run_metadata -> 'event_waits', '{}'::jsonb) "
+                    "   - CAST(:step_id AS text))"
+                    " WHERE id = CAST(:rid AS uuid)"
+                ),
+                {"rid": run_id, "step_id": step_id},
+            )
+            await session.commit()
+
+    async def deliver_event(self, tenant_id: str, channel: str, payload: dict[str, Any]) -> int:
+        """Deliver ``payload`` to every run of the tenant waiting on ``channel``.
+
+        Returns the number of waiting steps woken. The waiter entry is removed in
+        the same statement, so an event is delivered to a given wait only once.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            rows = (
+                await session.execute(
+                    sa_text(
+                        # Aggregated per run so a run with several steps waiting
+                        # on the same channel gets every one of them delivered.
+                        "WITH w AS ("
+                        "  SELECT r.id, "
+                        "   jsonb_object_agg(e.key, CAST(:payload AS jsonb)) AS deliv, "
+                        "   array_agg(e.key) AS steps "
+                        "  FROM workflow_runs r, "
+                        "   jsonb_each_text(COALESCE(r.run_metadata -> 'event_waits', "
+                        "     '{}'::jsonb)) e "
+                        # Not only 'waiting_timer': a run that registered its wait
+                        # but has not yet persisted the suspension (or is being
+                        # re-dispatched) must not miss the event.
+                        "  WHERE r.tenant_id = CAST(:tid AS uuid) "
+                        "    AND r.status IN ('waiting_timer', 'running', 'pending') "
+                        "    AND e.value = :ch "
+                        "  GROUP BY r.id"
+                        ") "
+                        "UPDATE workflow_runs r SET "
+                        " run_metadata = jsonb_set(jsonb_set("
+                        "   COALESCE(r.run_metadata, '{}'::jsonb), '{event_deliveries}', "
+                        "   COALESCE(r.run_metadata -> 'event_deliveries', '{}'::jsonb) "
+                        "     || w.deliv), "
+                        "   '{event_waits}', "
+                        "   COALESCE(r.run_metadata -> 'event_waits', '{}'::jsonb) - w.steps), "
+                        " wake_at = NOW() "
+                        "FROM w WHERE r.id = w.id RETURNING cardinality(w.steps)"
+                    ),
+                    {"tid": tenant_id, "ch": channel, "payload": json.dumps(payload, default=str)},
+                )
+            ).all()
+            await session.commit()
+            return sum(int(r[0] or 0) for r in rows)
+
     # ── Maintenance (cross-tenant) ────────────────────────────────────────────
     async def get_retryable_webhooks(self, max_attempts: int = 3) -> list[dict[str, Any]]:
         from sqlalchemy import text as sa_text

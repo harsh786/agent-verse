@@ -1283,16 +1283,27 @@ def run_goal(
     )
 
     # Phase 11: Check emergency stop before executing — honours operator kill switch
-    _stop_key = f"emergency_stop:{tenant_id}"
+    # Tenant stops (emergency_stop:{tenant}) AND org stops
+    # (emergency_stop:{tenant}:{org}, written by the org endpoint and previously
+    # never read) — the goal's org comes from goals.execution_context.org_id.
     _lock_r = _get_sync_redis()
     try:
-        if _lock_r and _lock_r.get(_stop_key):
+        from app.db.session import get_session_factory as _es_sf
+        from app.governance import emergency_stop as _es
+
+        _stop_reason = _es.emergency_stop_reason_sync(
+            _lock_r,
+            tenant_id,
+            resolve_org_id=lambda: _run_async(_es.goal_org_id(_es_sf(), tenant_id, goal_id)),
+        )
+        if _stop_reason:
             logger.warning(
-                "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s",
+                "goal_blocked_by_emergency_stop goal_id=%s tenant_id=%s reason=%s",
                 goal_id,
                 tenant_id,
+                _stop_reason,
             )
-            return {"status": "blocked", "reason": "Emergency stop active for tenant"}
+            return {"status": "blocked", "reason": _stop_reason}
     except Exception as _es_exc:
         logger.warning("emergency_stop_check_failed: %s", _es_exc)
 

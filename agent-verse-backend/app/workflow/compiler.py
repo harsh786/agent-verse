@@ -72,6 +72,20 @@ class WorkflowCompiler:
         # Cache: (workflow_id, version) → CompiledWorkflow
         self._cache: dict[str, CompiledWorkflow] = {}
 
+    def bind_services(self, **services: Any) -> None:
+        """Add/replace step services after construction and drop compiled graphs.
+
+        The runner is built FROM the compiler, so it can only be handed to step
+        nodes (``sub_workflow``) afterwards. Step nodes capture services at
+        compile time, hence the cache clear.
+        """
+        self._services.update({k: v for k, v in services.items() if v is not None})
+        self._cache.clear()
+
+    @property
+    def services(self) -> dict[str, Any]:
+        return dict(self._services)
+
     def compile(self, definition: WorkflowDefinition) -> CompiledWorkflow:
         """Compile a WorkflowDefinition to a runnable graph. Uses cache."""
         cache_key = self._cache_key(definition)

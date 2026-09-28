@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import json
 from datetime import UTC, datetime
 from typing import Any
@@ -683,7 +684,15 @@ Respond with ONLY valid JSON:
         success_metric: str,
     ) -> dict[str, Any] | None:
         try:
-            provider = await self._llm_factory()
+            # create_app wires a *synchronous* factory (``lambda: _app_provider``);
+            # awaiting it raised TypeError, was swallowed below, and no experiment
+            # was ever started. Accept both sync and async factories.
+            provider = self._llm_factory()
+            if inspect.isawaitable(provider):
+                provider = await provider
+            if provider is None:
+                logger.warning("suggestion_generation_no_provider")
+                return None
             from app.providers.base import CompletionRequest, Message
 
             config_excerpt = {

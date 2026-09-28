@@ -20,6 +20,9 @@ _EVENT_WAIT_CAP_S = 30.0
 # (cheaper than a suspend/beat round-trip, whose granularity is ~30 s).
 _INLINE_WAIT_MAX_S = 30.0
 
+# Default timeout of a wait-on-event step when no ``duration`` is given.
+_EVENT_WAIT_DEFAULT_S = 24 * 3600.0
+
 
 class WaitStepNode:
     def __init__(
@@ -100,25 +103,101 @@ class WaitStepNode:
             }
         return {"step_outputs": {**(state.get("step_outputs") or {}), step_id: output}}
 
+    def _can_suspend_on_event(self, state: WorkflowState) -> bool:
+        return bool(
+            self._can_suspend(state)
+            and hasattr(self.run_store, "register_event_wait")
+            and hasattr(self.run_store, "get_event_delivery")
+        )
+
+    async def _event_wait(
+        self, state: WorkflowState, channel: str, timeout_s: float
+    ) -> dict[str, Any]:
+        """Wait-on-event.
+
+        Old bug: no wiring ever passed Redis, so this returned ``{"waited": True}``
+        immediately; with Redis it listened at most 30 s and then continued as if
+        nothing was wrong. Now:
+
+        * Durable (run store wired): register the wait (channel + timeout
+          deadline) on the run row and suspend as ``waiting_timer``. An
+          ``emit_event`` for the same tenant+channel stores the payload on the
+          run and makes it due now; the timer beat re-dispatches it and this step
+          completes with the event. At the deadline it completes ``timed_out``.
+        * Redis only: listen inline (bounded by the timeout and the inline cap).
+        * Neither: FAIL — there is nothing that could ever deliver the event.
+        """
+        step_id = self.step.id
+        tenant_id = str(state.get("tenant_id") or "")
+        if self._can_suspend_on_event(state):
+            rid = str(state["run_id"])
+            delivered = await self.run_store.get_event_delivery(tenant_id, rid, step_id)
+            if delivered is not None:
+                output: dict[str, Any] = {
+                    "waited_channel": channel, "event": delivered, "timed_out": False,
+                    "durable": True,
+                }
+                return {"step_outputs": {**(state.get("step_outputs") or {}), step_id: output}}
+            now = datetime.now(UTC)
+            raw = await self.run_store.get_timer_wait(tenant_id, rid, step_id)
+            deadline = datetime.fromisoformat(raw) if raw else None
+            if deadline is None:
+                deadline = now + timedelta(seconds=timeout_s)
+            if now < deadline:
+                # (Re-)register every time: a wake whose delivery raced the
+                # claim must keep both the waiter entry and the deadline.
+                await self.run_store.register_event_wait(
+                    tenant_id, rid, step_id, channel, deadline
+                )
+                return {
+                    "status": WorkflowRunStatus.WAITING_TIMER,
+                    "paused_by": f"wait_timer:{step_id}",
+                    "step_outputs": {
+                        **(state.get("step_outputs") or {}),
+                        step_id: {
+                            "waiting": True,
+                            "waited_channel": channel,
+                            "timeout_at": deadline.isoformat(),
+                        },
+                    },
+                }
+            if hasattr(self.run_store, "clear_event_wait"):
+                await self.run_store.clear_event_wait(tenant_id, rid, step_id)
+            output = {
+                "waited_channel": channel, "event": None, "timed_out": True, "durable": True,
+            }
+            return {"step_outputs": {**(state.get("step_outputs") or {}), step_id: output}}
+
+        if self.redis is None:
+            raise RuntimeError(
+                f"wait step {step_id!r} waits on event channel {channel!r} but neither a "
+                "durable run store nor Redis is configured, so no event could ever arrive"
+            )
+        from app.workflow.steps.emit_event_step import tenant_event_channel
+
+        event = await self._await_event(
+            tenant_event_channel(tenant_id, channel), min(timeout_s, _EVENT_WAIT_CAP_S)
+        )
+        output = {"waited_channel": channel, "event": event, "timed_out": event is None}
+        return {"step_outputs": {**(state.get("step_outputs") or {}), step_id: output}}
+
     async def execute(self, state: WorkflowState) -> dict[str, Any]:
         duration = self.step.duration
         channel = self.step.event_channel
 
         if state.get("is_test_run"):
-            output = {"waited": True, "duration": duration or channel}
+            output = {"waited": True, "duration": duration or channel, "simulated": True}
+        elif channel:
+            # With an event channel, ``duration`` is the event timeout.
+            resolved_channel = str(self.ctx.resolve(channel, state))
+            timeout_s = self._parse_seconds(duration) if duration else _EVENT_WAIT_DEFAULT_S
+            return await self._event_wait(state, resolved_channel, timeout_s)
         elif duration:
             return await self._timer_wait(state, self._parse_seconds(duration))
-        elif channel and self.redis:
-            # Block on a Redis pub/sub event, resuming when it arrives.
-            resolved_channel = str(self.ctx.resolve(channel, state))
-            event = await self._await_event(resolved_channel, _EVENT_WAIT_CAP_S)
-            output = {
-                "waited_channel": resolved_channel,
-                "event": event,
-                "timed_out": event is None,
-            }
         else:
-            output = {"waited": True}
+            raise RuntimeError(
+                f"wait step {self.step.id!r} has neither a duration nor an event_channel"
+            )
 
         return {"step_outputs": {**(state.get("step_outputs") or {}), self.step.id: output}}
 

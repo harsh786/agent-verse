@@ -1983,9 +1983,18 @@ async def org_emergency_stop(
 
 
         redis = getattr(request.app.state, "_redis", None)
-        stop_key = f"emergency_stop:{tenant_id}:{org_id}"
-        if redis:
-            await redis.set(stop_key, "1", ex=86400)  # auto-expire after 24h if not cleared
+        from app.governance.emergency_stop import org_stop_key
+
+        stop_key = org_stop_key(tenant_id, org_id)
+        if redis is None:
+            # Answering "stopped" without persisting the flag told operators the
+            # org was halted while nothing (worker or API) could ever see it.
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Emergency stop unavailable: Redis is not configured; nothing was stopped",
+            )
+        # Read by app.governance.emergency_stop in the worker and AgentGraph.run.
+        await redis.set(stop_key, "1", ex=86400)  # auto-expire after 24h if not cleared
 
         _log.warning(
             "org.emergency_stop_activated",
