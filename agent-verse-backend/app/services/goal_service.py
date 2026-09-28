@@ -830,6 +830,7 @@ class GoalService:
         agent_id: str | None = None,
         runtime_profile: Any | None = None,
         execution_context: dict[str, Any] | None = None,
+        tenant_llm_config: dict[str, Any] | None = None,
     ) -> Any:
         """Build an AgentGraph using the tenant's configured LLM provider AND all
         governance/RAG/memory services from app.state.
@@ -869,9 +870,17 @@ class GoalService:
         # ``provider is None``.
         provider: Any = getattr(app_state, "_llm_provider_override", None) if app_state else None
 
-        # 1. Check per-tenant config from app.state
+        # 1. The tenant's own (BYOK) config — resolved from the durable store by
+        # the async caller (_resolve_tenant_llm_config). It used to be read only
+        # from this replica's app.state, so it applied only on the replica that
+        # had handled the tenant's PUT /tenants/me/llm.
         llm_configs: dict[str, Any] = getattr(app_state, "_llm_configs", {}) if app_state else {}
-        tenant_cfg = llm_configs.get(tenant_ctx.tenant_id) if provider is None else None
+        if provider is not None:
+            tenant_cfg = None
+        elif tenant_llm_config is not None:
+            tenant_cfg = tenant_llm_config
+        else:
+            tenant_cfg = llm_configs.get(tenant_ctx.tenant_id)
         if tenant_cfg:
             encrypted_key = tenant_cfg.get("encrypted_key", "")
             api_key = ""
@@ -888,7 +897,11 @@ class GoalService:
 
                 provider = AnthropicProvider(
                     api_key=api_key,
-                    default_model=tenant_cfg.get("default_model", "claude-opus-4-8"),
+                    default_model=(
+                        tenant_cfg.get("default_model")
+                        or tenant_cfg.get("model")
+                        or "claude-opus-4-8"
+                    ),
                 )
             elif pname in {"openai", "groq", "together", "azure", "ollama"} and api_key:
                 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -896,7 +909,9 @@ class GoalService:
                 provider = OpenAICompatibleProvider(
                     api_key=api_key,
                     base_url=tenant_cfg.get("base_url"),
-                    default_model=tenant_cfg.get("default_model", "gpt-5.2"),
+                    default_model=(
+                        tenant_cfg.get("default_model") or tenant_cfg.get("model") or "gpt-5.2"
+                    ),
                 )
 
         # 2. The app-wide provider resolved at startup from EVERY configured
@@ -2135,6 +2150,8 @@ class GoalService:
             db=getattr(self, "_db_session_factory", None),
         )
 
+        _persist_llm_config = await self._resolve_tenant_llm_config(tenant_ctx)
+
         def agent_factory() -> Any:
             # Set agent knowledge collection IDs for graph RAG
             _persist_record = self._goals.get(goal_id)
@@ -2150,6 +2167,7 @@ class GoalService:
                 execution_context=(
                     _persist_record.execution_context if _persist_record is not None else None
                 ),
+                tenant_llm_config=_persist_llm_config,
                 **_persist_profile_kwargs,
             )
             _persist_collection_ids: list[str] = []
@@ -2301,6 +2319,7 @@ class GoalService:
                 self._app_state,
                 agent_id=record.agent_id if record is not None else None,
                 execution_context=record.execution_context if record is not None else None,
+                tenant_llm_config=await self._resolve_tenant_llm_config(tenant_ctx),
                 **_profile_kwargs,
             )
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
@@ -3610,6 +3629,22 @@ class GoalService:
             await signal_pause(goal_id, redis)
 
         return {"goal_id": goal_id, "status": "paused"}
+
+    async def _resolve_tenant_llm_config(self, tenant_ctx: TenantContext) -> dict[str, Any] | None:
+        """The tenant's BYOK provider config from the durable store (None if unset)."""
+        from app.services.llm_config_store import get_llm_config_store
+
+        store = (
+            getattr(self._app_state, "llm_config_store", None) if self._app_state else None
+        ) or get_llm_config_store()
+        if store is None:
+            return None
+        try:
+            cfg = await store.get_config(tenant_ctx.tenant_id)
+        except Exception as exc:
+            _svc_logger.warning("tenant_llm_config_read_failed", error=str(exc))
+            return None
+        return dict(cfg) if cfg else None
 
     async def _suspend_for_approval(self, goal_id: str, tenant_ctx: TenantContext) -> None:
         """Record that the agent graph ENDED waiting for approvals (supervised mode).

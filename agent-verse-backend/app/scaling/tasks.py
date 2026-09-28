@@ -450,22 +450,30 @@ def _get_llm_provider(tenant_id: str) -> Any:
     """
     import os
 
-    redis_url = os.getenv("REDIS_URL", "")
-    if not redis_url:
-        return None
-
     try:
         import json
 
-        import redis as sync_redis
+        config: dict[str, Any] | None = None
+        redis_url = os.getenv("REDIS_URL", "")
+        if redis_url:
+            import redis as sync_redis
 
-        redis_from_url = cast(Any, sync_redis.from_url)
-        r = redis_from_url(redis_url, decode_responses=True)
-        raw = r.get(f"llm_config:{tenant_id}")
-        if raw is None:
+            redis_from_url = cast(Any, sync_redis.from_url)
+            r = redis_from_url(redis_url, decode_responses=True)
+            raw = r.get(f"llm_config:{tenant_id}")
+            config = json.loads(raw) if raw is not None else None
+        if config is None:
+            # Redis is only a cache: the config is durable in tenant_llm_configs.
+            # Reading Redis alone lost the tenant's provider whenever the key was
+            # evicted/expired (or Redis was flushed).
+            from app.services.llm_config_store import get_or_create_worker_llm_config_store
+
+            store = get_or_create_worker_llm_config_store()
+            if store is not None:
+                config = _run_async(store.get_config(tenant_id))
+        if config is None:
             return None
 
-        config = json.loads(raw)
         provider_name = config.get("provider", "")
         encrypted_key = config.get("encrypted_key", "")
         model = config.get("model", "")
@@ -1279,27 +1287,18 @@ def run_goal(
     started_monotonic = _monotonic()
     effective_goal = goal_text or goal_template
 
-    # Resolve actual tenant plan from Redis config (avoids hardcoded tier)
-    _plan_str = "professional"  # safe fallback
-    try:
-        from app.services.llm_config_store import get_llm_config_store
-
-        _config_store = get_llm_config_store()
-        if _config_store:
-            _tenant_cfg = _run_async(_config_store.get_config(tenant_id)) or {}
-            if _tenant_cfg is None:
-                logger.warning("tenant_llm_config_not_found", tenant_id=tenant_id)
-                _tenant_cfg = {}
-            _plan_str = _tenant_cfg.get("plan", "professional")
-    except Exception:
-        pass
-
+    # The tenant's plan is what the API enqueued with the goal. It used to be
+    # read from a "plan" field of the LLM-config cache that nothing writes, so
+    # every worker-run goal got PROFESSIONAL limits (goal timeout etc.)
+    # whatever the tenant's tier. An unknown value falls back to the most
+    # restrictive tier, never a paid one.
     from app.tenancy.context import PlanTier
 
     try:
-        plan = PlanTier(_plan_str)
+        plan = PlanTier(plan)
     except ValueError:
-        plan = PlanTier.PROFESSIONAL
+        logger.warning("run_goal_unknown_plan goal_id=%s plan=%s", goal_id, plan)
+        plan = PlanTier.FREE
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -2274,11 +2273,11 @@ def run_goal(
                     # Resolve scoped LLM key (G-28)
                     _iso_llm_key = ""
                     try:
-                        from app.services.llm_config_store import get_llm_api_key_for_tenant
+                        from app.services.llm_config_store import aget_llm_api_key_for_tenant
 
-                        _iso_llm_key = get_llm_api_key_for_tenant(tenant_id)
-                    except Exception:
-                        pass
+                        _iso_llm_key = _run_async(aget_llm_api_key_for_tenant(tenant_id))
+                    except Exception as _key_exc:
+                        logger.warning("isolated_llm_key_resolve_failed: %s", _key_exc)
 
                     _iso_envelope = _build_env(
                         tenant_id=tenant_id,
