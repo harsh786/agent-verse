@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_dsn
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -43,9 +44,11 @@ class PostgreSQLConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
+            # Every host the DSN would dial must resolve public (SSRF guard).
+            await check_source_dsn(dsn, context="postgresql")
             import asyncpg  # type: ignore[import-not-found]
 
-            dsn = config.connection_config.get("dsn") or _build_dsn(config.connection_config)
             conn = await asyncpg.connect(dsn, timeout=10)
             version = await conn.fetchval("SELECT version()")
             await conn.close()
@@ -78,6 +81,7 @@ class PostgreSQLConnector(BaseConnector):
                 "postgresql_cdc_mode=%s not yet implemented, falling back to query", cdc_mode
             )
 
+        await check_source_dsn(dsn, context="postgresql")
         try:
             import asyncpg
         except ImportError:
@@ -138,9 +142,14 @@ class PostgreSQLConnector(BaseConnector):
 
 
 def _build_dsn(cfg: dict) -> str:
-    host = cfg.get("host", "localhost")
+    from urllib.parse import quote
+
+    # No "localhost" default: that is the platform's own database, not the
+    # tenant's. An empty host is refused by the egress guard.
+    host = str(cfg.get("host", "") or "")
     port = cfg.get("port", 5432)
-    db = cfg.get("database", "postgres")
-    user = cfg.get("username", "postgres")
-    pwd = cfg.get("password", "")
-    return f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
+    db = quote(str(cfg.get("database", "postgres")), safe="")
+    user = quote(str(cfg.get("username", "postgres")), safe="")
+    pwd = quote(str(cfg.get("password", "")), safe="")
+    netloc_host = f"[{host}]" if ":" in host else host
+    return f"postgresql://{user}:{pwd}@{netloc_host}:{port}/{db}"

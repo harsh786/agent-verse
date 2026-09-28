@@ -21,7 +21,7 @@ def _config(**cc: Any) -> SourceConfig:
         name="clickhouse-src",
         family=SourceFamily.OLAP_DATABASE,
         source_type="clickhouse",
-        connection_config=cc,
+        connection_config={"host": "db.test", **cc},
     )
 
 

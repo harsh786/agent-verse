@@ -109,8 +109,16 @@ _SOURCES: dict[str, SourceConfig] = {}
 def _serialize_source(s: SourceConfig) -> dict:
     import dataclasses
 
+    from app.ingestion.source_secrets import mask_connection_config
+
     d = dataclasses.asdict(s)
     d["family"] = s.family.value if hasattr(s.family, "value") else str(s.family)
+    # Credentials never leave the API — not in plaintext (as they used to on every
+    # GET/POST/PATCH) and not encrypted either. Secret values are masked and the
+    # client gets a has_credentials flag; PATCHing the mask back keeps the secret.
+    d["connection_config"], d["has_credentials"] = mask_connection_config(
+        d.get("connection_config") or {}
+    )
     return d
 
 
@@ -206,6 +214,13 @@ async def update_source(source_id: str, request: Request, body: UpdateSourceRequ
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
     update_data = body.model_dump(exclude_none=True)
+    if isinstance(update_data.get("connection_config"), dict):
+        from app.ingestion.source_secrets import merge_masked_update
+
+        # A masked secret echoed back from a GET means "unchanged".
+        update_data["connection_config"] = merge_masked_update(
+            source.connection_config, update_data["connection_config"]
+        )
     store = _get_source_store(request)
     if store is not None:
         updated = await store.update(source_id, tenant.tenant_id, **update_data)

@@ -494,6 +494,9 @@ class TestExpireStaleDocuments:
             "deleted": 1,
             "graph_nodes_deleted": 2,
             "graph_edges_deleted": 1,
+            # No expired knowledge_chunks_<dim> rows in this fake DB.
+            "knowledge_chunks_expired": 0,
+            "knowledge_documents_expired": 0,
         }
 
     def test_error_returns_error_status(self):

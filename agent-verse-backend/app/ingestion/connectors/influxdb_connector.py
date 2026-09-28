@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,11 +32,15 @@ class InfluxDBConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            cc = config.connection_config
+            # Tenant-supplied URL: egress-guarded (it used to default to the
+            # platform's own http://localhost:8086).
+            url = cc.get("url", "")
+            assert_source_url(url, context="influxdb", config=config)
             from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
 
-            cc = config.connection_config
             with InfluxDBClient(
-                url=cc.get("url", "http://localhost:8086"),
+                url=url,
                 token=cc.get("token", ""),
                 org=cc.get("org", ""),
             ) as client:
@@ -58,6 +63,9 @@ class InfluxDBConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        cc = config.connection_config
+        url = cc.get("url", "")
+        assert_source_url(url, context="influxdb", config=config)
         try:
             from influxdb_client import InfluxDBClient  # type: ignore[import-not-found]
         except ImportError:
@@ -66,8 +74,6 @@ class InfluxDBConnector(BaseConnector):
 
         import asyncio
 
-        cc = config.connection_config
-        url = cc.get("url", "http://localhost:8086")
         token = cc.get("token", "")
         org = cc.get("org", "")
         bucket = cc.get("bucket", "")

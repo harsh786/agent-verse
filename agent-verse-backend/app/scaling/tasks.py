@@ -5537,11 +5537,22 @@ async def _expire_stale_documents(retention_days: int) -> dict:
                         )
                     ).rowcount
 
+        # The legacy ``documents`` table above is never written by
+        # KnowledgeStore; the real knowledge lives in knowledge_chunks_<dim>,
+        # whose chunks carry their own ``expires_at`` and were never deleted.
+        # Bounded batches: maintenance-role scan, per-tenant RLS deletes (plus
+        # the collection counters and the graph extracted from each document).
+        from app.rag.retention import expire_knowledge_chunks
+
+        knowledge = await expire_knowledge_chunks(system_db=db)
+
         return {
             "status": "ok",
             "deleted": len(doc_ids),
-            "graph_nodes_deleted": nodes_deleted,
-            "graph_edges_deleted": edges_deleted,
+            "graph_nodes_deleted": nodes_deleted + knowledge["graph_nodes_deleted"],
+            "graph_edges_deleted": edges_deleted + knowledge["graph_edges_deleted"],
+            "knowledge_chunks_expired": knowledge["knowledge_chunks_expired"],
+            "knowledge_documents_expired": knowledge["knowledge_documents_expired"],
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc)}

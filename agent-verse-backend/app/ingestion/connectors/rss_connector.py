@@ -12,12 +12,32 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url, guarded_request
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+_MAX_FEED_BYTES = 20 * 1024 * 1024
+
+
+async def _fetch_feed(url: str) -> bytes:
+    """Fetch the feed through the egress guard and return its bytes.
+
+    ``feedparser.parse(url)`` must never see the tenant's string: it fetches with
+    urllib (following redirects to anywhere, including 169.254.169.254) and, given
+    a path or ``file://`` URI, reads the platform's own filesystem. The URL is
+    guarded here, every redirect hop re-checked, and feedparser only parses bytes.
+    """
+    import httpx
+
+    assert_source_url(url, context="rss")
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await guarded_request(client, "GET", url, context="rss")
+        r.raise_for_status()
+        return bytes(r.content[:_MAX_FEED_BYTES])
 
 
 @register("rss")
@@ -35,7 +55,7 @@ class RSSConnector(BaseConnector):
             import feedparser  # type: ignore[import-not-found]
 
             url = config.connection_config.get("url", "")
-            feed = feedparser.parse(url)
+            feed = feedparser.parse(await _fetch_feed(url))
             if feed.bozo and not feed.entries:
                 raise ValueError(str(feed.bozo_exception))
             latency = (time.perf_counter() - t0) * 1000
@@ -56,16 +76,17 @@ class RSSConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        url = config.connection_config.get("url", "")
+        assert_source_url(url, context="rss")
         try:
             import feedparser  # type: ignore[import-not-found]
         except ImportError:
             _log.error("feedparser not installed")
             return
 
-        url = config.connection_config.get("url", "")
         max_entries = int(config.connection_config.get("max_entries", 200))
 
-        feed = feedparser.parse(url)
+        feed = feedparser.parse(await _fetch_feed(url))
         new_cursor = cursor or ""
 
         for entry in feed.entries[:max_entries]:

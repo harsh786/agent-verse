@@ -657,7 +657,7 @@ def create_app(
         # wired in the lifespan (app.state.ingestion_quota).
         _ingestion_pipeline = IngestionPipeline(
             knowledge_store=_knowledge_store,
-            embedder=_app_provider,
+            embedder=None,  # the query embedder — bound below with app.state.embedder
             kg_hook=_kg_ingestion_hook,
             pii_analyzer=build_pii_analyzer(),
         )
@@ -734,74 +734,12 @@ def create_app(
     _openai_key = get_provider_env("OPENAI_API_KEY")
     _voyage_key = get_provider_env("VOYAGE_API_KEY")
     _anthropic_key = get_provider_env("ANTHROPIC_API_KEY")
-    # Highest priority: a dedicated OpenAI-compatible embedding endpoint (its own
-    # base_url + model), e.g. a self-hosted Qwen3-Embedding on vLLM. This is
-    # separate from the chat LLM base_url so reasoning and embedding can live on
-    # different servers.
-    _embed_base_url = os.getenv("EMBEDDING_BASE_URL", "") or getattr(
-        settings, "embedding_base_url", ""
-    )
-    if not _embedder and _embed_base_url:
-        try:
-            from app.providers.openai_compatible import OpenAICompatibleProvider
+    # Selection lives in app.providers.embedder_factory so the Celery worker's
+    # ingestion pipeline builds the SAME embedder (document and query vectors
+    # must come from one model/space).
+    from app.providers.embedder_factory import build_query_embedder
 
-            _embed_model = os.getenv("EMBEDDING_MODEL", "") or getattr(
-                settings, "embedding_model", ""
-            )
-            _embedder = OpenAICompatibleProvider(
-                api_key=(
-                    os.getenv("EMBEDDING_API_KEY", "")
-                    or getattr(settings, "embedding_api_key", "")
-                    or "sk-noauth"
-                ),
-                base_url=_embed_base_url,
-                default_model=_embed_model or resolve_embed_model("text-embedding-3-small"),
-                embed_model=_embed_model or resolve_embed_model("text-embedding-3-small"),
-            )
-            logger.info(
-                "dedicated_embed_provider_wired", base_url=_embed_base_url, model=_embed_model
-            )
-        except Exception as _exc:
-            logger.warning("dedicated_embed_provider_failed", error=str(_exc))
-    if _voyage_key and not _embedder:
-        try:
-            from app.providers.voyage_provider import VoyageProvider
-
-            _embedder = VoyageProvider(api_key=_voyage_key)
-        except Exception:
-            pass
-    elif _openai_key and not _embedder:
-        try:
-            from app.providers.openai_compatible import OpenAICompatibleProvider
-
-            _embedder = OpenAICompatibleProvider(
-                api_key=_openai_key,
-                base_url=os.getenv("OPENAI_BASE_URL", ""),
-                default_model=resolve_embed_model("text-embedding-3-small"),
-                embed_model=resolve_embed_model("text-embedding-3-small"),
-            )
-        except Exception:
-            pass
-    elif get_provider_env("GOOGLE_API_KEY") and not _embedder:
-        try:
-            from app.providers.gemini_provider import GeminiProvider
-
-            _embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
-        except Exception:
-            pass
-    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", "") and not _embedder:
-        try:
-            from app.providers.voyage_provider import LocalEmbedProvider
-
-            _embedder = LocalEmbedProvider(
-                model_name=os.getenv("SENTENCE_TRANSFORMERS_MODEL", "all-MiniLM-L6-v2")
-            )
-            logger.info(
-                "local_embed_provider_wired",
-                model=os.getenv("SENTENCE_TRANSFORMERS_MODEL"),
-            )
-        except Exception as _exc:
-            logger.warning("local_embed_provider_failed", error=str(_exc))
+    _embedder = build_query_embedder(settings)
     # app.state.embedder is set after app = FastAPI(...)
 
     # Multi-model embedding routing (D-10): map EVERY configured embedding
@@ -2530,6 +2468,14 @@ def create_app(
     # overwriting it with None when no real provider API key is available.
     if getattr(app.state, "embedder", None) is None:
         app.state.embedder = _embedder
+    # The ingestion pipeline embeds documents with the SAME provider retrieval
+    # embeds queries with. It used to get the chat LLM (_app_provider) — a
+    # different model/space, so document and query vectors were incomparable
+    # and retrieval silently returned noise. No embedder → the pipeline reports
+    # ``no_embedder`` (as the direct ingest API answers 503) rather than
+    # indexing vectors no query can match.
+    if _ingestion_pipeline is not None:
+        _ingestion_pipeline._embedder = app.state.embedder
     # Resolver for multi-model embedding routing (None when ≤1 provider configured).
     app.state.embed_provider_resolver = _embed_provider_resolver
     app.state.model_router = _model_router

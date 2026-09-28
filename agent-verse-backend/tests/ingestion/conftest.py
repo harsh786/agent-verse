@@ -35,6 +35,15 @@ _TEST_SOURCE_HOSTS = (
     "gitlab.com",
     "dev.service-now.com",
     "acme.service-now.com",
+    # Placeholder database/broker hosts for the host:port connectors (egress-
+    # guarded since the second SSRF pass). ``test`` is the RFC 2606 reserved TLD.
+    "test",
+    "influx",
+    "db",
+    "db.local",
+    "ch.local",
+    "h",
+    "bad",
 )
 
 

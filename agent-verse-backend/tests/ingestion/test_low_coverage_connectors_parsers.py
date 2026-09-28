@@ -23,6 +23,7 @@ import io
 from datetime import datetime, UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
 
@@ -229,6 +230,14 @@ class TestGCSConnectorGetDelta:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestRSSConnectorValidateConnection:
+
+    @pytest.fixture(autouse=True)
+    def _no_network(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The feed is now fetched through the egress guard (not by feedparser);
+        # these tests exercise parsing, so the fetch is stubbed.
+        from app.ingestion.connectors import rss_connector
+
+        monkeypatch.setattr(rss_connector, "_fetch_feed", AsyncMock(return_value=b"<rss/>"))
     def test_import_error(self):
         from app.ingestion.connectors.rss_connector import RSSConnector
 
@@ -269,6 +278,14 @@ class TestRSSConnectorValidateConnection:
 
 
 class TestRSSConnectorGetDelta:
+
+    @pytest.fixture(autouse=True)
+    def _no_network(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The feed is now fetched through the egress guard (not by feedparser);
+        # these tests exercise parsing, so the fetch is stubbed.
+        from app.ingestion.connectors import rss_connector
+
+        monkeypatch.setattr(rss_connector, "_fetch_feed", AsyncMock(return_value=b"<rss/>"))
     def test_import_error_yields_nothing(self):
         from app.ingestion.connectors.rss_connector import RSSConnector
 

@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_host
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -33,6 +34,8 @@ class MySQLConnector(BaseConnector):
         t0 = time.perf_counter()
         cc = config.connection_config
         try:
+            # The tenant-chosen host must resolve public (SSRF guard).
+            await check_source_host(cc.get("host", ""), cc.get("port", 3306), context="mysql")
             conn = self._connect(cc)
             cur = conn.cursor()
             cur.execute("SELECT VERSION()")
@@ -51,7 +54,7 @@ class MySQLConnector(BaseConnector):
             import pymysql  # type: ignore[import-not-found]
 
             return pymysql.connect(
-                host=cc.get("host", "localhost"),
+                host=cc.get("host", ""),
                 port=int(cc.get("port", 3306)),
                 user=cc.get("username", ""),
                 password=cc.get("password", ""),
@@ -63,7 +66,7 @@ class MySQLConnector(BaseConnector):
             import MySQLdb  # type: ignore[import-not-found]
 
             return MySQLdb.connect(
-                host=cc.get("host", "localhost"),
+                host=cc.get("host", ""),
                 port=int(cc.get("port", 3306)),
                 user=cc.get("username", ""),
                 passwd=cc.get("password", ""),
@@ -91,6 +94,8 @@ class MySQLConnector(BaseConnector):
                 query += f" WHERE {cursor_col} > %s ORDER BY {cursor_col} LIMIT {batch_size}"
             else:
                 query += f" ORDER BY {cursor_col} LIMIT {batch_size}"
+
+        await check_source_host(cc.get("host", ""), cc.get("port", 3306), context="mysql")
 
         def _fetch():
             conn = self._connect(cc)

@@ -1719,7 +1719,13 @@ async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> 
         token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
         user=body.user,
     )
-    chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
+    from app.ingestion.connector_egress import ConnectorEgressBlockedError
+
+    try:
+        chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
+    except ConnectorEgressBlockedError as exc:
+        # base_url is tenant-supplied: an internal target is a client error.
+        raise HTTPException(status_code=400, detail="base_url is not allowed") from exc
 
     ingested = await _ingest_chunks_from_source(
         store, chunks, body.collection_id, tenant, embedder, request=request
@@ -1745,11 +1751,17 @@ async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, An
         token=body.token.get_secret_value(),  # SecretStr: extract only at point of use
         user=body.user,
     )
-    chunks = await ingestor.ingest_project(
-        body.project_key,
-        jql_extra=body.jql_extra,
-        max_issues=body.max_issues,
-    )
+    from app.ingestion.connector_egress import ConnectorEgressBlockedError
+
+    try:
+        chunks = await ingestor.ingest_project(
+            body.project_key,
+            jql_extra=body.jql_extra,
+            max_issues=body.max_issues,
+        )
+    except ConnectorEgressBlockedError as exc:
+        # base_url is tenant-supplied: an internal target is a client error.
+        raise HTTPException(status_code=400, detail="base_url is not allowed") from exc
 
     ingested = await _ingest_chunks_from_source(
         store, chunks, body.collection_id, tenant, embedder, request=request

@@ -22,7 +22,7 @@ def _config(**cc: Any) -> SourceConfig:
         name="mysql-src",
         family=SourceFamily.OLTP_DATABASE,
         source_type="mysql",
-        connection_config=cc,
+        connection_config={"host": "db.test", **cc},
     )
 
 

@@ -113,7 +113,12 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     with (
         patch("app.db.session.get_session_factory", return_value=fake_db_factory),
         patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
-        patch("app.providers.registry.resolve_provider", return_value=fake_provider),
+        # The chat LLM must NOT embed documents: queries are embedded with the
+        # configured query embedder, so documents must be too (same vector space).
+        patch("app.providers.registry.resolve_provider", return_value=MagicMock()),
+        patch(
+            "app.providers.embedder_factory.build_query_embedder", return_value=fake_provider
+        ),
         patch("app.rag.store.KnowledgeStore", return_value=fake_knowledge_store) as ks_cls,
         patch(
             "app.ingestion.pipeline.IngestionPipeline", return_value=fake_pipeline

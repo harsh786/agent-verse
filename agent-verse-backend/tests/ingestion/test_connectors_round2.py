@@ -742,7 +742,7 @@ class TestNeo4jConnector:
     def test_validate_connection_not_installed(self):
         from app.ingestion.connectors.neo4j_connector import Neo4jConnector
 
-        config = _make_config("neo4j", {})
+        config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687"})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": None}):
@@ -760,7 +760,7 @@ class TestNeo4jConnector:
         driver_cm.__exit__ = MagicMock(return_value=False)
         fake_neo4j.GraphDatabase.driver.return_value = driver_cm
 
-        config = _make_config("neo4j", {"uri": "bolt://localhost:7687"})
+        config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687"})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": fake_neo4j}):
@@ -775,7 +775,7 @@ class TestNeo4jConnector:
         fake_neo4j = _install_fake_neo4j()
         fake_neo4j.GraphDatabase.driver.side_effect = RuntimeError("unreachable")
 
-        config = _make_config("neo4j", {})
+        config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687"})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": fake_neo4j}):
@@ -787,7 +787,7 @@ class TestNeo4jConnector:
     def test_get_delta_not_installed_yields_nothing(self):
         from app.ingestion.connectors.neo4j_connector import Neo4jConnector
 
-        config = _make_config("neo4j", {})
+        config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687"})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": None}):
@@ -821,7 +821,7 @@ class TestNeo4jConnector:
 
         fake_neo4j.GraphDatabase.driver.return_value = driver_cm
 
-        config = _make_config("neo4j", {"uri": "bolt://localhost:7687", "node_labels": ["Person"]})
+        config = _make_config("neo4j", {"uri": "bolt://neo4j.test:7687", "node_labels": ["Person"]})
         connector = Neo4jConnector()
 
         with patch.dict(sys.modules, {"neo4j": fake_neo4j}):

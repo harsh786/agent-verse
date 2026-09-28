@@ -14,7 +14,7 @@ from app.ingestion.connectors.s3_connector import S3Connector
 class MinIOConnector(S3Connector):
     """MinIO S3-compatible object storage connector.
 
-    MinIO endpoint defaults to the local infra endpoint.
+    ``endpoint_url`` is required (no default) and egress-guarded.
     All S3 logic (ListObjectsV2 cursor, webhook, deletion tracking) is reused.
     """
 
@@ -22,10 +22,10 @@ class MinIOConnector(S3Connector):
     supports_streaming = True
     supports_deletion_tracking = True
 
-    _DEFAULT_ENDPOINT = "http://localhost:9000"
-
-    # Inject default endpoint_url for MinIO if not set
-    async def _get_s3_client(self, config):  # type: ignore[override]
-        if not config.connection_config.get("endpoint_url"):
-            config.connection_config["endpoint_url"] = self._DEFAULT_ENDPOINT
-        return await super()._get_s3_client(config) if hasattr(super(), "_get_s3_client") else None
+    # There is deliberately no default endpoint. The old default was the
+    # platform's own MinIO (http://localhost:9000) — a tenant Source with no
+    # endpoint_url would have indexed the platform's buckets into its own
+    # knowledge base. (The override that injected it was never called, so the
+    # default was dead code; it is removed rather than left armed.) endpoint_url
+    # is required and egress-guarded by S3Connector._endpoint_url.
+    _requires_endpoint = True
