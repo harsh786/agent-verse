@@ -142,10 +142,14 @@ async def get_subscription(request: Request) -> dict[str, Any]:
 
     settings = get_settings()
 
+    # No subscription record (period, renewal, cancellation) is stored, so the
+    # status of a paid plan is not known — it used to be a hardcoded "active".
+    plan = tenant_ctx.plan.value
     return {
         "tenant_id": tenant_ctx.tenant_id,
-        "plan": tenant_ctx.plan.value,
-        "status": "active",
+        "plan": plan,
+        "status": "free" if plan == "free" else "not_tracked",
+        "current_period_end": None,
         "stripe_configured": bool(settings.stripe_api_key),
         "razorpay_configured": bool(settings.razorpay_key_secret),
         "checkout_url": "/billing/checkout",

@@ -119,6 +119,9 @@ def test_get_subscription(client: TestClient, monkeypatch: pytest.MonkeyPatch) -
     assert data["plan"] == PlanTier.STARTER.value
     assert data["stripe_configured"] is True
     assert data["razorpay_configured"] is True
+    # Regression: status was a hardcoded "active" with no subscription record.
+    assert data["status"] == "not_tracked"
+    assert data["current_period_end"] is None
 
 
 def test_get_subscription_requires_auth() -> None:
