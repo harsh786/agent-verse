@@ -21,6 +21,11 @@ from app.guardrails_v2.models import (
 
 _log = logging.getLogger(__name__)
 
+# Tenant regex rules: per-evaluation time budget and input cap (ReDoS guard).
+_REGEX_TIMEOUT_S = 0.25
+_REGEX_MAX_INPUT = 200_000
+_REGEX_FALLBACK_MAX_INPUT = 10_000
+
 # Lazy per-tenant rule loading (replaces the cross-tenant startup warm scan).
 # A tenant's persisted rules are re-read from Postgres at most this often, so a
 # rule written through another replica becomes enforced here within the window.
@@ -588,18 +593,46 @@ class GuardrailsEngine:
         return {"triggered": False, "matches": [], "category": "prompt_injection"}
 
     def _check_regex(self, content: str, config: dict) -> dict[str, Any]:
+        """Run a TENANT-supplied pattern with a time budget (ReDoS-safe).
+
+        ``re.findall`` ran the pattern unbounded: one catastrophic-backtracking
+        rule (``(a+)+$``) pinned an API worker's CPU on every evaluated message.
+        The third-party ``regex`` engine (already locked in uv.lock) supports a
+        timeout; a timed-out or invalid pattern TRIGGERS the rule (fail closed)
+        instead of silently passing the content. Without ``regex`` installed the
+        input is capped so the worst case stays bounded.
+        """
         pattern = config.get("pattern", "")
         if not pattern:
             return {"triggered": False, "matches": [], "category": "regex"}
         try:
-            matches = re.findall(pattern, content)
-            return {"triggered": len(matches) > 0, "matches": matches, "category": "regex"}
-        except re.error:
-            return {"triggered": False, "matches": [], "category": "regex"}
+            import regex as _regex_engine
+        except ImportError:  # pragma: no cover - regex is a locked dependency
+            try:
+                found = re.findall(pattern, content[:_REGEX_FALLBACK_MAX_INPUT])
+            except re.error:
+                return {"triggered": True, "matches": ["invalid_pattern"], "category": "regex"}
+            return {"triggered": bool(found), "matches": found[:50], "category": "regex"}
+        try:
+            found = _regex_engine.findall(
+                pattern, content[:_REGEX_MAX_INPUT], timeout=_REGEX_TIMEOUT_S
+            )
+        except TimeoutError:
+            _log.warning("guardrail_regex_timeout pattern=%s", str(pattern)[:80])
+            return {"triggered": True, "matches": ["regex_timeout"], "category": "regex"}
+        except _regex_engine.error:
+            return {"triggered": True, "matches": ["invalid_pattern"], "category": "regex"}
+        return {"triggered": bool(found), "matches": found[:50], "category": "regex"}
 
     async def _check_toxicity_llm(self, content: str) -> dict[str, Any]:
+        """LLM toxicity judge, with the pattern classifier as the floor.
+
+        Without a provider, or on a provider error, the rule used to answer
+        "not toxic" for everything (it could never trigger). The built-in
+        pattern classifier now decides in those cases.
+        """
         if self._provider is None:
-            return {"triggered": False, "matches": [], "category": "toxicity"}
+            return self._check_toxicity_patterns(content)
         try:
             from app.providers.base import CompletionRequest, Message
 
@@ -612,9 +645,23 @@ class GuardrailsEngine:
                 )
             )
             is_toxic = "yes" in resp.content.lower()
-            return {"triggered": is_toxic, "matches": [], "category": "toxicity"}
-        except Exception:
-            return {"triggered": False, "matches": [], "category": "toxicity"}
+            if not is_toxic:
+                # The LLM saw only 200 chars; the patterns still apply to all.
+                return self._check_toxicity_patterns(content)
+            return {"triggered": True, "matches": [], "category": "toxicity"}
+        except Exception as exc:
+            _log.warning("guardrail_toxicity_llm_failed_pattern_fallback: %s", str(exc)[:120])
+            return self._check_toxicity_patterns(content)
+
+    def _check_toxicity_patterns(self, content: str) -> dict[str, Any]:
+        from app.guardrails_v2.toxicity import ToxicityClassifier
+
+        result = ToxicityClassifier(use_llm_for_ambiguous=False).classify_sync(content)
+        return {
+            "triggered": result.is_toxic,
+            "matches": list(result.categories),
+            "category": "toxicity",
+        }
 
     def _safe_preview(self, content: str, max_len: int = 100) -> str:
         """Return a safe preview with sensitive data redacted."""
