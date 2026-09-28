@@ -253,9 +253,17 @@ _BUILTIN_TOOL_RISK: dict[str, str] = {
 }
 
 # RPA tools declare their own risk vocabulary (read / low / high). Read-only ones map
-# to "read"; interactive ones to "write_low" — the same no-approval execution they had
-# before (they fell through to the old "read" default), just no longer mislabelled.
+# to "read"; interactive navigation to "write_low".
 _RPA_RISK_MAP = {"read": "read", "low": "write_low", "high": "write_low"}
+
+# Declared-"high" RPA tools whose single call has an external or irreversible effect
+# (submit data to a third party, upload a local file, write a download to disk).
+# They used to be mapped to write_low with every other "high" tool, so they ran with
+# no HITL gate at all. They are write_high: approval unless the operator opted in
+# (connector auto_approve / fully-autonomous + ALLOW_FULLY_AUTONOMOUS_WRITE_HIGH).
+# Pure interaction (click / type / select_option) stays write_low so browser
+# navigation is not blocked on an approval per keystroke.
+_RPA_WRITE_HIGH_TOOLS = frozenset({"rpa_submit_form", "rpa_upload_file", "rpa_download_file"})
 
 
 def _builtin_risk(tool_name: str) -> str | None:
@@ -269,5 +277,7 @@ def _builtin_risk(tool_name: str) -> str | None:
             declared = str(classify_rpa_tool_risk(name))
         except Exception:
             return None
+        if declared == "high" and name in _RPA_WRITE_HIGH_TOOLS:
+            return "write_high"
         return _RPA_RISK_MAP.get(declared)
     return None
