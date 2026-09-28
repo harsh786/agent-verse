@@ -634,6 +634,9 @@ async def _org_gate_approvals(
 
 
 @router.get("/approvals")
+# The frontend's getPendingApprovals() calls /governance/hitl/pending, which had
+# no route (404 → the approvals inbox looked empty). Same handler.
+@router.get("/hitl/pending")
 async def list_approvals(
     request: Request,
     org_id: str | None = Query(default=None, description="Filter approvals by org id (G-10)"),
