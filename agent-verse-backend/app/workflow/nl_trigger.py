@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 from app.observability.logging import get_logger
-from app.workflow.dsl import TriggerDefinition
+from app.workflow.dsl import EventTriggerConfig, ScheduleTriggerConfig, TriggerDefinition
 
 _log = get_logger(__name__)
 
@@ -58,6 +58,39 @@ Rules:
 
 class NLTriggerParseError(ValueError):
     pass
+
+
+def _cache_key(description: str) -> str:
+    # Stable across processes: the builtin ``hash()`` is randomised per process
+    # (PYTHONHASHSEED), so the shared Redis cache never hit on another replica.
+    import hashlib
+
+    return "nl_trigger:" + hashlib.sha256(description.encode()).hexdigest()[:32]
+
+
+def _definition_from_llm(data: dict[str, Any]) -> TriggerDefinition:
+    """Map the prompt's output shape onto the DSL's ``TriggerDefinition``.
+
+    The prompt asks for ``type: manual|cron|webhook|event`` with flat ``cron`` /
+    ``event_name`` fields, but ``TriggerDefinition`` only accepts ``schedule``
+    (with a nested ``schedule.cron``) / ``api`` / … — so passing the dict
+    straight through rejected every cron/manual answer and dropped the cron.
+    """
+    kind = str(data.get("type") or "").strip().lower()
+    if kind in ("cron", "schedule"):
+        cron = str(data.get("cron") or (data.get("schedule") or {}).get("cron") or "").strip()
+        if not cron:
+            raise ValueError("schedule trigger without a cron expression")
+        tz = str((data.get("schedule") or {}).get("timezone") or data.get("timezone") or "UTC")
+        return TriggerDefinition(
+            type="schedule", schedule=ScheduleTriggerConfig(cron=cron, timezone=tz)
+        )
+    if kind == "event":
+        channel = str(data.get("event_name") or (data.get("event") or {}).get("channel") or "")
+        return TriggerDefinition(type="event", event=EventTriggerConfig(channel=channel))
+    if kind == "manual":
+        return TriggerDefinition(type="api")
+    return TriggerDefinition(**data)
 
 
 class NLTriggerResolver:
@@ -103,9 +136,12 @@ class NLTriggerResolver:
     # ------------------------------------------------------------------
 
     def _fast_path(self, description: str) -> TriggerDefinition | None:
-        for pattern, _cron in _CRON_PATTERNS:
+        for pattern, cron in _CRON_PATTERNS:
             if pattern.search(description):
-                return TriggerDefinition(type="schedule")
+                # Keep the matched cron. This used to return a bare
+                # ``type="schedule"`` and discard it, so the workflow's schedule
+                # trigger had no cron and the beat never fired it.
+                return TriggerDefinition(type="schedule", schedule=ScheduleTriggerConfig(cron=cron))
         if any(kw in description.lower() for kw in ("webhook", "http ", "post ", "api ")):
             return TriggerDefinition(type="webhook")
         return None
@@ -114,7 +150,7 @@ class NLTriggerResolver:
         if self._redis is None:
             return None
         try:
-            key = f"nl_trigger:{hash(description)}"
+            key = _cache_key(description)
             raw = await self._redis.get(key)
             if raw:
                 return TriggerDefinition(**json.loads(raw))
@@ -126,7 +162,7 @@ class NLTriggerResolver:
         if self._redis is None:
             return
         try:
-            key = f"nl_trigger:{hash(description)}"
+            key = _cache_key(description)
             await self._redis.setex(key, self._cache_ttl, trigger.model_dump_json())
         except Exception as exc:
             _log.debug("nl_trigger_cache_write_failed", error=str(exc))
@@ -158,7 +194,7 @@ class NLTriggerResolver:
             if not match:
                 raise ValueError("No JSON found in response")
             data = json.loads(match.group())
-            return TriggerDefinition(**data)
+            return _definition_from_llm(data)
         except Exception as exc:
             _log.warning("nl_trigger_parse_failed", raw=raw_text[:200], error=str(exc))
             raise NLTriggerParseError(

@@ -46,12 +46,27 @@ def _redis_mock(payloads: dict[str, dict], *, extra_get: dict[str, str] | None =
             return raw_payloads[key]
         return extra_get.get(key)
 
+    def _getdel(key, *a, **kw):
+        return extra_get.pop(key, None)
+
     mock_r = MagicMock()
     mock_r.scan_iter = MagicMock(return_value=list(payloads.keys()))
     mock_r.get = MagicMock(side_effect=_get)
+    mock_r.getdel = MagicMock(side_effect=_getdel)
     mock_r.set = MagicMock()
     mock_r.delete = MagicMock()
     return mock_r
+
+
+def _assert_governed(mock_apply):
+    """Polling/alert fires must go through run_scheduled_goal (the governed
+    TriggerDispatcher path) carrying the real trigger type and the observed
+    event — not straight to run_goal (no dedup/rate-limit/condition/audit)."""
+    mock_apply.assert_called_once()
+    kwargs = mock_apply.call_args.kwargs["kwargs"]
+    assert kwargs["trigger_type"] != "cron"
+    assert isinstance(kwargs["event_payload"], dict) and kwargs["event_payload"]
+    assert kwargs["fire_instance_id"]
 
 
 class TestDeadlineAndBusinessCalendar:
@@ -157,11 +172,14 @@ class TestFileDropTrigger:
                     return_value={"goal": "handle new file", "priority": "medium", "agent_id": ""}
                 ),
             ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
             result = fire_due_schedules.run()
 
         assert result["schedules_fired"] == 1
+        mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
+        _assert_governed(mock_apply)
         mock_apply.assert_called_once()
 
     def test_no_new_files_does_not_fire(self):
@@ -213,11 +231,14 @@ class TestRssFeedTrigger:
                     return_value={"goal": "summarize new post", "priority": "medium", "agent_id": ""}
                 ),
             ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
             result = fire_due_schedules.run()
 
         assert result["schedules_fired"] == 1
+        mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
+        _assert_governed(mock_apply)
         mock_apply.assert_called_once()
 
     def test_fetch_error_is_caught(self):
@@ -269,11 +290,14 @@ class TestApiPollTrigger:
                     return_value={"goal": "investigate change", "priority": "medium", "agent_id": ""}
                 ),
             ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
             result = fire_due_schedules.run()
 
         assert result["schedules_fired"] == 1
+        mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
+        _assert_governed(mock_apply)
         mock_apply.assert_called_once()
 
     def test_fetch_error_is_caught(self):
@@ -326,11 +350,14 @@ class TestDbRowChangeTrigger:
                     return_value={"goal": "row count grew", "priority": "medium", "agent_id": ""}
                 ),
             ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
             result = fire_due_schedules.run()
 
         assert result["schedules_fired"] == 1
+        mock_direct.assert_not_called()  # never bypasses the TriggerDispatcher
+        _assert_governed(mock_apply)
         mock_apply.assert_called_once()
 
     def test_disallowed_table_never_fires(self):
@@ -389,7 +416,10 @@ class TestDbRowChangeTrigger:
 
 
 class TestExternalAlertTriggers:
-    def test_alertmanager_fallback_payload_fires(self):
+    def test_alertmanager_without_cached_payload_never_fires(self):
+        """Regression: with no real alert cached, the beat used to fabricate
+        {"status": "firing", "alertname": "PrometheusAlert"} and launch a goal
+        on every 60s tick. No payload -> no fire."""
         from app.scaling.tasks import fire_due_schedules
 
         mock_r = _redis_mock(
@@ -404,20 +434,20 @@ class TestExternalAlertTriggers:
         with (
             patch("redis.from_url", return_value=mock_r),
             patch("app.scaling.tasks._db_schedule_discovery_enabled", return_value=False),
-            patch(
-                "app.scaling.tasks._build_goal_kwargs_for_alert",
-                new=AsyncMock(
-                    return_value={"goal": "investigate alert", "priority": "high", "agent_id": ""}
-                ),
-            ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
-            result = fire_due_schedules.run()
+            first = fire_due_schedules.run()
+            second = fire_due_schedules.run()
 
-        assert result["schedules_fired"] == 1
-        mock_apply.assert_called_once()
+        assert first["schedules_fired"] == 0
+        assert second["schedules_fired"] == 0
+        mock_direct.assert_not_called()
+        mock_apply.assert_not_called()
 
-    def test_datadog_cached_payload_fires(self):
+    def test_datadog_cached_payload_fires_once(self):
+        """A real cached alert fires exactly once (atomic GETDEL consume) and is
+        routed through the governed dispatcher with the alert as payload."""
         from app.scaling.tasks import fire_due_schedules
 
         mock_r = _redis_mock(
@@ -428,7 +458,9 @@ class TestExternalAlertTriggers:
                     "schedule_id": "alert2",
                 }
             },
-            extra_get={"alert_payload:datadog:alert2": json.dumps({"monitor_name": "cpu-high"})},
+            extra_get={
+                "alert_payload:t1:datadog:alert2": json.dumps({"monitor_name": "cpu-high"})
+            },
         )
         with (
             patch("redis.from_url", return_value=mock_r),
@@ -439,12 +471,19 @@ class TestExternalAlertTriggers:
                     return_value={"goal": "investigate cpu", "priority": "high", "agent_id": ""}
                 ),
             ),
-            patch("app.scaling.tasks.run_goal.apply_async") as mock_apply,
+            patch("app.scaling.tasks.run_goal.apply_async") as mock_direct,
+            patch("app.scaling.tasks.run_scheduled_goal.apply_async") as mock_apply,
         ):
             result = fire_due_schedules.run()
+            again = fire_due_schedules.run()
 
         assert result["schedules_fired"] == 1
-        mock_apply.assert_called_once()
+        assert again["schedules_fired"] == 0  # consumed once
+        mock_direct.assert_not_called()
+        _assert_governed(mock_apply)
+        kwargs = mock_apply.call_args.kwargs["kwargs"]
+        assert kwargs["trigger_type"] == "datadog"
+        assert kwargs["event_payload"] == {"monitor_name": "cpu-high"}
 
     def test_pagerduty_missing_tenant_id_is_skipped(self):
         from app.scaling.tasks import fire_due_schedules

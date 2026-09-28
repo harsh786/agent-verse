@@ -1527,6 +1527,9 @@ def create_app(
             _schedule_store_db = ScheduleStoreClass(
                 db_session_factory=db_factory,
                 redis=redis_for_runtime,
+                # Startup load is cross-tenant: it must use the maintenance role
+                # (under the NOBYPASSRLS app role it used to load nothing).
+                system_db_session_factory=app.state.system_db_session_factory,
             )
             _knowledge_store_db = KnowledgeStoreClass(db_session_factory=db_factory)
             _collab_store_db = CollaborationStore(db_session_factory=db_factory)

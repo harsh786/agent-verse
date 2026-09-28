@@ -38,6 +38,21 @@ def _get_db(request: Request) -> Any:
     return getattr(request.app.state, "db_session_factory", None)
 
 
+def _has_async(store: Any, name: str) -> bool:
+    import inspect
+
+    return inspect.iscoroutinefunction(getattr(store, name, None))
+
+
+async def _store_get(store: Any, schedule_id: str, tenant_ctx: TenantContext) -> Any:
+    """DB read-through lookup (the in-memory ``get`` only knows this replica)."""
+    if store is None:
+        return None
+    if _has_async(store, "get_async"):
+        return await store.get_async(schedule_id, tenant_ctx=tenant_ctx)
+    return store.get(schedule_id, tenant_ctx=tenant_ctx)
+
+
 # The webhook token in ``/triggers/webhooks/{type}/{token}`` is the credential a
 # third party presents (it selects the tenant pre-auth), so it must not be
 # guessable: shorter tokens never authenticate and are refused on create.
@@ -186,12 +201,20 @@ def _serialize_record(rec: dict[str, Any]) -> dict[str, Any]:
     if spec is not None:
         import dataclasses
 
+        # The signing secret is write-only: it used to be echoed on every GET /
+        # list / PATCH response. It is returned exactly once, by rotate-secret.
         out["spec"] = {
             k: (v.value if hasattr(v, "value") else v)
             for k, v in dataclasses.asdict(spec).items()
-            if v is not None
+            if v is not None and k not in _WRITE_ONLY_SPEC_FIELDS
         }
+        out["spec"]["has_webhook_signature_secret"] = bool(
+            getattr(spec, "webhook_signature_secret", "")
+        )
     return out
+
+
+_WRITE_ONLY_SPEC_FIELDS = frozenset({"webhook_signature_secret"})
 
 
 def _spec_for_dispatch(rec: dict[str, Any]) -> TriggerSpec:
@@ -233,7 +256,10 @@ async def list_triggers(request: Request) -> list[dict[str, Any]]:
     store = _get_store(request)
     if store is None:
         return []
-    records = store.list_all(tenant_ctx=tenant_ctx)
+    if _has_async(store, "list_all_async"):
+        records = await store.list_all_async(tenant_ctx=tenant_ctx)
+    else:
+        records = store.list_all(tenant_ctx=tenant_ctx)
     return [_serialize_record(r) for r in records]
 
 
@@ -277,13 +303,34 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    schedule_id = store.create(
-        spec=spec,
-        tenant_ctx=tenant_ctx,
-        goal_id=body.goal_id,
-        agent_id=body.agent_id,
-        goal_template=body.goal_template,
-    )
+    # Durable create + PLAN_MAX_TRIGGERS. The quota enforcer existed but was
+    # never called, and ``store.create`` persisted fire-and-forget (a DB failure
+    # still answered 201 with a trigger no other replica or restart would see).
+    # ``create_async`` counts the tenant's rows in Postgres inside the INSERT's
+    # transaction, so the cap holds across replicas.
+    from app.triggers.quota import TriggerQuotaExceeded
+
+    plan = str(getattr(tenant_ctx, "plan", "free") or "free")
+    try:
+        if _has_async(store, "create_async"):
+            schedule_id = await store.create_async(
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                goal_id=body.goal_id,
+                agent_id=body.agent_id,
+                goal_template=body.goal_template,
+                quota_plan=plan,
+            )
+        else:
+            schedule_id = store.create(
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                goal_id=body.goal_id,
+                agent_id=body.agent_id,
+                goal_template=body.goal_template,
+            )
+    except TriggerQuotaExceeded as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=500, detail="Failed to retrieve created trigger")
@@ -405,7 +452,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
     dispatcher = _get_dispatcher(request)
     store = _get_store(request)
     if dispatcher is not None and store is not None:
-        rec = store.get(trigger_id, tenant_ctx=tenant_ctx)
+        rec = await _store_get(store, trigger_id, tenant_ctx)
         if rec is not None:
             with contextlib.suppress(Exception):
                 await dispatcher.dispatch(
@@ -432,7 +479,7 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
 async def get_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
     return _serialize_record(rec)
@@ -442,7 +489,14 @@ async def get_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
 async def delete_trigger(schedule_id: str, request: Request) -> None:
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    if store is None or not store.delete(schedule_id, tenant_ctx=tenant_ctx):
+    if store is None:
+        raise HTTPException(status_code=404, detail="Trigger not found")
+    # Durable delete (the sync ``delete`` removed the DB row fire-and-forget).
+    if _has_async(store, "delete_async"):
+        deleted = await store.delete_async(schedule_id, tenant_ctx=tenant_ctx)
+    else:
+        deleted = store.delete(schedule_id, tenant_ctx=tenant_ctx)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
 
@@ -450,22 +504,40 @@ async def delete_trigger(schedule_id: str, request: Request) -> None:
 async def pause_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    ok = store.pause(schedule_id, tenant_ctx=tenant_ctx) if store else False
-    if not ok:
+    rec = await _set_paused(store, schedule_id, tenant_ctx, paused=True)
+    if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
-    return _serialize_record(rec)  # type: ignore[arg-type]
+    return _serialize_record(rec)
 
 
 @router.post("/{schedule_id}/resume", response_model=dict[str, Any])
 async def resume_trigger(schedule_id: str, request: Request) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    # Resume used to set ``rec["paused"] = False`` on this process's copy only:
+    # Redis (read by the beat) and Postgres stayed paused, so the trigger never
+    # fired again and a restart reloaded it as paused. Persist like pause does.
+    rec = await _set_paused(store, schedule_id, tenant_ctx, paused=False)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
-    rec["paused"] = False
     return _serialize_record(rec)
+
+
+async def _set_paused(
+    store: Any, schedule_id: str, tenant_ctx: TenantContext, *, paused: bool
+) -> dict[str, Any] | None:
+    if store is None:
+        return None
+    if _has_async(store, "set_paused_async"):
+        rec: dict[str, Any] | None = await store.set_paused_async(
+            schedule_id, paused=paused, tenant_ctx=tenant_ctx
+        )
+        return rec
+    method = store.pause if paused else store.resume
+    if not method(schedule_id, tenant_ctx=tenant_ctx):
+        return None
+    got: dict[str, Any] | None = store.get(schedule_id, tenant_ctx=tenant_ctx)
+    return got
 
 
 @router.post("/{schedule_id}/simulate", response_model=dict[str, Any])
@@ -475,7 +547,7 @@ async def simulate_trigger(
     """Simulate a trigger firing without actually creating a goal."""
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
@@ -504,7 +576,7 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
     """Fire a trigger immediately, creating a real goal."""
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
     if rec.get("paused"):
@@ -582,16 +654,17 @@ async def update_trigger(
     """Partially update a trigger (goal_template, paused, or spec fields)."""
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
-    if body.goal_template is not None:
-        rec["goal_template"] = body.goal_template
-    if body.paused is not None:
-        rec["paused"] = body.paused
+    new_spec: TriggerSpec | None = None
     if body.spec is not None:
         new_spec = _build_spec(body.spec)
+        from app.triggers.dispatch_map import is_supported, unsupported_reason
+
+        if not is_supported(new_spec.trigger_type):
+            raise HTTPException(status_code=422, detail=unsupported_reason(new_spec.trigger_type))
         # Validate the replacement spec the same way create does — an update must
         # not be able to persist a misconfigured trigger either.
         from app.triggers.validation import validate_spec
@@ -600,8 +673,28 @@ async def update_trigger(
             validate_spec(new_spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        rec["spec"] = new_spec
 
+    # PATCH used to assign onto this process's record only — nothing reached
+    # Redis (the beat kept the old cron/template) or Postgres (a restart or any
+    # other replica reverted the edit). ``update_async`` persists all three.
+    if _has_async(store, "update_async"):
+        updated = await store.update_async(
+            schedule_id,
+            tenant_ctx=tenant_ctx,
+            goal_template=body.goal_template,
+            paused=body.paused,
+            spec=new_spec,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Trigger not found")
+        return _serialize_record(updated)
+
+    if body.goal_template is not None:
+        rec["goal_template"] = body.goal_template
+    if body.paused is not None:
+        rec["paused"] = body.paused
+    if new_spec is not None:
+        rec["spec"] = new_spec
     return _serialize_record(rec)
 
 
@@ -613,22 +706,35 @@ async def rotate_secret(schedule_id: str, request: Request) -> dict[str, Any]:
     """Initiate webhook secret rotation (dual-secret grace period)."""
     tenant_ctx = _require_tenant(request)
     store = _get_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx) if store else None
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=404, detail="Trigger not found")
 
     from app.triggers.webhooks.rotation import WebhookSecretRotation
 
-    rotation = WebhookSecretRotation()
-    result = await rotation.rotate(schedule_id, tenant_id=tenant_ctx.tenant_id)
-    # Update spec with new secret
-    spec = rec.get("spec")
-    if spec is not None:
-        spec.webhook_signature_secret = result["new_secret"]
+    grace_period_seconds = 300
+    new_secret = WebhookSecretRotation().generate_secret()
+    # The new secret used to be set on this process's spec only (the store's
+    # persistence was never called), so other replicas and every restart kept
+    # verifying with the OLD secret — or with none. It is now stored encrypted,
+    # with the previous secret honoured for the grace window, and is returned
+    # exactly once, here.
+    if _has_async(store, "update_secret_async"):
+        if not await store.update_secret_async(
+            schedule_id,
+            new_secret=new_secret,
+            tenant_id=tenant_ctx.tenant_id,
+            grace_period_seconds=grace_period_seconds,
+        ):
+            raise HTTPException(status_code=404, detail="Trigger not found")
+    else:
+        spec = rec.get("spec")
+        if spec is not None:
+            spec.webhook_signature_secret = new_secret
     return {
         "trigger_id": schedule_id,
-        "new_secret": result["new_secret"],
-        "grace_period_seconds": result["grace_period_seconds"],
+        "new_secret": new_secret,
+        "grace_period_seconds": grace_period_seconds,
         "status": "rotation_started",
     }
 
@@ -748,10 +854,29 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         if not stored_token or not hmac.compare_digest(stored_token.encode(), token.encode()):
             continue
         secret = getattr(spec, "webhook_signature_secret", "") or ""
-        if secret and (
-            not sig_header or not await verifier.verify(body_bytes, sig_header, secret)
-        ):
-            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        if secret:
+            # rotate-secret promised a dual-secret grace period, but only the
+            # new secret was ever checked. The previous one is now accepted
+            # until its (persisted) grace deadline.
+            candidates = [secret]
+            prev = str(trigger.get("previous_webhook_secret", "") or "") if isinstance(
+                trigger, dict
+            ) else ""
+            grace_until = float(trigger.get("secret_grace_until", 0) or 0) if isinstance(
+                trigger, dict
+            ) else 0.0
+            import time as _time
+
+            if prev and _time.time() < grace_until:
+                candidates.append(prev)
+            verified = False
+            if sig_header:
+                for candidate in candidates:
+                    if await verifier.verify(body_bytes, sig_header, candidate):
+                        verified = True
+                        break
+            if not verified:
+                raise HTTPException(status_code=401, detail="Invalid webhook signature")
         matched += 1
         with contextlib.suppress(Exception):
             await dispatcher.dispatch(spec, enriched, caller)

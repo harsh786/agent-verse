@@ -111,6 +111,7 @@ def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any)
         goal_template: str,
         agent_id: str,
         fire_instance_id: str,
+        **governance: Any,
     ) -> SimpleNamespace:
         captured.update(
             schedule_id=sched_id,
@@ -118,6 +119,7 @@ def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any)
             goal_template=goal_template,
             agent_id=agent_id,
             fire_instance_id=fire_instance_id,
+            governance=governance,
         )
         return SimpleNamespace(goal_created=True, goal_id="g-1", skip_reason=None)
 
@@ -143,6 +145,15 @@ def test_run_scheduled_goal_routes_through_governed_dispatcher(monkeypatch: Any)
         "goal_template": "Compile report",
         "agent_id": "agent-1",
         "fire_instance_id": "fire-xyz",
+        # The schedule's trigger type / condition / rate cap / plan now reach the
+        # dispatcher (they used to be dropped: every fire ran as a bare "cron").
+        "governance": {
+            "trigger_type": "cron",
+            "condition": "",
+            "max_firings_per_hour": 0,
+            "tenant_plan": "",
+            "event_payload": None,
+        },
     }
 
 
@@ -542,6 +553,10 @@ def test_fire_due_schedules_discovers_db_schedule_without_redis(monkeypatch: Any
                 "tenant_id": "tenant-1",
                 "agent_id": "agent-1",
                 "fire_instance_id": expected_slot,
+                "trigger_type": "interval",
+                "condition": "",
+                "max_firings_per_hour": 0,
+                "tenant_plan": "",
             },
             "queue": "schedules",
         }

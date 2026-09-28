@@ -456,7 +456,10 @@ def test_create_channel_mapping_persists_to_db():
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "mapped"}
-    session.execute.assert_awaited_once()
+    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
+    # Tenant GUC is set first (the table is FORCE RLS), then exactly one INSERT.
+    assert "set_config('app.tenant_id'" in sqls[0]
+    assert sum("INSERT INTO channel_tenant_mappings" in s for s in sqls) == 1
 
 
 def test_create_channel_mapping_db_error_returns_500():

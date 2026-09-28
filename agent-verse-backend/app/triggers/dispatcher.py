@@ -85,6 +85,68 @@ class TriggerDispatcher:
         message_id: str | None = None,
         txn_id: str | None = None,
     ) -> TriggerEvent | SimulatedTriggerResult:
+        """Execute the 12-step dispatch pipeline, auditing suppressed fires.
+
+        Every skip outcome (RBAC, payload size, dedup, rate limit, circuit open,
+        bulkhead full, condition false) used to be returned to the caller and
+        dropped: ``trigger_events`` only ever recorded fires that created a goal,
+        so a suppressed third-party delivery left no trace at all.
+        """
+        result = await self._dispatch_pipeline(
+            trigger_spec,
+            payload,
+            tenant_ctx,
+            simulation=simulation,
+            caller_role=caller_role,
+            scheduled_fire_time=scheduled_fire_time,
+            source_goal_id=source_goal_id,
+            completion_event_id=completion_event_id,
+            message_id=message_id,
+            txn_id=txn_id,
+        )
+        if isinstance(result, TriggerEvent) and result.skip_reason and not simulation:
+            if result.trigger_type == "unknown":
+                result.trigger_type = str(trigger_spec.trigger_type)
+            await self._persist_skip_event(result)
+        return result
+
+    async def _persist_skip_event(self, event: TriggerEvent) -> None:
+        """Record a suppressed firing without interfering with dedup.
+
+        ``trigger_events`` has UNIQUE (tenant_id, idempotency_key), and that key
+        is also the durable dedup gate (``_already_fired`` matches it exactly).
+        A skip row stored under the firing's real key would either collide with
+        the original fire (a dedup skip is by definition a repeat of a key that
+        already fired) or — worse, for a rate-limited / circuit-open / bulkhead
+        skip — permanently mark a firing that never ran as "already fired", so
+        its legitimate retry would be deduped forever. Skip rows are therefore
+        stored under ``<key>:skip:<event_id>``: unique per skip, still
+        prefix-searchable by the original key, and never matched by the gate.
+        Every skip kind is audited, including dedup (replayed deliveries are
+        exactly what an operator investigating a webhook wants to see).
+        """
+        import dataclasses
+
+        await self._persist_event(
+            dataclasses.replace(
+                event, idempotency_key=f"{event.idempotency_key}:skip:{event.event_id}"
+            )
+        )
+
+    async def _dispatch_pipeline(
+        self,
+        trigger_spec: TriggerSpec,
+        payload: dict,
+        tenant_ctx: object,
+        *,
+        simulation: bool = False,
+        caller_role: str = "operator",
+        scheduled_fire_time: str | None = None,
+        source_goal_id: str | None = None,
+        completion_event_id: str | None = None,
+        message_id: str | None = None,
+        txn_id: str | None = None,
+    ) -> TriggerEvent | SimulatedTriggerResult:
         """Execute the 12-step dispatch pipeline."""
         start_ms = time.monotonic() * 1000
         trigger_id = getattr(trigger_spec, "trigger_id", "unknown")

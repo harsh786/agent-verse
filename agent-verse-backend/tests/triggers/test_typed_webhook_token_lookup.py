@@ -206,3 +206,30 @@ def test_webhook_trigger_with_weak_token_is_rejected() -> None:
         json={"spec": {"trigger_type": "webhook", "webhook_token": "abc"}, "goal_template": "x"},
     )
     assert r.status_code == 422
+
+
+def test_previous_secret_verifies_only_during_rotation_grace() -> None:
+    """rotate-secret promises a dual-secret grace period; only the new secret
+    used to be checked, breaking in-flight deliveries signed with the old one."""
+    import time
+
+    store = _store_with(("t1", "github_webhook", TOKEN_A, "new-secret"))
+    (rec,) = store._data.values()
+    rec["previous_webhook_secret"] = "old-secret"
+    rec["secret_grace_until"] = time.time() + 300
+    client = _client(store, _Dispatcher())
+    body = json.dumps({"ref": "main"}).encode()
+
+    def _post(secret: str) -> int:
+        sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        return client.post(
+            f"/triggers/webhooks/github/{TOKEN_A}",
+            content=body,
+            headers={"x-hub-signature-256": sig},
+        ).status_code
+
+    assert _post("old-secret") == 200
+    assert _post("new-secret") == 200
+    assert _post("wrong") == 401
+    rec["secret_grace_until"] = time.time() - 1  # grace over
+    assert _post("old-secret") == 401
