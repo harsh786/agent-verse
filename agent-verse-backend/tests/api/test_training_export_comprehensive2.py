@@ -41,11 +41,29 @@ def _make_app(goal_service: Any = None) -> FastAPI:
     return app
 
 
+def _realize(svc: Any) -> Any:
+    """Map these legacy mock goals onto the real GoalService shape: the factory is
+    ``_db`` (None = no DB) and scores live in ``_eval_scores[goal_id]`` — there is
+    no ``GoalRecord.eval_score`` (reading it is the bug this export had)."""
+    from types import SimpleNamespace
+
+    svc._db = None
+    scores: dict[str, Any] = {}
+    for gid, g in dict(getattr(svc, "_goals", {}) or {}).items():
+        g.goal_id = gid
+        g.goal_text = g.goal
+        score = g.__dict__.get("eval_score")
+        if isinstance(score, int | float):
+            scores[gid] = SimpleNamespace(average_score=lambda s=score: s)
+    svc._eval_scores = scores
+    return svc
+
+
 def _make_service_with_goals(goals: dict) -> Any:
     svc = MagicMock()
-    svc._db_session_factory = None
+    svc._db = None
     svc._goals = goals
-    return svc
+    return _realize(svc)
 
 
 # ---------------------------------------------------------------------------

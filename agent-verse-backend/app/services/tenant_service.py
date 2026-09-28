@@ -136,6 +136,76 @@ class TenantService:
             raise NotFoundError(f"Tenant not found: {tenant_id}")
         return dict(tenant)
 
+    async def update_plan(self, tenant_id: str, plan: str) -> None:
+        """Durably change *tenant_id*'s plan tier and drop every cached copy of it.
+
+        Billing used to call this method although it did not exist; the
+        AttributeError was swallowed and the API answered "Successfully upgraded"
+        while ``tenants.plan_tier`` never changed. It now:
+
+        1. writes ``tenants.plan_tier`` (DB is the source of truth) inside the
+           tenant's RLS context, which is also what lets it read the tenant's
+           ``api_keys`` rows (FORCE RLS) to find their cache entries;
+        2. mirrors the change into this pod's in-memory record;
+        3. deletes the SHARED Redis caches that carry the plan — ``tenant:{id}``
+           and every ``api_key:{hash}`` of the tenant — so every replica resolves
+           the new plan on its next request instead of after the 300 s TTL.
+
+        Raises ``ValueError`` for an unknown plan, :class:`NotFoundError` when the
+        tenant does not exist, and propagates any DB error — callers must never
+        report an upgrade that was not recorded.
+        """
+        new_plan = PlanTier(plan)
+        key_hashes: set[str] = set()
+        if self._db is not None:
+            from sqlalchemy import func, select, update
+
+            from app.db.models.tenant import ApiKey, Tenant
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    update(Tenant)
+                    .where(Tenant.id == tenant_id)
+                    .values(plan_tier=new_plan.value, updated_at=func.now())
+                )
+                if not result.rowcount:
+                    raise NotFoundError(f"Tenant not found: {tenant_id}")
+                key_hashes.update(
+                    (
+                        await session.execute(
+                            select(ApiKey.key_hash).where(ApiKey.tenant_id == tenant_id)
+                        )
+                    ).scalars()
+                )
+        elif tenant_id not in self._tenants:
+            raise NotFoundError(f"Tenant not found: {tenant_id}")
+
+        record = self._tenants.get(tenant_id)
+        if record is not None:
+            record["plan"] = new_plan.value
+        for kid in self._tenant_keys.get(tenant_id, []):
+            key = self._keys.get(kid)
+            if key and key.get("key_hash"):
+                key_hashes.add(str(key["key_hash"]))
+
+        if self._redis is not None:
+            try:
+                await self._redis.delete(
+                    f"tenant:{tenant_id}", *(f"api_key:{h}" for h in sorted(key_hashes))
+                )
+            except Exception as exc:
+                # The plan IS durably changed; a failed invalidation only delays it
+                # by at most the cache TTL (300 s). Log loudly rather than fail a
+                # paid upgrade that already committed.
+                logging.getLogger(__name__).error(
+                    "tenant_plan_cache_invalidation_failed tenant=%s: %s", tenant_id, exc
+                )
+
     # ── API key management ────────────────────────────────────────────────────
 
     async def list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:

@@ -404,6 +404,26 @@ def test_create_order_exception(client: TestClient, monkeypatch: pytest.MonkeyPa
 # ── POST /billing/verify-payment ────────────────────────────────────────────
 
 
+def _seed_order(
+    app: FastAPI, *, order_id: str = "order_1", plan: str = "professional", is_mock: bool = False
+) -> None:
+    """verify-payment / webhook derive the plan from the server-side order record
+    that /billing/create-order writes; seed one directly."""
+    from app.api.billing import PLAN_PRICES, _Order
+
+    store = getattr(app.state, "billing_orders_mem", None) or {}
+    store[order_id] = _Order(
+        order_id=order_id,
+        tenant_id=TENANT_ID,
+        plan=plan,
+        cycle="monthly",
+        amount=PLAN_PRICES[plan]["monthly"],
+        currency="INR",
+        is_mock=is_mock,
+    )
+    app.state.billing_orders_mem = store
+
+
 def _verify_body(**overrides: Any) -> dict[str, Any]:
     body = {
         "razorpay_order_id": "order_1",
@@ -429,6 +449,7 @@ def test_verify_payment_no_razorpay_mock_allowed(
 ) -> None:
     _clear_billing_env(monkeypatch)
     monkeypatch.setenv("ALLOW_MOCK_PAYMENTS", "true")
+    _seed_order(app, is_mock=True)
     tenant_svc = MagicMock()
     tenant_svc.update_plan = AsyncMock()
     app.state.tenant_service = tenant_svc
@@ -441,9 +462,10 @@ def test_verify_payment_no_razorpay_mock_allowed(
 
 
 def test_verify_payment_invalid_signature(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _clear_billing_env(monkeypatch)
+    _seed_order(app)
     monkeypatch.setenv("RAZORPAY_KEY_SECRET", "topsecret")
     mock_rz = MagicMock()
     monkeypatch.setattr("app.api.billing._get_razorpay", lambda: mock_rz)
@@ -462,6 +484,7 @@ def test_verify_payment_valid_signature(
     sig = hmac.new(
         b"topsecret", b"order_1|pay_1", hashlib.sha256
     ).hexdigest()
+    _seed_order(app)
     tenant_svc = MagicMock()
     tenant_svc.update_plan = AsyncMock()
     app.state.tenant_service = tenant_svc
@@ -475,28 +498,29 @@ def test_verify_payment_valid_signature(
     assert data["payment_id"] == "pay_1"
 
 
-def test_verify_payment_tenant_service_update_failure_is_swallowed(
+def test_verify_payment_tenant_service_update_failure_is_an_error(
     app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_upgrade_tenant_plan logs and swallows a tenant_service.update_plan failure
-    rather than failing the whole request."""
+    """A tenant_service.update_plan failure must fail the request (503) — it used
+    to be swallowed and answered "success" while the plan never changed."""
     _clear_billing_env(monkeypatch)
     monkeypatch.setenv("ALLOW_MOCK_PAYMENTS", "true")
+    _seed_order(app, is_mock=True)
     tenant_svc = MagicMock()
     tenant_svc.update_plan = AsyncMock(side_effect=RuntimeError("db unreachable"))
     app.state.tenant_service = tenant_svc
 
     resp = client.post("/billing/verify-payment", json=_verify_body())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "success"
+    assert resp.status_code == 503
 
 
 def test_verify_payment_unexpected_exception(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An error raised *after* signature verification (inside the try block)
     must surface as a 502, not bubble up unhandled."""
     _clear_billing_env(monkeypatch)
+    _seed_order(app)
     monkeypatch.setenv("RAZORPAY_KEY_SECRET", "topsecret")
     mock_rz = MagicMock()
     monkeypatch.setattr("app.api.billing._get_razorpay", lambda: mock_rz)
@@ -566,8 +590,8 @@ def test_get_razorpay_client_construction_failure_returns_none(
 def test_webhook_payment_captured_upgrade_failure_is_logged(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failure inside the payment.captured upgrade path must not break the
-    webhook response — Razorpay must still get a 200 acknowledgement."""
+    """A payment.captured event with no server-side order (no order_id here) is
+    acknowledged and ignored — it never reaches the upgrade path."""
     _clear_billing_env(monkeypatch)
     monkeypatch.setenv("RAZORPAY_WEBHOOK_SECRET", "whsecret")
     monkeypatch.setattr(
@@ -622,6 +646,7 @@ def test_webhook_payment_captured(
     tenant_svc = MagicMock()
     tenant_svc.update_plan = AsyncMock()
     app.state.tenant_service = tenant_svc
+    _seed_order(app, order_id="order_wh_1", plan="starter")
 
     payload = {
         "event": "payment.captured",
@@ -629,7 +654,10 @@ def test_webhook_payment_captured(
             "payment": {
                 "entity": {
                     "id": "pay_wh_1",
-                    "notes": {"tenant_id": "wh-tenant", "plan": "starter", "cycle": "monthly"},
+                    "order_id": "order_wh_1",
+                    "amount": 2900,
+                    # notes.plan is NOT trusted; the stored order says "starter".
+                    "notes": {"tenant_id": TENANT_ID, "plan": "enterprise", "cycle": "monthly"},
                 }
             }
         },
@@ -637,7 +665,7 @@ def test_webhook_payment_captured(
     resp = _signed_webhook(client, "whsecret", payload)
     assert resp.status_code == 200
     assert resp.json()["event"] == "payment.captured"
-    tenant_svc.update_plan.assert_awaited_once_with("wh-tenant", "starter")
+    tenant_svc.update_plan.assert_awaited_once_with(TENANT_ID, "starter")
 
 
 def test_webhook_subscription_charged(

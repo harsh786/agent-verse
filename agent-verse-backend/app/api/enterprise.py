@@ -140,8 +140,29 @@ async def get_export_status(request: Request, request_id: str) -> dict[str, Any]
 
 @router.post("/compliance/delete", status_code=202)
 async def request_data_deletion(request: Request) -> dict[str, Any]:
+    """Record a durable GDPR erasure job (executed by the process_tenant_erasures
+    beat task after the grace period). 503 if the request could not be recorded —
+    never ``deletion_scheduled: true`` for a request that does not exist."""
     ctx = _require_tenant(request)
-    return await _compliance(request).request_data_deletion(tenant_ctx=ctx)
+    try:
+        result: dict[str, Any] = await _compliance(request).request_data_deletion(tenant_ctx=ctx)
+    except Exception as exc:
+        raise HTTPException(503, "Erasure request could not be recorded; retry") from exc
+    return result
+
+
+@router.get("/compliance/delete")
+async def get_data_deletion_status(request: Request) -> dict[str, Any]:
+    """The tenant's erasure job as stored: pending | processing | on_hold | failed |
+    completed, with attempts / last_error / result."""
+    ctx = _require_tenant(request)
+    try:
+        job = await _compliance(request).get_deletion_status(tenant_ctx=ctx)
+    except Exception as exc:
+        raise HTTPException(503, "Erasure status unavailable") from exc
+    if job is None:
+        raise HTTPException(404, "No erasure request for this tenant")
+    return dict(job)
 
 
 @router.get("/compliance/residency")

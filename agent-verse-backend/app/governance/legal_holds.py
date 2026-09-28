@@ -238,6 +238,38 @@ class LegalHoldManager:
 
         return False
 
+    async def has_active_hold(self, tenant_id: str) -> bool:
+        """True if ANY active hold exists for *tenant_id* (gate for whole-tenant erasure).
+
+        Unlike :meth:`is_under_hold` this is FAIL-CLOSED: it reads the DB (the
+        source of truth — the Redis set only tracks resource ids, not user- or
+        date-scoped holds) and lets any error propagate, so a caller about to
+        destroy the tenant's data can never mistake "could not check" for "no
+        hold". With no DB configured there is nothing to hold and nothing durable
+        to erase, so it answers False.
+        """
+        if self._db is None:
+            return False
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        # Like DeletionOrchestrator._active_hold: a hold blocks until
+                        # it is explicitly released (expires_at is informational).
+                        "SELECT 1 FROM legal_holds WHERE tenant_id = :tid "
+                        "AND status = 'active' LIMIT 1"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchone()
+        return row is not None
+
     async def list_holds(self, tenant_id: str, status: str = "active") -> list[dict[str, Any]]:
         """Return all holds of the given status for a tenant."""
         if self._db is None:
