@@ -195,13 +195,34 @@ def test_receive_task_valid_hmac(monkeypatch) -> None:
     monkeypatch.setenv("A2A_SHARED_SECRET", secret)
     client = TestClient(_make_app())
     payload = json.dumps({"goal": "HMAC task", "context": {}}).encode()
-    sig = "sha256=" + _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
-    resp = client.post(
-        "/a2a/tasks",
-        content=payload,
-        headers={"X-A2A-Signature": sig, "Content-Type": "application/json"},
-    )
+    import time
+
+    ts = str(int(time.time()))
+    signed = f"{ts}.".encode() + payload
+    sig = "sha256=" + _hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+    headers = {"X-A2A-Signature": sig, "X-A2A-Timestamp": ts, "Content-Type": "application/json"}
+    resp = client.post("/a2a/tasks", content=payload, headers=headers)
     assert resp.status_code == 202
+    # The same signed request again is a replay (body-only HMAC had no nonce).
+    assert client.post("/a2a/tasks", content=payload, headers=headers).status_code == 401
+
+
+def test_receive_task_body_only_or_stale_signature_is_rejected(monkeypatch) -> None:
+    import time
+
+    secret = "my-test-secret"
+    monkeypatch.setenv("A2A_SHARED_SECRET", secret)
+    client = TestClient(_make_app())
+    payload = json.dumps({"goal": "HMAC task 2", "context": {}}).encode()
+    body_only = "sha256=" + _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    h = {"X-A2A-Signature": body_only, "Content-Type": "application/json"}
+    assert client.post("/a2a/tasks", content=payload, headers=h).status_code == 401
+    old = str(int(time.time()) - 3600)
+    stale = "sha256=" + _hmac.new(
+        secret.encode(), f"{old}.".encode() + payload, hashlib.sha256
+    ).hexdigest()
+    h = {"X-A2A-Signature": stale, "X-A2A-Timestamp": old, "Content-Type": "application/json"}
+    assert client.post("/a2a/tasks", content=payload, headers=h).status_code == 401
 
 
 def test_receive_task_stores_in_memory() -> None:

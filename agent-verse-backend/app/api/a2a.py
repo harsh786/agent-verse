@@ -55,6 +55,51 @@ def _verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     return _hmac.compare_digest(f"sha256={expected}", signature)
 
 
+A2A_SIGNATURE_MAX_SKEW_SECONDS = 300
+_seen_signatures: dict[str, float] = {}  # no-Redis replay cache (single process)
+
+
+async def _check_signed_request(request: Request, raw_body: bytes, secret: str) -> None:
+    """Verify a timestamped, single-use A2A signature (raise 401/503).
+
+    The HMAC used to cover the body only, with no timestamp or nonce: a captured
+    request could be replayed forever. Now the signer sends ``X-A2A-Timestamp``
+    (unix seconds) and signs ``f"{timestamp}.".encode() + body``; the timestamp
+    must be within ±5 min and each signature is accepted once (Redis SET NX,
+    in-process without Redis; a Redis error refuses the request).
+    """
+    import time
+
+    signature = request.headers.get("X-A2A-Signature", "")
+    ts_raw = request.headers.get("X-A2A-Timestamp", "")
+    try:
+        ts = int(ts_raw)
+    except ValueError:
+        raise HTTPException(401, "Missing or invalid X-A2A-Timestamp") from None
+    now = time.time()
+    if abs(now - ts) > A2A_SIGNATURE_MAX_SKEW_SECONDS:
+        raise HTTPException(401, "A2A request timestamp outside the allowed window")
+    if not _verify_hmac(f"{ts}.".encode() + raw_body, signature, secret):
+        raise HTTPException(401, "Invalid A2A signature")
+
+    ttl = 2 * A2A_SIGNATURE_MAX_SKEW_SECONDS
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is not None:
+        try:
+            fresh = await redis.set(f"a2a_sig:{signature}", "1", nx=True, ex=ttl)
+        except Exception as exc:
+            raise HTTPException(503, "A2A replay protection unavailable; retry") from exc
+        if not fresh:
+            raise HTTPException(401, "A2A request replayed")
+        return
+    for sig, seen_at in list(_seen_signatures.items()):
+        if now - seen_at > ttl:
+            _seen_signatures.pop(sig, None)
+    if signature in _seen_signatures:
+        raise HTTPException(401, "A2A request replayed")
+    _seen_signatures[signature] = now
+
+
 def _is_production() -> bool:
     try:
         from app.core.config import get_settings
@@ -241,14 +286,13 @@ async def receive_a2a_task(
         raise HTTPException(401, "Not authenticated")
 
     raw_body = await request.body()
-    signature = request.headers.get("X-A2A-Signature", "")
     secret = _get_a2a_secret()
     if not secret and _is_production():
         # Fail closed: an unsigned A2A inbound is a dev convenience, never a
         # production posture.
         raise HTTPException(503, "A2A inbound is disabled: A2A_SHARED_SECRET is not configured")
-    if not _verify_hmac(raw_body, signature, secret):
-        raise HTTPException(401, "Invalid A2A signature")
+    if secret:
+        await _check_signed_request(request, raw_body, secret)
 
     # SSRF guard — validate callback URL before accepting the task
     if body.callback_url:
@@ -289,8 +333,11 @@ async def receive_a2a_task(
                     tenant_ctx=tenant_ctx,
                 )
                 goal_id = result["goal_id"]
-                final_status = "complete"
-                final_result = f"Goal submitted: {goal_id}"
+                # Not "complete": the goal has only been submitted. A stream
+                # that ends (or a cancellation) without a terminal event used
+                # to be reported to the caller as complete.
+                final_status = "incomplete"
+                final_result = f"Goal {goal_id} ended without a terminal event"
 
                 # Wait for completion
                 try:
@@ -305,6 +352,10 @@ async def receive_a2a_task(
                             elif evt.get("type") == "goal_failed":
                                 final_status = "failed"
                                 final_result = evt.get("reason", "failed")
+                                break
+                            elif evt.get("type") == "goal_cancelled":
+                                final_status = "cancelled"
+                                final_result = f"Goal {goal_id} was cancelled"
                                 break
                 except TimeoutError:
                     final_status = "timeout"
