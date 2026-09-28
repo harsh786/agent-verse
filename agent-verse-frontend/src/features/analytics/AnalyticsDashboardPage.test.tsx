@@ -233,3 +233,72 @@ describe('AnalyticsDashboardPage null safety', () => {
     }, { timeout: 3000 });
   });
 });
+
+describe('AnalyticsDashboardPage benchmarks with insufficient data', () => {
+  const ALL_NULL_BENCHMARKS = {
+    platform_avg_success_rate: null, platform_avg_cost_usd: null,
+    platform_avg_eval_score: null, your_success_rate: null,
+    your_cost_usd: null, your_eval_score: null,
+    percentile_success: null, percentile_cost: null,
+    comparison_label: 'insufficient_data',
+    your_sample_count: 0,
+    data_source: 'insufficient_data',
+    dimensions: { your: {}, platform: {} },
+  };
+
+  test('all-null benchmarks render "Not enough data yet" and dashes, never crash or invent numbers', async () => {
+    setupMocks({ benchmarks: ALL_NULL_BENCHMARKS });
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+    await waitFor(() =>
+      expect(screen.getByTestId('benchmark-comparison-label')).toHaveTextContent('Not enough data yet'),
+    );
+    expect(screen.getByTestId('benchmark-insufficient-data')).toBeInTheDocument();
+    expect(screen.queryByText('insufficient_data')).not.toBeInTheDocument();
+    // Percentile tiles render a dash, not "#null".
+    expect(screen.queryByText(/#null/)).not.toBeInTheDocument();
+    const successBar = screen.getByTestId('benchmark-bar-Success Rate');
+    expect(successBar).toHaveTextContent('—');
+    expect(successBar).toHaveTextContent('no platform average yet');
+    expect(screen.getByTestId('benchmark-bar-Eval Score')).toHaveTextContent('—');
+    expect(screen.getByText('Insufficient eval data')).toBeInTheDocument();
+  });
+
+  test('your numbers render while null platform averages suppress the comparison bar', async () => {
+    setupMocks({
+      benchmarks: {
+        ...ALL_NULL_BENCHMARKS,
+        your_success_rate: 0.8, your_cost_usd: 0.02, your_eval_score: 0.9,
+        dimensions: { your: { task_completion: 0.9 }, platform: {} },
+      },
+    });
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+    const successBar = await screen.findByTestId('benchmark-bar-Success Rate');
+    await waitFor(() => expect(successBar).toHaveTextContent('80.0%'));
+    expect(successBar).toHaveTextContent('no platform average yet');
+    expect(screen.getByTestId('benchmark-bar-Eval Score')).toHaveTextContent('0.90');
+    // Radar is drawn from your real dimension(s) only.
+    expect(screen.queryByText('Insufficient eval data')).not.toBeInTheDocument();
+  });
+
+  test('real platform data still renders the ranked comparison', async () => {
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+    await waitFor(() =>
+      expect(screen.getByTestId('benchmark-comparison-label')).toHaveTextContent('Top 25%'),
+    );
+    expect(screen.getByTestId('benchmark-bar-Success Rate')).toHaveTextContent('vs 72.0% avg');
+    expect(screen.getAllByText('#25').length).toBe(2);
+    expect(screen.queryByTestId('benchmark-insufficient-data')).not.toBeInTheDocument();
+  });
+
+  test('a failed benchmarks request says so instead of loading forever', async () => {
+    mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/intelligence/benchmarks')) {
+        return { ok: false, status: 500, statusText: 'boom', json: () => Promise.resolve({ detail: 'boom' }) } as Response;
+      }
+      return { ok: true, status: 200, json: () => Promise.resolve({}) } as Response;
+    });
+    render(<AnalyticsDashboardPage />, { wrapper: Wrapper });
+    expect(await screen.findByText('Benchmark data unavailable')).toBeInTheDocument();
+  });
+});

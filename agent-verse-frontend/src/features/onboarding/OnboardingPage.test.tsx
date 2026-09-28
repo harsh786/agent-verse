@@ -393,3 +393,52 @@ test('"Skip setup and go to dashboard" link navigates away from onboarding at an
 
   expect(mockNavigate).toHaveBeenCalledWith('/dashboard');
 });
+
+test('Step 3: a heuristic-draft 502 shows the draft; "Create anyway" resends with accept_heuristic and advances', async () => {
+  const createBodies: Array<Record<string, unknown>> = [];
+  const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.includes('/tenants/me/llm')) return jsonResponse({});
+    if (url.includes('/agents/create')) {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      createBodies.push(body);
+      if (!body.accept_heuristic) {
+        return jsonResponse({
+          detail: 'The agent designer LLM did not return a usable config; no agent was created.',
+          generated_by: 'heuristic',
+          fallback_reason: 'timeout',
+          draft_config: { name: 'Code Review Helper', goal_template: 'A helpful assistant for code review', connectors: [], trigger_type: 'manual', autonomy_mode: 'supervised' },
+        }, 502);
+      }
+      return jsonResponse({ agent: { agent_id: 'agent-heur-9', name: 'Code Review Helper' } }, 201);
+    }
+    if (url.endsWith('/goals')) return jsonResponse({ goal_id: 'goal-1' });
+    return jsonResponse({});
+  });
+  renderPage();
+
+  await userEvent.type(screen.getByPlaceholderText(/your openai api key/i), 'k');
+  await userEvent.click(screen.getByRole('button', { name: /save & continue/i }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /skip for now/i })).toBeInTheDocument());
+  await userEvent.click(screen.getByRole('button', { name: /skip for now/i }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /create agent/i })).toBeInTheDocument());
+  await userEvent.click(screen.getByRole('button', { name: /create agent/i }));
+
+  const panel = await screen.findByTestId('heuristic-draft-confirm');
+  expect(panel).toHaveTextContent('Code Review Helper');
+  // Not reported as created.
+  expect(screen.queryByText(/agent created!/i)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /create agent/i })).toBeDisabled();
+
+  await userEvent.click(screen.getByRole('button', { name: 'Create anyway' }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /run goal/i })).toBeInTheDocument());
+  expect(createBodies).toHaveLength(2);
+  expect(createBodies[1].accept_heuristic).toBe(true);
+
+  // The id from the {agent: {...}} response shape is carried into step 4.
+  await userEvent.click(screen.getByRole('button', { name: /run goal/i }));
+  await waitFor(() => {
+    const goalCall = f.mock.calls.find(([u]) => String(u).endsWith('/goals'));
+    expect(JSON.parse(String((goalCall?.[1] as RequestInit)?.body))).toMatchObject({ agent_id: 'agent-heur-9' });
+  });
+});

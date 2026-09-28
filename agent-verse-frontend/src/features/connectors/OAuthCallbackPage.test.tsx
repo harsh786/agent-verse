@@ -33,12 +33,14 @@ describe('OAuthCallbackPage', () => {
     setOpener({ postMessage });
     renderAt('?code=code-1&state=state-1');
 
-    expect(await screen.findByText('Connected!')).toBeInTheDocument();
+    expect(await screen.findByText('Authorization received')).toBeInTheDocument();
+    // It must not claim the connector is connected — the exchange happens in the opener.
+    expect(screen.queryByText('Connected!')).not.toBeInTheDocument();
     expect(postMessage).toHaveBeenCalledWith(
       { type: 'oauth_callback', code: 'code-1', state: 'state-1' },
       window.location.origin,
     );
-    expect(screen.getByText(/Authorization successful/i)).toBeInTheDocument();
+    expect(screen.getByText(/finishing the connection/i)).toBeInTheDocument();
   });
 
   test('forwards a provider error (using error_description) and shows the failure state', async () => {

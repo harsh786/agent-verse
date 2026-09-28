@@ -123,4 +123,64 @@ describe('AgentRadarPage', () => {
       { timeout: 3000 }
     );
   });
+  function mockRadarFetch(benchmarks: unknown, health: unknown = MOCK_HEALTH) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/insights/agent-health/')) return json(health);
+      if (url.includes('/insights/benchmarks')) return json(benchmarks);
+      if (url.includes('/agents/')) return json(MOCK_AGENT);
+      return new Response(null, { status: 404 });
+    });
+  }
+
+  test('compares against a real platform average when the backend has one', async () => {
+    mockRadarFetch(MOCK_BENCHMARKS);
+    renderPage();
+    expect(await screen.findByText(/Above platform average/i)).toBeInTheDocument();
+    expect(screen.getByText(/Platform avg: 85%/)).toBeInTheDocument();
+  });
+
+  test('never invents a platform average: null benchmarks show "not enough data" instead', async () => {
+    mockRadarFetch({
+      platform_avg_success_rate: null,
+      platform_avg_cost_usd: null,
+      platform_avg_duration_s: null,
+      top_10_pct_success_rate: null,
+      percentile_bands: {},
+      sample_count: 0,
+      data_source: 'insufficient_data',
+    });
+    renderPage();
+    const notice = await screen.findByTestId('radar-benchmark-insufficient');
+    expect(notice).toHaveTextContent(/not enough data yet/i);
+    expect(notice).toHaveTextContent('Your success rate: 92%');
+    // The old hard-coded fallback (74%) must never appear, nor any above/below verdict.
+    expect(screen.queryByText(/74%/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/(Above|Below) platform average/i)).not.toBeInTheDocument();
+  });
+
+  test('a failed benchmarks request also shows "not enough data" rather than a fake comparison', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const json = (b: unknown) =>
+        new Response(JSON.stringify(b), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/insights/agent-health/')) return json(MOCK_HEALTH);
+      if (url.includes('/insights/benchmarks')) return new Response('nope', { status: 404 });
+      if (url.includes('/agents/')) return json(MOCK_AGENT);
+      return new Response(null, { status: 404 });
+    });
+    renderPage();
+    expect(await screen.findByTestId('radar-benchmark-insufficient')).toBeInTheDocument();
+    expect(screen.queryByText(/74%/)).not.toBeInTheDocument();
+  });
+
+  test('an agent with no runs is not ranked against the platform', async () => {
+    mockRadarFetch(MOCK_BENCHMARKS, { ...MOCK_HEALTH, sample_size: 0 });
+    renderPage();
+    const notice = await screen.findByTestId('radar-benchmark-insufficient');
+    expect(notice).toHaveTextContent(/No runs yet/);
+    expect(screen.queryByText(/(Above|Below) platform average/i)).not.toBeInTheDocument();
+  });
 });

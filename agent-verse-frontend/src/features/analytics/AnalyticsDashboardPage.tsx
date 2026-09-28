@@ -10,6 +10,7 @@ import { analyticsApi, selfImprovementApi } from '@/lib/api/client';
 import type { AnalyticsGoalMetrics, CostMetrics, EvalMetrics, AnalyticsToolMetrics, AnalyticsAgentMetrics, BenchmarkMetrics } from '@/lib/api/client';
 import { ThemedBarChart, ThemedLineChart } from '@/components/charts';
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from '@/components/charts';
+import { fmtFixed, isMetric, NO_VALUE, NOT_ENOUGH_DATA } from '@/lib/metrics';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -150,15 +151,35 @@ function ToolHeatmapRow({ tool }: { tool: AnalyticsToolMetrics['tools'][0] }) {
 
 // ── Benchmark Bar ─────────────────────────────────────────────────────────────
 
-function BenchmarkBar({ label, yours, platform, format }: {
+function BenchmarkBar({ label, yours, platform, format, lowerIsBetter = false }: {
   label: string;
-  yours: number;
-  platform: number;
-  format: (v: number) => string;
+  yours: number | null | undefined;
+  platform: number | null | undefined;
+  format: (v: number | null | undefined) => string;
+  lowerIsBetter?: boolean;
 }) {
+  // The backend returns null for a figure it could not compute (and for platform
+  // averages until enough tenants contributed). Show a dash — never a bar drawn
+  // against an invented 0.
+  if (!isMetric(yours) || !isMetric(platform)) {
+    return (
+      <div className="space-y-1" data-testid={`benchmark-bar-${label}`}>
+        <div className="flex justify-between text-xs text-muted-foreground">
+          <span>{label}</span>
+          <span className="text-foreground font-medium">
+            {format(yours)}{' '}
+            <span className="text-muted-foreground">
+              {isMetric(platform) ? `vs ${format(platform)} avg` : '· no platform average yet'}
+            </span>
+          </span>
+        </div>
+      </div>
+    );
+  }
   const maxVal = Math.max(yours, platform, 0.01);
+  const better = lowerIsBetter ? yours <= platform : yours >= platform;
   return (
-    <div className="space-y-1">
+    <div className="space-y-1" data-testid={`benchmark-bar-${label}`}>
       <div className="flex justify-between text-xs text-muted-foreground">
         <span>{label}</span>
         <span className="text-foreground font-medium">{format(yours)} <span className="text-muted-foreground">vs {format(platform)} avg</span></span>
@@ -170,7 +191,7 @@ function BenchmarkBar({ label, yours, platform, format }: {
             style={{ width: `${(platform / maxVal) * 100}%` }}
           />
           <div
-            className={`absolute inset-y-0 left-0 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${yours >= platform ? 'bg-emerald-500' : 'bg-blue-500'}`}
+            className={`absolute inset-y-0 left-0 rounded-full transition-[color,background-color,border-color,opacity,box-shadow,transform] ${better ? 'bg-emerald-500' : 'bg-blue-500'}`}
             style={{ width: `${(yours / maxVal) * 100}%` }}
           />
         </div>
@@ -224,7 +245,7 @@ export function AnalyticsDashboardPage() {
     refetchInterval: 60_000,
   });
 
-  const { data: benchmarks } = useQuery<BenchmarkMetrics>({
+  const { data: benchmarks, isError: benchmarksError } = useQuery<BenchmarkMetrics>({
     queryKey: ['benchmarks', days],
     queryFn: () => selfImprovementApi.getBenchmarks(days),
     enabled: !!apiKey,
@@ -272,12 +293,30 @@ export function AnalyticsDashboardPage() {
     avg_score: d.avg_score,
   }));
 
-  // Radar data for benchmark comparison
-  const radarData = evalDims.map((dim) => ({
+  // Radar data for benchmark comparison. Dimensions the backend has no score
+  // for are left out (plotting them as 0 would draw a fake score), and the
+  // platform series is only drawn when every plotted dimension has a platform
+  // average — it is null until enough tenants contributed.
+  const yourDims = benchmarks?.dimensions?.your ?? {};
+  const platformDims = benchmarks?.dimensions?.platform ?? {};
+  const radarDims = evalDims.filter((dim) => isMetric(yourDims[dim]));
+  const showPlatformRadar =
+    radarDims.length > 0 && radarDims.every((dim) => isMetric(platformDims[dim]));
+  const radarData = radarDims.map((dim) => ({
     dim: dim.replace('_', '\n'),
-    yours: benchmarks?.dimensions?.your?.[dim] ?? 0,
-    platform: benchmarks?.dimensions?.platform?.[dim] ?? 0,
+    yours: yourDims[dim] as number,
+    ...(showPlatformRadar ? { platform: platformDims[dim] as number } : {}),
   }));
+  const benchmarkRanked =
+    !!benchmarks &&
+    isMetric(benchmarks.percentile_success) &&
+    benchmarks.comparison_label !== 'insufficient_data';
+  const platformBenchmarkMissing =
+    !!benchmarks &&
+    (benchmarks.data_source === 'insufficient_data' ||
+      (!isMetric(benchmarks.platform_avg_success_rate) &&
+        !isMetric(benchmarks.platform_avg_cost_usd) &&
+        !isMetric(benchmarks.platform_avg_eval_score)));
 
   // ── Agent filter dropdown ──
 
@@ -546,16 +585,31 @@ export function AnalyticsDashboardPage() {
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-semibold text-sm">Platform Benchmarks</h2>
           {benchmarks && (
-            <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${percentileBadge(benchmarks.percentile_success).className}`}>
-              {benchmarks.comparison_label}
+            <span
+              data-testid="benchmark-comparison-label"
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
+                benchmarkRanked
+                  ? percentileBadge(benchmarks.percentile_success as number).className
+                  : 'bg-muted text-muted-foreground'
+              }`}
+            >
+              {benchmarkRanked ? benchmarks.comparison_label : NOT_ENOUGH_DATA}
             </span>
           )}
         </div>
         {!benchmarks ? (
-          <div className="h-24 flex items-center justify-center text-sm text-muted-foreground">Loading benchmark data…</div>
+          <div className="h-24 flex items-center justify-center text-sm text-muted-foreground">
+            {benchmarksError ? 'Benchmark data unavailable' : 'Loading benchmark data…'}
+          </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <div className="space-y-4">
+              {platformBenchmarkMissing && (
+                <p role="status" data-testid="benchmark-insufficient-data" className="text-xs text-muted-foreground">
+                  {NOT_ENOUGH_DATA}: platform averages appear once enough tenants have contributed
+                  completed goals.
+                </p>
+              )}
               <BenchmarkBar
                 label="Success Rate"
                 yours={benchmarks.your_success_rate}
@@ -567,17 +621,18 @@ export function AnalyticsDashboardPage() {
                 yours={benchmarks.your_cost_usd}
                 platform={benchmarks.platform_avg_cost_usd}
                 format={usd}
+                lowerIsBetter
               />
               <BenchmarkBar
                 label="Eval Score"
                 yours={benchmarks.your_eval_score}
                 platform={benchmarks.platform_avg_eval_score}
-                format={(v) => v.toFixed(2)}
+                format={(v) => fmtFixed(v, 2)}
               />
               <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
                 {[
-                  { label: 'Success %ile', value: `#${benchmarks.percentile_success}` },
-                  { label: 'Cost %ile', value: `#${benchmarks.percentile_cost}` },
+                  { label: 'Success %ile', value: isMetric(benchmarks.percentile_success) ? `#${benchmarks.percentile_success}` : NO_VALUE },
+                  { label: 'Cost %ile', value: isMetric(benchmarks.percentile_cost) ? `#${benchmarks.percentile_cost}` : NO_VALUE },
                 ].map(({ label, value }) => (
                   <div key={label} className="border border-border rounded-lg p-2 text-center">
                     <p className="text-muted-foreground">{label}</p>
@@ -588,16 +643,18 @@ export function AnalyticsDashboardPage() {
             </div>
             <div>
               <p className="text-xs text-muted-foreground mb-2 text-center">Dimension Comparison</p>
-              {radarData.some((d) => d.yours > 0 || d.platform > 0) ? (
+              {radarData.length > 0 ? (
                 <ResponsiveContainer width="100%" height={200}>
                   <RadarChart data={radarData} margin={{ top: 8, right: 24, bottom: 8, left: 24 }}>
                     <PolarGrid stroke={CHART_AXIS_COLOR} opacity={0.3} />
                     <PolarAngleAxis dataKey="dim" tick={{ fill: CHART_AXIS_COLOR, fontSize: 10 }} />
                     <PolarRadiusAxis domain={[0, 1]} tick={{ fill: CHART_AXIS_COLOR, fontSize: 8 }} tickCount={3} />
-                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => [v.toFixed(2)]} />
+                    <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => [fmtFixed(typeof v === 'number' ? v : null, 2)]} />
                     <Legend wrapperStyle={{ fontSize: 11, color: CHART_AXIS_COLOR }} />
                     <Radar name="You" dataKey="yours" stroke={CHART_COLORS[0]} fill={CHART_COLORS[0]} fillOpacity={0.25} strokeWidth={2} />
-                    <Radar name="Platform Avg" dataKey="platform" stroke={CHART_COLORS[5]} fill={CHART_COLORS[5]} fillOpacity={0.15} strokeWidth={1.5} strokeDasharray="4 2" />
+                    {showPlatformRadar && (
+                      <Radar name="Platform Avg" dataKey="platform" stroke={CHART_COLORS[5]} fill={CHART_COLORS[5]} fillOpacity={0.15} strokeWidth={1.5} strokeDasharray="4 2" />
+                    )}
                   </RadarChart>
                 </ResponsiveContainer>
               ) : (

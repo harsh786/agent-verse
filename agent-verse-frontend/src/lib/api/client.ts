@@ -45,6 +45,32 @@ export interface RequestMeta {
   silenceServerErrorToast?: boolean;
 }
 
+/**
+ * Human-readable reason from an error body. Handles our `{error: {message}}`
+ * envelope, FastAPI's string `detail`, and RFC-7807-style object details
+ * (`{detail: {title, detail, ...}}`) — which previously became "[object Object]".
+ */
+export function errorMessageFromBody(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const b = body as { error?: { message?: unknown }; detail?: unknown };
+  if (typeof b.error?.message === "string" && b.error.message) return b.error.message;
+  const d = b.detail;
+  if (typeof d === "string" && d) return d;
+  if (d && typeof d === "object" && !Array.isArray(d)) {
+    const o = d as { detail?: unknown; message?: unknown; title?: unknown };
+    for (const v of [o.detail, o.message, o.title]) {
+      if (typeof v === "string" && v) return v;
+    }
+  }
+  if (Array.isArray(d)) {
+    const msgs = d
+      .map((e) => (e && typeof e === "object" ? (e as { msg?: unknown }).msg : e))
+      .filter((m): m is string => typeof m === "string" && m.length > 0);
+    if (msgs.length) return msgs.join("; ");
+  }
+  return undefined;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit = {},
@@ -77,7 +103,7 @@ async function request<T>(
     const body = await res.json().catch(() => ({ error: { message: res.statusText } }));
     // Prefer our envelope's error.message, then FastAPI's `detail`, then the raw status
     // text — so a toast/ApiError carries the real reason, not "Service Unavailable".
-    const message = body?.error?.message ?? body?.detail ?? res.statusText;
+    const message = errorMessageFromBody(body) ?? res.statusText;
     if (res.status === 401) {
       const { logout } = useAuthStore.getState();
       logout();
@@ -468,6 +494,61 @@ export interface AgentSnapshot {
   config: Record<string, unknown>;
 }
 
+/** The heuristic draft POST /agents/create hands back (502) when its LLM failed. */
+export interface MetaAgentDraftConfig {
+  name: string;
+  goal_template: string;
+  connectors: string[];
+  trigger_type: string;
+  autonomy_mode: string;
+}
+
+/** POST /agents/create success body. `agent_id` is accepted for older payloads. */
+export interface MetaAgentCreateResponse {
+  agent?: AgentResponse;
+  agent_id?: string;
+  meta_agent_config?: Record<string, unknown> & { generated_by?: string };
+}
+
+/** The id of the agent POST /agents/create made, whichever shape the body used. */
+export function createdAgentId(r: MetaAgentCreateResponse | null | undefined): string {
+  return r?.agent?.agent_id ?? r?.agent_id ?? "";
+}
+
+/**
+ * A meta-agent create the backend refused because the designer LLM failed.
+ * No agent exists yet; the user must explicitly confirm to create the draft.
+ */
+export interface HeuristicAgentDraft {
+  detail: string;
+  fallbackReason: string;
+  draft: MetaAgentDraftConfig;
+}
+
+/**
+ * Recognise the 502 `{detail, generated_by: "heuristic", draft_config}` answer
+ * from POST /agents/create. Returns null for any other error.
+ */
+export function heuristicDraftFromError(err: unknown): HeuristicAgentDraft | null {
+  if (!(err instanceof ApiError) || err.status !== 502) return null;
+  const body = err.body as
+    | { detail?: unknown; generated_by?: unknown; fallback_reason?: unknown; draft_config?: unknown }
+    | undefined;
+  if (!body || body.generated_by !== "heuristic") return null;
+  const d = (body.draft_config ?? {}) as Partial<Record<keyof MetaAgentDraftConfig, unknown>>;
+  return {
+    detail: typeof body.detail === "string" ? body.detail : "The agent designer LLM did not return a usable config.",
+    fallbackReason: typeof body.fallback_reason === "string" ? body.fallback_reason : "",
+    draft: {
+      name: typeof d.name === "string" ? d.name : "",
+      goal_template: typeof d.goal_template === "string" ? d.goal_template : "",
+      connectors: Array.isArray(d.connectors) ? d.connectors.map(String) : [],
+      trigger_type: typeof d.trigger_type === "string" ? d.trigger_type : "",
+      autonomy_mode: typeof d.autonomy_mode === "string" ? d.autonomy_mode : "",
+    },
+  };
+}
+
 export const agentsApi = {
   // TODO(scale): GET /agents returns the full list with no server-side
   // pagination/filter params (verified against the backend route + OpenAPI).
@@ -477,11 +558,25 @@ export const agentsApi = {
   get: (id: string) => request<AgentResponse>(`/agents/${id}`),
   create: (data: CreateAgentRequest) =>
     request<AgentResponse>("/agents", { method: "POST", body: JSON.stringify(data) }),
-  createNl: (command: string, autorun = false) =>
-    request<AgentResponse>("/agents/create", {
-      method: "POST",
-      body: JSON.stringify({ command, autorun }),
-    }),
+  /**
+   * Meta-agent NL create. When the designer LLM fails the backend answers 502
+   * with a heuristic draft and creates nothing (see {@link heuristicDraftFromError});
+   * resend with `acceptHeuristic: true` only after the user confirms the draft.
+   * The generic 5xx toast is suppressed — every caller renders this error inline.
+   */
+  createNl: (command: string, autorun = false, opts: { acceptHeuristic?: boolean } = {}) =>
+    request<MetaAgentCreateResponse>(
+      "/agents/create",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          command,
+          autorun,
+          ...(opts.acceptHeuristic ? { accept_heuristic: true } : {}),
+        }),
+      },
+      { silenceServerErrorToast: true },
+    ),
   update: (id: string, data: Partial<CreateAgentRequest>) =>
     request<AgentResponse>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   delete: (id: string) => request<void>(`/agents/${id}`, { method: "DELETE" }),
@@ -580,6 +675,25 @@ export interface ConnectorTestResult {
   status?: string;
 }
 
+/** GET /connectors/oauth/start?server_id=… */
+export interface PkceOAuthStart {
+  server_id: string;
+  auth_url: string;
+  state: string;
+  redirect_uri?: string;
+  instructions?: string;
+}
+
+/** GET /connectors/oauth/callback — only `status: "connected"` means tokens were stored. */
+export interface PkceOAuthCallback {
+  server_id: string;
+  status: "connected" | "pending_config" | "error" | string;
+  message?: string;
+  token_type?: string;
+  scope?: string;
+  has_refresh_token?: boolean;
+}
+
 export const connectorsApi = {
   getCatalog: () => request<CatalogEntry[]>("/connectors/catalog"),
   list: () => request<ConnectorResponse[]>("/connectors"),
@@ -592,18 +706,39 @@ export const connectorsApi = {
   unregister: (id: string) => request<void>(`/connectors/${id}`, { method: "DELETE" }),
   test: (id: string) =>
     request<ConnectorTestResult>(`/connectors/${id}/test`, { method: "POST" }),
-  /** Start an OAuth popup flow — returns the provider auth URL and a CSRF state token. */
+  /**
+   * Legacy popup flow start (POST). Its completion, POST /connectors/oauth/callback,
+   * now always answers 501 `oauth-token-exchange-unavailable` (it never exchanged
+   * the code) — use {@link startPkceOAuth} / {@link completePkceOAuth} instead.
+   */
   startOAuth: (connectorName: string) =>
     request<{ auth_url: string; state: string }>(`/connectors/oauth/start`, {
       method: "POST",
       body: JSON.stringify({ connector_name: connectorName }),
     }),
-  /** Complete the OAuth flow by exchanging the callback code for a registered connector. */
+  /**
+   * @deprecated Always 501 `{code: "oauth-token-exchange-unavailable", connected: false}`
+   * on the current backend: nothing is exchanged or registered.
+   */
   completeOAuth: (code: string, state: string, connectorName: string) =>
     request<{ server_id: string; name: string; status: string }>(`/connectors/oauth/callback`, {
       method: "POST",
       body: JSON.stringify({ code, state, connector_name: connectorName }),
     }),
+  /**
+   * Start the real OAuth (PKCE) flow for a REGISTERED connector whose auth_type is
+   * pkce / oauth_ac / oauth_cc. `auth_url` is only a URL when the connector's
+   * auth_config has authorize_url + client_id; otherwise it is an instruction string.
+   */
+  startPkceOAuth: (serverId: string) =>
+    request<PkceOAuthStart>(
+      `/connectors/oauth/start?server_id=${encodeURIComponent(serverId)}`,
+    ),
+  /** Exchange the provider's code (PKCE verifier held server-side) and store real tokens. */
+  completePkceOAuth: (serverId: string, code: string, state: string) =>
+    request<PkceOAuthCallback>(
+      `/connectors/oauth/callback?${new URLSearchParams({ server_id: serverId, code, state }).toString()}`,
+    ),
   getUsage: (connectorId: string) =>
     request<{ goals: GoalResponse[]; total: number; success_rate: number | null; filtered: boolean }>(
       `/connectors/${connectorId}/usage`
@@ -1187,20 +1322,45 @@ export interface EvalMetrics {
   evals_by_day: Array<{ date: string; pass_rate: number; avg_score: number }>;
 }
 
+/**
+ * GET /intelligence/benchmarks. Every figure is nullable: the backend returns
+ * `null` (never an invented default) when it has no data, and platform averages
+ * stay `null` until enough tenants contributed (k-anonymity guard) — in which
+ * case `data_source` is `"insufficient_data"`.
+ */
 export interface BenchmarkMetrics {
-  platform_avg_success_rate: number;
-  platform_avg_cost_usd: number;
-  platform_avg_eval_score: number;
-  your_success_rate: number;
-  your_cost_usd: number;
-  your_eval_score: number;
-  percentile_success: number;
-  percentile_cost: number;
+  platform_avg_success_rate: number | null;
+  platform_avg_cost_usd: number | null;
+  platform_avg_eval_score: number | null;
+  your_success_rate: number | null;
+  your_cost_usd: number | null;
+  your_eval_score: number | null;
+  percentile_success: number | null;
+  percentile_cost: number | null;
+  /** "Top 10%" | "Top 25%" | "Average" | "Below Average" | "insufficient_data" */
   comparison_label: string;
-  dimensions: {
-    your: Record<string, number>;
-    platform: Record<string, number>;
+  your_sample_count?: number;
+  data_source?: BenchmarkDataSource;
+  dimensions?: {
+    your?: Record<string, number | null>;
+    platform?: Record<string, number | null>;
   };
+}
+
+export type BenchmarkDataSource = "live_platform_data" | "insufficient_data";
+
+/** GET /insights/benchmarks — platform-wide aggregate; all-null when there is not enough data. */
+export interface InsightsBenchmarks {
+  platform_avg_success_rate: number | null;
+  platform_avg_cost_usd: number | null;
+  platform_avg_duration_s?: number | null;
+  platform_avg_iterations?: number | null;
+  top_10_pct_success_rate: number | null;
+  top_10_pct_cost_usd?: number | null;
+  percentile_bands: Record<string, Record<string, number | null>>;
+  sample_count?: number;
+  data_source?: BenchmarkDataSource;
+  message?: string;
 }
 
 export const analyticsApi = {
@@ -2208,14 +2368,7 @@ export const insightsApi = {
     ),
   getAgentHealth: (agentId: string) =>
     request<AgentHealth>(`/insights/agent-health/${agentId}`),
-  getBenchmarks: () =>
-    request<{
-      platform_avg_success_rate: number;
-      platform_avg_cost_usd: number;
-      platform_avg_duration_s: number;
-      top_10_pct_success_rate: number;
-      percentile_bands: Record<string, Record<string, number>>;
-    }>("/insights/benchmarks"),
+  getBenchmarks: () => request<InsightsBenchmarks>("/insights/benchmarks"),
 };
 
 // ── Goal Templates API ────────────────────────────────────────────────────────
@@ -2633,6 +2786,12 @@ export interface Suggestion {
 export const selfImprovementApi = {
   listExperiments: () => request<Experiment[]>("/intelligence/experiments"),
   getSuggestions: () => request<Suggestion[]>("/intelligence/suggestions"),
+  /**
+   * @deprecated The backend answers 410 Gone: v1 suggestions never changed any
+   * agent. Apply a concluded experiment's winner with {@link applyExperiment}
+   * (POST /intelligence/experiments/{id}/apply). Kept only so a caller gets the
+   * backend's explanatory 410 message as an ApiError rather than a 404.
+   */
   applySuggestion: (id: string) =>
     request<void>(`/intelligence/suggestions/${id}/apply`, { method: "POST" }),
   rejectSuggestion: (id: string) =>

@@ -3,7 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bot } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-import { agentsApi } from '@/lib/api/client';
+import {
+  agentsApi,
+  createdAgentId,
+  heuristicDraftFromError,
+  type HeuristicAgentDraft,
+} from '@/lib/api/client';
+import { HeuristicDraftConfirm } from './HeuristicDraftConfirm';
 import { MissionControlLayout } from '@/components/ui/MissionControlLayout';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -27,12 +33,21 @@ export function AgentCreatePage() {
     allowed_collection_ids: [] as string[],
   });
 
+  // Set when the backend refused to create an agent because its designer LLM
+  // failed and returned a heuristic draft instead (502). Creating it needs an
+  // explicit "Create anyway" that resends with accept_heuristic: true.
+  const [heuristicDraft, setHeuristicDraft] = useState<HeuristicAgentDraft | null>(null);
+
   const createMutation = useMutation({
-    mutationFn: () => agentsApi.createNl(nlCommand, autorun),
+    mutationFn: (acceptHeuristic: boolean) =>
+      agentsApi.createNl(nlCommand, autorun, { acceptHeuristic }),
+    onMutate: () => setHeuristicDraft(null),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['agents'] });
-      navigate(`/agents/${data.agent_id}`);
+      const id = createdAgentId(data);
+      navigate(id ? `/agents/${id}` : '/agents');
     },
+    onError: (e) => setHeuristicDraft(heuristicDraftFromError(e)),
   });
 
   const handleManualCreate = async (e: React.FormEvent) => {
@@ -115,7 +130,11 @@ export function AgentCreatePage() {
                 </label>
                 <textarea
                   value={nlCommand}
-                  onChange={(e) => setNlCommand(e.target.value)}
+                  onChange={(e) => {
+                    setNlCommand(e.target.value);
+                    // A draft describes the previous text — don't let it be created for new text.
+                    setHeuristicDraft(null);
+                  }}
                   placeholder="e.g. 'Create an agent that monitors GitHub issues labeled bug and creates JIRA tickets automatically'"
                   rows={5}
                   className="w-full border border-neural-violet/20 rounded-lg p-3 text-sm resize-none focus:ring-2 focus:ring-neural-violet/40 focus:border-neural-violet/40 outline-none bg-command-black text-white placeholder-white/25 transition-colors"
@@ -133,10 +152,24 @@ export function AgentCreatePage() {
                 Auto-run on creation
               </label>
 
-              {createMutation.isError && (
-                <p role="alert" className="text-xs text-mission-red">
-                  {String(createMutation.error)}
-                </p>
+              {heuristicDraft ? (
+                <HeuristicDraftConfirm
+                  draft={heuristicDraft}
+                  isPending={createMutation.isPending}
+                  onConfirm={() => createMutation.mutate(true)}
+                  onCancel={() => {
+                    setHeuristicDraft(null);
+                    createMutation.reset();
+                  }}
+                />
+              ) : (
+                createMutation.isError && (
+                  <p role="alert" className="text-xs text-mission-red">
+                    {createMutation.error instanceof Error
+                      ? createMutation.error.message
+                      : String(createMutation.error)}
+                  </p>
+                )
               )}
 
               <div className="flex gap-3 justify-end pt-2">
@@ -147,8 +180,8 @@ export function AgentCreatePage() {
                   Cancel
                 </button>
                 <button
-                  onClick={() => createMutation.mutate()}
-                  disabled={!nlCommand.trim() || createMutation.isPending}
+                  onClick={() => createMutation.mutate(false)}
+                  disabled={!nlCommand.trim() || createMutation.isPending || !!heuristicDraft}
                   className="bg-neural-violet text-white px-4 py-2 rounded-lg text-sm hover:bg-neural-violet/90 disabled:opacity-50 transition-opacity shadow-lg shadow-neural-violet/20"
                 >
                   {createMutation.isPending ? 'Creating…' : 'Create Agent'}

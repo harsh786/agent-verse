@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CheckCircle, ChevronRight, Loader2, Zap } from "lucide-react";
-import { settingsApi, connectorsApi, goalsApi, agentsApi } from "@/lib/api/client";
+import {
+  settingsApi,
+  connectorsApi,
+  goalsApi,
+  agentsApi,
+  createdAgentId as agentIdFromCreateResponse,
+  heuristicDraftFromError,
+  type HeuristicAgentDraft,
+} from "@/lib/api/client";
+import { HeuristicDraftConfirm } from "@/features/agents/HeuristicDraftConfirm";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -230,18 +239,24 @@ function Step3Agent({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  // Designer LLM failed → backend created nothing and returned a heuristic draft
+  // (502). Creating it requires an explicit confirmation.
+  const [draft, setDraft] = useState<HeuristicAgentDraft | null>(null);
 
-  const handleCreate = async () => {
+  const handleCreate = async (acceptHeuristic = false) => {
     if (!command.trim()) return;
     setSaving(true);
     setError("");
+    setDraft(null);
     try {
-      const data = await agentsApi.createNl(command, false);
-      onAgentCreated(data.agent_id ?? '');
+      const data = await agentsApi.createNl(command, false, { acceptHeuristic });
+      onAgentCreated(agentIdFromCreateResponse(data));
       setSaved(true);
       setTimeout(onNext, 800);
     } catch (e) {
-      setError(String(e));
+      const d = heuristicDraftFromError(e);
+      if (d) setDraft(d);
+      else setError(String(e));
     } finally {
       setSaving(false);
     }
@@ -260,7 +275,10 @@ function Step3Agent({
         <label className="block text-sm font-medium mb-1">Agent description</label>
         <textarea
           value={command}
-          onChange={(e) => setCommand(e.target.value)}
+          onChange={(e) => {
+            setCommand(e.target.value);
+            setDraft(null);
+          }}
           rows={3}
           placeholder="A helpful assistant that reviews PRs and reports issues…"
           className="w-full border border-input rounded-lg px-3 py-2 text-sm bg-background focus:ring-2 focus:ring-primary outline-none resize-none"
@@ -268,6 +286,14 @@ function Step3Agent({
       </div>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {draft && (
+        <HeuristicDraftConfirm
+          draft={draft}
+          isPending={saving}
+          onConfirm={() => void handleCreate(true)}
+          onCancel={() => setDraft(null)}
+        />
+      )}
       {saved && (
         <p className="text-sm text-green-600 flex items-center gap-1">
           <CheckCircle className="h-4 w-4" /> Agent created!
@@ -275,8 +301,8 @@ function Step3Agent({
       )}
 
       <button
-        onClick={handleCreate}
-        disabled={saving || saved || !command.trim()}
+        onClick={() => void handleCreate(false)}
+        disabled={saving || saved || !command.trim() || !!draft}
         className="flex items-center gap-2 px-5 py-2.5 bg-primary text-primary-foreground text-sm rounded-lg hover:opacity-90 disabled:opacity-50"
       >
         {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

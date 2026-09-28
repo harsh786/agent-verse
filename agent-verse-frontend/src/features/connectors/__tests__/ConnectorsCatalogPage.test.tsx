@@ -19,12 +19,14 @@ vi.mock('react-router-dom', async (importOriginal) => {
 vi.mock('../OAuthPopupButton', () => ({
   OAuthPopupButton: ({
     connectorName,
+    serverId,
     onSuccess,
   }: {
     connectorName: string;
+    serverId?: string;
     onSuccess?: () => void;
   }) => (
-    <button type="button" onClick={() => onSuccess?.()}>
+    <button type="button" data-server-id={serverId ?? ''} onClick={() => onSuccess?.()}>
       oauth-connect-{connectorName}
     </button>
   ),
@@ -324,5 +326,37 @@ describe('ConnectorsCatalogPage', () => {
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['connectors-catalog'] });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['connectors'] });
+  });
+
+  test("passes the tenant's registered OAuth connector server_id to the OAuth button (PKCE flow)", async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes('/connectors/catalog')
+        ? [OAUTH_ENTRY]
+        : [{ server_id: 'srv-slack-1', name: 'slack', url: 'https://slack.com', auth_type: 'oauth_ac' }];
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await screen.findByText('Slack');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /oauth-connect-slack/i })).toHaveAttribute(
+        'data-server-id',
+        'srv-slack-1',
+      ),
+    );
+  });
+
+  test('an unregistered OAuth connector gets no server_id (button cannot start a doomed flow)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes('/connectors/catalog')
+        ? [OAUTH_ENTRY]
+        // A same-named connector registered with a non-OAuth auth type does not count.
+        : [{ server_id: 'srv-slack-bearer', name: 'slack', url: 'https://slack.com', auth_type: 'bearer' }];
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await screen.findByText('Slack');
+    expect(screen.getByRole('button', { name: /oauth-connect-slack/i })).toHaveAttribute('data-server-id', '');
   });
 });

@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 import { ThemedBarChart } from "@/components/charts";
 import { CHART_COLORS, CHART_AXIS_COLOR, CHART_TOOLTIP_STYLE } from "@/components/charts";
 import { toast } from "@/stores/toast";
+import { fmtFixed, fmtRatioPct, fmtUsd, isMetric, NOT_ENOUGH_DATA } from "@/lib/metrics";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -52,6 +53,10 @@ function duration(start: string, end: string | null | undefined): string {
   if (days === 0) return "< 1 day";
   return `${days} day${days === 1 ? "" : "s"}`;
 }
+
+/** Why v1 suggestions have no Apply button (the backend answers 410 Gone). */
+const V1_APPLY_UNSUPPORTED =
+  "Suggestions can't be applied directly. Apply a concluded experiment's winner from the Experiments tab.";
 
 // ── Experiment Detail ─────────────────────────────────────────────────────────
 
@@ -144,16 +149,6 @@ function BenchmarksTab(): JSX.Element {
     queryFn: () => selfImprovementApi.getBenchmarks(30),
   });
 
-  const evalDims = ["task_completion", "efficiency", "accuracy", "safety", "coherence"];
-  const radarData = evalDims.map((dim) => ({
-    dim: dim.replace("_", "\n"),
-    yours: bm?.dimensions?.your?.[dim] ?? 0,
-    platform: bm?.dimensions?.platform?.[dim] ?? 0,
-  }));
-
-  function pct(v: number) { return `${(v * 100).toFixed(1)}%`; }
-  function usd(v: number) { return v >= 1 ? `$${v.toFixed(2)}` : `$${v.toFixed(4)}`; }
-
   if (isLoading) return <div className="flex justify-center p-12"><LoadingSpinner /></div>;
   if (isError || !bm) {
     return (
@@ -164,20 +159,49 @@ function BenchmarksTab(): JSX.Element {
     );
   }
 
-  const compBars = [
-    { metric: "Success Rate", yours: bm.your_success_rate, platform: bm.platform_avg_success_rate, fmt: pct },
-    { metric: "Eval Score", yours: bm.your_eval_score, platform: bm.platform_avg_eval_score, fmt: (v: number) => v.toFixed(2) },
-    { metric: "Avg Cost", yours: bm.your_cost_usd, platform: bm.platform_avg_cost_usd, fmt: usd },
+  // Missing dimensions stay missing — plotting them as 0 would draw a fake score.
+  const evalDims = ["task_completion", "efficiency", "accuracy", "safety", "coherence"];
+  const yourDims = bm.dimensions?.your ?? {};
+  const platformDims = bm.dimensions?.platform ?? {};
+  const radarDims = evalDims.filter((d) => isMetric(yourDims[d]));
+  const showPlatformRadar =
+    radarDims.length > 0 && radarDims.every((d) => isMetric(platformDims[d]));
+  const radarData = radarDims.map((dim) => ({
+    dim: dim.replace("_", "\n"),
+    yours: yourDims[dim] as number,
+    ...(showPlatformRadar ? { platform: platformDims[dim] as number } : {}),
+  }));
+
+  const platformMissing =
+    bm.data_source === "insufficient_data" ||
+    (!isMetric(bm.platform_avg_success_rate) &&
+      !isMetric(bm.platform_avg_cost_usd) &&
+      !isMetric(bm.platform_avg_eval_score));
+
+  const compBars: Array<{
+    metric: string;
+    yours: number | null;
+    platform: number | null;
+    percentile: number | null;
+    lowerIsBetter: boolean;
+    fmt: (v: number | null | undefined) => string;
+  }> = [
+    { metric: "Success Rate", yours: bm.your_success_rate, platform: bm.platform_avg_success_rate, percentile: bm.percentile_success, lowerIsBetter: false, fmt: (v) => fmtRatioPct(v) },
+    { metric: "Eval Score", yours: bm.your_eval_score, platform: bm.platform_avg_eval_score, percentile: null, lowerIsBetter: false, fmt: (v) => fmtFixed(v, 2) },
+    { metric: "Avg Cost", yours: bm.your_cost_usd, platform: bm.platform_avg_cost_usd, percentile: bm.percentile_cost, lowerIsBetter: true, fmt: fmtUsd },
   ];
 
-  const badgeClass =
-    bm.percentile_success <= 10
-      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-      : bm.percentile_success <= 25
-      ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
-      : bm.percentile_success <= 50
-      ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
-      : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
+  const hasRanking = isMetric(bm.percentile_success) && bm.comparison_label !== "insufficient_data";
+  const pctl = bm.percentile_success ?? 100;
+  const badgeClass = !hasRanking
+    ? "bg-muted text-muted-foreground"
+    : pctl <= 10
+    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
+    : pctl <= 25
+    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+    : pctl <= 50
+    ? "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400"
+    : "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400";
 
   return (
     <div className="space-y-6">
@@ -189,37 +213,66 @@ function BenchmarksTab(): JSX.Element {
             Anonymized comparison across all AgentVerse tenants (last 30 days)
           </p>
         </div>
-        <span className={`ml-auto px-3 py-1 rounded-full text-sm font-semibold ${badgeClass}`}>
-          {bm.comparison_label}
+        <span
+          data-testid="benchmark-comparison-label"
+          className={`ml-auto px-3 py-1 rounded-full text-sm font-semibold ${badgeClass}`}
+        >
+          {hasRanking ? bm.comparison_label : NOT_ENOUGH_DATA}
         </span>
       </div>
 
+      {platformMissing && (
+        <div
+          role="status"
+          data-testid="benchmark-insufficient-data"
+          className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground"
+        >
+          <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+          <span>
+            {NOT_ENOUGH_DATA}: platform averages are only shown once enough tenants have
+            contributed completed goals, so there is nothing to compare against yet.
+          </span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {compBars.map(({ metric, yours, platform, fmt }) => {
-          const better = metric === "Avg Cost" ? yours <= platform : yours >= platform;
+        {compBars.map(({ metric, yours, platform, percentile, lowerIsBetter, fmt }) => {
+          const comparable = isMetric(yours) && isMetric(platform);
+          const better = comparable && (lowerIsBetter ? yours <= platform : yours >= platform);
+          const scale = comparable ? Math.max(yours, platform, 0.001) : 1;
           return (
             <div key={metric} className="bg-muted/30 rounded-xl p-4 space-y-3">
               <p className="text-xs font-medium text-muted-foreground">{metric}</p>
               <div className="flex items-end gap-3">
                 <div className="text-2xl font-bold tabular-nums">{fmt(yours)}</div>
-                <div className={`text-xs ${better ? "text-emerald-500" : "text-red-400"} flex items-center gap-0.5`}>
-                  {better ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
-                  vs {fmt(platform)} avg
-                </div>
+                {comparable ? (
+                  <div className={`text-xs ${better ? "text-emerald-500" : "text-red-400"} flex items-center gap-0.5`}>
+                    {better ? <TrendingUp className="h-3.5 w-3.5" /> : <TrendingDown className="h-3.5 w-3.5" />}
+                    vs {fmt(platform)} avg
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    {isMetric(platform) ? `platform avg ${fmt(platform)}` : "no platform average yet"}
+                  </div>
+                )}
               </div>
-              <div className="flex items-center gap-2">
-                <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden relative">
-                  <div
-                    className="absolute inset-y-0 left-0 bg-muted-foreground/25 rounded-full"
-                    style={{ width: `${Math.min((platform / Math.max(yours, platform, 0.001)) * 100, 100)}%` }}
-                  />
-                  <div
-                    className={`absolute inset-y-0 left-0 rounded-full ${better ? "bg-emerald-500" : "bg-blue-500"}`}
-                    style={{ width: `${Math.min((yours / Math.max(yours, platform, 0.001)) * 100, 100)}%` }}
-                  />
+              {comparable && (
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden relative">
+                    <div
+                      className="absolute inset-y-0 left-0 bg-muted-foreground/25 rounded-full"
+                      style={{ width: `${Math.min((platform / scale) * 100, 100)}%` }}
+                    />
+                    <div
+                      className={`absolute inset-y-0 left-0 rounded-full ${better ? "bg-emerald-500" : "bg-blue-500"}`}
+                      style={{ width: `${Math.min((yours / scale) * 100, 100)}%` }}
+                    />
+                  </div>
+                  {isMetric(percentile) && (
+                    <span className="text-xs text-muted-foreground">pct {percentile}</span>
+                  )}
                 </div>
-                <span className="text-xs text-muted-foreground">pct {metric === "Avg Cost" ? bm.percentile_cost : bm.percentile_success}</span>
-              </div>
+              )}
             </div>
           );
         })}
@@ -229,18 +282,27 @@ function BenchmarksTab(): JSX.Element {
         <h3 className="text-xs font-medium text-muted-foreground mb-4 text-center">
           Eval Dimensions: You vs Platform Average
         </h3>
-        {radarData.some((d) => d.yours > 0 || d.platform > 0) ? (
-          <ResponsiveContainer width="100%" height={280}>
-            <RadarChart data={radarData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
-              <PolarGrid stroke={CHART_AXIS_COLOR} opacity={0.3} />
-              <PolarAngleAxis dataKey="dim" tick={{ fill: CHART_AXIS_COLOR, fontSize: 11 }} />
-              <PolarRadiusAxis domain={[0, 1]} tick={{ fill: CHART_AXIS_COLOR, fontSize: 9 }} tickCount={4} />
-              <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v: number) => [v.toFixed(2)]} />
-              <Legend wrapperStyle={{ fontSize: 11, color: CHART_AXIS_COLOR }} />
-              <Radar name="You" dataKey="yours" stroke={CHART_COLORS[0]} fill={CHART_COLORS[0]} fillOpacity={0.3} strokeWidth={2} />
-              <Radar name="Platform Avg" dataKey="platform" stroke={CHART_COLORS[5]} fill={CHART_COLORS[5]} fillOpacity={0.1} strokeWidth={1.5} strokeDasharray="4 2" />
-            </RadarChart>
-          </ResponsiveContainer>
+        {radarData.length > 0 ? (
+          <>
+            <ResponsiveContainer width="100%" height={280}>
+              <RadarChart data={radarData} margin={{ top: 10, right: 30, bottom: 10, left: 30 }}>
+                <PolarGrid stroke={CHART_AXIS_COLOR} opacity={0.3} />
+                <PolarAngleAxis dataKey="dim" tick={{ fill: CHART_AXIS_COLOR, fontSize: 11 }} />
+                <PolarRadiusAxis domain={[0, 1]} tick={{ fill: CHART_AXIS_COLOR, fontSize: 9 }} tickCount={4} />
+                <Tooltip contentStyle={CHART_TOOLTIP_STYLE} formatter={(v) => [fmtFixed(typeof v === "number" ? v : null, 2)]} />
+                <Legend wrapperStyle={{ fontSize: 11, color: CHART_AXIS_COLOR }} />
+                <Radar name="You" dataKey="yours" stroke={CHART_COLORS[0]} fill={CHART_COLORS[0]} fillOpacity={0.3} strokeWidth={2} />
+                {showPlatformRadar && (
+                  <Radar name="Platform Avg" dataKey="platform" stroke={CHART_COLORS[5]} fill={CHART_COLORS[5]} fillOpacity={0.1} strokeWidth={1.5} strokeDasharray="4 2" />
+                )}
+              </RadarChart>
+            </ResponsiveContainer>
+            {!showPlatformRadar && (
+              <p className="text-xs text-center text-muted-foreground">
+                Platform average: {NOT_ENOUGH_DATA.toLowerCase()}
+              </p>
+            )}
+          </>
         ) : (
           <div className="h-48 flex items-center justify-center text-sm text-muted-foreground">
             No eval dimension data available
@@ -272,15 +334,6 @@ export function SelfImprovementPage(): JSX.Element {
     queryKey: ["suggestions"],
     queryFn: () => selfImprovementApi.getSuggestions(),
     enabled: tab === "suggestions",
-  });
-
-  const applyMutation = useMutation({
-    mutationFn: (id: string) => selfImprovementApi.applySuggestion(id),
-    onSuccess: () => {
-      toast({ kind: "success", message: "Suggestion applied" });
-      qc.invalidateQueries({ queryKey: ["suggestions"] });
-    },
-    onError: (e) => toast({ kind: "error", message: `Failed: apply suggestion. ${String(e)}` }),
   });
 
   const rejectMutation = useMutation({
@@ -556,14 +609,17 @@ export function SelfImprovementPage(): JSX.Element {
                   <p className="text-xs text-muted-foreground">{relativeTime(s.created_at)}</p>
                 </div>
                 {s.status === "pending" && (
-                  <div className="flex gap-2 flex-shrink-0">
-                    <button
-                      onClick={() => applyMutation.mutate(s.id)}
-                      disabled={applyMutation.isPending}
-                      className="flex items-center gap-1 px-3 py-1.5 bg-green-600 text-foreground rounded-md text-xs hover:bg-green-700 disabled:opacity-50"
+                  <div className="flex flex-col items-end gap-2 flex-shrink-0 max-w-[220px]">
+                    {/* v1 suggestions cannot be applied: POST /intelligence/suggestions/{id}/apply
+                        is 410 Gone (it never changed any agent). Changes are applied from a
+                        concluded experiment's winner instead — say so rather than offer a
+                        button that can only fail. */}
+                    <p
+                      className="text-[11px] text-muted-foreground text-right"
+                      data-testid={`suggestion-apply-unsupported-${s.id}`}
                     >
-                      <CheckCircle2 className="h-3.5 w-3.5" /> Apply
-                    </button>
+                      {V1_APPLY_UNSUPPORTED}
+                    </p>
                     <button
                       onClick={() => rejectMutation.mutate(s.id)}
                       disabled={rejectMutation.isPending}

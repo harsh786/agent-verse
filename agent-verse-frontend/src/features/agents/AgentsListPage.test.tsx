@@ -410,6 +410,59 @@ test('create flow: shows the mutation error message on failure and keeps the mod
   expect(screen.getByPlaceholderText(/Create an agent that monitors/)).toBeInTheDocument();
 });
 
+test('create flow: a heuristic-draft 502 shows the draft; "Create anyway" resends with accept_heuristic', async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  let created = false;
+  const f = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/agents/create') && method === 'POST') {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      bodies.push(body);
+      if (!body.accept_heuristic) {
+        return new Response(JSON.stringify({
+          detail: 'The agent designer LLM did not return a usable config; no agent was created.',
+          generated_by: 'heuristic',
+          fallback_reason: 'llm_error',
+          draft_config: { name: 'Triage Bot', goal_template: 'Deploy a triage bot', connectors: [], trigger_type: 'manual', autonomy_mode: 'supervised' },
+        }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+      }
+      created = true;
+      return new Response(JSON.stringify({ agent: makeAgent({ agent_id: 'heur-1', name: 'Triage Bot' }) }), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (method === 'GET' && url.includes('/agents')) {
+      return new Response(JSON.stringify(created ? [makeAgent({ agent_id: 'heur-1', name: 'Triage Bot' })] : []), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    throw new Error(`Unhandled fetch: ${method} ${url}`);
+  });
+  const user = userEvent.setup();
+  renderPage();
+  await waitFor(() => expect(screen.getByText(/no agents/i)).toBeInTheDocument());
+
+  await user.click(screen.getByRole('button', { name: 'New Agent' }));
+  await user.type(screen.getByPlaceholderText(/Create an agent that monitors/), 'Deploy a triage bot');
+  await user.click(screen.getByRole('button', { name: 'Deploy Agent' }));
+
+  const panel = await screen.findByTestId('heuristic-draft-confirm');
+  expect(panel).toHaveTextContent('Triage Bot');
+  expect(panel).toHaveTextContent(/nothing was created/i);
+  // No generic error line and the modal stays open; the list is still empty.
+  expect(screen.queryByText(/ApiError/)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Deploy Agent' })).toBeDisabled();
+
+  await user.click(screen.getByRole('button', { name: 'Create anyway' }));
+  await waitFor(() => expect(screen.getByText('Triage Bot')).toBeInTheDocument());
+  expect(screen.queryByTestId('heuristic-draft-confirm')).not.toBeInTheDocument();
+  expect(bodies).toHaveLength(2);
+  expect(bodies[0].accept_heuristic).toBeUndefined();
+  expect(bodies[1].accept_heuristic).toBe(true);
+  expect(f).toHaveBeenCalled();
+});
+
 test('renders the Inactive status badge and falls back to the raw autonomy mode label/color', async () => {
   mockFetch({
     agents: [

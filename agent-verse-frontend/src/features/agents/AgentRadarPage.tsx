@@ -7,7 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 import { insightsApi, agentsApi } from "@/lib/api/client";
 import { ThemedRadarChart } from "@/components/charts";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { ArrowLeft, TrendingUp, TrendingDown } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { fmtRatioPct, isMetric, NOT_ENOUGH_DATA } from "@/lib/metrics";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -45,8 +46,10 @@ export function AgentRadarPage() {
     enabled: !!agentId,
   });
 
+  // Distinct key: ["benchmarks"] is the /intelligence/benchmarks payload (a
+  // different shape) used by the analytics pages — sharing it mixed the two.
   const { data: benchmarks } = useQuery({
-    queryKey: ["benchmarks"],
+    queryKey: ["insights-benchmarks"],
     queryFn: () => insightsApi.getBenchmarks(),
     staleTime: 600_000,
   });
@@ -63,9 +66,14 @@ export function AgentRadarPage() {
     ? Object.values(health.health).reduce((a, b) => a + b, 0) / Object.keys(health.health).length
     : 0;
 
-  const platformAvg = benchmarks?.platform_avg_success_rate ?? 0.74;
-  const successRate = health?.health.success_rate ?? 0;
-  const isAboveAvg = successRate > platformAvg;
+  // No invented platform average: the backend returns null until enough tenants
+  // contributed, and then there is nothing honest to compare against.
+  const rawPlatformAvg = benchmarks?.platform_avg_success_rate;
+  const platformAvg = isMetric(rawPlatformAvg) ? rawPlatformAvg : null;
+  const rawSuccessRate = health?.health.success_rate;
+  const successRate = isMetric(rawSuccessRate) ? rawSuccessRate : null;
+  const comparable = platformAvg !== null && successRate !== null && (health?.sample_size ?? 0) > 0;
+  const isAboveAvg = comparable && successRate > platformAvg;
 
   return (
     <JARVISPageShell>
@@ -96,7 +104,26 @@ export function AgentRadarPage() {
       </div>
 
       {/* Platform benchmark comparison */}
-      {health && benchmarks && (
+      {health && !comparable && (
+        <div
+          role="status"
+          data-testid="radar-benchmark-insufficient"
+          className="flex items-center gap-3 p-3 rounded-xl border border-border bg-muted/30 text-muted-foreground"
+        >
+          <Minus className="h-4 w-4 shrink-0" />
+          <div className="text-sm">
+            <span className="font-medium">Platform comparison: {NOT_ENOUGH_DATA.toLowerCase()}</span>
+            <span className="ml-2 opacity-70 text-xs">
+              Your success rate: {fmtRatioPct(successRate, 0)}
+              {platformAvg === null
+                ? " · Platform average appears once enough tenants have run goals"
+                : ` · Platform avg: ${fmtRatioPct(platformAvg, 0)}`}
+              {health.sample_size > 0 ? ` · Based on ${health.sample_size} runs` : " · No runs yet"}
+            </span>
+          </div>
+        </div>
+      )}
+      {health && comparable && (
         <div className={`flex items-center gap-3 p-3 rounded-xl border ${
           isAboveAvg
             ? "bg-green-50 dark:bg-green-950/30 border-green-200 dark:border-green-800 text-green-800 dark:text-green-300"
@@ -108,8 +135,8 @@ export function AgentRadarPage() {
               {isAboveAvg ? "Above" : "Below"} platform average
             </span>
             <span className="ml-2 opacity-70 text-xs">
-              Your success rate: {Math.round(successRate * 100)}% · Platform avg: {Math.round(platformAvg * 100)}%
-              {health.sample_size > 0 ? ` · Based on ${health.sample_size} runs` : " · Insufficient data"}
+              Your success rate: {fmtRatioPct(successRate, 0)} · Platform avg: {fmtRatioPct(platformAvg, 0)}
+              {` · Based on ${health.sample_size} runs`}
             </span>
           </div>
         </div>

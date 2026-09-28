@@ -194,17 +194,21 @@ describe('SelfImprovementPage', () => {
     }, { timeout: 3000 });
   });
 
-  test('pending suggestion shows apply and reject buttons', async () => {
+  test('pending v1 suggestion offers Reject but no Apply (v1 apply is 410 Gone)', async () => {
     const user = userEvent.setup();
-    mockFetch();
+    const spy = mockFetch();
     renderPage();
-    await waitFor(() =>
-      expect(screen.getByRole('tab', { name: 'suggestions' })).toBeInTheDocument()
+    await user.click(await screen.findByRole('tab', { name: 'suggestions' }));
+    await screen.findByText('Increase planning detail in system prompt');
+    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('suggestion-apply-unsupported-sug-1')).toHaveTextContent(
+      /Apply a concluded experiment's winner/i,
     );
-    await user.click(screen.getByRole('tab', { name: 'suggestions' }));
-    await waitFor(() => {
-      expect(screen.queryAllByText('Apply').length).toBeGreaterThan(0);
-    }, { timeout: 3000 });
+    // Nothing ever POSTs to the deprecated v1 apply endpoint.
+    expect(
+      spy.mock.calls.some(([u, i]) => String(u).includes('/suggestions/') && String(u).includes('/apply') && (i as RequestInit | undefined)?.method === 'POST'),
+    ).toBe(false);
   });
 
   test('concluded winner exposes an Apply-winner control that POSTs to the apply endpoint', async () => {
@@ -456,34 +460,6 @@ describe('SelfImprovementPage', () => {
     expect(screen.getByText('Swap search tool for a faster provider')).toBeInTheDocument();
   });
 
-  test('applying a pending suggestion posts to the apply endpoint and shows success toast', async () => {
-    const user = userEvent.setup();
-    const calls: string[] = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.includes('/suggestions/') && url.includes('/apply') && init?.method === 'POST') {
-        calls.push(url);
-        return new Response('null', { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-      if (url.includes('/intelligence/suggestions')) {
-        return new Response(JSON.stringify(MOCK_SUGGESTIONS), {
-          status: 200, headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    });
-    renderPage();
-    await user.click(await screen.findByRole('tab', { name: /suggestions/ }));
-    const applyBtn = await screen.findByRole('button', { name: 'Apply' });
-    await user.click(applyBtn);
-
-    await waitFor(() => expect(calls.some((u) => u.includes('/intelligence/suggestions/sug-1/apply'))).toBe(true));
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts;
-      expect(toasts.some((t) => t.kind === 'success' && t.message === 'Suggestion applied')).toBe(true);
-    });
-  });
-
   test('rejecting a pending suggestion posts to the reject endpoint and shows success toast', async () => {
     const user = userEvent.setup();
     const calls: string[] = [];
@@ -509,31 +485,6 @@ describe('SelfImprovementPage', () => {
     await waitFor(() => {
       const toasts = useToastStore.getState().toasts;
       expect(toasts.some((t) => t.kind === 'success' && t.message === 'Suggestion rejected')).toBe(true);
-    });
-  });
-
-  test('apply-suggestion failure shows an error toast', async () => {
-    const user = userEvent.setup();
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      if (url.includes('/suggestions/') && url.includes('/apply') && init?.method === 'POST') {
-        return new Response('boom', { status: 500 });
-      }
-      if (url.includes('/intelligence/suggestions')) {
-        return new Response(JSON.stringify(MOCK_SUGGESTIONS), {
-          status: 200, headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    });
-    renderPage();
-    await user.click(await screen.findByRole('tab', { name: /suggestions/ }));
-    const applyBtn = await screen.findByRole('button', { name: 'Apply' });
-    await user.click(applyBtn);
-
-    await waitFor(() => {
-      const toasts = useToastStore.getState().toasts;
-      expect(toasts.some((t) => t.kind === 'error' && t.message.includes('Failed: apply suggestion'))).toBe(true);
     });
   });
 
@@ -661,5 +612,91 @@ describe('SelfImprovementPage', () => {
     await user.click(await screen.findByRole('tab', { name: 'benchmarks' }));
     await waitFor(() => expect(screen.getByText('Middle of the pack')).toBeInTheDocument());
     expect(screen.queryByText('No eval dimension data available')).not.toBeInTheDocument();
+  });
+  test('benchmarks tab renders "Not enough data yet" and dashes when every metric is null', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/intelligence/benchmarks')) {
+        return new Response(JSON.stringify({
+          platform_avg_success_rate: null, platform_avg_cost_usd: null,
+          platform_avg_eval_score: null, your_success_rate: null,
+          your_cost_usd: null, your_eval_score: null,
+          percentile_success: null, percentile_cost: null,
+          comparison_label: 'insufficient_data',
+          your_sample_count: 0,
+          data_source: 'insufficient_data',
+          dimensions: { your: {}, platform: {} },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await user.click(await screen.findByRole('tab', { name: 'benchmarks' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('benchmark-comparison-label')).toHaveTextContent('Not enough data yet'),
+    );
+    expect(screen.getByTestId('benchmark-insufficient-data')).toBeInTheDocument();
+    // The raw backend label is never shown as a ranking.
+    expect(screen.queryByText('insufficient_data')).not.toBeInTheDocument();
+    // No invented numbers: every metric renders as a dash.
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(3);
+    expect(screen.queryByText(/0\.0%|\$0\.0000/)).not.toBeInTheDocument();
+    expect(screen.getAllByText('no platform average yet').length).toBe(3);
+    expect(screen.getByText('No eval dimension data available')).toBeInTheDocument();
+  });
+
+  test('benchmarks tab shows your real numbers but no comparison when platform averages are null', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/intelligence/benchmarks')) {
+        return new Response(JSON.stringify({
+          platform_avg_success_rate: null, platform_avg_cost_usd: null,
+          platform_avg_eval_score: null, your_success_rate: 0.8,
+          your_cost_usd: 0.0123, your_eval_score: 0.9,
+          percentile_success: null, percentile_cost: null,
+          comparison_label: 'insufficient_data',
+          data_source: 'insufficient_data',
+          dimensions: { your: { task_completion: 0.9, accuracy: 0.7 }, platform: {} },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await user.click(await screen.findByRole('tab', { name: 'benchmarks' }));
+    expect(await screen.findByText('80.0%')).toBeInTheDocument();
+    expect(screen.getByText('$0.0123')).toBeInTheDocument();
+    expect(screen.getByText('0.90')).toBeInTheDocument();
+    expect(screen.queryByText(/avg$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^pct /)).not.toBeInTheDocument();
+    // Radar still drawn for your dimensions; platform series explicitly absent.
+    expect(screen.queryByText('No eval dimension data available')).not.toBeInTheDocument();
+    expect(screen.getByText(/Platform average: not enough data yet/i)).toBeInTheDocument();
+  });
+
+  test('benchmarks tab tolerates a payload with no dimensions object at all', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/intelligence/benchmarks')) {
+        return new Response(JSON.stringify({
+          platform_avg_success_rate: 0.7, platform_avg_cost_usd: null,
+          platform_avg_eval_score: 0.6, your_success_rate: 0.8,
+          your_cost_usd: 0.01, your_eval_score: null,
+          percentile_success: 25, percentile_cost: null,
+          comparison_label: 'Top 25%',
+          data_source: 'live_platform_data',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await user.click(await screen.findByRole('tab', { name: 'benchmarks' }));
+    expect(await screen.findByText('Top 25%')).toBeInTheDocument();
+    expect(screen.getByText('vs 70.0% avg')).toBeInTheDocument();
+    expect(screen.getByText('pct 25')).toBeInTheDocument();
+    expect(screen.getByText('platform avg 0.60')).toBeInTheDocument();
+    expect(screen.queryByTestId('benchmark-insufficient-data')).not.toBeInTheDocument();
   });
 });

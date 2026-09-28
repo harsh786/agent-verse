@@ -4,7 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { Search, ChevronUp, ChevronDown, ArrowUpDown, Bot, Plus } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
-import { agentsApi } from '@/lib/api/client';
+import { agentsApi, heuristicDraftFromError, type HeuristicAgentDraft } from '@/lib/api/client';
+import { HeuristicDraftConfirm } from './HeuristicDraftConfirm';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Pagination } from '@/components/ui/Pagination';
@@ -66,6 +67,10 @@ export function AgentsListPage() {
   const qc = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [nlCommand, setNlCommand] = useState('');
+  // 502 from /agents/create = designer LLM failed, nothing created, heuristic
+  // draft returned. Show it and require an explicit "Create anyway".
+  const [heuristicDraft, setHeuristicDraft] = useState<HeuristicAgentDraft | null>(null);
+
 
   // Escape closes the create dialog. A modal that traps the user until they
   // locate the Cancel button is a standard accessibility failure; the e2e suite
@@ -76,6 +81,7 @@ export function AgentsListPage() {
       if (e.key === 'Escape') {
         setShowCreate(false);
         setNlCommand('');
+        setHeuristicDraft(null);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -126,13 +132,23 @@ export function AgentsListPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: () => agentsApi.createNl(nlCommand, false),
+    mutationFn: (acceptHeuristic: boolean) =>
+      agentsApi.createNl(nlCommand, false, { acceptHeuristic }),
+    onMutate: () => setHeuristicDraft(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents'] });
       setShowCreate(false);
       setNlCommand('');
     },
+    onError: (e) => setHeuristicDraft(heuristicDraftFromError(e)),
   });
+
+  const closeCreate = () => {
+    setShowCreate(false);
+    setNlCommand('');
+    setHeuristicDraft(null);
+    createMutation.reset();
+  };
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => agentsApi.delete(id),
@@ -242,30 +258,44 @@ export function AgentsListPage() {
               </div>
               <textarea
                 value={nlCommand}
-                onChange={(e) => setNlCommand(e.target.value)}
+                onChange={(e) => {
+                  setNlCommand(e.target.value);
+                  setHeuristicDraft(null);
+                }}
                 placeholder="e.g. 'Create an agent that monitors GitHub issues labeled bug and creates JIRA tickets automatically'"
                 rows={4}
                 className="w-full border border-input rounded-lg p-3 text-sm resize-none focus:ring-2 focus:ring-primary focus:border-primary outline-none bg-background text-foreground placeholder:text-muted-foreground transition-colors"
                 autoFocus
               />
-              {createMutation.isError && (
-                <p role="alert" className="text-xs text-mission-red mt-2">
-                  {String(createMutation.error)}
-                </p>
+              {heuristicDraft ? (
+                <div className="mt-3">
+                  <HeuristicDraftConfirm
+                    draft={heuristicDraft}
+                    isPending={createMutation.isPending}
+                    onConfirm={() => createMutation.mutate(true)}
+                    onCancel={() => {
+                      setHeuristicDraft(null);
+                      createMutation.reset();
+                    }}
+                  />
+                </div>
+              ) : (
+                createMutation.isError && (
+                  <p role="alert" className="text-xs text-mission-red mt-2">
+                    {String(createMutation.error)}
+                  </p>
+                )
               )}
               <div className="flex gap-3 mt-4 justify-end">
                 <button
-                  onClick={() => {
-                    setShowCreate(false);
-                    setNlCommand('');
-                  }}
+                  onClick={closeCreate}
                   className="px-4 py-2 border border-border rounded-lg text-sm text-muted-foreground hover:text-foreground hover:border-primary/40 transition-colors"
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={() => createMutation.mutate()}
-                  disabled={!nlCommand.trim() || createMutation.isPending}
+                  onClick={() => createMutation.mutate(false)}
+                  disabled={!nlCommand.trim() || createMutation.isPending || !!heuristicDraft}
                   className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm hover:bg-primary/90 disabled:opacity-50 transition-opacity "
                 >
                   {createMutation.isPending ? 'Deploying…' : 'Deploy Agent'}

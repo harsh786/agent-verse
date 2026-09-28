@@ -39,7 +39,11 @@ export default function OAuthCallbackPage() {
           window.location.origin,
         );
         setStatus('done');
-        setMessage('Authorization successful! You can close this window.');
+        // Only the code was received — the token exchange happens in the
+        // original window, which reports whether the connector really connected.
+        setMessage(
+          'Authorization received. The original window is finishing the connection — you can close this window.',
+        );
       } else {
         window.opener.postMessage(
           { type: 'oauth_callback', error: 'Missing code or state parameter' },
@@ -79,7 +83,7 @@ export default function OAuthCallbackPage() {
           <>
             <CheckCircle className="h-12 w-12 text-green-500 mx-auto" />
             <h2 className="text-lg font-semibold text-green-700 dark:text-green-400">
-              Connected!
+              Authorization received
             </h2>
             <p className="text-sm text-muted-foreground">{message}</p>
           </>

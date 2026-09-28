@@ -4,13 +4,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import {
   Eye, EyeOff, RefreshCw, Trash2, Copy, Check,
-  User, Cpu, KeyRound, Shield, Bell, Palette, AlertTriangle,
+  User, Cpu, KeyRound, Shield, Bell, Palette, AlertTriangle, AlertCircle,
   Sun, Moon, Monitor, CheckCircle, Loader2, Download, CreditCard,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
 import { toast } from '@/stores/toast';
-import { apiFetch as apiClient, tenantsApi } from '@/lib/api/client';
+import { apiFetch as apiClient, ApiError, tenantsApi } from '@/lib/api/client';
 import { MFASettings } from './MFASettings';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -528,21 +528,45 @@ function SecurityTab() {
   const { apiKey } = useAuthStore();
   const qc = useQueryClient();
 
-  const { data: sessions = [] } = useQuery({
+  // The backend does not record login sessions yet: GET/DELETE
+  // /tenants/me/sessions answer 501. That used to be swallowed into `[]`, which
+  // read as a verified "no other sessions" — surface it instead, and never offer
+  // a Revoke control that cannot end a session.
+  const sessionsQuery = useQuery({
     queryKey: ['tenant-sessions'],
-    queryFn: () => apiClient<{ session_id?: string; id?: string; device?: string; last_seen?: string }[]>('/tenants/me/sessions').catch(() => []),
+    queryFn: () =>
+      apiClient<{ session_id?: string; id?: string; device?: string; last_seen?: string }[]>(
+        '/tenants/me/sessions',
+        {},
+        { silenceServerErrorToast: true },
+      ),
     staleTime: 60_000,
+    retry: false,
     enabled: !!apiKey,
   });
+  const sessions = Array.isArray(sessionsQuery.data) ? sessionsQuery.data : [];
+  const sessionsUnsupported =
+    sessionsQuery.error instanceof ApiError && sessionsQuery.error.status === 501;
+  const sessionsUnsupportedReason =
+    sessionsUnsupported && typeof sessionsQuery.error?.message === 'string'
+      ? sessionsQuery.error.message
+      : '';
 
   const revokeSessionMutation = useMutation({
     mutationFn: (sessionId: string) =>
-      apiClient(`/tenants/me/sessions/${sessionId}`, { method: 'DELETE' }),
+      apiClient(`/tenants/me/sessions/${sessionId}`, { method: 'DELETE' }, { silenceServerErrorToast: true }),
     onSuccess: () => {
       toast({ kind: 'success', message: 'Session revoked' });
       qc.invalidateQueries({ queryKey: ['tenant-sessions'] });
     },
-    onError: () => toast({ kind: 'error', message: 'Failed to revoke session' }),
+    onError: (e) => {
+      if (e instanceof ApiError && e.status === 501) {
+        toast({ kind: 'error', message: 'Session management is not available — the session was not revoked.' });
+        qc.invalidateQueries({ queryKey: ['tenant-sessions'] });
+        return;
+      }
+      toast({ kind: 'error', message: `Failed to revoke session${e instanceof Error && e.message ? `: ${e.message}` : ''}` });
+    },
   });
 
   return (
@@ -568,7 +592,34 @@ function SecurityTab() {
               This device
             </span>
           </div>
-          {sessions.slice(0, 5).map((s, i) => (
+          {sessionsUnsupported && (
+            <div
+              role="status"
+              data-testid="sessions-unavailable"
+              className="flex items-start gap-3 p-4 border border-border rounded-xl bg-muted/30"
+            >
+              <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" aria-hidden="true" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">Session management is not available</p>
+                <p className="text-xs text-muted-foreground">
+                  {sessionsUnsupportedReason ||
+                    'Sign-in sessions are not tracked by this server, so they cannot be listed or revoked here.'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  To cut off access, rotate or delete API keys in the API Keys tab.
+                </p>
+              </div>
+            </div>
+          )}
+          {sessionsQuery.isError && !sessionsUnsupported && (
+            <p role="alert" className="text-xs text-destructive px-1">
+              Couldn&apos;t load other sessions
+              {sessionsQuery.error instanceof Error && sessionsQuery.error.message
+                ? `: ${sessionsQuery.error.message}`
+                : '.'}
+            </p>
+          )}
+          {!sessionsUnsupported && sessions.slice(0, 5).map((s, i) => (
             <div key={i} className="flex items-center justify-between p-4 border border-border rounded-xl">
               <div>
                 <p className="text-sm font-medium">{s.device ?? 'Unknown device'}</p>
@@ -576,7 +627,7 @@ function SecurityTab() {
               </div>
               <button
                 onClick={() => revokeSessionMutation.mutate(s.session_id ?? s.id ?? '')}
-                disabled={revokeSessionMutation.isPending}
+                disabled={revokeSessionMutation.isPending || !(s.session_id ?? s.id)}
                 className="text-xs text-destructive hover:underline disabled:opacity-50"
               >
                 Revoke

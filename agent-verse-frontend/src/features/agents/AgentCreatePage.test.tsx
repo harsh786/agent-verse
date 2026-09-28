@@ -101,6 +101,131 @@ describe('AgentCreatePage', () => {
     }, { timeout: 3000 });
   });
 
+  test('NL mode: navigates to the created agent from the {agent: {...}} response shape', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ agent: MOCK_CREATED_AGENT, meta_agent_config: { generated_by: 'llm' } }), {
+        status: 201, headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    renderPage();
+    await user.type(screen.getByRole('textbox'), 'Create an agent that triages bugs');
+    await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/agents/agent-new-1'));
+  });
+
+  describe('heuristic draft (designer LLM failed → 502)', () => {
+    const HEURISTIC_502 = {
+      detail:
+        'The agent designer LLM did not return a usable config; no agent was created. Retry, or resend with accept_heuristic=true to create the heuristic draft.',
+      error_code: 'meta_agent_llm_unavailable',
+      generated_by: 'heuristic',
+      fallback_reason: 'timeout',
+      draft_config: {
+        name: 'Bug Triage Agent',
+        goal_template: 'Create an agent that triages bugs',
+        connectors: ['github'],
+        trigger_type: 'manual',
+        autonomy_mode: 'supervised',
+      },
+    };
+
+    function mockCreate(second: () => Response) {
+      const bodies: Array<Record<string, unknown>> = [];
+      const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        if (String(input).includes('/agents/create')) {
+          const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+          bodies.push(body);
+          if (!body.accept_heuristic) {
+            return new Response(JSON.stringify(HEURISTIC_502), {
+              status: 502, headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return second();
+        }
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      return { spy, bodies };
+    }
+
+    test('shows the draft and does NOT navigate or claim success', async () => {
+      const user = userEvent.setup();
+      const { bodies } = mockCreate(() => new Response('{}', { status: 500 }));
+      renderPage();
+      await user.type(screen.getByRole('textbox'), 'Create an agent that triages bugs');
+      await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+
+      const panel = await screen.findByTestId('heuristic-draft-confirm');
+      expect(panel).toHaveTextContent(/nothing was created/i);
+      expect(panel).toHaveTextContent('Bug Triage Agent');
+      expect(panel).toHaveTextContent('github');
+      expect(panel).toHaveTextContent('supervised');
+      expect(panel).toHaveTextContent('Reason: timeout');
+      expect(screen.getByRole('button', { name: 'Create anyway' })).toBeInTheDocument();
+      // The primary button is locked while a draft awaits a decision.
+      expect(screen.getByRole('button', { name: 'Create Agent' })).toBeDisabled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]).toEqual({ command: 'Create an agent that triages bugs', autorun: false });
+    });
+
+    test('"Create anyway" resends with accept_heuristic: true and then navigates', async () => {
+      const user = userEvent.setup();
+      const { bodies } = mockCreate(() =>
+        new Response(JSON.stringify({ agent: { ...MOCK_CREATED_AGENT, agent_id: 'agent-heur-1' } }), {
+          status: 201, headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      renderPage();
+      await user.type(screen.getByRole('textbox'), 'Create an agent that triages bugs');
+      await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+      await user.click(await screen.findByRole('button', { name: 'Create anyway' }));
+
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/agents/agent-heur-1'));
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toMatchObject({ command: 'Create an agent that triages bugs', accept_heuristic: true });
+    });
+
+    test('"Discard draft" dismisses it without creating anything', async () => {
+      const user = userEvent.setup();
+      const { bodies } = mockCreate(() => new Response('{}', { status: 500 }));
+      renderPage();
+      await user.type(screen.getByRole('textbox'), 'Create an agent that triages bugs');
+      await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+      await user.click(await screen.findByRole('button', { name: 'Discard draft' }));
+
+      expect(screen.queryByTestId('heuristic-draft-confirm')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Create Agent' })).toBeEnabled();
+      expect(bodies).toHaveLength(1);
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    test('editing the description drops a stale draft', async () => {
+      const user = userEvent.setup();
+      mockCreate(() => new Response('{}', { status: 500 }));
+      renderPage();
+      await user.type(screen.getByRole('textbox'), 'Create an agent that triages bugs');
+      await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+      await screen.findByTestId('heuristic-draft-confirm');
+      await user.type(screen.getByRole('textbox'), ' daily');
+      expect(screen.queryByTestId('heuristic-draft-confirm')).not.toBeInTheDocument();
+    });
+
+    test('a plain 502 without a heuristic draft is shown as an ordinary error', async () => {
+      const user = userEvent.setup();
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+        new Response(JSON.stringify({ detail: 'Bad gateway upstream' }), {
+          status: 502, headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      renderPage();
+      await user.type(screen.getByRole('textbox'), 'x');
+      await user.click(screen.getByRole('button', { name: 'Create Agent' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent('Bad gateway upstream');
+      expect(screen.queryByTestId('heuristic-draft-confirm')).not.toBeInTheDocument();
+    });
+  });
+
   test('shows error message when agent creation fails', async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(

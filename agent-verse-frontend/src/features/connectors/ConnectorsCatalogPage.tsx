@@ -59,14 +59,19 @@ const CONNECTOR_EMOJIS: Record<string, string> = {
   google_sheets: '📋', miro: '🎨', teams: '🟦', circleci: '🔄', pagerduty: '🚨',
 };
 
+const OAUTH_AUTH_TYPES = new Set(['oauth_ac', 'pkce']);
+
 function ConnectorCard({
   entry,
   onConfigure,
   onOAuthSuccess,
+  oauthServerId,
 }: {
   entry: CatalogEntry;
   onConfigure: (entry: CatalogEntry) => void;
   onOAuthSuccess?: () => void;
+  /** This tenant's registered OAuth connector for this entry, if any. */
+  oauthServerId?: string;
 }) {
   const emoji = CONNECTOR_EMOJIS[entry.name] ?? '🔌';
   const categoryColor = CATEGORY_COLORS[entry.category] ?? CATEGORY_COLORS.other;
@@ -148,10 +153,11 @@ function ConnectorCard({
 
       <div className="mt-auto border-t p-3 flex flex-col gap-2">
         {/* OAuth connectors get a dedicated popup-flow button */}
-        {(entry.auth_type === 'oauth_ac' || entry.auth_type === 'pkce') && (
+        {OAUTH_AUTH_TYPES.has(entry.auth_type) && (
           <OAuthPopupButton
             connectorName={entry.name}
             displayName={entry.display_name}
+            serverId={oauthServerId}
             onSuccess={onOAuthSuccess}
           />
         )}
@@ -186,6 +192,24 @@ export function ConnectorsCatalogPage() {
     enabled: !!apiKey,
     staleTime: 60_000,
   });
+
+  // The real (PKCE) OAuth flow runs against a REGISTERED connector, so map each
+  // catalog name to this tenant's registered OAuth connector's server_id.
+  const { data: installed = [] } = useQuery({
+    queryKey: ['connectors'],
+    queryFn: () => connectorsApi.list(),
+    enabled: !!apiKey,
+    staleTime: 30_000,
+  });
+  const oauthServerIds = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of Array.isArray(installed) ? installed : []) {
+      if (c?.server_id && c.name && OAUTH_AUTH_TYPES.has(c.auth_type ?? '')) {
+        m.set(c.name.toLowerCase(), c.server_id);
+      }
+    }
+    return m;
+  }, [installed]);
 
   const categories = useMemo(() => {
     const cats = new Set(catalog.map((e) => e.category).filter(Boolean));
@@ -384,6 +408,7 @@ export function ConnectorsCatalogPage() {
               key={entry.name}
               entry={entry}
               onConfigure={handleConfigure}
+              oauthServerId={oauthServerIds.get(entry.name.toLowerCase())}
               onOAuthSuccess={() => {
                 qc.invalidateQueries({ queryKey: ['connectors-catalog'] });
                 qc.invalidateQueries({ queryKey: ['connectors'] });

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
 import { useThemeStore } from '@/stores/theme';
+import { useToastStore } from '@/stores/toast';
 import { SettingsPage } from './SettingsPage';
 
 // Mock clipboard API – not available in jsdom
@@ -553,12 +554,21 @@ describe('SettingsPage – Security tab', () => {
     vi.restoreAllMocks();
   });
 
+  const SESSIONS_501 = {
+    detail:
+      'Login session tracking is not implemented: sessions are not recorded and cannot be listed or revoked. Revoke API keys via /tenants/me/keys, or end the SSO session at the identity provider.',
+  };
+
   function mockSecurityFetch({
     sessions,
     mfaEnabled = false,
+    sessionsStatus = 200,
+    revokeStatus = 204,
   }: {
     sessions?: object[];
     mfaEnabled?: boolean;
+    sessionsStatus?: number;
+    revokeStatus?: number;
   } = {}) {
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -570,13 +580,17 @@ describe('SettingsPage – Security tab', () => {
         );
       }
       if (url.endsWith('/tenants/me/sessions') && method === 'GET') {
-        return new Response(JSON.stringify(sessions ?? []), {
-          status: 200,
+        return new Response(JSON.stringify(sessionsStatus === 200 ? sessions ?? [] : SESSIONS_501), {
+          status: sessionsStatus,
           headers: { 'Content-Type': 'application/json' },
         });
       }
       if (/\/tenants\/me\/sessions\/.+/.test(url) && method === 'DELETE') {
-        return new Response(null, { status: 204 });
+        if (revokeStatus === 204) return new Response(null, { status: 204 });
+        return new Response(JSON.stringify(SESSIONS_501), {
+          status: revokeStatus,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
       if (url.endsWith('/tenants/me/llm')) {
         return new Response(JSON.stringify({ provider: 'openai', model: 'gpt-4o' }), {
@@ -619,6 +633,43 @@ describe('SettingsPage – Security tab', () => {
         expect.objectContaining({ method: 'DELETE' })
       )
     );
+  });
+
+  test('a 501 from the sessions endpoint shows "Session management is not available" and no Revoke', async () => {
+    useToastStore.setState({ toasts: [] });
+    mockSecurityFetch({ sessionsStatus: 501 });
+    renderSettingsPage('security');
+    const notice = await screen.findByTestId('sessions-unavailable');
+    expect(notice).toHaveTextContent('Session management is not available');
+    // The backend's reason is shown verbatim.
+    expect(notice).toHaveTextContent(/sessions are not recorded/i);
+    expect(screen.queryByRole('button', { name: /revoke/i })).not.toBeInTheDocument();
+    // An expected 501 is not reported as a generic "Server error" toast.
+    expect(useToastStore.getState().toasts.some((t) => /Server error/.test(t.message))).toBe(false);
+    // The current-device row is still shown.
+    expect(screen.getByText('Current session')).toBeInTheDocument();
+  });
+
+  test('a 501 when revoking is an error, never a "Session revoked" success', async () => {
+    useToastStore.setState({ toasts: [] });
+    mockSecurityFetch({
+      sessions: [{ session_id: 'sess-2', device: 'iPhone 15', last_seen: '2 hours ago' }],
+      revokeStatus: 501,
+    });
+    renderSettingsPage('security');
+    await userEvent.click(await screen.findByRole('button', { name: /revoke/i }));
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts;
+      expect(toasts.some((t) => t.kind === 'error' && /not available/i.test(t.message))).toBe(true);
+    });
+    expect(useToastStore.getState().toasts.some((t) => t.message === 'Session revoked')).toBe(false);
+  });
+
+  test('a non-501 sessions failure is reported as a load error, not as "no other sessions"', async () => {
+    mockSecurityFetch({ sessionsStatus: 403 });
+    renderSettingsPage('security');
+    expect(await screen.findByText(/Couldn.t load other sessions/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('sessions-unavailable')).not.toBeInTheDocument();
   });
 });
 
