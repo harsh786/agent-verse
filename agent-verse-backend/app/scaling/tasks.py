@@ -1872,12 +1872,49 @@ def run_goal(
             except Exception as _mr_exc:  # pragma: no cover - defensive
                 logger.warning("model_registry_store_wire_failed: %s", _mr_exc)
 
+            # Governance parity with the in-process path (goal_service): Grantex
+            # tool-grant enforcement and the tenant's compliance autonomy ceiling.
+            # This path — which runs every QUEUED (production) goal — built the
+            # graph without either, so grants were never enforced and a HIPAA/SOX
+            # "supervised" ceiling never bound a worker goal.
+            _worker_grant_store: Any = None
+            _worker_enforce_grants = False
+            try:
+                from app.services.goal_service import (
+                    _agent_grants_enforced,
+                    clamp_autonomy_mode,
+                )
+
+                _worker_enforce_grants = _agent_grants_enforced()
+                if db_factory is not None:
+                    from app.governance.compliance_bundles import (
+                        PostgresComplianceBundleStore,
+                        effective_max_autonomy_for,
+                    )
+                    from app.governance.grants.postgres_store import PostgresGrantStore
+
+                    _worker_grant_store = PostgresGrantStore(db_factory)
+                    _ceiling = _run_async(
+                        effective_max_autonomy_for(
+                            PostgresComplianceBundleStore(db_factory), tenant_id
+                        )
+                    )
+                    _agent_autonomy_mode = clamp_autonomy_mode(
+                        _agent_autonomy_mode, str(_ceiling or "fully-autonomous")
+                    )
+            except Exception as _gov_exc:
+                # Fail toward the restrictive side: no store under enforcement
+                # means tool calls are denied (enforce_tool_call has no grants).
+                logger.warning("worker_governance_wire_failed: %s", _gov_exc)
+
             _agent_runner = AgentGraph(
                 planner=provider,
                 executor=provider,
                 verifier=_verifier_for_graph,
                 model_router=_model_router,
                 autonomy_mode=_agent_autonomy_mode,
+                grant_store=_worker_grant_store,
+                enforce_grants=_worker_enforce_grants,
                 capability_tracker=_capability_tracker,
                 max_iterations=_agent_max_iterations if _agent_max_iterations is not None else 100,
                 result_processor=ResultProcessor(),
@@ -1908,6 +1945,8 @@ def run_goal(
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
             _agent_runner._agent_collection_ids = list(_agent_collection_ids)
+            # Grants are keyed by agent id.
+            _agent_runner._agent_id = agent_id
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:
@@ -4008,8 +4047,10 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         import json as _json_alert
 
                         alert_data: dict[str, Any] = {}
+                        # Tenant-scoped (matches POST /webhooks/alerts/{type}).
                         alert_cache_key = (
-                            f"alert_payload:{trigger_type}:{sched.get('schedule_id', key)}"
+                            f"alert_payload:{sched.get('tenant_id') or ''}:{trigger_type}:"
+                            f"{sched.get('schedule_id', key)}"
                         )
                         if r is not None:
                             try:

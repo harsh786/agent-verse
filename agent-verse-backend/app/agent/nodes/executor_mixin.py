@@ -199,7 +199,21 @@ class ExecutorMixin:
                     # Sub-agents don't recurse into goal trees
                     enable_goal_tree=False,
                     autonomy_mode=self._autonomy_mode,
+                    # Grant enforcement, model routing, cost and concurrency
+                    # limits are inherited too. They were omitted, so a plan
+                    # large enough to fan out to sub-agents escaped grant
+                    # enforcement (sub-agents ran tools with no grant check) and
+                    # the tenant's bulkhead/cost tracking.
+                    grant_store=getattr(self, "_grant_store", None),
+                    enforce_grants=bool(getattr(self, "_enforce_grants", False)),
+                    model_router=getattr(self, "_model_router", None),
+                    bulkhead_registry=getattr(self, "_bulkhead_registry", None),
+                    cost_tracker=getattr(self, "_cost_tracker", None),
+                    semantic_cache=getattr(self, "_semantic_cache", None),
                 )
+                # Grants are keyed by agent: a sub-agent acts as its parent agent.
+                graph._agent_id = getattr(self, "_agent_id", None)
+                graph._db_session_factory = getattr(self, "_db_session_factory", None)
                 graph._agent_collection_ids = list(self._agent_collection_ids)
                 graph._event_callback = self._event_callback
                 graph._parent_trace_context = otel_context.get_current()

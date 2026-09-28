@@ -321,10 +321,16 @@ async def receive_alert_webhook(
     Stores the JSON payload in Redis under ``alert_payload:{type}:{schedule_id}``
     with a 5-minute TTL so ``fire_due_schedules`` picks it up on the next tick.
     """
-    _require_tenant(request)
+    tenant_ctx = _require_tenant(request)
     valid_types = ("alertmanager", "datadog", "pagerduty")
     if trigger_type not in valid_types:
         raise HTTPException(400, f"Unknown trigger type. Must be one of: {valid_types}")
+    # The schedule must be the caller's, and the cache key is tenant-scoped: any
+    # tenant used to be able to inject alert context into another tenant's
+    # alert-triggered goal by naming its schedule_id.
+    store = getattr(request.app.state, "schedule_store", None)
+    if store is None or not store.get(schedule_id, tenant_ctx=tenant_ctx):
+        raise HTTPException(404, "Schedule not found")
 
     pools = getattr(request.app.state, "pools", None)
     redis = getattr(pools, "redis", None) if pools else None
@@ -335,7 +341,7 @@ async def receive_alert_webhook(
         payload = await request.json()
         if not isinstance(payload, dict):
             payload = {"data": payload}
-        cache_key = f"alert_payload:{trigger_type}:{schedule_id}"
+        cache_key = f"alert_payload:{tenant_ctx.tenant_id}:{trigger_type}:{schedule_id}"
         await redis.set(cache_key, _json.dumps(payload), ex=300)
         return {"status": "queued", "trigger_type": trigger_type, "schedule_id": schedule_id}
     except Exception as exc:

@@ -37,7 +37,12 @@ async def check_grant(
     """
     _now = now or datetime.now(UTC)
     if store is None:
-        # No grant subsystem wired → do not block (governance is additive).
+        # Enforcement ON but no grant store wired: fail CLOSED. It used to allow
+        # every call here, so enforcement silently disappeared whenever the
+        # store failed to wire (e.g. a worker without its DB). With enforcement
+        # off (require_grant=False) governance stays additive.
+        if require_grant:
+            return GrantDecision(False, "grant_store_unavailable")
         return GrantDecision(True, "grants_not_configured")
 
     grants = await store.list_for_agent(tenant_id, agent_id)

@@ -89,6 +89,11 @@ async def test_enforcer_revocation_takes_effect() -> None:
     assert d.allowed is False and d.reason == "all_grants_expired_or_revoked"
 
 
-async def test_enforcer_noops_without_store() -> None:
+async def test_enforcer_without_store_fails_closed_only_when_required() -> None:
+    """Regression: with enforcement ON a missing store allowed every call."""
     d = await check_grant(None, tenant_id="t1", agent_id="a", tool_name="x", now=_NOW)
-    assert d.allowed is True and d.reason == "grants_not_configured"
+    assert d.allowed is False and d.reason == "grant_store_unavailable"
+    d2 = await check_grant(
+        None, tenant_id="t1", agent_id="a", tool_name="x", now=_NOW, require_grant=False
+    )
+    assert d2.allowed is True and d2.reason == "grants_not_configured"
