@@ -20,6 +20,25 @@ _AUTHORIZATION_HEADER_PATTERN = re.compile(
     r"(?i)\b(authorization\s*[:=]?\s*(?:basic|bearer)\s+)[^\s,;}'\"]+"
 )
 _BASIC_TOKEN_PATTERN = re.compile(r"(?i)\b(basic\s+)[A-Za-z0-9+/]{8,}={0,2}")
+# Bare secrets that carry no "key=" / "Authorization:" prefix (a token pasted into
+# a step output or error message). Only the key=value / header forms were
+# redacted, so these reached SSE events and the persisted event log verbatim.
+BARE_SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # PEM private-key blocks
+    re.compile(
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+    ),
+    # OpenAI / Anthropic style keys (sk-..., sk-proj-..., sk-ant-...)
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}"),
+    # GitHub tokens
+    re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{22,})"),
+    # AWS access key ids
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
+    # Slack tokens
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    # JSON Web Tokens
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+)
 _SIMPLE_EVENT_VALUE_TYPES = (str, int, float, bool)
 
 
@@ -32,7 +51,10 @@ def redact_sensitive_text(value: object) -> str:
     text = "" if value is None else str(value)
     text = _SENSITIVE_KV_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
     text = _AUTHORIZATION_HEADER_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
-    return _BASIC_TOKEN_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    text = _BASIC_TOKEN_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", text)
+    for pattern in BARE_SECRET_PATTERNS:
+        text = pattern.sub("[REDACTED]", text)
+    return text
 
 
 def sanitize_tool_raw_output(
@@ -75,7 +97,8 @@ def sanitize_event_value(value: Any, *, result_processor: ResultProcessor | None
             else key: sanitize_event_value(nested_value, result_processor=result_processor)
             for key, nested_value in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, list | tuple | set | frozenset):
+        # Tuples/sets used to be returned unsanitized (only lists were walked).
         return [sanitize_event_value(item, result_processor=result_processor) for item in value]
     return value
 

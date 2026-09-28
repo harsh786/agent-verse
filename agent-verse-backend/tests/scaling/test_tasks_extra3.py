@@ -38,20 +38,24 @@ class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self, monkeypatch):
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.delenv("REDIS_URL", raising=False)
-        assert _get_llm_provider("t1") is None
+        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+            assert _get_llm_provider("t1") is None
 
-    def test_returns_none_when_redis_raises(self, monkeypatch):
+    def test_redis_raises_and_no_durable_store_fails_closed(self, monkeypatch):
+        """Cache down and nothing durable to confirm "no BYOK": fail, don't guess."""
+        from app.providers.tenant_provider import TenantProviderError
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:9999/0")
-        with patch("redis.from_url", side_effect=Exception("no redis")):
-            assert _get_llm_provider("t1") is None
+        with patch("redis.from_url", side_effect=Exception("no redis")), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None), \
+             pytest.raises(TenantProviderError):
+            _get_llm_provider("t1")
 
     def test_returns_none_when_no_config_key(self, monkeypatch):
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
         mock_r.get = MagicMock(return_value=None)
-        with patch("redis.from_url", return_value=mock_r):
+        with patch("redis.from_url", return_value=mock_r), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
             assert _get_llm_provider("t1") is None
 
     def test_raises_when_no_encrypted_key(self, monkeypatch):

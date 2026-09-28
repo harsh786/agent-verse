@@ -158,3 +158,27 @@ async def test_run_qa_complete_only_hang_times_out() -> None:
     types = [e["type"] for e in events]
     assert "error" in types
     assert types[-1] == "done"
+
+
+async def test_run_qa_provider_error_is_error_event_not_answer() -> None:
+    """A provider stream failure is an error event; it is never streamed or
+    persisted as the assistant's answer (providers used to yield
+    "[stream error: ...]" as model content)."""
+
+    class _FailingProvider:
+        async def stream_complete(self, request):  # type: ignore[no-untyped-def]
+            raise ConnectionError("upstream refused")
+            yield ""  # pragma: no cover - makes this an async generator
+
+    svc = ChatService(answer_generator=_FailingProvider())
+    session = svc.create_session("t1")
+    svc.save_message(session_id=session.id, tenant_id="t1", role="user", content="hi")
+    events = await _collect(
+        svc.run_qa(session_id=session.id, tenant_id="t1", message_id="m", user_message="hi")
+    )
+    types = [e["type"] for e in events]
+    assert "error" in types
+    assert types[-1] == "done"
+    assert not any(e["type"] == "token" for e in events)
+    msgs = svc.list_messages(session.id, "t1")
+    assert not any(m.role == "assistant" for m in msgs)

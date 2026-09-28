@@ -342,8 +342,17 @@ async def reseed_configured_models(request: Request) -> dict[str, Any]:
 @router.get("/routing-policies")
 async def get_routing_policies(request: Request) -> dict[str, Any]:
     """Get the tenant's model routing policies."""
+    from fastapi import HTTPException
+
+    from app.ai_router.registry import policy_is_enforced
+
     tenant = _require_tenant(request)
-    policies = model_registry._tenant_policies.get(tenant.tenant_id, {})
+    try:
+        # Shared (Redis) store when wired — it used to read this process's dict,
+        # so another replica answered with an empty list.
+        policies = model_registry.list_route_policies(tenant.tenant_id)
+    except Exception as exc:
+        raise HTTPException(503, "Routing policy store unavailable") from exc
     return {
         "policies": [
             {
@@ -352,6 +361,7 @@ async def get_routing_policies(request: Request) -> dict[str, Any]:
                 "preferred_provider": p.preferred_provider,
                 "preferred_model": p.preferred_model,
                 "fallback_chain": p.fallback_chain,
+                "enforced": policy_is_enforced(p),
             }
             for task, p in policies.items()
         ]
@@ -378,5 +388,27 @@ async def set_routing_policy(request: Request, task_type: str) -> dict[str, Any]
         preferred_model=body.get("preferred_model"),
         fallback_chain=body.get("fallback_chain", []),
     )
-    model_registry.set_route_policy(tenant.tenant_id, tt, policy)
-    return {"status": "saved", "task_type": task_type}
+    from fastapi import HTTPException
+
+    from app.ai_router.registry import policy_is_enforced
+
+    try:
+        model_registry.set_route_policy(tenant.tenant_id, tt, policy)
+    except Exception as exc:
+        raise HTTPException(503, "Routing policy could not be saved; nothing changed") from exc
+    enforced = policy_is_enforced(policy)
+    return {
+        "status": "saved",
+        "task_type": task_type,
+        # Honest scope: goals pin the planning/execution/verification role to
+        # preferred_model; other task types and routing modes are stored only.
+        "enforced": enforced,
+        **(
+            {}
+            if enforced
+            else {
+                "note": "Stored but not enforced on goals: only a preferred_model for "
+                "planning/execution/verification is applied."
+            }
+        ),
+    }

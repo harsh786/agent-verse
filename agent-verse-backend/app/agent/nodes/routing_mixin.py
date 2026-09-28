@@ -192,10 +192,18 @@ class RoutingMixin:
             return False
         if agent_state.status is not GoalStatus.FAILED:
             agent_state.status = GoalStatus.FAILED
-            agent_state.error_message = (
-                "budget_exceeded: the goal hit its per-goal or the tenant's daily cost "
-                "budget; execution was stopped."
-            )
+            check_error = agent_state.context.get("_budget_check_error")
+            if check_error:
+                # The cost controller could not be consulted: fail closed, but say so.
+                agent_state.error_message = (
+                    "budget_exceeded: the cost budget could not be verified "
+                    f"({check_error}); execution was stopped (fail-closed)."
+                )
+            else:
+                agent_state.error_message = (
+                    "budget_exceeded: the goal hit its per-goal or the tenant's daily cost "
+                    "budget; execution was stopped."
+                )
             agent_state.context["terminal_reason"] = "budget_exceeded"
             agent_state.context["error_class"] = "budget_exceeded"
             with contextlib.suppress(Exception):

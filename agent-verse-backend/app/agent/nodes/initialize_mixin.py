@@ -47,6 +47,59 @@ class InitializeMixin:
     # Nodes
     # ------------------------------------------------------------------
 
+    # Agent-config keys an experiment arm can change that this graph really
+    # applies per goal. system_prompt is read by the planner from context.
+    _EXPERIMENT_APPLICABLE_KEYS: frozenset[str] = frozenset({"system_prompt"})
+
+    async def _apply_experiment_arm(
+        self, self_opt_v2: Any, agent_state: AgentState, tenant_ctx: TenantContext
+    ) -> None:
+        """Pick this goal's SelfOptimizerV2 arm and APPLY its config.
+
+        Only the arm's name used to be stored (and even that was read from an
+        ``arm_name`` key the config never has, so every goal was "control"); the
+        candidate config was never applied, so the experiment compared two
+        identical runs and its "winner" was noise. Now the candidate's changed
+        keys are applied; an experiment whose change cannot be applied here is
+        excluded (no arm recorded for either arm), rather than measured as noise.
+        """
+        ctx = agent_state.context
+        try:
+            get_assignment = getattr(self_opt_v2, "get_arm_assignment", None)
+            if get_assignment is None:
+                return
+            assignment = await get_assignment(
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=self._agent_id,
+                goal_id=agent_state.goal_id,
+            )
+        except Exception as exc:
+            self._logger.warning("experiment_arm_assignment_failed", error=str(exc)[:200])
+            return
+        arm = str(assignment.get("arm") or "control")
+        changed = [str(k) for k in assignment.get("changed_keys") or []]
+        unapplicable = sorted(set(changed) - self._EXPERIMENT_APPLICABLE_KEYS)
+        if unapplicable:
+            ctx["_experiment_excluded"] = {
+                "experiment_id": assignment.get("experiment_id"),
+                "reason": "arm changes config keys this runtime cannot apply per goal",
+                "keys": unapplicable,
+            }
+            self._logger.warning(
+                "experiment_arm_not_applicable",
+                experiment_id=assignment.get("experiment_id"),
+                keys=unapplicable,
+            )
+            return
+        if arm != "control":
+            config = assignment.get("config") or {}
+            applied: list[str] = []
+            if "system_prompt" in changed and isinstance(config.get("system_prompt"), str):
+                ctx["system_prompt"] = config["system_prompt"]
+                applied.append("system_prompt")
+            ctx["_experiment_arm_applied_keys"] = applied
+        ctx["_experiment_arm"] = arm
+
     async def _node_initialize(self, state: GraphState) -> dict[str, Any]:
         goal: str = state["goal"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -123,17 +176,8 @@ class InitializeMixin:
         self_opt_v2 = (
             getattr(self._app_state, "self_optimizer_v2", None) if self._app_state else None
         )
-        if self_opt_v2 and self._agent_id:
-            try:
-                arm_config = await self_opt_v2.get_arm_config(
-                    agent_id=self._agent_id,
-                    goal_id=agent_state.goal_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                )
-                if arm_config and isinstance(agent_state.context, dict):
-                    agent_state.context["_experiment_arm"] = arm_config.get("arm_name", "control")
-            except Exception:
-                pass
+        if self_opt_v2 and self._agent_id and isinstance(agent_state.context, dict):
+            await self._apply_experiment_arm(self_opt_v2, agent_state, tenant_ctx)
 
         if self._runtime_profile is not None:
             agent_state.context["_runtime_profile"] = self._runtime_profile

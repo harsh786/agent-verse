@@ -33,8 +33,14 @@ async def decompose_goal(
     planner: LLMProvider,
     tenant_ctx: TenantContext,
     parent_goal_id: str,
+    model: str = "",
 ) -> DecompositionResult:
-    """Ask the planner LLM whether to decompose and how."""
+    """Ask the planner LLM whether to decompose and how.
+
+    ``model`` is the graph's planning model; the hard-coded platform default is
+    only a last resort (it was always used, so a tenant/role-routed planner got a
+    model id its provider may not even serve).
+    """
     from app.agent.prompts import GOAL_TREE_SYSTEM  # lazy to avoid import cycles
 
     req = CompletionRequest(
@@ -42,7 +48,7 @@ async def decompose_goal(
             Message(role="system", content=GOAL_TREE_SYSTEM),
             Message(role="user", content=f"Goal: {goal}"),
         ],
-        model=_configured_default_model("claude-opus-4-8"),
+        model=model or _configured_default_model("claude-opus-4-8"),
     )
     resp = await planner.complete(req)
     text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()
@@ -154,6 +160,7 @@ async def execute_goal_tree(
     graph_factory: Any,
     event_callback: Any = None,
     max_parallel: int = 4,
+    model: str = "",
 ) -> list[SubGoal]:
     """Decompose goal → build dependency DAG → execute with parallelism.
 
@@ -161,12 +168,13 @@ async def execute_goal_tree(
     The final element (when sub-goals succeed) is a synthesis SubGoal whose
     ``result`` contains the LLM-synthesized answer to the original goal.
     """
-    decomp = await decompose_goal(goal, planner, tenant_ctx, parent_goal_id)
+    decomp = await decompose_goal(goal, planner, tenant_ctx, parent_goal_id, model=model)
     if not decomp.should_decompose or not decomp.sub_goals:
         return []
 
     semaphore = asyncio.Semaphore(max_parallel)
-    completed: set[str] = set()
+    succeeded: set[str] = set()
+    not_succeeded: set[str] = set()
     results: list[SubGoal] = []
 
     # Topological execution: process waves of ready sub-goals
@@ -176,10 +184,24 @@ async def execute_goal_tree(
 
     while remaining and wave < max_waves:
         wave += 1
-        # Find all sub-goals whose dependencies are already completed
-        ready = [sg for sg in remaining if all(dep in completed for dep in sg.depends_on)]
+        # A sub-goal whose dependency failed (or was itself skipped) must not run
+        # on missing inputs: every finished sub-goal used to count as "completed"
+        # regardless of status, so dependents ran anyway.
+        for sg in list(remaining):
+            blocked = [dep for dep in sg.depends_on if dep in not_succeeded]
+            if blocked:
+                sg.status = GoalStatus.FAILED
+                sg.error = f"skipped: dependency {', '.join(blocked)} did not succeed"
+                not_succeeded.add(sg.sub_goal_id)
+                results.append(sg)
+                remaining.remove(sg)
+        if not remaining:
+            break
+        # Find all sub-goals whose dependencies all succeeded
+        ready = [sg for sg in remaining if all(dep in succeeded for dep in sg.depends_on)]
         if not ready:
-            # Circular dependency or impossible — execute all remaining sequentially
+            # Circular dependency or unknown dependency ids — execute all remaining
+            # (none of them depends on a failed sub-goal; checked above).
             ready = remaining[:]
 
         # Execute ready sub-goals in parallel (bounded by semaphore)
@@ -196,7 +218,10 @@ async def execute_goal_tree(
         done: list[SubGoal] = list(await asyncio.gather(*tasks, return_exceptions=False))
 
         for sg in done:
-            completed.add(sg.sub_goal_id)
+            if sg.status is not GoalStatus.FAILED and not sg.error:
+                succeeded.add(sg.sub_goal_id)
+            else:
+                not_succeeded.add(sg.sub_goal_id)
             results.append(sg)
             if sg in remaining:
                 remaining.remove(sg)
@@ -222,7 +247,9 @@ async def execute_goal_tree(
         parent_goal_id=parent_goal_id,
         depends_on=[sg.sub_goal_id for sg in results],
         result=synthesized_text,
-        status=GoalStatus.COMPLETE,
+        # A tree where no sub-goal succeeded produced nothing to synthesize.
+        status=GoalStatus.COMPLETE if succeeded else GoalStatus.FAILED,
+        error="" if succeeded else "no sub-goal succeeded",
     )
     results.append(synthesis_sg)
 

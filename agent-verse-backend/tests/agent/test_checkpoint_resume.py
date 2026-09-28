@@ -101,3 +101,42 @@ def test_restore_marks_in_flight_steps_failed() -> None:
     assert restored is not None
     assert [s.status for s in restored.steps] == [StepStatus.COMPLETE, StepStatus.FAILED]
     assert restored.goal_id == "g1"
+
+
+async def test_unreadable_checkpoints_fail_closed_instead_of_rerunning() -> None:
+    """A checkpoint read error used to be swallowed and the goal started over,
+    re-running side-effecting steps. It now fails the goal without executing."""
+
+    async def _broken_load(goal_id: str, tenant_ctx: Any) -> Any:
+        raise RuntimeError("checkpoint load failed: db down")
+
+    planner = _CountingProvider(responses=[PLAN])
+    executor = _CountingProvider(responses=["sent the email again"])
+    graph = _graph(planner, executor)
+    graph._load_checkpoint = _broken_load  # type: ignore[method-assign]
+    events: list[dict[str, Any]] = []
+
+    async def _cb(event: dict[str, Any]) -> None:
+        events.append(event)
+
+    final = await graph.run(
+        goal="handle the complaint", tenant_ctx=CTX, goal_id="g-ckpt", event_callback=_cb
+    )
+
+    assert final.status is GoalStatus.FAILED
+    assert "checkpoint_unavailable" in (final.error_message or "")
+    assert planner.prompts == [] and executor.prompts == []
+    assert events and events[-1]["type"] == "goal_failed"
+
+
+async def test_load_checkpoint_db_error_raises_not_none() -> None:
+    import pytest
+
+    class _BrokenFactory:
+        def __call__(self) -> Any:
+            raise ConnectionError("db down")
+
+    graph = _graph(_CountingProvider(responses=[PLAN]), _CountingProvider(responses=["x"]))
+    graph._db_session_factory = _BrokenFactory()
+    with pytest.raises(RuntimeError, match="checkpoint load failed"):
+        await graph._load_checkpoint("g1", CTX)

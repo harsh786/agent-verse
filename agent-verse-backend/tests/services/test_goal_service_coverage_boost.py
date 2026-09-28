@@ -437,7 +437,7 @@ class TestSubmitGoalAutoRouting:
 
         svc = _svc()
         ctx = _ctx("cb-router-1")
-        app_state = MagicMock()
+        app_state = MagicMock(redis_cost_controller=None, cost_controller=None)
         agent_store = MagicMock()
         app_state.agent_store = agent_store
         decision = RoutingDecision(
@@ -457,7 +457,7 @@ class TestSubmitGoalAutoRouting:
 
         svc = _svc()
         ctx = _ctx("cb-router-2")
-        app_state = MagicMock()
+        app_state = MagicMock(redis_cost_controller=None, cost_controller=None)
         app_state.agent_store = MagicMock()
         decision = RoutingDecision(
             agent_id=None,
@@ -492,7 +492,7 @@ class TestSubmitGoalAutoRouting:
     async def test_router_failure_falls_back_to_best_scored_agent(self):
         svc = _svc()
         ctx = _ctx("cb-router-3")
-        app_state = MagicMock()
+        app_state = MagicMock(redis_cost_controller=None, cost_controller=None)
         agent_store = MagicMock()
         agent_store.list = MagicMock(
             return_value=[

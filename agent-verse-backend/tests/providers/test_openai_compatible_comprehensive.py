@@ -518,7 +518,8 @@ async def test_stream_complete_skips_none_deltas() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_complete_yields_error_string_on_exception() -> None:
+async def test_stream_complete_raises_on_exception() -> None:
+    """The provider error propagates; it is never yielded as model content."""
     mock_openai, mock_client = _make_openai_module()
     mock_client.chat.completions.create = AsyncMock(side_effect=OSError("conn refused"))
 
@@ -526,13 +527,13 @@ async def test_stream_complete_yields_error_string_on_exception() -> None:
         from app.providers.openai_compatible import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(api_key="key")
         chunks = []
-        async for tok in provider.stream_complete(
-            CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
-        ):
-            chunks.append(tok)
+        with pytest.raises(OSError, match="conn refused"):
+            async for tok in provider.stream_complete(
+                CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
+            ):
+                chunks.append(tok)
 
-    assert len(chunks) == 1
-    assert "[stream error:" in chunks[0]
+    assert chunks == []
 
 
 # ---------------------------------------------------------------------------

@@ -218,8 +218,11 @@ class AnthropicProvider:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for text in stream.text_stream:
                     yield text
-        except Exception as exc:
-            yield f"[stream error: {exc}]"
+        except Exception:
+            # Never yield the provider error AS model output (it used to emit
+            # "[stream error: ...]" as content, which callers rendered/saved as
+            # the answer). Propagate so callers can fail over or report it.
+            raise
 
     async def stream_tokens(
         self,

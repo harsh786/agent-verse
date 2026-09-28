@@ -124,3 +124,20 @@ async def test_static_workflow_with_unexecuted_step_is_not_complete() -> None:
     result = await ex.execute(plan, T, tool_context=ToolContext(connectors=[], tools=[tool]))
     assert result["status"] == "incomplete"
     mcp.call_tool.assert_not_called()
+
+
+async def test_budget_controller_error_fails_closed_for_tool_call() -> None:
+    """A cost-controller outage must deny the tool call (was: ok=True)."""
+    cc = SimpleNamespace(check_and_record=AsyncMock(side_effect=ConnectionError("redis down")))
+    result, mcp = await _run_tool_step(GovernedToolGate(cost_controller=cc, guardrails=None))
+    assert result["status"] == "denied"
+    assert "budget_check_failed" in result["error"]
+    mcp.call_tool.assert_not_called()
+
+
+async def test_charge_llm_controller_error_denies_spend() -> None:
+    """charge_llm returns False (deny) on a controller error (was: True)."""
+    cc = SimpleNamespace(check_and_record=AsyncMock(side_effect=ConnectionError("redis down")))
+    gate = GovernedToolGate(cost_controller=cc, guardrails=None)
+    resp = SimpleNamespace(model="gpt-4o", usage=None, input_tokens=10, output_tokens=5)
+    assert await gate.charge_llm(goal_id="g1", tenant_ctx=T, resp=resp) is False

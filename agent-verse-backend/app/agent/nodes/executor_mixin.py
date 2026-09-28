@@ -115,6 +115,18 @@ _DEDUP_NON_RESULT_PREFIXES = (
 )
 
 
+def _log_background_failure(task: Any) -> None:
+    """Done-callback: retrieve and log a fire-and-forget task's exception."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        with contextlib.suppress(Exception):
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("background_task_failed", error=str(exc)[:200])
+
+
 def _is_uncacheable_output(output: str | None) -> bool:
     """Single source of truth for "must not enter or be served from the cache".
 
@@ -380,6 +392,10 @@ class ExecutorMixin:
                 return graph
 
             try:
+                _tree_model = ""
+                if self._model_router is not None:
+                    with contextlib.suppress(Exception):
+                        _tree_model = self._model_router.model_for("planning") or ""
                 sub_goals: list[SubGoal] = await execute_goal_tree(
                     agent_state.goal,
                     planner=self._planner,
@@ -387,6 +403,7 @@ class ExecutorMixin:
                     parent_goal_id=agent_state.goal_id,
                     graph_factory=_sub_graph_factory,
                     event_callback=self._event_callback,
+                    model=_tree_model,
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:
@@ -935,13 +952,20 @@ class ExecutorMixin:
             if _asp.safety_level.value == ActionSafetyLevel.HITL_REQUIRED.value:
                 _asp_hitl_required = True
                 _asp_reason = _asp.reason
-        except Exception:
-            pass
+        except Exception as _asp_exc:
+            # Fail closed: an action-safety assessment that cannot be made must
+            # not let the step run unassessed (this used to be ``except: pass``).
+            raise StepNotExecutedError(
+                f"Action-safety assessment failed for '{tool_name or 'llm'}' "
+                f"({type(_asp_exc).__name__}); step was not executed (fail-closed)."
+            ) from _asp_exc
 
         # SAFE-3 (P0-14): route an action-safety HITL_REQUIRED verdict through the
         # HITL gateway. This is intentionally OUTSIDE the try/except above so an
         # approval rejection/timeout can never be swallowed and silently allowed.
         _asp_hitl_done = False
+        # True only once a human explicitly APPROVED this step (supervised wait).
+        _step_approved = False
         if _asp_hitl_required and self._hitl_gateway is not None:
             req_id = str(
                 self._hitl_gateway.request_approval(
@@ -970,6 +994,14 @@ class ExecutorMixin:
                     raise PermissionError(
                         f"Step '{step}' approval timed out (action-safety: {_asp_reason})."
                     )
+                if final_status != ApprovalStatus.APPROVED:
+                    # Only an explicit approval lets the step run (a still-pending
+                    # status used to fall through and execute).
+                    raise PermissionError(
+                        f"Step '{step}' approval not granted ({final_status}) "
+                        f"(action-safety: {_asp_reason})."
+                    )
+                _step_approved = True
                 await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
@@ -1046,25 +1078,31 @@ class ExecutorMixin:
                 return f"Guardrail blocked step: {'; '.join(violations)}"
 
         # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
-        try:
-            from app.core.runtime_flags import get_runtime_flags as _ge_rtf
-            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+        from app.core.runtime_flags import get_runtime_flags as _ge_rtf
 
-            _ge_flags = _ge_rtf()
-            _runtime_profile = state.context.get("_runtime_profile")
-            if (
-                _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
-            ) and _runtime_profile is not None:
+        _ge_flags = _ge_rtf()
+        _runtime_profile = state.context.get("_runtime_profile")
+        if (
+            _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
+        ) and _runtime_profile is not None:
+            try:
+                from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+
                 _ge = GuardrailEnforcer()
                 _ge_result = await _ge.check_tool_args(
                     tool_name=tool_name,
                     tool_args={},  # C2 fix: tool_args not defined at pre-LLM check stage
                     profile=_runtime_profile,
                 )
-                if _ge_result.blocked:
-                    return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
-        except Exception:
-            pass  # profile-based guardrail never crashes execution
+            except Exception as _ge_exc:
+                # Fail closed: the enabled profile guardrail could not evaluate the
+                # tool, so the step must not run unchecked (was: ``except: pass``).
+                raise StepNotExecutedError(
+                    f"Profile guardrail check failed for '{tool_name or 'llm'}' "
+                    f"({type(_ge_exc).__name__}); step was not executed (fail-closed)."
+                ) from _ge_exc
+            if _ge_result.blocked:
+                return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
 
         # N6b: guardrail_profile_selected SSE — only when dynamic orchestration profile present
         if self._event_callback is not None and _runtime_profile is not None:
@@ -1099,11 +1137,17 @@ class ExecutorMixin:
                     f"Tool '{tool_name}' denied by governance policy "
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
-            elif (
-                policy_result == PolicyResult.REQUIRE_APPROVAL
-                and self._hitl_gateway is not None
-                and not _hitl_already_requested
-            ):
+            elif policy_result == PolicyResult.REQUIRE_APPROVAL and not _step_approved:
+                # A tenant policy demands approval. It used to be skipped when no
+                # gateway was wired, when an (unanswered) action-safety request
+                # had been filed, and outside supervised mode — where the request
+                # was orphaned and the step ran anyway. Fail closed in all three.
+                if self._hitl_gateway is None:
+                    record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                    raise PermissionError(
+                        f"Tool '{tool_name}' requires approval by policy; no approval "
+                        "gateway is configured, so the step was not executed."
+                    )
                 req_id = str(
                     self._hitl_gateway.request_approval(
                         goal_id=state.goal_id,
@@ -1113,6 +1157,12 @@ class ExecutorMixin:
                     )
                 )
                 _hitl_already_requested = True
+                if self._autonomy_mode != "supervised":
+                    record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                    raise PermissionError(
+                        f"Tool '{tool_name}' requires approval by policy (non-supervised "
+                        f"mode); the step was not executed. Approval request {req_id}."
+                    )
                 if self._autonomy_mode == "supervised":
                     await self._emit(
                         {"type": "waiting_approval", "request_id": req_id, "action": step}
@@ -1504,23 +1554,29 @@ class ExecutorMixin:
                 if hasattr(_bulkhead, "acquire"):
                     # RedisBulkhead path
                     _bulkhead_acquired = await _bulkhead.acquire()
-                    if not _bulkhead_acquired:
-                        self._logger.warning(
-                            "bulkhead_full",
-                            tenant_id=getattr(tenant_ctx, "tenant_id", ""),
-                            step=step[:100],
-                        )
-                        return (
-                            "[Bulkhead: too many concurrent operations for this tenant."
-                            " Please retry.]"
-                        )
                 else:
                     # asyncio.Semaphore fallback
                     await _bulkhead.acquire()
                     _bulkhead_acquired = True
             except Exception as bulkhead_exc:
+                # Fail closed: the concurrency limit could not be checked, so the
+                # step does not run unthrottled (it used to proceed without a slot).
                 self._logger.warning("bulkhead_acquire_failed", error=str(bulkhead_exc))
-                _bulkhead_acquired = False
+                raise StepNotExecutedError(
+                    f"Tenant concurrency limit could not be checked "
+                    f"({type(bulkhead_exc).__name__}); step was not executed."
+                ) from bulkhead_exc
+            if not _bulkhead_acquired:
+                self._logger.warning(
+                    "bulkhead_full",
+                    tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                    step=step[:100],
+                )
+                # Not a step result: it used to be returned AS the step's output.
+                raise StepNotExecutedError(
+                    "Bulkhead: too many concurrent operations for this tenant; "
+                    "step was not executed."
+                )
 
         # Token streaming — buffer for accumulation and closure for on_token callback.
         # Defined before the bulkhead try so the closure captures step by value.
@@ -2088,6 +2144,7 @@ class ExecutorMixin:
                                     )
                                     self._background_tasks.add(_rpa_ltm_task)
                                     _rpa_ltm_task.add_done_callback(self._background_tasks.discard)
+                                    _rpa_ltm_task.add_done_callback(_log_background_failure)
                                 # Track current URL for extraction attribution
                                 if rpa_tool_name == "rpa_open_url":
                                     _nav_url = (tool_call.arguments or {}).get("url", "")
@@ -2172,7 +2229,7 @@ class ExecutorMixin:
                     # else: falls through to write_high HITL gate below (default-secure)
                     if tool_risk == "destructive":
                         error = self._sanitize_tool_raw_output(
-                            f"Jira tool '{tool_ref.name}' denied as destructive."
+                            f"Tool '{tool_ref.name}' denied as destructive."
                         )
                         await self._emit(
                             {
@@ -2193,7 +2250,7 @@ class ExecutorMixin:
                     elif tool_risk == "write_high":
                         if self._hitl_gateway is None:
                             error = self._sanitize_tool_raw_output(
-                                f"Jira tool '{tool_ref.name}' requires approval."
+                                f"Tool '{tool_ref.name}' requires approval."
                             )
                             await self._emit(
                                 {

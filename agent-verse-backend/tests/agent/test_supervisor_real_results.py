@@ -77,3 +77,31 @@ async def test_failures_and_empty_completions_are_surfaced() -> None:
     assert by_goal["c"].status == "failed"
     assert by_goal["d"].status == "failed"
     assert result.success is False
+
+
+def _bridged(goal_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    """The envelope Celery workers publish (and the Redis bridge forwards)."""
+    return {"goal_id": goal_id, "tenant_id": T.tenant_id, "type": event["type"], "payload": event}
+
+
+async def test_worker_bridged_events_are_unwrapped() -> None:
+    """Sub-goals run on workers deliver {type, payload:{...}}; outputs sat in payload."""
+    svc = _GoalService(
+        {
+            "find the price": [
+                _bridged("g-1", {"type": "step_complete", "output": "The price is $42."}),
+                _bridged("g-1", {"type": "goal_complete"}),
+            ],
+            "find the stock": [
+                _bridged("g-2", {"type": "goal_failed", "reason": "tool denied"}),
+            ],
+        }
+    )
+    result = await SupervisorAgent(
+        planner_provider=_planner("find the price", "find the stock"), goal_service=svc
+    ).run(goal="g", tenant_ctx=T)
+    by_goal = {t.goal: t for t in result.tasks}
+    assert by_goal["find the price"].status == "complete"
+    assert by_goal["find the price"].result == "The price is $42."
+    assert by_goal["find the stock"].status == "failed"
+    assert by_goal["find the stock"].error == "tool denied"

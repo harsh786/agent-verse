@@ -275,11 +275,19 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 rounds = body.debate_rounds
                 orchestrator = DebateOrchestrator(provider=provider, rounds=rounds)
                 debate_result = await orchestrator.run(goal=body.goal)
+                # debate_consensus is fed to the goal's planner (PlannerMixin).
                 exec_ctx["debate_consensus"] = debate_result.winning_proposal
                 exec_ctx["debate_confidence"] = debate_result.consensus_level
                 exec_ctx["debate_winning_agent"] = debate_result.winning_agent
-            except Exception:
-                pass  # Fall back to normal execution if debate fails
+            except Exception as _debate_exc:
+                # The goal still runs, but the failed debate is recorded on it
+                # (it used to be swallowed, indistinguishable from a debate run).
+                import logging
+
+                logging.getLogger(__name__).warning("debate_mode_failed: %s", _debate_exc)
+                exec_ctx["debate_error"] = f"{type(_debate_exc).__name__}: {_debate_exc}"[:300]
+        else:
+            exec_ctx["debate_error"] = "no LLM provider available for the debate"
 
     # ── Supervisor mode: LLM decomposes goal → parallel sub-agents ───────────
     if body.workflow_mode == "supervisor":
@@ -294,6 +302,17 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 max_parallel=body.supervisor_max_parallel,
             )
             result = await supervisor.run(goal=body.goal, tenant_ctx=tenant)
+        except Exception as exc:
+            raise HTTPException(500, f"Supervisor execution failed: {exc}") from exc
+        if not isinstance(result, dict) and len(result.tasks) <= 1:
+            # The goal did not decompose into several sub-tasks, so the supervisor
+            # ran nothing (it used to answer success=False with no goal at all).
+            # Run it as one ordinary goal and say so.
+            exec_ctx["supervisor_applied"] = True  # do not decompose again in-graph
+            exec_ctx["supervisor_fallback"] = (
+                "goal did not decompose into multiple sub-tasks; ran as a single goal"
+            )
+        else:
             if isinstance(result, dict):
                 sub_goal_ids = [str(value) for value in result.get("sub_goal_ids", [])]
                 return {
@@ -332,8 +351,6 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
                 ],
                 "goal": body.goal,
             }
-        except Exception as exc:
-            raise HTTPException(500, f"Supervisor execution failed: {exc}") from exc
 
     # ── Multi-agent mode: same goal dispatched to N agents in parallel ────────
     if body.workflow_mode == "multi_agent" and body.agent_ids:

@@ -556,8 +556,8 @@ async def test_stream_complete_with_system_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_complete_yields_error_on_exception() -> None:
-    """stream_complete() yields an error string when the API raises."""
+async def test_stream_complete_raises_on_exception() -> None:
+    """stream_complete() propagates the API error; it never yields it as content."""
     from app.providers.anthropic_provider import AnthropicProvider
 
     class _BrokenStream:
@@ -574,16 +574,16 @@ async def test_stream_complete_yields_error_on_exception() -> None:
 
         provider = AnthropicProvider(api_key="key")
         chunks = []
-        async for chunk in provider.stream_complete(
-            CompletionRequest(
-                messages=[Message(role="user", content="Hi")],
-                model="claude-3-haiku-20240307",
-            )
-        ):
-            chunks.append(chunk)
+        with pytest.raises(OSError, match="Network error"):
+            async for chunk in provider.stream_complete(
+                CompletionRequest(
+                    messages=[Message(role="user", content="Hi")],
+                    model="claude-3-haiku-20240307",
+                )
+            ):
+                chunks.append(chunk)
 
-    assert len(chunks) == 1
-    assert "[stream error:" in chunks[0]
+    assert chunks == []
 
 
 # ---------------------------------------------------------------------------

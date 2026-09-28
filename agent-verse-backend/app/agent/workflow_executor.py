@@ -112,6 +112,17 @@ class WorkflowExecutor:
                     "steps": [asdict(step) for step in canonical_plan.steps],
                 },
             )
+        if not canonical_plan.steps:
+            # Fail closed: a plan with no steps did nothing, so it must never be
+            # reported as a completed workflow (and a goal_complete event).
+            return {
+                "status": "failed",
+                "reason": "empty_plan: no executable steps could be derived from the goal",
+                "steps_executed": 0,
+                "waves": 0,
+                "results": results,
+                "summary": "",
+            }
 
         async def run_step(step: StructuredStep) -> dict[str, Any]:
             if event_callback is not None:

@@ -225,7 +225,7 @@ class TestGetSyncRedis:
 class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self) -> None:
         from app.scaling.tasks import _get_llm_provider
-        with patch.dict("os.environ", {"REDIS_URL": ""}):
+        with patch.dict("os.environ", {"REDIS_URL": ""}), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
             result = _get_llm_provider("tenant-1")
         assert result is None
 
@@ -235,17 +235,19 @@ class TestGetLlmProvider:
         mock_redis.get = MagicMock(return_value=None)
 
         with patch.dict("os.environ", {"REDIS_URL": "redis://localhost:6379"}):
-            with patch("redis.from_url", return_value=mock_redis):
+            with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
                 result = _get_llm_provider("tenant-1")
 
         assert result is None
 
-    def test_returns_none_on_redis_error(self) -> None:
+    def test_redis_error_without_durable_store_fails_closed(self) -> None:
+        """Unknown BYOK state is not treated as "no BYOK" (platform spend)."""
+        from app.providers.tenant_provider import TenantProviderError
         from app.scaling.tasks import _get_llm_provider
         with patch.dict("os.environ", {"REDIS_URL": "redis://localhost:6379"}):
-            with patch("redis.from_url", side_effect=Exception("Redis down")):
-                result = _get_llm_provider("tenant-1")
-        assert result is None
+            with patch("redis.from_url", side_effect=Exception("Redis down")), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+                with pytest.raises(TenantProviderError):
+                    _get_llm_provider("tenant-1")
 
 
 # ── _run_with_signals ─────────────────────────────────────────────────────────

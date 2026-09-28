@@ -795,7 +795,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
     the verifier regardless of what the engine said. Now it must actually act
     on the verdict."""
     executor = FakeProvider(responses=['{"tool": "get_status", "arguments": {}}'])
-    mcp = _RecordingMCPClient(output={"content": "sk-live-totally-real-secret-key-12345"})
+    mcp = _RecordingMCPClient(output={"content": "PHI: patient record MRN-778812"})
     graph = _make_graph(executor=executor, mcp_client=mcp)
     state = _make_state(step_desc="check status")
     state.context["tool_context"] = _tool_context(("get_status", "Custom", {}))
@@ -803,7 +803,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
     async def fake_evaluate(*, content, layer, **_kwargs):
         from app.guardrails_v2.models import GuardrailLayer
 
-        if layer == GuardrailLayer.TOOL_OUTPUT and "sk-live" in content:
+        if layer == GuardrailLayer.TOOL_OUTPUT and "MRN-778812" in content:
             return {"blocked": True, "violations": [{"rule_name": "secret_exfiltration"}]}
         return {"blocked": False, "violations": []}
 
@@ -811,7 +811,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
         mock_engine.evaluate = AsyncMock(side_effect=fake_evaluate)
         output = await graph._execute_step("check status", state, T)
 
-    assert "sk-live-totally-real-secret-key-12345" not in output
+    assert "MRN-778812" not in output
     assert "[redacted by guardrail policy]" in output
 
 
@@ -933,12 +933,14 @@ async def test_dispatch_parallel_extra_tool_calls_applies_all_safety_gates() -> 
 
 
 # ---------------------------------------------------------------------------
-# Bulkhead: an acquire() failure must fail OPEN (execute without the bulkhead)
-# rather than crash the step.
+# Bulkhead: an acquire() failure fails CLOSED — the step is not executed
+# (it used to run unthrottled), and "full" is a not-executed step, never output.
 # ---------------------------------------------------------------------------
 
 
-async def test_bulkhead_acquire_exception_falls_back_to_unthrottled_execution() -> None:
+async def test_bulkhead_acquire_exception_fails_closed() -> None:
+    from app.agent.graph_types import StepNotExecutedError
+
     class _BrokenBulkhead:
         async def acquire(self) -> bool:
             raise RuntimeError("redis connection refused")
@@ -947,13 +949,26 @@ async def test_bulkhead_acquire_exception_falls_back_to_unthrottled_execution() 
             pass
 
     registry = SimpleNamespace(get_bulkhead=MagicMock(return_value=_BrokenBulkhead()))
-    executor = FakeProvider(responses=["done despite bulkhead outage"])
+    executor = FakeProvider(responses=["must not run"])
     graph = _make_graph(executor=executor, bulkhead_registry=registry)
     state = _make_state(step_desc="do the thing")
 
-    output = await graph._execute_step("do the thing", state, T)
+    with pytest.raises(StepNotExecutedError, match="concurrency limit could not be checked"):
+        await graph._execute_step("do the thing", state, T)
+    assert executor.call_history == []
 
-    assert output == "done despite bulkhead outage"
+
+async def test_bulkhead_full_is_not_executed_not_output() -> None:
+    from app.agent.graph_types import StepNotExecutedError
+
+    bulkhead = SimpleNamespace(acquire=AsyncMock(return_value=False), release=AsyncMock())
+    registry = SimpleNamespace(get_bulkhead=MagicMock(return_value=bulkhead))
+    executor = FakeProvider(responses=["must not run"])
+    graph = _make_graph(executor=executor, bulkhead_registry=registry)
+
+    with pytest.raises(StepNotExecutedError, match="too many concurrent"):
+        await graph._execute_step("do the thing", _make_state(step_desc="do the thing"), T)
+    assert executor.call_history == []
 
 
 # ---------------------------------------------------------------------------

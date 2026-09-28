@@ -427,3 +427,60 @@ def test_get_goal_attempts_db_exception_returns_empty() -> None:
 
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_supervisor_single_task_runs_as_ordinary_goal() -> None:
+    """<=1 decomposed task: the supervisor ran nothing and answered success=False.
+
+    Now the goal is submitted as one ordinary goal, flagged in its context.
+    """
+    svc = AsyncMock()
+    svc.submit_goal = AsyncMock(
+        return_value={"id": "g1", "goal_id": "g1", "status": "planning", "goal": "g"}
+    )
+    app = _make_app(svc)
+    app.state._app_provider = MagicMock()
+
+    from app.agent.supervisor import SubAgentTask, SupervisionResult
+
+    with patch("app.agent.supervisor.SupervisorAgent") as mock_cls:
+        mock_supervisor = AsyncMock()
+        mock_supervisor.run = AsyncMock(
+            return_value=SupervisionResult(success=False, tasks=[SubAgentTask(goal="g")])
+        )
+        mock_cls.return_value = mock_supervisor
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(
+            "/goals",
+            json={"goal": "g", "workflow_mode": "supervisor"},
+            headers={"X-API-Key": _KEY},
+        )
+
+    assert resp.status_code in (200, 202)
+    assert resp.json()["goal_id"] == "g1"
+    ctx = svc.submit_goal.await_args.kwargs["execution_context"]
+    assert "single goal" in ctx["supervisor_fallback"]
+    assert ctx["supervisor_applied"] is True
+
+
+def test_debate_failure_is_recorded_on_the_goal() -> None:
+    svc = AsyncMock()
+    svc.submit_goal = AsyncMock(
+        return_value={"id": "g1", "goal_id": "g1", "status": "planning", "goal": "g"}
+    )
+    app = _make_app(svc)
+    app.state._app_provider = MagicMock()
+    with patch("app.agent.debate.DebateOrchestrator") as mock_cls:
+        mock_orchestrator = AsyncMock()
+        mock_orchestrator.run = AsyncMock(side_effect=RuntimeError("debate failed"))
+        mock_cls.return_value = mock_orchestrator
+        client = TestClient(app, raise_server_exceptions=False)
+        resp = client.post(
+            "/goals",
+            json={"goal": "g", "workflow_mode": "debate"},
+            headers={"X-API-Key": _KEY},
+        )
+    assert resp.status_code in (200, 202)
+    ctx = svc.submit_goal.await_args.kwargs["execution_context"]
+    assert "debate failed" in ctx["debate_error"]
+    assert "debate_consensus" not in ctx

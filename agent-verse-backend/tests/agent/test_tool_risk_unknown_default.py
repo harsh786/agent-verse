@@ -48,11 +48,15 @@ def test_read_only_builtins_stay_read(name: str) -> None:
 
 def test_rpa_tools_are_classified_not_unknown() -> None:
     # RPA tools declare their own risk. Read-only ones stay "read"; interactive ones are
-    # "write_low" (executed without approval, exactly as before this change) — they must
-    # NOT fall into the unknown → approval bucket and break browser automation.
+    # "write_low" — they must NOT fall into the unknown → approval bucket and break
+    # browser automation. Declared-high tools with an external/irreversible effect
+    # (submit/upload/download) are write_high (approval-gated).
     expected = {"read": "read", "low": "write_low", "high": "write_low"}
+    irreversible = {"rpa_submit_form", "rpa_upload_file", "rpa_download_file"}
     for tool in RPA_TOOLS:
-        assert classify_tool_risk(str(tool["name"]), "rpa") == expected[str(tool["risk"])], tool
+        name = str(tool["name"])
+        want = "write_high" if name in irreversible else expected[str(tool["risk"])]
+        assert classify_tool_risk(name, "rpa") == want, tool
 
 
 class _RecordingMCP:
@@ -117,3 +121,20 @@ async def test_unknown_tool_is_not_dispatched_without_approval_in_bounded_mode()
 )
 def test_classified_tools_unchanged(name: str, server: str, risk: str) -> None:
     assert classify_tool_risk(name, server) == risk
+
+
+def test_irreversible_rpa_tools_require_approval() -> None:
+    """Declared-high RPA tools with external effects are write_high (were write_low: no HITL)."""
+    from app.agent.tool_risk import classify_tool_risk
+
+    for name in ("rpa_submit_form", "rpa_upload_file", "rpa_download_file"):
+        assert classify_tool_risk(name) == "write_high", name
+        assert classify_tool_risk(f"rpa.{name}") == "write_high", name
+
+
+def test_interactive_rpa_tools_stay_write_low_and_reads_stay_read() -> None:
+    from app.agent.tool_risk import classify_tool_risk
+
+    for name in ("rpa_click", "rpa_type", "rpa_select_option", "rpa_open_url"):
+        assert classify_tool_risk(name) == "write_low", name
+    assert classify_tool_risk("rpa_extract_text") == "read"

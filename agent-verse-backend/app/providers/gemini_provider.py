@@ -37,13 +37,37 @@ class GeminiProvider:
         self._default_model = default_model
         self._embed_model = embed_model
 
+    @staticmethod
+    def _reject_unsupported(request: CompletionRequest) -> None:
+        """Fail honestly on request features this adapter does not implement.
+
+        The prompt is flattened to text, so tool definitions and image payloads
+        used to be dropped silently and the model answered as if they were never
+        offered (a fake tool-less "success"). Raise instead.
+        """
+        if request.tools:
+            raise NotImplementedError(
+                "GeminiProvider does not implement tool calling; "
+                f"{len(request.tools)} tool definition(s) cannot be sent"
+            )
+        if any(getattr(m, "image_data", None) for m in request.messages):
+            raise NotImplementedError("GeminiProvider does not implement image input")
+
+    def _config(self, request: CompletionRequest) -> object:
+        kwargs: dict[str, object] = {
+            "max_output_tokens": request.max_tokens,
+            "temperature": request.temperature,
+        }
+        if request.response_schema is not None or request.json_object:
+            # JSON mode; the schema itself is stated in the prompt (see _prompt).
+            kwargs["response_mime_type"] = "application/json"
+        return self._types.GenerateContentConfig(**kwargs)
+
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self._reject_unsupported(request)
         model_name = request.model or self._default_model
         prompt = self._prompt(request)
-        config = self._types.GenerateContentConfig(
-            max_output_tokens=request.max_tokens,
-            temperature=request.temperature,
-        )
+        config = self._config(request)
         response = await self._client.aio.models.generate_content(
             model=model_name,
             contents=prompt,
@@ -69,25 +93,43 @@ class GeminiProvider:
         request: CompletionRequest,
         on_token: Callable[[str], Awaitable[None]],
     ) -> CompletionResponse:
+        self._reject_unsupported(request)
         model_name = request.model or self._default_model
         content = ""
+        usage = None
         try:
             stream = await self._client.aio.models.generate_content_stream(
                 model=model_name,
                 contents=self._prompt(request),
-                config=self._types.GenerateContentConfig(
-                    max_output_tokens=request.max_tokens,
-                    temperature=request.temperature,
-                ),
+                config=self._config(request),
             )
             async for chunk in stream:
+                usage = getattr(chunk, "usage_metadata", None) or usage
                 token = str(getattr(chunk, "text", "") or "")
                 if token:
                     content += token
                     await on_token(token)
         except Exception:
+            if content:
+                # Tokens were already delivered: re-running complete() would emit
+                # a second, different answer after the partial one. Propagate.
+                raise
             return await self.complete(request)
-        return CompletionResponse(content=content, model=model_name)
+        prompt_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+        output_tokens = int(getattr(usage, "candidates_token_count", 0) or 0)
+        return CompletionResponse(
+            content=content,
+            model=model_name,
+            input_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+            usage=TokenUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=prompt_tokens + output_tokens,
+            )
+            if usage is not None
+            else None,
+        )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         task_type = "RETRIEVAL_QUERY" if request.input_type == "query" else "RETRIEVAL_DOCUMENT"
@@ -117,10 +159,19 @@ class GeminiProvider:
         for message in request.messages:
             if message.role != "system":
                 parts.append(f"[{message.role.capitalize()}]: {message.content}")
+        if request.response_schema is not None:
+            import json
+
+            parts.append(
+                "[System]: Respond with a single JSON object that matches this JSON "
+                f"Schema exactly: {json.dumps(request.response_schema)}"
+            )
         return "\n".join(parts)
 
     def supports_vision(self) -> bool:
-        return "gemini" in self._default_model
+        # Images are not sent (see _reject_unsupported) — do not advertise vision.
+        return False
 
     def supports_tool_use(self) -> bool:
-        return True
+        # Tool definitions are not sent (see _reject_unsupported).
+        return False

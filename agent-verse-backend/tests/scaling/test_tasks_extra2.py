@@ -139,15 +139,36 @@ class TestGetLlmProvider:
     def test_returns_none_when_no_redis_url(self, monkeypatch):
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.delenv("REDIS_URL", raising=False)
-        result = _get_llm_provider("tenant1")
-        assert result is None
-
-    def test_returns_none_on_redis_error(self, monkeypatch):
-        from app.scaling.tasks import _get_llm_provider
-        monkeypatch.setenv("REDIS_URL", "redis://localhost:9999/0")
-        with patch("redis.Redis", side_effect=ConnectionError("no redis")):
+        with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
             result = _get_llm_provider("tenant1")
         assert result is None
+
+    def test_redis_error_with_durable_store_saying_none_returns_none(self, monkeypatch):
+        """Redis is a cache: the durable store is authoritative for "no BYOK"."""
+        from app.scaling.tasks import _get_llm_provider
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:9999/0")
+        store = MagicMock()
+        store.get_config = AsyncMock(return_value=None)
+        with patch("redis.from_url", side_effect=ConnectionError("no redis")), patch(
+            "app.services.llm_config_store.get_or_create_worker_llm_config_store",
+            return_value=store,
+        ):
+            result = _get_llm_provider("tenant1")
+        assert result is None
+        assert store.get_config.await_args.kwargs == {"strict": True}
+
+    def test_unreadable_config_fails_closed(self, monkeypatch):
+        """Unknown BYOK state must not silently fall back to the platform provider."""
+        from app.providers.tenant_provider import TenantProviderError
+        from app.scaling.tasks import _get_llm_provider
+        monkeypatch.setenv("REDIS_URL", "redis://localhost:9999/0")
+        store = MagicMock()
+        store.get_config = AsyncMock(side_effect=RuntimeError("db down"))
+        with patch("redis.from_url", side_effect=ConnectionError("no redis")), patch(
+            "app.services.llm_config_store.get_or_create_worker_llm_config_store",
+            return_value=store,
+        ), pytest.raises(TenantProviderError, match="could not be read"):
+            _get_llm_provider("tenant1")
 
 
 class TestSetupSigterm:

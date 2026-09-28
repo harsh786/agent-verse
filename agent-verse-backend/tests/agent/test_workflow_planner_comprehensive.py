@@ -291,3 +291,10 @@ async def test_heuristic_plan_structure() -> None:
     assert plan.steps[0].id == "s1"
     assert plan.steps[0].description == "Specific goal text"
     assert plan.steps[0].estimated_minutes == 5
+
+
+def test_build_static_workflow_ui_is_whole_word_only() -> None:
+    """ui inside build / guide must not add an RPA step."""
+    plan = build_static_workflow("Build a guide for the quarterly report")
+    assert all(step.connector_name != "rpa" for step in plan.steps)
+    assert len(plan.steps) == 0

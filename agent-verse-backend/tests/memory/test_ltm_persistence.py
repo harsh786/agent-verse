@@ -31,15 +31,13 @@ async def test_extract_from_goal_async_calls_store_async():
 
 @pytest.mark.asyncio
 async def test_extract_from_goal_async_adds_to_in_memory():
-    """In-memory list must also be updated for same-session recall."""
+    """In-memory list is updated (once, via the guardrail-vetted store_async)."""
     store = LongTermMemoryStore()
-    store.store_async = AsyncMock(return_value=None)
 
-    initial_count = len(store._memories)
     await store.extract_from_goal_async(
         goal="test goal",
         result="test result",
         tenant_ctx=T,
     )
 
-    assert len(store._memories) == initial_count + 1
+    assert len(store._memories.get(T.tenant_id, [])) == 1

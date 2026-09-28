@@ -604,17 +604,21 @@ async def test_mcp_client_tools_injected_into_plan_prompt() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_self_optimizer_v2_arm_config_injection() -> None:
-    """SelfOptimizerV2.get_arm_config() is called in _node_initialize (lines 301-310)."""
-    mock_v2 = MagicMock()
-    mock_v2.get_arm_config = AsyncMock(
-        return_value={"arm_name": "treatment_high_temp"}
-    )
+async def _run_with_assignment(assignment: dict) -> tuple:  # type: ignore[type-arg]
+    captured: dict = {}
 
+    class _Planner(FakeProvider):
+        async def complete(self, request):  # type: ignore[no-untyped-def, override]
+            texts = [str(request.system or "")] + [str(m.content) for m in request.messages]
+            captured["system"] = captured.get("system", "") + "\n".join(texts)
+            return await super().complete(request)
+
+    mock_v2 = MagicMock()
+    mock_v2.get_arm_assignment = AsyncMock(return_value=assignment)
+    mock_v2.on_goal_completed = AsyncMock()
     mock_app_state = MagicMock()
     mock_app_state.self_optimizer_v2 = mock_v2
-
-    p = FakeProvider(
+    p = _Planner(
         responses=[
             '{"steps": ["search data"]}',
             "data found",
@@ -624,10 +628,38 @@ async def test_self_optimizer_v2_arm_config_injection() -> None:
     g = AgentGraph(planner=p, executor=p, verifier=p)
     g._app_state = mock_app_state
     g._agent_id = "agent-v2-test"
-
     state = await g.run(goal="search for data", tenant_ctx=T)
-    assert state.goal == "search for data"
-    mock_v2.get_arm_config.assert_awaited()
+    return state, mock_v2, captured
+
+
+async def test_self_optimizer_v2_candidate_arm_config_is_applied() -> None:
+    """The candidate arm's system prompt really reaches the planner (was: only a name)."""
+    state, mock_v2, captured = await _run_with_assignment(
+        {
+            "arm": "candidate",
+            "experiment_id": "exp-1",
+            "config": {"system_prompt": "CANDIDATE PROMPT XYZ"},
+            "changed_keys": ["system_prompt"],
+        }
+    )
+    mock_v2.get_arm_assignment.assert_awaited()
+    assert state.context["_experiment_arm"] == "candidate"
+    assert state.context["_experiment_arm_applied_keys"] == ["system_prompt"]
+    assert "CANDIDATE PROMPT XYZ" in captured.get("system", "")
+
+
+async def test_self_optimizer_v2_unapplicable_arm_is_excluded_not_measured() -> None:
+    """An arm changing a key the runtime cannot apply is excluded (no noise result)."""
+    state, _mock_v2, _ = await _run_with_assignment(
+        {
+            "arm": "candidate",
+            "experiment_id": "exp-2",
+            "config": {"retrieval_top_k": 9},
+            "changed_keys": ["retrieval_top_k"],
+        }
+    )
+    assert "_experiment_arm" not in state.context
+    assert state.context["_experiment_excluded"]["keys"] == ["retrieval_top_k"]
 
 
 # ---------------------------------------------------------------------------

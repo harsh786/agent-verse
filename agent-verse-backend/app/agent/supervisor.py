@@ -18,6 +18,23 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _unwrap_bridged_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Flatten a Celery-worker event ``{type, goal_id, tenant_id, payload: {...}}``.
+
+    Sub-goals run on workers publish that envelope (and the Redis bridge /
+    cross-replica subscribe paths forward it as-is), so ``output`` / ``result``
+    sat under ``payload`` and every worker-run sub-task looked output-less.
+    """
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return event
+    merged = dict(payload)
+    for key, value in event.items():
+        if key != "payload":
+            merged.setdefault(key, value)
+    return merged
+
+
 def _final_answer(event: dict[str, Any], step_outputs: list[str]) -> str:
     """The sub-goal's real result: an answer carried on the terminal event, else the
     outputs of the steps it executed. Empty when nothing real was produced."""
@@ -156,9 +173,10 @@ class SupervisorAgent:
                     # be the literal string 'completed' for every sub-task.
                     step_outputs: list[str] = []
                     async with asyncio.timeout(self._timeout):
-                        async for evt in self._goal_service.subscribe_events(
+                        async for raw_evt in self._goal_service.subscribe_events(
                             goal_id=goal_id, tenant_ctx=tenant_ctx
                         ):
+                            evt = _unwrap_bridged_event(raw_evt)
                             etype = evt.get("type")
                             if etype == "step_complete" and evt.get("output"):
                                 step_outputs.append(str(evt["output"]))

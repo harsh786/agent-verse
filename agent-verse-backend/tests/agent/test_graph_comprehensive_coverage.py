@@ -991,8 +991,10 @@ async def test_execute_step_cost_tracker_records_usage() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_execute_step_bulkhead_full_returns_message() -> None:
-    """When bulkhead is full, returns retry message."""
+async def test_execute_step_bulkhead_full_is_not_executed() -> None:
+    """When bulkhead is full the step is NOT executed (no retry text as output)."""
+    from app.agent.graph_types import StepNotExecutedError
+
     mock_bulkhead = MagicMock()
     mock_bulkhead.acquire = AsyncMock(return_value=False)  # Bulkhead full
 
@@ -1003,9 +1005,8 @@ async def test_execute_step_bulkhead_full_returns_message() -> None:
     graph = _make_graph(executor=executor, bulkhead_registry=mock_registry)
 
     agent_state = _make_agent_state("concurrent task")
-    result = await graph._execute_step("concurrent step", agent_state, T)
-
-    assert "Bulkhead" in result or "too many concurrent" in result.lower()
+    with pytest.raises(StepNotExecutedError, match="too many concurrent"):
+        await graph._execute_step("concurrent step", agent_state, T)
     assert len(executor.call_history) == 0
 
 

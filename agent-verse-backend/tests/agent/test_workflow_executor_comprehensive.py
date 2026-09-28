@@ -216,11 +216,13 @@ async def test_execute_parallel_wave_exception_caught() -> None:
     assert result["status"] == "failed"
 
 
-async def test_execute_empty_plan_returns_complete() -> None:
+async def test_execute_empty_plan_fails_closed() -> None:
+    """An empty plan did nothing and must never be reported complete."""
     executor = WorkflowExecutor()
     plan = WorkflowPlan(goal="G", steps=[])
     result = await executor.execute(plan, _CTX)
-    assert result["status"] == "complete"
+    assert result["status"] == "failed"
+    assert result["reason"].startswith("empty_plan")
     assert result["steps_executed"] == 0
 
 

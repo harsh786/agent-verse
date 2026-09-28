@@ -441,6 +441,26 @@ async def resolve_effective_autonomy_mode(
 # ── service ───────────────────────────────────────────────────────────────────
 
 
+
+# execution_context keys (set by POST /goals before the goal runs) that the agent
+# graph reads from its state context. Only an allow-list is forwarded: the rest of
+# execution_context (runtime profile, trigger metadata, ...) is not graph state.
+GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
+    "debate_consensus",
+    "debate_confidence",
+    "debate_winning_agent",
+    "debate_error",
+    "supervisor_applied",
+    "supervisor_fallback",
+)
+
+
+def graph_context_from_execution_context(execution_context: Any) -> dict[str, Any]:
+    """The allow-listed execution_context entries that belong in the graph's context."""
+    if not isinstance(execution_context, dict):
+        return {}
+    return {k: execution_context[k] for k in GRAPH_CONTEXT_KEYS if k in execution_context}
+
 class GoalService:
     """In-memory goal service.
 
@@ -702,10 +722,11 @@ class GoalService:
     async def _check_budget_preflight(self, tenant_ctx: TenantContext) -> None:
         """Reject goal submission when the tenant's daily cost budget is exhausted.
 
-        Best-effort and fail-open: a budgeting error must never block legitimate
-        goals. Prefers the Redis controller (cross-replica) and falls back to the
-        in-memory one. Raises PlanLimitExceededError (HTTP 429) with a budget
-        reason when there is no remaining daily budget.
+        Fail-closed: when a configured cost controller cannot be consulted the
+        goal is rejected with a retryable ExternalServiceError (it used to be
+        accepted unmetered). Prefers the Redis controller (cross-replica) and
+        falls back to the in-memory one. Raises PlanLimitExceededError (HTTP 429)
+        with a budget reason when there is no remaining daily budget.
         """
         from app.tenancy.limits import PlanLimitExceededError
 
@@ -732,8 +753,15 @@ class GoalService:
                 has_budget = mem_cc.has_remaining_budget(tenant_ctx=tenant_ctx)
         except PlanLimitExceededError:
             raise
-        except Exception:
-            return  # fail-open on any budgeting error
+        except Exception as exc:
+            from app.core.errors import ExternalServiceError
+
+            _svc_logger.warning("budget_preflight_fail_closed", error=str(exc)[:200])
+            raise ExternalServiceError(
+                "Cost budget could not be verified — goal rejected (fail-closed). "
+                "Retry once the budget service is reachable.",
+                cause=exc,
+            ) from exc
 
         if not has_budget:
             raise PlanLimitExceededError(
@@ -1041,7 +1069,7 @@ class GoalService:
         except Exception:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
-                from app.agent.model_router import ModelRouter, get_router_for_tenant  # noqa: F401
+                from app.agent.model_router import ModelRouter, get_router_for_tenant
 
                 _model_router = get_router_for_tenant(_agent_config)
             except Exception:
@@ -1049,7 +1077,12 @@ class GoalService:
 
         # Extract per-agent execution settings (FIX 4)
         _max_iterations = int(_agent_config.get("max_iterations", 6))
-        _model_override = str(_agent_config.get("model_override", "") or "")
+        # A goal-level model_override (POST /goals body) wins over the agent's
+        # pinned model. It used to be written to execution_context and never read.
+        _goal_model_override = str((execution_context or {}).get("model_override") or "")
+        _model_override = _goal_model_override or str(
+            _agent_config.get("model_override", "") or ""
+        )
 
         # Per-goal role map: which configured model serves planning/execution/
         # verification, restricted to models THIS goal's provider can route (a
@@ -1064,11 +1097,37 @@ class GoalService:
                     _model_router.set_role_map(deployment_role_models(servable=_servable))
             except Exception as _rm_exc:
                 _svc_logger.warning("model_role_map_failed", error=str(_rm_exc))
+            # Tenant routing policies (PUT /models/routing-policies): a preferred
+            # model for planning/execution/verification pins that role. They were
+            # saved and never applied to any goal.
+            try:
+                from app.ai_router.deployment_roles import servable_models as _sm
+                from app.ai_router.registry import tenant_policy_role_models
+
+                _policy_roles = tenant_policy_role_models(
+                    tenant_ctx.tenant_id, servable=_sm(provider)
+                )
+                if _policy_roles:
+                    _model_router.set_role_map({**_model_router.role_map, **_policy_roles})
+            except Exception as _tp_exc:
+                _svc_logger.warning("tenant_routing_policy_apply_failed", error=str(_tp_exc))
 
         # Apply model override to the model router before building the graph
-        if _model_override and _model_router is not None:
-            with suppress(Exception):  # Model router may not support override — use default
+        if _model_override:
+            if _model_router is None:
+                from app.agent.model_router import ModelRouter
+
+                _model_router = ModelRouter()
+            try:
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
+            except Exception as _mo_exc:
+                if _goal_model_override:
+                    # The caller explicitly asked for this model: never silently
+                    # run the goal on a different one.
+                    raise ValueError(
+                        f"model_override '{_goal_model_override}' could not be applied: {_mo_exc}"
+                    ) from _mo_exc
+                _svc_logger.warning("agent_model_override_apply_failed", error=str(_mo_exc))
 
         # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
         from app.reliability.circuit_breaker import CircuitBreaker
@@ -2446,6 +2505,11 @@ class GoalService:
 
             if record is not None and record.execution_context.get(SUBGOAL_MARKER):
                 initial_context[SUBGOAL_MARKER] = record.execution_context[SUBGOAL_MARKER]
+            # Pre-execution pattern results from the API (debate consensus,
+            # supervisor fallback) were written to execution_context and never
+            # reached the graph, so the planner could not use them.
+            if record is not None:
+                initial_context.update(graph_context_from_execution_context(record.execution_context))
             # N2: Load reflexion lessons to feed back into planning (close the feedback loop).
             # Lessons written by ReflexionWirer on failure are recalled here for the next goal.
             try:
@@ -2574,17 +2638,45 @@ class GoalService:
                 except Exception:
                     pass
 
-        # Resolve scoped LLM key from tenant config store (best-effort)
+        # Resolve the tenant's scoped (BYOK) LLM key. The store persists only the
+        # vault ciphertext (``encrypted_key``); this read ``api_key`` — a field it
+        # never writes — so the key was always "" (errors swallowed too) and the
+        # isolated runner fell back to the platform key. A tenant WITH a BYOK
+        # config whose key cannot be read/decrypted now fails the goal instead.
         scoped_llm_key = ""
         try:
             from app.services.llm_config_store import get_llm_config_store
 
             _config_store = get_llm_config_store()
             if _config_store is not None:
-                _cfg = await _config_store.get_config(tenant_ctx.tenant_id) or {}
-                scoped_llm_key = str(_cfg.get("api_key", ""))
-        except Exception:
-            pass
+                _cfg = await _config_store.get_config(tenant_ctx.tenant_id, strict=True) or {}
+                _enc = str(_cfg.get("encrypted_key") or "")
+                if _enc:
+                    from app.providers.vault import get_vault
+
+                    scoped_llm_key = str(get_vault().decrypt(_enc) or "")
+                    if not scoped_llm_key:
+                        raise ValueError("tenant LLM API key decrypted to an empty value")
+                elif _cfg:
+                    scoped_llm_key = str(_cfg.get("api_key") or "")
+        except Exception as _scoped_exc:
+            _svc_logger.warning(
+                "isolated_scoped_llm_key_unavailable", error=type(_scoped_exc).__name__
+            )
+            if record is not None:
+                record.status = GoalStatus.FAILED
+                record.error_message = "tenant LLM key unavailable for isolated execution"
+            await self._dispatch_event(
+                goal_id,
+                {
+                    "type": "goal_failed",
+                    "reason": "tenant LLM configuration could not be read or decrypted; "
+                    "the goal was not run on the platform key in its place",
+                    "failure_reason": "tenant_llm_provider_unavailable",
+                },
+                tenant_ctx=tenant_ctx,
+            )
+            return
 
         # Collect runtime_profile and feature_flags snapshots for the envelope
         _runtime_profile: dict[str, Any] = {}

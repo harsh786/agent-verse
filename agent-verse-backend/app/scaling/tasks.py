@@ -446,15 +446,20 @@ def _get_llm_provider(tenant_id: str) -> Any:
     """Load the tenant's configured LLM provider from Redis.
 
     Uses a synchronous Redis client since Celery tasks run in a regular
-    (non-async) thread.  Returns *None* if Redis is unavailable, not
-    configured, or the tenant has no stored provider config.
+    (non-async) thread.  Returns *None* only when the tenant verifiably has no
+    stored provider config. When the config cannot be READ (Redis cache error
+    with no durable store to confirm, or a durable-store read failure) it raises
+    TenantProviderError: treating "unknown" as "no BYOK" silently ran the tenant's
+    goal on the platform provider, at platform cost.
     """
+    import json
     import os
 
-    try:
-        import json
+    from app.providers.tenant_provider import TenantProviderError
 
-        config: dict[str, Any] | None = None
+    config: dict[str, Any] | None = None
+    cache_error: Exception | None = None
+    try:
         redis_url = os.getenv("REDIS_URL", "")
         if redis_url:
             import redis as sync_redis
@@ -463,18 +468,27 @@ def _get_llm_provider(tenant_id: str) -> Any:
             r = redis_from_url(redis_url, decode_responses=True)
             raw = r.get(f"llm_config:{tenant_id}")
             config = json.loads(raw) if raw is not None else None
-        if config is None:
-            # Redis is only a cache: the config is durable in tenant_llm_configs.
-            # Reading Redis alone lost the tenant's provider whenever the key was
-            # evicted/expired (or Redis was flushed).
+    except Exception as exc:
+        # Redis is only a cache; the durable store below is authoritative.
+        logger.warning("Could not load tenant LLM config from Redis: %s", exc)
+        cache_error = exc
+    if config is None:
+        # Redis is only a cache: the config is durable in tenant_llm_configs.
+        # Reading Redis alone lost the tenant's provider whenever the key was
+        # evicted/expired (or Redis was flushed).
+        try:
             from app.services.llm_config_store import get_or_create_worker_llm_config_store
 
             store = get_or_create_worker_llm_config_store()
             if store is not None:
-                config = _run_async(store.get_config(tenant_id))
-    except Exception as exc:
-        logger.warning("Could not load tenant LLM config from Redis: %s", exc)
-        return None
+                config = _run_async(store.get_config(tenant_id, strict=True))
+            elif cache_error is not None:
+                raise RuntimeError(f"cache read failed and no durable store: {cache_error}")
+        except Exception as exc:
+            raise TenantProviderError(
+                f"tenant LLM config could not be read ({type(exc).__name__}); the goal "
+                "is not run on the platform provider in its place"
+            ) from exc
     if config is None:
         return None
 
@@ -555,6 +569,38 @@ async def _run_with_signals(
     return await run_task
 
 
+class _WorkerSubgoalService:
+    """GoalService facade the worker graph uses to dispatch and await sub-goals.
+
+    ``submit_goal`` persists + enqueues the sub-goal (CeleryGoalTaskQueue), then
+    drops the worker-local in-memory record: the sub-goal runs on another worker,
+    so its events never reach that record. Without a local record
+    ``subscribe_events`` takes GoalService's cross-process path (persisted-event
+    replay + Redis ``goal_events:{tenant}:{goal}`` subscription), which is where
+    the executing worker publishes.
+    """
+
+    def __init__(self, goal_service: Any) -> None:
+        self._gs = goal_service
+
+    async def submit_goal(self, **kwargs: Any) -> dict[str, Any]:
+        result: dict[str, Any] = await self._gs.submit_goal(**kwargs)
+        goal_id = str(result.get("goal_id") or "")
+        if goal_id and not result.get("deduplicated"):
+            self._gs._goals.pop(goal_id, None)
+        return result
+
+    def subscribe_events(
+        self, goal_id: str, tenant_ctx: Any, since_sequence: int = 0
+    ) -> Any:
+        return self._gs.subscribe_events(
+            goal_id=goal_id, tenant_ctx=tenant_ctx, since_sequence=since_sequence
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._gs, name)
+
+
 class _WorkerMCPAgentRunner:
     def __init__(self, runner: Any, context_factory: Any, system_prompt: str = "") -> None:
         self._runner = runner
@@ -569,6 +615,7 @@ class _WorkerMCPAgentRunner:
         initial_context: dict[str, Any] | None = None,
         event_callback: Any = None,
         goal_id: str | None = None,
+        attempt: int | None = None,
     ) -> Any:
         redis_client = None
         context = dict(initial_context or {})
@@ -592,10 +639,141 @@ class _WorkerMCPAgentRunner:
                 initial_context=context or None,
                 event_callback=event_callback,
                 goal_id=goal_id,
+                **({"attempt": attempt} if attempt is not None else {}),
             )
         finally:
             if redis_client is not None:
                 await redis_client.aclose()
+
+
+async def _goal_persistence_settings(
+    goal_id: str, tenant_id: str
+) -> tuple[bool, dict[str, Any]]:
+    """``(persistence_mode, persistence_config)`` from goals.execution_context.
+
+    The API path runs such goals through GoalPersistenceEngine; queued goals —
+    every production goal — used to get exactly one attempt in the worker.
+    Mirrors GoalService: the admitted runtime profile's
+    ``agent_patterns.persistence_mode`` wins over the raw request flag.
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        raw = (
+            await session.execute(
+                text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                {"g": goal_id, "t": tenant_id},
+            )
+        ).scalar()
+    ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    if not isinstance(ctx, dict):
+        return False, {}
+    mode = bool(ctx.get("persistence_mode", False))
+    profile = ctx.get("runtime_profile")
+    if isinstance(profile, dict):
+        patterns = profile.get("agent_patterns")
+        if isinstance(patterns, dict) and "persistence_mode" in patterns:
+            mode = bool(patterns.get("persistence_mode"))
+    cfg = ctx.get("persistence_config")
+    return mode, dict(cfg) if isinstance(cfg, dict) else {}
+
+
+def _worker_persistence_config(cfg: dict[str, Any], goal_timeout_s: float) -> Any:
+    """PersistenceConfig for a worker goal, bounded by the goal's hard timeout."""
+    from app.agent.persistence import PersistenceConfig
+
+    requested_total = float(cfg.get("total_timeout_seconds", 0.0) or 0.0)
+    # The whole run is wrapped in wait_for(goal_timeout_s); keep the engine's own
+    # budget inside it so it ends with its real outcome, not a bare timeout.
+    ceiling = max(1.0, goal_timeout_s * 0.9)
+    total = min(requested_total, ceiling) if requested_total > 0 else ceiling
+    return PersistenceConfig(
+        max_attempts=int(cfg.get("max_attempts", 10)),
+        iterations_per_attempt=int(cfg.get("iterations_per_attempt", 15)),
+        base_backoff_seconds=float(cfg.get("base_backoff_seconds", 30.0)),
+        max_backoff_seconds=float(cfg.get("max_backoff_seconds", 600.0)),
+        strategy_switch_after=int(cfg.get("strategy_switch_after", 2)),
+        escalate_after_failures=int(cfg.get("escalate_after_failures", 6)),
+        total_timeout_seconds=total,
+        decompose_on_failure=bool(cfg.get("decompose_on_failure", True)),
+    )
+
+
+class _PersistentWorkerRunner:
+    """Runs a worker goal through GoalPersistenceEngine (retry until success).
+
+    Same contract as the wrapped runner's ``run`` — it returns the final
+    attempt's AgentState, or a FAILED state when no attempt succeeded — so the
+    worker's terminal bookkeeping is unchanged.
+    """
+
+    def __init__(self, inner: Any, *, config: Any, db: Any = None, redis: Any = None) -> None:
+        self._inner = inner
+        self._config = config
+        self._db = db
+        self._redis = redis
+
+    async def run(
+        self,
+        *,
+        goal: str,
+        tenant_ctx: Any,
+        initial_context: dict[str, Any] | None = None,
+        event_callback: Any = None,
+        goal_id: str | None = None,
+    ) -> Any:
+        from app.agent.persistence import GoalPersistenceEngine
+        from app.agent.state import AgentState, GoalStatus
+
+        inner = self._inner
+        last: dict[str, Any] = {}
+
+        class _Attempt:
+            async def run(
+                self_inner: _Attempt,  # noqa: N805
+                *,
+                goal: str,
+                tenant_ctx: Any,
+                event_callback: Any = None,
+                goal_id: str | None = None,
+                attempt: int | None = None,
+            ) -> Any:
+                state = await inner.run(
+                    goal=goal,
+                    tenant_ctx=tenant_ctx,
+                    initial_context=initial_context,
+                    event_callback=event_callback,
+                    goal_id=goal_id,
+                    attempt=attempt,
+                )
+                last["state"] = state
+                return state
+
+        engine = GoalPersistenceEngine(config=self._config, db=self._db, redis=self._redis)
+        success, attempts = await engine.run(
+            goal=goal,
+            agent_factory=_Attempt(),
+            tenant_ctx=tenant_ctx,
+            event_callback=event_callback,
+            goal_id=goal_id or "",
+        )
+        final = last.get("state")
+        if success and final is not None:
+            return final
+        failed = final if final is not None else AgentState(goal=goal, tenant_ctx=tenant_ctx)
+        failed.status = GoalStatus.FAILED
+        last_reason = attempts[-1].failure_reason if attempts else ""
+        failed.error_message = (
+            f"Goal could not be achieved after {len(attempts)} persistence attempt(s)"
+            + (f": {last_reason}" if last_reason else "")
+        )[:1000]
+        return failed
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -1202,9 +1380,51 @@ def run_goal_dlq(
 
 
 async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | None:
-    """Carry a supervisor sub-goal's marker into the worker graph (no re-decomposition)."""
-    from app.agent.supervisor import SUBGOAL_MARKER
+    """Initial graph context carried from goals.execution_context.
 
+    The supervisor sub-goal marker (no re-decomposition) plus the allow-listed
+    pre-execution pattern results (API debate consensus, supervisor fallback) —
+    the API path forwards the same keys (goal_service.GRAPH_CONTEXT_KEYS).
+    """
+    import json as _json
+
+    from app.agent.supervisor import SUBGOAL_MARKER
+    from app.services.goal_service import graph_context_from_execution_context
+
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+            raw = (
+                await session.execute(
+                    text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                    {"g": goal_id, "t": tenant_id},
+                )
+            ).scalar()
+    except Exception as exc:
+        logger.warning("subgoal_context_lookup_failed goal=%s: %s", goal_id, exc)
+        return None
+    try:
+        ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        ctx = {}
+    if not isinstance(ctx, dict):
+        return None
+    out = graph_context_from_execution_context(ctx)
+    if ctx.get(SUBGOAL_MARKER):
+        out[SUBGOAL_MARKER] = ctx[SUBGOAL_MARKER]
+    return out or None
+
+
+async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
+    """The goal-level ``model_override`` persisted in goals.execution_context ("" if none).
+
+    The API path applies it (GoalService); worker-run goals used to ignore it.
+    """
     try:
         from sqlalchemy import text
 
@@ -1216,16 +1436,16 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
             value = (
                 await session.execute(
                     text(
-                        "SELECT execution_context::jsonb ->> :k FROM goals "
+                        "SELECT execution_context::jsonb ->> 'model_override' FROM goals "
                         "WHERE id = :g AND tenant_id = :t"
                     ),
-                    {"k": SUBGOAL_MARKER, "g": goal_id, "t": tenant_id},
+                    {"g": goal_id, "t": tenant_id},
                 )
             ).scalar()
     except Exception as exc:
-        logger.warning("subgoal_context_lookup_failed goal=%s: %s", goal_id, exc)
-        return None
-    return {SUBGOAL_MARKER: value} if value else None
+        logger.warning("goal_model_override_lookup_failed goal=%s: %s", goal_id, exc)
+        return ""
+    return str(value or "")
 
 
 async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
@@ -1797,6 +2017,20 @@ def run_goal(
             # (empty for a tenant-configured single provider) — the same map
             # GoalService.set_role_map applies on the API path.
             _worker_roles = _worker_role_map(real_provider) if real_provider else {}
+            # Tenant routing policies (PUT /models/routing-policies) — same as the
+            # API path; they were stored in one API process and never applied.
+            try:
+                from app.ai_router.deployment_roles import servable_models as _sm
+                from app.ai_router.registry import tenant_policy_role_models
+
+                _worker_roles = {
+                    **_worker_roles,
+                    **tenant_policy_role_models(
+                        tenant_id, servable=_sm(real_provider) if real_provider else None
+                    ),
+                }
+            except Exception as _tp_exc:
+                logger.warning("worker_tenant_routing_policy_failed: %s", _tp_exc)
             if _worker_roles:
                 try:
                     if _model_router is None:
@@ -1806,14 +2040,20 @@ def run_goal(
                     _model_router.set_role_map(_worker_roles)
                 except Exception as _rm_exc:
                     logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
-            if _agent_model_override:
+            # A goal-level model_override (POST /goals body) wins over the agent's.
+            _goal_level_override = _run_async(_goal_model_override(goal_id, tenant_id))
+            _effective_override = _goal_level_override or _agent_model_override
+            if _effective_override:
                 try:
                     if _model_router is None:
                         from app.agent.model_router import ModelRouter
 
                         _model_router = ModelRouter()
-                    _model_router = _model_router.with_override(_agent_model_override)
+                    _model_router = _model_router.with_override(_effective_override)
                 except Exception as _mo_exc:
+                    if _goal_level_override:
+                        # Explicitly requested: never silently run on another model.
+                        raise
                     logger.warning("worker_model_override_apply_failed: %s", _mo_exc)
 
             # Build LLM response cache and semantic cache for the worker.
@@ -2125,6 +2365,16 @@ def run_goal(
             _agent_runner._agent_collection_ids = list(_agent_collection_ids)
             # Grants are keyed by agent id.
             _agent_runner._agent_id = agent_id
+            # Sub-goal dispatch (in-graph supervisor, civilization spawn). The API
+            # path sets graph._goal_service; the worker never did, so the
+            # supervisor node silently no-op'd and every spawn failed here.
+            try:
+                _subgoal_gs, _ = _build_worker_goal_service()
+                if _subgoal_gs is not None:
+                    _subgoal_gs._redis_url_for_pubsub = REDIS_URL
+                    _agent_runner._goal_service = _WorkerSubgoalService(_subgoal_gs)
+            except Exception as _sgs_exc:
+                logger.warning("worker_subgoal_service_wire_failed: %s", _sgs_exc)
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:
@@ -2417,6 +2667,30 @@ def run_goal(
                         "_isolation_error": True,
                     }
             # ── End isolation routing ────────────────────────────────────────────
+
+            # Persistence mode (retry until success) — parity with the API path,
+            # which runs it through GoalPersistenceEngine. (Like the sub-goal and
+            # model-override lookups, an unreadable goal row degrades to a single
+            # attempt — loudly: the goal's own DB writes fail in that case anyway.)
+            try:
+                _persist_mode, _persist_cfg = _run_async(
+                    _goal_persistence_settings(goal_id, tenant_id)
+                )
+            except Exception as _pm_exc:
+                logger.warning(
+                    "persistence_settings_lookup_failed goal=%s (single attempt): %s",
+                    goal_id,
+                    _pm_exc,
+                )
+                _persist_mode, _persist_cfg = False, {}
+            if _persist_mode and _use_agent_graph:
+                logger.info("Goal %s runs in persistence mode on the worker", goal_id)
+                _agent_runner = _PersistentWorkerRunner(
+                    _agent_runner,
+                    config=_worker_persistence_config(_persist_cfg, float(goal_timeout_s)),
+                    db=db_factory,
+                    redis=_worker_async_redis(),
+                )
 
             state = _run_async(
                 _asyncio.wait_for(

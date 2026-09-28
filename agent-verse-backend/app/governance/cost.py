@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -488,8 +487,10 @@ class RedisCostController:
             err_str = str(exc)
             if "GOAL_BUDGET_EXCEEDED" in err_str or "DAILY_BUDGET_EXCEEDED" in err_str:
                 return False
-            get_logger(__name__).warning("cost_check_error", error=err_str[:100])
-            return os.getenv("ENVIRONMENT", "development") != "production"
+            # Fail closed in every environment: an unset/misspelled ENVIRONMENT
+            # used to make a Redis outage wave all spend through unmetered.
+            get_logger(__name__).warning("cost_check_error_fail_closed", error=err_str[:100])
+            return False
 
     async def refund_async(
         self,

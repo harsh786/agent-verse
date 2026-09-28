@@ -161,27 +161,35 @@ class SelfImprovementEngine:
                     try:
                         rating = int(row.rating or 0)
                         feedback_text = row.feedback_text or ""
-                        # Low rating → store reflexion lesson
+                        # Low rating → store the correction as a failure-pattern
+                        # lesson in long-term memory. This used to import a module
+                        # that does not exist (app.memory.long_term_memory), swallow
+                        # the ImportError, still count the action and mark the row
+                        # processed — so no lesson was ever stored. Now the action
+                        # counts only when the lesson was durably stored; a failed
+                        # store leaves the row unprocessed for the next run.
                         if rating <= 2 and feedback_text.strip():
+                            await _store_feedback_lesson(
+                                db_session_factory,
+                                tenant_id=tenant_id,
+                                goal_id=str(row.goal_id),
+                                lesson=feedback_text[:500],
+                            )
                             actions_derived += 1
-                            # Persist lesson into long-term memory if available
-                            try:
-                                from app.memory.long_term_memory import LongTermMemoryStore
-
-                                ltm = LongTermMemoryStore(db_session_factory)
-                                await ltm.store_lesson(
-                                    tenant_id=tenant_id,
-                                    goal_id=str(row.goal_id),
-                                    lesson=feedback_text[:500],
-                                )
-                            except Exception:
-                                pass
                         await session.execute(
                             _t("UPDATE goal_feedback SET processed_at = NOW() WHERE id = :id"),
                             {"id": row.id},
                         )
                         processed += 1
-                    except Exception:
+                    except Exception as row_exc:
+                        import logging
+
+                        logging.getLogger(__name__).warning(
+                            "feedback_row_not_processed tenant=%s id=%s: %s",
+                            tenant_id,
+                            getattr(row, "id", "?"),
+                            row_exc,
+                        )
                         continue
                 await session.commit()
         except Exception as exc:
@@ -191,3 +199,26 @@ class SelfImprovementEngine:
                 "feedback_batch_failed tenant=%s: %s", tenant_id, exc
             )
         return {"processed": processed, "actions_derived": actions_derived}
+
+
+async def _store_feedback_lesson(
+    db_session_factory: Any, *, tenant_id: str, goal_id: str, lesson: str
+) -> str:
+    """Persist a low-rating correction as a ``failure_pattern`` LTM lesson.
+
+    Raises (LongTermMemoryUnavailableError) when the lesson could not be stored.
+    """
+    from app.memory.long_term import LongTermMemory, LongTermMemoryStore
+    from app.tenancy.context import PlanTier, TenantContext
+
+    store = LongTermMemoryStore()
+    store._db_factory = db_session_factory
+    memory = LongTermMemory(
+        content=f"[User feedback correction] {lesson}",
+        source_goal_id=goal_id,
+        memory_type="failure_pattern",
+        confidence=0.9,
+        tags=["goal_feedback", "self_improvement"],
+    )
+    ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="self-improvement")
+    return await store.store_async(memory=memory, tenant_ctx=ctx, db=db_session_factory)

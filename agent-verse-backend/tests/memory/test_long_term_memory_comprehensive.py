@@ -171,12 +171,34 @@ class TestLongTermMemoryStoreAsync:
         assert len(memories) == 1
 
     @pytest.mark.asyncio
-    async def test_store_async_with_failing_db_does_not_raise(self):
-        """DB failure in store_async must be silently caught."""
+    async def test_store_async_with_failing_db_raises_and_does_not_cache(self):
+        """A failed durable write is reported, not faked: no id, no cached entry."""
+        from app.memory.long_term import LongTermMemoryUnavailableError
+
         store = LongTermMemoryStore()
         m = LongTermMemory(content="safe content", source_goal_id="g1", memory_type="success_pattern")
-        mid = await store.store_async(memory=m, tenant_ctx=_CTX, db=_FailingDB())
-        assert mid == m.memory_id
+        with pytest.raises(LongTermMemoryUnavailableError):
+            await store.store_async(memory=m, tenant_ctx=_CTX, db=_FailingDB())
+        assert all(x.memory_id != m.memory_id for x in store._memories.get(_CTX.tenant_id, []))
+
+    @pytest.mark.asyncio
+    async def test_store_async_guardrail_error_fails_closed(self):
+        """Content the MEMORY_WRITE guardrail could not vet is never stored."""
+        from unittest.mock import AsyncMock, patch
+
+        from app.memory.long_term import LongTermMemoryUnavailableError
+
+        store = LongTermMemoryStore()
+        m = LongTermMemory(content="maybe pii", source_goal_id="g1", memory_type="domain_fact")
+        with (
+            patch(
+                "app.memory.long_term.guardrails_engine.evaluate",
+                AsyncMock(side_effect=RuntimeError("engine down")),
+            ),
+            pytest.raises(LongTermMemoryUnavailableError, match="guardrail"),
+        ):
+            await store.store_async(memory=m, tenant_ctx=_CTX, db=None)
+        assert store._memories.get(_CTX.tenant_id, []) == []
 
     @pytest.mark.asyncio
     async def test_store_async_with_embedder_no_db(self):

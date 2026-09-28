@@ -238,7 +238,8 @@ def test_record_schedule_fire_metric_swallows_exceptions() -> None:
 def test_get_llm_provider_returns_none_when_no_redis_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REDIS_URL", raising=False)
     from app.scaling.tasks import _get_llm_provider
-    result = _get_llm_provider("tenant-1")
+    with patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
+        result = _get_llm_provider("tenant-1")
     assert result is None
 
 
@@ -248,7 +249,7 @@ def test_get_llm_provider_returns_none_when_no_config(monkeypatch: pytest.Monkey
     mock_redis = MagicMock()
     mock_redis.get.return_value = None  # No config key in Redis
 
-    with patch("redis.from_url", return_value=mock_redis):
+    with patch("redis.from_url", return_value=mock_redis), patch("app.services.llm_config_store.get_or_create_worker_llm_config_store", return_value=None):
         from app.scaling.tasks import _get_llm_provider
         result = _get_llm_provider("tenant-1")
 
@@ -330,9 +331,17 @@ def test_get_llm_provider_returns_openai_provider_for_openai(
     assert hasattr(result, "_default_model")
 
 
-def test_get_llm_provider_swallows_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_llm_provider_redis_error_defers_to_durable_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A Redis (cache) error falls through to the durable store, which decides."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    with patch("redis.from_url", side_effect=RuntimeError("redis error")):
+    store = MagicMock()
+    store.get_config = AsyncMock(return_value=None)
+    with patch("redis.from_url", side_effect=RuntimeError("redis error")), patch(
+        "app.services.llm_config_store.get_or_create_worker_llm_config_store",
+        return_value=store,
+    ):
         from app.scaling.tasks import _get_llm_provider
         result = _get_llm_provider("tenant-3")
     assert result is None
