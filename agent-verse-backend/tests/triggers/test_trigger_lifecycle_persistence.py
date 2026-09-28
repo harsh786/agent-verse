@@ -332,3 +332,23 @@ async def test_nl_llm_cron_answer_maps_to_schedule() -> None:
     t = await NLTriggerResolver(llm_provider=_LLM()).resolve("at quarter past three nightly")
     assert t.type == "schedule"
     assert t.schedule is not None and t.schedule.cron == "15 3 * * *"
+
+
+def test_manual_fires_of_a_time_trigger_are_not_deduplicated_forever() -> None:
+    """Regression: a cron/interval fire without a scheduled time keyed on the
+    constant "now", so every manual fire after the first was a duplicate."""
+    from app.triggers.dedup import derive_idempotency_key
+
+    a = derive_idempotency_key("t1", "cron", {})
+    b = derive_idempotency_key("t1", "cron", {})
+    assert a != b
+    at = derive_idempotency_key("t1", "cron", {}, scheduled_fire_time="2026-01-01T00:00")
+    assert at == derive_idempotency_key("t1", "cron", {}, scheduled_fire_time="2026-01-01T00:00")
+
+
+def test_goal_chain_fire_without_ids_falls_back_to_the_payload() -> None:
+    from app.triggers.dedup import derive_idempotency_key
+
+    a = derive_idempotency_key("t1", "goal_completed", {"goal": "a"})
+    b = derive_idempotency_key("t1", "goal_completed", {"goal": "b"})
+    assert a != b
