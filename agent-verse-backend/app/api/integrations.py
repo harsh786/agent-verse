@@ -24,6 +24,29 @@ def _get_zapier_tenant_id() -> str:
 # ── Slack ──────────────────────────────────────────────────────────────────────
 
 
+def _require_slack_signature(
+    body: bytes, timestamp: str, signature: str, *, bad_status: int = 403
+) -> None:
+    """Fail-closed Slack request authentication for the public /integrations routes.
+
+    These routes are in TenantMiddleware's bypass list, so the Slack signature is
+    their only authentication. Unconfigured → 503 (in every environment — the old
+    development fallback accepted unsigned requests that submit goals / resolve
+    approvals for SLACK_TENANT_ID); bad or stale signature → ``bad_status``.
+    """
+    from app.integrations.slack.handler import (
+        get_slack_signing_secret,
+        verify_slack_signature,
+    )
+
+    secret = get_slack_signing_secret()
+    if not secret:
+        raise HTTPException(503, "Slack integration is not configured (no signing secret)")
+    if not verify_slack_signature(body, timestamp, signature, secret):
+        raise HTTPException(bad_status, "Invalid Slack signature")
+
+
+
 @router.post("/slack/commands")
 async def slack_slash_command(
     request: Request,
@@ -33,18 +56,7 @@ async def slack_slash_command(
     """Handle /agentverse Slack slash command."""
     body = await request.body()
 
-    from app.integrations.slack.handler import (
-        get_slack_signing_secret,
-        verify_slack_signature,
-    )
-
-    if not verify_slack_signature(
-        body,
-        x_slack_request_timestamp,
-        x_slack_signature,
-        get_slack_signing_secret(),
-    ):
-        raise HTTPException(403, "Invalid Slack signature")
+    _require_slack_signature(body, x_slack_request_timestamp, x_slack_signature)
 
     params = dict(urllib.parse.parse_qsl(body.decode()))
 
@@ -107,21 +119,7 @@ async def slack_events(
     """Handle Slack event callbacks (interactive buttons, etc.)."""
     body = await request.body()
 
-    from app.integrations.slack.handler import (
-        get_slack_signing_secret,
-        verify_slack_signature,
-    )
-
-    # Always verify: the old ``if secret and not verify(...)`` skipped the check
-    # entirely when no secret was set — in production too. verify_slack_signature
-    # fails closed in production and only allows unsigned requests in development.
-    if not verify_slack_signature(
-        body,
-        x_slack_request_timestamp,
-        x_slack_signature,
-        get_slack_signing_secret(),
-    ):
-        raise HTTPException(403, "Invalid Slack signature")
+    _require_slack_signature(body, x_slack_request_timestamp, x_slack_signature)
 
     try:
         data = json.loads(body)
@@ -169,14 +167,12 @@ async def slack_interactive_callback(request: Request) -> dict:
     # Slack sends payload as form-encoded
     body = await request.body()
 
-    # Verify Slack signature
-    from app.integrations.slack.handler import verify_slack_signature
-
-    signing_secret = os.getenv("SLACK_SIGNING_SECRET", "")
-    timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-    signature = request.headers.get("X-Slack-Signature", "")
-    if not verify_slack_signature(body, timestamp, signature, signing_secret):
-        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+    _require_slack_signature(
+        body,
+        request.headers.get("X-Slack-Request-Timestamp", ""),
+        request.headers.get("X-Slack-Signature", ""),
+        bad_status=401,
+    )
 
     # Parse the payload
     try:

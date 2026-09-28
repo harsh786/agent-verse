@@ -34,10 +34,12 @@ class TestGetSlackConfig:
 
 
 class TestVerifySlackSignature:
-    def test_no_secret_dev_mode_allows(self, monkeypatch):
+    def test_no_secret_dev_mode_denies(self, monkeypatch):
+        # Regression: ENVIRONMENT defaults to development, so allowing unsigned
+        # requests there left any deployment without the env var wide open.
         monkeypatch.setenv("ENVIRONMENT", "development")
         result = verify_slack_signature(b"body", "12345", "v0=sig", "")
-        assert result is True
+        assert result is False
 
     def test_no_secret_production_denies(self, monkeypatch):
         monkeypatch.setenv("ENVIRONMENT", "production")

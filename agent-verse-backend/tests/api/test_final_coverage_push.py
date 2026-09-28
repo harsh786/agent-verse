@@ -28,6 +28,18 @@ from fastapi.testclient import TestClient
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
+
+def _signed_slack_headers(body: bytes, secret: str, content_type: str) -> dict[str, str]:
+    ts = str(int(time.time()))
+    sig = "v0=" + hmac.new(
+        secret.encode(), f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256
+    ).hexdigest()
+    return {
+        "Content-Type": content_type,
+        "X-Slack-Request-Timestamp": ts,
+        "X-Slack-Signature": sig,
+    }
+
 # ---------------------------------------------------------------------------
 # Shared test tenant / key
 # ---------------------------------------------------------------------------
@@ -1209,7 +1221,7 @@ class TestIntegrationsExtra:
 
     # line 140 — slack_events block_actions with no value (request_id empty) → continue
     def test_slack_events_block_actions_no_request_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("SLACK_SIGNING_SECRET", "s3")
         monkeypatch.setenv("SLACK_TENANT_ID", "slack-t1")
 
         payload = {
@@ -1226,7 +1238,7 @@ class TestIntegrationsExtra:
         resp = client.post(
             "/integrations/slack/events",
             content=body,
-            headers={"Content-Type": "application/json"},
+            headers=_signed_slack_headers(body, "s3", "application/json"),
         )
         assert resp.status_code == 200
         assert resp.json().get("ok") is True
@@ -2836,7 +2848,7 @@ class TestIntegrationsWave5:
 
     def test_slack_interactive_invalid_payload(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 185-188: invalid JSON payload → 400."""
-        monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("SLACK_SIGNING_SECRET", "s3")
 
         # Send invalid JSON that will fail parse
         body = b"payload=INVALID%JSON"
@@ -2856,7 +2868,7 @@ class TestIntegrationsWave5:
 
     def test_slack_interactive_resume_exception_logged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 223-225: resume_goal raises → logged."""
-        monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+        monkeypatch.setenv("SLACK_SIGNING_SECRET", "s3")
         monkeypatch.setenv("SLACK_TENANT_ID", "slack-t")
 
         mock_goal_service = AsyncMock()
@@ -2878,7 +2890,7 @@ class TestIntegrationsWave5:
         resp = client.post(
             "/integrations/slack/interactive",
             content=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers=_signed_slack_headers(body, "s3", "application/x-www-form-urlencoded"),
         )
         assert resp.status_code == 200
         # resume_goal raised but exception was logged — ok:True returned

@@ -145,4 +145,26 @@ def test_slack_events_route_fails_closed_in_production_without_a_secret(
     r = TestClient(app).post(
         "/integrations/slack/events", content=b'{"type":"event_callback"}'
     )
-    assert r.status_code == 403
+    assert r.status_code == 503
+
+
+@pytest.mark.parametrize(
+    "path", ["/integrations/slack/events", "/integrations/slack/commands",
+             "/integrations/slack/interactive"],
+)
+def test_slack_routes_fail_closed_in_development_without_a_secret(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Regression: with no SLACK_SIGNING_SECRET and ENVIRONMENT unset/development,
+    unsigned requests were accepted and could submit goals / resolve approvals."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.integrations import router
+
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    app = FastAPI()
+    app.include_router(router)
+    r = TestClient(app).post(path, content=b"text=deploy+prod&user_id=U1")
+    assert r.status_code == 503

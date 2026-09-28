@@ -23,8 +23,8 @@ def test_verify_slack_signature_invalid():
 
 
 def test_verify_slack_signature_no_secret():
-    # Empty secret = disabled (return True)
-    assert verify_slack_signature(b"body", "ts", "anything", "") is True
+    # Empty secret fails closed (it used to mean "verification disabled").
+    assert verify_slack_signature(b"body", "ts", "anything", "") is False
 
 
 def test_verify_slack_signature_stale():

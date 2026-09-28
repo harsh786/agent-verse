@@ -11,7 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient as _BaseTestClient
 
 from app.api.integrations import router as integrations_router
 
@@ -25,6 +25,35 @@ def _webhook_auth_satisfied(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(webhook_auth, "require_bearer_token", lambda *a, **k: None)
     monkeypatch.setattr(webhook_auth, "require_hmac_body_signature", lambda *a, **k: None)
+
+_AUTO_SLACK_SECRET = "auto-slack-test-secret"
+
+
+@pytest.fixture(autouse=True)
+def _slack_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Slack routes fail closed without a signing secret; configure one and let
+    ``TestClient`` below sign any Slack POST that carries no explicit signature."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", _AUTO_SLACK_SECRET)
+
+
+class TestClient(_BaseTestClient):
+    def post(self, url: Any, *args: Any, **kw: Any) -> Any:  # type: ignore[override]
+        import os
+
+        headers = dict(kw.pop("headers", None) or {})
+        body = kw.get("content")
+        secret = os.getenv("SLACK_SIGNING_SECRET", "")
+        if (
+            "/slack/" in str(url)
+            and secret
+            and isinstance(body, bytes)
+            and not any(k.lower() == "x-slack-signature" for k in headers)
+        ):
+            ts, sig = _slack_sig(body, secret)
+            headers["X-Slack-Request-Timestamp"] = ts
+            headers["X-Slack-Signature"] = sig
+        return super().post(url, *args, headers=headers, **kw)
+
 
 def _make_app(goal_service: Any = None, hitl_gateway: Any = None) -> FastAPI:
     from types import SimpleNamespace
@@ -52,8 +81,8 @@ def _slack_sig(body: bytes, secret: str, timestamp: str | None = None) -> tuple[
 
 # ── POST /integrations/slack/commands ────────────────────────────────────────
 
-def test_slack_command_no_secret_dev_mode(monkeypatch) -> None:
-    """Without SLACK_SIGNING_SECRET, dev mode allows all requests."""
+def test_slack_command_without_secret_is_503_in_every_environment(monkeypatch) -> None:
+    """No SLACK_SIGNING_SECRET → 503 even in development (used to accept unsigned)."""
     monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "development")
 
@@ -64,13 +93,10 @@ def test_slack_command_no_secret_dev_mode(monkeypatch) -> None:
         content=body,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    # No goal service configured → returns service unavailable message
-    data = resp.json()
-    assert "response_type" in data
+    assert resp.status_code == 503
 
 
 def test_slack_command_no_text_returns_usage_hint(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "development")
 
     body = urllib.parse.urlencode({"text": "", "user_id": "U123"}).encode()
@@ -159,7 +185,6 @@ def test_slack_command_with_tenant_and_goal_service(monkeypatch) -> None:
 
 
 def test_slack_command_goal_service_exception(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("SLACK_TENANT_ID", "t1")
 
@@ -205,7 +230,6 @@ def test_slack_events_returns_ok_for_unknown_type() -> None:
 
 
 def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("SLACK_TENANT_ID", "evt-tenant")
 
     mock_hitl = MagicMock()
@@ -230,7 +254,6 @@ def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
 
 
 def test_slack_events_block_actions_reject_hitl(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("SLACK_TENANT_ID", "evt-tenant-2")
 
     mock_hitl = MagicMock()
@@ -287,7 +310,6 @@ def test_slack_interactive_invalid_signature_returns_401(monkeypatch) -> None:
 
 
 def test_slack_interactive_non_block_actions_returns_ok(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     import json
     payload = json.dumps({"type": "shortcut"})
     body = ("payload=" + urllib.parse.quote(payload)).encode()
@@ -302,7 +324,6 @@ def test_slack_interactive_non_block_actions_returns_ok(monkeypatch) -> None:
 
 
 def test_slack_interactive_approve_action_resumes_goal(monkeypatch) -> None:
-    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
     monkeypatch.setenv("SLACK_TENANT_ID", "interactive-tenant")
 
     import json

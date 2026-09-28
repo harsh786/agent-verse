@@ -35,10 +35,14 @@ def verify_slack_signature(
     signature: str,
     signing_secret: str,
 ) -> bool:
-    """Verify Slack request signature. Returns False when no secret configured."""
+    """Verify Slack request signature. Returns False when no secret configured.
+
+    Fail closed in EVERY environment: ENVIRONMENT defaults to ``development``, so
+    the old "allow unsigned in development" branch was open on any deployment
+    that forgot to set it.
+    """
     if not signing_secret:
-        # Fail-closed in production, allow in development only
-        return os.getenv("ENVIRONMENT", "development") != "production"
+        return False
 
     # Reject stale requests (> 5 minutes old)
     try:
