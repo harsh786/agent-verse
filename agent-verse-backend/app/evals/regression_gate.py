@@ -115,6 +115,30 @@ class RegressionGate:
             )
         return PromotionDecision(True, (), recommendation="expand")
 
+    def cost_latency_regressions(
+        self,
+        *,
+        control_cost_usd: float | None,
+        candidate_cost_usd: float | None,
+        control_p95_ms: float | None,
+        candidate_p95_ms: float | None,
+    ) -> list[str]:
+        """Cost / p95-latency regressions of a candidate arm vs its control.
+
+        For A/B experiments whose winner is picked on a quality metric: a
+        dimension with no data on either arm cannot show a regression.
+        """
+        reasons: list[str] = []
+        if control_cost_usd is not None and candidate_cost_usd is not None and (
+            self._ratio_delta(candidate_cost_usd, control_cost_usd) > self._max_cost_regression
+        ):
+            reasons.append("cost_regression")
+        if control_p95_ms is not None and candidate_p95_ms is not None and (
+            self._ratio_delta(candidate_p95_ms, control_p95_ms) > self._max_latency_regression
+        ):
+            reasons.append("latency_regression")
+        return reasons
+
     @staticmethod
     def _ratio_delta(candidate: float, baseline: float) -> float:
         if baseline <= 0:

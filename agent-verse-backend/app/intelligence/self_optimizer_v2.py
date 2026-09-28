@@ -47,6 +47,15 @@ DOMAIN_METRICS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+
+def _opt_float(row: Any, index: int) -> float | None:
+    """Column *index* of a result row as float; None when absent or NULL."""
+    try:
+        value = row[index]
+    except (IndexError, KeyError, TypeError):
+        return None
+    return None if value is None else float(value)
+
 class TenantOptimizationState:
     """
     Per-tenant, per-agent state stored in Redis.
@@ -770,7 +779,13 @@ Respond with ONLY valid JSON:
                             COUNT(CASE WHEN r.arm = 'control'   THEN 1 END) AS ctrl_n,
                             COUNT(CASE WHEN r.arm = 'candidate' THEN 1 END) AS cand_n,
                             AVG(CASE WHEN r.arm = 'control'   THEN r.metric_value END) AS ctrl_mean,
-                            AVG(CASE WHEN r.arm = 'candidate' THEN r.metric_value END) AS cand_mean
+                            AVG(CASE WHEN r.arm = 'candidate' THEN r.metric_value END) AS cand_mean,
+                            AVG(r.cost_usd) FILTER (WHERE r.arm = 'control')   AS ctrl_cost,
+                            AVG(r.cost_usd) FILTER (WHERE r.arm = 'candidate') AS cand_cost,
+                            percentile_cont(0.95) WITHIN GROUP (ORDER BY r.latency_ms)
+                                FILTER (WHERE r.arm = 'control')   AS ctrl_p95,
+                            percentile_cont(0.95) WITHIN GROUP (ORDER BY r.latency_ms)
+                                FILTER (WHERE r.arm = 'candidate') AS cand_p95
                         FROM improvement_experiments e
                         LEFT JOIN improvement_results r
                                ON r.experiment_id = e.id AND r.tenant_id = e.tenant_id
@@ -806,8 +821,29 @@ Respond with ONLY valid JSON:
             )
             uplift_pct = ((cand_mean - ctrl_mean) / max(ctrl_mean, 1e-9)) * 100
 
+            held_reasons: list[str] = []
             if posterior_prob >= threshold:
                 winner = "candidate"
+                # The winner used to be picked on the success metric alone, so a
+                # candidate that scored slightly higher while tripling cost or
+                # p95 latency was auto-applied. Hold it with the same cost /
+                # latency gate prompt-variant promotion uses.
+                from app.evals.regression_gate import RegressionGate
+
+                held_reasons = RegressionGate().cost_latency_regressions(
+                    control_cost_usd=_opt_float(row, 9),
+                    candidate_cost_usd=_opt_float(row, 10),
+                    control_p95_ms=_opt_float(row, 11),
+                    candidate_p95_ms=_opt_float(row, 12),
+                )
+                if held_reasons:
+                    winner = "control"
+                    logger.info(
+                        "optimization_candidate_held_by_regression_gate",
+                        tenant_id=tenant_id,
+                        experiment_id=experiment_id,
+                        reasons=held_reasons,
+                    )
             elif posterior_prob <= (1.0 - threshold):
                 winner = "control"
             else:
@@ -824,7 +860,8 @@ Respond with ONLY valid JSON:
                         status = CASE WHEN :winner != 'inconclusive'
                                       THEN 'completed' ELSE status END,
                         completed_at = CASE WHEN :winner != 'inconclusive'
-                                            THEN NOW() ELSE completed_at END
+                                            THEN NOW() ELSE completed_at END,
+                        suggestion_rationale = suggestion_rationale || :held_note
                     WHERE id = :exp_id AND tenant_id = :tenant_id
                 """),
                 {
@@ -835,6 +872,11 @@ Respond with ONLY valid JSON:
                     "uplift": round(uplift_pct, 4),
                     "prob": round(posterior_prob, 3),
                     "winner": winner,
+                    "held_note": (
+                        f" [held by regression gate: {', '.join(held_reasons)}]"
+                        if held_reasons
+                        else ""
+                    ),
                     "exp_id": experiment_id,
                     "tenant_id": tenant_id,
                 },
