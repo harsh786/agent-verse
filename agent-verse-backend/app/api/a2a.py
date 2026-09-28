@@ -23,6 +23,76 @@ router = APIRouter(tags=["a2a"])
 # In-memory fallback (used when DB not available)
 _tasks: dict[str, dict[str, Any]] = {}
 
+_A2A_GOAL_TIMEOUT_S = 300.0
+_TERMINAL_EVENT_STATUS = {
+    "goal_complete": "complete",
+    "goal_failed": "failed",
+    "worker_failed": "failed",
+    "goal_cancelled": "canceled",
+}
+_GOAL_STATUS_TO_A2A = {"complete": "complete", "failed": "failed", "cancelled": "canceled"}
+
+
+async def _goal_result_text(goal_service: Any, goal_id: str, tenant_ctx: Any) -> str:
+    """The goal's actual output (its result artifact summary), not a status line."""
+    try:
+        goal = await goal_service.get_goal(goal_id, tenant_ctx)
+    except Exception as exc:
+        logger.warning("a2a_goal_result_unavailable", goal_id=goal_id, error=str(exc)[:200])
+        return ""
+    artifact = goal.get("result_artifact") if isinstance(goal, dict) else None
+    if isinstance(artifact, dict):
+        return str(artifact.get("summary") or "")
+    return ""
+
+
+async def _await_goal_outcome(
+    goal_service: Any,
+    goal_id: str,
+    tenant_ctx: Any,
+    *,
+    timeout_s: float = _A2A_GOAL_TIMEOUT_S,
+) -> tuple[str, str]:
+    """Wait for ``goal_id`` to reach a terminal state; return ``(a2a_status, result)``.
+
+    The status used to be pre-set to ``complete``, so a cancelled goal (whose
+    ``goal_cancelled`` event the loop ignored), or a stream that simply ended,
+    was reported to the calling agent as completed — with the literal text
+    ``"Goal <id> completed"`` instead of the goal's output. Now only an explicit
+    terminal event (or the goal's persisted status, when the stream ends early)
+    decides the outcome, and a completed task carries the real result.
+    """
+    import asyncio
+
+    status: str | None = None
+    detail = ""
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for evt in goal_service.subscribe_events(goal_id=goal_id, tenant_ctx=tenant_ctx):
+                mapped = _TERMINAL_EVENT_STATUS.get(str(evt.get("type", "")))
+                if mapped is not None:
+                    status = mapped
+                    detail = str(evt.get("reason") or "")
+                    break
+    except TimeoutError:
+        return "timeout", f"Goal {goal_id} did not finish within {int(timeout_s)}s"
+
+    if status is None:
+        # Stream ended without a terminal event: trust the persisted status only.
+        try:
+            goal = await goal_service.get_goal(goal_id, tenant_ctx)
+            status = _GOAL_STATUS_TO_A2A.get(str(goal.get("status", "")).lower())
+        except Exception:
+            status = None
+        if status is None:
+            return "error", f"Goal {goal_id} event stream ended before a terminal state"
+
+    if status == "complete":
+        return "complete", await _goal_result_text(goal_service, goal_id, tenant_ctx)
+    if status == "canceled":
+        return "canceled", detail or f"Goal {goal_id} was cancelled"
+    return "failed", detail or f"Goal {goal_id} failed"
+
 # ── startup check: warn loudly when HMAC auth is disabled ─────────────────────
 if not os.getenv("A2A_SHARED_SECRET", ""):
     logger.warning(
@@ -288,28 +358,9 @@ async def receive_a2a_task(
                     dry_run=False,
                     tenant_ctx=tenant_ctx,
                 )
-                goal_id = result["goal_id"]
-                final_status = "complete"
-                final_result = f"Goal submitted: {goal_id}"
-
-                # Wait for completion
-                try:
-                    async with asyncio.timeout(300):
-                        async for evt in goal_service.subscribe_events(
-                            goal_id=goal_id, tenant_ctx=tenant_ctx
-                        ):
-                            if evt.get("type") == "goal_complete":
-                                final_status = "complete"
-                                final_result = f"Goal {goal_id} completed"
-                                break
-                            elif evt.get("type") == "goal_failed":
-                                final_status = "failed"
-                                final_result = evt.get("reason", "failed")
-                                break
-                except TimeoutError:
-                    final_status = "timeout"
-                    final_result = "Goal timed out"
-
+                final_status, final_result = await _await_goal_outcome(
+                    goal_service, str(result["goal_id"]), tenant_ctx
+                )
             except Exception as exc:
                 final_status = "error"
                 final_result = str(exc)
