@@ -163,6 +163,27 @@ class FakeRunner(BaseRunner):
             )
 
         # --- Build agent loop ---
+        if self._factory is None:
+            # No real agent loop was injected. The default used to be an
+            # AgentGraph over canned FakeProviders ("Goal executed in isolated
+            # environment" + a verifier that always says success), so with
+            # isolation enabled but no local/kubernetes runner configured every
+            # goal was reported COMPLETE without doing anything.
+            return ExecutionResult(
+                goal_id=envelope.goal_id,
+                tenant_id=envelope.tenant_id,
+                attempt_id=envelope.attempt_id,
+                success=False,
+                status="failed",
+                failure_reason=ExecutionFailureReason.RUNNER_UNAVAILABLE,
+                error_message=(
+                    "NOT IMPLEMENTED: no isolated runner is configured — enable "
+                    "isolated_execution_local_runner or isolated_execution_kubernetes_runner"
+                ),
+                runner_type=self.runner_type,
+                capsule_id=capsule_id,
+                execution_time_ms=(time.monotonic() - t_start) * 1000,
+            )
         agent_loop = self._build_loop(envelope)
 
         # --- Build tenant context with real plan tier (G-36) ---

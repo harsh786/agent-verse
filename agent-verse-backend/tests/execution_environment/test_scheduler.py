@@ -25,11 +25,46 @@ from app.execution_environment.scheduler import (
     RunnerUnavailableError,
 )
 
+def _scripted_runner() -> FakeRunner:
+    """A FakeRunner with an explicitly injected, scripted agent loop (test double)."""
+    from app.agent.graph import AgentGraph
+    from app.providers.fake import FakeProvider
+
+    def _factory(envelope: object) -> AgentGraph:
+        return AgentGraph(
+            planner=FakeProvider(responses=['{"steps": ["do it"]}'] * 5),
+            executor=FakeProvider(responses=["done"] * 5),
+            verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}'] * 5),
+        )
+
+    return FakeRunner(agent_loop_factory=_factory)
+
+
+async def test_default_fake_runner_never_fakes_completion() -> None:
+    """Regression: with no agent loop injected, FakeRunner ran canned providers
+    ("Goal executed in isolated environment" + an always-true verifier), so with
+    isolation on but no real runner configured every goal came back COMPLETE."""
+    collected: list[dict] = []
+
+    async def callback(event: dict) -> None:
+        collected.append(event)
+
+    envelope = build_envelope(tenant_id="t1", goal_id="g1", goal_text="Do something")
+    result = await FakeRunner().run(
+        ExecutionRequest(envelope=envelope, runner_type=RunnerType.FAKE), event_callback=callback
+    )
+    assert result.success is False
+    assert result.status == "failed"
+    assert result.failure_reason == ExecutionFailureReason.RUNNER_UNAVAILABLE
+    assert "NOT IMPLEMENTED" in result.error_message
+    assert not any(e.get("type") == "goal_complete" for e in collected)
+
+
 # ── FakeRunner tests ──────────────────────────────────────────────────────────
 
 
 async def test_fake_runner_completes_simple_goal() -> None:
-    runner = FakeRunner()
+    runner = _scripted_runner()
     envelope = build_envelope(tenant_id="t1", goal_id="g1", goal_text="Do something")
     request = ExecutionRequest(envelope=envelope, runner_type=RunnerType.FAKE)
     result = await runner.run(request)
@@ -89,7 +124,7 @@ async def test_fake_runner_dry_run_emits_expected_events() -> None:
 
 
 async def test_fake_runner_forwards_events_to_callback() -> None:
-    runner = FakeRunner()
+    runner = _scripted_runner()
     envelope = build_envelope(tenant_id="t1", goal_id="g1", goal_text="stream test")
     request = ExecutionRequest(envelope=envelope, runner_type=RunnerType.FAKE)
     collected: list[dict] = []
@@ -145,7 +180,7 @@ async def test_fake_runner_receives_same_execution_context() -> None:
 
 
 async def test_scheduler_dispatches_to_fake_runner() -> None:
-    scheduler = ExecutionEnvironmentScheduler()
+    scheduler = ExecutionEnvironmentScheduler(runner=_scripted_runner())
     envelope = build_envelope(tenant_id="t1", goal_id="g1", goal_text="task")
     result = await scheduler.schedule(envelope)
     assert result.success is True

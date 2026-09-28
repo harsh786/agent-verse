@@ -20,8 +20,11 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.execution_environment.envelope import build_envelope
 from app.execution_environment.worker_entrypoint import (
+    ProviderUnavailableError,
     _build_provider,
     _emit,
     _emit_log,
@@ -32,30 +35,27 @@ from app.execution_environment.worker_entrypoint import (
 # ── _build_provider ───────────────────────────────────────────────────────────
 
 
-def test_build_provider_returns_fake_when_no_key() -> None:
-    from app.providers.fake import FakeProvider
-    p = _build_provider("", "planner")
-    assert isinstance(p, FakeProvider)
+def test_build_provider_without_key_raises_instead_of_faking() -> None:
+    """Regression: no key used to yield a FakeProvider scripted to succeed."""
+    with pytest.raises(ProviderUnavailableError):
+        _build_provider("", "planner")
 
 
 def test_build_provider_returns_separate_instances_per_role() -> None:
     """Each role must get its own instance to prevent cross-role state sharing."""
-    p1 = _build_provider("", "planner")
-    p2 = _build_provider("", "executor")
+    p1 = _build_provider("sk-ant-test-key", "planner")
+    p2 = _build_provider("sk-ant-test-key", "executor")
     assert p1 is not p2
 
 
 def test_build_provider_anthropic_key_prefix() -> None:
-    """sk-ant- prefix → try AnthropicProvider (may fail if not installed; falls back)."""
     p = _build_provider("sk-ant-test-key", "planner")
-    # Either AnthropicProvider or FakeProvider (fallback) — both are valid
     assert p is not None
 
 
-def test_build_provider_unknown_prefix_falls_back_to_fake() -> None:
-    from app.providers.fake import FakeProvider
-    p = _build_provider("UNKNOWN-KEY-PREFIX", "planner")
-    assert isinstance(p, FakeProvider)
+def test_build_provider_unknown_prefix_raises() -> None:
+    with pytest.raises(ProviderUnavailableError):
+        _build_provider("UNKNOWN-KEY-PREFIX", "planner")
 
 
 # ── _set_resource_limits ──────────────────────────────────────────────────────
@@ -88,7 +88,8 @@ def _run_main_with_env(extra_env: dict) -> tuple[list[dict], int]:
 
     we._emit = capture_emit  # type: ignore[method-assign]
     try:
-        with patch.dict(os.environ, extra_env, clear=False):
+        env = {"_ISOLATED_WORKER_LLM_KEY": "sk-ant-test-key", **extra_env}
+        with patch.dict(os.environ, env, clear=False):
             rc = we.main()
     finally:
         we._emit = original_emit  # type: ignore[method-assign]
@@ -228,8 +229,25 @@ def test_build_provider_openai_key_prefix() -> None:
 
 
 def test_build_provider_gemini_key_prefix() -> None:
-    p = _build_provider("AIzaSyTestKey", "planner")
-    assert p is not None
+    # google-genai is an optional extra: either a real provider or an honest error.
+    try:
+        p = _build_provider("AIzaSyTestKey", "planner")
+    except ProviderUnavailableError as exc:
+        assert "google-genai" in str(exc)
+    else:
+        assert p is not None
+
+
+def test_main_non_dry_run_without_llm_key_reports_failure() -> None:
+    """No key → failed result, never a scripted 'Goal executed' success."""
+    encoded = _signed_payload(goal_text="do the thing", dry_run=False)
+    events, rc = _run_main_with_env(
+        {"_ISOLATED_WORKER_ENVELOPE": encoded, "_ISOLATED_WORKER_LLM_KEY": ""}
+    )
+    assert rc == 1
+    result = [e for e in events if e.get("_result")][-1]
+    assert result["success"] is False
+    assert "No LLM key" in result["error_message"]
 
 
 def test_build_provider_voyage_key_prefix() -> None:
@@ -237,48 +255,36 @@ def test_build_provider_voyage_key_prefix() -> None:
     assert p is not None
 
 
-def test_build_provider_anthropic_init_failure_falls_back_to_fake() -> None:
-    from app.providers.fake import FakeProvider
-
+def test_build_provider_anthropic_init_failure_raises() -> None:
     with patch(
         "app.providers.anthropic_provider.AnthropicProvider.__init__",
         side_effect=RuntimeError("init failed"),
-    ):
-        p = _build_provider("sk-ant-test-key", "planner")
-    assert isinstance(p, FakeProvider)
+    ), pytest.raises(ProviderUnavailableError):
+        _build_provider("sk-ant-test-key", "planner")
 
 
-def test_build_provider_openai_init_failure_falls_back_to_fake() -> None:
-    from app.providers.fake import FakeProvider
-
+def test_build_provider_openai_init_failure_raises() -> None:
     with patch(
         "app.providers.openai_compatible.OpenAICompatibleProvider.__init__",
         side_effect=RuntimeError("init failed"),
-    ):
-        p = _build_provider("sk-openai-test-key", "executor")
-    assert isinstance(p, FakeProvider)
+    ), pytest.raises(ProviderUnavailableError):
+        _build_provider("sk-openai-test-key", "executor")
 
 
-def test_build_provider_gemini_init_failure_falls_back_to_fake() -> None:
-    from app.providers.fake import FakeProvider
-
+def test_build_provider_gemini_init_failure_raises() -> None:
     with patch(
         "app.providers.gemini_provider.GeminiProvider.__init__",
         side_effect=RuntimeError("init failed"),
-    ):
-        p = _build_provider("AIzaSyTestKey", "planner")
-    assert isinstance(p, FakeProvider)
+    ), pytest.raises(ProviderUnavailableError):
+        _build_provider("AIzaSyTestKey", "planner")
 
 
-def test_build_provider_voyage_init_failure_falls_back_to_fake() -> None:
-    from app.providers.fake import FakeProvider
-
+def test_build_provider_voyage_init_failure_raises() -> None:
     with patch(
         "app.providers.voyage_provider.VoyageProvider.__init__",
         side_effect=RuntimeError("init failed"),
-    ):
-        p = _build_provider("pa-test-key", "verifier")
-    assert isinstance(p, FakeProvider)
+    ), pytest.raises(ProviderUnavailableError):
+        _build_provider("pa-test-key", "verifier")
 
 
 # ── _make_db_factory ───────────────────────────────────────────────────────────

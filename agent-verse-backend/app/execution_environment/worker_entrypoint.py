@@ -116,70 +116,51 @@ def _emit_log(level: str, message: str, **extra: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+class ProviderUnavailableError(RuntimeError):
+    """No usable LLM provider could be built for the isolated worker."""
+
+
 def _build_provider(llm_key: str, role: str) -> Any:
     """Construct the best available LLM provider for the given role.
 
     Supports Anthropic (sk-ant-), OpenAI-compatible (sk-), Gemini (AIza),
-    and Voyage (pa-).  Falls back to FakeProvider with a logged warning when
-    no key is present — allowing dry-run and test paths to work without a key.
+    and Voyage (pa-). Raises :class:`ProviderUnavailableError` when no key is
+    present, the prefix is unknown, or the provider cannot be constructed.
+
+    It used to fall back to a FakeProvider scripted with "Goal executed in
+    isolated environment" and a verifier that always answered success, so an
+    isolated worker without a working key reported every goal COMPLETE without
+    doing anything. (Dry-run envelopes short-circuit before this is called.)
 
     A fresh instance is returned for each role to prevent cross-role state
     sharing (G-41).
     """
-    from app.providers.fake import FakeProvider
-
     if not llm_key:
-        _emit_log("warning", f"No LLM key for role={role}, using FakeProvider")
-        return FakeProvider(
-            responses=[
-                '{"steps": ["Execute the goal autonomously"]}',
-                "Goal executed in isolated environment",
-                '{"success": true, "reason": "Completed in isolated environment"}',
-            ]
-        )
+        raise ProviderUnavailableError(f"No LLM key available for role={role}")
 
-    if llm_key.startswith("sk-ant-"):
-        try:
+    try:
+        if llm_key.startswith("sk-ant-"):
             from app.providers.anthropic_provider import AnthropicProvider
 
             return AnthropicProvider(api_key=llm_key)
-        except Exception as exc:
-            _emit_log("warning", f"Anthropic provider init failed for role={role}: {exc}")
-
-    elif llm_key.startswith("sk-"):
-        try:
+        if llm_key.startswith("sk-"):
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
             return OpenAICompatibleProvider(api_key=llm_key)
-        except Exception as exc:
-            _emit_log("warning", f"OpenAI provider init failed for role={role}: {exc}")
-
-    elif llm_key.startswith("AIza"):
-        try:
+        if llm_key.startswith("AIza"):
             from app.providers.gemini_provider import GeminiProvider
 
             return GeminiProvider(api_key=llm_key)
-        except Exception as exc:
-            _emit_log("warning", f"Gemini provider init failed for role={role}: {exc}")
-
-    elif llm_key.startswith("pa-"):
-        try:
+        if llm_key.startswith("pa-"):
             from app.providers.voyage_provider import VoyageProvider
 
             return VoyageProvider(api_key=llm_key)
-        except Exception as exc:
-            _emit_log("warning", f"Voyage provider init failed for role={role}: {exc}")
-
-    else:
-        _emit_log("warning", f"Unrecognised LLM key prefix for role={role}, using FakeProvider")
-
-    return FakeProvider(
-        responses=[
-            '{"steps": ["Execute the goal autonomously"]}',
-            "Goal executed in isolated environment",
-            '{"success": true, "reason": "Completed in isolated environment"}',
-        ]
-    )
+    except Exception as exc:
+        _emit_log("error", f"LLM provider init failed for role={role}: {exc}")
+        raise ProviderUnavailableError(
+            f"LLM provider init failed for role={role}: {exc}"
+        ) from exc
+    raise ProviderUnavailableError(f"Unrecognised LLM key prefix for role={role}")
 
 
 # ---------------------------------------------------------------------------
