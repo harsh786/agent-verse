@@ -38,6 +38,9 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -498,7 +501,32 @@ def _make_workflow_hitl_resume_callback(
 # ── error handlers ─────────────────────────────────────────────────────────────
 
 
+def _scrub_surrogates(value: Any) -> Any:
+    """Escape unpaired UTF-16 surrogates so a value can be encoded as UTF-8 JSON."""
+    if isinstance(value, str):
+        return value.encode("utf-8", "backslashreplace").decode("utf-8")
+    if isinstance(value, dict):
+        return {_scrub_surrogates(k): _scrub_surrogates(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_scrub_surrogates(v) for v in value]
+    return value
+
+
 def _register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        # FastAPI's default 422 body echoes the offending input. JSON may carry a
+        # lone surrogate ("\ud800", accepted by json.loads) that cannot be encoded
+        # as UTF-8, so rendering that 422 raised UnicodeEncodeError and the client
+        # got a 500 instead. Same body shape, surrogates escaped.
+        try:
+            return await request_validation_exception_handler(request, exc)
+        except UnicodeEncodeError:
+            detail = _scrub_surrogates(jsonable_encoder(exc.errors()))
+            return JSONResponse(status_code=422, content={"detail": detail})
+
     @app.exception_handler(PlatformError)
     async def _platform_error_handler(_: Request, exc: PlatformError) -> JSONResponse:
         if exc.severity.value in {"high", "critical"}:
@@ -1762,14 +1790,14 @@ def create_app(
             except Exception as _cal_exc:
                 logger.warning("verifier_calibration_wire_failed", error=str(_cal_exc))
 
-            # Wire DB into ABTestingEngine + hydrate historical results
+            # Wire DB into ABTestingEngine. No startup hydration: that was a
+            # cross-tenant scan of ab_test_results (zero rows under the
+            # NOBYPASSRLS role, and a mixed-tenant pool otherwise). Each
+            # tenant's history now loads lazily, tenant-scoped, on first use.
             try:
                 from app.optimization.ab_testing import ab_testing_engine as _ab_engine
 
                 _ab_engine._db_factory = db_factory
-                import asyncio as _ab_asyncio
-
-                _ab_asyncio.create_task(_ab_engine.load_from_db(db_factory=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
                 logger.info("ab_testing_engine_wired")
             except Exception as _ab_exc:
                 logger.warning("ab_testing_engine_wire_failed", error=str(_ab_exc))

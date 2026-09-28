@@ -319,8 +319,13 @@ class TestABTestingEngine:
         await engine.record_result_async(
             "g1", ExperimentType.MODEL_ROUTING, "control", 0.75, tenant_id="t1"
         )
-        stats = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control")
+        stats = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control", tenant_id="t1")
         assert stats["call_count"] == 1
+        # Results are tenant-scoped: no other tenant (nor the tenant-less pool)
+        # sees t1's result.
+        other = engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control", tenant_id="t2")
+        assert other["call_count"] == 0
+        assert engine.get_arm_stats(ExperimentType.MODEL_ROUTING, "control")["call_count"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

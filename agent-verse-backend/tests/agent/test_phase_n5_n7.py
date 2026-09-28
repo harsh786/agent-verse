@@ -15,8 +15,12 @@ async def test_ab_testing_engine_record_async_no_db():
     await engine.record_result_async(
         "g1", ExperimentType.RAG_STRATEGY, "control", 0.85, tenant_id="t1"
     )
-    stats = engine.get_arm_stats(ExperimentType.RAG_STRATEGY, "control")
+    stats = engine.get_arm_stats(ExperimentType.RAG_STRATEGY, "control", tenant_id="t1")
     assert stats["call_count"] == 1
+    # Tenant-scoped: another tenant's view of the same arm is empty.
+    assert engine.get_arm_stats(
+        ExperimentType.RAG_STRATEGY, "control", tenant_id="t2"
+    )["call_count"] == 0
 
 
 def test_runtime_decision_trace_has_all_5_events():

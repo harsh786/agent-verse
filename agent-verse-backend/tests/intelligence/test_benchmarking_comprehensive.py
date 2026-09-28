@@ -191,7 +191,7 @@ class TestBenchmarkStoreAsyncPersistence:
     async def test_load_history_from_db_no_db_returns_empty(self):
         """load_history_from_db with no DB returns []."""
         store = BenchmarkStore()
-        result = await store.load_history_from_db("any-suite")
+        result = await store.load_history_from_db("any-suite", tenant_id="t-1")
         assert result == []
 
     @pytest.mark.asyncio
@@ -206,5 +206,5 @@ class TestBenchmarkStoreAsyncPersistence:
                 pass
 
         store = BenchmarkStore(db_session_factory=_FailDB())
-        result = await store.load_history_from_db("test-suite", limit=10)
+        result = await store.load_history_from_db("test-suite", tenant_id="t-1", limit=10)
         assert result == []

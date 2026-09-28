@@ -9,7 +9,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.responses import Response, StreamingResponse
 
 from app.chat.execution import ChatCodeExecutor
@@ -770,8 +770,23 @@ async def delete_all_memories(
 
 class CreateTemplateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    description: str = ""
+    # Same bound as the goal-template API (app/api/templates.py) whose table
+    # this persona is stored in.
+    description: str = Field(default="", max_length=2000)
     system_prompt: str = Field(..., min_length=1, max_length=10_000)
+
+    @field_validator("name", "description", "system_prompt")
+    @classmethod
+    def _storable_text(cls, value: str) -> str:
+        # Postgres TEXT cannot store U+0000, and a lone UTF-16 surrogate (JSON
+        # "\ud800", which json.loads accepts) cannot be encoded as UTF-8 by
+        # asyncpg. Both used to pass validation and then fail at INSERT time,
+        # answering 500 for schema-valid JSON. Reject them as a 422 instead.
+        if "\x00" in value:
+            raise ValueError("must not contain NUL (\\u0000) characters")
+        if any("\ud800" <= ch <= "\udfff" for ch in value):
+            raise ValueError("must not contain unpaired UTF-16 surrogates")
+        return value
 
 
 # Chat personas are persisted in the shared DB-backed goal-template store under a

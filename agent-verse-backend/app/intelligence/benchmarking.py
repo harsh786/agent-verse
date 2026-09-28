@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import TenantContext
+
+_log = logging.getLogger(__name__)
+
+# ``benchmark_runs.tenant_id`` value for platform-wide runs (not owned by any
+# tenant): readable by every tenant, writable only by the maintenance role.
+GLOBAL_TENANT = "global"
 
 
 @dataclass
@@ -17,7 +25,7 @@ class BenchmarkRun:
 
     suite_name: str
     score: float
-    tenant_id: str = "global"
+    tenant_id: str = GLOBAL_TENANT
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
 
@@ -124,15 +132,27 @@ class BenchmarkStore:
         return sorted(results, key=lambda x: x.get("overall_avg", 0), reverse=True)
 
     async def record_run_async(self, run: BenchmarkRun) -> None:
-        """Persist benchmark run to DB and update in-memory cache."""
-        if self._db is not None:
+        """Persist a tenant's benchmark run to DB and update the in-memory cache.
+
+        ``benchmark_runs`` is FORCE ROW LEVEL SECURITY: the INSERT runs in a
+        transaction carrying the run's tenant GUC. Runs tagged
+        ``GLOBAL_TENANT`` are platform-wide rows that every tenant can read; they
+        are written only by system jobs on the maintenance (BYPASSRLS) role, never
+        through this tenant-scoped store, so they are kept in memory only here.
+        """
+        tenant_id = run.tenant_id
+        if self._db is not None and tenant_id and tenant_id != GLOBAL_TENANT:
             try:
                 import json
                 import uuid
 
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         text("""
                         INSERT INTO benchmark_runs
@@ -141,37 +161,59 @@ class BenchmarkStore:
                     """),
                         {
                             "id": uuid.uuid4().hex,
-                            "tid": getattr(run, "tenant_id", "global"),
+                            "tid": tenant_id,
                             "suite": run.suite_name,
                             "score": run.score,
-                            "meta": json.dumps(getattr(run, "metadata", {})),
+                            "meta": json.dumps(run.metadata),
                         },
                     )
             except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).warning("benchmark_persist_failed: %s", exc)
+                _log.warning("benchmark_persist_failed: %s", exc)
+        elif self._db is not None:
+            _log.warning(
+                "benchmark_run_not_persisted: tenant_id=%r is not a tenant; global "
+                "benchmark rows are written by system jobs only",
+                tenant_id,
+            )
 
         # Also keep in-memory cache
         self._runs.setdefault(run.suite_name, []).append(run)
 
-    async def load_history_from_db(self, suite_name: str, limit: int = 100) -> list[dict]:
-        """Load historical benchmark runs from DB."""
-        if self._db is None:
+    async def load_history_from_db(
+        self,
+        suite_name: str,
+        *,
+        tenant_id: str,
+        limit: int = 100,
+        include_global: bool = True,
+    ) -> list[dict]:
+        """Load a tenant's benchmark history for ``suite_name`` from DB.
+
+        Tenant-scoped (RLS GUC + explicit predicate). ``include_global`` also
+        returns the platform-wide ``GLOBAL_TENANT`` rows, which the
+        ``benchmark_runs_global_read`` policy exposes read-only to every tenant.
+        """
+        if self._db is None or not tenant_id:
             return []
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            tenant_ids = [tenant_id, GLOBAL_TENANT] if include_global else [tenant_id]
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
                     SELECT id, suite_name, score, metadata, created_at
                     FROM benchmark_runs
                     WHERE suite_name = :suite
+                      AND tenant_id = ANY(:tids)
                     ORDER BY created_at DESC LIMIT :lim
                 """),
-                        {"suite": suite_name, "lim": limit},
+                        {"suite": suite_name, "tids": tenant_ids, "lim": limit},
                     )
                 ).fetchall()
             return [

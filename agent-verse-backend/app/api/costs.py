@@ -5,12 +5,24 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.db.rls import sqlalchemy_rls_context
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/costs", tags=["costs"])
+
+# budget_configs stores the USD limits as NUMERIC(10,4) (max 999999.9999) and the
+# alert thresholds as INTEGER[]; out-of-range values used to pass validation and
+# then fail the INSERT, answering 500 for a schema-valid request.
+_MAX_BUDGET_USD = 999_999.0
+_BudgetUsd = Annotated[float, Field(ge=0, le=_MAX_BUDGET_USD, allow_inf_nan=False)]
+_AlertPct = Annotated[int, Field(ge=1, le=100)]
 
 
 # ---------------------------------------------------------------------------
@@ -25,10 +37,12 @@ class PredictCostRequest(BaseModel):
 
 
 class UpdateBudgetRequest(BaseModel):
-    per_goal_usd: float = 10.0
-    per_tenant_daily_usd: float = 500.0
-    per_agent_daily_usd: dict[str, float] = {}
-    alert_pct_thresholds: list[int] = [50, 75, 90]
+    per_goal_usd: _BudgetUsd = 10.0
+    per_tenant_daily_usd: _BudgetUsd = 500.0
+    per_agent_daily_usd: dict[str, _BudgetUsd] = Field(default_factory=dict, max_length=1000)
+    alert_pct_thresholds: list[_AlertPct] = Field(
+        default_factory=lambda: [50, 75, 90], max_length=20
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -258,7 +272,14 @@ async def update_budgets(
 
             from sqlalchemy import text as _t
 
-            async with tracker._db() as session:
+            # budget_configs is FORCE ROW LEVEL SECURITY: the upsert must run in a
+            # transaction carrying the tenant GUC, or the NOBYPASSRLS production
+            # role rejects it (WITH CHECK) and every budget update answers 500.
+            async with (
+                tracker._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, ctx.tenant_id),
+            ):
                 await session.execute(
                     _t(
                         "INSERT INTO budget_configs "
@@ -280,11 +301,13 @@ async def update_budgets(
                         "apt": body.alert_pct_thresholds,
                     },
                 )
-                await session.commit()
         except Exception as exc:
+            # Log the driver error server-side; do not echo SQL/driver text to
+            # the client.
+            logger.warning("budget_persist_failed", tenant_id=ctx.tenant_id, error=str(exc))
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to persist budget: {exc}",
+                detail="Failed to persist budget",
             ) from exc
 
     return {

@@ -356,7 +356,12 @@ class GoalAnalyticsAggregator:
         return self.cost_trends(days=days, bucket=bucket)
 
     async def cost_by_model_db(self, tenant_id: str, days: int = 30) -> dict[str, float]:
-        """Return cost aggregated by model from cost_ledger table."""
+        """Return cost aggregated by model from cost_ledger table.
+
+        Groups on ``cost_ledger.model``. It previously grouped on ``tool_name``,
+        a column the partitioned ledger (migration 0058) does not have, so every
+        call raised UndefinedColumn, was swallowed, and returned ``{}``.
+        """
         if self._db is None or not tenant_id:
             return {}
         try:
@@ -369,7 +374,7 @@ class GoalAnalyticsAggregator:
                 result = await session.execute(
                     text("""
                         SELECT
-                            COALESCE(tool_name, 'unknown') AS model,
+                            COALESCE(model, 'unknown') AS model,
                             SUM(cost_usd) AS total_cost
                         FROM cost_ledger
                         WHERE tenant_id = :tid

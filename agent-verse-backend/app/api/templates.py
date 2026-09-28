@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
+from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/templates", tags=["templates"])
@@ -259,10 +260,11 @@ class _TemplateStore:
             yaml_templates = _load_yaml_goal_templates()
             source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
 
-            async with self._db() as session:
-                await session.execute(
-                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-                )
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 for tpl in source:
                     tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
                     params = _extract_parameters(tpl["goal_text"])
@@ -289,7 +291,6 @@ class _TemplateStore:
                             "now": now,
                         },
                     )
-                await session.commit()
         except Exception:
             pass  # Seeding is best-effort; templates can still be created manually
 
@@ -402,15 +403,18 @@ class _TemplateStore:
             try:
                 from sqlalchemy import text as _t
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
-                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                        _t(
+                            "UPDATE goal_templates SET use_count = use_count + 1 "
+                            "WHERE id = :id AND tenant_id = :tid"
+                        ),
+                        {"id": template_id, "tid": tenant_id},
                     )
-                    await session.execute(
-                        _t("UPDATE goal_templates SET use_count = use_count + 1 WHERE id = :id"),
-                        {"id": template_id},
-                    )
-                    await session.commit()
             except Exception:
                 pass
             return
@@ -420,14 +424,14 @@ class _TemplateStore:
     # DB implementations
     async def _list_db(self, tenant_id: str, domain: str | None) -> list[dict[str, Any]]:
         from sqlalchemy import select
-        from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
 
-        async with self._db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             q = select(GoalTemplate).where(GoalTemplate.tenant_id == tenant_id)
             if domain:
                 q = q.where(GoalTemplate.domain == domain)
@@ -436,14 +440,14 @@ class _TemplateStore:
 
     async def _get_db(self, tenant_id: str, template_id: str) -> dict[str, Any] | None:
         from sqlalchemy import select
-        from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
 
-        async with self._db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             row = (
                 await session.execute(
                     select(GoalTemplate).where(
@@ -462,15 +466,15 @@ class _TemplateStore:
         domain: str,
         parameters: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
 
         now = datetime.now(UTC)
-        async with self._db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             obj = GoalTemplate(
                 id=str(uuid.uuid4()),
                 tenant_id=tenant_id,
@@ -485,8 +489,14 @@ class _TemplateStore:
                 updated_at=now,
             )
             session.add(obj)
-            await session.commit()
-            await session.refresh(obj)
+            # Build the response INSIDE the tenant-scoped transaction. The old
+            # ``commit()`` + ``refresh(obj)`` re-read the row in a NEW transaction
+            # where app.tenant_id was no longer set, so under the NOBYPASSRLS
+            # production role RLS hid the just-inserted row and refresh raised
+            # "Could not refresh instance" -> POST /templates and POST
+            # /chat/templates answered 500 (after the row had been committed).
+            # Every column is set explicitly above, so nothing needs re-reading;
+            # sqlalchemy_rls_context flushes the INSERT while the GUC is set.
             return self._orm_to_dict(obj)
 
     async def _update_db(
@@ -500,14 +510,14 @@ class _TemplateStore:
         parameters: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
         from sqlalchemy import select
-        from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
 
-        async with self._db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             obj = (
                 await session.execute(
                     select(GoalTemplate).where(
@@ -524,20 +534,21 @@ class _TemplateStore:
             obj.parameters = parameters
             obj.version += 1
             obj.updated_at = datetime.now(UTC)
-            await session.commit()
-            await session.refresh(obj)
+            # Same as _create_db: no post-commit refresh (it ran without the
+            # tenant GUC and failed under RLS). The UPDATE is flushed by
+            # sqlalchemy_rls_context while app.tenant_id is still set.
             return self._orm_to_dict(obj)
 
     async def _delete_db(self, tenant_id: str, template_id: str) -> bool:
         from sqlalchemy import select
-        from sqlalchemy import text as _t
 
         from app.db.models.template import GoalTemplate
 
-        async with self._db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-            )
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             obj = (
                 await session.execute(
                     select(GoalTemplate).where(
@@ -548,7 +559,6 @@ class _TemplateStore:
             if obj is None:
                 return False
             await session.delete(obj)
-            await session.commit()
             return True
 
     @staticmethod
