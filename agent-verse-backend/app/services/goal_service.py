@@ -3957,16 +3957,22 @@ class GoalService:
         """Approve or reject a pending HITL request for *goal_id*."""
         self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
         if action == "approve":
-            ok = self._hitl.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
+            # DB-resolving: the sync approve() only sees this process's cache,
+            # which is not warmed from the DB at startup (Postgres is the source
+            # of truth), so a gate raised before a restart / on another replica
+            # would read as not found.
+            ok = await self._hitl.approve_async(
+                request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
+            )
         elif action == "reject":
             ok = await self._hitl.reject(
                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
             )
         else:
             ok = False
-        # ``HITLGateway.approve`` returns a dual sync/async ``_AwaitableBool`` which
-        # FastAPI/pydantic cannot serialize; coerce to a plain bool for the
-        # response payload.
+        # Coerce to a plain bool for the response payload (the sync
+        # ``HITLGateway.approve`` returns an ``_AwaitableBool`` pydantic cannot
+        # serialize, and test doubles may return any truthy value).
         return {"request_id": request_id, "action": action, "accepted": bool(ok)}
 
     # ── DB persistence helpers ────────────────────────────────────────────────

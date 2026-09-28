@@ -142,7 +142,13 @@ async def test_list_pending_approvals_skill() -> None:
             self.status = "pending"
 
     class _Gateway:
+        # The skill must use the DB-backed listing: the process cache is not
+        # warmed at startup, so list_pending() would miss approvals raised before
+        # a restart or on another replica.
         def list_pending(self, *, tenant_ctx: Any, goal_id: Any = None) -> list[Any]:
+            raise AssertionError("chat skill must use alist_pending (DB-backed)")
+
+        async def alist_pending(self, *, tenant_ctx: Any, goal_id: Any = None) -> list[Any]:
             return [_Req("req-1")]
 
     skill = build_list_pending_approvals_skill(_Gateway())
@@ -161,7 +167,11 @@ async def test_resolve_approval_skill_approve_and_reject() -> None:
         def __init__(self) -> None:
             self.calls: list[tuple[str, str]] = []
 
-        async def approve(self, request_id: str, *, approver: str, note: str, tenant_ctx: Any) -> bool:
+        # approve_async resolves the request in Postgres first; the sync
+        # approve() only sees this process's cache.
+        async def approve_async(
+            self, request_id: str, *, approver: str, note: str, tenant_ctx: Any
+        ) -> bool:
             self.calls.append(("approve", request_id))
             return True
 

@@ -127,7 +127,9 @@ def build_generate_document_skill(artifact_store: Any) -> ChatSkill:
 
 def build_list_pending_approvals_skill(hitl_gateway: Any) -> ChatSkill:
     async def handler(tenant_ctx: Any, goal_id: str | None = None) -> list[dict[str, Any]]:
-        reqs = hitl_gateway.list_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
+        # DB-backed, tenant-scoped listing: the process cache holds only what this
+        # replica raised or already read (no startup warm-up).
+        reqs = await hitl_gateway.alist_pending(tenant_ctx=tenant_ctx, goal_id=goal_id)
         return [
             {
                 "request_id": getattr(r, "request_id", None) or getattr(r, "id", None),
@@ -154,7 +156,8 @@ def build_resolve_approval_skill(hitl_gateway: Any) -> ChatSkill:
     ) -> dict[str, Any]:
         d = decision.strip().lower()
         if d in ("approve", "approved", "yes"):
-            ok = await hitl_gateway.approve(
+            # DB-resolving approve (see HITLGateway.approve_async).
+            ok = await hitl_gateway.approve_async(
                 request_id, approver="chat", note=note, tenant_ctx=tenant_ctx
             )
         elif d in ("reject", "rejected", "no", "deny", "denied"):

@@ -855,9 +855,11 @@ class TestHandleApproval:
     async def test_approve_action_delegates_to_hitl(self):
         svc = _svc()
         _inject_goal(svc, "g1")
-        with patch.object(svc._hitl, "approve", return_value=True):
+        # DB-resolving approve: the process cache is not warmed at startup.
+        with patch.object(svc._hitl, "approve_async", AsyncMock(return_value=True)) as m:
             result = await svc.handle_approval("g1", "req-1", "approve", "admin", "", _ctx())
         assert result["accepted"] is True
+        m.assert_awaited_once()
 
     async def test_reject_action_delegates_to_hitl(self):
         svc = _svc()

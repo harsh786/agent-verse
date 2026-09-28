@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import logging
 import re
+import time
 import uuid
 from typing import Any
 
@@ -19,6 +20,25 @@ from app.guardrails_v2.models import (
 )
 
 _log = logging.getLogger(__name__)
+
+# Lazy per-tenant rule loading (replaces the cross-tenant startup warm scan).
+# A tenant's persisted rules are re-read from Postgres at most this often, so a
+# rule written through another replica becomes enforced here within the window.
+_DEFAULT_RULE_REFRESH_S = 60.0
+# After a FIRST load fails, further evaluations for that tenant fail fast for this
+# long instead of each waiting on a struggling database.
+_LOAD_RETRY_BACKOFF_S = 5.0
+
+
+class GuardrailRulesUnavailableError(RuntimeError):
+    """A tenant's persisted guardrail rules could not be loaded.
+
+    Raised instead of silently evaluating against only the in-memory defaults:
+    that would quietly drop the tenant's own BLOCK rules. Callers already treat
+    an erroring guardrail check as "unknown" and fail closed on high-risk work
+    (SAFE-4). Deliberately not a ``TypeError``/``AttributeError``, which callers
+    treat as a contract bug.
+    """
 
 # Combined secret-format regex used by the baseline ``regex_match`` rule so that
 # an unconfigured tenant still blocks obvious credential leakage in tool args /
@@ -212,7 +232,7 @@ def _injection_deobfuscation_hit(content: str) -> str | None:
 class GuardrailsEngine:
     """Evaluates content against guardrail rules."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, rule_refresh_s: float = _DEFAULT_RULE_REFRESH_S) -> None:
         self._rules: dict[str, list[GuardrailRule]] = {}  # tenant_id → rules
         self._violations: dict[str, list[GuardrailViolation]] = {}  # tenant_id → violations
         self._provider: Any = None
@@ -221,24 +241,41 @@ class GuardrailsEngine:
         # in the in-memory create_app path / unit tests.
         self._repo: Any = None
         self._auto_persist: bool = False
+        # Rules written by an operator/API call → upserted on flush.
         self._unsaved: list[GuardrailRule] = []
+        # Seeded baseline/bundle defaults → inserted only if absent on flush, so a
+        # re-seed on a fresh process never overwrites a persisted (edited) row.
+        self._unsaved_seeds: list[GuardrailRule] = []
         self._save_tasks: set[Any] = set()
+        # Lazy per-tenant load bookkeeping (monotonic timestamps).
+        self._rule_refresh_s = rule_refresh_s
+        self._tenant_loaded_at: dict[str, float] = {}
+        self._tenant_load_failed_at: dict[str, float] = {}
 
     def set_provider(self, provider: Any) -> None:
         self._provider = provider
 
     def bind_repository(self, repo: Any, *, auto_persist: bool = False) -> None:
-        """Attach a persistence repository. When ``auto_persist`` is set, rules
-        added at runtime are flushed to the repo on a best-effort background task.
-        Tests bind with ``auto_persist=False`` and call ``flush`` explicitly for
-        deterministic behaviour."""
+        """Attach (or with ``None`` detach) a persistence repository.
+
+        When ``auto_persist`` is set, rules added at runtime are flushed to the
+        repo on a best-effort background task. Tests bind with
+        ``auto_persist=False`` and call ``flush`` explicitly for deterministic
+        behaviour. Nothing is read here: each tenant's persisted rules are loaded
+        on that tenant's first evaluation (:meth:`ensure_tenant_loaded`).
+        """
         self._repo = repo
         self._auto_persist = auto_persist
+        self._tenant_loaded_at.clear()
+        self._tenant_load_failed_at.clear()
 
     def add_rule(self, rule: GuardrailRule) -> None:
+        self._add(rule, seed=False)
+
+    def _add(self, rule: GuardrailRule, *, seed: bool) -> None:
         self._rules.setdefault(rule.tenant_id, []).append(rule)
         if self._repo is not None:
-            self._unsaved.append(rule)
+            (self._unsaved_seeds if seed else self._unsaved).append(rule)
             if self._auto_persist:
                 self._schedule_flush()
 
@@ -256,11 +293,22 @@ class GuardrailsEngine:
 
     async def flush(self) -> int:
         """Persist any rules added since the last flush. Returns the count saved."""
-        if self._repo is None or not self._unsaved:
+        if self._repo is None or not (self._unsaved or self._unsaved_seeds):
             return 0
-        pending = self._unsaved
-        self._unsaved = []
+        seeds, self._unsaved_seeds = self._unsaved_seeds, []
+        pending, self._unsaved = self._unsaved, []
+        insert_if_absent = getattr(self._repo, "insert_if_absent", None)
         saved = 0
+        for rule in seeds:
+            try:
+                if insert_if_absent is not None:
+                    await insert_if_absent(rule)
+                else:  # minimal repos (tests) without the conditional insert
+                    await self._repo.upsert(rule)
+                saved += 1
+            except Exception:
+                _log.exception("guardrail rule persist failed rule_id=%s", rule.rule_id)
+                self._unsaved_seeds.append(rule)  # retry on next flush
         for rule in pending:
             try:
                 await self._repo.upsert(rule)
@@ -270,19 +318,88 @@ class GuardrailsEngine:
                 self._unsaved.append(rule)  # retry on next flush
         return saved
 
-    async def load_from_repo(self, tenant_id: str | None = None) -> int:
-        """Rehydrate rules from the bound repository into memory. Returns count."""
+    async def load_from_repo(self, tenant_id: str) -> int:
+        """Merge ONE tenant's persisted rules into memory. Returns the count added.
+
+        Postgres is the source of truth: a persisted row replaces an in-memory
+        rule with the same id (e.g. a baseline default seeded moments earlier by
+        ``ensure_default_rules``), unless that in-memory rule is an operator write
+        still waiting to be flushed — that one is newer than the row.
+        """
         if self._repo is None:
             return 0
         rules = await self._repo.load(tenant_id)
+        pending_writes = {r.rule_id for r in self._unsaved if r.tenant_id == tenant_id}
+        existing = self._rules.setdefault(tenant_id, [])
+        position = {r.rule_id: i for i, r in enumerate(existing)}
+        persisted: set[str] = set()
         loaded = 0
         for rule in rules:
-            existing = self._rules.setdefault(rule.tenant_id, [])
-            if any(r.rule_id == rule.rule_id for r in existing):
+            if rule.tenant_id != tenant_id:
+                # Defense in depth: RLS + the repo's predicate already exclude
+                # these; never let another tenant's rule into this tenant's list.
+                _log.error(
+                    "guardrail rule tenant mismatch rule_id=%s expected=%s got=%s",
+                    rule.rule_id,
+                    tenant_id,
+                    rule.tenant_id,
+                )
                 continue
-            existing.append(rule)
-            loaded += 1
+            persisted.add(rule.rule_id)
+            idx = position.get(rule.rule_id)
+            if idx is None:
+                position[rule.rule_id] = len(existing)
+                existing.append(rule)
+                loaded += 1
+            elif rule.rule_id not in pending_writes:
+                existing[idx] = rule
+        # A seed whose row already exists needs no insert.
+        self._unsaved_seeds = [r for r in self._unsaved_seeds if r.rule_id not in persisted]
         return loaded
+
+    async def ensure_tenant_loaded(self, tenant_id: str) -> None:
+        """Make sure ``tenant_id``'s persisted rules are in memory (and fresh).
+
+        This is the lazy, per-tenant replacement for the old cross-tenant startup
+        scan: the first evaluation for a tenant on this process reads that
+        tenant's rules under its own RLS context; later evaluations re-read them
+        at most every ``rule_refresh_s`` so rules written on another replica are
+        picked up. No-op without a bound repository.
+
+        Raises :class:`GuardrailRulesUnavailableError` when the tenant has never
+        been loaded here and the load fails. Once loaded, a failed refresh keeps
+        serving the last-known rules (logged) rather than failing the request.
+        """
+        if self._repo is None or not tenant_id:
+            return
+        now = time.monotonic()
+        loaded_at = self._tenant_loaded_at.get(tenant_id)
+        if loaded_at is not None and now - loaded_at < self._rule_refresh_s:
+            return
+        if loaded_at is None:
+            failed_at = self._tenant_load_failed_at.get(tenant_id)
+            if failed_at is not None and now - failed_at < _LOAD_RETRY_BACKOFF_S:
+                raise GuardrailRulesUnavailableError(
+                    f"guardrail rules for tenant {tenant_id!r} are unavailable"
+                )
+        try:
+            await self.load_from_repo(tenant_id)
+        except Exception as exc:
+            if loaded_at is None:
+                self._tenant_load_failed_at[tenant_id] = time.monotonic()
+                _log.warning("guardrail rules load failed tenant=%s: %s", tenant_id, exc)
+                raise GuardrailRulesUnavailableError(
+                    f"guardrail rules for tenant {tenant_id!r} could not be loaded"
+                ) from exc
+            _log.warning(
+                "guardrail rules refresh failed tenant=%s; serving last-known rules: %s",
+                tenant_id,
+                exc,
+            )
+            self._tenant_loaded_at[tenant_id] = time.monotonic()  # retry next window
+            return
+        self._tenant_loaded_at[tenant_id] = time.monotonic()
+        self._tenant_load_failed_at.pop(tenant_id, None)
 
     def ensure_default_rules(
         self, tenant_id: str, bundles: list[str] | None = None
@@ -299,7 +416,7 @@ class GuardrailsEngine:
         for rule in _baseline_rules(tenant_id):
             if rule.rule_id in existing_ids:
                 continue
-            self.add_rule(rule)
+            self._add(rule, seed=True)
             existing_ids.add(rule.rule_id)
             added += 1
         for tag in bundles or []:
@@ -312,16 +429,25 @@ class GuardrailsEngine:
                 rule = _rule_from_spec(tenant_id, rule_id, spec)
                 if rule.rule_id in existing_ids:
                     continue
-                self.add_rule(rule)
+                self._add(rule, seed=True)
                 existing_ids.add(rule.rule_id)
                 added += 1
         return added
 
     def get_rules(self, tenant_id: str, layer: GuardrailLayer | None = None) -> list[GuardrailRule]:
+        """In-memory view only. Request paths should use :meth:`aget_rules`, which
+        first loads the tenant's persisted rules on a fresh process."""
         rules = [r for r in self._rules.get(tenant_id, []) if r.enabled]
         if layer:
             rules = [r for r in rules if layer in r.layers]
         return rules
+
+    async def aget_rules(
+        self, tenant_id: str, layer: GuardrailLayer | None = None
+    ) -> list[GuardrailRule]:
+        """Like :meth:`get_rules`, after loading the tenant's persisted rules."""
+        await self.ensure_tenant_loaded(tenant_id)
+        return self.get_rules(tenant_id, layer)
 
     def get_violations(self, tenant_id: str, limit: int = 100) -> list[GuardrailViolation]:
         violations = list(reversed(self._violations.get(tenant_id, [])))
@@ -336,7 +462,7 @@ class GuardrailsEngine:
         step_description: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate content against all active rules for the given layer."""
-        rules = self.get_rules(tenant_id, layer)
+        rules = await self.aget_rules(tenant_id, layer)
         violations = []
         redacted_content = content
         blocked = False
@@ -393,7 +519,7 @@ class GuardrailsEngine:
         except ValueError:
             return {"error": f"Invalid layer: {layer}"}
 
-        rules = self.get_rules(tenant_id, layer_enum)
+        rules = await self.aget_rules(tenant_id, layer_enum)
         would_trigger = []
 
         for rule in rules:

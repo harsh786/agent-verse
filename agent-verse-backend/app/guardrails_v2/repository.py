@@ -4,6 +4,11 @@ Rules were previously held only in ``GuardrailsEngine._rules`` (in-memory) and
 were lost on restart. This repository durably stores them, tenant-scoped and
 RLS-protected. It is bound to the engine in the app lifespan (two-phase wiring:
 in-memory in ``create_app``, DB-backed here).
+
+Every statement runs inside the owning tenant's RLS context (``app.tenant_id``)
+and also carries an explicit ``tenant_id`` predicate. There is deliberately no
+cross-tenant read: the API connects as a NOBYPASSRLS role, and the engine loads
+each tenant's rules lazily instead of warming every tenant's rules at startup.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.models.guardrail_rule import GuardrailRuleRow
-from app.db.rls import sqlalchemy_rls_context, system_session
+from app.db.rls import sqlalchemy_rls_context
 from app.guardrails_v2.models import (
     GuardrailAction,
     GuardrailLayer,
@@ -74,29 +79,52 @@ class PostgresGuardrailRuleRepository:
             stmt = pg_insert(GuardrailRuleRow).values(**values)
             update_cols = {k: v for k, v in values.items() if k not in ("rule_id", "tenant_id")}
             stmt = stmt.on_conflict_do_update(
-                index_elements=[GuardrailRuleRow.rule_id], set_=update_cols
+                index_elements=[GuardrailRuleRow.rule_id],
+                set_=update_cols,
+                # Defense in depth next to RLS: never rewrite another tenant's row.
+                where=GuardrailRuleRow.tenant_id == rule.tenant_id,
             )
             await db.execute(stmt)
 
-    async def load(self, tenant_id: str | None = None) -> list[GuardrailRule]:
-        """Load rules. With ``tenant_id`` set, scope to that tenant under its RLS
-        context; with ``None`` (lifespan rehydrate) read across tenants via a
-        system session (requires a BYPASSRLS/superuser DB role)."""
-        if tenant_id is not None:
-            async with (
-                self._sessions() as db,
-                db.begin(),
-                sqlalchemy_rls_context(db, tenant_id),
-            ):
-                rows = (
-                    await db.execute(
-                        select(GuardrailRuleRow).where(
-                            GuardrailRuleRow.tenant_id == tenant_id
-                        )
-                    )
-                ).scalars().all()
-                return [_from_row(r) for r in rows]
+    async def insert_if_absent(self, rule: GuardrailRule) -> None:
+        """Insert ``rule`` unless a row with its id already exists.
 
-        async with self._sessions() as db, db.begin(), system_session(db):
-            rows = (await db.execute(select(GuardrailRuleRow))).scalars().all()
-            return [_from_row(r) for r in rows]
+        Used for seeded baseline / compliance-bundle rules. Their ids are
+        deterministic per tenant, so an existing row means the tenant already has
+        that rule, possibly edited (e.g. disabled). Re-seeding on a fresh process
+        must not overwrite it with the pristine default, which an upsert would do.
+        """
+        values = _to_row(rule)
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, rule.tenant_id),
+        ):
+            stmt = (
+                pg_insert(GuardrailRuleRow)
+                .values(**values)
+                .on_conflict_do_nothing(index_elements=[GuardrailRuleRow.rule_id])
+            )
+            await db.execute(stmt)
+
+    async def load(self, tenant_id: str) -> list[GuardrailRule]:
+        """Load ONE tenant's rules under that tenant's RLS context.
+
+        ``tenant_id`` is required. The previous ``load(None)`` read every tenant's
+        rules through ``system_session`` at startup; under the API's NOBYPASSRLS
+        role that failed ("failed to load persisted guardrail rules"), and a
+        maintenance-role read has no place on the request-serving path. The engine
+        now loads each tenant lazily on that tenant's first evaluation. The explicit
+        predicate is defense in depth on top of the RLS policy.
+        """
+        if not tenant_id:
+            raise ValueError("tenant_id is required to load guardrail rules")
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            result = await db.execute(
+                select(GuardrailRuleRow).where(GuardrailRuleRow.tenant_id == tenant_id)
+            )
+            return [_from_row(r) for r in result.scalars().all()]

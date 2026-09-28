@@ -1184,9 +1184,10 @@ def create_app(
             event_store = EventStore(db_factory)
 
             # P1-4: bind the guardrails engine to a durable, RLS-scoped repository
-            # and rehydrate any persisted rules (two-phase wiring — in-memory in
-            # create_app, DB-backed here). Best-effort: a load failure must not
-            # abort startup (defaults are re-seeded per goal by the selector).
+            # (two-phase wiring — in-memory in create_app, DB-backed here). There is
+            # no startup warm-up: each tenant's persisted rules are loaded under that
+            # tenant's RLS context on its first evaluation (the old cross-tenant
+            # SELECT failed under the API's NOBYPASSRLS role).
             try:
                 from app.guardrails_v2.engine import guardrails_engine
                 from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
@@ -1194,10 +1195,9 @@ def create_app(
                 guardrails_engine.bind_repository(
                     PostgresGuardrailRuleRepository(db_factory), auto_persist=True
                 )
-                _loaded_rules = await guardrails_engine.load_from_repo()
-                logger.info("guardrails_rules_loaded", extra={"count": _loaded_rules})
+                logger.info("guardrails_rule_repository_bound")
             except Exception:
-                logger.exception("failed to load persisted guardrail rules")
+                logger.exception("failed to bind the guardrail rule repository")
             from app.coordination.service import CoordinationService
             from app.coordination.store import CoordinationStore
 
@@ -2112,10 +2112,15 @@ def create_app(
             except Exception as _pv_exc:
                 logger.warning("prompt_optimizer_db_wire_failed", error=str(_pv_exc))
 
-            # ── HITLGateway: restore pending approvals from DB on startup ──────────
+            # ── HITLGateway: startup maintenance only ────────────────────────────
+            # Expiring phantom approvals is cross-tenant system work, so it runs on
+            # the maintenance role. Pending approvals are not warmed into memory:
+            # Postgres is the source of truth and request paths read it per tenant.
             try:
-                _hitl_restored = await _hitl.startup_restore(db=db_factory)
-                logger.info("hitl_startup_restore_complete", count=_hitl_restored)
+                _hitl_expired = await _hitl.startup_restore(
+                    db=app.state.system_db_session_factory
+                )
+                logger.info("hitl_startup_restore_complete", phantoms_expired=_hitl_expired)
             except Exception as _hitl_exc:
                 logger.warning("hitl_startup_restore_failed", error=str(_hitl_exc))
 
@@ -2381,6 +2386,17 @@ def create_app(
 
                     with contextlib.suppress(Exception):
                         await _siem_fwd.stop()
+                # Persist any guardrail rules still pending, then detach the
+                # process-wide engine from this lifespan's DB pool: it now reads
+                # rules through the repository on evaluation, and must not keep
+                # doing so against a pool that is being shut down.
+                try:
+                    from app.guardrails_v2.engine import guardrails_engine as _ge_stop
+
+                    await _ge_stop.flush()
+                    _ge_stop.bind_repository(None)
+                except Exception as _ge_stop_exc:
+                    logger.warning("guardrails_repository_unbind_failed", error=str(_ge_stop_exc))
                 await active.shutdown()
         else:
             try:

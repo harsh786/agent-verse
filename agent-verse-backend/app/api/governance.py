@@ -1402,7 +1402,11 @@ async def batch_approve(
 
     for req_id in body.request_ids:
         if body.action == "approve":
-            ok = gateway.approve(
+            # DB-resolving (tenant-scoped): the sync approve() only sees this
+            # replica's cache, which no longer gets a cross-tenant warm-up at
+            # startup — a live approval raised before a restart or on another
+            # replica would otherwise report not_found.
+            ok = await gateway.approve_async(
                 req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
             )
             if ok:

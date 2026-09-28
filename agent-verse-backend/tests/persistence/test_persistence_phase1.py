@@ -21,9 +21,9 @@ def test_hitl_has_db_session_factory_attr() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hitl_load_pending_returns_zero_without_db() -> None:
+async def test_hitl_phantom_sweep_returns_zero_without_db() -> None:
     gw = HITLGateway()
-    count = await gw.load_pending_from_db_full(None)
+    count = await gw.expire_phantom_approvals(None)
     assert count == 0
 
 

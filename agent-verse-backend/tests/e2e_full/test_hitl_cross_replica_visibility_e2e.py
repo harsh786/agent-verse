@@ -125,19 +125,49 @@ async def test_pending_listing_is_tenant_scoped(app: Any, client: Any) -> None:
     assert any(r.request_id == request_id for r in await gateway.alist_pending(tenant_ctx=ctx_a))
 
 
-async def test_startup_hydration_is_bounded() -> None:
-    """The startup scan must not pull the whole fleet's approvals into memory.
+async def test_startup_does_not_hydrate_and_its_sweep_is_bounded() -> None:
+    """Startup pulls no tenant's approvals into memory; its one write is bounded.
 
-    It is a warm cache, not the source of truth — the DB fallback above is what
-    makes correctness independent of it — so an unbounded fleet-wide read is
-    pure cost: O(fleet) startup time and every replica holding every tenant's
-    pending approvals.
+    The DB is the source of truth and every request path reads it per tenant,
+    so the old fleet-wide warm-up (which also could not see any rows under the
+    NOBYPASSRLS application role) is gone. What remains at startup is the
+    phantom sweep on the maintenance role, capped per call.
     """
-    import inspect
-
+    from app.governance import hitl as hitl_mod
     from app.governance.hitl import HITLGateway
 
-    source = inspect.getsource(HITLGateway.load_pending_from_db_full)
-    assert "LIMIT" in source, (
-        "the startup hydration scan is unbounded across every tenant"
-    )
+    assert not hasattr(HITLGateway, "load_pending_from_db_full")
+    assert "LIMIT :lim" in hitl_mod._EXPIRE_PHANTOMS_SQL
+    assert "SKIP LOCKED" in hitl_mod._EXPIRE_PHANTOMS_SQL  # concurrent replicas
+    assert hitl_mod._PHANTOM_SWEEP_LIMIT <= 10_000
+
+    class _NoRows:
+        def all(self) -> list[object]:
+            return []
+
+    class _Session:
+        async def execute(self, *a: object, **k: object) -> _NoRows:
+            return _NoRows()
+
+    class _Tx:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *a: object) -> bool:
+            return False
+
+    class _Factory:
+        def __call__(self) -> _Factory:
+            return self
+
+        async def __aenter__(self) -> _Session:
+            sess = _Session()
+            sess.begin = lambda: _Tx()  # type: ignore[attr-defined]
+            return sess
+
+        async def __aexit__(self, *a: object) -> bool:
+            return False
+
+    gw = HITLGateway()
+    await gw.startup_restore(_Factory())
+    assert gw._requests == {}

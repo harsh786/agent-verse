@@ -591,43 +591,9 @@ class TestHITLExtra:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
-
-        def _db():
-            return mock_session
-
-        gw = HITLGateway()
-        count = await gw.load_pending_from_db(db=_db, tenant_id="t1")
-        assert count == 1
-
-    # lines 432–455 — load_pending_from_db_full with DB rows
-    @pytest.mark.asyncio
-    async def test_load_pending_from_db_full_with_rows(self) -> None:
-        from app.governance.hitl import HITLGateway
-
-        # load_pending_from_db_full reads the pending query via .mappings().all()
-        # (dict rows) and the terminal-goal checks via .scalars().all().
-        row = {
-            "id": "req-full-1",
-            "goal_id": "g-full-1",
-            "action": "migrate",
-            "risk_level": "medium",
-            "tenant_id": "tenant-full",
-        }
-        mock_mappings = MagicMock()
-        mock_mappings.all = MagicMock(return_value=[row])
-        mock_scalars = MagicMock()
-        mock_scalars.all = MagicMock(return_value=[])  # no terminal missions/goals
-
-        mock_result = MagicMock()
-        mock_result.mappings = MagicMock(return_value=mock_mappings)
-        mock_result.scalars = MagicMock(return_value=mock_scalars)
-
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        # load_pending_from_db_full opens `async with db() as session, session.begin(), ...`
-        # so session.begin() must return an async context manager, not a coroutine.
+        # load_pending_from_db opens `async with db() as session, session.begin(),
+        # sqlalchemy_rls_context(...)` — the tenant RLS context is mandatory on
+        # FORCE-RLS approval_requests — so begin() must be an async CM.
         _txn = AsyncMock()
         _txn.__aenter__ = AsyncMock(return_value=_txn)
         _txn.__aexit__ = AsyncMock(return_value=False)
@@ -637,17 +603,55 @@ class TestHITLExtra:
             return mock_session
 
         gw = HITLGateway()
-        count = await gw.load_pending_from_db_full(db=_db)
+        count = await gw.load_pending_from_db(db=_db, tenant_id="t1")
         assert count == 1
+        # The first statement sets the tenant GUC before the SELECT runs.
+        first_sql = str(mock_session.execute.await_args_list[0].args[0])
+        assert "set_config('app.tenant_id'" in first_sql
+        assert mock_session.execute.await_args_list[0].args[1] == {"tid": "t1"}
 
-    # lines 477–480 — startup_restore logs warning on exception
+    @pytest.mark.asyncio
+    async def test_expire_phantom_approvals_updates_and_syncs_cache(self) -> None:
+        from app.governance.hitl import ApprovalRequest, ApprovalStatus, HITLGateway
+
+        # The sweep is a single UPDATE ... RETURNING id, tenant_id (no hydration).
+        mock_result = MagicMock()
+        mock_result.all = MagicMock(return_value=[("req-phantom", "tenant-x")])
+
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        _txn = AsyncMock()
+        _txn.__aenter__ = AsyncMock(return_value=_txn)
+        _txn.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=_txn)
+
+        def _system_db():
+            return mock_session
+
+        gw = HITLGateway()
+        cached = ApprovalRequest(
+            goal_id="g-done", action="deploy", risk_level="high", request_id="req-phantom"
+        )
+        gw._requests[("tenant-x", "req-phantom")] = cached
+
+        count = await gw.expire_phantom_approvals(_system_db)
+        assert count == 1
+        executed = [str(c.args[0]) for c in mock_session.execute.await_args_list]
+        assert executed[0] == "SET LOCAL row_security = off"  # maintenance role
+        assert "UPDATE approval_requests" in executed[1]
+        assert "LIMIT :lim" in executed[1]
+        assert cached.status == ApprovalStatus.TIMED_OUT
+        assert list(gw._requests) == [("tenant-x", "req-phantom")]  # nothing hydrated
+
+    # startup_restore logs warning on exception
     @pytest.mark.asyncio
     async def test_startup_restore_exception_logged(self) -> None:
         from app.governance.hitl import HITLGateway
 
         gw = HITLGateway()
-        # Make load_pending_from_db_full raise
-        gw.load_pending_from_db_full = AsyncMock(side_effect=RuntimeError("full scan failed"))
+        gw.expire_phantom_approvals = AsyncMock(side_effect=RuntimeError("sweep failed"))
 
         result = await gw.startup_restore(db=MagicMock())
         assert result == 0  # returns 0 on exception
@@ -2787,21 +2791,26 @@ class TestHITLWave5:
         await gw._db_persist_approval_request(req, "t1")
 
     @pytest.mark.asyncio
-    async def test_load_pending_from_db_full_exception_logged(self) -> None:
-        """Lines 452-455: load_pending_from_db_full DB exception logged."""
+    async def test_expire_phantom_approvals_exception_logged(self) -> None:
+        """A failing phantom sweep (e.g. no BYPASSRLS role) is logged, returns 0."""
         from app.governance.hitl import HITLGateway
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=RuntimeError("db fail"))
+        _txn = AsyncMock()
+        _txn.__aenter__ = AsyncMock(return_value=_txn)
+        _txn.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=_txn)
 
         def _db():
             return mock_session
 
         gw = HITLGateway()
-        count = await gw.load_pending_from_db_full(db=_db)
+        count = await gw.expire_phantom_approvals(_db)
         assert count == 0
+        mock_session.execute.assert_awaited()
 
 
 class TestIntegrationsWave5:

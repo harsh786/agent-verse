@@ -96,9 +96,14 @@ async def create_rule(request: Request, body: CreateRuleRequest) -> dict[str, An
 async def list_rules(request: Request) -> dict[str, Any]:
     """List all guardrail rules for the tenant."""
     tenant = _require_tenant(request)
-    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
 
-    rules = guardrails_engine.get_rules(tenant.tenant_id)
+    # aget_rules loads this tenant's persisted rules on a fresh process (there is
+    # no cross-tenant warm-up at startup any more).
+    try:
+        rules = await guardrails_engine.aget_rules(tenant.tenant_id)
+    except GuardrailRulesUnavailableError as exc:
+        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
     return {
         "rules": [
             {
@@ -120,20 +125,23 @@ async def list_rules(request: Request) -> dict[str, Any]:
 async def evaluate_content(request: Request, body: EvaluateRequest) -> dict[str, Any]:
     """Evaluate content against guardrail rules."""
     tenant = _require_tenant(request)
-    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
 
     try:
         layer = GuardrailLayer(body.layer)
     except ValueError as _b904_exc:
         raise HTTPException(400, f"Invalid layer: {body.layer}") from _b904_exc
 
-    result = await guardrails_engine.evaluate(
-        content=body.content,
-        layer=layer,
-        tenant_id=tenant.tenant_id,
-        goal_id=body.goal_id,
-        step_description=body.step_description,
-    )
+    try:
+        result = await guardrails_engine.evaluate(
+            content=body.content,
+            layer=layer,
+            tenant_id=tenant.tenant_id,
+            goal_id=body.goal_id,
+            step_description=body.step_description,
+        )
+    except GuardrailRulesUnavailableError as exc:
+        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
     return result
 
 
@@ -141,9 +149,12 @@ async def evaluate_content(request: Request, body: EvaluateRequest) -> dict[str,
 async def simulate_evaluation(request: Request, body: SimulateRequest) -> dict[str, Any]:
     """Simulate guardrail evaluation without recording violations."""
     tenant = _require_tenant(request)
-    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError, guardrails_engine
 
-    return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
+    try:
+        return await guardrails_engine.simulate(body.content, body.layer, tenant.tenant_id)
+    except GuardrailRulesUnavailableError as exc:
+        raise HTTPException(503, "Guardrail rules are temporarily unavailable") from exc
 
 
 @router.post("/evaluate-corpus")

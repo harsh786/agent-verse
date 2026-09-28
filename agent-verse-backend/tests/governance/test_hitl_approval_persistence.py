@@ -80,30 +80,31 @@ async def test_approve_persists_and_phantoms_are_expired_on_restore() -> None:
         gw = HITLGateway()
         gw._db_session_factory = factory
 
-        # ── Restore: the phantom (failed goal) is skipped + expired; the live one loads.
-        loaded = await gw.load_pending_from_db_full(factory)
-        assert loaded == 1, "only the live-goal approval should be restored"
-        assert (tenant_id, req_live) in gw._requests
-        assert (tenant_id, req_phantom) not in gw._requests
+        # ── Startup maintenance: the phantom (its goal already failed) is expired
+        # in the DB; nothing is warm-loaded into memory any more (Postgres is the
+        # source of truth and request paths read it per tenant).
+        expired = await gw.expire_phantom_approvals(factory)
+        assert expired == 1, "only the failed-goal approval is a phantom"
+        assert gw._requests == {}, "no cross-tenant warm-up into process memory"
         assert await _status(req_phantom) == "expired", "phantom must be expired in DB"
         assert await _status(req_live) == "pending"
 
-        # ── Approve the live one → the DB row becomes durable 'approved'.
-        ok = await gw.approve(req_live, approver="tester", tenant_ctx=ctx)
+        # ── A process that never raised or cached the request can still approve
+        # it: approve_async resolves it in the DB (tenant-scoped) first.
+        ok = await gw.approve_async(req_live, approver="tester", tenant_ctx=ctx)
         assert bool(ok) is True
         assert gw._requests[(tenant_id, req_live)].status == ApprovalStatus.APPROVED
-        # approve() schedules the DB write on the loop — let it settle, then verify.
         for _ in range(20):
             if await _status(req_live) == "approved":
                 break
             await asyncio.sleep(0.1)
         assert await _status(req_live) == "approved", "approval must persist to the DB"
 
-        # ── A fresh gateway restoring from DB must NOT resurrect the approved gate.
+        # ── A fresh gateway must not see the approved gate as pending.
         gw2 = HITLGateway()
         gw2._db_session_factory = factory
-        loaded2 = await gw2.load_pending_from_db_full(factory)
-        assert loaded2 == 0, "an approved gate must not reappear after restart"
+        assert await gw2.alist_pending(tenant_ctx=ctx) == []
+        assert await gw2.expire_phantom_approvals(factory) == 0
     finally:
         async with factory() as s, s.begin():
             await s.execute(

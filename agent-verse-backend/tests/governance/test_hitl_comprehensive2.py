@@ -335,9 +335,9 @@ class TestHITLGateway:
         count = await gw.load_pending_from_db(bad_factory, "t1")
         assert count == 0
 
-    async def test_load_pending_from_db_full_no_db(self) -> None:
+    async def test_expire_phantom_approvals_no_db(self) -> None:
         gw = HITLGateway()
-        count = await gw.load_pending_from_db_full(None)
+        count = await gw.expire_phantom_approvals(None)
         assert count == 0
 
     async def test_startup_restore_no_db_returns_0(self) -> None:

@@ -114,10 +114,46 @@ class ApprovalRequest:
         return hash(self.request_id)
 
 
-# Cap on the fleet-wide pending-approval hydration at startup. The cache is a
-# warm-start optimisation; correctness comes from the DB-backed reads, so there
-# is nothing to gain from pulling every tenant's queue into every replica.
-_STARTUP_HYDRATION_LIMIT = 5000
+# Cap on how many phantom approvals one startup sweep expires, so a huge backlog
+# cannot hold row locks on approval_requests for long while the API boots. Any
+# remainder is picked up by the next sweep.
+_PHANTOM_SWEEP_LIMIT = 5000
+
+# Cross-tenant maintenance: expire pending approvals whose owning goal/mission
+# already reached a terminal state. Those are phantoms — the work is done and
+# there is nothing left to approve — but they would otherwise sit in every
+# tenant's DB-backed pending list forever. Goal ownership is matched on tenant as
+# well as id; org mission ids are globally unique UUIDs (and their tenant_id is a
+# UUID column, not the 32-char text of approval_requests).
+_EXPIRE_PHANTOMS_SQL = """
+WITH phantom AS (
+    SELECT ar.id
+    FROM approval_requests ar
+    WHERE ar.status = 'pending'
+      AND ar.goal_id IS NOT NULL
+      AND (
+        EXISTS (
+            SELECT 1 FROM goals g
+            WHERE g.id = ar.goal_id
+              AND g.tenant_id = ar.tenant_id
+              AND g.status IN ('complete', 'failed', 'cancelled')
+        )
+        OR EXISTS (
+            SELECT 1 FROM org_missions m
+            WHERE m.id::text = ar.goal_id
+              AND m.status IN ('completed', 'failed', 'cancelled', 'archived')
+        )
+      )
+    ORDER BY ar.created_at
+    LIMIT :lim
+    FOR UPDATE OF ar SKIP LOCKED
+)
+UPDATE approval_requests AS ar
+SET status = 'expired', resolved_at = NOW()
+FROM phantom
+WHERE ar.id = phantom.id AND ar.status = 'pending'
+RETURNING ar.id, ar.tenant_id
+"""
 
 # approval_requests.status values → ApprovalStatus.
 _STATUS_BY_DB_VALUE = {
@@ -140,11 +176,14 @@ class HITLGateway:
         *,
         db_session_factory: Any = None,
     ) -> None:
-        # Warm cache only — NOT the source of truth. ``approval_requests`` in
-        # Postgres is, and the ``a*`` read methods below consult it, because a
-        # process-local dict is invisible to every other replica: an approval
-        # created on replica B could not be found or listed on replica A, and one
-        # resolved on B still read as pending on A until A restarted.
+        # Process-local cache only — NOT the source of truth. ``approval_requests``
+        # in Postgres is, and the ``a*`` read methods (and ``reject``) consult it,
+        # because a process-local dict is invisible to every other replica: an
+        # approval created on replica B could not be found or listed on replica A,
+        # and one resolved on B still read as pending on A until A restarted.
+        # It is filled lazily, per tenant, by those DB reads; there is no
+        # cross-tenant warm scan at startup (under the API's NOBYPASSRLS role it
+        # could not see any rows anyway).
         self._requests: dict[tuple[str, str], ApprovalRequest] = {}
         self._timeout = timeout_seconds
         self._notification_service: Any = None
@@ -691,6 +730,10 @@ class HITLGateway:
         Works in both sync and async contexts:
         - Sync: ``ok = gateway.approve(...); assert ok``
         - Async: ``ok = await gateway.approve(...)``
+
+        Process-local: it only sees requests this process raised or has already
+        read from the DB. Request paths use :meth:`approve_async`, which resolves
+        the request in Postgres first (there is no startup warm-up of the cache).
         """
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
@@ -736,6 +779,12 @@ class HITLGateway:
         tenant_ctx: TenantContext,
     ) -> bool:
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
+        if req is None and self._db_session_factory is not None:
+            # Not raised by (or cached on) this process — e.g. created on another
+            # replica, or before a restart. Postgres is the source of truth, so
+            # resolve it there (tenant-scoped, under RLS) rather than answering
+            # "not found" for a live approval.
+            req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
             return False
 
@@ -797,10 +846,11 @@ class HITLGateway:
         tenant_ctx: TenantContext,
         goal_id: str | None = None,
     ) -> list[ApprovalRequest]:
-        """Return pending approval requests for the tenant.
+        """Return pending approval requests for the tenant, from this process's cache.
 
         When *goal_id* is given only requests belonging to that goal are
         returned (C6.4 — prevents goal-B's pending approval from pausing goal-A).
+        Request paths use :meth:`alist_pending`, which reads Postgres.
         """
         return [
             req
@@ -910,15 +960,25 @@ class HITLGateway:
         return expired
 
     async def load_pending_from_db(self, db: Any, tenant_id: str) -> int:
-        """Restore pending approvals from DB on startup (so goals can resume)."""
+        """Cache ONE tenant's pending approvals from the DB. Returns the count.
+
+        Runs inside the tenant's RLS context: ``approval_requests`` is FORCE-RLS,
+        so without ``app.tenant_id`` set the API's NOBYPASSRLS role reads zero
+        rows and this silently restored nothing.
+        """
         if db is None:
             return 0
         try:
             from sqlalchemy import select
 
             from app.db.models.governance import ApprovalRequest as DBApprovalReq
+            from app.db.rls import sqlalchemy_rls_context
 
-            async with db() as session:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 result = await session.execute(
                     select(DBApprovalReq).where(
                         DBApprovalReq.tenant_id == tenant_id, DBApprovalReq.status == "pending"
@@ -941,114 +1001,72 @@ class HITLGateway:
             get_logger(__name__).warning("hitl_load_from_db_failed", error=str(exc))
             return 0
 
-    async def load_pending_from_db_full(self, db: Any) -> int:
-        """Load all pending requests from DB on startup (full tenant scan).
+    async def expire_phantom_approvals(self, system_db: Any) -> int:
+        """Expire pending approvals whose goal/mission already finished (all tenants).
 
-        Returns the number of requests loaded. Returns 0 immediately when db is None.
+        This is genuinely cross-tenant maintenance, so ``system_db`` MUST be the
+        maintenance session factory (``app.db.session.get_system_session_factory``
+        / ``app.state.system_db_session_factory``, a BYPASSRLS role) — never the
+        request-serving factory. Under the API's NOBYPASSRLS role
+        ``system_session`` fails loudly ("query would be affected by row-level
+        security"); that is logged and 0 is returned.
+
+        It only writes; nothing is loaded into this process's cache. The previous
+        startup scan also pulled every tenant's pending approvals into memory,
+        which was both a privilege problem and unnecessary: the DB-backed reads
+        (``aget_request`` / ``alist_pending`` / ``approve_async`` / ``reject``)
+        resolve approvals per tenant on demand.
+
+        Bounded to ``_PHANTOM_SWEEP_LIMIT`` rows per call. Returns the number of
+        approvals expired.
         """
-        if db is None:
+        if system_db is None:
             return 0
         try:
             from sqlalchemy import text
 
-            # Cross-tenant startup scan — bypass RLS (system_session) so the
-            # phantom check can see every tenant's missions/goals. All reads +
-            # the expire write share one transaction to avoid autobegin clashes.
             from app.db.rls import system_session
 
-            async with db() as session, session.begin(), system_session(session):
-                raw = (
-                    await session.execute(
-                        text(
-                            "SELECT id, tenant_id, goal_id, action, risk_level "
-                            "FROM approval_requests WHERE status = 'pending' "
-                            # Warm cache, not the source of truth: the a*
-                            # read methods fall back to the DB, so an
-                            # unbounded fleet-wide read here would only buy
-                            # O(fleet) startup time and every replica holding
-                            # every tenant's pending approvals in RAM.
-                            "ORDER BY created_at DESC LIMIT :lim"
-                        ),
-                        {"lim": _STARTUP_HYDRATION_LIMIT},
-                    )
-                ).mappings().all()
-
-                # Don't resurrect gates whose owning mission/goal already finished:
-                # those are phantom approvals (the work is done — nothing to approve).
-                # Expire them in the DB so they never re-appear, and skip loading them.
-                goal_ids = [r["goal_id"] for r in raw if r["goal_id"]]
-                terminal: set[str] = set()
-                if goal_ids:
-                    m = (
-                        await session.execute(
-                            text(
-                                "SELECT id::text FROM org_missions "
-                                "WHERE id::text = ANY(:ids) "
-                                "AND status IN ('completed','failed','cancelled','archived')"
-                            ),
-                            {"ids": goal_ids},
-                        )
-                    ).scalars().all()
-                    g = (
-                        await session.execute(
-                            text(
-                                "SELECT id FROM goals WHERE id = ANY(:ids) "
-                                "AND status IN ('complete','failed','cancelled')"
-                            ),
-                            {"ids": goal_ids},
-                        )
-                    ).scalars().all()
-                    terminal = {str(x) for x in [*m, *g]}
-                    if terminal:
-                        await session.execute(
-                            text(
-                                "UPDATE approval_requests SET status='expired', "
-                                "resolved_at=NOW() WHERE status='pending' "
-                                "AND goal_id = ANY(:ids)"
-                            ),
-                            {"ids": list(terminal)},
-                        )
-
-            loaded = 0
-            for row in raw:
-                if row["goal_id"] and str(row["goal_id"]) in terminal:
-                    continue  # phantom — owning mission/goal already terminal
-                req = ApprovalRequest(
-                    goal_id=row["goal_id"],
-                    action=row["action"] or "unknown",
-                    risk_level=row["risk_level"] or "unknown",
-                    request_id=row["id"],
-                    status=ApprovalStatus.PENDING,
+            async with (
+                system_db() as session,
+                session.begin(),
+                system_session(session),
+            ):
+                result = await session.execute(
+                    text(_EXPIRE_PHANTOMS_SQL), {"lim": _PHANTOM_SWEEP_LIMIT}
                 )
-                self._requests[(row["tenant_id"], row["id"])] = req
-                loaded += 1
-            return loaded
+                expired = [(str(r[1]), str(r[0])) for r in result.all()]
         except Exception as exc:
             from app.observability.logging import get_logger
 
-            get_logger(__name__).warning("hitl_load_pending_full_failed", error=str(exc))
+            get_logger(__name__).warning("hitl_expire_phantoms_failed", error=str(exc))
             return 0
+        # Keep any copy this process already cached consistent with the DB.
+        for key in expired:
+            cached = self._requests.get(key)
+            if cached is not None and cached.status == ApprovalStatus.PENDING:
+                cached.status = ApprovalStatus.TIMED_OUT
+                cached._event.set()
+        return len(expired)
 
     async def startup_restore(self, db: Any) -> int:
-        """Restore pending HITL approval requests from DB on startup.
+        """Startup HITL maintenance: expire phantom approvals.
 
-        This MUST be called after DB session factory is available so that:
-        - Goals that were waiting_human before restart can be resumed when approved
-        - Operators who approved via Slack/UI during downtime have their approval processed
+        ``db`` must be the maintenance (system) session factory — see
+        :meth:`expire_phantom_approvals`. Pending approvals are NOT hydrated into
+        memory any more: Postgres is the source of truth and every request path
+        reads it per tenant, so a goal left ``waiting_human`` across a restart is
+        still approvable (``approve_async`` / ``reject`` resolve it in the DB).
 
-        Returns: number of requests restored
+        Returns: number of phantom approvals expired.
         """
         if db is None:
             return 0
         try:
-            count = await self.load_pending_from_db_full(db)
+            count = await self.expire_phantom_approvals(db)
             from app.observability.logging import get_logger
 
-            get_logger(__name__).info(
-                "hitl_pending_restored",
-                count=count,
-                message=f"Restored {count} pending HITL approval requests from DB",
-            )
+            get_logger(__name__).info("hitl_phantom_approvals_expired", count=count)
             return count
         except Exception as exc:
             from app.observability.logging import get_logger

@@ -260,9 +260,17 @@ class AuditV3:
             try:
                 from sqlalchemy import text
 
-                from app.db.rls import system_session
+                from app.db.rls import sqlalchemy_rls_context
 
-                async with self._db() as session, session.begin(), system_session(session):
+                # One tenant's record → that tenant's RLS context. This used to
+                # run under system_session (RLS bypass) — a privilege escalation
+                # on a request path, and under the API's NOBYPASSRLS role every
+                # statement failed "query would be affected by row-level security".
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         text("""
                             INSERT INTO audit_events

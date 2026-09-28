@@ -13,6 +13,7 @@ Designed to be fire-and-forget (async tasks) so it never blocks the hot path.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -196,30 +197,71 @@ class UsageService:
             to_flush = self._buffer[:100]
             self._buffer = self._buffer[100:]
 
-        try:
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            from app.db.rls import system_session
+        from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session, session.begin(), system_session(session):
-                for record in to_flush:
-                    await session.execute(
-                        text(
-                            "INSERT INTO usage_records"
-                            " (id, tenant_id, goal_id, metric, quantity,"
-                            " unit_cost_usd, total_cost_usd, period_start, metadata)"
-                            " VALUES (:id, :tenant_id, :goal_id, :metric, :quantity,"
-                            " :unit_cost_usd, :total_cost_usd, :period_start,"
-                            " CAST(:metadata AS jsonb))"
-                            " ON CONFLICT (id) DO NOTHING"
-                        ),
-                        {**record, "metadata": str(record["metadata"]).replace("'", '"')},
-                    )
-            logger.info("usage_flushed", count=len(to_flush))
-        except Exception as exc:
-            logger.warning("usage_flush_failed", error=str(exc)[:80])
+        # The buffer mixes tenants. usage_records is FORCE-RLS, so each tenant's
+        # slice is written in its own transaction under that tenant's RLS context.
+        # (This used to be one cross-tenant batch under system_session — an RLS
+        # bypass inside the API process, which under the API's NOBYPASSRLS role
+        # failed every flush.) A failing tenant re-buffers only its own records.
+        by_tenant: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for record in to_flush:
+            by_tenant[str(record["tenant_id"])].append(record)
+
+        insert = text(
+            "INSERT INTO usage_records"
+            " (id, tenant_id, goal_id, metric, quantity,"
+            " unit_cost_usd, total_cost_usd, period_start, metadata)"
+            " VALUES (:id, :tenant_id, :goal_id, :metric, :quantity,"
+            " :unit_cost_usd, :total_cost_usd, :period_start,"
+            " CAST(:metadata AS json))"
+            " ON CONFLICT (id) DO NOTHING"
+        )
+        failed: list[dict[str, Any]] = []
+        flushed = 0
+        for tenant_id, records in by_tenant.items():
+            try:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    await session.execute(insert, [_insert_params(r) for r in records])
+                flushed += len(records)
+            except Exception as exc:
+                logger.warning("usage_flush_failed", tenant_id=tenant_id, error=str(exc)[:120])
+                failed.extend(records)
+        if flushed:
+            logger.info("usage_flushed", count=flushed)
+        if failed:
             # Re-add to buffer for retry
-            self._buffer = to_flush + self._buffer
+            self._buffer = failed + self._buffer
+
+
+def _insert_params(record: dict[str, Any]) -> dict[str, Any]:
+    """Bind parameters for one buffered record.
+
+    ``period_start`` is buffered as an ISO string but bound as a ``datetime``
+    (asyncpg will not coerce a str into a timestamptz parameter), and metadata is
+    real JSON — the previous ``str(dict).replace("'", '"')`` produced invalid JSON
+    for ``None``/``True`` values or quotes inside strings.
+    """
+    period_start = record["period_start"]
+    if isinstance(period_start, str):
+        period_start = datetime.fromisoformat(period_start)
+    return {
+        "id": record["id"],
+        "tenant_id": record["tenant_id"],
+        "goal_id": record.get("goal_id"),
+        "metric": record["metric"],
+        "quantity": record["quantity"],
+        "unit_cost_usd": record["unit_cost_usd"],
+        "total_cost_usd": record["total_cost_usd"],
+        "period_start": period_start,
+        "metadata": json.dumps(record.get("metadata") or {}, default=str),
+    }
 
 
 # Module-level singleton
