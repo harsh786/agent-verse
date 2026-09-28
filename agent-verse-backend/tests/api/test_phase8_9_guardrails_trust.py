@@ -21,11 +21,22 @@ _KEY_B = "ak_phase89b_test_key"
 _HEADERS = {"X-API-Key": _KEY}
 _HEADERS_B = {"X-API-Key": _KEY_B}
 
+# Distinct principals of tenant A. The approver identity is the authenticated
+# key (api_key_id), so separation-of-duties tests need one key per approver.
+_APPROVER_CTX = {
+    who: TenantContext(tenant_id="tid-p89", plan=PlanTier.PROFESSIONAL, api_key_id=f"kid-{who}")
+    for who in ("alice", "bob", "carol")
+}
+_APPROVER_HEADERS = {who: {"X-API-Key": f"ak_p89_{who}"} for who in _APPROVER_CTX}
+
 def _make_app():
     app = FastAPI()
     async def _resolve(key):
         if key == _KEY: return _CTX
         if key == _KEY_B: return _CTX_B
+        for who, ctx in _APPROVER_CTX.items():
+            if key == f"ak_p89_{who}":
+                return ctx
         return None
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
     app.add_middleware(SecurityHeadersMiddleware)
@@ -261,12 +272,12 @@ def test_multi_approver_flow():
     approval_id = create.json()["approval_id"]
 
     # First approval — not enough
-    resp1 = client.post(f"/trust/approvals/{approval_id}/approve", json={"approver_id": "alice"}, headers=_HEADERS)
+    resp1 = client.post(f"/trust/approvals/{approval_id}/approve", json={}, headers=_APPROVER_HEADERS["alice"])
     assert resp1.json()["status"] == "pending"
     assert resp1.json()["approver_count"] == 1
 
     # Second approval — reaches threshold
-    resp2 = client.post(f"/trust/approvals/{approval_id}/approve", json={"approver_id": "bob"}, headers=_HEADERS)
+    resp2 = client.post(f"/trust/approvals/{approval_id}/approve", json={}, headers=_APPROVER_HEADERS["bob"])
     assert resp2.json()["status"] == "approved"
 
 def test_reject_approval():
@@ -275,7 +286,6 @@ def test_reject_approval():
     approval_id = create.json()["approval_id"]
 
     reject = client.post(f"/trust/approvals/{approval_id}/reject", json={
-        "approver_id": "manager",
         "reason": "Too risky",
     }, headers=_HEADERS)
     assert reject.status_code == 200
@@ -305,7 +315,7 @@ def test_list_compliance_bundles():
 
 def test_approval_not_found():
     client = TestClient(_make_app())
-    resp = client.post("/trust/approvals/nonexistent-id/approve", json={"approver_id": "alice"}, headers=_HEADERS)
+    resp = client.post("/trust/approvals/nonexistent-id/approve", json={}, headers=_HEADERS)
     assert resp.status_code == 404
 
 def test_list_approvals_filters_by_status():
@@ -444,7 +454,7 @@ def test_one_approver_cannot_satisfy_a_multi_approver_requirement():
 
     first = client.post(
         f"/trust/approvals/{approval_id}/approve",
-        json={"approver_id": "alice"}, headers=_HEADERS,
+        json={}, headers=_APPROVER_HEADERS["alice"],
     )
     assert first.status_code == 200
     assert first.json()["status"] == "pending"
@@ -453,7 +463,7 @@ def test_one_approver_cannot_satisfy_a_multi_approver_requirement():
     for _ in range(2):
         again = client.post(
             f"/trust/approvals/{approval_id}/approve",
-            json={"approver_id": "alice"}, headers=_HEADERS,
+            json={}, headers=_APPROVER_HEADERS["alice"],
         )
         assert again.status_code == 409, again.json()
 
@@ -473,10 +483,75 @@ def test_three_distinct_approvers_do_satisfy_the_requirement():
 
     for who in ("alice", "bob"):
         r = client.post(f"/trust/approvals/{approval_id}/approve",
-                        json={"approver_id": who}, headers=_HEADERS)
+                        json={}, headers=_APPROVER_HEADERS[who])
         assert r.json()["status"] == "pending", r.json()
 
     final = client.post(f"/trust/approvals/{approval_id}/approve",
-                        json={"approver_id": "carol"}, headers=_HEADERS)
+                        json={}, headers=_APPROVER_HEADERS["carol"])
     assert final.json()["status"] == "approved", final.json()
     assert final.json()["approver_count"] == 3
+
+
+# ── Trust: approver identity comes from the authenticated principal ──────────
+
+
+def test_approver_cannot_be_spoofed_via_the_request_body():
+    """One key must not be able to vote as several people.
+
+    Regression: approve_request read ``approver_id`` straight from the JSON body
+    (defaulting to "anonymous"), so a single API key could post
+    {"approver_id": "alice"}, then {"approver_id": "bob"}, ... and satisfy an
+    N-approver requirement alone while the audit trail named people who never
+    approved. The approver is now the authenticated key; a body value naming
+    anyone else is rejected.
+    """
+    client = TestClient(_make_app())
+    approval_id = client.post(
+        "/trust/approvals",
+        json={"goal_id": "g-spoof", "required_approvers": 2},
+        headers=_HEADERS,
+    ).json()["approval_id"]
+
+    for who in ("alice", "bob"):
+        r = client.post(f"/trust/approvals/{approval_id}/approve",
+                        json={"approver_id": who}, headers=_HEADERS)
+        assert r.status_code == 403, r.json()
+
+    listed = client.get("/trust/approvals", headers=_HEADERS).json()
+    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
+    assert approval["status"] == "pending", approval
+    assert approval["approvers"] == [], approval["approvers"]
+
+
+def test_recorded_approver_is_the_authenticated_key():
+    client = TestClient(_make_app())
+    approval_id = client.post(
+        "/trust/approvals", json={"goal_id": "g-who"}, headers=_HEADERS,
+    ).json()["approval_id"]
+
+    # Naming yourself explicitly is fine; omitting it is fine too.
+    r = client.post(f"/trust/approvals/{approval_id}/approve",
+                    json={"approver_id": "kid-alice"}, headers=_APPROVER_HEADERS["alice"])
+    assert r.status_code == 200, r.json()
+
+    listed = client.get("/trust/approvals", headers=_HEADERS).json()
+    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
+    assert [a["approver_id"] for a in approval["approvers"]] == ["kid-alice"]
+
+
+def test_rejector_cannot_be_spoofed_and_is_recorded_from_the_key():
+    client = TestClient(_make_app())
+    approval_id = client.post(
+        "/trust/approvals", json={"goal_id": "g-rej-who"}, headers=_HEADERS,
+    ).json()["approval_id"]
+
+    spoofed = client.post(f"/trust/approvals/{approval_id}/reject",
+                          json={"approver_id": "cfo", "reason": "no"}, headers=_HEADERS)
+    assert spoofed.status_code == 403, spoofed.json()
+
+    ok = client.post(f"/trust/approvals/{approval_id}/reject",
+                     json={"reason": "no"}, headers=_APPROVER_HEADERS["bob"])
+    assert ok.status_code == 200, ok.json()
+    listed = client.get("/trust/approvals", headers=_HEADERS).json()
+    approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
+    assert approval["rejected_by"] == "kid-bob", approval

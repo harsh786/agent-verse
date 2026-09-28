@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -9,6 +12,8 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/billing/gst", tags=["billing"])
 
@@ -26,6 +31,8 @@ class GSTInvoiceRequest(BaseModel):
     buyer_gstin: str | None = None
     plan: str = "starter"
     billing_month: str = ""
+    # Tenant being invoiced (platform operator call); defaults to the caller's tenant.
+    tenant_id: str | None = None
 
     @field_validator("buyer_gstin")
     @classmethod
@@ -47,6 +54,23 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+def _require_platform_billing(request: Request) -> None:
+    """Only the platform (seller) may issue a tax invoice.
+
+    A GST invoice is issued BY AgentVerse (it carries the platform's seller
+    GSTIN) TO a tenant. This used to accept any tenant API key, so a tenant
+    could mint "official" invoices for any amount and buyer it liked. Issuing
+    now requires the platform admin key (``PLATFORM_ADMIN_KEY`` via
+    ``X-Admin-Key``), matching app/api/admin.py. 503 when unconfigured.
+    """
+    admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
+    if not admin_key:
+        raise HTTPException(503, "Platform admin not configured; GST invoicing disabled")
+    presented = request.headers.get("x-admin-key", "") or ""
+    if not presented or not hmac.compare_digest(presented.encode(), admin_key.encode()):
+        raise HTTPException(403, "Platform billing privileges required to issue GST invoices")
+
+
 def _generate_invoice_number(tenant_prefix: str) -> str:
     now = datetime.now(UTC)
     return f"AV/{now.year}-{str(now.year + 1)[-2:]}/{tenant_prefix[:4].upper()}/{uuid.uuid4().hex[:6].upper()}"  # noqa: E501
@@ -57,7 +81,9 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
     """Generate and persist a GST-compliant tax invoice."""
     from app.core.config import get_settings
 
-    tenant = _require_tenant(request)
+    caller = _require_tenant(request)
+    _require_platform_billing(request)
+    billed_tenant_id = body.tenant_id or caller.tenant_id
     s = get_settings()
     seller_gstin = getattr(s, "seller_gstin", "27AAAAA0000A1Z5")
     seller_name = getattr(s, "seller_name", "AgentVerse Technologies Pvt Ltd")
@@ -70,7 +96,7 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
     cgst = round(gst_total / 2, 2) if not inter_state else 0.0
     sgst = round(gst_total / 2, 2) if not inter_state else 0.0
 
-    invoice_number = _generate_invoice_number(tenant.tenant_id)
+    invoice_number = _generate_invoice_number(billed_tenant_id)
     invoice_date = datetime.now(UTC).strftime("%d/%m/%Y")
 
     invoice = {
@@ -92,40 +118,46 @@ async def generate_gst_invoice(body: GSTInvoiceRequest, request: Request) -> dic
         "description": f"AgentVerse {body.plan.title()} Plan — {body.billing_month or datetime.now(UTC).strftime('%B %Y')}",  # noqa: E501
     }
 
-    # Persist to DB for 7-year GST retention compliance
+    # Persist to DB for 7-year GST retention compliance. Two old bugs here: the
+    # INSERT ran without the tenant RLS context, so under gst_invoices' FORCE RLS
+    # ``WITH CHECK`` policy it was rejected; and that error was swallowed and the
+    # handler still returned 201 with an invoice that was never retained. An
+    # invoice that is not stored has not been issued -> 503.
     db = getattr(request.app.state, "db_session_factory", None)
-    if db is not None:
-        try:
-            import json as _json
+    if db is None:
+        raise HTTPException(503, "Invoice store unavailable; invoice not issued")
+    try:
+        import json as _json
 
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            async with db() as session:
-                await session.execute(
-                    text(
-                        "INSERT INTO gst_invoices (id, tenant_id, invoice_number, invoice_date, "
-                        "buyer_name, buyer_gstin, taxable_amount_inr, total_gst_amount, "
-                        "total_amount_inr, invoice_json) VALUES "
-                        "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"  # noqa: E501
-                    ),
-                    {
-                        "id": uuid.uuid4().hex,
-                        "tid": tenant.tenant_id,
-                        "inv_num": invoice_number,
-                        "inv_date": invoice_date,
-                        "buyer": body.buyer_name,
-                        "gstin": body.buyer_gstin,
-                        "taxable": taxable,
-                        "gst": gst_total,
-                        "total": body.amount_inr,
-                        "json": _json.dumps(invoice),
-                    },
-                )
-                await session.commit()
-        except Exception as exc:
-            import logging
+        from app.db.rls import sqlalchemy_rls_context
 
-            logging.getLogger(__name__).warning("gst_invoice_persist_failed: %s", exc)
+        async with db() as session, sqlalchemy_rls_context(session, billed_tenant_id):
+            await session.execute(
+                text(
+                    "INSERT INTO gst_invoices (id, tenant_id, invoice_number, invoice_date, "
+                    "buyer_name, buyer_gstin, taxable_amount_inr, total_gst_amount, "
+                    "total_amount_inr, invoice_json) VALUES "
+                    "(:id, :tid, :inv_num, :inv_date, :buyer, :gstin, :taxable, :gst, :total, CAST(:json AS json))"  # noqa: E501
+                ),
+                {
+                    "id": uuid.uuid4().hex,
+                    "tid": billed_tenant_id,
+                    "inv_num": invoice_number,
+                    "inv_date": invoice_date,
+                    "buyer": body.buyer_name,
+                    "gstin": body.buyer_gstin,
+                    "taxable": taxable,
+                    "gst": gst_total,
+                    "total": body.amount_inr,
+                    "json": _json.dumps(invoice),
+                },
+            )
+            await session.commit()
+    except Exception as exc:
+        logger.warning("gst_invoice_persist_failed: %s", exc)
+        raise HTTPException(503, "Invoice could not be persisted; invoice not issued") from exc
 
     return invoice
 

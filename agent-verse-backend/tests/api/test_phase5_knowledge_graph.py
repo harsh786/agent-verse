@@ -7,7 +7,10 @@ from app.knowledge_graph.extractor import EntityExtractor
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-p5", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p5")
+# admin: DELETE /knowledge-graph/rebuild is admin-only (a tenant owner key is admin).
+_CTX = TenantContext(
+    tenant_id="tid-p5", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p5", roles=("admin",)
+)
 _CTX_B = TenantContext(tenant_id="tid-p5-b", plan=PlanTier.FREE, api_key_id="kid-p5b")
 _KEY = "ak_phase5_test_key"
 _KEY_B = "ak_phase5b_test_key"

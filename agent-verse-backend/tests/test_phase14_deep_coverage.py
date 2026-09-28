@@ -42,6 +42,13 @@ _KEY_A = "isolation_key_a"
 _KEY_B = "isolation_key_b"
 _HDRS_A = {"X-API-Key": _KEY_A}
 _HDRS_B = {"X-API-Key": _KEY_B}
+# A second key of tenant A — trust approvers are identified by the authenticated
+# key, so a 2-approver flow needs two distinct keys.
+_TENANT_A2 = TenantContext(
+    tenant_id="isolation-test-tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka2"
+)
+_KEY_A2 = "isolation_key_a2"
+_HDRS_A2 = {"X-API-Key": _KEY_A2}
 
 
 def _make_full_app() -> TestClient:
@@ -52,6 +59,8 @@ def _make_full_app() -> TestClient:
             return _TENANT_A
         if key == _KEY_B:
             return _TENANT_B
+        if key == _KEY_A2:
+            return _TENANT_A2
         return None
 
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)
@@ -431,7 +440,7 @@ def test_multi_approver_flow():
 
     resp1 = client.post(
         f"/trust/approvals/{aid}/approve",
-        json={"approver_id": "alice"},
+        json={},
         headers=_HDRS_A,
     )
     assert resp1.status_code == 200
@@ -439,8 +448,8 @@ def test_multi_approver_flow():
 
     resp2 = client.post(
         f"/trust/approvals/{aid}/approve",
-        json={"approver_id": "bob"},
-        headers=_HDRS_A,
+        json={},
+        headers=_HDRS_A2,
     )
     assert resp2.status_code == 200
     assert resp2.json()["status"] == "approved"
