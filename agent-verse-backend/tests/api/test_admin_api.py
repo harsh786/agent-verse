@@ -166,46 +166,39 @@ class TestChangeTenantPlan:
         )
         assert resp.status_code == 400
 
-    def test_updates_dict_tenant_in_place(self):
+    def test_plan_change_goes_through_the_durable_update_plan(self):
+        """Regression: the endpoint edited only this replica's in-memory dict."""
+        from app.services.tenant_service import TenantService
+
         app = _make_app()
-        tenants = {"t1": {"tenant_id": "t1", "plan": "free"}}
-        app.state.tenant_service = types.SimpleNamespace(_tenants=tenants)
-        client = TestClient(app)
-        resp = client.put(
-            "/admin/tenants/t1/plan", headers=_ADMIN_HEADERS, json={"plan": "enterprise"}
+        svc = TenantService()
+        import asyncio
+
+        t = asyncio.run(svc.create_tenant(name="Acme", email="plan@acme.test"))
+        app.state.tenant_service = svc
+        resp = TestClient(app).put(
+            f"/admin/tenants/{t['tenant_id']}/plan",
+            headers=_ADMIN_HEADERS,
+            json={"plan": "enterprise"},
         )
         assert resp.status_code == 200
-        assert resp.json() == {"tenant_id": "t1", "plan": "enterprise", "status": "updated"}
-        assert tenants["t1"]["plan"] == "enterprise"
+        assert asyncio.run(svc.get_tenant(t["tenant_id"]))["plan"] == "enterprise"
 
-    def test_replaces_tenant_context_dataclass(self):
-        app = _make_app()
-        ctx = TenantContext(tenant_id="t2", plan=PlanTier.FREE, api_key_id="k2")
-        tenants = {"t2": ctx}
-        app.state.tenant_service = types.SimpleNamespace(_tenants=tenants)
-        client = TestClient(app)
-        resp = client.put(
-            "/admin/tenants/t2/plan", headers=_ADMIN_HEADERS, json={"plan": "starter"}
-        )
-        assert resp.status_code == 200
-        assert tenants["t2"].plan == PlanTier.STARTER
+    def test_unknown_tenant_is_404(self):
+        from app.services.tenant_service import TenantService
 
-    def test_unknown_tenant_id_is_noop_but_200(self):
         app = _make_app()
-        app.state.tenant_service = types.SimpleNamespace(_tenants={})
-        client = TestClient(app)
-        resp = client.put(
+        app.state.tenant_service = TenantService()
+        resp = TestClient(app).put(
             "/admin/tenants/nope/plan", headers=_ADMIN_HEADERS, json={"plan": "starter"}
         )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "updated"
+        assert resp.status_code == 404
 
-    def test_no_tenant_service_still_200(self):
-        client = TestClient(_make_app())
-        resp = client.put(
+    def test_no_tenant_service_is_503_not_a_fake_update(self):
+        resp = TestClient(_make_app()).put(
             "/admin/tenants/t1/plan", headers=_ADMIN_HEADERS, json={"plan": "starter"}
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 503
 
 
 class TestPlatformUsage:

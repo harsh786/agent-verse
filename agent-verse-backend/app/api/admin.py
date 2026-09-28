@@ -140,25 +140,24 @@ async def change_tenant_plan(
 
     logger.info("admin_plan_change", tenant_id=tenant_id, new_plan=body.plan)
 
-    app_state = request.app.state
-    tenant_svc = getattr(app_state, "tenant_service", None)
+    # Durable change through TenantService.update_plan (tenants.plan_tier +
+    # cache invalidation). This used to edit only this replica's in-memory dict
+    # and answer "updated": the DB, every other replica and every cached key
+    # context kept the old plan.
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    if tenant_svc is None or not hasattr(tenant_svc, "update_plan"):
+        raise HTTPException(status_code=503, detail="Tenant service unavailable")
+    try:
+        await tenant_svc.update_plan(tenant_id, body.plan)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from app.core.errors import NotFoundError
 
-    if tenant_svc is not None:
-        tenants_dict = getattr(tenant_svc, "_tenants", {})
-        tenant = tenants_dict.get(tenant_id)
-        if tenant is not None:
-            if isinstance(tenant, dict):
-                # In-memory tenants are stored as plain dicts
-                tenant["plan"] = body.plan
-            else:
-                # TenantContext is a frozen dataclass — replace with new plan
-                from dataclasses import replace
-
-                from app.tenancy.context import PlanTier
-
-                with contextlib.suppress(Exception):
-                    tenants_dict[tenant_id] = replace(tenant, plan=PlanTier(body.plan))
-
+        if isinstance(exc, NotFoundError):
+            raise HTTPException(status_code=404, detail="Tenant not found") from exc
+        logger.error("admin_plan_change_failed", tenant_id=tenant_id, error=str(exc))
+        raise HTTPException(status_code=503, detail="Plan change could not be saved") from exc
     return {"tenant_id": tenant_id, "plan": body.plan, "status": "updated"}
 
 
