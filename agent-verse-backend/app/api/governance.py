@@ -15,7 +15,7 @@ from starlette.responses import StreamingResponse
 
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
-from app.governance.hitl import HITLGateway
+from app.governance.hitl import HITLGateway, HITLResolutionUnavailableError
 from app.governance.policies import Policy, PolicyEngine
 from app.tenancy.context import TenantContext
 from app.tenancy.rbac import require_role
@@ -73,6 +73,15 @@ def _require_tenant(request: Request) -> Any:
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return ctx
+
+
+def _resolution_unavailable(exc: HITLResolutionUnavailableError) -> HTTPException:
+    """503 for an approval decision that could not be recorded (never a fake 200)."""
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="The approval decision could not be recorded; retry shortly.",
+        headers={"Retry-After": "5"},
+    )
 
 
 def _hitl(request: Request) -> HITLGateway:
@@ -849,9 +858,12 @@ async def approve_request(
     # DB-resolving: the sync approve() looks the request up in this replica's
     # own dict, so an operator routed to a different replica than the one that
     # raised the gate got a false 'not found' for a live approval.
-    ok = await gateway.approve_async(
-        request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
-    )
+    try:
+        ok = await gateway.approve_async(
+            request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
+        )
+    except HITLResolutionUnavailableError as exc:
+        raise _resolution_unavailable(exc) from exc
     # Not a live gateway request — maybe a durable org approval gate.
     if not ok and not await _resolve_org_gate(
         request, tenant_ctx, request_id, "approve", approver, body.note
@@ -873,9 +885,12 @@ async def reject_request(
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
     approver = _approver_identity(tenant_ctx)
-    ok = await gateway.reject(
-        request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
-    )
+    try:
+        ok = await gateway.reject(
+            request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
+        )
+    except HITLResolutionUnavailableError as exc:
+        raise _resolution_unavailable(exc) from exc
     if not ok and not await _resolve_org_gate(
         request, tenant_ctx, request_id, "reject", approver, body.note
     ):
@@ -1554,9 +1569,12 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
         api_key_id="email-link-approver",
     )
 
-    ok = await gateway.reject(
-        request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx
-    )
+    try:
+        ok = await gateway.reject(
+            request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx
+        )
+    except HITLResolutionUnavailableError as exc:
+        raise _resolution_unavailable(exc) from exc
     if not ok:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
@@ -1692,6 +1710,7 @@ async def batch_approve(
     approved = 0
     rejected_count = 0
     not_found = 0
+    unavailable = 0
     results: list[dict[str, Any]] = []
 
     for req_id in body.request_ids:
@@ -1700,9 +1719,14 @@ async def batch_approve(
             # replica's cache, which no longer gets a cross-tenant warm-up at
             # startup — a live approval raised before a restart or on another
             # replica would otherwise report not_found.
-            ok = await gateway.approve_async(
-                req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
-            )
+            try:
+                ok = await gateway.approve_async(
+                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                )
+            except HITLResolutionUnavailableError:
+                unavailable += 1
+                results.append({"request_id": req_id, "result": "unavailable"})
+                continue
             if ok:
                 approved += 1
                 # Also publish via Redis BLPOP path if available
@@ -1717,9 +1741,14 @@ async def batch_approve(
                 not_found += 1
                 results.append({"request_id": req_id, "result": "not_found"})
         elif body.action == "reject":
-            ok = await gateway.reject(
-                req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
-            )
+            try:
+                ok = await gateway.reject(
+                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                )
+            except HITLResolutionUnavailableError:
+                unavailable += 1
+                results.append({"request_id": req_id, "result": "unavailable"})
+                continue
             if ok:
                 rejected_count += 1
                 await gateway.publish_resolution(
@@ -1742,6 +1771,7 @@ async def batch_approve(
         "approved": approved,
         "rejected": rejected_count,
         "not_found": not_found,
+        "unavailable": unavailable,
         "results": results,
     }
 
@@ -2017,9 +2047,17 @@ async def list_approval_history(
         if status_filter:
             sql += " AND status = :sf"
             params["sf"] = status_filter
-        sql += f" ORDER BY created_at DESC LIMIT {min(limit, 200)}"
+        sql += f" ORDER BY created_at DESC LIMIT {max(1, min(limit, 200))}"
 
-        async with db() as session:
+        from app.db.rls import sqlalchemy_rls_context
+
+        # approval_requests is FORCE-RLS: without the tenant GUC the application
+        # role reads zero rows, so the history was always empty.
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
             rows = (await session.execute(_text(sql), params)).fetchall()
 
         history = [
@@ -2036,8 +2074,12 @@ async def list_approval_history(
             }
             for r in rows
         ]
-    except Exception:
-        history = []
+    except Exception as exc:
+        # An unreadable history is a 503, not an empty (fake) one.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Approval history is temporarily unavailable.",
+        ) from exc
 
     # Include resolved org approval gates (durable OrgTasks) in the History tab.
     gate_history = await _org_gate_approvals(tenant_ctx, None, resolved=True)
