@@ -86,7 +86,9 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     """
     from app.db.session import get_session_factory, get_system_session_factory
     from app.ingestion.job_tracker import IngestionJobTracker
+    from app.ingestion.pii import build_pii_analyzer
     from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.quota import IngestionQuotaEnforcer
     from app.ingestion.source_store import SourceConfigStore
     from app.providers.registry import resolve_provider
     from app.rag.store import KnowledgeStore
@@ -94,7 +96,14 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     db_factory = get_session_factory()
     provider = resolve_provider()
     knowledge_store = KnowledgeStore(db_factory)
-    pipeline = IngestionPipeline(knowledge_store=knowledge_store, embedder=provider)
+    # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
+    # scheduled/DLQ-retried document skipped both.
+    pipeline = IngestionPipeline(
+        knowledge_store=knowledge_store,
+        embedder=provider,
+        pii_analyzer=build_pii_analyzer(),
+        quota_enforcer=IngestionQuotaEnforcer(db_factory),
+    )
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store

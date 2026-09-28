@@ -31,6 +31,7 @@ import hashlib
 import logging
 import time
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from app.agent.tokenizer import count_tokens
@@ -64,6 +65,16 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     if na <= 0.0 or nb <= 0.0:
         return 0.0
     return dot / ((na**0.5) * (nb**0.5))
+
+
+@dataclass(frozen=True)
+class ScreenResult:
+    """Outcome of :meth:`IngestionPipeline.screen_text` (Stages 6 + 6b)."""
+
+    text: str
+    pii_detected: bool = False
+    blocked_reason: str = ""  # "" | "pii_rejected" | "guardrail_blocked"
+
 
 # Minimum text length (chars) to consider a document worth chunking
 _MIN_TEXT_LENGTH = 50
@@ -166,10 +177,17 @@ class IngestionPipeline:
 
         try:
             # ── Stage 1: RECEIVE — quota check ────────────────────────────────
+            # ``check_doc_quota`` is async for the DB-backed enforcer
+            # (app.ingestion.quota). Only a genuine quota breach is a skip; any
+            # other error (DB down) propagates to the outer handler and is
+            # reported as ``failed`` (→ DLQ, retried) — it used to be swallowed
+            # and mislabelled ``quota_exceeded``.
             if self._quota is not None:
+                from app.ingestion.quota import IngestionQuotaExceededError, call_quota_check
+
                 try:
-                    self._quota.check_doc_quota(source_config.tenant_id)
-                except Exception as e:
+                    await call_quota_check(self._quota, source_config.tenant_id)
+                except IngestionQuotaExceededError as e:
                     result.status = "skipped"
                     result.skip_reason = "quota_exceeded"
                     _log.warning(
@@ -258,49 +276,19 @@ class IngestionPipeline:
                 result.skip_reason = "empty_content"
                 return result
 
-            # ── Stage 6: PII DETECTION + REDACTION (LAW-06) ──────────────────
-            text, pii_detected = self._run_pii(text, source_config.pii_action)
-            if text is None:
+            # ── Stage 6 + 6b: PII (LAW-06) + Guardrails 2.0 RAG_INGEST ────────
+            screened = await self.screen_text(
+                text,
+                tenant_id=source_config.tenant_id,
+                pii_action=source_config.pii_action,
+                doc_id=raw_doc.doc_id,
+            )
+            if screened.blocked_reason:
                 result.status = "skipped"
-                result.skip_reason = "pii_rejected"
+                result.skip_reason = screened.blocked_reason
                 return result
-
-            # ── Stage 6b: GUARDRAILS 2.0 — RAG_INGEST layer ───────────────────
-            # RAG_INGEST was declared in GuardrailLayer but never actually
-            # checked anywhere before this fix, so compliance-bundle rules
-            # that explicitly target it (GDPR's "Block PII in RAG ingest",
-            # PCI's "Block PCI data") had zero real effect: unvetted document
-            # content — including secrets, which Stage 6's Presidio-based PII
-            # scan does not cover — flowed straight into chunking/embedding/
-            # persistence. Gated here, before chunking, mirroring the block/
-            # redact pattern already used for FINAL_OUTPUT/TOOL_ARGS/
-            # TOOL_OUTPUT (see app/security_runtime/guardrail_enforcer.py).
-            # Scans the full parsed text (not truncated) — unlike the
-            # per-turn agent-loop layers, a document is evaluated once, so
-            # the cost of a full regex pass is negligible and truncating
-            # would let a secret past the halfway point of a long doc slip
-            # through untouched.
-            if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
-                try:
-                    guardrails_engine.ensure_default_rules(source_config.tenant_id)
-                    _g2_ingest_result = await guardrails_engine.evaluate(
-                        content=text,
-                        layer=GuardrailLayer.RAG_INGEST,
-                        tenant_id=source_config.tenant_id,
-                    )
-                    if _g2_ingest_result.get("blocked"):
-                        result.status = "skipped"
-                        result.skip_reason = "guardrail_blocked"
-                        return result
-                    _g2_ingest_redacted = _g2_ingest_result.get("redacted_content")
-                    if _g2_ingest_redacted and _g2_ingest_redacted != text:
-                        text = _g2_ingest_redacted
-                except Exception as _g2_ingest_exc:
-                    _log.warning(
-                        "pipeline_stage=guardrail_rag_ingest error doc=%s: %s",
-                        raw_doc.doc_id,
-                        _g2_ingest_exc,
-                    )
+            text = screened.text
+            pii_detected = screened.pii_detected
 
             # ── Stage 7: QUALITY GATE ─────────────────────────────────────────
             quality_score = self._quality_score(text)
@@ -472,35 +460,104 @@ class IngestionPipeline:
             _log.debug("pipeline_dedup_check_error: %s", e)
         return False
 
+    async def screen_text(
+        self,
+        text: str,
+        *,
+        tenant_id: str,
+        pii_action: str = "redact",
+        doc_id: str = "",
+    ) -> ScreenResult:
+        """Stages 6 + 6b for one document's text, before it is chunked/embedded.
+
+        Public so the direct ingestion routes (``/knowledge/ingest*``) that do
+        their own parsing/chunking still run the SAME PII + RAG_INGEST guardrail
+        gate as connector ingestion (LAW-01/LAW-06) instead of bypassing it.
+
+        Returns the (possibly redacted) text, whether PII was found, and a
+        ``blocked_reason`` (``pii_rejected`` / ``guardrail_blocked``) when the
+        document must not be indexed at all.
+        """
+        # ── Stage 6: PII DETECTION + REDACTION (LAW-06) ──────────────────────
+        screened, pii_detected = self._run_pii(text, pii_action)
+        if screened is None:
+            return ScreenResult(text="", pii_detected=True, blocked_reason="pii_rejected")
+        text = screened
+
+        # ── Stage 6b: GUARDRAILS 2.0 — RAG_INGEST layer ───────────────────────
+        # RAG_INGEST was declared in GuardrailLayer but never actually
+        # checked anywhere before this fix, so compliance-bundle rules
+        # that explicitly target it (GDPR's "Block PII in RAG ingest",
+        # PCI's "Block PCI data") had zero real effect: unvetted document
+        # content — including secrets, which Stage 6's PII scan does not
+        # cover — flowed straight into chunking/embedding/persistence.
+        # Scans the full parsed text (not truncated) — a document is
+        # evaluated once, so a full regex pass is cheap and truncating would
+        # let a secret past the halfway point of a long doc slip through.
+        if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+            try:
+                guardrails_engine.ensure_default_rules(tenant_id)
+                _g2_ingest_result = await guardrails_engine.evaluate(
+                    content=text,
+                    layer=GuardrailLayer.RAG_INGEST,
+                    tenant_id=tenant_id,
+                )
+                if _g2_ingest_result.get("blocked"):
+                    return ScreenResult(
+                        text="", pii_detected=pii_detected, blocked_reason="guardrail_blocked"
+                    )
+                _g2_ingest_redacted = _g2_ingest_result.get("redacted_content")
+                if _g2_ingest_redacted and _g2_ingest_redacted != text:
+                    text = _g2_ingest_redacted
+            except Exception as _g2_ingest_exc:
+                _log.warning(
+                    "pipeline_stage=guardrail_rag_ingest error doc=%s: %s",
+                    doc_id,
+                    _g2_ingest_exc,
+                )
+        return ScreenResult(text=text, pii_detected=pii_detected)
+
     def _run_pii(self, text: str, pii_action: str) -> tuple[str | None, bool]:
         """Detect and handle PII.
 
         Returns (text_after_action, pii_was_detected).
         Returns (None, True) if pii_action=reject and PII found.
+
+        The analyzer is ``app.ingestion.pii.RegexPIIAnalyzer`` (wired at every
+        construction site) or any Presidio-compatible ``analyze()``. An analyzer
+        exposing ``redact(text)`` redacts itself; otherwise Presidio's
+        anonymizer is used. An analyzer *error* fails closed for ``redact`` /
+        ``reject`` — the previous code returned the unscanned text as clean, so
+        a broken analyzer silently indexed PII.
         """
         if self._pii is None:
             return text, False
 
         try:
             results = self._pii.analyze(text=text, language="en")
-            if not results:
-                return text, False
-
-            if pii_action == "reject":
-                return None, True
-
-            if pii_action == "redact":
-                from presidio_anonymizer import AnonymizerEngine  # type: ignore
-
-                anonymizer = AnonymizerEngine()
-                redacted = anonymizer.anonymize(text=text, analyzer_results=results)
-                return redacted.text, True
-
-            # pii_action == "allow"
-            return text, True
         except Exception as e:
-            _log.debug("pipeline_pii_error: %s", e)
+            if pii_action == "allow":
+                _log.debug("pipeline_pii_error (allow): %s", e)
+                return text, False
+            raise RuntimeError(f"pii_scan_failed: {e}") from e
+        if not results:
             return text, False
+
+        if pii_action == "reject":
+            return None, True
+
+        if pii_action == "redact":
+            redact = getattr(self._pii, "redact", None)
+            if callable(redact):
+                return str(redact(text)), True
+            from presidio_anonymizer import AnonymizerEngine  # type: ignore
+
+            anonymizer = AnonymizerEngine()
+            redacted = anonymizer.anonymize(text=text, analyzer_results=results)
+            return redacted.text, True
+
+        # pii_action == "allow"
+        return text, True
 
     def _quality_score(self, text: str) -> float:
         """Compute a quality score 0.0-1.0 for the text."""
@@ -786,3 +843,53 @@ class RedisKnowledgeEventBus:
         import json
 
         await self._redis.publish(channel, json.dumps(payload))
+
+
+class IngestionPolicyRejectedError(ValueError):
+    """A document was refused by the ingestion PII / RAG_INGEST guardrail gate."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"document rejected by ingestion policy: {reason}")
+
+
+_screening_pipeline: IngestionPipeline | None = None
+
+
+def _default_screening_pipeline() -> IngestionPipeline:
+    """A store-less pipeline used only for :func:`screen_ingest_text`."""
+    global _screening_pipeline
+    if _screening_pipeline is None:
+        from app.ingestion.pii import build_pii_analyzer
+
+        _screening_pipeline = IngestionPipeline(pii_analyzer=build_pii_analyzer())
+    return _screening_pipeline
+
+
+async def screen_ingest_text(
+    text: str,
+    *,
+    tenant_id: str,
+    pii_action: str = "redact",
+    pipeline: Any = None,
+    doc_id: str = "",
+) -> str:
+    """Run pipeline Stages 6 + 6b on *text* for an ingestion path that parses and
+    chunks on its own (direct ``/knowledge/ingest*`` routes, the orchestrator,
+    repository ingest), so none of them bypasses the PII + RAG_INGEST gate
+    (LAW-01 / LAW-06).
+
+    Uses the app's wired pipeline when it has a PII analyzer, else a store-less
+    default. Returns the screened (possibly redacted) text; raises
+    ``IngestionPolicyRejectedError`` when the document must not be indexed. A
+    PII-scan failure propagates (fail closed).
+    """
+    screener = pipeline if isinstance(pipeline, IngestionPipeline) else None
+    if screener is None or screener._pii is None:
+        screener = _default_screening_pipeline()
+    result = await screener.screen_text(
+        text, tenant_id=tenant_id, pii_action=pii_action, doc_id=doc_id
+    )
+    if result.blocked_reason:
+        raise IngestionPolicyRejectedError(result.blocked_reason)
+    return result.text

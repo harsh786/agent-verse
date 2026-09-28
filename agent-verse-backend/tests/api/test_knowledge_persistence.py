@@ -84,6 +84,12 @@ class _AwaitedStore(KnowledgeStore):
         self._db = database
         return collections
 
+    async def exists_by_hash(
+        self, *, content_hash: str, tenant_id: str, collection_id: str | None = None
+    ) -> bool:
+        # Direct ingest routes now run the Stage 3 dedup probe first.
+        return False
+
     async def delete_collection_async(
         self,
         collection_id: str,

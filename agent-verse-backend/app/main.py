@@ -650,10 +650,16 @@ def create_app(
             _kg_ingestion_hook: Any = KGIngestionHook()
         except Exception:
             _kg_ingestion_hook = None
+        from app.ingestion.pii import build_pii_analyzer
+
+        # Stage 6 PII analyzer: previously never constructed, so Stage 6 was
+        # skipped for every document. The quota enforcer needs the DB and is
+        # wired in the lifespan (app.state.ingestion_quota).
         _ingestion_pipeline = IngestionPipeline(
             knowledge_store=_knowledge_store,
             embedder=_app_provider,
             kg_hook=_kg_ingestion_hook,
+            pii_analyzer=build_pii_analyzer(),
         )
         _ingestion_job_tracker = IngestionJobTracker()
         from app.ingestion.source_store import SourceConfigStore
@@ -1552,6 +1558,16 @@ def create_app(
             if _ing_pipe_kb is not None:
                 _ing_pipe_kb._kb = _knowledge_store_db
                 logger.info("ingestion_pipeline_knowledge_store_rewired")
+
+            # Stage 1 quota: DB-backed (source_configs / knowledge_collections
+            # counters under tenant RLS). It was never constructed, so no
+            # ingestion quota was ever enforced. The same enforcer backs
+            # GET /ingestion/quota and the Source limit on POST /sources.
+            from app.ingestion.quota import IngestionQuotaEnforcer as _IngestionQuota
+
+            app.state.ingestion_quota = _IngestionQuota(db_factory)
+            if _ing_pipe_kb is not None:
+                _ing_pipe_kb._quota = app.state.ingestion_quota
 
             # Item 6: DB-back the ingestion Source store + job tracker so Sources
             # persist and are visible cross-process (the Celery worker/scheduler
@@ -2678,6 +2694,7 @@ def create_app(
     app.state.multimodal_pipeline = _multimodal_pipeline
     # Ingestion framework
     app.state.ingestion_pipeline = _ingestion_pipeline
+    app.state.ingestion_quota = None  # DB-backed IngestionQuotaEnforcer, set in lifespan
     app.state.ingestion_job_tracker = _ingestion_job_tracker
     app.state.ingestion_source_store = _ingestion_source_store
     app.state.retrieval_gateway = _retrieval_gateway

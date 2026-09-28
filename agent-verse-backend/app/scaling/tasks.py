@@ -5814,7 +5814,6 @@ def delta_reingest_files(
 
     async def _run() -> dict[str, Any]:
         from app.ingestion.connector_registry import get_connector, load_all_connectors
-        from app.ingestion.pipeline import IngestionPipeline
         from app.ingestion.source_config import SourceConfig, SourceFamily
 
         load_all_connectors()
@@ -5847,7 +5846,13 @@ def delta_reingest_files(
             collection_id=collection_id,
         )
         connector = connector_cls()
-        pipeline = IngestionPipeline()
+        # A bare ``IngestionPipeline()`` has no knowledge store / embedder, so
+        # every document was skipped (``no_embedder``) while this reported
+        # ``status: ok``. Use the worker's fully-wired pipeline (store, embedder,
+        # PII, quota) like the scheduled sync does.
+        from app.ingestion.scheduler import _build_worker_ingestion
+
+        _tracker, pipeline, _store = _build_worker_ingestion()
 
         indexed = skipped = failed = 0
         try:
