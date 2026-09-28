@@ -749,11 +749,11 @@ async def test_submit_goal_multi_agent_emits_workflow_events() -> None:
         "goal_started",
         "workflow_planned",
         "workflow_step_started",
-        "workflow_step_complete",
+        "workflow_step_failed",
         "workflow_step_started",
-        "workflow_step_complete",
+        "workflow_step_failed",
         "workflow_step_started",
-        "workflow_step_complete",
+        "workflow_step_failed",
         # No connector tools are wired, so no step actually ran: the goal fails
         # honestly instead of emitting goal_complete for planned-only steps.
         "goal_failed",

@@ -163,7 +163,10 @@ async def test_circuit_breaker_open_skips_step() -> None:
     # Step output should be the circuit-open message
     assert state is not None
     if state.steps:
-        assert "Circuit open" in state.steps[0].output
+        # An open circuit fails the step (it was reported as a completed step
+        # whose "output" was the skip message).
+        assert state.steps[0].status.value == "failed"
+        assert "Circuit breaker open" in (state.steps[0].error or "")
 
 
 # ── Test 7: HITL gateway creates approval request for high-risk steps ─────────

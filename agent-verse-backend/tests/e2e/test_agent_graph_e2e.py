@@ -164,13 +164,16 @@ async def test_over_budget_goal_stops_making_further_llm_calls():
         cost_controller=cost,
         max_iterations=5,
     )
-    await graph.run(goal="expensive task that never verifies", tenant_ctx=T)
+    final = await graph.run(goal="expensive task that never verifies", tenant_ctx=T)
 
-    assert len(executor_p.call_history) == 1, (
-        "expected exactly one executor LLM call once the goal's budget was "
-        f"exhausted, got {len(executor_p.call_history)} — a goal already over "
-        "budget must not start another LLM call on a later replan iteration"
+    # Every LLM call is charged now (planner/verifier included), so the first
+    # call exhausts a zero budget: the goal must stop, never keep replanning.
+    total_calls = (
+        len(planner_p.call_history) + len(executor_p.call_history) + len(verifier_p.call_history)
     )
+    assert total_calls <= 2, f"LLM calls continued after the budget was exhausted: {total_calls}"
+    assert len(planner_p.call_history) == 1, "an over-budget goal must not replan"
+    assert final.status.value == "failed"
 
 
 async def test_secret_redaction_in_output():
@@ -226,7 +229,10 @@ async def test_circuit_breaker_open_skips_llm_step():
     )
     state = await graph.run(goal="circuit test", tenant_ctx=T)
     if state.steps:
-        assert "Circuit open" in state.steps[0].output
+        # An open circuit fails the step (it was reported as a completed step
+        # whose "output" was the skip message).
+        assert state.steps[0].status.value == "failed"
+        assert "Circuit breaker open" in (state.steps[0].error or "")
 
 
 async def test_self_optimizer_processes_failed_eval():

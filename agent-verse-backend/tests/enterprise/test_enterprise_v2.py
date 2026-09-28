@@ -363,60 +363,15 @@ async def test_scim_create_user_blocked_when_disabled() -> None:
     assert exc_info.value.status_code == 403
 
 
-@pytest.mark.asyncio
-async def test_scim_group_to_role_mapping() -> None:
-    """SCIM group membership maps to tenant role via group_role_map."""
+def test_scim_group_to_role_mapping() -> None:
+    """SCIM group membership maps to a tenant role via group_role_map (the DB
+    round trip is covered in tests/tenancy/test_tenancy_auth_integration.py)."""
     from app.auth.scim_handler import SCIMHandler
 
-    created_users: list[dict] = []
-
-    mock_db = AsyncMock()
-    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_db.__aexit__ = AsyncMock(return_value=None)
-    mock_db.commit = AsyncMock()
-    # Handler ops run in one transaction under the tenant's RLS GUC.
-    mock_db.begin = MagicMock(return_value=_tx_cm())
-
-    executed_params: list[dict] = []
-
-    async def execute_side_effect(query, params=None, **kwargs):
-        if params:
-            executed_params.append(dict(params))
-        mock_result = MagicMock()
-        # Return a mock row for the SELECT after INSERT
-        mock_row = MagicMock()
-        mock_row.__getitem__ = lambda s, i: (
-            ["user-id-1", "eng@example.com", "Engineer", True, "ext-1", None, None][i]
-        )
-        mock_result.fetchone = lambda: mock_row
-        mock_result.fetchall = lambda: []
-        mock_result.scalar = lambda: 0
-        return mock_result
-
-    mock_db.execute = AsyncMock(side_effect=execute_side_effect)
-
-    config = {
-        "allow_user_create": True,
-        "default_role": "viewer",
-        "group_role_map": {"Engineering": "developer", "Compliance": "viewer"},
-    }
-    handler = SCIMHandler(
-        tenant_id="t1",
-        config=config,
-        db_factory=lambda: mock_db,
-    )
-
-    scim_user = {
-        "userName": "eng@example.com",
-        "name": {"givenName": "Jane", "familyName": "Engineer"},
-        "groups": [{"display": "Engineering"}],
-        "active": True,
-    }
-    result = await handler.create_user(scim_user)
-    # Check that the role was mapped correctly
-    insert_params = [p for p in executed_params if "role" in p]
-    assert len(insert_params) > 0
-    assert insert_params[0]["role"] == "developer"
+    h = SCIMHandler("t1", {"group_role_map": {"Admins": "admin"}, "default_role": "viewer"}, None)
+    assert h._map_groups_to_role([{"display": "Admins"}]) == "admin"
+    assert h._map_groups_to_role([{"display": "Other"}]) == "viewer"
+    assert h._map_groups_to_role([]) == "viewer"
 
 
 # ---------------------------------------------------------------------------

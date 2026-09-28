@@ -82,8 +82,11 @@ async def test_complex_multi_agent_goal_emits_events_in_dependency_order() -> No
         if event["type"] == "workflow_step_complete"
     ]
 
-    assert goal["status"] == GoalStatus.COMPLETE.value
-    assert completed_step_ids == ["step_1", "step_2", "step_3"]
+    # No LLM or tools back this workflow: its steps have no real result, so the
+    # goal fails honestly (it used to "complete" on stub "Completed: …" outputs)
+    # and no step is announced as complete.
+    assert goal["status"] == GoalStatus.FAILED.value
+    assert completed_step_ids == []
     assert events[1]["type"] == "workflow_planned"
     assert [step["depends_on"] for step in events[1]["steps"]] == [
         [],
@@ -97,10 +100,30 @@ async def test_workflow_step_complete_redacts_authorization_bearer_tool_output()
     mcp_client = _FakeWorkflowMCPClient(
         output={"headers": "Authorization: Bearer workflow-secret"}
     )
+    # Workflow tool calls pass the grant gate like the agent executor: the agent
+    # needs a covering grant (none → denied, fail closed).
+    from datetime import UTC, datetime, timedelta
+
+    from app.governance.grants import Grant, InMemoryGrantStore
+
+    grants = InMemoryGrantStore()
+    now = datetime.now(UTC)
+    await grants.issue(
+        Grant(
+            grant_id="g-jira",
+            tenant_id=_CTX.tenant_id,
+            grantor="test",
+            grantee_agent_id="agent-123",
+            scopes=("jira_*",),
+            not_before=now - timedelta(minutes=1),
+            expires_at=now + timedelta(hours=1),
+        )
+    )
     svc = GoalService(
         app_state=SimpleNamespace(
             agent_store=_FakeAgentStore(agent),
             mcp_client=mcp_client,
+            grant_store=grants,
         )
     )
 

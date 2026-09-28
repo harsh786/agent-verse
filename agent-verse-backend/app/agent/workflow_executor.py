@@ -130,10 +130,13 @@ class WorkflowExecutor:
                 result = await self._execute_step(step, tenant_ctx, prior_results=results)
             results[step.id] = result
             if event_callback is not None:
+                # Only a step with a real result is "complete"; a denied, blocked
+                # or failed step used to be announced as workflow_step_complete.
+                _done = str(result.get("status", "")) in _DONE_STATUSES
                 await self._emit(
                     event_callback,
                     {
-                        "type": "workflow_step_complete",
+                        "type": "workflow_step_complete" if _done else "workflow_step_failed",
                         **asdict(step),
                         "output": result,
                     },

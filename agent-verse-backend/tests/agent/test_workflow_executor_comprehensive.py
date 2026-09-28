@@ -274,7 +274,7 @@ async def test_run_legacy_step_requires_approval_returns_planned() -> None:
         tool_context=None, event_callback=cb,
     )
     # Should emit step_complete with planned_not_executed
-    step_done = [e for e in events if e.get("type") == "workflow_step_complete"]
+    step_done = [e for e in events if e.get("type") == "workflow_step_failed"]  # no real result
     assert len(step_done) == 1
     assert step_done[0]["output"]["status"] == "planned_not_executed"
 
@@ -300,7 +300,7 @@ async def test_run_legacy_no_matching_tool_returns_planned() -> None:
         plan=plan, goal="Test", tenant_ctx=_CTX,
         tool_context=None, event_callback=cb,
     )
-    step_done = [e for e in events if e.get("type") == "workflow_step_complete"]
+    step_done = [e for e in events if e.get("type") == "workflow_step_failed"]  # no real result
     assert step_done[0]["output"]["reason"] == "no_matching_connector_tool"
 
 
@@ -384,7 +384,7 @@ async def test_run_legacy_mcp_tool_failure_returns_tool_call_failed() -> None:
         plan=plan, goal="Test", tenant_ctx=_CTX,
         tool_context=tool_context, event_callback=cb,
     )
-    step_done = [e for e in events if e.get("type") == "workflow_step_complete"]
+    step_done = [e for e in events if e.get("type") == "workflow_step_failed"]  # no real result
     assert step_done[0]["output"]["status"] == "tool_call_failed"
 
 
