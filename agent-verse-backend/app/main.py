@@ -1962,15 +1962,16 @@ def create_app(
                     _ing_pipe._event_bus = RedisKnowledgeEventBus(redis_for_runtime)
                     logger.info("ingestion_pipeline_event_bus_wired")
 
-                # SemanticCache: wire pgvector ANN backend for O(log n) L2 lookup.
+                # SemanticCache: wire the durable pgvector L2 (written through on store).
                 try:
                     from app.rag.vector_cache_backend import select_cache_backend as _scb_select
 
+                    _sc = getattr(app.state, "semantic_cache", None)
                     _sem_cache_backend = await _scb_select(
                         db_factory=db_factory,
                         redis=redis_for_runtime,
+                        ttl_seconds=float(getattr(_sc, "_ttl", 3600) or 3600),
                     )
-                    _sc = getattr(app.state, "semantic_cache", None)
                     if _sc is not None:
                         _sc._backend = _sem_cache_backend
                     logger.info("semantic_cache_backend_wired")

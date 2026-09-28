@@ -322,30 +322,12 @@ class TestConsolidateMemoriesTask:
 # ── reindex_stale_knowledge ───────────────────────────────────────────────────
 
 class TestReindexStaleKnowledge:
-    """Lines 1595-1619."""
+    """Retired: it marked the legacy ``documents`` table, which nothing reads."""
 
-    def test_db_error_returns_error_dict(self):
+    def test_is_an_explicit_retirement(self):
         from app.scaling.tasks import reindex_stale_knowledge
-        with patch("app.db.session.get_session_factory", side_effect=Exception("no db")):
-            result = reindex_stale_knowledge.run()
-        assert result["marked_for_reindex"] == 0
-        assert "error" in result
 
-    def test_success_returns_marked_count(self):
-        from app.scaling.tasks import reindex_stale_knowledge
-        mock_session = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.rowcount = 5
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
-        mock_session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_cm = MagicMock()
-        mock_cm.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_cm.__aexit__ = AsyncMock(return_value=False)
-        mock_factory = MagicMock(return_value=mock_cm)
-        with patch("app.db.session.get_session_factory", return_value=mock_factory):
-            result = reindex_stale_knowledge.run()
-        assert isinstance(result, dict)
+        assert reindex_stale_knowledge.run() == {"status": "retired", "marked_for_reindex": 0}
 
 
 # ── purge_expired_artifacts ───────────────────────────────────────────────────

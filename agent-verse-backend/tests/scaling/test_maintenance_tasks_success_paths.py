@@ -115,14 +115,13 @@ class TestConsolidateMemoriesTaskFullPath:
 
 
 class TestReindexStaleKnowledgeSuccess:
-    def test_success_returns_marked_count(self):
+    def test_retired_task_touches_no_database(self):
         from app.scaling.tasks import reindex_stale_knowledge
 
-        session = _session_with_begin(execute_side_effect=[MagicMock(rowcount=4)])
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
+        with patch("app.db.session.get_session_factory") as factory:
             result = reindex_stale_knowledge.run()
-        assert result == {"marked_for_reindex": 4}
+        factory.assert_not_called()
+        assert result == {"status": "retired", "marked_for_reindex": 0}
 
 
 class TestPurgeExpiredArtifactsSuccess:

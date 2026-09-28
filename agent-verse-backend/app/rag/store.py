@@ -96,6 +96,32 @@ def _trigram_score(query: str, text: str) -> float:
     return overlap / len(q_tris)
 
 
+def _document_row(document_id: str, chunks: list[Chunk], source_id: str) -> dict[str, Any]:
+    """In-memory equivalent of the SQL aggregate in ``list_source_documents_async``."""
+    meta = [dict(c.metadata or {}) for c in chunks]
+
+    def _first(key: str) -> str:
+        return next((str(m[key]) for m in meta if m.get(key)), "")
+
+    scores = [
+        float(m["quality_score"]) for m in meta if isinstance(m.get("quality_score"), int | float)
+    ]
+    return {
+        "id": document_id,
+        "source_id": source_id,
+        "doc_id": document_id,
+        "title": _first("doc_title"),
+        "source_url": _first("source_url"),
+        "content_hash": _first("doc_content_hash"),
+        "language": _first("language"),
+        "chunk_count": len(chunks),
+        "quality_score": max(scores) if scores else None,
+        "has_pii_redacted": any(m.get("has_pii_redacted") in (True, "true") for m in meta),
+        "ingested_at": None,
+        "expires_at": None,
+    }
+
+
 @dataclass
 class _CollectionStore:
     collection: KnowledgeCollection
@@ -327,6 +353,209 @@ class KnowledgeStore:
                 embedder=str(row[4] or "voyage"),
             )
             for row in rows
+        ]
+
+    async def collection_counters_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Per-collection counters straight from the source of truth.
+
+        DB path: one indexed read of ``knowledge_collections`` — whose
+        ``document_count`` / ``chunk_count`` / ``total_size_bytes`` /
+        ``last_indexed_at`` are maintained exactly by ``_persist_chunks`` under
+        the collection row lock — so this is O(collections), never a scan of
+        the (millions-row) chunk tables. Errors propagate (callers answer 5xx).
+        """
+        if self._db is None:
+            out: list[dict[str, Any]] = []
+            for (tid, cid), cstore in self._data.items():
+                if tid != tenant_ctx.tenant_id or (collection_id and cid != collection_id):
+                    continue
+                chunks = cstore.chunks
+                out.append(
+                    {
+                        "collection_id": cid,
+                        "name": cstore.collection.name,
+                        "embedder": cstore.collection.embedder,
+                        "document_count": len({c.document_id for c in chunks}),
+                        "chunk_count": len(chunks),
+                        "total_size_bytes": sum(len(c.content.encode()) for c in chunks),
+                        "embedding_dim": len(chunks[0].embedding) if chunks else None,
+                        "last_indexed_at": None,
+                    }
+                )
+            return out
+
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        sql = (
+            "SELECT id, name, embedder, document_count, chunk_count, "
+            "COALESCE(total_size_bytes, 0), embedding_dim, last_indexed_at "
+            "FROM knowledge_collections "
+            "WHERE tenant_id = :tid AND is_active IS TRUE"
+        )
+        params: dict[str, Any] = {"tid": tenant_ctx.tenant_id}
+        if collection_id:
+            sql += " AND id = :cid"
+            params["cid"] = collection_id
+        sql += " ORDER BY created_at"
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (await session.execute(text(sql), params)).fetchall()
+        return [
+            {
+                "collection_id": str(r[0]),
+                "name": str(r[1]),
+                "embedder": str(r[2] or ""),
+                "document_count": int(r[3] or 0),
+                "chunk_count": int(r[4] or 0),
+                "total_size_bytes": int(r[5] or 0),
+                "embedding_dim": int(r[6]) if r[6] is not None and int(r[4] or 0) else None,
+                "last_indexed_at": r[7].isoformat() if r[7] is not None else None,
+            }
+            for r in rows
+        ]
+
+    async def source_type_sample_async(
+        self,
+        collection_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        embedding_dim: int | None,
+        sample_size: int = 5_000,
+    ) -> tuple[dict[str, int], int]:
+        """``source_type`` distribution over a BOUNDED sample of a collection's
+        chunks (at most ``sample_size`` rows via the (tenant_id, collection_id)
+        index) — exact for small collections, a sample for huge ones, never a
+        full scan. Returns (distribution, rows_sampled)."""
+        if self._db is None:
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            dist: dict[str, int] = {}
+            chunks = cstore.chunks[:sample_size] if cstore is not None else []
+            for c in chunks:
+                key = str((c.metadata or {}).get("source_type") or "unknown")
+                dist[key] = dist.get(key, 0) + 1
+            return dist, len(chunks)
+        if not embedding_dim:
+            return {}, 0
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        table = _chunk_table(embedding_dim)
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT COALESCE(s.st, 'unknown'), COUNT(*) FROM ("
+                        f"  SELECT metadata->>'source_type' AS st FROM {table} "
+                        "  WHERE tenant_id = :tid AND collection_id = :cid LIMIT :n"
+                        ") AS s GROUP BY 1"
+                    ),
+                    {"tid": tenant_ctx.tenant_id, "cid": collection_id, "n": sample_size},
+                )
+            ).fetchall()
+        dist = {str(r[0]): int(r[1]) for r in rows}
+        return dist, sum(dist.values())
+
+    async def list_source_documents_async(
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        collection_id: str,
+        source_id: str,
+        limit: int = 50,
+        after: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """One row per indexed document of an ingestion Source (keyset-paginated
+        by ``document_id``), aggregated in SQL from the chunk table.
+
+        Served by ``idx_knowledge_chunks_<dim>_source_doc`` on
+        (tenant_id, collection_id, metadata->>'source_id', document_id), so the
+        GROUP BY streams in index order and stops at ``limit`` documents.
+        """
+        if self._db is None:
+            cstore = self._data.get((tenant_ctx.tenant_id, collection_id))
+            grouped: dict[str, list[Chunk]] = {}
+            for c in cstore.chunks if cstore is not None else []:
+                if str((c.metadata or {}).get("source_id") or "") == source_id:
+                    grouped.setdefault(c.document_id, []).append(c)
+            ids = sorted(d for d in grouped if after is None or d > after)[:limit]
+            return [_document_row(d, grouped[d], source_id) for d in ids]
+
+        dim = await self.get_collection_embedding_dim(collection_id, tenant_ctx=tenant_ctx)
+        if dim is None:
+            return []
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        table = _chunk_table(dim)
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(f"""
+                        SELECT document_id,
+                               COUNT(*),
+                               MIN(created_at),
+                               MAX(expires_at),
+                               MAX(metadata->>'doc_title'),
+                               MAX(metadata->>'source_url'),
+                               MAX(metadata->>'doc_content_hash'),
+                               MAX(metadata->>'language'),
+                               NULL,
+                               BOOL_OR(metadata->>'has_pii_redacted' = 'true'),
+                               MAX(CASE WHEN jsonb_typeof(metadata->'quality_score') = 'number'
+                                        THEN (metadata->>'quality_score')::float END)
+                        FROM {table}
+                        WHERE tenant_id = :tid AND collection_id = :cid
+                          AND metadata->>'source_id' = :sid
+                          AND (CAST(:after AS text) IS NULL OR document_id > CAST(:after AS text))
+                        GROUP BY document_id
+                        ORDER BY document_id
+                        LIMIT :lim
+                    """),
+                    {
+                        "tid": tenant_ctx.tenant_id,
+                        "cid": collection_id,
+                        "sid": source_id,
+                        "after": after,
+                        "lim": limit,
+                    },
+                )
+            ).fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "source_id": source_id,
+                "doc_id": str(r[0]),
+                "title": str(r[4] or ""),
+                "source_url": str(r[5] or ""),
+                "content_hash": str(r[6] or ""),
+                "language": str(r[7] or ""),
+                "chunk_count": int(r[1] or 0),
+                "quality_score": float(r[10]) if r[10] is not None else None,
+                "has_pii_redacted": bool(r[9]),
+                "ingested_at": r[2].isoformat() if r[2] is not None else None,
+                "expires_at": r[3].isoformat() if r[3] is not None else None,
+            }
+            for r in rows
         ]
 
     async def delete_collection_async(

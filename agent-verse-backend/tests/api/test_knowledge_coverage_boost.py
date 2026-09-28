@@ -257,8 +257,8 @@ def test_analytics_no_knowledge_store() -> None:
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/knowledge/analytics", headers=_auth())
-    assert resp.status_code == 200
-    assert resp.json() == {"collections": [], "total_documents": 0, "total_collections": 0}
+    # No knowledge store is an outage, not "zero collections".
+    assert resp.status_code == 503
 
 
 def test_analytics_success() -> None:
@@ -271,22 +271,24 @@ def test_analytics_success() -> None:
     body = resp.json()
     assert body["total_collections"] == 2
     assert len(body["collections"]) == 2
-    assert body["collections"][0]["health_score"] == 75
+    # Was a hardcoded 75 / total_chunks=0; now computed from real counters —
+    # an empty collection scores 0 and relevance/cache are honestly unknown.
+    assert body["collections"][0]["health_score"] == 0
+    assert body["collections"][0]["total_chunks"] == 0
+    assert body["collections"][0]["avg_relevance_score"] is None
 
 
-def test_analytics_exception_is_caught() -> None:
+def test_analytics_failure_is_503_not_200_with_error_field() -> None:
     store = KnowledgeStore()
 
-    async def _boom(*, tenant_ctx: Any) -> Any:
+    async def _boom(**_: Any) -> Any:
         raise RuntimeError("db exploded")
 
-    store.list_collections_async = _boom  # type: ignore[method-assign]
+    store.collection_counters_async = _boom  # type: ignore[method-assign]
     client = _client(knowledge_store=store)
     resp = client.get("/knowledge/analytics", headers=_auth())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total_collections"] == 0
-    assert "db exploded" in body["error"]
+    assert resp.status_code == 503
+    assert "db exploded" not in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -524,17 +526,16 @@ def test_list_documents_db_fallback() -> None:
     assert body["documents"][0]["title"] == "Title"
 
 
-def test_list_documents_exception_is_caught() -> None:
+def test_list_documents_failure_is_503() -> None:
     class _FakeStore:
         async def list_documents(self, **kwargs: Any) -> Any:
             raise RuntimeError("boom")
 
     client = _client(knowledge_store=_FakeStore())
     resp = client.get("/knowledge/collections/col-1/documents", headers=_auth())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["total"] == 0
-    assert "boom" in body["error"]
+    # Was 200 {"documents": [], "error": "boom"} — looked like an empty collection.
+    assert resp.status_code == 503
+    assert "boom" not in resp.text
 
 
 # ---------------------------------------------------------------------------

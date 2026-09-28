@@ -1,4 +1,4 @@
-"""Embedding Router - vendor-agnostic embedding with fallbacks."""
+"""Embedding Router - vendor-agnostic embedding; lexical fallback only on explicit opt-in."""
 
 from __future__ import annotations
 
@@ -41,8 +41,25 @@ BUILTIN_EMBEDDING_CONFIGS = {
 }
 
 
+LEXICAL_FALLBACK_MODEL = "lexical-hash-384"
+
+
+class EmbeddingUnavailableError(RuntimeError):
+    """No embedding provider is configured, or it failed, and no fallback was requested."""
+
+
+@dataclass
+class EmbeddingRunResult:
+    """What an embedding call actually produced (never ambiguous about fallback)."""
+
+    embeddings: list[list[float]]
+    model: str
+    used_fallback: bool
+    error: str = ""
+
+
 class EmbeddingRouter:
-    """Route embedding requests to the correct provider with fallback."""
+    """Route embedding requests to the configured provider (fallback is opt-in)."""
 
     def __init__(self, provider: Any = None) -> None:
         self._provider: Any = provider  # can be injected at construction or via set_provider()
@@ -65,33 +82,73 @@ class EmbeddingRouter:
         texts: list[str],
         provider: str = "openai",
         model: str = "text-embedding-3-small",
-        fallback_lexical: bool = True,
+        fallback_lexical: bool = False,
     ) -> list[list[float]]:
-        """Embed texts using the specified provider with lexical fallback."""
-        if not texts:
-            return []
+        """Embed *texts* on the configured provider.
 
+        Raises ``EmbeddingUnavailableError`` when there is no provider or it
+        fails, unless the caller explicitly opts into ``fallback_lexical`` (a
+        deterministic hashing vector with NO semantic meaning). The default used
+        to be ``True``, so any caller that forgot to opt out silently received
+        fake 384-dim vectors as if they were real embeddings.
+        """
+        result = await self.embed_texts_report(
+            texts, provider=provider, model=model, fallback_lexical=fallback_lexical
+        )
+        return result.embeddings
+
+    async def embed_texts_report(
+        self,
+        texts: list[str],
+        *,
+        provider: str = "openai",
+        model: str = "text-embedding-3-small",
+        fallback_lexical: bool = False,
+        provider_impl: Any = None,
+    ) -> EmbeddingRunResult:
+        """Like :meth:`embed_texts` but reports what actually produced the vectors.
+
+        ``provider_impl`` overrides the router's provider for this call only
+        (the API passes the app's provider per request instead of mutating this
+        process-wide singleton).
+        """
         model_key = f"{provider}/{model}"
-        if self._provider is not None:
+        if not texts:
+            return EmbeddingRunResult(embeddings=[], model=model_key, used_fallback=False)
+
+        impl = provider_impl if provider_impl is not None else self._provider
+        error = "no embedding provider configured"
+        if impl is not None:
             try:
                 # C7 fix: use embed(EmbedRequest) — the required Protocol method.
                 # embed_batch() is an optional default that some provider ducks may not have.
                 from app.providers.base import EmbedRequest
 
-                resp = await self._provider.embed(EmbedRequest(texts=texts))
-                embeddings = resp.embeddings if resp.embeddings else []
+                resp = await impl.embed(EmbedRequest(texts=texts))
+                embeddings = list(resp.embeddings or [])
+                if len(embeddings) != len(texts) or any(not e for e in embeddings):
+                    raise RuntimeError(
+                        f"provider returned {len(embeddings)} usable vectors for {len(texts)} texts"
+                    )
                 token_count = sum(len(t.split()) for t in texts)
                 self._usage[model_key] = self._usage.get(model_key, 0) + token_count
-                return embeddings
+                actual = str(getattr(resp, "model", "") or "") or model_key
+                return EmbeddingRunResult(embeddings=embeddings, model=actual, used_fallback=False)
             except Exception as exc:
                 self._errors[model_key] = self._errors.get(model_key, 0) + 1
+                error = f"{type(exc).__name__}: {exc}"[:300]
                 _log.warning("Embedding via provider failed: %s", exc)
 
         if fallback_lexical:
-            # Deterministic fallback — BM25-style sparse vector simulation
-            return [self._lexical_embed(t) for t in texts]
+            # Explicit opt-in only. Deterministic hashing vectors — NOT semantic.
+            return EmbeddingRunResult(
+                embeddings=[self._lexical_embed(t) for t in texts],
+                model=LEXICAL_FALLBACK_MODEL,
+                used_fallback=True,
+                error=error,
+            )
 
-        raise RuntimeError("Embedding failed and lexical fallback is disabled")
+        raise EmbeddingUnavailableError(error)
 
     def _lexical_embed(self, text: str, dim: int = 384) -> list[float]:
         """Deterministic fallback embedding using character hashing."""

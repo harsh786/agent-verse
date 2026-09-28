@@ -4791,52 +4791,26 @@ except Exception as _sched_exc:
 
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")
 def reindex_stale_knowledge() -> dict:
-    """Mark knowledge chunks past their freshness TTL as needing reindex."""
+    """Retired — deliberately does nothing and is NOT on the beat schedule.
 
-    async def _run() -> dict:
-        from sqlalchemy import text
+    It used to ``UPDATE documents SET needs_reindex = TRUE`` hourly, which was a
+    no-op dressed up as maintenance:
 
-        from app.db.session import get_session_factory as _get_fresh_db
+    * ``KnowledgeStore`` never writes the legacy ``documents`` table — chunks
+      live in ``knowledge_chunks_<dim>`` — so there was nothing to mark;
+    * nothing anywhere reads ``needs_reindex``, so a mark triggered nothing;
+    * it ran on the application role without an RLS context against a
+      FORCE-RLS table, so under the production role it matched zero rows anyway.
 
-        db = _get_fresh_db()
-        async with db() as session, session.begin():
-            result = await session.execute(
-                text("""
-                UPDATE documents
-                SET needs_reindex = TRUE, updated_at = NOW()
-                WHERE needs_reindex = FALSE
-                  AND last_modified IS NOT NULL
-                  AND freshness_ttl_hours > 0
-                  AND last_modified < NOW() - (freshness_ttl_hours * INTERVAL '1 hour')
-            """)
-            )
-            marked = result.rowcount
-        return {"marked_for_reindex": marked}
-
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_run())
-    except Exception as exc:
-        logger.warning("reindex_stale_knowledge failed: %s", exc)
-        return {"marked_for_reindex": 0, "error": str(exc)}
-    finally:
-        loop.close()
-
-
-# Register reindex_stale_knowledge in the Celery beat schedule (hourly)
-try:
-    celery_app.conf.beat_schedule["reindex-stale-knowledge"] = {
-        "task": "agentverse.maintenance.reindex_stale_knowledge",
-        "schedule": 3600,
-        "options": {"queue": "maintenance"},
-    }
-    celery_app.conf.task_routes.update(
-        {"agentverse.maintenance.reindex_stale_knowledge": {"queue": "maintenance"}}
-    )
-except Exception as _reindex_sched_exc:
-    logger.warning(
-        "Failed to register reindex_stale_knowledge beat schedule: %s", _reindex_sched_exc
-    )
+    Real freshness is handled elsewhere: each Source is re-synced on its
+    ``sync_interval_seconds`` by ``ingestion.dispatch_due_sources`` (content-hash
+    dedup skips unchanged documents), retrieval already excludes chunks past
+    ``expires_at``, and a model change is re-embedded explicitly via
+    ``re_embed_collection``. The task name stays registered only so messages
+    already queued by an older beat drain harmlessly.
+    """
+    logger.info("reindex_stale_knowledge_retired")
+    return {"status": "retired", "marked_for_reindex": 0}
 
 
 @celery_app.task(name="agentverse.maintenance.purge_expired_artifacts")

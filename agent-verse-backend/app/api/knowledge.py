@@ -1997,60 +1997,64 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     }
 
 
+def _health_score(chunk_count: int, doc_count: int) -> float:
+    """0-1 composite over REAL counters: coverage (embedding is NOT NULL on every
+    persisted chunk, so any chunk is embedded), corpus size, document count."""
+    coverage = 1.0 if chunk_count > 0 else 0.0
+    score = (
+        (0.4 * coverage)
+        + (0.4 * min(1.0, chunk_count / 100))
+        + (0.2 * min(1.0, doc_count / 10))
+    )
+    return round(min(1.0, score), 3)
+
+
 @router.get("/collections/{collection_id}/stats")
 async def get_collection_stats(request: Request, collection_id: str) -> dict[str, Any]:
-    """Return quality and freshness statistics for a knowledge collection."""
+    """Quality/size statistics for one collection, from the source of truth.
+
+    Previously computed from the in-memory ``_data`` mirror, which is empty
+    whenever the DB-backed store is wired — so every production collection read
+    0 chunks / 0% coverage. Counts now come from the ``knowledge_collections``
+    counters (maintained exactly on every ingest/delete); the source-type
+    distribution is a bounded sample (``source_type_sample_size`` rows). 5xx on
+    failure.
+    """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
-
-    # Verify collection exists
-    collections = await store.list_collections_async(tenant_ctx=tenant_ctx)
-    col = next((c for c in collections if c.collection_id == collection_id), None)
-    if col is None:
+    try:
+        counters = await store.collection_counters_async(
+            tenant_ctx=tenant_ctx, collection_id=collection_id
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    if not counters:
         raise HTTPException(status_code=404, detail="Collection not found")
-
-    # Pull chunks from in-memory store for analytics
-    # _data maps (tenant_id, collection_id) → _CollectionStore; extract .chunks
-    raw_data = getattr(store, "_data", {})
-    cid_key = (tenant_ctx.tenant_id, collection_id)
-    col_store = raw_data.get(cid_key)
-    chunk_objs: list[Any] = col_store.chunks if col_store is not None else []
-    doc_count = getattr(col, "document_count", 0)
-    chunk_count = len(chunk_objs)
-
-    # Compute avg embedding magnitude as a proxy for embedding health
-    embeddings_present = sum(1 for c in chunk_objs if getattr(c, "embedding", None))
-    embedding_coverage = round(embeddings_present / max(chunk_count, 1), 4)
-
-    # Source type distribution
-    source_types: dict[str, int] = {}
-    for c in chunk_objs:
-        stype = (getattr(c, "metadata", None) or {}).get("source_type", "unknown")
-        source_types[stype] = source_types.get(stype, 0) + 1
-
-    # Average chunk length
-    avg_chunk_len = int(
-        sum(len(getattr(c, "content", "")) for c in chunk_objs) / max(chunk_count, 1)
-    )
+    col = counters[0]
+    chunk_count = int(col["chunk_count"])
+    doc_count = int(col["document_count"])
+    try:
+        source_types, sampled = await store.source_type_sample_async(
+            collection_id, tenant_ctx=tenant_ctx, embedding_dim=col["embedding_dim"]
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
 
     return {
         "collection_id": collection_id,
-        "name": col.name,
+        "name": col["name"],
         "doc_count": doc_count,
         "chunk_count": chunk_count,
-        "embedding_coverage_pct": round(embedding_coverage * 100, 1),
-        "avg_chunk_length": avg_chunk_len,
+        "embedding_coverage_pct": 100.0 if chunk_count else 0.0,
+        # Mean stored chunk size in bytes (UTF-8), from the maintained counter.
+        "avg_chunk_length": int(col["total_size_bytes"] / chunk_count) if chunk_count else 0,
+        "total_size_bytes": int(col["total_size_bytes"]),
         "source_type_distribution": source_types,
-        "embedder": getattr(col, "embedder", "unknown"),
-        "health_score": round(
-            min(
-                1.0,
-                (0.4 * embedding_coverage)
-                + (0.4 * min(1.0, chunk_count / 100))
-                + (0.2 * min(1.0, doc_count / 10)),
-            ),
-            3,
-        ),
+        "source_type_sample_size": sampled,
+        "embedder": col["embedder"] or "unknown",
+        "embedding_dim": col["embedding_dim"],
+        "last_indexed_at": col["last_indexed_at"],
+        "health_score": _health_score(chunk_count, doc_count),
     }
 
 
@@ -2210,42 +2214,45 @@ def _require_tenant_ctx(request: Request) -> TenantContext:
 
 @router.get("/analytics")
 async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
-    """Return aggregate analytics for all knowledge collections."""
+    """Aggregate analytics for all of the tenant's collections.
+
+    Previously hardcoded ``total_chunks=0``, ``health_score=75`` and zero
+    relevance/cache rates, and answered 200 with an ``error`` field when the
+    lookup failed. Now every number comes from the ``knowledge_collections``
+    counters in one indexed query; metrics this service does not measure per
+    collection (relevance, cache hit rate) are ``None`` rather than invented;
+    a failure is a 503.
+    """
     tenant = _require_tenant_ctx(request)
     knowledge_store: KnowledgeStore | None = getattr(request.app.state, "knowledge_store", None)
-
     if knowledge_store is None:
-        return {"collections": [], "total_documents": 0, "total_collections": 0}
-
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
     try:
-        collections = await knowledge_store.list_collections_async(tenant_ctx=tenant)
-        analytics: list[dict[str, Any]] = []
-        for col in collections:
-            analytics.append(
-                {
-                    "collection_id": col.collection_id,
-                    "name": col.name,
-                    "document_count": col.document_count,
-                    "total_chunks": 0,
-                    "last_indexed": None,
-                    "avg_relevance_score": 0.0,
-                    "cache_hit_rate": 0.0,
-                    "health_score": 75,
-                }
-            )
-
-        return {
-            "collections": analytics,
-            "total_documents": sum(a["document_count"] for a in analytics),
-            "total_collections": len(analytics),
-        }
+        counters = await knowledge_store.collection_counters_async(tenant_ctx=tenant)
     except Exception as exc:
-        return {
-            "collections": [],
-            "total_documents": 0,
-            "total_collections": 0,
-            "error": str(exc),
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    analytics = [
+        {
+            "collection_id": c["collection_id"],
+            "name": c["name"],
+            "document_count": int(c["document_count"]),
+            "total_chunks": int(c["chunk_count"]),
+            "total_size_bytes": int(c["total_size_bytes"]),
+            "last_indexed": c["last_indexed_at"],
+            "avg_relevance_score": None,  # not measured per collection
+            "cache_hit_rate": None,  # semantic cache is not per-collection
+            "health_score": round(
+                _health_score(int(c["chunk_count"]), int(c["document_count"])) * 100
+            ),
         }
+        for c in counters
+    ]
+    return {
+        "collections": analytics,
+        "total_documents": sum(a["document_count"] for a in analytics),
+        "total_chunks": sum(a["total_chunks"] for a in analytics),
+        "total_collections": len(analytics),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2456,8 +2463,17 @@ async def list_documents(
                     for r in rows
                 ]
                 return {"documents": documents, "total": int(total)}
+    except HTTPException:
+        raise
     except Exception as exc:
-        return {"documents": [], "total": 0, "error": str(exc)}
+        # Was a 200 {"documents": [], "error": ...} — indistinguishable from an
+        # empty collection. A failed lookup is a failure.
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).exception("list_documents_failed", collection_id=collection_id)
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
 
     return {"documents": [], "total": 0}
 

@@ -50,9 +50,25 @@ _COST_BY_PLAN = {
     "enterprise": ["free", "low", "medium", "high"],
 }
 
-# Provider fallback order — used when the primary provider fails.
-# Each entry is a provider name; the orchestrator tries them in order.
-_FALLBACK_ORDER = ["anthropic", "openai", "voyage", "gemini", "fake"]
+# Provider fallback order for EMBEDDINGS — used when the primary provider fails.
+# Anthropic has no embeddings API, so it is not in the chain; "fake" (random-ish
+# 10-dim vectors) is appended only outside production (see fallback_order()).
+_FALLBACK_ORDER = ["openai", "voyage", "gemini"]
+
+
+def _is_production() -> bool:
+    import os
+
+    return os.getenv("ENVIRONMENT", "development").strip().lower() == "production"
+
+
+def fallback_order() -> list[str]:
+    """The embedding provider fallback chain for this environment."""
+    return [*_FALLBACK_ORDER] if _is_production() else [*_FALLBACK_ORDER, "fake"]
+
+
+class NoEmbeddingModelAvailableError(RuntimeError):
+    """No real embedding model is selectable (production never falls back to fake)."""
 
 # Default batch size for embed_batch()
 _DEFAULT_BATCH_SIZE = 32
@@ -165,7 +181,12 @@ class EmbeddingOrchestrator:
                 selection_reason="fallback to text embedding",
             )
 
-        # Ultimate fallback
+        # Ultimate fallback — development/tests only. In production a fake
+        # 10-dim "embedding" would silently poison the vector index.
+        if _is_production():
+            raise NoEmbeddingModelAvailableError(
+                f"no embedding model available for content_type={content_type.value}"
+            )
         return EmbeddingSelectionResult(
             model_id="fake-embedding",
             dimension=10,

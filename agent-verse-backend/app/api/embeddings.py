@@ -23,31 +23,49 @@ class EmbedRequest(BaseModel):
     texts: list[str] = Field(..., max_length=100)
     provider: str = "openai"
     model: str = "text-embedding-3-small"
-    fallback_lexical: bool = True
+    # Opt-in only. When true and the provider is missing/failing, deterministic
+    # hashing vectors (no semantic meaning) are returned and flagged as such.
+    # The default used to be True — callers silently got fake 384-dim vectors.
+    fallback_lexical: bool = False
 
 
 @router.post("/embed")
 async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
-    """Embed texts using the configured provider."""
+    """Embed texts on the app's configured embedding provider.
+
+    503 when no provider is configured or it fails, unless the caller opted into
+    ``fallback_lexical``; ``used_fallback`` reports whether the fallback actually
+    ran, and ``model`` is what produced the vectors.
+    """
     _require_tenant(request)
-    from app.embedding.router import embedding_router
+    from app.embedding.router import EmbeddingUnavailableError, embedding_router
 
-    provider = getattr(request.app.state, "_app_provider", None)
-    if provider:
-        embedding_router.set_provider(provider)
-
-    embeddings = await embedding_router.embed_texts(
-        body.texts,
-        provider=body.provider,
-        model=body.model,
-        fallback_lexical=body.fallback_lexical,
+    provider = getattr(request.app.state, "embedder", None) or getattr(
+        request.app.state, "_app_provider", None
     )
+    try:
+        result = await embedding_router.embed_texts_report(
+            body.texts,
+            provider=body.provider,
+            model=body.model,
+            fallback_lexical=body.fallback_lexical,
+            provider_impl=provider,
+        )
+    except EmbeddingUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Embedding provider is unavailable (set fallback_lexical=true to accept "
+            "non-semantic lexical vectors)",
+        ) from exc
+    embeddings = result.embeddings
     return {
         "embeddings": embeddings,
-        "model": f"{body.provider}/{body.model}",
+        "model": result.model,
+        "requested_model": f"{body.provider}/{body.model}",
         "dimension": len(embeddings[0]) if embeddings else 0,
         "count": len(embeddings),
-        "used_fallback": provider is None,
+        "used_fallback": result.used_fallback,
+        "fallback_reason": (result.error or None) if result.used_fallback else None,
     }
 
 

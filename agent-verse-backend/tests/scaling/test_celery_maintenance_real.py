@@ -524,11 +524,12 @@ def test_consolidate_memories_task_has_real_sql() -> None:
 # ── reindex_stale_knowledge has real impl ─────────────────────────────────────
 
 
-def test_reindex_stale_knowledge_has_real_sql() -> None:
+def test_reindex_stale_knowledge_is_retired_not_faked() -> None:
+    """It used to UPDATE the legacy ``documents`` table (never written, never
+    read) and report a count; it is now an explicit, unscheduled retirement."""
     from app.scaling.tasks import reindex_stale_knowledge
-    src = inspect.getsource(reindex_stale_knowledge)
-    assert "documents" in src
-    assert "noop" not in src.lower()
+
+    assert reindex_stale_knowledge.run() == {"status": "retired", "marked_for_reindex": 0}
 
 
 # ── purge_expired_artifacts has real impl ─────────────────────────────────────

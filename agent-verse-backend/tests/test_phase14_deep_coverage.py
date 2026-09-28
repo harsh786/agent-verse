@@ -277,15 +277,22 @@ def test_no_secrets_in_model_catalog():
 
 
 def test_embed_multiple_texts():
+    """No embedding provider → 503 by default (was: fake hash vectors, 200)."""
     client = _make_full_app()
     resp = client.post(
         "/embeddings/embed",
         json={"texts": ["hello", "world", "test"]},
         headers=_HDRS_A,
     )
-    assert resp.status_code == 200
-    assert resp.json()["count"] == 3
-    assert all(len(e) > 0 for e in resp.json()["embeddings"])
+    assert resp.status_code == 503
+    opted_in = client.post(
+        "/embeddings/embed",
+        json={"texts": ["hello", "world", "test"], "fallback_lexical": True},
+        headers=_HDRS_A,
+    )
+    assert opted_in.status_code == 200
+    assert opted_in.json()["count"] == 3
+    assert opted_in.json()["used_fallback"] is True
 
 
 def test_dimension_validation_catches_mismatch():
@@ -336,21 +343,20 @@ def test_pdf_ingestion_handles_gracefully():
 # ─── RAG Platform ─────────────────────────────────────────────────────────────
 
 
-def test_rag_query_returns_structured_result():
+def test_rag_query_without_retrieval_gateway_is_503_not_fake_empty_answer():
+    """Regression: with no retrieval gateway this answered 200 with an empty
+    "structurally valid" result, indistinguishable from "nothing found"."""
     client = _make_full_app()
     resp = client.post(
         "/rag/query",
         json={"query": "What is machine learning?"},
         headers=_HDRS_A,
     )
-    assert resp.status_code == 200
-    assert "answer" in resp.json()
-    assert "strategy_used" in resp.json()
-    assert "citations" in resp.json()
-    assert "confidence" in resp.json()
+    assert resp.status_code == 503
 
 
 def test_rag_all_strategies_accessible():
+    """Every strategy id resolves (no 422) — the missing gateway is a 503."""
     client = _make_full_app()
     for strategy in ["naive", "hybrid", "hyde", "graph"]:
         resp = client.post(
@@ -358,7 +364,7 @@ def test_rag_all_strategies_accessible():
             json={"query": "test", "strategy": strategy},
             headers=_HDRS_A,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 503
 
 
 # ─── Guardrails 2.0 ───────────────────────────────────────────────────────────

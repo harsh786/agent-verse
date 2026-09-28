@@ -1,9 +1,11 @@
 """
 Vector Cache Backends for SemanticCache L2.
 
-Replaces the O(n) Python Redis scan with ANN lookup.
+Durable, cross-replica L2 next to the Redis scan.
 Backends:
-  - PgVectorCacheBackend: pgvector HNSW on `semantic_cache_entries` table
+  - PgVectorCacheBackend: pgvector cosine search over `semantic_cache_entries`
+    (write-through from SemanticCache.store_async; TTL-bounded; exact scan of
+    the tenant's live window — the TEXT embedding column has no ANN index)
   - InMemoryCacheBackend: fallback for tests / no DB
 
 `select_cache_backend()` probes capabilities and returns the best available.
@@ -123,10 +125,28 @@ def _get_rls_imports() -> tuple[Any, Any]:
 
 
 class PgVectorCacheBackend:
-    """pgvector HNSW-indexed semantic cache backend."""
+    """Durable, cross-replica semantic cache L2 on ``semantic_cache_entries``.
 
-    def __init__(self, db_factory: Any) -> None:
+    Rows are written through by ``SemanticCache.store_async`` (previously nothing
+    ever wrote this table, so every lookup here was a guaranteed miss) and
+    cleared by ``SemanticCache.clear_async``. Every statement runs under the
+    tenant's RLS context with an explicit ``tenant_id`` predicate. Lookups only
+    consider rows younger than ``ttl_seconds`` (same TTL as the Redis L2, via
+    ``idx_semantic_cache_tenant_created``) and stale rows are purged on write, so
+    the per-tenant working set stays bounded.
+
+    Note: ``embedding`` is a TEXT column cast to ``vector`` at query time (the
+    dimension is not fixed by the schema), so this is an exact scan of the
+    tenant's live window, not an HNSW ANN lookup.
+    """
+
+    # Purge a tenant's expired rows on roughly one write in this many.
+    _PURGE_EVERY = 64
+
+    def __init__(self, db_factory: Any, ttl_seconds: float = 3600.0) -> None:
         self._db = db_factory
+        self._ttl = max(1, int(ttl_seconds))
+        self._writes = 0
 
     async def get_similar(
         self,
@@ -146,21 +166,37 @@ class PgVectorCacheBackend:
             ):
                 result = await session.execute(
                     text("""
-                        SELECT response,
-                               1 - (embedding <=> CAST(:emb AS vector)) AS score
-                        FROM semantic_cache_entries
-                        WHERE tenant_id = :tid
-                          AND 1 - (embedding <=> CAST(:emb AS vector)) >= :threshold
-                        ORDER BY embedding <=> CAST(:emb AS vector)
+                        SELECT response, score FROM (
+                            SELECT response,
+                                   1 - (CAST(embedding AS vector) <=> CAST(:emb AS vector))
+                                       AS score
+                            FROM semantic_cache_entries
+                            WHERE tenant_id = :tid
+                              AND created_at > now() - make_interval(secs => :ttl)
+                              AND vector_dims(CAST(embedding AS vector)) = :dim
+                        ) AS candidates
+                        WHERE score >= :threshold
+                        ORDER BY score DESC
                         LIMIT 1
                     """),
-                    {"emb": emb_str, "tid": tenant_id, "threshold": threshold},
+                    # ``embedding`` is a TEXT column: it must be cast before the
+                    # pgvector operator (the previous ``embedding <=> vector``
+                    # raised UndefinedFunction on every call, swallowed at DEBUG),
+                    # and rows of another dimension are skipped, not an error.
+                    {
+                        "emb": emb_str,
+                        "tid": tenant_id,
+                        "threshold": threshold,
+                        "ttl": self._ttl,
+                        "dim": len(embedding),
+                    },
                 )
                 row = result.fetchone()
                 if row:
                     return {"response": row[0], "score": float(row[1])}
         except Exception as e:
-            logger.debug("pgvector_cache_get_failed", error=str(e)[:80])
+            # A cache miss is safe, but a broken backend must be visible.
+            logger.warning("pgvector_cache_get_failed", error=str(e)[:120])
         return None
 
     async def store(
@@ -196,8 +232,17 @@ class PgVectorCacheBackend:
                         "resp": response,
                     },
                 )
+                self._writes += 1
+                if self._writes % self._PURGE_EVERY == 0:
+                    await session.execute(
+                        text(
+                            "DELETE FROM semantic_cache_entries WHERE tenant_id = :tid "
+                            "AND created_at <= now() - make_interval(secs => :ttl)"
+                        ),
+                        {"tid": tenant_id, "ttl": self._ttl},
+                    )
         except Exception as e:
-            logger.debug("pgvector_cache_store_failed", error=str(e)[:80])
+            logger.warning("pgvector_cache_store_failed", error=str(e)[:120])
 
     async def clear(self, tenant_id: str) -> None:
         if self._db is None:
@@ -214,7 +259,7 @@ class PgVectorCacheBackend:
                     {"tid": tenant_id},
                 )
         except Exception as e:
-            logger.debug("pgvector_cache_clear_failed", error=str(e)[:80])
+            logger.warning("pgvector_cache_clear_failed", error=str(e)[:120])
 
     async def stats(self, tenant_id: str) -> dict[str, Any]:
         return {"backend": "pgvector", "tenant_id": tenant_id}
@@ -233,6 +278,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 async def select_cache_backend(
     db_factory: Any = None,
     redis: Any = None,
+    ttl_seconds: float = 3600.0,
 ) -> Any:
     """
     Probe available infrastructure and return the best cache backend.
@@ -245,7 +291,7 @@ async def select_cache_backend(
             async with db_factory() as session, session.begin():
                 await session.execute(text("SELECT 1 FROM semantic_cache_entries LIMIT 1"))
             logger.info("semantic_cache_backend_pgvector")
-            return PgVectorCacheBackend(db_factory)
+            return PgVectorCacheBackend(db_factory, ttl_seconds=ttl_seconds)
         except Exception as e:
             logger.debug("pgvector_backend_unavailable", error=str(e)[:60])
 

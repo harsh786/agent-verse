@@ -108,23 +108,13 @@ def _raise_retrieval_http_error(exc: Exception) -> NoReturn:
 async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     """Execute a RAG query with the specified strategy."""
     tenant = _require_tenant(request)
-    resolved_strategy = _resolve_request_strategy(body.strategy)
+    _resolve_request_strategy(body.strategy)  # unknown strategy → 422 before 503
     gateway = getattr(request.app.state, "retrieval_gateway", None)
     if gateway is None:
-        # No retrieval gateway configured — return an empty but structurally
-        # valid response so strategy-accessibility tests pass in unit-test envs.
-        return {
-            "query": body.query,
-            "requested_strategy_id": body.strategy,
-            "resolved_strategy_id": resolved_strategy.value,
-            "strategy_used": resolved_strategy.value,
-            "answer": "",
-            "citations": [],
-            "confidence": 0.0,
-            "grounded": False,
-            "retrieval_legs": [],
-            "strategy_trace": [],
-        }
+        # Was a 200 with an empty "structurally valid" answer (so unit tests
+        # passed) — indistinguishable from "nothing relevant found". No
+        # retrieval service is an outage, not an empty result.
+        raise HTTPException(status_code=503, detail="Retrieval service is unavailable")
     retriever = RAGRetriever(gateway=gateway)
     try:
         result = await retriever.retrieve(
@@ -139,6 +129,16 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
     except Exception as exc:
         _raise_retrieval_http_error(exc)
 
+    # ``confidence`` used to be the single best citation score presented as an
+    # answer confidence. Prefer the gateway's calibrated aggregate retrieval
+    # confidence (WS-10); strategies that do not compute one fall back to the
+    # max citation score — and ``confidence_basis`` always says which it is.
+    max_citation_score = max((citation.score for citation in result.citations), default=0.0)
+    calibrated = float(result.retrieval_confidence or 0.0)
+    if calibrated > 0.0:
+        confidence, confidence_basis = calibrated, "calibrated_retrieval"
+    else:
+        confidence, confidence_basis = max_citation_score, "max_citation_score"
     return {
         "query": body.query,
         "requested_strategy_id": result.requested_strategy_id,
@@ -147,7 +147,10 @@ async def rag_query(request: Request, body: RAGQueryRequest) -> dict[str, Any]:
         "answer": result.answer,
         "citations": [citation.model_dump(mode="json") for citation in result.citations],
         "grounded": result.grounded,
-        "confidence": round(max((citation.score for citation in result.citations), default=0.0), 3),
+        "confidence": round(confidence, 3),
+        "confidence_basis": confidence_basis,
+        "max_citation_score": round(max_citation_score, 3),
+        "low_confidence": bool(result.low_confidence),
         "retrieval_legs": [leg.model_dump(mode="json") for leg in result.retrieval_legs],
         "strategy_trace": [trace.model_dump(mode="json") for trace in result.strategy_trace],
     }

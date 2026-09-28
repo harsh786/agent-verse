@@ -295,6 +295,9 @@ class IngestionJobTracker:
                                docs_skipped = :skipped,
                                docs_failed = :failed,
                                chunks_created = :chunks,
+                               docs_discovered = :discovered,
+                               bytes_processed = :bytes,
+                               tokens_consumed = :tokens,
                                error_message = :error,
                                cursor_after = :cursor
                          WHERE id = :job_id AND tenant_id = :tenant_id
@@ -305,6 +308,11 @@ class IngestionJobTracker:
                         "skipped": job.docs_skipped,
                         "failed": job.docs_failed,
                         "chunks": job.chunks_created,
+                        # Tokens/bytes/discovered were tracked in memory but never
+                        # persisted, so /ingestion/cost had nothing real to report.
+                        "discovered": job.docs_discovered,
+                        "bytes": job.bytes_processed,
+                        "tokens": job.tokens_consumed,
                         "error": job.error_message,
                         "cursor": job.cursor_after,
                         "job_id": job.job_id,
@@ -527,6 +535,7 @@ class IngestionJobTracker:
                           FROM ingestion_dlq
                          WHERE permanent_failure IS NOT TRUE
                            AND resolved_at IS NULL
+                           AND (next_retry_at IS NULL OR next_retry_at <= NOW())
                          ORDER BY created_at ASC
                          LIMIT :limit
                     """),
@@ -536,6 +545,91 @@ class IngestionJobTracker:
         except Exception as exc:
             _log.warning("get_retryable_dlq_entries_error: %s", exc)
             return []
+
+    # ── Tenant read models (GET /ingestion/dlq, GET /ingestion/cost) ────────
+
+    async def list_dlq_entries(
+        self,
+        tenant_id: str,
+        *,
+        limit: int = 50,
+        source_id: str = "",
+        include_resolved: bool = False,
+    ) -> list[dict[str, Any]]:
+        """One tenant's DLQ rows, newest first, under its RLS context.
+
+        ``GET /ingestion/dlq`` returned a hardcoded ``[]`` while this table was
+        being populated. Served by ``idx_ingestion_dlq_tenant_open``. Raises
+        when no DB is wired or the query fails (the API answers 5xx) — an empty
+        list must mean "no entries", never "could not look".
+        """
+        if self._db is None:
+            raise RuntimeError("ingestion DLQ requires a database")
+        from sqlalchemy import text
+
+        sql = (
+            "SELECT id, source_id, job_id, doc_id, failed_stage, failure_type, "
+            "error_message, last_error, retry_count, next_retry_at, last_retried_at, "
+            "COALESCE(permanent_failure, false) AS permanent_failure, resolved_at, "
+            "created_at FROM ingestion_dlq WHERE tenant_id = :tid"
+        )
+        params: dict[str, Any] = {"tid": tenant_id, "limit": limit}
+        if not include_resolved:
+            sql += " AND resolved_at IS NULL"
+        if source_id:
+            sql += " AND source_id = :sid"
+            params["sid"] = source_id
+        sql += " ORDER BY created_at DESC LIMIT :limit"
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (await session.execute(text(sql), params)).mappings().all()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for key in ("next_retry_at", "last_retried_at", "resolved_at", "created_at"):
+                value = item.get(key)
+                item[key] = value.isoformat() if isinstance(value, datetime) else value
+            out.append(item)
+        return out
+
+    async def monthly_usage(self, tenant_id: str) -> dict[str, int]:
+        """This calendar month's ingestion-job totals for one tenant (UTC).
+
+        Aggregate over ``ingestion_jobs`` via ``idx_ingestion_jobs_tenant_created``.
+        Raises when no DB is wired or the query fails.
+        """
+        if self._db is None:
+            raise RuntimeError("ingestion usage requires a database")
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT COUNT(*), COALESCE(SUM(tokens_consumed), 0), "
+                        "COALESCE(SUM(docs_indexed), 0), COALESCE(SUM(chunks_created), 0), "
+                        "COALESCE(SUM(bytes_processed), 0) FROM ingestion_jobs "
+                        "WHERE tenant_id = :tid "
+                        "AND created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') "
+                        "AT TIME ZONE 'UTC'"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).one()
+        return {
+            "jobs": int(row[0] or 0),
+            "tokens": int(row[1] or 0),
+            "docs_indexed": int(row[2] or 0),
+            "chunks_created": int(row[3] or 0),
+            "bytes_processed": int(row[4] or 0),
+        }
 
     async def resolve_dlq_entry(self, dlq_id: str, tenant_id: str) -> None:
         """Mark a DLQ entry as resolved (successfully retried).
@@ -553,9 +647,14 @@ class IngestionJobTracker:
 
     async def increment_dlq_retry(self, dlq_id: str, tenant_id: str, error: str = "") -> None:
         """Increment retry count on a DLQ entry."""
+        # Exponential backoff (5 min x 2^attempt, capped at 6 h) recorded in
+        # next_retry_at, which the retry scan honours — without it every beat
+        # tick re-picked the same oldest failing rows, starving newer entries.
         await self._update_dlq_entry(
             "UPDATE ingestion_dlq SET retry_count = retry_count + 1, "
-            "last_error = :error, last_retried_at = NOW() "
+            "last_error = :error, last_retried_at = NOW(), "
+            "next_retry_at = NOW() + LEAST(interval '6 hours', "
+            "interval '5 minutes' * power(2, retry_count)) "
             "WHERE id = :id AND tenant_id = :tid",
             {"id": dlq_id, "tid": tenant_id, "error": error},
             tenant_id=tenant_id,
