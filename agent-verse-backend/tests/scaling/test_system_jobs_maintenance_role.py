@@ -118,7 +118,11 @@ async def test_retention_runs_on_maintenance_role() -> None:
 
     # One session for the partition sweep, then one short transaction per
     # retention batch (a single batch per table here: 4 < batch size).
-    sessions = [_session(default=MagicMock(rowcount=4)) for _ in range(5)]
+    # scalar() → False: no tenant-wide legal hold is in force.
+    sessions = [
+        _session(default=MagicMock(rowcount=4, scalar=MagicMock(return_value=False)))
+        for _ in range(5)
+    ]
     sys_session = _Recorder()
     p = _system_patches(_factory(*sessions), sys_session)
     with p[0], p[1], p[2]:

@@ -108,13 +108,15 @@ class TestHitlEmailLinks:
 # ── Legal holds ───────────────────────────────────────────────────────────────
 
 class TestLegalHolds:
-    def test_list_legal_holds_no_db_returns_empty(self):
+    def test_list_legal_holds_no_db_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("app.api.governance._get_db", lambda _r: None)
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/legal-holds", headers=_H)
         assert resp.status_code == 200
         assert resp.json() == []
 
-    def test_create_legal_hold_no_db_returns_error(self):
+    def test_create_legal_hold_no_db_returns_error(self, monkeypatch):
+        monkeypatch.setattr("app.api.governance._get_db", lambda _r: None)
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.post(
             "/governance/legal-hold",

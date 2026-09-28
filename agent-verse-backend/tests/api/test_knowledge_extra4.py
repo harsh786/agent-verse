@@ -130,8 +130,8 @@ def test_delete_collection_with_legal_hold_blocks_deletion() -> None:
     assert resp.status_code == 409
 
 
-def test_delete_collection_legal_hold_exception_non_fatal() -> None:
-    """Lines 201-204: Legal hold check exception is non-fatal (deletion proceeds)."""
+def test_delete_collection_legal_hold_exception_fails_closed() -> None:
+    """An unverifiable legal-hold state refuses the deletion (503), never allows it."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     coll_id = _create_collection(client)
 
@@ -140,7 +140,7 @@ def test_delete_collection_legal_hold_exception_non_fatal() -> None:
     client.app.state.legal_hold_manager = hold_mgr
 
     resp = client.delete(f"/knowledge/collections/{coll_id}", headers=H)
-    assert resp.status_code == 204
+    assert resp.status_code == 503
 
 
 def test_delete_collection_with_db_mock() -> None:

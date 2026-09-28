@@ -66,7 +66,7 @@ def test_verify_rejects_wrong_type():
     h = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
     signing_input = f"{h}.{b}"
     sig = hmac.new(
-        stream_tokens._SIGNING_SECRET.encode(), signing_input.encode(), hashlib.sha256
+        stream_tokens._signing_secret().encode(), signing_input.encode(), hashlib.sha256
     ).digest()
     token = f"{signing_input}.{base64.urlsafe_b64encode(sig).rstrip(b'=').decode()}"
     assert verify_stream_token(token) is None

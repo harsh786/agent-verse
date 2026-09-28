@@ -1240,6 +1240,12 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
 class LegalHoldRequest(BaseModel):
     reason: str
     expires_at: str | None = None  # ISO datetime
+    # Optional scoping. Default ("tenant", no ids) holds ALL of the tenant's data.
+    name: str | None = None
+    resource_type: str = "tenant"
+    resource_ids: list[str] | None = None
+    user_ids: list[str] | None = None
+    legal_matter_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1567,69 +1573,93 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
 # ---------------------------------------------------------------------------
 
 
-@router.post("/legal-hold")
-async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
-    """Place a legal hold on tenant data to prevent retention deletion."""
-    ctx = _require_tenant(request)
+def _legal_hold_manager(request: Request) -> Any:
+    """LegalHoldManager over the request DB factory (+ the wired Redis cache)."""
     db = _get_db(request)
     if db is None:
+        return None
+    from app.governance.legal_holds import LegalHoldManager
+
+    wired = getattr(request.app.state, "legal_hold_manager", None)
+    return LegalHoldManager(redis=getattr(wired, "_redis", None), db_factory=db)
+
+
+@router.post("/legal-hold")
+async def create_legal_hold(request: Request, body: LegalHoldRequest) -> dict:
+    """Place a legal hold on tenant data to prevent retention deletion.
+
+    This used to INSERT a ``reason`` column that ``legal_holds`` (migration 0057)
+    does not have, omit the NOT NULL ``name``/``resource_type`` and run without
+    the RLS tenant context — so every call failed. It now goes through
+    ``LegalHoldManager`` (the real schema, under RLS). The default hold is
+    tenant-wide (``resource_type="tenant"``), which the delete gates and the
+    retention sweeps honour.
+    """
+    from datetime import datetime
+
+    from app.governance.legal_holds import TENANT_WIDE
+
+    ctx = _require_tenant(request)
+    mgr = _legal_hold_manager(request)
+    if mgr is None:
         raise HTTPException(503, "Database not available")
-    import uuid
 
-    from sqlalchemy import text
+    expires_at = None
+    if body.expires_at:
+        try:
+            expires_at = datetime.fromisoformat(body.expires_at)
+        except ValueError as exc:
+            raise HTTPException(422, "expires_at must be an ISO-8601 datetime") from exc
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+    resource_type = (body.resource_type or TENANT_WIDE).strip() or TENANT_WIDE
+    if resource_type != TENANT_WIDE and not (body.resource_ids or body.user_ids):
+        raise HTTPException(422, "A non-tenant-wide hold needs resource_ids or user_ids")
 
-    async with db() as session, session.begin():
-        await session.execute(
-            text("""
-            INSERT INTO legal_holds (id, tenant_id, reason, expires_at, created_by)
-            VALUES (:id, :tid, :reason, :exp, :by)
-        """),
-            {
-                "id": uuid.uuid4().hex,
-                "tid": ctx.tenant_id,
-                "reason": body.reason,
-                "exp": body.expires_at,
-                "by": getattr(ctx, "api_key_id", "unknown"),
-            },
+    try:
+        hold = await mgr.create_hold(
+            tenant_id=ctx.tenant_id,
+            name=(body.name or body.reason)[:500],
+            description=body.reason,
+            resource_type=resource_type,
+            resource_ids=body.resource_ids,
+            user_ids=body.user_ids,
+            legal_matter_id=body.legal_matter_id,
+            created_by=getattr(ctx, "api_key_id", None) or None,
+            expires_at=expires_at,
         )
+    except Exception as exc:
+        raise HTTPException(
+            503, "Legal hold could not be persisted; no hold is in place"
+        ) from exc
     return {
         "status": "legal_hold_placed",
+        "id": hold["id"],
         "tenant_id": ctx.tenant_id,
         "reason": body.reason,
+        "resource_type": resource_type,
+        "resource_ids": hold["resource_ids"],
+        "user_ids": hold["user_ids"],
+        "expires_at": expires_at.isoformat() if expires_at else None,
     }
 
 
 @router.get("/legal-holds")
 async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
-    """List active legal holds for this tenant (empty when DB unavailable)."""
+    """List active legal holds for this tenant (empty when no DB is configured).
+
+    A query failure is a 503, not ``[]``: an empty list reads as "nothing is on
+    hold", which is exactly the wrong conclusion to hand a compliance officer.
+    """
     ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is None:
+    mgr = _legal_hold_manager(request)
+    if mgr is None:
         return []
     try:
-        from sqlalchemy import text
-
-        async with db() as session:
-            rows = (
-                await session.execute(
-                    text(
-                        "SELECT id, reason, expires_at, created_by "
-                        "FROM legal_holds WHERE tenant_id = :tid ORDER BY id"
-                    ),
-                    {"tid": ctx.tenant_id},
-                )
-            ).fetchall()
-        return [
-            {
-                "id": r[0],
-                "reason": r[1],
-                "expires_at": r[2].isoformat() if r[2] else None,
-                "created_by": r[3],
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
+        holds = await mgr.list_holds(ctx.tenant_id)
+    except Exception as exc:
+        raise HTTPException(503, "Legal holds could not be read") from exc
+    return [{**h, "reason": h.get("description") or h.get("name")} for h in holds]
 
 
 # ---------------------------------------------------------------------------

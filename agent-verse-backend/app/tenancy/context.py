@@ -68,3 +68,7 @@ class TenantContext:
     api_key_id: str
     # RBAC roles assigned to this API key / SSO user (expanded from role hierarchy)
     roles: tuple[str, ...] = field(default_factory=tuple)
+    # Scopes the API key itself was created with. Empty = no key-level restriction
+    # (the roles' scopes apply). Non-empty = the key may use ONLY these scopes, on
+    # top of its roles' scopes (TenantMiddleware enforces the intersection).
+    scopes: tuple[str, ...] = field(default_factory=tuple)

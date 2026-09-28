@@ -540,7 +540,7 @@ def test_list_legal_holds_no_db() -> None:
 
 
 def test_list_legal_holds_with_db_exception() -> None:
-    """Lines 999-1028: DB query raises → returns empty list."""
+    """DB query raises → 503 (an empty list would read as "nothing on hold")."""
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
@@ -550,8 +550,7 @@ def test_list_legal_holds_with_db_exception() -> None:
     with patch("app.api.governance._get_db", return_value=db_factory):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/legal-holds", headers=_headers())
-        assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -986,9 +985,13 @@ def test_batch_reject_success_path() -> None:
 def test_list_legal_holds_with_rows() -> None:
     """Lines 945-966: DB returns rows → returns list."""
     from datetime import datetime
+    # Real legal_holds columns (migration 0057), as selected by list_holds.
     rows = [
-        ("hold-1", "regulatory audit", None, "kid-gov3"),
-        ("hold-2", "litigation", datetime(2027, 1, 1), "kid-gov3"),
+        ("hold-1", "regulatory audit", "regulatory audit", "tenant", [], [],
+         None, None, "active", None, "kid-gov3", datetime(2026, 1, 1), None, None),
+        ("hold-2", "litigation", "litigation", "tenant", [], [],
+         None, None, "active", None, "kid-gov3", datetime(2026, 1, 2), None,
+         datetime(2027, 1, 1)),
     ]
     result = MagicMock()
     result.fetchall = MagicMock(return_value=rows)

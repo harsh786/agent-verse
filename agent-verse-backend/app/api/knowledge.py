@@ -479,8 +479,13 @@ async def delete_collection(request: Request, collection_id: str) -> None:
                 )
         except HTTPException:
             raise
-        except Exception:
-            pass  # Legal hold check failure is non-fatal; allow deletion
+        except Exception as exc:
+            # Fail closed: an unverifiable hold state must not let held data be
+            # deleted (this used to "allow deletion").
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Legal hold state could not be verified; deletion refused",
+            ) from exc
 
     try:
         deleted = await store.delete_collection_async(
