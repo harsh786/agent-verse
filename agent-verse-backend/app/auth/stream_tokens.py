@@ -34,11 +34,28 @@ logger = get_logger(__name__)
 # enough that a leaked stream URL expires quickly.
 STREAM_TOKEN_TTL = 600
 
-_SIGNING_SECRET = (
-    os.getenv("STREAM_TOKEN_SECRET")
-    or os.getenv("GOAL_TOKEN_SECRET")
-    or "agentverse-stream-token-secret-change-in-prod"
-)
+_DEV_SECRET = "agentverse-stream-token-secret-change-in-prod"
+
+
+def _signing_secret() -> str:
+    """HMAC key for stream tokens.
+
+    It used to fall back to the hardcoded public default above in every
+    environment, so anyone could forge a stream token for any tenant. Production
+    now uses STREAM_TOKEN_SECRET / GOAL_TOKEN_SECRET or a key derived from the
+    vault master key, and refuses to run on the default.
+    """
+    explicit = os.getenv("STREAM_TOKEN_SECRET") or os.getenv("GOAL_TOKEN_SECRET")
+    if explicit:
+        return explicit
+    master = os.getenv("VAULT_MASTER_KEY")
+    if master:
+        return hashlib.sha256(b"agentverse-stream-token:" + master.encode()).hexdigest()
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        raise RuntimeError(
+            "STREAM_TOKEN_SECRET (or VAULT_MASTER_KEY) must be set in production"
+        )
+    return _DEV_SECRET
 
 
 def _b64url(data: bytes) -> str:
@@ -64,7 +81,7 @@ def mint_stream_token(
     header = _b64url(json.dumps({"alg": "HS256", "typ": "StreamToken"}).encode())
     body = _b64url(json.dumps(payload).encode())
     signing_input = f"{header}.{body}"
-    sig = hmac.new(_SIGNING_SECRET.encode(), signing_input.encode(), hashlib.sha256).digest()
+    sig = hmac.new(_signing_secret().encode(), signing_input.encode(), hashlib.sha256).digest()
     return f"{signing_input}.{_b64url(sig)}"
 
 
@@ -77,7 +94,7 @@ def verify_stream_token(token: str) -> dict[str, Any] | None:
         header, body, sig = parts
         signing_input = f"{header}.{body}"
         expected_sig = hmac.new(
-            _SIGNING_SECRET.encode(), signing_input.encode(), hashlib.sha256
+            _signing_secret().encode(), signing_input.encode(), hashlib.sha256
         ).digest()
         token_sig = base64.urlsafe_b64decode(sig + "==")
         if not hmac.compare_digest(expected_sig, token_sig):

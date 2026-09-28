@@ -11,11 +11,12 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.governance.grants import Grant
 from app.observability.logging import get_logger
+from app.tenancy.rbac import require_role
 
 logger = get_logger(__name__)
 
@@ -87,14 +88,30 @@ def _to_dict(g: Grant) -> dict[str, Any]:
     }
 
 
+def _principal(request: Request) -> str:
+    ctx = getattr(request.state, "tenant", None)
+    key_id = str(getattr(ctx, "api_key_id", "") or "")
+    user_id = str(getattr(ctx, "user_id", "") or "")
+    return f"user:{user_id}" if user_id else f"key:{key_id}"
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def issue_grant(body: IssueGrantRequest, request: Request) -> dict[str, Any]:
+async def issue_grant(
+    body: IssueGrantRequest,
+    request: Request,
+    # Minting authority for agents is an admin action. There was no role or scope
+    # check at all, so any key — a viewer's included — could issue a "*" grant
+    # with no cost cap to any agent, defeating grant enforcement entirely.
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     now = datetime.now(UTC)
     grant = Grant(
         grant_id=uuid.uuid4().hex,
         tenant_id=tenant_id,
-        grantor=body.grantor,
+        # The grantor is the authenticated principal, never a request field (it
+        # was body.grantor: an audit trail anyone could forge).
+        grantor=_principal(request),
         grantee_agent_id=body.grantee_agent_id,
         scopes=tuple(body.scopes),
         not_before=now + timedelta(seconds=body.not_before_seconds),
@@ -124,7 +141,11 @@ async def list_grants(request: Request, agent_id: str) -> dict[str, Any]:
 
 
 @router.post("/{grant_id}/revoke")
-async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
+async def revoke_grant(
+    grant_id: str,
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     revoked = await _store(request).revoke(tenant_id, grant_id)
     if revoked is None:

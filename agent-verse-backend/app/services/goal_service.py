@@ -414,9 +414,12 @@ async def compliance_autonomy_ceiling(app_state: Any, *, tenant_id: str) -> str:
         from app.governance.compliance_bundles import effective_max_autonomy_for
 
         ceiling = await effective_max_autonomy_for(store, tenant_id)
-    except Exception:
-        return "fully-autonomous"
-    return ceiling if ceiling in _AUTONOMY_ORDER else "fully-autonomous"
+    except Exception as exc:
+        # Fail closed: a compliance lookup error used to lift the ceiling to
+        # fully-autonomous, silently dropping e.g. HIPAA's supervised limit.
+        _svc_logger.warning("compliance_ceiling_lookup_failed", error=str(exc))
+        return "supervised"
+    return ceiling if ceiling in _AUTONOMY_ORDER else "supervised"
 
 
 async def resolve_effective_autonomy_mode(

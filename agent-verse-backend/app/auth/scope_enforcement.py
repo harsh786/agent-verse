@@ -266,6 +266,22 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
 }
 
 
+_WRITE_ROLES = frozenset({"admin", "operator"})
+
+
+def _may_write_unregistered(roles: tuple[str, ...], path: str) -> bool:
+    """Whether a key with *roles* may call a write on an unregistered endpoint.
+
+    Admin and operator keys may (per-route ``require_role`` checks still apply).
+    An approver key may only act on approval endpoints; a viewer key never.
+    """
+    if _WRITE_ROLES.intersection(roles):
+        return True
+    if "approver" in roles:
+        return "/approv" in path or "/hitl" in path
+    return False
+
+
 # ---------------------------------------------------------------------------
 # H3: Trusted-proxy-aware IP extraction
 # ---------------------------------------------------------------------------
@@ -574,7 +590,21 @@ class ScopeEnforcementMiddleware(BaseHTTPMiddleware):
         # 5. Determine required scope for this endpoint
         required = self._required_scope(request.method, path)
         if required is None:
-            # No scope requirement registered for this endpoint → pass through
+            # No scope registered for this endpoint. Reads pass through, but a
+            # write used to pass through too — for EVERY unregistered route
+            # (/grants, /trust, /billing, /skills, /triggers, /sources, /chat …),
+            # so a read-only viewer key could mint grants, change triggers, etc.
+            # Writes on unregistered routes now need a role that may write.
+            if request.method not in {"GET", "HEAD", "OPTIONS"} and not (
+                _may_write_unregistered(tenant_roles, path)
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "INSUFFICIENT_ROLE",
+                        "detail": "This API key's role is read-only for this endpoint.",
+                    },
+                )
             return await call_next(request)
 
         # 6. Resolve effective scopes (cache-first)

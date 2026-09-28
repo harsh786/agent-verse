@@ -134,7 +134,8 @@ def test_approve_request() -> None:
     assert approve_resp.status_code == 200
     body = approve_resp.json()
     assert body["status"] == "approved"
-    assert body["approver"] == "alice@example.com"
+    # The approver is the authenticated key, not the body's claimed name.
+    assert body["approver"] == "kid-1"
 
     # Should no longer appear in pending list.
     list_resp2 = client.get("/governance/approvals", headers={"X-API-Key": _VALID_KEY})

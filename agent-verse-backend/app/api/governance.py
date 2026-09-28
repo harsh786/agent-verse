@@ -824,6 +824,18 @@ async def _resolve_org_gate(
         return False
 
 
+def _approver_identity(tenant_ctx: TenantContext) -> str:
+    """The approver is the authenticated key, never a request field.
+
+    It was ``body.approver``: one key could approve as "alice", then "bob", and
+    satisfy a multi-approver rule on its own (same bug fixed in /trust).
+    """
+    key_id = str(getattr(tenant_ctx, "api_key_id", "") or "")
+    if not key_id:
+        raise HTTPException(status_code=403, detail="Approver identity unavailable")
+    return key_id
+
+
 @router.post("/approvals/{request_id}/approve")
 async def approve_request(
     request: Request,
@@ -833,21 +845,22 @@ async def approve_request(
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
+    approver = _approver_identity(tenant_ctx)
     # DB-resolving: the sync approve() looks the request up in this replica's
     # own dict, so an operator routed to a different replica than the one that
     # raised the gate got a false 'not found' for a live approval.
     ok = await gateway.approve_async(
-        request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+        request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
     )
     # Not a live gateway request — maybe a durable org approval gate.
     if not ok and not await _resolve_org_gate(
-        request, tenant_ctx, request_id, "approve", body.approver, body.note
+        request, tenant_ctx, request_id, "approve", approver, body.note
     ):
         raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Approval request {request_id} not found",
             )
-    return {"request_id": request_id, "status": "approved", "approver": body.approver}
+    return {"request_id": request_id, "status": "approved", "approver": approver}
 
 
 @router.post("/approvals/{request_id}/reject")
@@ -859,17 +872,18 @@ async def reject_request(
 ) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
+    approver = _approver_identity(tenant_ctx)
     ok = await gateway.reject(
-        request_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+        request_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
     )
     if not ok and not await _resolve_org_gate(
-        request, tenant_ctx, request_id, "reject", body.approver, body.note
+        request, tenant_ctx, request_id, "reject", approver, body.note
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Approval request {request_id} not found",
         )
-    return {"request_id": request_id, "status": "rejected", "approver": body.approver}
+    return {"request_id": request_id, "status": "rejected", "approver": approver}
 
 
 # ---------------------------------------------------------------------------
