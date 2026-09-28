@@ -176,12 +176,12 @@ def test_discord_valid_signature_answers_ping(monkeypatch: pytest.MonkeyPatch) -
     assert r.status_code == 200 and r.json() == {"type": 1}
 
 
-# ── Shared-secret relay channels (email / sms / voice / forms / meeting) ─
+# ── Shared-secret relay channels (email / voice / forms / meeting) ─
+# SMS is Twilio: its credential is X-Twilio-Signature (tests/gateway/test_twilio_fail_closed.py).
 
 
 _SECRET_ROUTES = [
     ("email", "/channels/email/inbound", {"data": {"to": "a@b.c", "from": "x@y.z"}}),
-    ("sms", "/channels/sms/inbound", {"data": {"To": "+1", "From": "+2", "Body": "hi"}}),
     ("voice", "/channels/voice/transcript", {"json": {"transcript": "hi"}}),
     ("form", "/channels/forms/form-1", {"json": {"field": "v"}}),
     ("meeting", "/channels/meeting/ended", {"json": {"account_id": "acct"}}),
@@ -221,12 +221,12 @@ def test_secret_channel_correct_secret_is_accepted(
 
 
 def test_secret_channel_accepts_basic_auth_password(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Twilio / SendGrid cannot add headers but can put credentials in the URL."""
-    monkeypatch.setenv("CHANNEL_WEBHOOK_SECRET_SMS", "right")
+    """SendGrid-style senders cannot add headers but can put credentials in the URL."""
+    monkeypatch.setenv("CHANNEL_WEBHOOK_SECRET_EMAIL", "right")
     client, _ = _app()
     r = client.post(
-        "/channels/sms/inbound",
-        data={"To": "+1", "From": "+2", "Body": "hi"},
-        auth=("twilio", "right"),
+        "/channels/email/inbound",
+        data={"to": "a@b.c", "from": "x@y.z"},
+        auth=("sendgrid", "right"),
     )
     assert r.status_code == 200

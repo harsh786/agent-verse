@@ -386,9 +386,20 @@ _TWILIO = {
 }
 
 
+def _twilio_consent(monkeypatch: pytest.MonkeyPatch, number: str) -> None:
+    """Outbound Twilio tools are consent-gated (default deny): opt the recipient in."""
+    from app.gateway import telephony_consent
+
+    ledger = telephony_consent.TelephonyConsentLedger()
+    ledger.record(telephony_consent.PLATFORM_TENANT, number, granted=True, source="test")
+    monkeypatch.setattr(telephony_consent, "_DEFAULT_LEDGER", ledger)
+
+
 @pytest.mark.asyncio
-async def test_twilio_send_sms():
+async def test_twilio_send_sms(monkeypatch: pytest.MonkeyPatch):
     from app.mcp.servers.twilio_server import call_tool
+
+    _twilio_consent(monkeypatch, "+15559876543")
 
     mc = mk_client(post=make_resp(data={"sid": "SM123", "status": "queued", "body": "Hello", "to": "+15559876543", "from": "+15551234567", "price": None}))
     with patch.dict("os.environ", _TWILIO), patch("httpx.AsyncClient") as Cls:
@@ -400,8 +411,10 @@ async def test_twilio_send_sms():
 
 
 @pytest.mark.asyncio
-async def test_twilio_send_whatsapp():
+async def test_twilio_send_whatsapp(monkeypatch: pytest.MonkeyPatch):
     from app.mcp.servers.twilio_server import call_tool
+
+    _twilio_consent(monkeypatch, "+15559876543")
 
     mc = mk_client(post=make_resp(data={"sid": "SM456", "status": "queued", "to": "whatsapp:+15559876543", "body": "Hi"}))
     with patch.dict("os.environ", _TWILIO), patch("httpx.AsyncClient") as Cls:
@@ -424,8 +437,10 @@ async def test_twilio_list_messages():
 
 
 @pytest.mark.asyncio
-async def test_twilio_make_call():
+async def test_twilio_make_call(monkeypatch: pytest.MonkeyPatch):
     from app.mcp.servers.twilio_server import call_tool
+
+    _twilio_consent(monkeypatch, "+15559876543")
 
     mc = mk_client(post=make_resp(data={"sid": "CA123", "status": "queued", "to": "+15559876543", "from": "+15551234567"}))
     with patch.dict("os.environ", _TWILIO), patch("httpx.AsyncClient") as Cls:

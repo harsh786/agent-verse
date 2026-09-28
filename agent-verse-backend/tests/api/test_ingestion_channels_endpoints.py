@@ -259,13 +259,19 @@ def test_email_inbound_full_flow(app_with_gateway_and_db):
     assert body["subject"] == "Hi"
 
 
-def test_sms_inbound_full_flow(app_with_gateway_and_db):
+def test_sms_inbound_full_flow(app_with_gateway_and_db, monkeypatch):
+    # The SMS webhook now requires a valid X-Twilio-Signature (fails closed).
+    from app.gateway.twilio_auth import compute_twilio_signature
+
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "sms-test-token")
     app, gateway = app_with_gateway_and_db
     client = TestClient(app)
+    form = {"To": "+15550001111", "From": "+15551112222", "Body": "hello", "MessageSid": "SM1"}
+    sig = compute_twilio_signature(
+        "sms-test-token", "http://testserver/channels/sms/inbound", form
+    )
     resp = client.post(
-        "/channels/sms/inbound",
-        data={"To": "+15550001111", "From": "+15551112222", "Body": "hello", "MessageSid": "SM1"},
-        headers=_RELAY,
+        "/channels/sms/inbound", data=form, headers={"X-Twilio-Signature": sig}
     )
     assert resp.status_code == 200
     assert "<Response>" in resp.text

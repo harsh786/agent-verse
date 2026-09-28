@@ -538,40 +538,48 @@ async def test_store_persona_audio_falls_back_to_local_on_failure() -> None:
     assert url == "local://t1/org-1/ref.wav"
 
 
+def _ws_with_key(key: str | None) -> MagicMock:
+    ws = MagicMock()
+    ws.headers = {"x-api-key": key} if key else {}
+    ws.query_params = {"api_key": "query-key-must-be-ignored"}
+    return ws
+
+
 @pytest.mark.asyncio
 async def test_ws_auth_no_api_key_returns_none() -> None:
-    ws = MagicMock()
-    assert await voice_router_module._ws_auth(ws, "") is None
+    assert await voice_router_module._ws_auth(_ws_with_key(None)) is None
 
 
 @pytest.mark.asyncio
-async def test_ws_auth_no_resolver_dev_fallback() -> None:
-    ws = MagicMock()
+async def test_ws_auth_no_resolver_does_not_use_key_as_tenant() -> None:
+    # Regression: the "dev fallback" returned the raw key as the tenant id.
+    ws = _ws_with_key("some-key")
     ws.app.state = MagicMock(spec=[])
-    assert await voice_router_module._ws_auth(ws, "some-key") == "some-key"
+    assert await voice_router_module._ws_auth(ws) is None
 
 
 @pytest.mark.asyncio
 async def test_ws_auth_with_resolver_success() -> None:
-    ws = MagicMock()
+    ws = _ws_with_key("some-key")
     tenant_ctx = MagicMock(tenant_id="resolved-tenant")
     ws.app.state._tenant_key_resolver = AsyncMock(return_value=tenant_ctx)
-    result = await voice_router_module._ws_auth(ws, "some-key")
+    result = await voice_router_module._ws_auth(ws)
     assert result == "resolved-tenant"
+    ws.app.state._tenant_key_resolver.assert_awaited_once_with("some-key")
 
 
 @pytest.mark.asyncio
 async def test_ws_auth_with_resolver_rejects() -> None:
-    ws = MagicMock()
+    ws = _ws_with_key("some-key")
     ws.app.state._tenant_key_resolver = AsyncMock(return_value=None)
-    assert await voice_router_module._ws_auth(ws, "some-key") is None
+    assert await voice_router_module._ws_auth(ws) is None
 
 
 @pytest.mark.asyncio
 async def test_ws_auth_resolver_exception_returns_none() -> None:
-    ws = MagicMock()
+    ws = _ws_with_key("some-key")
     ws.app.state._tenant_key_resolver = AsyncMock(side_effect=RuntimeError("boom"))
-    assert await voice_router_module._ws_auth(ws, "some-key") is None
+    assert await voice_router_module._ws_auth(ws) is None
 
 
 # ── WebSocket /v1/voice/stream/{org_id} ───────────────────────────────────────
@@ -585,7 +593,7 @@ def test_voice_stream_unauthorized_closes_connection() -> None:
     client = TestClient(app)
     with patch("app.voice.router._ws_auth", AsyncMock(return_value=None)):
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect("/v1/voice/stream/org-1?api_key=bad") as ws:
+            with client.websocket_connect("/v1/voice/stream/org-1") as ws:
                 ws.receive_text()
     assert exc_info.value.code == 4001
 
@@ -624,7 +632,7 @@ def test_voice_stream_authorized_autodetects_language_from_org() -> None:
          patch("app.db.rls.sqlalchemy_rls_context", MagicMock(return_value=_Session())), \
          patch("app.voice.router.VoiceStreamingSession", return_value=mock_session) as mock_cls:
         app.state.db_session_factory = lambda: _Session()
-        with client.websocket_connect("/v1/voice/stream/org-1?api_key=good"):
+        with client.websocket_connect("/v1/voice/stream/org-1"):
             pass
 
     _, kwargs = mock_cls.call_args
@@ -645,7 +653,7 @@ def test_voice_stream_authorized_language_detection_failure_falls_back() -> None
          patch("app.voice.router._get_persona", AsyncMock(return_value=(None, None))), \
          patch("app.voice.router.VoiceStreamingSession", return_value=mock_session) as mock_cls:
         app.state.db_session_factory = _boom
-        with client.websocket_connect("/v1/voice/stream/org-1?api_key=good"):
+        with client.websocket_connect("/v1/voice/stream/org-1"):
             pass
 
     _, kwargs = mock_cls.call_args
@@ -663,7 +671,7 @@ def test_voice_stream_authorized_runs_session() -> None:
     with patch("app.voice.router._ws_auth", AsyncMock(return_value="t1")), \
          patch("app.voice.router._get_persona", AsyncMock(return_value=(None, None))), \
          patch("app.voice.router.VoiceStreamingSession", return_value=mock_session) as mock_cls:
-        with client.websocket_connect("/v1/voice/stream/org-1?api_key=good&consent=true"):
+        with client.websocket_connect("/v1/voice/stream/org-1?consent=true"):
             pass
 
     mock_cls.assert_called_once()

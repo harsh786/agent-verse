@@ -8,10 +8,11 @@ New endpoints:
   GET  /v1/gateway/{org_id}/whatsapp/webhook  (verification)
   POST /v1/gateway/{org_id}/teams/messages
   POST /v1/gateway/{org_id}/webhook
-  GET  /v1/gateway/{org_id}/config
-  PUT  /v1/gateway/{org_id}/config
-  GET  /v1/gateway/{org_id}/conversations
-  GET  /v1/gateway/{org_id}/history
+  POST /v1/gateway/voice/incoming  (Twilio call webhook, signature required)
+  POST /v1/gateway/{channel}/chat
+  GET  /v1/gateway/{org_id}/config           (501 — not implemented)
+  PUT  /v1/gateway/{org_id}/config           (501 — not implemented)
+  GET  /v1/gateway/{org_id}/channels/status  (501 — not implemented)
 """
 
 from __future__ import annotations
@@ -552,8 +553,22 @@ async def voice_incoming(request: Request) -> Response:
     form = dict((await request.form()).items())
     payload: dict[str, Any] = {**form, "_request_url": str(request.url)}
 
-    # Provider signature verification (open in dev when no auth token configured).
-    if not await adapter.verify_auth(dict(request.headers), payload):
+    # Provider signature verification — fail CLOSED. This was "open in dev when no
+    # auth token configured" (verify_auth returned True) and an exception inside
+    # verification surfaced as a 500, so an unconfigured deployment accepted
+    # forged calls into any registered tenant. Mirrors app/integrations/
+    # webhook_auth.py: unconfigured → 503, bad/missing signature or error → 403.
+    if not getattr(adapter, "is_configured", False):
+        raise HTTPException(
+            status_code=503,
+            detail="Voice webhook is not configured (VOICE_PHONE_AUTH_TOKEN is unset)",
+        )
+    try:
+        verified = await adapter.verify_auth(dict(request.headers), payload)
+    except Exception as exc:
+        _log.warning("gateway.voice_signature_error", error=str(exc)[:160])
+        verified = False
+    if not verified:
         raise HTTPException(status_code=403, detail="Invalid voice signature")
 
     to_number = str(form.get("To", "") or "")
@@ -768,24 +783,46 @@ async def generic_webhook(
 
 
 # ── Gateway config ────────────────────────────────────────────────────────────
+#
+# These three endpoints used to be stubs that faked success: GET /config returned
+# hard-coded defaults, PUT /config echoed the request body back WITHOUT storing
+# it, and GET /channels/status returned canned "active"/"not_configured" statuses
+# (plus a made-up wss://mcp.agentverse.io endpoint) for every org. They also sit
+# under the /v1/gateway/ TenantMiddleware bypass, so they answered anyone, for any
+# org id. A client "saving" config got 200 and the change silently vanished.
+#
+# There is no gateway-config store, nothing reads these flags (channel webhooks
+# are gated by their own env-configured secrets), and persisting them durably
+# would need tenant auth on a bypassed prefix plus vault storage for the channel
+# credentials the frontend sends — so they now answer 501 honestly instead.
+
+_GATEWAY_CONFIG_NOT_IMPLEMENTED = (
+    "Gateway channel configuration is not implemented: channels are configured via "
+    "environment (TELEGRAM_*/SLACK_*/WHATSAPP_*/TEAMS_*, GATEWAY_INGRESS_SECRET, "
+    "VOICE_PHONE_*) and nothing is persisted per org."
+)
 
 
 @router.get(
     "/{org_id}/config",
     operation_id="gateway_get_config",
-    summary="Get gateway channel configuration",
+    summary="Get gateway channel configuration (not implemented — 501)",
+    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    responses={501: {"description": "Not implemented"}},
 )
 async def get_config(org_id: str) -> GatewayConfig:
-    return GatewayConfig()
+    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, _GATEWAY_CONFIG_NOT_IMPLEMENTED)
 
 
 @router.put(
     "/{org_id}/config",
     operation_id="gateway_update_config",
-    summary="Update gateway channel configuration",
+    summary="Update gateway channel configuration (not implemented — 501)",
+    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    responses={501: {"description": "Not implemented"}},
 )
 async def update_config(org_id: str, config: GatewayConfig) -> GatewayConfig:
-    return config
+    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, _GATEWAY_CONFIG_NOT_IMPLEMENTED)
 
 
 # ── Q10: Gateway Admin UI endpoints ──────────────────────────────────────────
@@ -794,60 +831,10 @@ async def update_config(org_id: str, config: GatewayConfig) -> GatewayConfig:
 @router.get(
     "/{org_id}/channels/status",
     operation_id="gateway_channel_status",
-    summary="Q10 — Get all channel connection statuses",
+    summary="Q10 — Channel connection statuses (not implemented — 501)",
+    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+    responses={501: {"description": "Not implemented"}},
 )
 async def get_channel_status(org_id: str) -> dict[str, Any]:
-    """
-    Q10: Gateway Admin UI — shows all active channels and their status.
-    SETTINGS → Command Gateway → ACTIVE CHANNELS
-    """
-    return {
-        "org_id": org_id,
-        "channels": [
-            {
-                "name": "rest",
-                "label": "REST API",
-                "enabled": True,
-                "status": "active",
-                "endpoint": f"/v1/org/{org_id}/command",
-            },
-            {
-                "name": "telegram",
-                "label": "Telegram",
-                "enabled": False,
-                "status": "not_configured",
-                "setup_url": f"/gateway/{org_id}/setup/telegram",
-            },
-            {
-                "name": "slack",
-                "label": "Slack",
-                "enabled": False,
-                "status": "not_configured",
-                "setup_url": f"/gateway/{org_id}/setup/slack",
-            },
-            {
-                "name": "teams",
-                "label": "Teams",
-                "enabled": False,
-                "status": "not_configured",
-                "setup_url": f"/gateway/{org_id}/setup/teams",
-            },
-            {"name": "discord", "label": "Discord", "enabled": False, "status": "not_configured"},
-            {"name": "whatsapp", "label": "WhatsApp", "enabled": False, "status": "not_configured"},
-            {"name": "email", "label": "Email", "enabled": False, "status": "not_configured"},
-            {
-                "name": "mcp",
-                "label": "MCP Server",
-                "enabled": True,
-                "status": "active",
-                "endpoint": f"wss://mcp.agentverse.io/v1/org/{org_id}",
-            },
-            {"name": "webhook", "label": "Webhooks", "enabled": True, "status": "active"},
-        ],
-        "gateway_config": {
-            "max_commands_per_hour": 100,
-            "require_2fa_for": ["approve", "change-autonomy", "delete"],
-            "response_language": "auto",
-            "log_all_commands": True,
-        },
-    }
+    """Was a hard-coded status list identical for every org; see the note above."""
+    raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, _GATEWAY_CONFIG_NOT_IMPLEMENTED)

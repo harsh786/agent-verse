@@ -38,7 +38,8 @@ export function useVoiceStream(orgId: string, callbacks?: UseVoiceStreamCallback
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     setState('connecting');
     try {
-      const ws = new WebSocket(voiceApi.streamUrl(orgId));
+      // The key goes in the subprotocol handshake header, never the URL.
+      const ws = new WebSocket(voiceApi.streamUrl(orgId), voiceApi.streamProtocols());
       wsRef.current = ws;
 
       ws.onopen = () => setState('listening');

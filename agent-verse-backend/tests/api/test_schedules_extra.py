@@ -318,10 +318,17 @@ def test_webhook_trigger_known_token():
     assert len(token_map) > 0
     token = list(token_map.keys())[0]
 
-    # Hit the webhook endpoint
+    # Hit the webhook endpoint — it must really dispatch (it used to return
+    # {"status": "ok"} and drop the webhook). See test_schedule_webhook_fires.py.
+    dispatcher = AsyncMock()
+    dispatcher.dispatch.return_value = AsyncMock(
+        goal_id="g1", goal_created=True, skip_reason=None, fired_at="t"
+    )
+    app.state.trigger_dispatcher = dispatcher
     resp = client.post(f"/webhooks/{token}", headers=_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "ok"
+    assert resp.status_code == 202
+    assert resp.json()["goal_id"] == "g1"
+    dispatcher.dispatch.assert_awaited_once()
 
 
 def test_webhook_trigger_unknown_token():

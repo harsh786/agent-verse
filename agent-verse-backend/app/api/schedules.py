@@ -348,18 +348,70 @@ async def receive_alert_webhook(
         raise HTTPException(500, f"Failed to queue alert: {exc}") from exc
 
 
-@webhooks_router.post("/{token}")
+@webhooks_router.post("/{token}", status_code=status.HTTP_202_ACCEPTED)
 async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
-    """Receive an inbound webhook and fire the associated schedule."""
-    _require_tenant(request)
-    token_map = _token_map(request)
-    schedule_id = token_map.get(token)
-    if schedule_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Unknown webhook token",
-        )
-    return {"status": "ok", "schedule_id": schedule_id}
+    """Receive an inbound webhook and fire the caller's matching webhook trigger.
+
+    This used to be a stub: it looked ``token`` up in a process-local
+    ``{token: schedule_id}`` dict — global across tenants, empty after a restart
+    or on another replica — and returned ``{"status": "ok"}`` without dispatching
+    anything, so every webhook was silently dropped while the sender was told it
+    succeeded. It now resolves the AUTHENTICATED tenant's own ``webhook`` trigger
+    from the ScheduleStore and runs it through the real ``TriggerDispatcher``
+    (the path ``POST /triggers/webhooks/webhook/{token}`` uses), enforcing the
+    trigger's signing secret when it has one.
+    """
+    import hmac
+
+    from app.api.triggers import _spec_for_dispatch
+    from app.triggers.webhooks.verifier import WebhookSignatureVerifier
+
+    tenant_ctx: TenantContext = _require_tenant(request)
+    store = getattr(request.app.state, "schedule_store", None)
+    if store is None:
+        raise HTTPException(503, "Schedule store unavailable")
+
+    rec: dict[str, Any] | None = None
+    for candidate in store.list_all(tenant_ctx=tenant_ctx):
+        spec = candidate.get("spec")
+        if spec is None or getattr(spec, "trigger_type", None) != TriggerType.WEBHOOK:
+            continue
+        stored = str(getattr(spec, "webhook_token", "") or "")
+        if stored and hmac.compare_digest(stored, token):
+            rec = candidate
+            break
+    if rec is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown webhook token")
+    if rec.get("paused"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Trigger is paused")
+    dispatcher = getattr(request.app.state, "trigger_dispatcher", None)
+    if dispatcher is None:  # never report success for a webhook nothing can run
+        raise HTTPException(503, "Trigger dispatcher unavailable")
+
+    body_bytes = await request.body()
+    spec = _spec_for_dispatch(rec)
+    secret = str(getattr(spec, "webhook_signature_secret", "") or "")
+    if secret:
+        signature = request.headers.get("x-signature", "")
+        if not await WebhookSignatureVerifier().verify(body_bytes, signature, secret):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    payload: dict[str, Any] = {}
+    if body_bytes:
+        try:
+            parsed = _json.loads(body_bytes)
+        except ValueError:
+            raise HTTPException(422, "Webhook body must be JSON") from None
+        payload = parsed if isinstance(parsed, dict) else {"data": parsed}
+
+    event = await dispatcher.dispatch(spec, payload, tenant_ctx)
+    return {
+        "schedule_id": rec.get("schedule_id"),
+        "goal_id": getattr(event, "goal_id", None),
+        "goal_created": getattr(event, "goal_created", None),
+        "skip_reason": getattr(event, "skip_reason", None),
+        "fired_at": getattr(event, "fired_at", None),
+    }
 
 
 # ---------------------------------------------------------------------------

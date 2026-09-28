@@ -471,14 +471,12 @@ def test_webhook_trigger() -> None:
     token = create_resp.json()["spec"]["webhook_token"]
     assert token  # Token must have been generated.
 
-    # Fire the webhook.
+    # Fire the webhook. No TriggerDispatcher is wired in this app, so the honest
+    # answer is 503 — it used to return {"status": "ok"} and drop the webhook.
     fire_resp = client.post(
         f"/webhooks/{token}", headers={"X-API-Key": _VALID_KEY}
     )
-    assert fire_resp.status_code == 200
-    body = fire_resp.json()
-    assert body["status"] == "ok"
-    assert "schedule_id" in body
+    assert fire_resp.status_code == 503
 
 
 def test_webhook_unknown_token_returns_404() -> None:
