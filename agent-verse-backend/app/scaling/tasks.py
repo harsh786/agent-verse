@@ -4911,7 +4911,30 @@ def execute_retention_policy(self: Any) -> dict[str, Any]:
     import os
 
     retention_days = int(os.getenv("DATA_RETENTION_DAYS", "90"))
-    return _run_async(_delete_expired_records(retention_days))
+    result: dict[str, Any] = _run_async(_delete_expired_records(retention_days))
+    _fail_task_on_errors("execute_retention_policy", result)
+    return result
+
+
+def _fail_task_on_errors(task: str, result: dict[str, Any]) -> None:
+    """Raise so Celery records FAILURE when a maintenance run hit errors.
+
+    The helpers report per-table / per-partition problems as ``"error: ..."``
+    strings (and a top-level ``{"error": ...}``) so one failure does not stop
+    the rest — but the tasks then returned that dict, which Celery records as
+    SUCCESS, so a retention or partition job that never worked looked healthy.
+    """
+    problems: list[str] = []
+    if result.get("error"):
+        problems.append(str(result["error"]))
+    for label, value in (result.get("deleted") or {}).items():
+        if isinstance(value, str) and value.startswith("error"):
+            problems.append(f"{label}: {value}")
+    for name, err in (result.get("errors") or {}).items():
+        problems.append(f"{name}: {err}")
+    if problems:
+        logger.error(f"{task}_incomplete", problems=problems[:20])
+        raise RuntimeError(f"{task} incomplete: " + "; ".join(problems[:5])[:1000])
 
 
 # Rows per retention DELETE statement. Each batch is its own short transaction:
@@ -5775,7 +5798,9 @@ def create_guardrail_partitions() -> dict[str, Any]:
     of need even if a scheduled run is skipped or delayed, keeping DEFAULT
     empty in the steady state.
     """
-    return _run_async(_ensure_future_partitions())
+    result: dict[str, Any] = _run_async(_ensure_future_partitions())
+    _fail_task_on_errors("ensure_future_partitions", result)
+    return result
 
 
 @celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
