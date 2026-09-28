@@ -1517,7 +1517,7 @@ async def test_dispatch_builtin_tool_secret_resolver_without_tenant_support():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_builtin_tool_secret_resolver_raises_falls_back_to_raw_ref():
+async def test_dispatch_builtin_tool_secret_resolver_raises_fails_closed():
     captured = {}
 
     async def handler(tool_name: str, args: dict, credentials: dict) -> dict:
@@ -1539,14 +1539,14 @@ async def test_dispatch_builtin_tool_secret_resolver_raises_falls_back_to_raw_re
         patch("app.mcp.client.resolve_connector_secret_ref", return_value=None),
     ):
         result = await client._dispatch_builtin_tool(cfg, "search_issues", {}, _ctx())
-    # Resolver raised and in-memory lookup returned nothing — handler still
-    # gets called, receiving the raw (unresolved) ref as a best-effort fallback.
-    assert result.success is True
-    assert captured["api_token"] == "vault://connectors/secret-boom"
+    # Fail closed: the raw ref is never handed to the handler as the secret.
+    assert result.success is False
+    assert "Could not resolve the credential" in (result.error or "")
+    assert captured == {}
 
 
 @pytest.mark.asyncio
-async def test_dispatch_builtin_tool_credential_resolution_outer_exception_is_swallowed():
+async def test_dispatch_builtin_tool_credential_resolution_error_fails_closed():
     async def handler(tool_name: str, args: dict) -> dict:
         return {"ok": True}
 
@@ -1564,9 +1564,10 @@ async def test_dispatch_builtin_tool_credential_resolution_outer_exception_is_sw
         ),
     ):
         result = await client._dispatch_builtin_tool(cfg, "search_issues", {}, _ctx())
-    # The outer try/except around the whole credential-resolution block must
-    # swallow this — the handler still runs with best-effort credentials.
-    assert result.success is True
+    # An unresolvable credential is a failed call — the handler must not run
+    # with the raw vault:// reference as its secret.
+    assert result.success is False
+    assert "Could not resolve the credential" in (result.error or "")
 
 
 @pytest.mark.asyncio

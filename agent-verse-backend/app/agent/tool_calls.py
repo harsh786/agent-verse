@@ -4,15 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-import time
 from dataclasses import dataclass
 from typing import Any
-
-# ---------------------------------------------------------------------------
-# Jira account-ID in-memory cache
-# ---------------------------------------------------------------------------
-_jira_account_cache: dict[str, tuple[str, float]] = {}  # display_name → (account_id, expires_at)
-_JIRA_CACHE_TTL = 3600  # 1 hour
 
 
 @dataclass
@@ -285,99 +278,6 @@ async def _jql_from_goal_or_step(text: str) -> str:
     return ""
 
 
-async def _resolve_jira_account_id(display_name: str) -> str:
-    """Look up a Jira user account ID by display name (async, non-blocking).
-
-    Calls GET /rest/api/3/user/search?query=<name> using the credentials
-    configured via JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN env vars.
-    Returns the accountId of the first exact (case-insensitive) display name
-    match, or an empty string if not found or credentials are unavailable.
-
-    Results are cached in ``_jira_account_cache`` for ``_JIRA_CACHE_TTL`` seconds
-    to avoid repeated round-trips for the same display name within a goal run.
-    """
-    import base64
-    import os
-
-    # --- cache lookup ---
-    now = time.monotonic()
-    cached = _jira_account_cache.get(display_name)
-    if cached is not None:
-        account_id, expires_at = cached
-        if now < expires_at:
-            return account_id
-        # expired — remove stale entry
-        _jira_account_cache.pop(display_name, None)
-
-    base = os.getenv("JIRA_BASE_URL", "").rstrip("/")
-    email = os.getenv("JIRA_EMAIL", "")
-    token = os.getenv("JIRA_API_TOKEN", "")
-    if not base or not email or not token:
-        return ""
-
-    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
-    headers = {"Authorization": f"Basic {creds}", "Accept": "application/json"}
-
-    try:
-        import httpx
-
-        async with httpx.AsyncClient(headers=headers, timeout=8.0) as client:
-            resp = await client.get(
-                f"{base}/rest/api/3/user/search",
-                params={"query": display_name, "maxResults": 10},
-            )
-            resp.raise_for_status()
-            users = resp.json()
-    except Exception:
-        return ""
-
-    if not isinstance(users, list):
-        return ""
-    lower_name = display_name.lower()
-    result = ""
-    for user in users:
-        if user.get("displayName", "").lower() == lower_name:
-            result = str(user.get("accountId", ""))
-            break
-    if not result:
-        for user in users:
-            if lower_name in user.get("displayName", "").lower():
-                result = str(user.get("accountId", ""))
-                break
-
-    # --- populate cache (cache empty result too to suppress repeated 404s) ---
-    _jira_account_cache[display_name] = (result, now + _JIRA_CACHE_TTL)
-    return result
-
-
-async def _resolve_jira_display_names_in_jql(jql: str) -> str:
-    """Replace display-name strings in JQL assignee clauses with account IDs (async).
-
-    Handles both single-quoted and double-quoted names:
-        assignee = "Abhay Dwivedi"   → assignee = "712020:..."
-        assignee = 'Abhay Dwivedi'   → assignee = "712020:..."
-    Values that already look like account IDs (contain ':') are untouched.
-    """
-    # First, normalise single-quoted values to double-quoted in JQL
-    # so the subsequent regex only needs to handle double quotes
-    jql = re.sub(r"assignee\s*=\s*'([^']+)'", r'assignee = "\1"', jql)
-    jql = re.sub(r"assignee\s+in\s*\(\s*'([^']+)'", r'assignee in ("\1"', jql)
-
-    # Find all double-quoted strings that look like display names (3-80 chars, no colon).
-    # Process in reverse order to preserve string offsets during replacement.
-    pattern = re.compile(r'"([^"]{3,80})"')
-    matches = list(pattern.finditer(jql))
-    for m in reversed(matches):
-        name = m.group(1)
-        if ":" in name:  # already an account ID
-            continue
-        aid = await _resolve_jira_account_id(name)
-        if aid:
-            jql = jql[: m.start()] + f'"{aid}"' + jql[m.end() :]
-
-    return jql
-
-
 async def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") -> ToolCall:
     """Fill obvious missing arguments from the planner step text."""
     canonical_tool = _canonical_tool_name(call.tool)
@@ -392,10 +292,12 @@ async def repair_tool_call_arguments(call: ToolCall, step: str, goal: str = "") 
     if repaired_jql:
         return ToolCall(tool=call.tool, arguments={**call.arguments, "jql": repaired_jql})
     if existing_jql:
-        # Even if JQL looks valid, resolve any display names → account IDs
-        resolved_jql = await _resolve_jira_display_names_in_jql(existing_jql)
-        if resolved_jql != existing_jql:
-            return ToolCall(tool=call.tool, arguments={**call.arguments, "jql": resolved_jql})
+        # Argument repair is pure text work. It used to rewrite assignee display
+        # names to account ids by calling Jira with the PLATFORM's
+        # JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN (not the tenant's
+        # connector) and caching the answers in a process-global dict shared by
+        # every tenant — so one tenant's goal queried the platform's Jira and
+        # could receive account ids resolved for another tenant.
         return call
     match = re.search(r"JQL\s+['\"]([^'\"]+)['\"]", step, flags=re.IGNORECASE)
     if match is None:

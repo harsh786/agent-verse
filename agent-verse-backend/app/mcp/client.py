@@ -577,39 +577,51 @@ class MCPClient:
             for v in credentials.values()
         )
         if _has_secret_ref:
-            try:
-                resolved: dict[str, str] = {}
-                for k, v in credentials.items():
-                    # Check for BOTH vault://connectors/ and secret://connector/ formats
-                    if isinstance(v, str) and (
-                        v.startswith("secret://") or is_connector_secret_ref(v)
-                    ):
-                        # Try in-memory store first (vault://connectors/ format)
-                        plain = resolve_connector_secret_ref(v)
-                        if not plain and self._secret_resolver is not None:
-                            try:
-                                # Pass tenant_ctx if the resolver accepts it
-                                if self._secret_resolver_accepts_tenant and tenant_ctx is not None:
-                                    plain = self._secret_resolver(v, tenant_ctx)
-                                else:
-                                    plain = self._secret_resolver(v)
-                                # The resolver may be sync (e.g. the default
-                                # resolve_connector_secret_ref) or async — only
-                                # await when it actually returned an awaitable.
-                                # Unconditionally awaiting a sync resolver's
-                                # plain string/None return raises TypeError,
-                                # which used to be swallowed here, silently
-                                # leaving the raw "vault://…" ref unresolved.
-                                if inspect.isawaitable(plain):
-                                    plain = await plain
-                            except Exception:
-                                pass
-                        resolved[k] = plain or v
+            # Fail closed. This used to swallow every resolver error and pass the
+            # raw "vault://…" reference to the handler as if it were the secret
+            # (so the vendor API got the reference string as a password, and a
+            # handler with an env fallback silently ran on platform credentials).
+            # It also consulted the process-global secret mapping *before* the
+            # tenant-aware resolver; canonical ids such as ``builtin-jira`` are
+            # shared by every tenant, so that could return another tenant's secret.
+            resolved: dict[str, str] = {}
+            for k, v in credentials.items():
+                # Check for BOTH vault://connectors/ and secret://connector/ formats
+                if not (
+                    isinstance(v, str) and (v.startswith("secret://") or is_connector_secret_ref(v))
+                ):
+                    resolved[k] = v
+                    continue
+                plain: Any = None
+                try:
+                    if self._secret_resolver_accepts_tenant and tenant_ctx is not None:
+                        plain = self._secret_resolver(v, tenant_ctx)
                     else:
-                        resolved[k] = v
-                credentials = resolved
-            except Exception:
-                pass  # Best-effort: an unresolved ref is passed through as-is
+                        plain = self._secret_resolver(v)
+                    # The resolver may be sync (the default resolve_connector_secret_ref)
+                    # or async — only await when it returned an awaitable.
+                    if inspect.isawaitable(plain):
+                        plain = await plain
+                except Exception as exc:
+                    logger.warning(
+                        "builtin_secret_resolve_failed server_id=%s key=%s error=%s",
+                        server.server_id,
+                        k,
+                        str(exc)[:120],
+                    )
+                    plain = None
+                if not plain:
+                    return ToolCallResult(
+                        tool_name=tool_name,
+                        success=False,
+                        error=(
+                            f"Could not resolve the credential '{k}' for connector "
+                            f"'{server.name}'; re-enter the connector's credentials."
+                        ),
+                        server_id=server.server_id,
+                    )
+                resolved[k] = str(plain)
+            credentials = resolved
         # Confused-deputy guard: most built-in handlers still fall back to the
         # platform's env credentials (os.getenv("GITHUB_TOKEN"), ...) when the
         # tenant supplied none, so a tenant connector without its own credentials

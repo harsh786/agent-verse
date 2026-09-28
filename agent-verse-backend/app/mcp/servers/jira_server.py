@@ -253,8 +253,18 @@ async def _call_tool_inner(
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creds = credentials or {}
+    # Platform env credentials are only for a direct platform call (credentials
+    # is None). A tenant connector dispatch always passes its own credentials
+    # dict — mixing in env values let a tenant pair its own URL (e.g. an
+    # attacker host) with the platform's JIRA_EMAIL / JIRA_API_TOKEN, sending the
+    # platform's Jira token to that host, or run searches on the platform's Jira.
+    use_env = credentials is None
+
+    def _env(name: str) -> str:
+        return os.getenv(name, "") if use_env else ""
+
     tenant_base = str(creds.get("url") or creds.get("base_url") or "")
-    base = _absolute_http_url(tenant_base or os.getenv("JIRA_BASE_URL", ""))
+    base = _absolute_http_url(tenant_base or _env("JIRA_BASE_URL"))
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
     if tenant_base:
@@ -268,14 +278,20 @@ async def _call_tool_inner(
         except SSRFError:
             return {"error": "Jira URL blocked by SSRF guard"}
 
-    email = creds.get("username") or creds.get("email") or os.getenv("JIRA_EMAIL", "")
+    email = creds.get("username") or creds.get("email") or _env("JIRA_EMAIL")
     token = (
         creds.get("password")
         or creds.get("api_token")
         or creds.get("token")
-        or os.getenv("JIRA_API_TOKEN", "")
+        or _env("JIRA_API_TOKEN")
     )
-    headers = _jira_auth(email=email, token=token)
+    if not email or not token:
+        return {"error": "Jira credentials (email + API token) are not configured"}
+    headers = {
+        "Authorization": "Basic " + base64.b64encode(f"{email}:{token}".encode()).decode(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
 
     async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
         if tool_name == "jira_search_issues":
