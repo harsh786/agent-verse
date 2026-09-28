@@ -133,6 +133,15 @@ async def get_audit_integrity(request: Request) -> dict[str, Any]:
     }
 
 
+def _audit_event_dict(event: Any) -> dict[str, Any]:
+    import dataclasses
+    import enum
+
+    is_instance = dataclasses.is_dataclass(event) and not isinstance(event, type)
+    raw = dataclasses.asdict(event) if is_instance else dict(event)
+    return {k: (v.value if isinstance(v, enum.Enum) else v) for k, v in raw.items()}
+
+
 @router.get("/audit/export")
 async def export_audit_evidence(request: Request) -> Any:
     """Export audit evidence as an integrity-hashed JSON package.
@@ -151,17 +160,19 @@ async def export_audit_evidence(request: Request) -> Any:
     tenant = _require_tenant(request)
 
     audit_svc = getattr(request.app.state, "audit_log", None)
-    if audit_svc is None or not hasattr(audit_svc, "query"):
+    if audit_svc is None or not hasattr(audit_svc, "query_db"):
         raise HTTPException(
             503, "audit log unavailable; refusing to emit an empty evidence package"
         )
+    # This awaited the SYNC ``AuditLog.query(tenant_id=...)`` — wrong signature
+    # (it takes tenant_ctx) and not awaitable — so the export was always a 503.
     try:
-        result = await audit_svc.query(tenant_id=tenant.tenant_id, limit=1000)
+        rows = await audit_svc.query_db(tenant_ctx=tenant, limit=1000)
     except Exception as exc:
         raise HTTPException(
             503, f"audit log query failed; refusing to emit an empty package: {exc}"
         ) from exc
-    events = result.get("events", []) if isinstance(result, dict) else []
+    events = [_audit_event_dict(e) for e in rows]
 
     package = {
         "tenant_id": tenant.tenant_id,
