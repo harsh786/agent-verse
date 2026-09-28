@@ -134,9 +134,13 @@ class TestAgentsExtra:
         store = AgentStore(db_session_factory=_db_factory)
         ctx = TenantContext(tenant_id="ex-t", plan=PlanTier.FREE, api_key_id="k")
         store._data[("ex-t", "ag3")] = {"agent_id": "ag3", "tenant_id": "ex-t"}
-        # Should NOT raise — exception is logged and returns True (fallback)
-        result = await store.update_async("ag3", {"name": "new name"}, tenant_ctx=ctx)
-        assert result is True
+        # A failed write is a 503 (it used to be logged and reported as True).
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            await store.update_async("ag3", {"name": "new name"}, tenant_ctx=ctx)
+        assert exc.value.status_code == 503
+        assert store._data[("ex-t", "ag3")].get("name") is None
 
     # line 689 — update_agent returns 404 when store.update_async returns False
     def test_update_agent_returns_404(self) -> None:

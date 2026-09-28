@@ -9,6 +9,8 @@ Targets uncovered lines: 28-53, 60-83, 106, 112-119, 144-183, 191-192,
 
 from __future__ import annotations
 
+import pytest
+
 import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -272,7 +274,7 @@ def test_agent_store_list_async_db_exception_falls_back() -> None:
 
 
 def test_agent_store_delete_async_db_exception() -> None:
-    """Lines 318-323: delete_async handles DB exception gracefully."""
+    """A DB failure is a 503 — never an in-memory-only 'deleted' (it used to be)."""
     async def _run():
         session = AsyncMock()
         session.execute = AsyncMock(side_effect=Exception("DB fail"))
@@ -290,8 +292,11 @@ def test_agent_store_delete_async_db_exception() -> None:
         store._data[(_CTX.tenant_id, "del-agent")] = {"agent_id": "del-agent"}
         return await store.delete_async("del-agent", tenant_ctx=_CTX)
 
-    result = asyncio.run(_run())
-    assert result is True  # Falls back to in-memory delete
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(_run())
+    assert exc.value.status_code == 503
 
 
 def test_agent_store_update_async_db_with_allowed_fields() -> None:
