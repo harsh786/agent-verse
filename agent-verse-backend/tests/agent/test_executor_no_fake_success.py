@@ -188,3 +188,34 @@ async def test_profile_guardrail_error_fails_closed() -> None:
     ):
         await graph._execute_step("do thing", state, T)
     assert executor.call_history == []
+
+
+@pytest.mark.parametrize("mode", ["bounded-autonomous", "fully-autonomous"])
+async def test_policy_require_approval_outside_supervised_mode_is_not_executed(
+    mode: str,
+) -> None:
+    """The request used to be filed (orphaned) and the step ran anyway."""
+    policy = MagicMock()
+    policy.evaluate.return_value = PolicyResult.REQUIRE_APPROVAL
+    hitl = MagicMock()
+    hitl.request_approval.return_value = "req-9"
+    hitl.wait_for_approval = AsyncMock()
+    executor = FakeProvider(responses=["must not run"])
+    graph = _graph(executor=executor, policy_engine=policy, hitl_gateway=hitl, autonomy_mode=mode)
+
+    with pytest.raises(PermissionError, match="requires approval by policy"):
+        await graph._execute_step("do thing", _state(), T)
+    assert executor.call_history == []
+    hitl.wait_for_approval.assert_not_awaited()
+
+
+async def test_policy_require_approval_without_gateway_is_not_executed() -> None:
+    """No approval gateway used to skip the policy entirely."""
+    policy = MagicMock()
+    policy.evaluate.return_value = PolicyResult.REQUIRE_APPROVAL
+    executor = FakeProvider(responses=["must not run"])
+    graph = _graph(executor=executor, policy_engine=policy, autonomy_mode="supervised")
+
+    with pytest.raises(PermissionError, match="no approval gateway"):
+        await graph._execute_step("do thing", _state(), T)
+    assert executor.call_history == []

@@ -895,6 +895,8 @@ class ExecutorMixin:
         # HITL gateway. This is intentionally OUTSIDE the try/except above so an
         # approval rejection/timeout can never be swallowed and silently allowed.
         _asp_hitl_done = False
+        # True only once a human explicitly APPROVED this step (supervised wait).
+        _step_approved = False
         if _asp_hitl_required and self._hitl_gateway is not None:
             req_id = str(
                 self._hitl_gateway.request_approval(
@@ -923,6 +925,14 @@ class ExecutorMixin:
                     raise PermissionError(
                         f"Step '{step}' approval timed out (action-safety: {_asp_reason})."
                     )
+                if final_status != ApprovalStatus.APPROVED:
+                    # Only an explicit approval lets the step run (a still-pending
+                    # status used to fall through and execute).
+                    raise PermissionError(
+                        f"Step '{step}' approval not granted ({final_status}) "
+                        f"(action-safety: {_asp_reason})."
+                    )
+                _step_approved = True
                 await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
@@ -1058,11 +1068,17 @@ class ExecutorMixin:
                     f"Tool '{tool_name}' denied by governance policy "
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
-            elif (
-                policy_result == PolicyResult.REQUIRE_APPROVAL
-                and self._hitl_gateway is not None
-                and not _hitl_already_requested
-            ):
+            elif policy_result == PolicyResult.REQUIRE_APPROVAL and not _step_approved:
+                # A tenant policy demands approval. It used to be skipped when no
+                # gateway was wired, when an (unanswered) action-safety request
+                # had been filed, and outside supervised mode — where the request
+                # was orphaned and the step ran anyway. Fail closed in all three.
+                if self._hitl_gateway is None:
+                    record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                    raise PermissionError(
+                        f"Tool '{tool_name}' requires approval by policy; no approval "
+                        "gateway is configured, so the step was not executed."
+                    )
                 req_id = str(
                     self._hitl_gateway.request_approval(
                         goal_id=state.goal_id,
@@ -1072,6 +1088,12 @@ class ExecutorMixin:
                     )
                 )
                 _hitl_already_requested = True
+                if self._autonomy_mode != "supervised":
+                    record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                    raise PermissionError(
+                        f"Tool '{tool_name}' requires approval by policy (non-supervised "
+                        f"mode); the step was not executed. Approval request {req_id}."
+                    )
                 if self._autonomy_mode == "supervised":
                     await self._emit(
                         {"type": "waiting_approval", "request_id": req_id, "action": step}
