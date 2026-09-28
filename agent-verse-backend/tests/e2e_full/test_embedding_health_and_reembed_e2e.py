@@ -188,7 +188,7 @@ async def test_re_embed_collection_actually_rewrites_vectors(
 
 
 async def test_re_embed_refuses_a_dimension_changing_model(
-    app: Any, tenant_client: Any
+    app: Any, tenant_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A model of a different dimension is refused, not half-applied.
 
@@ -200,8 +200,15 @@ async def test_re_embed_refuses_a_dimension_changing_model(
 
     tenant_id, collection_id = await _collection_with_chunks(app, tenant_client, 2)
 
-    # No provider key configured → the router falls back to a 384-d fake, while
-    # the collection is 1536-d.
+    # A provider producing 384-d vectors, while the collection is 1536-d. (There
+    # is no silent 384-d fake fallback any more: with no provider the task fails
+    # with "no embedding provider configured" — a separate, honest refusal.)
+    from app.embedding.router import embedding_router
+
+    async def _embed_384(texts: list[str], provider: str = "", model: str = "") -> list[list[float]]:
+        return [[0.1] * 384 for _ in texts]
+
+    monkeypatch.setattr(embedding_router, "embed_texts", _embed_384)
     result = await re_embed_collection_async(tenant_id, collection_id)
     assert result["re_embedded"] == 0
     assert "dimension" in result["error"] or "-dim" in result["error"]

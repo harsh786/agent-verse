@@ -72,10 +72,15 @@ async def test_eval_suites_are_isolated_and_runs_are_async(app: Any, client: Any
         deadline = time.monotonic() + 120
         runs: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
-            runs = (await owner.get("/intelligence/eval-suites/shared-name/results")).json()
+            resp = await owner.get("/intelligence/eval-suites/shared-name/results")
+            if resp.status_code == 429:
+                # The plan rate limit is per tenant (not per path): poll politely.
+                await asyncio.sleep(float(resp.headers.get("Retry-After", "5")))
+                continue
+            runs = resp.json()
             if runs and runs[0]["status"] != "running":
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
         assert runs and runs[0]["run_id"] == run_id
         assert runs[0]["status"] in ("completed", "failed"), runs[0]
         assert runs[0]["passed"] + runs[0]["failed"] == 1 or runs[0]["status"] == "failed"
