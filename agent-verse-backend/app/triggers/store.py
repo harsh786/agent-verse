@@ -113,6 +113,37 @@ def apply_config_to_spec(spec: TriggerSpec, config: Any) -> None:
                 setattr(spec, field, cfg_val)
 
 
+# A secret that cannot be decrypted must never degrade to "no secret" (which
+# means "accept unsigned deliveries"): it becomes this unmatchable value, so
+# signature verification fails closed.
+_UNDECRYPTABLE_SECRET = "\x00undecryptable-webhook-secret\x00"
+
+
+def encrypt_webhook_secret(secret: str) -> str:
+    """Fernet-encrypt a webhook signing secret for the ``schedules`` row.
+
+    Raises when no vault key is available (production without a key) — a
+    signing secret is never written in plaintext.
+    """
+    if not secret:
+        return ""
+    from app.providers.vault import get_vault
+
+    return get_vault().encrypt(secret)
+
+
+def decrypt_webhook_secret(ciphertext: str) -> str:
+    if not ciphertext:
+        return ""
+    try:
+        from app.providers.vault import get_vault
+
+        return get_vault().decrypt(ciphertext)
+    except Exception as exc:
+        _log.error("webhook secret decrypt failed (failing closed): %s", type(exc).__name__)
+        return _UNDECRYPTABLE_SECRET
+
+
 def _strip_secret_redis_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key.lower() not in _SECRET_REDIS_FIELDS}
 
@@ -140,11 +171,24 @@ def bind_refs_to_spec(spec: TriggerSpec, *, agent_id: str = "", goal_template: s
 class ScheduleStore:
     """Per-tenant schedule registry."""
 
-    def __init__(self, db_session_factory: Any = None, redis: Any = None) -> None:
-        # Key: (tenant_id, schedule_id) → schedule record
+    def __init__(
+        self,
+        db_session_factory: Any = None,
+        redis: Any = None,
+        system_db_session_factory: Any = None,
+    ) -> None:
+        # Key: (tenant_id, schedule_id) → schedule record. With a DB configured
+        # this is only a CACHE: the ``*_async`` read paths re-read the tenant's
+        # rows from Postgres (the source of truth) so a trigger created, paused,
+        # edited or deleted on another replica is seen here too.
         self._data: dict[tuple[str, str], dict[str, Any]] = {}
         self._db = db_session_factory
         self._redis = redis
+        # Maintenance (BYPASSRLS) factory for the cross-tenant startup load. The
+        # load used to run on the tenant factory with no GUC, so under the
+        # NOBYPASSRLS application role it saw zero rows and every replica
+        # started with an empty trigger registry.
+        self._system_db = system_db_session_factory
         self._db_tasks: set[asyncio.Future[None]] = set()
         self._redis_tasks: set[asyncio.Future[None]] = set()
 
@@ -305,7 +349,23 @@ class ScheduleStore:
         tenant_ctx: TenantContext,
         agent_id: str = "",
         goal_template: str = "",
+        quota_plan: str | None = None,
     ) -> str:
+        """Durably create a schedule (DB first, then Redis, then the cache).
+
+        ``quota_plan`` enforces ``PLAN_MAX_TRIGGERS`` for that plan. With a DB
+        the count is taken from ``schedules`` inside the INSERT's transaction
+        under a per-tenant advisory lock, so concurrent creates on different
+        replicas cannot both slip under the cap; without a DB the in-memory
+        registry is the only (and therefore authoritative) count. Raises
+        :class:`~app.triggers.quota.TriggerQuotaExceeded`.
+        """
+        if quota_plan is not None and self._db is None:
+            from app.triggers.quota import TriggerQuotaEnforcer
+
+            TriggerQuotaEnforcer().check_create(
+                len(self.list_all(tenant_ctx=tenant_ctx)), quota_plan
+            )
         sched_id = uuid.uuid4().hex
         bind_refs_to_spec(spec, agent_id=agent_id, goal_template=goal_template)
         spec.trigger_id = sched_id  # type: ignore[attr-defined]
@@ -320,6 +380,9 @@ class ScheduleStore:
         }
         db_created = False
         if self._db is not None:
+            create_kwargs: dict[str, Any] = {"strict": True}
+            if quota_plan is not None:
+                create_kwargs["quota_plan"] = quota_plan
             await self._db_create(
                 sched_id,
                 goal_id,
@@ -327,7 +390,7 @@ class ScheduleStore:
                 tenant_ctx.tenant_id,
                 agent_id,
                 goal_template,
-                strict=True,
+                **create_kwargs,
             )
             db_created = True
         try:
@@ -349,10 +412,15 @@ class ScheduleStore:
         goal_template: str,
         *,
         strict: bool = False,
+        quota_plan: str | None = None,
     ) -> None:
         if self._db is None:
             return
+        from app.triggers.quota import TriggerQuotaEnforcer, TriggerQuotaExceeded
+
         try:
+            from sqlalchemy import text
+
             from app.db.models.scheduling import Schedule
             from app.db.rls import sqlalchemy_rls_context
 
@@ -361,6 +429,20 @@ class ScheduleStore:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                if quota_plan is not None:
+                    # Serialise this tenant's creates, then count the durable
+                    # rows — the quota used to be defined but never checked.
+                    await session.execute(
+                        text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                        {"k": f"trigger_quota:{tenant_id}"},
+                    )
+                    current = (
+                        await session.execute(
+                            text("SELECT count(*) FROM schedules WHERE tenant_id = :t"),
+                            {"t": tenant_id},
+                        )
+                    ).scalar_one()
+                    TriggerQuotaEnforcer().check_create(int(current or 0), quota_plan)
                 row = Schedule(
                     id=sched_id,
                     tenant_id=tenant_id,
@@ -377,8 +459,13 @@ class ScheduleStore:
                     description=spec.description or "",
                     config=spec_config(spec),
                     paused=False,
+                    webhook_signature_secret_enc=encrypt_webhook_secret(
+                        getattr(spec, "webhook_signature_secret", "") or ""
+                    ),
                 )
                 session.add(row)
+        except TriggerQuotaExceeded:
+            raise
         except Exception as exc:
             _log.warning("DB schedule create failed: %s", exc)
             if strict:
@@ -395,41 +482,270 @@ class ScheduleStore:
         """Rotate a webhook signing secret, retaining the previous one for a grace
         window so in-flight deliveries signed with the old secret still verify.
 
-        WT-5: returns True if a record was updated. Persists to the DB backend
-        when one is configured (following the store's existing write pattern).
+        Returns True if a record was updated. With a DB this is durable and
+        STRICT: the rotation used to be written to a ``webhook_signature_secret``
+        column that did not exist, without RLS, and the failure was swallowed —
+        so the API handed out a "new" secret that no other replica (and no
+        restart) ever knew about. Both secrets are stored encrypted.
         """
-        import time as _time
+        from datetime import timedelta
 
-        rec = self._data.get((tenant_id, schedule_id))
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
         if rec is None:
             return False
         spec = rec["spec"]
         prev = getattr(spec, "webhook_signature_secret", "") or ""
+        grace_until = datetime.now(UTC) + timedelta(seconds=max(0, grace_period_seconds))
+        if self._db is not None:
+            updated = await self._db_update_values(
+                schedule_id,
+                tenant_id,
+                {
+                    "webhook_signature_secret_enc": encrypt_webhook_secret(new_secret),
+                    "webhook_signature_secret_prev_enc": encrypt_webhook_secret(prev),
+                    "webhook_secret_grace_until": grace_until,
+                },
+            )
+            if not updated:
+                self._data.pop((tenant_id, schedule_id), None)
+                return False
         spec.webhook_signature_secret = new_secret
         rec["previous_webhook_secret"] = prev
-        rec["secret_grace_until"] = _time.time() + max(0, grace_period_seconds)
-        if self._db is not None:
-            await self._db_update_secret(schedule_id, tenant_id, new_secret)
+        rec["secret_grace_until"] = grace_until.timestamp()
         return True
 
-    async def _db_update_secret(self, schedule_id: str, tenant_id: str, new_secret: str) -> None:
-        """Persist a rotated secret to the DB backend. Best-effort, non-fatal."""
+    async def _db_update_values(
+        self, schedule_id: str, tenant_id: str, values: dict[str, Any]
+    ) -> bool:
+        """Strict, RLS-scoped UPDATE of one schedule row. True if a row matched."""
         if self._db is None:
-            return
-        try:
-            from sqlalchemy import text
+            return True
+        from sqlalchemy import update
 
-            async with self._db() as session:
-                await session.execute(
-                    text(
-                        "UPDATE schedules SET webhook_signature_secret = :s "
-                        "WHERE id = :sid AND tenant_id = :tid"
-                    ),
-                    {"s": new_secret, "sid": schedule_id, "tid": tenant_id},
+        from app.db.models.scheduling import Schedule
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            result = await session.execute(
+                update(Schedule)
+                .where(Schedule.id == schedule_id, Schedule.tenant_id == tenant_id)
+                .values(**values)
+            )
+        rowcount = getattr(result, "rowcount", None)
+        return not isinstance(rowcount, int) or rowcount > 0
+
+    async def set_paused_async(
+        self, schedule_id: str, *, paused: bool, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """Durably pause/resume: DB row, then the Redis copy the beat reads, then
+        the cache. Returns the updated record, or None if it does not exist.
+
+        ``POST /triggers/{id}/resume`` used to flip only the in-memory record,
+        so Redis and Postgres stayed paused: the beat never fired the trigger
+        again, and a restart reloaded it as paused.
+        """
+        tenant_id = tenant_ctx.tenant_id
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
+        if rec is None:
+            return None
+        if self._db is not None and not await self._db_update_values(
+            schedule_id, tenant_id, {"paused": paused}
+        ):
+            self._data.pop((tenant_id, schedule_id), None)
+            return None
+        rec["paused"] = paused
+        await self._write_redis_schedule_async(tenant_id, rec, strict=True)
+        return rec
+
+    async def update_async(
+        self,
+        schedule_id: str,
+        *,
+        tenant_ctx: TenantContext,
+        goal_template: str | None = None,
+        paused: bool | None = None,
+        spec: TriggerSpec | None = None,
+    ) -> dict[str, Any] | None:
+        """Durably apply a partial update (PATCH). Returns the record or None.
+
+        PATCH used to mutate only this process's record: nothing reached Redis
+        (the beat kept firing the old cron/template) or Postgres (a restart or
+        another replica reverted the edit). A replacement spec keeps the
+        existing webhook token / signing secret unless it sets new ones, so an
+        edit cannot silently disable a webhook's URL or its signature check.
+        """
+        tenant_id = tenant_ctx.tenant_id
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
+        if rec is None:
+            return None
+        new_rec = dict(rec)
+        if goal_template is not None:
+            new_rec["goal_template"] = goal_template
+        if paused is not None:
+            new_rec["paused"] = paused
+        old_spec: TriggerSpec = rec["spec"]
+        new_spec = spec if spec is not None else old_spec
+        if spec is not None:
+            if not spec.webhook_token:
+                spec.webhook_token = old_spec.webhook_token
+            if not spec.webhook_signature_secret:
+                spec.webhook_signature_secret = old_spec.webhook_signature_secret
+        if goal_template is not None:
+            # The record-level template is what every dispatch path renders.
+            new_spec.goal_template = goal_template
+        bind_refs_to_spec(
+            new_spec,
+            agent_id=str(new_rec.get("agent_id") or ""),
+            goal_template=str(new_rec.get("goal_template") or ""),
+        )
+        new_spec.trigger_id = schedule_id  # type: ignore[attr-defined]
+        new_rec["spec"] = new_spec
+        if self._db is not None:
+            values: dict[str, Any] = {
+                "goal_id_template": new_rec.get("goal_template") or new_rec.get("goal_id") or "",
+                "paused": bool(new_rec.get("paused", False)),
+                "trigger_type": new_spec.trigger_type.value,
+                "cron_expression": new_spec.cron_expression or "",
+                "timezone": new_spec.timezone or "UTC",
+                "interval_seconds": new_spec.interval_seconds or 0,
+                "webhook_token": new_spec.webhook_token or "",
+                "event_channel": new_spec.event_channel or "",
+                "fire_at_iso": new_spec.fire_at_iso or "",
+                "condition": new_spec.condition or "",
+                "description": new_spec.description or "",
+                "config": spec_config(new_spec),
+            }
+            if spec is not None:
+                values["webhook_signature_secret_enc"] = encrypt_webhook_secret(
+                    new_spec.webhook_signature_secret or ""
                 )
-                await session.commit()
+            if not await self._db_update_values(schedule_id, tenant_id, values):
+                self._data.pop((tenant_id, schedule_id), None)
+                return None
+        rec.clear()
+        rec.update(new_rec)
+        await self._write_redis_schedule_async(tenant_id, rec, strict=True)
+        return rec
+
+    # ── DB read-through (Postgres is the source of truth) ────────────────────
+
+    def _record_from_row(self, row: Any) -> dict[str, Any]:
+        from app.triggers.models import TriggerType
+
+        try:
+            ttype = TriggerType(row.trigger_type)
+        except ValueError:
+            ttype = TriggerType.ONCE
+        spec = TriggerSpec(
+            trigger_type=ttype,
+            cron_expression=row.cron_expression or "",
+            timezone=row.timezone or "UTC",
+            interval_seconds=row.interval_seconds or 0,
+            webhook_token=row.webhook_token or "",
+            event_channel=row.event_channel or "",
+            fire_at_iso=row.fire_at_iso or "",
+            condition=row.condition or "",
+            description=row.description or "",
+            webhook_signature_secret=decrypt_webhook_secret(
+                str(getattr(row, "webhook_signature_secret_enc", "") or "")
+            ),
+        )
+        # Rehydrate the family-specific config (file-watch path, RSS/poll URL,
+        # db_table, time offsets, …) that spec_config persisted on create.
+        apply_config_to_spec(spec, getattr(row, "config", None))
+        row_agent = str(row.agent_id or "")
+        row_goal_tmpl = row.goal_id_template or ""
+        # Keep the rehydrated spec self-contained across restarts / replicas so
+        # agent-referencing triggers still route + run the agent's goal.
+        bind_refs_to_spec(spec, agent_id=row_agent, goal_template=row_goal_tmpl)
+        spec.trigger_id = row.id  # type: ignore[attr-defined]
+        grace_dt = getattr(row, "webhook_secret_grace_until", None)
+        return {
+            "schedule_id": row.id,
+            "goal_id": row.goal_id_template,
+            "agent_id": row_agent,
+            "goal_template": row_goal_tmpl,
+            "spec": spec,
+            "paused": bool(row.paused),
+            "created_at": getattr(row, "created_at", None),
+            "last_fired_at": getattr(row, "last_fired_at", None),
+            "next_fire_at": getattr(row, "next_fire_at", None),
+            "previous_webhook_secret": decrypt_webhook_secret(
+                str(getattr(row, "webhook_signature_secret_prev_enc", "") or "")
+            ),
+            "secret_grace_until": (
+                grace_dt.timestamp() if isinstance(grace_dt, datetime) else 0.0
+            ),
+        }
+
+    async def _db_fetch_tenant(
+        self,
+        tenant_id: str,
+        *,
+        schedule_id: str | None = None,
+        trigger_type: str | None = None,
+    ) -> list[dict[str, Any]] | None:
+        """Read this tenant's schedule rows under its RLS context and refresh the
+        cache from them. Returns None when there is no DB or the read failed
+        (callers then fall back to the cache)."""
+        if self._db is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from app.db.models.scheduling import Schedule
+            from app.db.rls import sqlalchemy_rls_context
+
+            stmt = select(Schedule).where(Schedule.tenant_id == tenant_id)
+            if schedule_id is not None:
+                stmt = stmt.where(Schedule.id == schedule_id)
+            if trigger_type is not None:
+                stmt = stmt.where(Schedule.trigger_type == trigger_type)
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = list((await session.execute(stmt)).scalars().all())
+            records = [self._record_from_row(row) for row in rows]
         except Exception as exc:
-            _log.warning("schedule secret DB persist failed id=%s: %s", schedule_id, exc)
+            _log.warning("DB schedule read failed tenant=%s: %s", tenant_id, exc)
+            return None
+        for rec in records:
+            self._data[(tenant_id, rec["schedule_id"])] = rec
+        if schedule_id is not None and not records:
+            # Deleted elsewhere — drop the stale cache entry.
+            self._data.pop((tenant_id, schedule_id), None)
+        return records
+
+    async def _get_for_tenant_async(
+        self, tenant_id: str, schedule_id: str
+    ) -> dict[str, Any] | None:
+        fetched = await self._db_fetch_tenant(tenant_id, schedule_id=schedule_id)
+        if fetched is not None:
+            return fetched[0] if fetched else None
+        return self._data.get((tenant_id, schedule_id))
+
+    async def get_async(
+        self, schedule_id: str, *, tenant_ctx: TenantContext
+    ) -> dict[str, Any] | None:
+        """``get`` with DB read-through, so a trigger created/edited/deleted on
+        another replica is seen here (``get`` only knows this process)."""
+        return await self._get_for_tenant_async(tenant_ctx.tenant_id, schedule_id)
+
+    async def list_all_async(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
+        fetched = await self._db_fetch_tenant(tenant_ctx.tenant_id)
+        if fetched is not None:
+            live = {rec["schedule_id"] for rec in fetched}
+            for key in [k for k in self._data if k[0] == tenant_ctx.tenant_id]:
+                if key[1] not in live:
+                    del self._data[key]
+            return fetched
+        return self.list_all(tenant_ctx=tenant_ctx)
 
     def get(self, schedule_id: str, *, tenant_ctx: TenantContext) -> dict[str, Any] | None:
         return self._data.get((tenant_ctx.tenant_id, schedule_id))
@@ -517,9 +833,17 @@ class ScheduleStore:
         """Async version of find_by_type for use in consumers.
 
         Accepts both positional and keyword ``trigger_type`` for ergonomics.
+
+        With a DB the tenant's rows of that type are re-read first: this used to
+        consult only this process's memory, so an inbound webhook/event for a
+        trigger created on ANOTHER replica resolved its tenant from the DB
+        (``find_tenant_by_webhook_token``) and then still found no trigger (404).
         """
         if trigger_type is None:
             return []
+        fetched = await self._db_fetch_tenant(tenant_id, trigger_type=trigger_type)
+        if fetched is not None:
+            return [rec for rec in fetched if not rec.get("paused", False)]
         return self.find_by_type(trigger_type, tenant_id=tenant_id)
 
     def delete(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
@@ -540,12 +864,17 @@ class ScheduleStore:
 
     async def delete_async(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
         key = (tenant_ctx.tenant_id, schedule_id)
-        if key not in self._data:
+        # A cache miss is not "not found" with a DB: the trigger may have been
+        # created on another replica, so ask Postgres before answering 404.
+        if key not in self._data and (
+            self._db is None
+            or await self._get_for_tenant_async(tenant_ctx.tenant_id, schedule_id) is None
+        ):
             return False
         if self._db is not None:
             await self._db_delete_schedule(schedule_id, tenant_ctx.tenant_id, strict=True)
         await self._delete_redis_schedule_async(tenant_ctx.tenant_id, schedule_id, strict=True)
-        del self._data[key]
+        self._data.pop(key, None)
         return True
 
     def pause(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
@@ -637,65 +966,43 @@ class ScheduleStore:
                 raise
 
     async def sync_from_db(self) -> int:
-        """Load schedules from PostgreSQL into memory.
+        """Load schedules from PostgreSQL into memory (startup warm-up).
 
         Returns the number of new entries loaded (skips already-present keys).
         Returns 0 immediately when no ``db_session_factory`` is configured.
+
+        This is cross-tenant by nature, so with a ``system_db_session_factory``
+        it runs on that maintenance (BYPASSRLS) factory under ``system_session``.
+        It used to run on the tenant factory with no RLS context: under the
+        least-privilege NOBYPASSRLS role the query saw zero rows, so every
+        replica booted with an empty registry. (Without a system factory — unit
+        tests, RLS-less dev DBs — the legacy plain-session query is kept.)
         """
         if self._db is None:
             return 0
         try:
+            from contextlib import AsyncExitStack
+
             from sqlalchemy import select
 
             from app.db.models.scheduling import Schedule
-            from app.triggers.models import TriggerSpec, TriggerType
 
             loaded = 0
-            async with self._db() as session:
+            async with AsyncExitStack() as stack:
+                if self._system_db is not None:
+                    from app.db.rls import system_session
+
+                    session = await stack.enter_async_context(self._system_db())
+                    await stack.enter_async_context(session.begin())
+                    await stack.enter_async_context(system_session(session))
+                else:
+                    session = await stack.enter_async_context(self._db())
                 result = await session.execute(select(Schedule))
                 rows = result.scalars().all()
                 for row in rows:
                     key = (row.tenant_id, row.id)
                     if key not in self._data:
-                        try:
-                            ttype = TriggerType(row.trigger_type)
-                        except ValueError:
-                            ttype = TriggerType.ONCE
-                        spec = TriggerSpec(
-                            trigger_type=ttype,
-                            cron_expression=row.cron_expression or "",
-                            timezone=row.timezone or "UTC",
-                            interval_seconds=row.interval_seconds or 0,
-                            webhook_token=row.webhook_token or "",
-                            event_channel=row.event_channel or "",
-                            fire_at_iso=row.fire_at_iso or "",
-                            condition=row.condition or "",
-                            description=row.description or "",
-                        )
-                        # Rehydrate the family-specific config (file-watch path,
-                        # RSS/poll URL, db_table, time offsets, …) that spec_config
-                        # persisted into the schedules.config column on create.
-                        apply_config_to_spec(spec, getattr(row, "config", None))
-                        _row_agent = str(row.agent_id or "")
-                        _row_goal_tmpl = row.goal_id_template or ""
-                        # Keep the rehydrated spec self-contained across restarts /
-                        # replicas so agent-referencing triggers still route + run
-                        # the agent's goal on every dispatch path.
-                        bind_refs_to_spec(
-                            spec, agent_id=_row_agent, goal_template=_row_goal_tmpl
-                        )
-                        spec.trigger_id = row.id  # type: ignore[attr-defined]
-                        self._data[key] = {
-                            "schedule_id": row.id,
-                            "goal_id": row.goal_id_template,
-                            "agent_id": _row_agent,
-                            "goal_template": _row_goal_tmpl,
-                            "spec": spec,
-                            "paused": row.paused,
-                            "created_at": getattr(row, "created_at", None),
-                            "last_fired_at": getattr(row, "last_fired_at", None),
-                            "next_fire_at": getattr(row, "next_fire_at", None),
-                        }
+                        self._data[key] = self._record_from_row(row)
                         self._write_redis_schedule(row.tenant_id, self._data[key])
                         loaded += 1
             return loaded

@@ -12,7 +12,27 @@ from __future__ import annotations
 from typing import Any
 
 from app.db.rls import sqlalchemy_rls_context
+from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
+
+_log = get_logger(__name__)
+
+
+class RecallResult(list[dict[str, Any]]):
+    """Recall hits, plus whether the authoritative store could be read.
+
+    A plain ``list`` for every existing caller. ``degraded=True`` means a DB is
+    configured but the query failed: the result is deliberately EMPTY rather
+    than this replica's process-local cache, which is a partial view that other
+    replicas do not share (it used to be returned silently as if it were the
+    tenant's history).
+    """
+
+    degraded: bool
+
+    def __init__(self, items: list[dict[str, Any]] | None = None, *, degraded: bool = False):
+        super().__init__(items or [])
+        self.degraded = degraded
 
 
 class ExecutionMemory:
@@ -245,7 +265,7 @@ class ExecutionMemory:
         tenant_id: str,
         db: Any = None,
         limit: int = 3,
-    ) -> list[dict]:
+    ) -> RecallResult:
         """Recall relevant PAST FAILURES from DB for a given goal.
 
         ``record_failure_async`` persists failed attempts to ``execution_memory``
@@ -255,8 +275,9 @@ class ExecutionMemory:
         blind — it never saw the failures earlier runs recorded. This DB-backed
         path lets the planner avoid repeating cross-session mistakes.
 
-        Falls back to the in-memory ``self._failures`` when ``db`` is None or the
-        query fails, so the no-DB path keeps working exactly as before.
+        Uses the in-memory ``self._failures`` only when ``db`` is None (no DB
+        configured). A failed query logs a warning and returns an empty
+        ``RecallResult(degraded=True)`` — never the replica-local cache.
         """
 
         def _from_memory() -> list[dict]:
@@ -278,7 +299,7 @@ class ExecutionMemory:
             return results
 
         if db is None:
-            return _from_memory()
+            return RecallResult(_from_memory())
 
         try:
             from sqlalchemy import text
@@ -323,10 +344,11 @@ class ExecutionMemory:
                 )
                 if len(filtered) >= limit:
                     break
-            return filtered
-        except Exception:
-            # DB failed — fall back to in-memory
-            return _from_memory()
+            return RecallResult(filtered)
+        except Exception as exc:
+            # Was: silently return this replica's in-process failures as truth.
+            _log.warning("execution_memory_recall_failures_db_failed", error=str(exc)[:300])
+            return RecallResult(degraded=True)
 
     async def recall_async(
         self,
@@ -335,18 +357,19 @@ class ExecutionMemory:
         tenant_id: str,
         db: Any = None,
         limit: int = 3,
-    ) -> list[dict]:
+    ) -> RecallResult:
         """Recall relevant execution plans from DB for a given goal.
 
-        Falls back to in-memory search when ``db`` is None or DB query fails.
+        Uses the in-memory ``_plans`` only when ``db`` is None (no DB
+        configured). A failed query logs a warning and returns an empty
+        ``RecallResult(degraded=True)`` — never this replica's local cache.
         """
+        words = goal_hint.lower().split()[:5]
         if db is None:
-            # In-memory fallback: search _plans by keyword match
-            hint_lower = goal_hint.lower()
-            results: list[dict] = []
+            results: list[dict[str, Any]] = []
             for m in self._plans.get(tenant_id, []):
                 goal_str = str(m.get("goal", m.get("goal_text", "")))
-                if any(word in goal_str.lower() for word in hint_lower.split()[:5]):
+                if any(word in goal_str.lower() for word in words):
                     results.append(
                         {
                             "goal": goal_str,
@@ -356,7 +379,7 @@ class ExecutionMemory:
                     )
                     if len(results) >= limit:
                         break
-            return results
+            return RecallResult(results)
 
         try:
             from sqlalchemy import text
@@ -375,37 +398,23 @@ class ExecutionMemory:
                         {"tid": tenant_id, "lim": limit * 3},
                     )
                 ).fetchall()
+        except Exception as exc:
+            # Was: silently fall back to this replica's in-process plans.
+            _log.warning("execution_memory_recall_db_failed", error=str(exc)[:300])
+            return RecallResult(degraded=True)
 
-            # Filter by keyword relevance
-            hint_lower = goal_hint.lower()
-            filtered: list[dict] = []
-            for row in rows:
-                goal_text, plan, success = row
-                if any(word in (goal_text or "").lower() for word in hint_lower.split()[:5]):
-                    filtered.append(
-                        {
-                            "goal": goal_text,
-                            "plan": plan if isinstance(plan, list) else [],
-                            "success": success,
-                        }
-                    )
-                    if len(filtered) >= limit:
-                        break
-            return filtered
-        except Exception:
-            # DB failed — fall back to in-memory
-            hint_lower = goal_hint.lower()
-            fallback: list[dict] = []
-            for m in self._plans.get(tenant_id, []):
-                goal_str = str(m.get("goal", m.get("goal_text", "")))
-                if any(word in goal_str.lower() for word in hint_lower.split()[:5]):
-                    fallback.append(
-                        {
-                            "goal": goal_str,
-                            "plan": m.get("plan", []) if isinstance(m.get("plan"), list) else [],
-                            "success": m.get("success", True),
-                        }
-                    )
-                    if len(fallback) >= limit:
-                        break
-            return fallback
+        # Filter by keyword relevance
+        filtered: list[dict[str, Any]] = []
+        for row in rows:
+            goal_text, plan, success = row
+            if any(word in (goal_text or "").lower() for word in words):
+                filtered.append(
+                    {
+                        "goal": goal_text,
+                        "plan": plan if isinstance(plan, list) else [],
+                        "success": success,
+                    }
+                )
+                if len(filtered) >= limit:
+                    break
+        return RecallResult(filtered)

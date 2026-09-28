@@ -60,6 +60,32 @@ def _schedule_store(request: Request) -> ScheduleStore:
     return request.app.state.schedule_store  # type: ignore[no-any-return]
 
 
+async def _create_with_quota(
+    store: ScheduleStore,
+    tenant_ctx: TenantContext,
+    *,
+    goal_id: str,
+    spec: TriggerSpec,
+    agent_id: str,
+    goal_template: str,
+) -> str:
+    """``create_async`` with PLAN_MAX_TRIGGERS enforced (counted in Postgres when
+    DB-backed). The quota existed but no create path ever checked it."""
+    from app.triggers.quota import TriggerQuotaExceeded
+
+    try:
+        return await store.create_async(
+            goal_id=goal_id,
+            spec=spec,
+            tenant_ctx=tenant_ctx,
+            agent_id=agent_id,
+            goal_template=goal_template,
+            quota_plan=str(getattr(tenant_ctx, "plan", "free") or "free"),
+        )
+    except TriggerQuotaExceeded as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+
+
 def _nl_scheduler(request: Request) -> NLScheduler:
     return request.app.state.nl_scheduler  # type: ignore[no-any-return]
 
@@ -174,10 +200,11 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
     )
 
     goal_id = body.goal_template or body.agent_id or "unset"
-    schedule_id = await store.create_async(
+    schedule_id = await _create_with_quota(
+        store,
+        tenant_ctx,
         goal_id=goal_id,
         spec=spec,
-        tenant_ctx=tenant_ctx,
         agent_id=body.agent_id,
         goal_template=body.goal_template,
     )
@@ -253,6 +280,26 @@ async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any
     if trigger_type_val not in {"rest", "webhook"}:
         raise HTTPException(400, "Only REST and webhook schedules can be manually fired")
     goal_text = rec.get("goal_template") or rec.get("goal_id") or "Execute scheduled task"
+    dispatcher = getattr(request.app.state, "trigger_dispatcher", None)
+    if dispatcher is not None:
+        # Through the dispatcher so the manual fire is governed AND recorded in
+        # trigger_events (which GET /schedules/{id}/history reads). The fire id
+        # makes each manual fire a distinct firing rather than a replay.
+        import uuid as _uuid
+
+        from app.api.triggers import _spec_for_dispatch
+
+        event = await dispatcher.dispatch(
+            _spec_for_dispatch(rec),
+            {"manual_fire_id": _uuid.uuid4().hex, "source": "manual"},
+            tenant,
+        )
+        skip_reason = getattr(event, "skip_reason", None)
+        if skip_reason:
+            raise HTTPException(409, f"Schedule fire suppressed: {skip_reason}")
+        if not getattr(event, "goal_created", False):
+            raise HTTPException(502, "Goal could not be enqueued (recorded in the trigger DLQ)")
+        return {"fired": True, "schedule_id": schedule_id, "goal_id": event.goal_id}
     goal_svc = request.app.state.goal_service
     result = await goal_svc.submit_goal(
         goal=goal_text,
@@ -288,10 +335,11 @@ async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[
             webhook_token = secrets.token_hex(16)
             spec.webhook_token = webhook_token
 
-        schedule_id = await store.create_async(
+        schedule_id = await _create_with_quota(
+            store,
+            tenant_ctx,
             goal_id=body.command,
             spec=spec,
-            tenant_ctx=tenant_ctx,
             agent_id=body.agent_id,
             goal_template=body.command,
         )
@@ -630,56 +678,83 @@ async def get_schedule_history(
     request: Request,
     limit: int = Query(default=20, le=100),
 ) -> dict:
-    """Get execution history for a schedule."""
+    """Get execution history for a schedule, from the ``trigger_events`` audit log.
+
+    This used to filter ``goals`` on ``execution_context->>'schedule_id'`` — a
+    key nothing ever writes — so it was always empty, and a bare
+    ``except: pass`` hid every error. Every fire (beat, manual, webhook) goes
+    through the TriggerDispatcher, which records one ``trigger_events`` row per
+    firing *including suppressed ones* (skip_reason), keyed by the schedule id;
+    the goal's live status comes from a join on ``goals``.
+    """
     tenant = _require_tenant(request)
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        return {"runs": [], "total": 0, "schedule_id": schedule_id}
 
-    goal_svc = getattr(request.app.state, "goal_service", None)
+    import logging
+
+    from sqlalchemy import text as _t
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    _t(
+                        """
+                        SELECT te.id, te.goal_id, te.goal_created, te.skip_reason,
+                               te.fired_at, g.status, g.created_at, g.completed_at,
+                               g.error_message
+                        FROM trigger_events te
+                        LEFT JOIN goals g
+                               ON g.id = te.goal_id AND g.tenant_id = te.tenant_id
+                        WHERE te.tenant_id = :tid AND te.trigger_id = :sid
+                        ORDER BY te.fired_at DESC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"tid": tenant.tenant_id, "sid": schedule_id, "limit": limit},
+                )
+            ).fetchall()
+    except Exception as exc:
+        logging.getLogger(__name__).error(
+            "schedule_history_query_failed schedule=%s: %s", schedule_id, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Schedule history unavailable",
+        ) from exc
+
     runs = []
-
-    if goal_svc:
-        try:
-            from sqlalchemy import text as _t
-
-            db = getattr(goal_svc, "_db", None)
-            if db:
-                from app.db.rls import sqlalchemy_rls_context
-
-                async with db() as session, sqlalchemy_rls_context(session, tenant.tenant_id):
-                    rows = (
-                        await session.execute(
-                            _t("""
-                                SELECT id, status, created_at,
-                                       execution_context->>'duration_s' as duration_s,
-                                       execution_context->>'error' as error
-                                FROM goals
-                                WHERE tenant_id = :tid
-                                  AND execution_context->>'schedule_id' = :sid
-                                ORDER BY created_at DESC
-                                LIMIT :limit
-                            """),
-                            {
-                                "tid": tenant.tenant_id,
-                                "sid": schedule_id,
-                                "limit": limit,
-                            },
-                        )
-                    ).fetchall()
-                    runs = [
-                        {
-                            "run_id": str(row[0]),
-                            "goal_id": str(row[0]),
-                            "status": (
-                                "success"
-                                if row[1] == "complete"
-                                else ("failed" if row[1] == "failed" else row[1])
-                            ),
-                            "started_at": row[2].isoformat() if row[2] else None,
-                            "duration_ms": (int(float(row[3] or 0) * 1000) if row[3] else None),
-                            "error": row[4],
-                        }
-                        for row in rows
-                    ]
-        except Exception:
-            pass
-
+    for row in rows:
+        event_id, goal_id, goal_created, skip_reason, fired_at = row[0:5]
+        goal_status, goal_created_at, goal_completed_at, goal_error = row[5:9]
+        if skip_reason:
+            run_status = "skipped"
+        elif not goal_created:
+            run_status = "failed"  # dispatch failed before a goal existed (see DLQ)
+        elif goal_status == "complete":
+            run_status = "success"
+        else:
+            run_status = goal_status or "dispatched"
+        duration_ms = None
+        if goal_created_at is not None and goal_completed_at is not None:
+            duration_ms = int((goal_completed_at - goal_created_at).total_seconds() * 1000)
+        runs.append(
+            {
+                "run_id": str(event_id),
+                "goal_id": str(goal_id) if goal_id else None,
+                "status": run_status,
+                "skip_reason": skip_reason,
+                "started_at": fired_at.isoformat() if fired_at else None,
+                "duration_ms": duration_ms,
+                "error": goal_error or None,
+            }
+        )
     return {"runs": runs, "total": len(runs), "schedule_id": schedule_id}

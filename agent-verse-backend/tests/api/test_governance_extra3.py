@@ -642,7 +642,7 @@ def test_get_policy_versions_no_db() -> None:
 
 
 def test_get_policy_versions_with_db_exception() -> None:
-    """Lines 1142-1177: DB raises → returns empty list."""
+    """DB raises → 503 (an unreadable history is not an empty one)."""
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
@@ -652,8 +652,7 @@ def test_get_policy_versions_with_db_exception() -> None:
     with patch("app.api.governance._get_db", return_value=db_factory):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/policies/p1/versions", headers=_headers())
-        assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -744,17 +743,21 @@ def test_verify_audit_chain_with_db() -> None:
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
+    begin = MagicMock()
+    begin.__aenter__ = AsyncMock(return_value=session)
+    begin.__aexit__ = AsyncMock(return_value=False)
+    session.begin = MagicMock(return_value=begin)
     db_factory = MagicMock(return_value=session)
 
-    mock_result = {"valid": True, "events_checked": 10, "tampered": []}
+    mock_result = {"verified": True, "verified_events": 10, "broken_chain_at": None}
     with patch(
-        "app.governance.audit_v2.HashChainVerifier.verify",
-        new_callable=lambda: lambda *args, **kwargs: AsyncMock(return_value=mock_result)(),
+        "app.governance.audit_v3.HashChainVerifier.verify",
+        new=AsyncMock(return_value=mock_result),
     ), patch("app.api.governance._get_db", return_value=db_factory):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/audit/integrity/verify", headers=_headers())
-        # Even if the mock path fails, it should not be 503
-        assert resp.status_code in (200, 500)
+        assert resp.status_code == 200
+        assert resp.json() == mock_result
 
 
 # ---------------------------------------------------------------------------
@@ -766,13 +769,11 @@ def test_get_sla_stats_no_db() -> None:
     with patch("app.api.governance._get_db", return_value=None):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/approvals/sla-stats", headers=_headers())
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "error" in data or isinstance(data, dict)
+        assert resp.status_code == 503
 
 
 def test_get_sla_stats_with_db_exception() -> None:
-    """Lines 1283+: DB query raises → returns empty dict."""
+    """DB query raises → 503 (not an empty dict posing as stats)."""
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
@@ -782,12 +783,11 @@ def test_get_sla_stats_with_db_exception() -> None:
     with patch("app.api.governance._get_db", return_value=db_factory):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/approvals/sla-stats", headers=_headers())
-        assert resp.status_code == 200
-        assert resp.json() == {}
+        assert resp.status_code == 503
 
 
 def test_get_sla_stats_with_db_no_rows() -> None:
-    """Lines 1283+: DB returns no row → returns empty dict."""
+    """DB returns no row → all-zero stats (a real, empty answer)."""
     result = MagicMock()
     result.fetchone = MagicMock(return_value=None)
 
@@ -801,13 +801,15 @@ def test_get_sla_stats_with_db_no_rows() -> None:
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/approvals/sla-stats", headers=_headers())
         assert resp.status_code == 200
-        assert resp.json() == {}
+        assert resp.json()["pending"] == 0
+        assert resp.json()["avg_resolution_seconds"] is None
 
 
 def test_get_sla_stats_with_data() -> None:
     """Lines 1283+: DB returns row → returns stats dict."""
-    # Row: (pending, approved, denied, timed_out, escalated, within_sla, avg_resolution_seconds)
-    row = (5, 10, 2, 1, 0, 8, 45.5)
+    # Row: (pending, approved, rejected, timed_out, escalated, within_sla, breached_sla,
+    #       avg_resolution_seconds)
+    row = (5, 10, 2, 1, 0, 8, 3, 45.5)
     result = MagicMock()
     result.fetchone = MagicMock(return_value=row)
 
@@ -1010,24 +1012,16 @@ def test_list_legal_holds_with_rows() -> None:
 def test_rollback_policy_success() -> None:
     """Lines 1208-1241: rollback policy to target version."""
 
-    target_row = ("ver-snap-id", "policy-name", "Block deletes", '{"rules": []}', 2)
-    max_ver_result = MagicMock()
-    max_ver_result.scalar = MagicMock(return_value=3)
+    target_row = ("ver-snap-id", "policy-name", "Block deletes", '{"rules": []}', 2, None)
 
-    call_count = 0
-
-    async def _execute(*args: Any, **kwargs: Any) -> Any:
-        nonlocal call_count
-        call_count += 1
+    async def _execute(q: Any, *args: Any, **kwargs: Any) -> Any:
+        sql = str(q)
         result = MagicMock()
-        if call_count == 1:
-            # Deactivate current version
-            result.fetchone = MagicMock(return_value=None)
-        elif call_count == 2:
-            # Fetch target snapshot
+        result.fetchall = MagicMock(return_value=[])
+        result.scalar_one_or_none = MagicMock(return_value=None)
+        if "version_number = :ver" in sql:
             result.fetchone = MagicMock(return_value=target_row)
-        elif call_count == 3:
-            # Get max version
+        elif "COALESCE(MAX(version_number)" in sql:
             result.scalar = MagicMock(return_value=3)
         else:
             result.fetchone = MagicMock(return_value=None)
@@ -1295,17 +1289,16 @@ def test_get_policy_versions_with_rows() -> None:
 # Lines 1249-1250 — rollback policy return statement
 def test_rollback_policy_returns_correct_data() -> None:
     """Lines 1249-1250: rollback policy return value has correct fields."""
-    target_row = ("snap-id", "policy-name", "Block deploys", '{"rules": []}', 3)
+    target_row = ("snap-id", "policy-name", "Block deploys", '{"rules": []}', 3, None)
 
-    call_count = 0
-
-    async def _execute(*args: Any, **kwargs: Any) -> Any:
-        nonlocal call_count
-        call_count += 1
+    async def _execute(q: Any, *args: Any, **kwargs: Any) -> Any:
+        sql = str(q)
         result = MagicMock()
-        if call_count == 2:
+        result.fetchall = MagicMock(return_value=[])
+        result.scalar_one_or_none = MagicMock(return_value=None)
+        if "version_number = :ver" in sql:
             result.fetchone = MagicMock(return_value=target_row)
-        elif call_count == 3:
+        elif "COALESCE(MAX(version_number)" in sql:
             result.scalar = MagicMock(return_value=5)
         else:
             result.fetchone = MagicMock(return_value=None)

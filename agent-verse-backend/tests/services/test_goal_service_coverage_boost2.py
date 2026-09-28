@@ -107,7 +107,8 @@ async def test_budget_preflight_memory_controller_rejects_when_exhausted() -> No
     state = _AppState()
     state.redis_cost_controller = None
     state.cost_controller = MagicMock()
-    state.cost_controller.has_remaining_budget = MagicMock(return_value=False)
+    # Async variant resolves the tenant's configured budget_configs row.
+    state.cost_controller.ahas_remaining_budget = AsyncMock(return_value=False)
     svc._app_state = state
 
     with pytest.raises(PlanLimitExceededError, match="budget exhausted"):

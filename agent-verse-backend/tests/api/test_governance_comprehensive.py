@@ -528,10 +528,8 @@ def test_sla_stats_no_db(monkeypatch) -> None:
     app = _make_app_no_db()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/governance/approvals/sla-stats", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    # Should return either {"error": ...} or an empty/default stats dict
-    body = resp.json()
-    assert isinstance(body, dict)
+    # No DB → 503, never a zeroed/fake stats answer.
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

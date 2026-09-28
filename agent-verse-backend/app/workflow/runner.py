@@ -18,8 +18,6 @@ import json
 import uuid
 from typing import Any
 
-import httpx
-
 from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import WorkflowDefinition
@@ -37,6 +35,21 @@ MAX_TRIGGER_PAYLOAD_BYTES = 1 * 1024 * 1024  # 1 MB
 
 class WorkflowValidationError(ValueError):
     pass
+
+
+class WorkflowEngineUnavailableError(RuntimeError):
+    """The durable run path (persistent run store) is not wired, so a request
+    that needs it (idempotent trigger, retry, legacy /run) cannot be honoured.
+    Routers map this to HTTP 503 rather than pretending to run anything."""
+
+
+# Run statuses after which a completion callback is delivered.
+_CALLBACK_STATUSES = {
+    WorkflowRunStatus.COMPLETE,
+    WorkflowRunStatus.FAILED,
+    WorkflowRunStatus.CANCELLED,
+    WorkflowRunStatus.TIMED_OUT,
+}
 
 
 class WorkflowRunner:
@@ -71,13 +84,22 @@ class WorkflowRunner:
         Maps the ``POST /workflows/{id}/trigger`` contract onto :meth:`run` and
         returns a RunResponse-shaped dict. Previously the router called this
         method, which did not exist -> AttributeError -> HTTP 500.
+
+        ``idempotency_key`` is now enforced (it used to be dropped into run
+        metadata that was never even persisted): a repeat trigger with the same
+        key for the same tenant+workflow returns the ORIGINAL run.
+        ``callback_url`` is validated here and POSTed on the terminal status.
         """
+        metadata: dict[str, Any] = {}
+        if callback_url:
+            metadata["callback_url"] = callback_url
         run_id = await self.run(
             workflow_id=workflow_id,
             tenant_id=tenant_id,
             inputs=inputs,
             is_test_run=dry_run,
-            run_metadata={"idempotency_key": idempotency_key, "callback_url": callback_url},
+            run_metadata=metadata or None,
+            idempotency_key=idempotency_key,
         )
         if self._run_store is not None:
             rec = await self._run_store.get(tenant_id, run_id)
@@ -97,8 +119,33 @@ class WorkflowRunner:
         labels: dict[str, str] | None = None,
         run_metadata: dict[str, Any] | None = None,
         wait_for_completion: bool = False,
+        idempotency_key: str | None = None,
+        seed_from_run_id: str | None = None,
     ) -> str:
-        """Trigger a new workflow run. Returns run_id immediately."""
+        """Trigger a new workflow run. Returns run_id immediately.
+
+        ``idempotency_key``: with a persistent run store, a second call with the
+        same (tenant, workflow, key) returns the existing run's id and does NOT
+        start another execution (the DB unique index arbitrates, so this holds
+        across replicas).
+
+        ``seed_from_run_id``: copy that run's COMPLETE step results into the new
+        run before it is dispatched, so the engine skips them (used by retry).
+        """
+        if idempotency_key and self._run_store is None:
+            # Without a persistent store there is nothing to dedupe against;
+            # silently ignoring the key would start duplicate runs.
+            raise WorkflowEngineUnavailableError(
+                "idempotency_key requires the persistent workflow run store"
+            )
+        callback_url = (run_metadata or {}).get("callback_url")
+        if callback_url:
+            from app.workflow.callbacks import validate_callback_url
+
+            try:
+                validate_callback_url(str(callback_url))
+            except ValueError as exc:  # SSRFError subclasses ValueError
+                raise WorkflowValidationError(f"callback_url rejected: {exc}") from exc
 
         # 1. Payload size guard
         payload_bytes = len(json.dumps(inputs, default=str).encode())
@@ -136,7 +183,14 @@ class WorkflowRunner:
 
         # 6. Persist run record
         if self._run_store is not None:
-            await self._run_store.create(
+            extra: dict[str, Any] = {}
+            # Only pass the newer kwargs when set, so minimal stores that predate
+            # them keep working.
+            if run_metadata:
+                extra["run_metadata"] = run_metadata
+            if idempotency_key:
+                extra["idempotency_key"] = idempotency_key
+            owner = await self._run_store.create(
                 run_id=run_id,
                 workflow_id=workflow_id,
                 tenant_id=tenant_id,
@@ -145,7 +199,25 @@ class WorkflowRunner:
                 inputs=inputs,
                 labels=initial_state["labels"],
                 is_test_run=is_test_run,
+                **extra,
             )
+            if idempotency_key and owner and str(owner) != run_id:
+                # Duplicate trigger: the key already belongs to an earlier run.
+                # Return it and do NOT execute/dispatch a second time.
+                _log.info(
+                    "workflow_run_idempotent_replay",
+                    workflow_id=workflow_id,
+                    existing_run_id=str(owner),
+                )
+                return str(owner)
+            if seed_from_run_id and hasattr(self._run_store, "copy_completed_step_results"):
+                # Must happen BEFORE dispatch so the worker sees the seeded steps.
+                copied = await self._run_store.copy_completed_step_results(
+                    tenant_id, seed_from_run_id, run_id
+                )
+                _log.info(
+                    "workflow_retry_seeded", run_id=run_id, source=seed_from_run_id, steps=copied
+                )
 
         # 7. Execute (inline for tests, Celery for production)
         if is_test_run or wait_for_completion or self._celery is None:
@@ -202,7 +274,9 @@ class WorkflowRunner:
             # Reach a terminal run-level status (COMPLETE), or persist the halt
             # (WAITING_HITL / PAUSED) the graph settled on — the graph nodes only
             # emit step_outputs, they never finalize the run row themselves.
-            await self._finalize_status(run_id, initial_state["tenant_id"], final_state)
+            await self._finalize_status(
+                run_id, initial_state["tenant_id"], final_state, definition=definition
+            )
         except Exception as exc:
             _log.error(
                 "workflow_run_failed_inline", run_id=run_id, error=repr(exc), exc_info=True
@@ -216,6 +290,9 @@ class WorkflowRunner:
                     tenant_id=initial_state["tenant_id"],
                     error=str(exc),
                 )
+            self._fire_callback(
+                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
+            )
 
     def _build_initial_state(
         self,
@@ -294,17 +371,23 @@ class WorkflowRunner:
         definition = await self._load_definition(workflow_id, tenant_id)
         inputs: dict[str, Any] = {}
         labels: dict[str, str] | None = None
+        run_metadata: dict[str, Any] | None = None
         if self._run_store is not None:
             record = await self._run_store.get(tenant_id, run_id)
             if record:
                 inputs = record.get("inputs") or {}
                 labels = record.get("labels") or None
+                # The worker previously rebuilt state WITHOUT run_metadata, so a
+                # trigger's callback_url never reached the process that finishes
+                # the run.
+                run_metadata = record.get("run_metadata") or None
         initial_state = self._build_initial_state(
             run_id=run_id,
             workflow_id=workflow_id,
             tenant_id=tenant_id,
             definition=definition,
             inputs=inputs,
+            run_metadata=run_metadata,
             is_test_run=is_test_run,
             mock_overrides=mock_overrides,
             labels=labels,
@@ -356,6 +439,7 @@ class WorkflowRunner:
                     await self._run_store.update_status(
                         run_id, WorkflowRunStatus.CANCELLED, tenant_id=tenant_id
                     )
+            self._fire_callback(WorkflowRunStatus.CANCELLED, initial_state, definition)
             return
         except WorkflowPaused:
             # Operator paused the run — leave it PAUSED (set via the API) with its
@@ -370,12 +454,15 @@ class WorkflowRunner:
                 await self._run_store.update_status(
                     run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=str(exc)
                 )
+            self._fire_callback(
+                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
+            )
             return
         # Finalize the run-level status. The graph leaves a successful run at its
         # initial PENDING status (step nodes only emit step_outputs); a halting
         # step sets WAITING_HITL / PAUSED (or FAILED). Preserve those halts and
         # otherwise mark the run COMPLETE so it reaches a terminal state.
-        await self._finalize_status(run_id, tenant_id, final_state)
+        await self._finalize_status(run_id, tenant_id, final_state, definition=definition)
 
     async def execute_resume_fresh(
         self,
@@ -409,17 +496,23 @@ class WorkflowRunner:
         definition = await self._load_definition(workflow_id, tenant_id)
         inputs: dict[str, Any] = {}
         labels: dict[str, str] | None = None
+        run_metadata: dict[str, Any] | None = None
         if self._run_store is not None:
             record = await self._run_store.get(tenant_id, run_id)
             if record:
                 inputs = record.get("inputs") or {}
                 labels = record.get("labels") or None
+                # The worker previously rebuilt state WITHOUT run_metadata, so a
+                # trigger's callback_url never reached the process that finishes
+                # the run.
+                run_metadata = record.get("run_metadata") or None
         initial_state = self._build_initial_state(
             run_id=run_id,
             workflow_id=workflow_id,
             tenant_id=tenant_id,
             definition=definition,
             inputs=inputs,
+            run_metadata=run_metadata,
             labels=labels,
         )
         # Seed the reviewer's decision. HITLStepNode.execute() resumes (rather
@@ -443,17 +536,26 @@ class WorkflowRunner:
                 await self._run_store.update_status(
                     run_id, WorkflowRunStatus.FAILED, tenant_id=tenant_id, error=str(exc)
                 )
+            self._fire_callback(
+                WorkflowRunStatus.FAILED, {**initial_state, "error": str(exc)}, definition
+            )
             return
-        await self._finalize_status(run_id, tenant_id, final_state)
+        await self._finalize_status(run_id, tenant_id, final_state, definition=definition)
 
     async def _finalize_status(
-        self, run_id: str, tenant_id: str, final_state: Any
+        self,
+        run_id: str,
+        tenant_id: str,
+        final_state: Any,
+        *,
+        definition: WorkflowDefinition | None = None,
     ) -> None:
         if self._run_store is None:
             return
         raw_status = (final_state or {}).get("status") if isinstance(final_state, dict) else None
         halted = {
             WorkflowRunStatus.WAITING_HITL,
+            WorkflowRunStatus.WAITING_TIMER,
             WorkflowRunStatus.PAUSED,
             WorkflowRunStatus.FAILED,
             WorkflowRunStatus.CANCELLED,
@@ -475,6 +577,67 @@ class WorkflowRunner:
             cost_usd=_fs.get("cost_usd"),
             tokens_used=_fs.get("tokens_used"),
         )
+        # Status is persisted first; the callback is handed off afterwards and
+        # can never delay or fail the run's completion.
+        self._fire_callback(status, {**_fs, "run_id": run_id}, definition)
+
+    def _fire_callback(
+        self,
+        status: Any,
+        state: Any,
+        definition: WorkflowDefinition | None,
+    ) -> None:
+        """Deliver the run-completion callback for a terminal ``status``.
+
+        Old bug: :meth:`send_callback` existed but nothing ever called it, and a
+        trigger's ``callback_url`` was only put in never-persisted run metadata,
+        so no caller was ever notified. Now every terminal transition (inline,
+        worker, HITL resume, cancel, failure) lands here. Sandbox/test runs never
+        call out (no side effects).
+        """
+        try:
+            if status not in _CALLBACK_STATUSES:
+                return
+            st = state if isinstance(state, dict) else {}
+            if st.get("is_test_run"):
+                return
+            url = self._resolve_callback_url(status, st, definition)
+            if not url:
+                return
+            from app.workflow.callbacks import build_payload, dispatch_callback
+
+            workflow_id = str(st.get("workflow_id") or "")
+            payload = build_payload(
+                run_id=str(st.get("run_id") or ""),
+                workflow_id=workflow_id,
+                status=str(getattr(status, "value", status)),
+                state=st,
+            )
+            dispatch_callback(
+                url,
+                payload,
+                tenant_id=str(st.get("tenant_id") or ""),
+                workflow_id=workflow_id,
+                celery_app=self._celery,
+            )
+        except Exception as exc:  # never let a callback problem touch the run
+            _log.error("workflow_callback_schedule_failed", error=str(exc))
+
+    def _resolve_callback_url(
+        self, status: Any, state: dict[str, Any], definition: WorkflowDefinition | None
+    ) -> str | None:
+        """Trigger-supplied ``callback_url`` wins (the caller asked for exactly
+        this run); otherwise the DSL ``callback`` block, honouring its
+        ``on_failure`` flag."""
+        meta_url = (state.get("run_metadata") or {}).get("callback_url")
+        if meta_url:
+            return str(meta_url)
+        cb = definition.callback if definition is not None else None
+        if cb is None or not cb.url:
+            return None
+        if status == WorkflowRunStatus.FAILED and not cb.on_failure:
+            return None
+        return str(self._ctx.resolve(cb.url, state))
 
     async def resume_from_hitl(
         self,
@@ -552,7 +715,9 @@ class WorkflowRunner:
             final_state = await compiled.ainvoke(state, config)
             # A resumed in-process run must also reach a terminal run-level
             # status (the graph itself only emits step_outputs).
-            await self._finalize_status(run_id, tenant_id, final_state)
+            await self._finalize_status(
+                run_id, tenant_id, final_state, definition=definition
+            )
 
     async def _load_definition(self, workflow_id: str, tenant_id: str) -> WorkflowDefinition:
         if self._run_store is not None:
@@ -593,24 +758,10 @@ class WorkflowRunner:
         definition: WorkflowDefinition,
         state: WorkflowState,
     ) -> None:
-        """POST final outputs to callback URL if configured."""
-        if not definition.callback or not definition.callback.url:
-            return
+        """Schedule the completion callback for ``state``'s status (non-blocking).
 
-        cb_url = self._ctx.resolve(definition.callback.url, state)
-        payload = {
-            "run_id": state.get("run_id"),
-            "status": str(state.get("status", "")),
-            "outputs": state.get("outputs", {}),
-            "labels": state.get("labels", {}),
-            "cost_usd": state.get("cost_usd", 0.0),
-        }
-
-        if state.get("status") == WorkflowRunStatus.FAILED and not definition.callback.on_failure:
-            return
-
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                await client.post(str(cb_url), json=payload)
-        except Exception as exc:
-            _log.warning("callback_failed", url=cb_url, error=str(exc))
+        Kept for API compatibility; the engine itself calls :meth:`_fire_callback`
+        on every terminal transition. Delivery is SSRF-guarded, signed, retried
+        and never awaited here (see ``app.workflow.callbacks``).
+        """
+        self._fire_callback(state.get("status"), dict(state), definition)

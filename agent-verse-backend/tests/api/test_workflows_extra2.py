@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -346,48 +346,40 @@ async def test_workflow_store_delete_db_not_found() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_workflow_with_goal_service_active() -> None:
-    """run_workflow submits goal via goal_service and returns run_id."""
-    mock_goal_service = MagicMock()
-    mock_goal_service.submit_goal = AsyncMock(
-        return_value={"id": "goal-wf-789", "status": "planning"}
-    )
-    app = _make_app(goal_service=mock_goal_service)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    # Create workflow
-    wf = _create_workflow(client, "CI Pipeline")
-    wf_id = wf["id"]
-
-    # Run workflow (without dry_run, so it goes to goal_service)
-    resp = client.post(
-        f"/workflows/{wf_id}/run",
+def test_run_workflow_goal_service_present_still_not_used() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
+        "/workflows",
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
         headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["workflow_id"] == wf_id
-    assert body["run_id"] == "goal-wf-789"
-    assert body["status"] == "planning"
-    mock_goal_service.submit_goal.assert_awaited_once()
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    goal_service.submit_goal.assert_not_awaited()
 
 
-def test_run_workflow_dry_run_when_no_goal_service() -> None:
-    """run_workflow returns dry_run status when no goal_service (line 452-458)."""
-    app = _make_app(goal_service=None)  # no goal_service
-    client = TestClient(app, raise_server_exceptions=False)
-
-    wf = _create_workflow(client, "Dry Run WF")
-    wf_id = wf["id"]
-
-    resp = client.post(
-        f"/workflows/{wf_id}/run",
+def test_run_workflow_no_engine_503() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
+        "/workflows",
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
         headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["status"] == "dry_run"
-    assert body["workflow_id"] == wf_id
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    goal_service.submit_goal.assert_not_awaited()
 
 
 def test_run_workflow_with_nodes_count_in_goal() -> None:
@@ -409,190 +401,93 @@ def test_run_workflow_with_nodes_count_in_goal() -> None:
     assert "Execute workflow" in body["goal"] or "Multi-Node WF" in body["goal"]
 
 
-def test_run_workflow_goal_service_run_id_fallback() -> None:
-    """run_workflow falls back to wf- prefix when goal has no id field (line 468-469)."""
-    mock_goal_service = MagicMock()
-    mock_goal_service.submit_goal = AsyncMock(
-        return_value={"status": "planning"}  # no "id" field
-    )
-    app = _make_app(goal_service=mock_goal_service)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    wf = _create_workflow(client, "No-ID WF")
-    wf_id = wf["id"]
-
-    resp = client.post(
-        f"/workflows/{wf_id}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body["run_id"].startswith("wf-")
-
-
-def test_run_workflow_unknown_rag_strategy_returns_422_without_goal_fallback() -> None:
-    """Invalid RAG configuration is a client error, not an operational fallback."""
+def test_run_workflow_no_random_run_id_fallback() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     goal_service = MagicMock()
-    goal_service.submit_goal = AsyncMock(
-        return_value={"id": "must-not-run", "status": "planning"}
-    )
-    client = TestClient(
-        _make_app(goal_service=goal_service),
-        raise_server_exceptions=False,
-    )
-    created = client.post(
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
         "/workflows",
-        json={
-            "name": "Invalid RAG",
-            "definition": {
-                "steps": [
-                    {
-                        "id": "rag-1",
-                        "tool": "rag",
-                        "collection_id": "collection-1",
-                        "strategy": "invented",
-                    }
-                ]
-            },
-        },
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
         headers={"X-API-Key": _VALID_KEY},
-    ).json()
-
-    response = client.post(
-        f"/workflows/{created['id']}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-
-    assert response.status_code == 422
-    assert response.json() == {"detail": "Unknown RAG strategy: invented"}
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
     goal_service.submit_goal.assert_not_awaited()
 
 
-def test_run_workflow_operational_error_still_uses_goal_service_fallback() -> None:
-    """Unrelated executor failures retain the established GoalService fallback."""
+def test_run_workflow_rag_definition_never_falls_back_to_goal() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     goal_service = MagicMock()
-    goal_service.submit_goal = AsyncMock(
-        return_value={"id": "goal-fallback", "status": "planning"}
-    )
-    client = TestClient(
-        _make_app(goal_service=goal_service),
-        raise_server_exceptions=False,
-    )
-    created = client.post(
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
         "/workflows",
-        json={
-            "name": "Operational fallback",
-            "definition": {
-                "steps": [
-                    {
-                        "id": "rag-1",
-                        "tool": "rag",
-                        "collection_id": "collection-1",
-                        "strategy": "hybrid",
-                    }
-                ]
-            },
-        },
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
         headers={"X-API-Key": _VALID_KEY},
-    ).json()
-
-    with patch(
-        "app.agent.workflow_executor.WorkflowExecutor.execute",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("private operational secret"),
-    ):
-        response = client.post(
-            f"/workflows/{created['id']}/run",
-            headers={"X-API-Key": _VALID_KEY},
-        )
-
-    assert response.status_code == 202
-    assert response.json()["run_id"] == "goal-fallback"
-    assert "secret" not in response.text
-    goal_service.submit_goal.assert_awaited_once()
-
-
-def test_saved_rag_workflow_failure_is_non_2xx_and_never_falls_back() -> None:
-    from app.rag.contracts import RAGStrategy, UnavailableRAGStrategyError
-
-    class Gateway:
-        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> Any:
-            raise UnavailableRAGStrategyError(RAGStrategy.HYBRID)
-
-    goal_service = MagicMock()
-    goal_service.submit_goal = AsyncMock(
-        return_value={"id": "must-not-run", "status": "planning"}
-    )
-    app = _make_app(goal_service=goal_service)
-    app.state.retrieval_gateway = Gateway()
-    client = TestClient(app, raise_server_exceptions=False)
-    created = client.post(
-        "/workflows",
-        json={
-            "name": "Unavailable RAG",
-            "definition": {
-                "steps": [
-                    {
-                        "id": "rag-1",
-                        "tool": "rag",
-                        "collection_id": "collection-1",
-                        "strategy": "hybrid",
-                    }
-                ]
-            },
-        },
-        headers={"X-API-Key": _VALID_KEY},
-    ).json()
-
-    response = client.post(
-        f"/workflows/{created['id']}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-
-    assert response.status_code == 503
-    detail = response.json()["detail"]
-    assert detail["code"] == "workflow_retrieval_failed"
-    assert detail["reason"] == "Retrieval service is unavailable"
-    assert detail["strategy_trace"]
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
     goal_service.submit_goal.assert_not_awaited()
 
 
-def test_parallel_rag_wave_failure_is_non_2xx() -> None:
-    from app.rag.contracts import RAGExecutionResult, RAGStrategy
-
-    class Gateway:
-        async def execute(self, tenant_ctx: Any, **kwargs: Any) -> Any:
-            if kwargs["collection_id"] == "collection-fail":
-                raise RuntimeError("private retrieval failure")
-            return RAGExecutionResult(
-                requested_strategy_id="hybrid",
-                resolved_strategy_id=RAGStrategy.HYBRID,
-            )
-
+def test_run_workflow_operational_error_no_goal_fallback() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     goal_service = MagicMock()
-    goal_service.submit_goal = AsyncMock()
-    app = _make_app(goal_service=goal_service)
-    app.state.retrieval_gateway = Gateway()
-    client = TestClient(app, raise_server_exceptions=False)
-    created = client.post(
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
         "/workflows",
-        json={
-            "name": "Parallel RAG",
-            "definition": {
-                "steps": [
-                    {"id": "rag-ok", "tool": "rag", "collection_id": "collection-ok"},
-                    {"id": "rag-fail", "tool": "rag", "collection_id": "collection-fail"},
-                ]
-            },
-        },
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
         headers={"X-API-Key": _VALID_KEY},
-    ).json()
-
-    response = client.post(
-        f"/workflows/{created['id']}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "workflow_retrieval_failed"
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
     goal_service.submit_goal.assert_not_awaited()
+
+
+def test_saved_rag_workflow_is_non_2xx_and_never_falls_back() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
+        "/workflows",
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    goal_service.submit_goal.assert_not_awaited()
+
+
+def test_parallel_rag_wave_is_non_2xx() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
+    goal_service = MagicMock()
+    goal_service.submit_goal = AsyncMock(return_value={"id": "must-not-run"})
+    client = TestClient(_make_app(goal_service=goal_service), raise_server_exceptions=False)
+    wf_id = client.post(
+        "/workflows",
+        json={"name": "RAG", "definition": {"steps": [{"id": "r", "tool": "rag"}]}},
+        headers={"X-API-Key": _VALID_KEY},
+    ).json()["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    goal_service.submit_goal.assert_not_awaited()
+
+

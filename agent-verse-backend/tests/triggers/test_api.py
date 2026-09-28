@@ -135,7 +135,11 @@ def test_advanced_spec_fields_round_trip(client):
 
 
 def test_webhook_signature_secret_round_trips(client):
-    """The aligned webhook HMAC field name persists (was 'webhook_secret' drift)."""
+    """The aligned webhook HMAC field name persists (was 'webhook_secret' drift).
+
+    The secret itself is write-only: it is kept on the trigger (and verified on
+    delivery) but no longer echoed by GET/list — only its presence is reported.
+    """
     resp = client.post("/triggers", json={
         "spec": {
             "trigger_type": "github_webhook",
@@ -146,8 +150,12 @@ def test_webhook_signature_secret_round_trips(client):
     })
     assert resp.status_code == 201, resp.text
     spec = client.get("/triggers").json()[0]["spec"]
-    assert spec["webhook_signature_secret"] == "whsec_test_123"
+    assert "webhook_signature_secret" not in spec
+    assert spec["has_webhook_signature_secret"] is True
     assert spec["github_event_filter"] == "push"
+    store = client.app.state.schedule_store
+    (rec,) = store._data.values()
+    assert rec["spec"].webhook_signature_secret == "whsec_test_123"
 
 
 @pytest.mark.parametrize("trigger_type,extra", [

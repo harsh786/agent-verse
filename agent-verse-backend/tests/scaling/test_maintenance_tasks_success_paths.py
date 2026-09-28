@@ -271,34 +271,71 @@ class TestWarmJwksCache:
 
 
 class TestEnforceHitlSla:
-    def test_escalates_overdue_approvals(self):
+    """enforce_hitl_sla acts on approval_requests (the table the gateway writes)."""
+
+    def _sys_factory(self, session):
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return MagicMock(return_value=cm)
+
+    def test_escalates_and_auto_denies_overdue_approvals(self):
         from app.scaling.tasks import enforce_hitl_sla
 
-        session = _session(
+        session = _session_with_begin(
             execute_side_effect=[
-                MagicMock(fetchall=MagicMock(return_value=[("req-1", "t1", None), ("req-2", "t1", None)])),
-                MagicMock(),
+                MagicMock(),  # system_session: SET LOCAL row_security
+                MagicMock(fetchall=MagicMock(return_value=[("req-0", "t1")])),  # auto-deny
+                MagicMock(  # escalate
+                    fetchall=MagicMock(
+                        return_value=[("req-1", "t1", False), ("req-2", "t1", False)]
+                    )
+                ),
                 MagicMock(),
             ]
         )
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
+        with (
+            patch(
+                "app.db.session.get_system_session_factory",
+                return_value=self._sys_factory(session),
+            ),
+            patch("redis.asyncio.from_url", return_value=AsyncMock()),
+        ):
             result = enforce_hitl_sla.run()
-        assert result == {"enforced": 2}
+        assert result["auto_denied"] == 1
+        assert result["escalated"] == 2
+        assert result["enforced"] == 3
+        sqls = [str(c.args[0]) for c in session.execute.call_args_list]
+        assert any("approval_requests" in q for q in sqls)
+        assert not any("hitl_approval_requests" in q for q in sqls)
 
     def test_no_overdue_returns_zero(self):
         from app.scaling.tasks import enforce_hitl_sla
 
-        session = _session(execute_side_effect=[MagicMock(fetchall=MagicMock(return_value=[]))])
-        db_factory = _db_factory(session)
-        with patch("app.db.session.get_session_factory", return_value=db_factory):
+        empty = MagicMock(fetchall=MagicMock(return_value=[]))
+        session = _session_with_begin(
+            execute_side_effect=[MagicMock(), empty, empty, MagicMock()]
+        )
+        with (
+            patch(
+                "app.db.session.get_system_session_factory",
+                return_value=self._sys_factory(session),
+            ),
+            patch("redis.asyncio.from_url", return_value=AsyncMock()),
+        ):
             result = enforce_hitl_sla.run()
-        assert result == {"enforced": 0}
+        assert result["enforced"] == 0
 
     def test_db_error_returns_error_dict(self):
         from app.scaling.tasks import enforce_hitl_sla
 
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no db")):
+        with (
+            patch(
+                "app.db.session.get_system_session_factory",
+                side_effect=RuntimeError("no db"),
+            ),
+            patch("redis.asyncio.from_url", return_value=AsyncMock()),
+        ):
             result = enforce_hitl_sla.run()
         assert result == {"error": "no db", "enforced": 0}
 

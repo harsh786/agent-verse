@@ -30,7 +30,7 @@ class OptimizationSuggestion:
     category: str = ""  # "prompt" | "tool_selection" | "retry_strategy" | "context_size"
     # change_type drives the actual mutation in apply_suggestion():
     #   "improve_planner_prompt" | "improve_executor_prompt" | "add_domain_context"
-    #   | "increase_iterations" | "add_tool_access"
+    #   | "increase_iterations" | "decrease_iterations" | "add_tool_access"
     change_type: str = ""
     description: str = ""
     before: str = ""
@@ -72,8 +72,11 @@ class SelfOptimizer:
         # Continuous improvement: any non-perfect goal is worth a suggestion
         if avg < 0.9:
             suggestions.append(
+                # change_type was never set here, so apply_suggestion() matched no
+                # branch and "applied" nothing while reporting success.
                 OptimizationSuggestion(
                     category="prompt",
+                    change_type="improve_planner_prompt",
                     description=(
                         f"Goal scored {avg:.2f} — review planner instructions for "
                         "more precise task decomposition and completion criteria"
@@ -88,6 +91,7 @@ class SelfOptimizer:
             suggestions.append(
                 OptimizationSuggestion(
                     category="tool_selection",
+                    change_type="improve_executor_prompt",
                     description=(
                         "Tool lookup failure detected — expand available tool "
                         "context in executor prompt"
@@ -103,6 +107,7 @@ class SelfOptimizer:
             suggestions.append(
                 OptimizationSuggestion(
                     category="retry_strategy",
+                    change_type="decrease_iterations",
                     description=(
                         "Efficiency is low — reduce max_iterations or add "
                         "early-termination on repeated steps"
@@ -320,13 +325,14 @@ class SelfOptimizer:
             except Exception:
                 pass
 
-        # 2. Increase max_iterations
-        elif change_type == "increase_iterations":
+        # 2. Adjust max_iterations — `after` is "8" or prose like
+        #    "max_iterations=8 with repeated-step detection"; use its first integer.
+        elif change_type in ("increase_iterations", "decrease_iterations"):
             if agent_config is not None:
-                try:
-                    agent_config["max_iterations"] = int(suggestion.after or "5")
-                except ValueError:
-                    agent_config["max_iterations"] = 5
+                import re as _re
+
+                m = _re.search(r"\d+", suggestion.after or "")
+                agent_config["max_iterations"] = int(m.group()) if m else 5
 
         # 3. Add tool access — append connector_id
         elif change_type == "add_tool_access":

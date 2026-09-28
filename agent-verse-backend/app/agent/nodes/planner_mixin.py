@@ -16,6 +16,7 @@ from app.agent.prompts import (
     STRUCTURED_PLANNER_SYSTEM,
 )
 from app.agent.state import AgentState, GoalStatus
+from app.agent.tool_context import ToolContext
 from app.observability.metrics import (
     record_plan_duration,
 )
@@ -45,6 +46,41 @@ from app.agent.nodes._helpers import (
 
 class PlannerMixin:
     """Mixin: _node_plan."""
+
+    async def _granted_tool_names(
+        self, agent_state: AgentState, tenant_ctx: TenantContext
+    ) -> set[str] | None:
+        """Tool names this agent holds a grant for (None: grants not enforced).
+
+        Computed once per goal with the enforcer's own decision function, so what
+        the models are shown matches what the dispatch gate will allow. The
+        dispatch gate still checks every call; this only stops the models from
+        being offered tools they can never use.
+        """
+        if not getattr(self, "_enforce_grants", False):
+            return None
+        cached = agent_state.context.get(GRANTED_TOOLS_KEY)
+        if isinstance(cached, list):
+            return set(cached)
+        tool_ctx = agent_state.context.get("tool_context")
+        tools = list(getattr(tool_ctx, "tools", []) or [])
+        if not tools:
+            return None
+        from app.governance.grants import check_grant
+
+        store = _ListOnceGrantStore(getattr(self, "_grant_store", None))
+        names: set[str] = set()
+        for tool in tools:
+            decision = await check_grant(
+                store if store.inner is not None else None,
+                tenant_id=tenant_ctx.tenant_id,
+                agent_id=getattr(self, "_agent_id", None) or "",
+                tool_name=tool.name,
+            )
+            if decision.allowed:
+                names.add(tool.name)
+        agent_state.context[GRANTED_TOOLS_KEY] = sorted(names)
+        return names
 
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
@@ -187,6 +223,22 @@ class PlannerMixin:
         if rag_knowledge:
             extra_parts.append(f"[Knowledge base context]\n{rag_knowledge}")
         tool_prompt = agent_state.context.get("tool_prompt")
+        # Under grant enforcement, show the planner only the tools this agent may
+        # actually call. It used to see the whole catalogue: a real model with the
+        # answer already in its knowledge context planned RPA/browser steps, every
+        # one was denied, and the goal failed after three replans.
+        _granted = await self._granted_tool_names(agent_state, tenant_ctx)
+        _tool_ctx_full = agent_state.context.get("tool_context")
+        if _granted is not None and _tool_ctx_full is not None:
+            _visible = [t for t in getattr(_tool_ctx_full, "tools", []) if t.name in _granted]
+            tool_prompt = (
+                ToolContext(connectors=[], tools=_visible).to_prompt_block()
+                if _visible
+                else (
+                    "No tools are granted to this agent. Plan steps that answer from "
+                    "the knowledge context above and your own reasoning."
+                )
+            )
         if isinstance(tool_prompt, str) and tool_prompt:
             extra_parts.append(f"[Available connector tools]\n{tool_prompt}")
 
@@ -197,6 +249,8 @@ class PlannerMixin:
             _tool_ctx = agent_state.context.get("tool_context")
             if _tool_ctx is not None:
                 _tools = getattr(_tool_ctx, "tools", []) or []
+                if _granted is not None:
+                    _tools = [t for t in _tools if t.name in _granted]
                 if _tools:
                     from app.mcp.tool_intelligence import SchemaAwarePromptInjector
 
@@ -748,3 +802,20 @@ class PlannerMixin:
         agent_state.context[EXECUTABLE_PLAN_KEY] = list(plan)
         agent_state.context[COMPLETED_STEPS_KEY] = {}
         return {"agent_state": agent_state, "plan": plan, "iteration": iteration}
+
+
+GRANTED_TOOLS_KEY = "_granted_tool_names"
+
+
+class _ListOnceGrantStore:
+    """Grant-store view that lists an agent's grants once (one query per goal)."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self._cache: dict[tuple[str, str], Any] = {}
+
+    async def list_for_agent(self, tenant_id: str, agent_id: str) -> Any:
+        key = (tenant_id, agent_id)
+        if key not in self._cache:
+            self._cache[key] = await self.inner.list_for_agent(tenant_id, agent_id)
+        return self._cache[key]

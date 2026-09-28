@@ -171,19 +171,42 @@ function NotificationsPanel({ wf: _wf }: { wf: WEWorkflow }) {
   );
 }
 
+// Shows the workflow's REAL webhook (POST /wf-hooks/{signed-token}) fetched from
+// the backend. It used to print /api/v1/webhooks/workflows/{id} — a route that
+// does not exist — and claimed replay protection the endpoint does not have.
 function WebhookPanel({ wf }: { wf: WEWorkflow }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['workflow-engine', 'webhook', wf.id],
+    queryFn: () => workflowEngineApi.getWebhook(wf.id),
+  });
+  const url = data?.webhook_url
+    ? data.webhook_url.startsWith('http')
+      ? data.webhook_url
+      : `${window.location.origin}${data.webhook_url}`
+    : null;
   return (
     <div>
       <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Webhook Trigger</h3>
       <div className="space-y-4">
         <div className="rounded-xl border border-white/10 bg-[#0F1826]/3 p-4">
           <p className="text-xs text-[#F1F5F9]/50 mb-2">Webhook URL</p>
-          <code className="text-xs text-sky-400 font-mono break-all">
-            {`${window.location.origin}/api/v1/webhooks/workflows/${wf.id}`}
-          </code>
+          {isLoading ? (
+            <p className="text-xs text-[#F1F5F9]/30">Loading…</p>
+          ) : isError ? (
+            <p className="text-xs text-rose-400">Could not load the webhook URL.</p>
+          ) : url ? (
+            <code className="text-xs text-sky-400 font-mono break-all">{url}</code>
+          ) : (
+            <p className="text-xs text-[#F1F5F9]/40">
+              Publish this workflow to get its webhook URL.
+            </p>
+          )}
         </div>
         <p className="text-xs text-[#F1F5F9]/30">
-          HMAC-SHA256 signature verification is enforced. Replay protection window: 5 minutes.
+          POST a JSON body to this URL to start a run; the body becomes the run inputs. The
+          signed token in the URL is the credential — keep it secret. The workflow needs a
+          webhook or api trigger. Run-completion callbacks are signed with HMAC-SHA256 in the{' '}
+          <code>{data?.callback_signature_header ?? 'X-AgentVerse-Signature'}</code> header.
         </p>
       </div>
     </div>

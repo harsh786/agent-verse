@@ -15,6 +15,9 @@ from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.governance.grants import Grant
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/grants", tags=["grants"])
 
@@ -33,15 +36,31 @@ def _store(request: Request) -> Any:
     return store
 
 
-async def _audit(request: Request, tenant_id: str, event: dict[str, Any]) -> None:
-    """Best-effort append to the tamper-evident audit chain (never fails the request)."""
+async def _audit(request: Request, tenant_id: str, event: dict[str, Any]) -> bool:
+    """Append to the tamper-evident audit chain; return whether it was recorded.
+
+    ``PersistentAuditChain.append`` retries a concurrent (tenant_id, seq) PK
+    collision itself; a final failure used to vanish inside
+    ``suppress(Exception)``, silently dropping the grant's audit record. It is now
+    logged at error level and surfaced as ``audit_recorded: false`` on the
+    response (the grant mutation itself has already committed, so failing the
+    request would misreport it as not having happened).
+    """
     chain = getattr(request.app.state, "audit_chain", None)
     if chain is None:
-        return
-    import contextlib
-
-    with contextlib.suppress(Exception):
+        return False
+    try:
         await chain.append(tenant_id, event)
+    except Exception as exc:
+        logger.error(
+            "grant_audit_append_failed",
+            tenant_id=tenant_id,
+            audit_event=event.get("event"),
+            grant_id=event.get("grant_id"),
+            error=str(exc)[:200],
+        )
+        return False
+    return True
 
 
 class IssueGrantRequest(BaseModel):
@@ -83,7 +102,7 @@ async def issue_grant(body: IssueGrantRequest, request: Request) -> dict[str, An
         max_cost_usd=body.max_cost_usd,
     )
     stored = await _store(request).issue(grant)
-    await _audit(
+    audit_recorded = await _audit(
         request,
         tenant_id,
         {
@@ -94,7 +113,7 @@ async def issue_grant(body: IssueGrantRequest, request: Request) -> dict[str, An
             "grantor": stored.grantor,
         },
     )
-    return _to_dict(stored)
+    return {**_to_dict(stored), "audit_recorded": audit_recorded}
 
 
 @router.get("")
@@ -110,5 +129,7 @@ async def revoke_grant(grant_id: str, request: Request) -> dict[str, Any]:
     revoked = await _store(request).revoke(tenant_id, grant_id)
     if revoked is None:
         raise HTTPException(status_code=404, detail="grant not found")
-    await _audit(request, tenant_id, {"event": "grant_revoked", "grant_id": grant_id})
-    return _to_dict(revoked)
+    audit_recorded = await _audit(
+        request, tenant_id, {"event": "grant_revoked", "grant_id": grant_id}
+    )
+    return {**_to_dict(revoked), "audit_recorded": audit_recorded}

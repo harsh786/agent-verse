@@ -201,6 +201,11 @@ class WorkflowCompiler:
         async def node_fn(state: WorkflowState) -> dict[str, Any]:
             # Check operator pause before each step
             if state.get("paused_by"):
+                # A durable timer wait suspended the run: skip without touching
+                # the status, so it stays WAITING_TIMER (not PAUSED) and the
+                # beat wakes it; this step runs when the run is re-dispatched.
+                if str(state.get("paused_by")).startswith("wait_timer:"):
+                    return {}
                 return {"status": WorkflowRunStatus.PAUSED}
 
             # ── Cooperative run control (operator stop/pause/resume via the API) ──

@@ -97,6 +97,7 @@ class _AsyncCreateStore(ScheduleStore):
         tenant_ctx: TenantContext,
         agent_id: str = "",
         goal_template: str = "",
+        quota_plan: str | None = None,
     ) -> str:
         self.events.append("async-create-start")
         await asyncio.sleep(0)

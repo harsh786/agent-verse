@@ -11,6 +11,8 @@ At planning time, the agent recalls similar past episodes to inform its approach
 
 from __future__ import annotations
 
+import json
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -46,6 +48,61 @@ class Episode:
             f"Actions: {self.action_summary[:150]}\n"
             f"Lesson: {self.lessons[:200]}"
         )
+
+
+#: Most-recent/best episodes scored per recall. ``episodic_memories.embedding``
+#: is JSONB (migration 0089), not a pgvector column, so similarity is computed
+#: in Python over this candidate window rather than by an ANN index.
+_CANDIDATE_WINDOW = 200
+
+
+def _parse_embedding(raw: Any) -> list[float] | None:
+    """JSONB embedding → floats (asyncpg may hand JSONB back as a str)."""
+    if raw is None:
+        return None
+    try:
+        vec = json.loads(raw) if isinstance(raw, str | bytes) else raw
+        if isinstance(vec, list) and vec:
+            return [float(x) for x in vec]
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float | None:
+    if len(a) != len(b):
+        return None  # different embedding model/dimension — not comparable
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0.0 or nb == 0.0:
+        return None
+    return dot / (na * nb)
+
+
+def _rank(
+    episodes: list[Episode], goal: str, query_vec: list[float] | None, limit: int
+) -> list[Episode]:
+    """Rank by embedding cosine when both sides have a comparable vector, else by
+    keyword overlap (fraction of query words present), quality as tiebreak.
+
+    Recall used to be keyword overlap only, although every episode's goal was
+    embedded and the vector stored — semantically similar goals phrased with
+    different words were never recalled.
+    """
+    words = set(goal.lower().split())
+
+    def _relevance(ep: Episode) -> float:
+        if query_vec is not None and ep.embedding:
+            sim = _cosine(query_vec, ep.embedding)
+            if sim is not None:
+                return sim
+        if not words:
+            return 0.0
+        return sum(1 for w in words if w in ep.goal_text.lower()) / len(words)
+
+    scored = sorted(episodes, key=lambda e: (-_relevance(e), -e.quality_score))
+    return scored[:limit]
 
 
 class EpisodicMemoryStore:
@@ -173,6 +230,20 @@ class EpisodicMemoryStore:
                 except Exception:
                     pass
 
+    async def _embed_query(self, goal: str) -> list[float] | None:
+        if self._embedder is None:
+            return None
+        try:
+            from app.providers.base import EmbedRequest
+
+            resp = await self._embedder.embed(EmbedRequest(texts=[goal[:200]]))
+            return _parse_embedding(resp.embeddings[0]) if resp.embeddings else None
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("episodic_query_embed_failed", error=str(exc)[:200])
+            return None
+
     async def recall(
         self,
         *,
@@ -181,7 +252,12 @@ class EpisodicMemoryStore:
         limit: int = 3,
         outcome_filter: str | None = None,
     ) -> list[Episode]:
-        """Recall similar past episodes for a given goal."""
+        """Recall similar past episodes for a given goal.
+
+        Semantic (embedding cosine) when an embedder is wired and episodes carry
+        a stored vector; keyword overlap otherwise.
+        """
+        query_vec = await self._embed_query(goal)
         # Try DB first if available
         if self._db is not None:
             try:
@@ -190,25 +266,26 @@ class EpisodicMemoryStore:
                     tenant_id=tenant_id,
                     limit=limit,
                     outcome_filter=outcome_filter,
+                    query_vec=query_vec,
                 )
             except Exception:
                 pass
 
-        # Fall back to in-memory cache (keyword match)
+        # Fall back to in-memory cache
         episodes = self._cache.get(tenant_id, [])
         if outcome_filter:
             episodes = [e for e in episodes if e.outcome == outcome_filter]
-        # Simple keyword relevance
-        query_words = set(goal.lower().split())
-        scored = [(sum(1 for w in query_words if w in e.goal_text.lower()), e) for e in episodes]
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [e for _, e in scored[:limit]]
+        return _rank(episodes, goal, query_vec, limit)
 
     async def _recall_from_db(
-        self, *, goal: str, tenant_id: str, limit: int, outcome_filter: str | None
+        self,
+        *,
+        goal: str,
+        tenant_id: str,
+        limit: int,
+        outcome_filter: str | None,
+        query_vec: list[float] | None = None,
     ) -> list[Episode]:
-        import json
-
         from sqlalchemy import text
 
         where_outcome = "AND outcome = :outcome" if outcome_filter else ""
@@ -224,7 +301,7 @@ class EpisodicMemoryStore:
                 await session.execute(
                     text(f"""
                 SELECT id, goal_id, goal_text, action_summary, outcome,
-                       lessons, quality_score, steps_count, tools_used
+                       lessons, quality_score, steps_count, tools_used, embedding
                 FROM episodic_memories
                 WHERE tenant_id = :tenant_id {where_outcome}
                 ORDER BY quality_score DESC, created_at DESC
@@ -232,16 +309,16 @@ class EpisodicMemoryStore:
             """),
                     {
                         "tenant_id": tenant_id,
-                        "limit": limit * 3,
+                        # Rank over a candidate window, not just the top
+                        # limit*3 by quality — a relevant episode must be able
+                        # to outrank a merely high-quality one.
+                        "limit": max(limit * 3, _CANDIDATE_WINDOW),
                         **({"outcome": outcome_filter} if outcome_filter else {}),
                     },
                 )
             ).fetchall()
-        # Keyword filter
-        query_words = set(goal.lower().split())
-        episodes = []
-        for row in rows:
-            ep = Episode(
+        episodes = [
+            Episode(
                 episode_id=str(row[0]),
                 tenant_id=tenant_id,
                 goal_id=str(row[1]),
@@ -252,11 +329,11 @@ class EpisodicMemoryStore:
                 quality_score=float(row[6]),
                 steps_count=int(row[7]),
                 tools_used=json.loads(row[8]) if row[8] else [],
+                embedding=_parse_embedding(row[9]) if len(row) > 9 else None,
             )
-            relevance = sum(1 for w in query_words if w in ep.goal_text.lower())
-            episodes.append((relevance, ep))
-        episodes.sort(key=lambda x: (-x[0], -x[1].quality_score))
-        return [e for _, e in episodes[:limit]]
+            for row in rows
+        ]
+        return _rank(episodes, goal, query_vec, limit)
 
     def format_for_context(self, episodes: list[Episode]) -> str:
         """Format episodes as a context block for planner prompt."""

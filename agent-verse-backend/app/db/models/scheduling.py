@@ -60,6 +60,19 @@ class Schedule(Base):
     # indexes are available.
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Webhook signing secrets, Fernet-encrypted (app.providers.vault) — migration
+    # b3c4d5e6f7a9. Previously there was no column at all, so a trigger's secret
+    # lived only in one process's memory and a restart made it accept unsigned
+    # deliveries. The previous secret stays valid until the grace deadline.
+    webhook_signature_secret_enc: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    webhook_signature_secret_prev_enc: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    webhook_secret_grace_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

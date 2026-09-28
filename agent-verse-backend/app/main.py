@@ -1511,6 +1511,12 @@ def create_app(
             # Wire DB into CostTracker for ledger persistence + historical queries
             _cost_tracker._db = db_factory
             app.state.cost_tracker = _cost_tracker
+            # Enforce each tenant's configured budget_configs row (PUT /costs/budgets)
+            # instead of the hard-coded BudgetConfig() defaults.
+            for _cc_name in ("redis_cost_controller", "cost_controller"):
+                _cc = getattr(app.state, _cc_name, None)
+                if _cc is not None and hasattr(_cc, "set_budget_db"):
+                    _cc.set_budget_db(db_factory)
 
             # Wire AgentIdentityService with DB session factory
             _agent_identity_svc.set_db(db_factory)
@@ -1533,6 +1539,9 @@ def create_app(
             _schedule_store_db = ScheduleStoreClass(
                 db_session_factory=db_factory,
                 redis=redis_for_runtime,
+                # Startup load is cross-tenant: it must use the maintenance role
+                # (under the NOBYPASSRLS app role it used to load nothing).
+                system_db_session_factory=app.state.system_db_session_factory,
             )
             _knowledge_store_db = KnowledgeStoreClass(db_session_factory=db_factory)
             _collab_store_db = CollaborationStore(db_session_factory=db_factory)
@@ -1634,6 +1643,10 @@ def create_app(
                     provider=_app_provider,
                     ocr_engine=_WFOcrEngine(),
                     knowledge_store=getattr(app.state, "knowledge_store", None),
+                    # Durable timer waits: woken by the Celery beat task
+                    # ``workflow.wake_due_timer_waits`` (this runner dispatches
+                    # via Celery), so a long wait never holds a slot.
+                    durable_timer_waits=True,
                 )
                 _wf_runner_db = _WFRunner(
                     compiler=_wf_compiler_db,

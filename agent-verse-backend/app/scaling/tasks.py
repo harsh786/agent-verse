@@ -11,6 +11,7 @@ import re
 import signal as _signal
 import threading
 import time
+import uuid
 from datetime import UTC
 from typing import Any, cast
 
@@ -1712,6 +1713,9 @@ def run_goal(
                     )
                 except Exception:
                     pass
+            # Workers enforce the tenant's configured budget_configs row too.
+            if db_factory is not None:
+                _cost.set_budget_db(db_factory)
 
             # Build a model router matched to the provider type so the graph
             # uses the correct model names (e.g. gpt-4-turbo not claude-opus-4-8).
@@ -2499,6 +2503,11 @@ def run_scheduled_goal(
     goal_template: str,
     agent_id: str = "",
     fire_instance_id: str = "",
+    trigger_type: str = "cron",
+    condition: str = "",
+    max_firings_per_hour: int = 0,
+    tenant_plan: str = "",
+    event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute a scheduled goal trigger.
 
@@ -2506,6 +2515,13 @@ def run_scheduled_goal(
     dedup / rate-limit / circuit-breaker / condition governance as every other
     trigger type, instead of enqueueing ``run_goal`` directly. The dispatcher
     creates the goal via ``GoalService.create_goal``.
+
+    ``trigger_type`` / ``condition`` / ``max_firings_per_hour`` / ``tenant_plan``
+    used to be dropped here (every fire was dispatched as a plain ``cron`` with
+    no condition), and the beat's polling families (file_drop, rss_feed,
+    api_poll, db_row_change, alert webhooks) bypassed this task entirely.
+    ``event_payload`` carries what the poll observed (file, entry, value, alert)
+    so the condition and ``{{payload.*}}`` template see it.
     """
     logger.info("Firing schedule %s for tenant %s", schedule_id, tenant_id)
     try:
@@ -2516,6 +2532,11 @@ def run_scheduled_goal(
                 goal_template,
                 agent_id,
                 fire_instance_id,
+                trigger_type=trigger_type,
+                condition=condition,
+                max_firings_per_hour=max_firings_per_hour,
+                tenant_plan=tenant_plan,
+                event_payload=event_payload,
             )
         )
     except Exception as exc:
@@ -2579,17 +2600,98 @@ def _dispatch_due_schedule(
     # which routes the fire through the governed TriggerDispatcher. via_scheduled_task
     # is retained for callers/telemetry that distinguish the two schedule sources.
     _ = via_scheduled_task
-    run_scheduled_goal.apply_async(
-        kwargs={
-            "schedule_id": schedule_key,
-            "tenant_id": goal_kwargs["tenant_id"],
-            "goal_template": goal_kwargs["goal_template"],
-            "agent_id": str(goal_kwargs.get("agent_id") or ""),
-            "fire_instance_id": fire_instance_id,
-        },
-        queue="schedules",
+    _enqueue_governed_fire(
+        schedule_key,
+        sched,
+        goal_template=str(goal_kwargs["goal_template"]),
+        tenant_id=str(goal_kwargs["tenant_id"]),
+        agent_id=str(goal_kwargs.get("agent_id") or ""),
+        fire_instance_id=fire_instance_id,
     )
     return goal_kwargs
+
+
+def _enqueue_governed_fire(
+    schedule_key: str,
+    sched: dict[str, Any],
+    *,
+    goal_template: str,
+    tenant_id: str,
+    agent_id: str,
+    fire_instance_id: str,
+    event_payload: dict[str, Any] | None = None,
+) -> None:
+    """Enqueue ``run_scheduled_goal`` — the ONE governed path for beat fires.
+
+    Carries the schedule's real trigger type, condition, rate cap and plan so
+    the dispatcher applies them (they used to be dropped), plus the observed
+    ``event_payload`` for the polling/alert families.
+    """
+    kwargs: dict[str, Any] = {
+        "schedule_id": schedule_key,
+        "tenant_id": tenant_id,
+        "goal_template": goal_template,
+        "agent_id": agent_id,
+        "fire_instance_id": fire_instance_id,
+        "trigger_type": str(sched.get("trigger_type") or "cron"),
+        "condition": str(sched.get("condition") or ""),
+        "max_firings_per_hour": int(sched.get("max_firings_per_hour") or 0),
+        "tenant_plan": str(sched.get("tenant_plan") or ""),
+    }
+    if event_payload is not None:
+        kwargs["event_payload"] = event_payload
+    run_scheduled_goal.apply_async(kwargs=kwargs, queue="schedules")
+
+
+def _dispatch_beat_event_fire(
+    schedule_key: str,
+    sched: dict[str, Any],
+    *,
+    goal_text: str,
+    fire_instance_id: str,
+    event_payload: dict[str, Any],
+) -> bool:
+    """Route a polling/alert beat fire (file_drop, rss_feed, api_poll,
+    db_row_change, alertmanager/datadog/pagerduty) through the dispatcher.
+
+    These branches used to call ``run_goal.apply_async`` directly, bypassing
+    the TriggerDispatcher: no durable dedup, no rate limit / circuit breaker /
+    bulkhead, the schedule's condition was ignored, and no ``trigger_events``
+    audit row was written (so schedule history never showed them). The
+    ``fire_instance_id`` (file name / entry id / observed value) becomes the
+    dispatcher's idempotency input, so the same file or entry fires once even
+    across replicas and after the Redis dedup window expires.
+    """
+    tenant_id = str(sched.get("tenant_id") or "")
+    if not tenant_id or not goal_text:
+        return False
+    _enqueue_governed_fire(
+        schedule_key,
+        sched,
+        goal_template=goal_text,
+        tenant_id=tenant_id,
+        agent_id=str(sched.get("agent_id") or ""),
+        fire_instance_id=fire_instance_id,
+        event_payload=event_payload,
+    )
+    return True
+
+
+def _bare_schedule_id(schedule_key: str) -> str:
+    """``schedule:{tenant}:{id}`` → ``{id}`` (other keys are returned as-is).
+
+    The beat used the full Redis key as the dispatcher's ``trigger_id``. That is
+    74 characters, but ``trigger_events.trigger_id`` is VARCHAR(36): every beat
+    fire's audit INSERT failed (swallowed as ``persist_event_failed``), so beat
+    fires had no audit trail, the durable post-TTL dedup never saw them, and
+    ``GET /triggers/{id}/events`` / schedule history (keyed by the bare id)
+    could not find them. The bare id also matches the API fire path's
+    ``trigger_id``, so rate limits / circuit breakers are shared per trigger.
+    """
+    parts = schedule_key.split(":", 2)
+    if len(parts) == 3 and parts[0] == "schedule" and parts[2]:
+        return parts[2]
+    return schedule_key
 
 
 def _build_scheduled_trigger_spec(schedule_key: str, sched: dict[str, Any]) -> Any:
@@ -2611,7 +2713,7 @@ def _build_scheduled_trigger_spec(schedule_key: str, sched: dict[str, Any]) -> A
         watch_agent_id=str(sched.get("agent_id") or ""),
     )
     # trigger_id is an instance attribute (not a dataclass field) — see dispatcher.
-    spec.trigger_id = schedule_key  # type: ignore[attr-defined]
+    spec.trigger_id = _bare_schedule_id(schedule_key)  # type: ignore[attr-defined]
     return spec
 
 
@@ -2666,11 +2768,20 @@ async def _dispatch_scheduled_via_dispatcher(
             redis=redis,
         )
 
+    # The observed event (file / entry / polled value / alert) is the payload the
+    # condition and ``{{payload.*}}`` template evaluate; the schedule's own goal
+    # fields win on key collisions so an external payload cannot rewrite them.
+    event_payload = sched.get("event_payload")
+    payload: dict[str, Any] = {**event_payload} if isinstance(event_payload, dict) else {}
+    payload.update(goal_kwargs)
     return await dispatcher.dispatch(
         spec,
-        dict(goal_kwargs),
+        payload,
         tenant_ctx,
         scheduled_fire_time=fire_instance_id,
+        # Data-family triggers (file_drop, rss_feed, db_row_change) derive their
+        # idempotency key from txn_id: the file / entry / count being fired on.
+        txn_id=fire_instance_id,
     )
 
 
@@ -2717,16 +2828,27 @@ async def _run_scheduled_goal_governed(
     goal_template: str,
     agent_id: str,
     fire_instance_id: str,
+    *,
+    trigger_type: str = "cron",
+    condition: str = "",
+    max_firings_per_hour: int = 0,
+    tenant_plan: str = "",
+    event_payload: dict[str, Any] | None = None,
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
     goal_service, db_factory = _build_worker_goal_service()
     redis = _worker_async_redis()
-    sched = {
-        "trigger_type": "cron",
+    sched: dict[str, Any] = {
+        "trigger_type": trigger_type or "cron",
         "goal_template": goal_template,
         "tenant_id": tenant_id,
         "agent_id": agent_id,
+        "condition": condition,
+        "max_firings_per_hour": max_firings_per_hour,
+        "tenant_plan": tenant_plan,
     }
+    if event_payload is not None:
+        sched["event_payload"] = event_payload
     try:
         return await _dispatch_scheduled_via_dispatcher(
             schedule_id,
@@ -2809,6 +2931,42 @@ async def _build_goal_kwargs_for_alert(
             error=str(exc)[:80],
         )
         return None
+
+
+def _consume_alert_payload(r: Any, cache_key: str) -> dict[str, Any] | None:
+    """Atomically take (read + delete) a cached alert payload, or None.
+
+    ``GETDEL`` makes exactly one beat replica the consumer. On a Redis without
+    GETDEL (< 6.2) it falls back to GET then DEL, where only the caller whose
+    DEL actually removed the key (returns 1) consumes it.
+    """
+    import json as _json
+
+    if r is None:
+        return None
+    raw: Any
+    try:
+        raw = r.getdel(cache_key)
+    except Exception:
+        try:
+            raw = r.get(cache_key)
+            if raw is None or int(r.delete(cache_key) or 0) != 1:
+                return None
+        except Exception as exc:
+            logger.warning("alert_payload_consume_failed key=%s: %s", cache_key, exc)
+            return None
+    if isinstance(raw, bytes):
+        raw = raw.decode()
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        data = _json.loads(raw)
+    except ValueError:
+        logger.warning("alert_payload_not_json key=%s", cache_key)
+        return None
+    if not isinstance(data, dict):
+        data = {"data": data}
+    return data or None
 
 
 def _schedule_key(tenant_id: str, schedule_id: str) -> str:
@@ -3861,21 +4019,15 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 # goal id differed too and nothing downstream
                                 # could dedup them — the same recurring-key bug
                                 # already fixed for interval schedules.
-                                _goal_id_fd = _scheduled_goal_id(
+                                # Governed dispatch (was a direct run_goal).
+                                if _dispatch_beat_event_fire(
                                     key,
+                                    sched,
+                                    goal_text=str(_alert_kw["goal"]),
                                     fire_instance_id=f"filedrop:{_file_name}",
-                                )
-                                run_goal.apply_async(
-                                    kwargs={
-                                        "goal_id": _goal_id_fd,
-                                        "tenant_id": _tenant_id_fd,
-                                        "goal_text": _alert_kw["goal"],
-                                        "priority": _alert_kw["priority"],
-                                        "agent_id": str(_alert_kw.get("agent_id") or ""),
-                                    },
-                                    queue="schedules",
-                                )
-                                fired += 1
+                                    event_payload=_file_alert,
+                                ):
+                                    fired += 1
 
                         if new_files:
                             if r is not None:
@@ -3962,20 +4114,14 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                         tenant_ctx=_tenant_ctx_rss,
                                     )
                                 )
-                                if _rss_kw:
-                                    _rss_goal_id = _scheduled_goal_id(
-                                        key, fire_instance_id=f"rss:{_entry.entry_id}"
-                                    )
-                                    run_goal.apply_async(
-                                        kwargs={
-                                            "goal_id": _rss_goal_id,
-                                            "tenant_id": _tenant_id_rss,
-                                            "goal_text": _rss_kw["goal"],
-                                            "priority": _rss_kw["priority"],
-                                            "agent_id": str(_rss_kw.get("agent_id") or ""),
-                                        },
-                                        queue="schedules",
-                                    )
+                                # Governed dispatch (was a direct run_goal).
+                                if _rss_kw and _dispatch_beat_event_fire(
+                                    key,
+                                    sched,
+                                    goal_text=str(_rss_kw["goal"]),
+                                    fire_instance_id=f"rss:{_entry.entry_id}",
+                                    event_payload=_rss_alert,
+                                ):
                                     fired += 1
 
                             if entries and r is not None:
@@ -4066,20 +4212,14 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                             tenant_ctx=_tc_ap,
                                         )
                                     )
-                                    if _ap_kw:
-                                        _ap_goal_id = _scheduled_goal_id(
-                                            key, fire_instance_id=f"apipoll:{current}"
-                                        )
-                                        run_goal.apply_async(
-                                            kwargs={
-                                                "goal_id": _ap_goal_id,
-                                                "tenant_id": _tenant_id_ap,
-                                                "goal_text": _ap_kw["goal"],
-                                                "priority": _ap_kw["priority"],
-                                                "agent_id": str(_ap_kw.get("agent_id") or ""),
-                                            },
-                                            queue="schedules",
-                                        )
+                                    # Governed dispatch (was a direct run_goal).
+                                    if _ap_kw and _dispatch_beat_event_fire(
+                                        key,
+                                        sched,
+                                        goal_text=str(_ap_kw["goal"]),
+                                        fire_instance_id=f"apipoll:{current}",
+                                        event_payload=_ap_alert,
+                                    ):
                                         fired += 1
                                         logger.info(
                                             "api_poll_trigger_fired",
@@ -4143,20 +4283,14 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                             tenant_ctx=_tc_db,
                                         )
                                     )
-                                    if _db_kw:
-                                        _db_goal_id = _scheduled_goal_id(
-                                            key, fire_instance_id=f"dbrow:{current}"
-                                        )
-                                        run_goal.apply_async(
-                                            kwargs={
-                                                "goal_id": _db_goal_id,
-                                                "tenant_id": _tenant_id_db,
-                                                "goal_text": _db_kw["goal"],
-                                                "priority": _db_kw["priority"],
-                                                "agent_id": str(_db_kw.get("agent_id") or ""),
-                                            },
-                                            queue="schedules",
-                                        )
+                                    # Governed dispatch (was a direct run_goal).
+                                    if _db_kw and _dispatch_beat_event_fire(
+                                        key,
+                                        sched,
+                                        goal_text=str(_db_kw["goal"]),
+                                        fire_instance_id=f"dbrow:{current}",
+                                        event_payload=_db_alert,
+                                    ):
                                         fired += 1
                                         logger.info(
                                             "db_row_change_trigger_fired",
@@ -4173,49 +4307,17 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
                 # ── External alert triggers (Alertmanager / Datadog / PagerDuty) ─
                 elif trigger_type in ("alertmanager", "datadog", "pagerduty"):
-                    # External alert triggers: read payload from Redis webhook cache
-                    # (set by POST /webhooks/alerts/{type}), fall back to schedule
-                    # metadata; dispatch a goal with alert context.
+                    # External alert triggers fire ONLY on a real alert payload
+                    # cached by POST /webhooks/alerts/{type}, consumed exactly once.
+                    #
+                    # This used to synthesize a fake alert ({"status": "firing",
+                    # "alertname": "PrometheusAlert", ...}) whenever no payload was
+                    # cached — i.e. on EVERY 60s beat tick — so each alert trigger
+                    # launched an autonomous "investigate and resolve" goal every
+                    # minute for an incident that never happened. The GET + DELETE
+                    # consume was also non-atomic, so two beat replicas could both
+                    # read (and both fire) the same real alert.
                     try:
-                        import json as _json_alert
-
-                        alert_data: dict[str, Any] = {}
-                        # Tenant-scoped (matches POST /webhooks/alerts/{type}).
-                        alert_cache_key = (
-                            f"alert_payload:{sched.get('tenant_id') or ''}:{trigger_type}:"
-                            f"{sched.get('schedule_id', key)}"
-                        )
-                        if r is not None:
-                            try:
-                                _cached = r.get(alert_cache_key)
-                                if _cached:
-                                    alert_data = _json_alert.loads(_cached)
-                                    r.delete(alert_cache_key)
-                            except Exception:
-                                pass
-
-                        if not alert_data:
-                            alert_data = {
-                                "trigger_type": trigger_type,
-                                "schedule_id": sched.get("schedule_id", key),
-                                "fired_at": now.isoformat(),
-                                "source": trigger_type,
-                                "status": "firing",
-                            }
-                            if trigger_type == "alertmanager":
-                                alert_data["alertname"] = sched.get("alert_name", "PrometheusAlert")
-                                alert_data["severity"] = sched.get("severity", "warning")
-                            elif trigger_type == "datadog":
-                                alert_data["monitor_name"] = sched.get(
-                                    "monitor_name", "DatadogMonitor"
-                                )
-                                alert_data["status"] = sched.get("alert_status", "triggered")
-                            elif trigger_type == "pagerduty":
-                                alert_data["incident_title"] = sched.get(
-                                    "incident_title", "PagerDutyIncident"
-                                )
-                                alert_data["urgency"] = sched.get("urgency", "high")
-
                         _tenant_id_alert = str(sched.get("tenant_id") or "")
                         if not _tenant_id_alert:
                             logger.warning(
@@ -4224,49 +4326,50 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                 key=key,
                             )
                         else:
-                            from app.tenancy.context import (
-                                PlanTier as _PT_alert,
+                            # Tenant-scoped (matches POST /webhooks/alerts/{type}).
+                            alert_cache_key = (
+                                f"alert_payload:{_tenant_id_alert}:{trigger_type}:"
+                                f"{sched.get('schedule_id', key)}"
                             )
-                            from app.tenancy.context import (
-                                TenantContext as _TC_alert,
-                            )
+                            alert_data = _consume_alert_payload(r, alert_cache_key)
+                            if alert_data is not None:
+                                from app.tenancy.context import (
+                                    PlanTier as _PT_alert,
+                                )
+                                from app.tenancy.context import (
+                                    TenantContext as _TC_alert,
+                                )
 
-                            _tenant_ctx_alert = _TC_alert(
-                                tenant_id=_tenant_id_alert,
-                                plan=_PT_alert.PROFESSIONAL,
-                                api_key_id="trigger-alert",
-                            )
-                            _alert_kwargs = _run_async(
-                                _build_goal_kwargs_for_alert(
-                                    sched,
-                                    trigger_type=trigger_type,
-                                    alert_context=alert_data,
-                                    goal_service=None,
-                                    tenant_ctx=_tenant_ctx_alert,
-                                    default_priority="high",
+                                _tenant_ctx_alert = _TC_alert(
+                                    tenant_id=_tenant_id_alert,
+                                    plan=_PT_alert.PROFESSIONAL,
+                                    api_key_id="trigger-alert",
                                 )
-                            )
-                            if _alert_kwargs:
-                                _goal_id_alert = _scheduled_goal_id(
+                                _alert_kwargs = _run_async(
+                                    _build_goal_kwargs_for_alert(
+                                        sched,
+                                        trigger_type=trigger_type,
+                                        alert_context=alert_data,
+                                        goal_service=None,
+                                        tenant_ctx=_tenant_ctx_alert,
+                                        default_priority="high",
+                                    )
+                                )
+                                # Governed dispatch (was a direct run_goal). Each
+                                # consumed payload is its own firing.
+                                if _alert_kwargs and _dispatch_beat_event_fire(
                                     key,
-                                    fire_instance_id=f"{trigger_type}:{now.isoformat()}",
-                                )
-                                run_goal.apply_async(
-                                    kwargs={
-                                        "goal_id": _goal_id_alert,
-                                        "tenant_id": _tenant_id_alert,
-                                        "goal_text": _alert_kwargs["goal"],
-                                        "priority": _alert_kwargs["priority"],
-                                        "agent_id": str(_alert_kwargs.get("agent_id") or ""),
-                                    },
-                                    queue="schedules",
-                                )
-                                fired += 1
-                                logger.info(
-                                    "external_alert_trigger_fired",
-                                    trigger_type=trigger_type,
-                                    schedule_id=sched.get("schedule_id", key),
-                                )
+                                    sched,
+                                    goal_text=str(_alert_kwargs["goal"]),
+                                    fire_instance_id=f"{trigger_type}:{uuid.uuid4().hex}",
+                                    event_payload=alert_data,
+                                ):
+                                    fired += 1
+                                    logger.info(
+                                        "external_alert_trigger_fired",
+                                        trigger_type=trigger_type,
+                                        schedule_id=sched.get("schedule_id", key),
+                                    )
                     except Exception as _alert_exc:
                         logger.warning(
                             "external_alert_trigger_error",
@@ -5169,43 +5272,38 @@ def create_guardrail_partitions() -> dict[str, Any]:
 
 @celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
 def enforce_hitl_sla() -> dict:
-    """Check pending HITL approvals past SLA deadline and escalate or auto-resolve."""
+    """Escalate / auto-deny pending HITL approvals that breached their SLA.
+
+    Acts on ``approval_requests`` (the table the HITL gateway writes) joined to
+    ``approval_sla_configs`` — see app/governance/hitl_sla.py. It used to scan
+    ``hitl_approval_requests``, which nothing writes, so it never did anything.
+    Cross-tenant beat scan → maintenance (BYPASSRLS) session.
+    """
 
     async def _run() -> dict:
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
+        from app.governance.hitl_sla import enforce_sla
+
+        redis = None
         try:
-            from sqlalchemy import text as _t
+            import redis.asyncio as aioredis
 
-            from app.db.session import get_session_factory as _get_fresh_db
-
-            db = _get_fresh_db()
-            enforced = 0
-            async with db() as session:
-                overdue = (
-                    await session.execute(
-                        _t("""
-                            SELECT id, tenant_id, sla_deadline
-                            FROM hitl_approval_requests
-                            WHERE status = 'pending'
-                              AND sla_deadline IS NOT NULL
-                              AND sla_deadline < NOW()
-                            LIMIT 100
-                        """)
-                    )
-                ).fetchall()
-                for row in overdue:
-                    await session.execute(
-                        _t("""
-                            UPDATE hitl_approval_requests
-                            SET status = 'sla_escalated', resolved_at = NOW()
-                            WHERE id = :id
-                        """),
-                        {"id": row[0]},
-                    )
-                    enforced += 1
-                await session.commit()
-            return {"enforced": enforced}
+            redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         except Exception as exc:
+            logger.warning("enforce_hitl_sla_redis_unavailable: %s", exc)
+        try:
+            db = get_system_session_factory()
+            async with db() as session, session.begin(), system_session(session):
+                result = await enforce_sla(session, redis=redis)
+            return {**result, "enforced": result["auto_denied"] + result["escalated"]}
+        except Exception as exc:
+            logger.error("enforce_hitl_sla_failed: %s", exc)
             return {"error": str(exc), "enforced": 0}
+        finally:
+            if redis is not None:
+                with contextlib.suppress(Exception):
+                    await redis.aclose()
 
     return _run_async(_run())
 

@@ -519,44 +519,53 @@ _audit_v3 = AuditV3()
 
 
 # ---------------------------------------------------------------------------
-# Backward-compat shims for code migrating from audit_v2
-# These allow `from app.governance.audit_v3 import AuditWriter, AuditFlusher,
-# HashChainVerifier` so callers can switch import paths without changing logic.
+# Persistent chain: WAL writer/flusher + verifier over ``audit_events``
 # ---------------------------------------------------------------------------
+# These used to be no-op "compat shims": AuditWriter.write discarded events,
+# AuditFlusher.run slept forever (while the lifespan spawned it as if it were the
+# flusher) and HashChainVerifier queried v3 columns that audit_events does not
+# have, swallowed the error and answered verified=True. The durable, per-tenant
+# hash chain that actually exists is the audit_v2 WAL pipeline (Redis WAL ->
+# AuditFlusher -> audit_events with prev_hash/event_hash, per-tenant RLS), so
+# the v3 names now ARE those implementations and the verifier checks that chain.
 
 
-class AuditWriter:
-    """Compat shim: v3 writes directly — no Redis WAL needed."""
+def _load_v2() -> Any:
+    import warnings
 
-    def __init__(self, redis: Any = None) -> None:
-        self._redis = redis
+    with warnings.catch_warnings():
+        # audit_v2 warns on import that callers should use audit_v3; this module
+        # is the sanctioned re-export, so the warning is noise here.
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from app.governance import audit_v2 as _v2
 
-    async def write(self, event: dict[str, Any], *, tenant_id: str = "") -> None:
-        """No-op: v3 persists synchronously in AuditV3.append()."""
+    return _v2
 
 
-class AuditFlusher:
-    """Compat shim: v3 has no WAL to flush — records are written directly."""
+_v2_module = _load_v2()
+AuditWriter = _v2_module.AuditWriter
+AuditFlusher = _v2_module.AuditFlusher
 
-    def __init__(self, redis: Any = None, db_factory: Any = None) -> None:
-        self._redis = redis
-        self._db = db_factory
 
-    async def run(self) -> None:
-        """Long-running no-op so the background task doesn't crash."""
-        import asyncio
-
-        while True:
-            await asyncio.sleep(3600)
-
-    async def flush(self) -> int:
-        """No-op — v3 does not buffer in Redis WAL."""
-        return 0
+class AuditChainVerificationError(RuntimeError):
+    """The chain could not be read, so integrity is UNKNOWN (never "verified")."""
 
 
 class HashChainVerifier:
-    """Compat shim wrapping AuditV3.verify_chain() (in-memory) with a DB fallback
-    that queries audit_events using the v3 schema columns."""
+    """Verify the tenant's ``audit_events`` hash chain (written by AuditFlusher).
+
+    Each row's ``event_hash`` is recomputed from its content and stored
+    ``prev_hash``; the rows must then form ONE unbroken linked list:
+
+    * a modified row fails its own hash recomputation;
+    * a deleted row leaves its successor pointing at a hash that no longer exists;
+    * a fork (two rows claiming the same predecessor) is reported too.
+
+    A window that starts mid-chain is anchored on the predecessor hash, which must
+    exist before ``from_date``. Any read error raises
+    :class:`AuditChainVerificationError` — an unreadable chain is never reported
+    as verified.
+    """
 
     async def verify(
         self,
@@ -565,75 +574,117 @@ class HashChainVerifier:
         from_date: Any,
         to_date: Any,
     ) -> dict[str, Any]:
-        # Try DB query with v3 columns first
+        from sqlalchemy import text
+
+        audit_event_cls = _v2_module.AuditEvent
         try:
-            from sqlalchemy import text
-
-            rows_result = await db.execute(
-                text(
-                    """
-                    SELECT id, goal_id, action, tool_name, tool_args_hash,
-                           actor, actor_ip, delegation_chain_hash, previous_hash,
-                           entry_hash, event_timestamp, metadata_hash, sequence_num
-                    FROM audit_events
-                    WHERE tenant_id = :tenant_id
-                      AND event_timestamp BETWEEN :from_date AND :to_date
-                    ORDER BY sequence_num ASC NULLS LAST, event_timestamp ASC
-                    """
-                ),
-                {
-                    "tenant_id": tenant_id,
-                    "from_date": from_date,
-                    "to_date": to_date,
-                },
+            # audit_events is FORCE ROW LEVEL SECURITY: without the tenant GUC a
+            # NOBYPASSRLS session sees zero rows and "verifies" an empty chain.
+            await db.execute(
+                text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
             )
-            rows = rows_result.fetchall()
-        except Exception:
-            rows = []
+            rows = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT id, event_type, resource_id, action, status,
+                               created_at, prev_hash, event_hash
+                        FROM audit_events
+                        WHERE tenant_id = :tenant_id
+                          AND created_at BETWEEN :from_date AND :to_date
+                        ORDER BY created_at ASC, id ASC
+                        """
+                    ),
+                    {"tenant_id": tenant_id, "from_date": from_date, "to_date": to_date},
+                )
+            ).fetchall()
+        except Exception as exc:
+            logger.error("audit_chain_verify_read_failed", tenant_id=tenant_id, error=str(exc))
+            raise AuditChainVerificationError("audit chain could not be read") from exc
 
-        if not rows:
-            # Fall back to in-memory verify
-            result = _audit_v3.verify_chain(tenant_id)
+        def _broken(row_id: str | None, reason: str, verified: int) -> dict[str, Any]:
             return {
-                "verified": result.get("valid", True),
-                "verified_events": result.get("records_checked", 0),
-                "broken_chain_at": result.get("broken_at"),
+                "verified": False,
+                "verified_events": verified,
+                "broken_chain_at": row_id,
+                "reason": reason,
                 "chain_tip_hash": None,
             }
 
-        prev_hash = "genesis"
-        verified = 0
-        for row in rows:
-            expected = compute_entry_hash(
-                previous_hash=prev_hash,
-                timestamp=(
-                    row.event_timestamp.isoformat()
-                    if hasattr(row.event_timestamp, "isoformat")
-                    else str(row.event_timestamp)
-                ),
-                tenant_id=tenant_id,
-                goal_id=str(row.goal_id or ""),
-                action=str(row.action or ""),
-                tool_name=str(row.tool_name or ""),
-                tool_args_hash=str(row.tool_args_hash or ""),
-                actor=str(row.actor or "system"),
-                actor_ip=str(row.actor_ip or ""),
-                delegation_chain_hash=str(row.delegation_chain_hash or ""),
-                metadata_hash=str(row.metadata_hash or ""),
-            )
-            if expected != row.entry_hash:
-                return {
-                    "verified": False,
-                    "verified_events": verified,
-                    "broken_chain_at": str(row.id),
-                    "chain_tip_hash": prev_hash,
-                }
-            prev_hash = row.entry_hash
-            verified += 1
+        if not rows:
+            return {
+                "verified": True,
+                "verified_events": 0,
+                "broken_chain_at": None,
+                "chain_tip_hash": None,
+            }
 
+        # 1. Per-row integrity.
+        by_prev: dict[str, list[Any]] = {}
+        hashes: set[str] = set()
+        for row in rows:
+            created = row.created_at
+            if hasattr(created, "astimezone"):
+                created_iso = created.astimezone(UTC).isoformat()
+            else:
+                created_iso = str(created)
+            ae = audit_event_cls(
+                id=str(row.id),
+                tenant_id=tenant_id,
+                event_type=row.event_type,
+                resource_id=str(row.resource_id) if row.resource_id else None,
+                action=row.action,
+                status=row.status,
+                created_at=created_iso,
+            )
+            prev = str(row.prev_hash or "")
+            if ae.compute_hash(prev) != row.event_hash:
+                return _broken(str(row.id), "event hash mismatch (row modified)", 0)
+            by_prev.setdefault(prev, []).append(row)
+            hashes.add(str(row.event_hash))
+
+        # 2. Linkage: exactly one entry point, no forks, no dangling predecessors.
+        for children in by_prev.values():
+            if len(children) > 1:
+                return _broken(str(children[1].id), "chain fork (shared predecessor)", 0)
+        entry_points = [p for p in by_prev if p not in hashes]
+        if len(entry_points) != 1:
+            # >1 entry point ⇒ some row's predecessor is missing (deleted row).
+            dangling = sorted(
+                (by_prev[p][0] for p in entry_points), key=lambda r: (r.created_at, r.id)
+            )
+            return _broken(str(dangling[-1].id), "missing predecessor (row deleted)", 0)
+        anchor = entry_points[0]
+        if anchor:
+            # Window starts mid-chain: the predecessor must precede the window.
+            try:
+                exists = (
+                    await db.execute(
+                        text(
+                            "SELECT 1 FROM audit_events WHERE tenant_id = :tid "
+                            "AND event_hash = :h AND created_at < :from_date LIMIT 1"
+                        ),
+                        {"tid": tenant_id, "h": anchor, "from_date": from_date},
+                    )
+                ).scalar()
+            except Exception as exc:
+                raise AuditChainVerificationError("audit chain anchor unreadable") from exc
+            if not exists:
+                first = by_prev[anchor][0]
+                return _broken(str(first.id), "missing predecessor (row deleted)", 0)
+
+        # 3. Walk the chain from the anchor to the tip.
+        verified = 0
+        cur = anchor
+        while cur in by_prev:
+            row = by_prev[cur][0]
+            verified += 1
+            cur = str(row.event_hash)
+        if verified != len(rows):
+            return _broken(None, "chain contains a cycle or disconnected rows", verified)
         return {
             "verified": True,
             "verified_events": verified,
             "broken_chain_at": None,
-            "chain_tip_hash": prev_hash,
+            "chain_tip_hash": cur,
         }

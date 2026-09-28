@@ -343,34 +343,43 @@ class _RaisingSession:
         raise RuntimeError("db exploded")
 
 
-def test_list_policies_db_exception_falls_back_to_in_memory_registry() -> None:
+def test_create_policy_db_exception_is_503_not_fake_created() -> None:
+    """A policy whose DB write failed must not answer 201 and be enforced only on
+    this replica (every other replica loads policies from the DB)."""
     db = lambda: _RaisingSession()  # noqa: E731
-    client = TestClient(_make_app(db_session_factory=db), raise_server_exceptions=False)
+    app = _make_app(db_session_factory=db)
+    client = TestClient(app, raise_server_exceptions=False)
 
     create = client.post(
         "/governance/policies",
         json={"name": "p1", "tools_pattern": "x_*", "action": "deny"},
         headers=_h(),
     )
-    assert create.status_code == 201  # create swallows the DB error too
+    assert create.status_code == 503
 
     listing = client.get("/governance/policies", headers=_h())
     assert listing.status_code == 200
-    assert len(listing.json()) == 1
-    assert listing.json()[0]["name"] == "p1"
+    assert listing.json() == []
 
 
-def test_delete_policy_db_exception_swallowed_then_removed_from_registry() -> None:
+def test_delete_policy_db_exception_is_503_and_policy_kept() -> None:
     db = lambda: _RaisingSession()  # noqa: E731
-    client = TestClient(_make_app(db_session_factory=db), raise_server_exceptions=False)
-    created = client.post(
-        "/governance/policies",
-        json={"name": "p2", "tools_pattern": "y_*", "action": "deny"},
-        headers=_h(),
+    app = _make_app(db_session_factory=db)
+    # Seed a policy as if created while the DB was healthy.
+    from app.governance.policies import Policy
+
+    app.state._policy_registry = {
+        _TENANT_ID: {"pid": {"policy_id": "pid", "name": "p2", "tools_pattern": "y_*"}}
+    }
+    app.state.policy_engine.add_policy(
+        Policy(name="p2", denied_tools=["y_*"], tenant_id=_TENANT_ID)
     )
-    policy_id = created.json()["policy_id"]
-    resp = client.delete(f"/governance/policies/{policy_id}", headers=_h())
-    assert resp.status_code == 204
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.delete("/governance/policies/pid", headers=_h())
+    assert resp.status_code == 503
+    # Still enforced here, matching the DB (and so every other replica).
+    assert any(p.name == "p2" for p in app.state.policy_engine._policies)
+    assert "pid" in app.state._policy_registry[_TENANT_ID]
 
 
 # ---------------------------------------------------------------------------
@@ -1287,7 +1296,10 @@ def test_emergency_stop_redis_publish_exception_is_swallowed() -> None:
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
-    assert resp.json()["celery_signal_sent"] is True
+    # A failed publish is reported, not claimed as sent (no fake success).
+    assert resp.json()["celery_signal_sent"] is False
+    assert resp.json()["partial"] is True
+    assert any("celery_signal_failed" in e for e in resp.json()["errors"])
 
 
 def test_emergency_stop_reject_pending_exception_is_swallowed() -> None:
@@ -1328,4 +1340,6 @@ def test_emergency_stop_audit_log_exception_is_swallowed() -> None:
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
-    assert resp.json()["status"] == "emergency_stop_activated"
+    # The stop still runs, but the missing audit record is surfaced.
+    assert resp.json()["status"] == "emergency_stop_partial"
+    assert resp.json()["audit_recorded"] is False

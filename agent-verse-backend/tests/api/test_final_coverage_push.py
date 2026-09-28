@@ -1519,7 +1519,8 @@ class TestPoliciesExtra:
             except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
 
-        engine.reload_from_db.assert_called_once_with(None, tenant_id="t1")
+        # strict=True: tenant RLS context (a non-strict reload sees zero rows under RLS).
+        engine.reload_from_db.assert_called_once_with(None, tenant_id="t1", strict=True)
 
 
 # ===========================================================================

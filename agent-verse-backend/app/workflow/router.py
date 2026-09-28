@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.observability.logging import get_logger
 from app.workflow.dsl import WorkflowDefinition
-from app.workflow.runner import WorkflowValidationError
+from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
 
 _log = get_logger(__name__)
 
@@ -334,6 +334,8 @@ async def trigger_workflow(
         return run
     except WorkflowValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except WorkflowEngineUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
         _log.error("trigger_failed", workflow_id=workflow_id, error=str(exc))
         raise HTTPException(status_code=500, detail="Trigger failed") from exc
@@ -566,6 +568,46 @@ async def list_webhook_events(
         per_page=per_page,
     )
     return {"items": items, "total": total, "page": page, "per_page": per_page}
+
+
+@router.get("/{workflow_id}/webhook", tags=["workflow-webhooks"])
+async def get_webhook_trigger(workflow_id: str, request: Request) -> dict[str, Any]:
+    """The workflow's real inbound webhook URL (``POST /wf-hooks/{token}``) and
+    the key used to sign its run-completion callbacks.
+
+    The UI used to display ``/api/v1/webhooks/workflows/{id}`` — a route that
+    does not exist. The token is only issued for a PUBLISHED workflow (the
+    webhook endpoint rejects unpublished ones), so it is withheld otherwise.
+    """
+    svc = _svc(request)
+    tenant = _get_tenant(request)
+    item = await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    published = item.get("status") == "published"
+    out: dict[str, Any] = {"workflow_id": workflow_id, "published": published}
+    if not published:
+        return out
+    from app.workflow.webhook_tokens import callback_signing_secret, make_webhook_token
+
+    token = make_webhook_token(tenant.tenant_id, workflow_id)
+    path = f"/wf-hooks/{token}"
+    base = ""
+    try:
+        from app.core.config import get_settings
+
+        base = (get_settings().workflow_webhook_base_url or "").rstrip("/")
+    except Exception:
+        base = ""
+    out.update(
+        {
+            "webhook_path": path,
+            "webhook_url": f"{base}{path}" if base else path,
+            "callback_signature_header": "X-AgentVerse-Signature",
+            "callback_signing_secret": callback_signing_secret(tenant.tenant_id, workflow_id),
+        }
+    )
+    return out
 
 
 # ---------------------------------------------------------------------------

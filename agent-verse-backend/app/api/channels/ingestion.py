@@ -69,6 +69,18 @@ def _lookup_db(request: Request) -> Any:
     return getattr(state, "system_db_session_factory", None) or getattr(state, "db", None)
 
 
+def _tenant_db(request: Request) -> Any:
+    """Tenant-scoped session factory for the mapping CRUD.
+
+    The CRUD read ``app.state.db`` — never set in production — so creating a
+    mapping silently took the in-memory "mapped" branch and nothing was ever
+    stored, which is why inbound channel messages never resolved a tenant.
+    ``app.state.db`` remains only as a fallback for tests that inject it.
+    """
+    state = request.app.state
+    return getattr(state, "db_session_factory", None) or getattr(state, "db", None)
+
+
 # ── Inbound authentication (fail closed) ─────────────────────────────────────
 
 
@@ -458,7 +470,7 @@ async def create_channel_mapping(request: Request) -> dict:
     tenant_id = getattr(getattr(request.state, "tenant", None), "tenant_id", "")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    db = getattr(request.app.state, "db", None)
+    db = _tenant_db(request)
     if db is None:
         # In-memory fallback
         return {
@@ -466,25 +478,55 @@ async def create_channel_mapping(request: Request) -> dict:
             "channel_type": body.get("channel_type"),
             "channel_id": body.get("channel_id"),
         }
+    channel_type = str(body.get("channel_type") or "")
+    channel_id = str(body.get("channel_id") or "")
+    if not channel_type or not channel_id:
+        raise HTTPException(status_code=422, detail="channel_type and channel_id are required")
     try:
         import uuid
 
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
-            await session.execute(
-                text(
-                    "INSERT INTO channel_tenant_mappings (id, tenant_id, channel_type, channel_id) "
-                    "VALUES (:id, :tid, :ct, :ci) ON CONFLICT DO NOTHING"
-                ),
-                {
-                    "id": uuid.uuid4().hex,
-                    "tid": tenant_id,
-                    "ct": body.get("channel_type"),
-                    "ci": body.get("channel_id"),
-                },
-            )
+        from app.db.rls import sqlalchemy_rls_context
+
+        # Written under the tenant's RLS context (the table is FORCE RLS: a
+        # GUC-less INSERT is rejected under the app role). An external channel
+        # resolves to exactly one tenant (unique (channel_type, channel_id)), so
+        # a conflict is either this tenant re-mapping (idempotent) or another
+        # tenant's claim — which is refused instead of reported as "mapped".
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            inserted = (
+                await session.execute(
+                    text(
+                        "INSERT INTO channel_tenant_mappings "
+                        "(id, tenant_id, channel_type, channel_id) "
+                        "VALUES (:id, :tid, :ct, :ci) ON CONFLICT DO NOTHING RETURNING id"
+                    ),
+                    {
+                        "id": uuid.uuid4().hex,
+                        "tid": tenant_id,
+                        "ct": channel_type,
+                        "ci": channel_id,
+                    },
+                )
+            ).fetchone()
+            if inserted is None:
+                own = (
+                    await session.execute(
+                        text(
+                            "SELECT 1 FROM channel_tenant_mappings WHERE tenant_id = :tid "
+                            "AND channel_type = :ct AND channel_id = :ci"
+                        ),
+                        {"tid": tenant_id, "ct": channel_type, "ci": channel_id},
+                    )
+                ).fetchone()
+                if own is None:
+                    raise HTTPException(
+                        status_code=409, detail="Channel is already mapped to another tenant"
+                    )
         return {"status": "mapped"}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -495,13 +537,15 @@ async def list_channel_mappings(request: Request) -> list[dict]:
     tenant_id = getattr(getattr(request.state, "tenant", None), "tenant_id", "")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    db = getattr(request.app.state, "db", None)
+    db = _tenant_db(request)
     if db is None:
         return []
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             rows = await session.execute(
                 text(
                     "SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"  # noqa: E501

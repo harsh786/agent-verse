@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 
 
 def derive_idempotency_key(
@@ -35,7 +36,10 @@ def derive_idempotency_key(
         "relative_delay",
         "deadline",
     ):
-        stable = f"{trigger_id}:{scheduled_fire_time or 'now'}"
+        # A fire with no scheduled time is a manual/ad-hoc fire. It used to key
+        # on the constant "now", so after the first manual fire every later one
+        # was deduplicated forever; each manual fire is now its own firing.
+        stable = f"{trigger_id}:{scheduled_fire_time or 'manual:' + uuid.uuid4().hex}"
 
     # Family B: Goal chain — keyed on trigger + source goal + completion event
     elif trigger_type in (
@@ -46,7 +50,12 @@ def derive_idempotency_key(
         "hitl_rejected",
         "memory_created",
     ):
-        stable = f"{trigger_id}:{source_goal_id or ''}:{completion_event_id or ''}"
+        if source_goal_id or completion_event_id:
+            stable = f"{trigger_id}:{source_goal_id or ''}:{completion_event_id or ''}"
+        else:
+            # No identifying event: the constant key deduplicated every such fire
+            # after the first; fall back to the payload like the other families.
+            stable = f"{trigger_id}:{_payload_hash(payload)}"
 
     # Family C: Conversational — keyed on trigger + message_id
     elif trigger_type in (

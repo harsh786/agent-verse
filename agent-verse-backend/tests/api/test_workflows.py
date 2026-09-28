@@ -195,40 +195,32 @@ def test_run_workflow_dry_run_returns_202() -> None:
     assert "goal" in data
 
 
-def test_run_workflow_without_goal_service_degrades_gracefully() -> None:
-    """No GoalService on app.state → returns dry_run, does not crash."""
-    app = _make_app()  # no goal_service
-    client = TestClient(app)
+def test_run_workflow_without_durable_engine_is_503() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
+    client = TestClient(_make_app())
     wf_id = client.post(
         "/workflows", json={"name": "No Service Flow"}, headers=_HEADERS
     ).json()["id"]
-
     resp = client.post(f"/workflows/{wf_id}/run", headers=_HEADERS)
-    assert resp.status_code == 202
-    assert resp.json()["status"] == "dry_run"
+    assert resp.status_code == 503
 
 
-def test_run_workflow_calls_goal_service() -> None:
+def test_run_workflow_never_falls_back_to_goal_service() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     mock_svc = AsyncMock()
-    mock_svc.submit_goal.return_value = {
-        "id": "goal-abc-123",
-        "status": "planning",
-    }
-    app = _make_app(goal_service=mock_svc)
-    client = TestClient(app)
+    client = TestClient(_make_app(goal_service=mock_svc))
     wf_id = client.post(
-        "/workflows",
-        json={"name": "Live Flow", "description": "Run this"},
-        headers=_HEADERS,
+        "/workflows", json={"name": "Live Flow"}, headers=_HEADERS
     ).json()["id"]
-
     resp = client.post(f"/workflows/{wf_id}/run", headers=_HEADERS)
-    assert resp.status_code == 202
-    data = resp.json()
-    assert data["run_id"] == "goal-abc-123"
-    assert data["status"] == "planning"
-    assert data["workflow_id"] == wf_id
-    mock_svc.submit_goal.assert_awaited_once()
+    assert resp.status_code == 503
+    mock_svc.submit_goal.assert_not_awaited()
 
 
 def test_run_nonexistent_workflow_returns_404() -> None:
@@ -237,29 +229,14 @@ def test_run_nonexistent_workflow_returns_404() -> None:
     assert resp.status_code == 404
 
 
-def test_run_workflow_goal_includes_workflow_name() -> None:
-    """Verify the generated goal string includes the workflow name."""
-    mock_svc = AsyncMock()
-    mock_svc.submit_goal.return_value = {"id": "g1", "status": "planning"}
-    app = _make_app(goal_service=mock_svc)
-    client = TestClient(app)
+def test_run_workflow_dry_run_goal_includes_workflow_name() -> None:
+    """The dry-run preview still describes the workflow by name."""
+    client = TestClient(_make_app())
     wf_id = client.post(
-        "/workflows",
-        json={
-            "name": "Complex Flow",
-            "definition": {
-                "nodes": [{"id": "n1"}, {"id": "n2"}, {"id": "n3"}],
-                "edges": [],
-            },
-        },
-        headers=_HEADERS,
+        "/workflows", json={"name": "Complex Flow"}, headers=_HEADERS
     ).json()["id"]
-
-    client.post(f"/workflows/{wf_id}/run", headers=_HEADERS)
-
-    call_kwargs = mock_svc.submit_goal.call_args
-    goal_text: str = call_kwargs.kwargs.get("goal", "") or call_kwargs.args[0]
-    assert "Complex Flow" in goal_text
+    resp = client.post(f"/workflows/{wf_id}/run?dry_run=true", headers=_HEADERS)
+    assert "Complex Flow" in resp.json()["goal"]
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

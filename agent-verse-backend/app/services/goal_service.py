@@ -707,6 +707,9 @@ class GoalService:
             if redis_cc is not None and hasattr(redis_cc, "get_budget_status"):
                 status = await redis_cc.get_budget_status(tenant_ctx=tenant_ctx)
                 has_budget = float(status.get("daily_remaining", 1.0)) > 0.0
+            elif mem_cc is not None and hasattr(mem_cc, "ahas_remaining_budget"):
+                # Async: resolves the tenant's configured budget_configs row.
+                has_budget = await mem_cc.ahas_remaining_budget(tenant_ctx=tenant_ctx)
             elif mem_cc is not None and hasattr(mem_cc, "has_remaining_budget"):
                 has_budget = mem_cc.has_remaining_budget(tenant_ctx=tenant_ctx)
         except PlanLimitExceededError:

@@ -8,14 +8,27 @@ caller may retry). All statements run under tenant RLS.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from app.db.rls import sqlalchemy_rls_context
 from app.governance.audit_chain import _GENESIS, compute_hash
+
+# Bounded retry for the (tenant_id, seq) PK race: two replicas (or two requests
+# on one replica) read the same tip and both try to INSERT seq N+1; the loser
+# gets a unique violation. Re-reading the tip and re-hashing is always correct
+# because nothing was committed by the losing transaction.
+APPEND_MAX_ATTEMPTS = 6
+
+
+class AuditChainAppendError(RuntimeError):
+    """The record could not be appended after the bounded retries."""
 
 
 class PersistentAuditChain:
@@ -23,6 +36,26 @@ class PersistentAuditChain:
         self._sf = session_factory
 
     async def append(self, tenant_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Append one record, retrying on a concurrent-append seq collision.
+
+        Raises :class:`AuditChainAppendError` when every attempt collided, and
+        re-raises any non-conflict DB error — a lost audit record must never be
+        silent.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(APPEND_MAX_ATTEMPTS):
+            try:
+                return await self._append_once(tenant_id, payload)
+            except IntegrityError as exc:
+                last_exc = exc
+                # Jittered backoff so the colliding writers spread out.
+                await asyncio.sleep(random.uniform(0, 0.01 * (2**attempt)))
+        raise AuditChainAppendError(
+            f"audit chain append for tenant {tenant_id} lost {APPEND_MAX_ATTEMPTS} "
+            "consecutive seq races"
+        ) from last_exc
+
+    async def _append_once(self, tenant_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Append one record to the tenant's chain; returns the stored record."""
         at = datetime.now(UTC)
         at_iso = at.isoformat()
@@ -85,4 +118,4 @@ class PersistentAuditChain:
         return True, None
 
 
-__all__ = ["PersistentAuditChain"]
+__all__ = ["AuditChainAppendError", "PersistentAuditChain"]

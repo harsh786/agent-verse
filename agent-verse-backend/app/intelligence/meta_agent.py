@@ -49,6 +49,11 @@ class MetaAgentConfig:
     interval_seconds: int = 0
     autonomy_mode: str = "bounded-autonomous"
     policy_suggestions: list[str] = field(default_factory=list)
+    # "llm" — designed by the provider; "heuristic" — the provider failed
+    # (error / timeout / non-JSON) and this is a name-and-command guess. Callers
+    # must not present a heuristic config as a designed agent.
+    generated_by: str = "llm"
+    fallback_reason: str = ""
 
 
 # Filler words dropped when deriving a name from a free-text command, so the
@@ -167,22 +172,25 @@ class MetaAgentPlanner:
                 timeout=self._timeout_seconds,
             )
         except Exception as exc:
-            logging.getLogger(__name__).warning("meta_agent_provider_failed: %s", exc)
-            return MetaAgentConfig(
-                name=_derive_agent_name(command),
-                goal_template=command,
-                connectors=[],
+            reason = (
+                f"provider timed out after {self._timeout_seconds:g}s"
+                if isinstance(exc, TimeoutError)
+                else f"provider error: {str(exc)[:200] or type(exc).__name__}"
             )
+            logging.getLogger(__name__).warning("meta_agent_provider_failed: %s", reason)
+            return self._heuristic(command, reason)
         text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()
 
         try:
             obj = json.loads(text)
         except json.JSONDecodeError:
-            return MetaAgentConfig(
-                name=_derive_agent_name(command),
-                goal_template=command,
-                connectors=[],
-            )
+            return self._heuristic(command, "provider returned non-JSON output")
+        if not isinstance(obj, dict):
+            return self._heuristic(command, "provider returned JSON that is not an object")
+        try:
+            interval_seconds = int(str(obj.get("interval_seconds", 0) or 0))
+        except ValueError:
+            interval_seconds = 0
 
         return MetaAgentConfig(
             name=_clean_llm_name(obj.get("name"), command),
@@ -191,7 +199,18 @@ class MetaAgentPlanner:
             trigger_type=str(obj.get("trigger_type", "rest")),
             event_channel=str(obj.get("event_channel", "")),
             cron_expression=str(obj.get("cron_expression", "")),
-            interval_seconds=int(str(obj.get("interval_seconds", 0))),
+            interval_seconds=interval_seconds,
             autonomy_mode=str(obj.get("autonomy_mode", "bounded-autonomous")),
             policy_suggestions=[str(p) for p in obj.get("policy_suggestions", [])],
+        )
+
+    @staticmethod
+    def _heuristic(command: str, reason: str) -> MetaAgentConfig:
+        """A clearly-labelled guess — was returned unlabelled, as if designed."""
+        return MetaAgentConfig(
+            name=_derive_agent_name(command),
+            goal_template=command,
+            connectors=[],
+            generated_by="heuristic",
+            fallback_reason=reason,
         )
