@@ -111,7 +111,11 @@ def main() -> int:
         args.json: json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         args.markdown: render_markdown(manifest),
     }
-    stale = [path for path, content in outputs.items() if not path.exists() or path.read_text() != content]
+    stale = [
+        path
+        for path, content in outputs.items()
+        if not path.exists() or path.read_text() != content
+    ]
     if args.check:
         if stale:
             raise SystemExit(f"generated capability files are stale: {', '.join(map(str, stale))}")

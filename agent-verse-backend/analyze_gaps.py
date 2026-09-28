@@ -1,7 +1,7 @@
 """Analyze coverage gaps for targeted test writing."""
 import json
 
-with open('/Users/harsh.kumar01/Documents/Learning/Agent-Verse/agent-verse-backend/coverage.json') as f:
+with open('coverage.json') as f:
     d = json.load(f)
 
 files = d['files']

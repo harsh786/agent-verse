@@ -12,6 +12,10 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.workflow.template_store import SystemTemplateStore
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
