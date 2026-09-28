@@ -115,6 +115,18 @@ _DEDUP_NON_RESULT_PREFIXES = (
 )
 
 
+def _log_background_failure(task: Any) -> None:
+    """Done-callback: retrieve and log a fire-and-forget task's exception."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        with contextlib.suppress(Exception):
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("background_task_failed", error=str(exc)[:200])
+
+
 def _is_uncacheable_output(output: str | None) -> bool:
     """Single source of truth for "must not enter or be served from the cache".
 
@@ -2041,6 +2053,7 @@ class ExecutorMixin:
                                     )
                                     self._background_tasks.add(_rpa_ltm_task)
                                     _rpa_ltm_task.add_done_callback(self._background_tasks.discard)
+                                    _rpa_ltm_task.add_done_callback(_log_background_failure)
                                 # Track current URL for extraction attribution
                                 if rpa_tool_name == "rpa_open_url":
                                     _nav_url = (tool_call.arguments or {}).get("url", "")

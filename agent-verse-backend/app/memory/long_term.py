@@ -344,9 +344,9 @@ class LongTermMemoryStore:
             confidence=0.8,
             tags=["auto-extracted"],
         )
-        # In-memory store (immediate availability for current session)
-        self._memories.setdefault(tenant_ctx.tenant_id, []).append(memory)
-        # Async DB persistence (survives restarts)
+        # store_async caches it in-memory (after the guardrail vets it) and
+        # persists it; appending here first cached unvetted content and
+        # duplicated the entry.
         await self.store_async(memory=memory, tenant_ctx=tenant_ctx, db=db, embedder=embedder)
         return memory
 
@@ -396,9 +396,14 @@ class LongTermMemoryStore:
                     if _g2_mem_redacted and _g2_mem_redacted != memory.content[:2000]:
                         memory.content = _g2_mem_redacted + memory.content[2000:]
             except Exception as _g2_mem_exc:
+                # Fail closed: content the MEMORY_WRITE guardrail could not vet is
+                # never stored (it used to be written unvetted).
                 get_logger(__name__).warning(
                     "ltm_memory_write_guardrail_failed", error=str(_g2_mem_exc)
                 )
+                raise LongTermMemoryUnavailableError(
+                    "memory-write guardrail could not vet the content; nothing was stored"
+                ) from _g2_mem_exc
 
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
         if db is not None:
@@ -425,8 +430,12 @@ class LongTermMemoryStore:
                                 embedding_str = "[" + ",".join(str(v) for v in fitted) + "]"
                                 embedding_model = str(getattr(resp, "model", "") or "")
                                 embedding_dim = len(raw_vec)
-                    except Exception:
-                        pass  # Embedding failure is non-fatal
+                    except Exception as _emb_exc:
+                        # Non-fatal (the row is stored without a vector and is
+                        # still found by keyword recall) — but not silent.
+                        get_logger(__name__).warning(
+                            "ltm_embedding_failed", error=str(_emb_exc)[:200]
+                        )
 
                 # Under RLS like every other tenant write: without the tenant GUC a
                 # least-privilege role rejects the INSERT.
@@ -482,7 +491,18 @@ class LongTermMemoryStore:
                             },
                         )
             except Exception as exc:
+                # Fail honestly: the durable write failed, so do not leave the
+                # memory in this process's cache (where it would look stored but
+                # vanish on restart / be invisible to other replicas) and do not
+                # return an id as if it were persisted.
                 get_logger(__name__).warning("ltm_db_write_failed", error=str(exc))
+                cached = self._memories.get(tenant_ctx.tenant_id, [])
+                self._memories[tenant_ctx.tenant_id] = [
+                    m for m in cached if m.memory_id != mid
+                ]
+                raise LongTermMemoryUnavailableError(
+                    "long-term memory write failed; nothing was stored"
+                ) from exc
         return mid
 
     async def store_rpa_extraction(

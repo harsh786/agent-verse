@@ -739,8 +739,10 @@ async def create_memory(body: CreateMemoryRequest, request: Request) -> dict[str
     ltm = _ltm(request)
     if ltm is not None:
         embedder = getattr(request.app.state, "embedder", None)
-        m = await ltm.create_user_memory_async(
-            content=body.content, tenant_ctx=tenant, embedder=embedder
+        m = await _ltm_call(
+            ltm.create_user_memory_async(
+                content=body.content, tenant_ctx=tenant, embedder=embedder
+            )
         )
         return _ltm_to_dict(m)
     return _memory_to_dict(_memory_api.create_memory(tenant.tenant_id, body.content))
