@@ -52,20 +52,45 @@ def _service(request: Request) -> Any:
     return service
 
 
+_CREATE_SCOPES = frozenset({"coordination:create", "agents:write"})
+
+
+def _authorization(tenant: Any) -> AuthorizationContext:
+    """Permissions the CALLER actually holds.
+
+    This used to hand every authenticated caller ``coordination:create``, so the
+    service's permission check was a no-op (a read-only viewer key could create
+    sessions). Creating requires the operator role (admin implies it); a key
+    minted with explicit scopes must also carry a create scope.
+    """
+    permissions: set[str] = set()
+    roles = set(getattr(tenant, "roles", ()) or ())
+    key_scopes = set(getattr(tenant, "scopes", ()) or ())
+    if roles & {"admin", "operator"} and (not key_scopes or key_scopes & _CREATE_SCOPES):
+        permissions.add("coordination:create")
+    return AuthorizationContext(
+        actor_id=str(getattr(tenant, "api_key_id", tenant.tenant_id)),
+        permissions=frozenset(permissions),
+    )
+
+
 @router.post("/coordination/v1/sessions", status_code=status.HTTP_201_CREATED)
-async def create_session(request: Request, body: CreateSessionRequest) -> dict[str, Any]:
+async def create_session(
+    request: Request, body: CreateSessionRequest, *, idempotency_key: str | None = None
+) -> dict[str, Any]:
     tenant = _tenant(request)
     admission = SessionAdmission(
         civilization_id=body.civilization_id,
         goal_id=body.goal_id,
         policy_snapshot=body.policy_snapshot,
         budget_snapshot=body.budget_snapshot,
-        authorization=AuthorizationContext(
-            actor_id=str(getattr(tenant, "api_key_id", tenant.tenant_id)),
-            permissions=frozenset({"coordination:create"}),
-        ),
+        authorization=_authorization(tenant),
     )
-    result = await _service(request).create_session(tenant, admission)
+    extra: dict[str, Any] = {"idempotency_key": idempotency_key} if idempotency_key else {}
+    try:
+        result = await _service(request).create_session(tenant, admission, **extra)
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     return cast(dict[str, Any], result.model_dump(mode="json"))
 
 
@@ -81,8 +106,10 @@ async def create_coordination_session(
     body: CreateSessionRequest,
     idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
 ) -> Any:
-    del idempotency_key
-    result = await create_session(request, body)
+    # The required Idempotency-Key used to be discarded, so a client retry
+    # created a second session. It now deterministically names the session:
+    # the same key (per tenant) returns the session it created the first time.
+    result = await create_session(request, body, idempotency_key=idempotency_key)
     response.headers["Location"] = f"/api/v1/coordination/sessions/{result['session_id']}"
     return result
 

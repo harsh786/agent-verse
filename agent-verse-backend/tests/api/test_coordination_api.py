@@ -11,7 +11,8 @@ from app.coordination.store import AcceptedTransition, CoordinationSessionRecord
 
 
 class Service:
-    async def create_session(self, tenant, admission):
+    async def create_session(self, tenant, admission, **kw):
+        self.create_kwargs = kw
         assert tenant.tenant_id == "tenant-1"
         return CoordinationSessionRecord(
             session_id="session-1",
@@ -62,7 +63,7 @@ def _app() -> FastAPI:
     @application.middleware("http")
     async def tenant(request: Request, call_next):
         request.state.tenant = SimpleNamespace(
-            tenant_id="tenant-1", api_key_id="key-1"
+            tenant_id="tenant-1", api_key_id="key-1", roles=("operator",)
         )
         return await call_next(request)
 

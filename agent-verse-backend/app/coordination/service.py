@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -31,6 +32,7 @@ class CoordinationCommandStore(Protocol):
         goal_id: str,
         policy_snapshot: dict[str, Any],
         budget_snapshot: dict[str, Any],
+        session_id: str | None = None,
     ) -> CoordinationSessionRecord: ...
 
     async def transition_session(
@@ -48,6 +50,14 @@ class CoordinationCommandStore(Protocol):
     ) -> CoordinationSessionRecord: ...
 
 
+_IDEMPOTENCY_NAMESPACE = uuid.UUID("6f1d8a52-3c1b-4f7e-9a0d-2b5c8e4f1a37")
+
+
+def session_id_for_idempotency_key(tenant_id: str, idempotency_key: str) -> str:
+    """Deterministic 32-hex session id for a (tenant, Idempotency-Key) pair."""
+    return uuid.uuid5(_IDEMPOTENCY_NAMESPACE, f"{tenant_id}:{idempotency_key}").hex
+
+
 class CoordinationService:
     """Validate authority and immutable admission inputs before persistence."""
 
@@ -55,15 +65,27 @@ class CoordinationService:
         self._store = store
 
     async def create_session(
-        self, tenant_ctx: TenantContext, admission: SessionAdmission
+        self,
+        tenant_ctx: TenantContext,
+        admission: SessionAdmission,
+        *,
+        idempotency_key: str | None = None,
     ) -> CoordinationSessionRecord:
+        """Create a session; with an idempotency key the id is derived from
+        (tenant, key), so a retry returns the session the first call created."""
         self._require(admission.authorization, "coordination:create")
+        kwargs: dict[str, Any] = {}
+        if idempotency_key:
+            kwargs["session_id"] = session_id_for_idempotency_key(
+                tenant_ctx.tenant_id, idempotency_key
+            )
         return await self._store.create_session(
             tenant_ctx,
             civilization_id=admission.civilization_id,
             goal_id=admission.goal_id,
             policy_snapshot=deepcopy(admission.policy_snapshot),
             budget_snapshot=deepcopy(admission.budget_snapshot),
+            **kwargs,
         )
 
     async def start_session(

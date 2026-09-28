@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.state_machines import transition_session
@@ -56,16 +57,19 @@ class CoordinationStore:
         goal_id: str,
         policy_snapshot: dict[str, Any],
         budget_snapshot: dict[str, Any],
+        session_id: str | None = None,
     ) -> CoordinationSessionRecord:
-        session_id = uuid.uuid4().hex
+        idempotent = session_id is not None
+        session_id = session_id or uuid.uuid4().hex
         table = COORDINATION_TABLES["coordination_sessions"]
         async with (
             self._sessions() as db,
             db.begin(),
             sqlalchemy_rls_context(db, tenant_ctx.tenant_id),
         ):
-            await db.execute(
-                insert(table).values(
+            result = await db.execute(
+                pg_insert(table)
+                .values(
                     id=session_id,
                     tenant_id=tenant_ctx.tenant_id,
                     civilization_id=civilization_id,
@@ -78,7 +82,11 @@ class CoordinationStore:
                     next_sequence=1,
                     version=1,
                 )
+                .on_conflict_do_nothing(index_elements=["id"])
             )
+        if idempotent and not int(getattr(result, "rowcount", 1) or 0):
+            # Same Idempotency-Key replayed: return the session it created.
+            return await self.get_session(tenant_ctx, session_id=session_id)
         return CoordinationSessionRecord(
             session_id=session_id,
             tenant_id=tenant_ctx.tenant_id,
@@ -282,16 +290,20 @@ class InMemoryCoordinationStore:
         goal_id: str,
         policy_snapshot: dict[str, Any],
         budget_snapshot: dict[str, Any],
+        session_id: str | None = None,
     ) -> CoordinationSessionRecord:
         del civilization_id, goal_id, policy_snapshot, budget_snapshot
         record = CoordinationSessionRecord(
-            session_id=uuid.uuid4().hex,
+            session_id=session_id or uuid.uuid4().hex,
             tenant_id=tenant_ctx.tenant_id,
             state="pending",
             next_sequence=1,
             version=1,
         )
         async with self._lock:
+            existing = self._sessions.get((tenant_ctx.tenant_id, record.session_id))
+            if existing is not None:
+                return existing
             self._sessions[(tenant_ctx.tenant_id, record.session_id)] = record
         return record
 

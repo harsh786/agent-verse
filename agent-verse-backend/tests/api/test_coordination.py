@@ -10,7 +10,8 @@ from app.coordination.store import AcceptedTransition, CoordinationSessionRecord
 
 
 class Service:
-    async def create_session(self, tenant, admission):
+    async def create_session(self, tenant, admission, **kw):
+        self.create_kwargs = kw
         assert tenant.tenant_id == "tenant-1"
         assert admission.authorization.actor_id == "key-1"
         return CoordinationSessionRecord(
@@ -40,7 +41,7 @@ def app(*, authenticated: bool) -> FastAPI:
     async def tenant(request: Request, call_next):
         if authenticated:
             request.state.tenant = SimpleNamespace(
-                tenant_id="tenant-1", api_key_id="key-1"
+                tenant_id="tenant-1", api_key_id="key-1", roles=("operator",)
             )
         return await call_next(request)
 
@@ -117,7 +118,9 @@ def _real_app() -> FastAPI:
     @application.middleware("http")
     async def tenant(request: Request, call_next):
         tid = request.headers.get("x-tenant", "tenant-a")
-        request.state.tenant = SimpleNamespace(tenant_id=tid, api_key_id=f"key-{tid}")
+        request.state.tenant = SimpleNamespace(
+            tenant_id=tid, api_key_id=f"key-{tid}", roles=("operator",)
+        )
         return await call_next(request)
 
     application.include_router(router)
