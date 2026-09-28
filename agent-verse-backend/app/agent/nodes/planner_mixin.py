@@ -55,6 +55,11 @@ class PlannerMixin:
         agent_state.status = GoalStatus.PLANNING
         agent_state.iterations = iteration
 
+        # Events queued by the (synchronous) router, e.g. stuck_loop_detected.
+        # Nothing drained this list before, so those events never reached SSE.
+        for _pending in agent_state.context.pop("_pending_events", None) or []:
+            await self._emit(_pending)
+
         # Crash resume: reuse the checkpointed plan so its step ids line up with
         # the completed steps the executor will skip. Replanning here would
         # produce different steps and re-run tools that already ran.

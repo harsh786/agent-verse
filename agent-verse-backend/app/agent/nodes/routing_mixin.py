@@ -81,8 +81,8 @@ class RoutingMixin:
                     goal_id=agent_state.goal_id,
                     consecutive_failures=3,
                 )
-                # Emit is async; record intent in context and let the execute
-                # node pick it up at start of next iteration via event_callback.
+                # Emit is async and routing is sync: queue it; the plan node
+                # (next on the replan edge) drains _pending_events.
                 agent_state.context["_pending_events"] = [*agent_state.context.get("_pending_events", []), {"type": "stuck_loop_detected", "goal_id": agent_state.goal_id, "message": "3 consecutive step failures — forcing replan"}]  # noqa: E501
                 return "replan"
         except Exception:
@@ -141,7 +141,7 @@ class RoutingMixin:
             _gap_detector = ContextGapDetector()
             _remediation_count = agent_state.context.get("remediation_count", 0)
             if (
-                agent_state.context.get("allow_rag_remediation", False)
+                self._rag_remediation_allowed(agent_state)
                 and not agent_state.verification_success
                 and _gap_detector.has_gap(agent_state.verification_feedback or "")
                 and _remediation_count < 2

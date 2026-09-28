@@ -451,6 +451,24 @@ class RAGMixin:
         """
         return await self._node_rag_retrieval(state)
 
+    def _rag_remediation_allowed(self, agent_state: AgentState) -> bool:
+        """Whether a context-gap verification failure may trigger re-retrieval.
+
+        An explicit ``allow_rag_remediation`` in the goal context wins. Otherwise
+        it defaults on for agents bound to knowledge collections with a
+        retrieval gateway — nothing ever set the flag, so the remediation node
+        was unreachable and a "no information about X" verdict always replanned
+        against the same (insufficient) context.
+        """
+        explicit = agent_state.context.get("allow_rag_remediation")
+        if explicit is not None:
+            return bool(explicit)
+        if not self._agent_collection_ids:
+            return False
+        app_state = getattr(self._app_state, "state", self._app_state)
+        gateway = self._retrieval_gateway or getattr(app_state, "retrieval_gateway", None)
+        return gateway is not None
+
     async def _node_rag_remediate(self, state: GraphState) -> dict:
         """Targeted re-retrieval when verification fails due to context gap (doc-2 §9.2).
 
@@ -468,7 +486,7 @@ class RAGMixin:
         if agent_state is None:
             return {}
 
-        if not agent_state.context.get("allow_rag_remediation", False):
+        if not self._rag_remediation_allowed(agent_state):
             return {}
 
         try:
