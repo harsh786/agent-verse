@@ -107,7 +107,13 @@ class CoordinationStore:
                         table.c.state,
                         table.c.next_sequence,
                         table.c.version,
-                    ).where(table.c.id == session_id)
+                    ).where(
+                        # Explicit tenant predicate on top of RLS (defense in depth):
+                        # a BYPASSRLS/superuser connection must still never read a
+                        # foreign tenant's session.
+                        table.c.id == session_id,
+                        table.c.tenant_id == tenant_ctx.tenant_id,
+                    )
                 )
             ).one_or_none()
         if row is None:
@@ -143,7 +149,12 @@ class CoordinationStore:
             sqlalchemy_rls_context(db, tenant_ctx.tenant_id),
         ):
             replay = (
-                await db.execute(select(events.c.payload).where(events.c.id == event_id))
+                await db.execute(
+                    select(events.c.payload).where(
+                        events.c.id == event_id,
+                        events.c.tenant_id == tenant_ctx.tenant_id,
+                    )
+                )
             ).scalar_one_or_none()
             if replay is not None:
                 return AcceptedTransition.model_validate(replay["accepted"])
@@ -155,7 +166,12 @@ class CoordinationStore:
                         sessions.c.next_sequence,
                         sessions.c.version,
                     )
-                    .where(sessions.c.id == session_id)
+                    .where(
+                        # Tenant predicate on top of RLS: without it a BYPASSRLS
+                        # connection would let tenant B transition tenant A's session.
+                        sessions.c.id == session_id,
+                        sessions.c.tenant_id == tenant_ctx.tenant_id,
+                    )
                     .with_for_update()
                 )
             ).one_or_none()
@@ -187,6 +203,7 @@ class CoordinationStore:
                 update(sessions)
                 .where(
                     sessions.c.id == session_id,
+                    sessions.c.tenant_id == tenant_ctx.tenant_id,
                     sessions.c.version == expected_version,
                 )
                 .values(

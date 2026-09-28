@@ -33,7 +33,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from starlette.requests import HTTPConnection
 
 from app.org.brain_settings import resolve_autonomy_settings
@@ -3541,16 +3541,48 @@ class _SchedulePublishConfig(BaseModel):
 
 
 class _MissionScheduleRequest(BaseModel):
+    """Create-schedule body.
+
+    Every field is bounded to what ``org_mission_schedules`` can store and what
+    the mission it launches accepts (``priority`` / ``autonomy_level`` mirror
+    ``CreateMissionRequest``). Previously ``priority`` was unbounded (a value over
+    the VARCHAR(20) column was a DB truncation error → 500), ``autonomy_level``
+    accepted any integer (int32 overflow → 500), a non-UUID ``dept_id`` crashed
+    ``uuid.UUID()`` in the service (→ 500), and an unknown ``timezone`` was
+    stored and then silently evaluated as UTC.
+    """
+
     title: str = Field(min_length=1, max_length=500)
     objective: str = Field(default="", max_length=2000)
     cron_expression: str = Field(min_length=1, max_length=120)
     timezone: str = Field(default="UTC", max_length=64)
-    priority: str = Field(default="medium")
-    autonomy_level: int | None = None
+    priority: str = Field(default="medium", pattern="^(low|medium|high|critical)$")
+    autonomy_level: int | None = Field(default=None, ge=0, le=5)
     dept_id: str | None = None
     name: str = Field(default="", max_length=200)
     enabled: bool = True
     publish: _SchedulePublishConfig | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, value: str) -> str:
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(value)
+        except Exception as exc:  # ZoneInfoNotFoundError, ValueError on bad keys
+            raise ValueError(f"unknown timezone {value!r} (use an IANA name)") from exc
+        return value
+
+    @field_validator("dept_id")
+    @classmethod
+    def _dept_id_is_uuid(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        try:
+            return str(uuid_mod.UUID(value))
+        except ValueError as exc:
+            raise ValueError("dept_id must be a UUID") from exc
 
 
 class _ScheduleToggleRequest(BaseModel):
@@ -3604,10 +3636,27 @@ def _validate_cron(expr: str) -> None:
     from croniter import croniter
 
     if not croniter.is_valid(expr):
+        # HTTP_422_UNPROCESSABLE_CONTENT, not the deprecated ..._ENTITY alias:
+        # touching the deprecated name emits StarletteDeprecationWarning, which
+        # under warnings-as-errors (the test suites, the e2e sweep) turned every
+        # invalid cron into an unhandled 500 instead of this 422.
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Invalid cron expression: {expr!r}",
         )
+
+
+def _schedule_id_or_404(schedule_id: str) -> str:
+    """Reject a schedule id that cannot exist before it reaches the service.
+
+    Schedule ids are UUIDs; the service does ``uuid.UUID(schedule_id)``, so any
+    other string raised ValueError there — an unhandled 500 for what is simply
+    an unknown schedule.
+    """
+    try:
+        return str(uuid_mod.UUID(schedule_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Schedule not found") from exc
 
 
 @router.post(
@@ -3673,6 +3722,7 @@ async def org_toggle_schedule(
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, Any]:
     _require_tenant(request)
+    schedule_id = _schedule_id_or_404(schedule_id)
     sched = await service.set_mission_schedule_enabled(org_id, schedule_id, body.enabled)
     if sched is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -3691,6 +3741,7 @@ async def org_delete_schedule(
     service: OrgService = Depends(get_org_service),
 ) -> None:
     _require_tenant(request)
+    schedule_id = _schedule_id_or_404(schedule_id)
     if not await service.delete_mission_schedule(org_id, schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
 
@@ -3714,6 +3765,7 @@ async def org_approve_schedule_publishing(
     re-arms the gate for future runs without unpublishing anything already sent.
     """
     _require_tenant(request)
+    schedule_id = _schedule_id_or_404(schedule_id)
     sched = await service.approve_schedule_publishing(org_id, schedule_id, body.approved)
     if sched is None:
         raise HTTPException(status_code=404, detail="Schedule not found")

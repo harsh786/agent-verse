@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,6 +16,8 @@ from pydantic import BaseModel, Field
 
 from app.db.rls import sqlalchemy_rls_context
 from app.tenancy.context import TenantContext
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/templates", tags=["templates"])
 
@@ -209,6 +215,26 @@ class _TemplateStore:
     def set_db(self, db_factory: Any) -> None:
         self._db = db_factory
 
+    @asynccontextmanager
+    async def _tenant_session(self, tenant_id: str) -> AsyncIterator[Any]:
+        """One transaction with the tenant RLS GUC set for its whole lifetime.
+
+        Every statement — including the ORM flush of pending adds, which
+        ``sqlalchemy_rls_context`` performs before it resets the GUC — runs while
+        ``app.tenant_id`` is set, so the NOBYPASSRLS application role can see and
+        write the tenant's rows. The previous code set the GUC transaction-locally
+        on an autobegun transaction, committed, then called ``session.refresh()``:
+        the refresh ran in a NEW transaction with the GUC gone, RLS hid the
+        just-inserted row, and ``POST /templates`` answered 500 ("Could not
+        refresh instance").
+        """
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            yield session
+
     def _seed_builtins_for_tenant(self, tenant_id: str) -> None:
         """Seed read-only starter templates for a tenant (in-memory mode only).
 
@@ -260,16 +286,10 @@ class _TemplateStore:
             yaml_templates = _load_yaml_goal_templates()
             source = yaml_templates if yaml_templates else _BUILTIN_TEMPLATES
 
-            async with (
-                self._db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
+            async with self._tenant_session(tenant_id) as session:
                 for tpl in source:
                     tpl_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{tenant_id}:{tpl['name']}"))
                     params = _extract_parameters(tpl["goal_text"])
-                    import json
-
                     await session.execute(
                         _t("""
                             INSERT INTO goal_templates
@@ -291,8 +311,11 @@ class _TemplateStore:
                             "now": now,
                         },
                     )
-        except Exception:
-            pass  # Seeding is best-effort; templates can still be created manually
+        except Exception as exc:
+            # Seeding is best-effort (templates can still be created manually), but
+            # forget the tenant so the next request retries instead of never seeding.
+            self._seeded_tenants.discard(tenant_id)
+            logger.warning("template_builtin_seed_failed tenant=%s: %s", tenant_id, exc)
 
     async def list(self, tenant_id: str, domain: str | None = None) -> list[dict[str, Any]]:
         if self._db:
@@ -303,11 +326,7 @@ class _TemplateStore:
                 if rows or not self._seed_builtins:
                     return rows
             except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "template_db_list_failed_falling_back_to_memory: %s", exc
-                )
+                logger.warning("template_db_list_failed_falling_back_to_memory: %s", exc)
 
             # If DB is down, migrated incompletely, or built-in seeding failed,
             # keep user-facing template/domain pages useful with deterministic
@@ -403,11 +422,7 @@ class _TemplateStore:
             try:
                 from sqlalchemy import text as _t
 
-                async with (
-                    self._db() as session,
-                    session.begin(),
-                    sqlalchemy_rls_context(session, tenant_id),
-                ):
+                async with self._tenant_session(tenant_id) as session:
                     await session.execute(
                         _t(
                             "UPDATE goal_templates SET use_count = use_count + 1 "
@@ -415,23 +430,21 @@ class _TemplateStore:
                         ),
                         {"id": template_id, "tid": tenant_id},
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                # Usage counting is advisory; never fail an instantiate over it.
+                logger.warning("template_use_count_increment_failed: %s", exc)
             return
         if template_id in self._mem:
             self._mem[template_id]["use_count"] = self._mem[template_id].get("use_count", 0) + 1
 
-    # DB implementations
+    # DB implementations — each runs in ONE tenant-scoped transaction (see
+    # _tenant_session) and keeps an explicit tenant_id predicate (defense in depth).
     async def _list_db(self, tenant_id: str, domain: str | None) -> list[dict[str, Any]]:
         from sqlalchemy import select
 
         from app.db.models.template import GoalTemplate
 
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
+        async with self._tenant_session(tenant_id) as session:
             q = select(GoalTemplate).where(GoalTemplate.tenant_id == tenant_id)
             if domain:
                 q = q.where(GoalTemplate.domain == domain)
@@ -443,11 +456,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
 
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
+        async with self._tenant_session(tenant_id) as session:
             row = (
                 await session.execute(
                     select(GoalTemplate).where(
@@ -466,15 +475,10 @@ class _TemplateStore:
         domain: str,
         parameters: list[dict[str, Any]],
     ) -> dict[str, Any]:
-
         from app.db.models.template import GoalTemplate
 
         now = datetime.now(UTC)
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
+        async with self._tenant_session(tenant_id) as session:
             obj = GoalTemplate(
                 id=str(uuid.uuid4()),
                 tenant_id=tenant_id,
@@ -489,14 +493,11 @@ class _TemplateStore:
                 updated_at=now,
             )
             session.add(obj)
-            # Build the response INSIDE the tenant-scoped transaction. The old
-            # ``commit()`` + ``refresh(obj)`` re-read the row in a NEW transaction
-            # where app.tenant_id was no longer set, so under the NOBYPASSRLS
-            # production role RLS hid the just-inserted row and refresh raised
-            # "Could not refresh instance" -> POST /templates and POST
-            # /chat/templates answered 500 (after the row had been committed).
-            # Every column is set explicitly above, so nothing needs re-reading;
-            # sqlalchemy_rls_context flushes the INSERT while the GUC is set.
+            # Every column is set client-side, so the response is built from the
+            # object itself — no post-commit refresh, which would run outside the
+            # tenant transaction where RLS hides the row. sqlalchemy_rls_context
+            # flushes the INSERT while the GUC is still set; if that (or the
+            # commit) fails, the exception propagates and nothing is returned.
             return self._orm_to_dict(obj)
 
     async def _update_db(
@@ -513,11 +514,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
 
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
+        async with self._tenant_session(tenant_id) as session:
             obj = (
                 await session.execute(
                     select(GoalTemplate).where(
@@ -534,9 +531,7 @@ class _TemplateStore:
             obj.parameters = parameters
             obj.version += 1
             obj.updated_at = datetime.now(UTC)
-            # Same as _create_db: no post-commit refresh (it ran without the
-            # tenant GUC and failed under RLS). The UPDATE is flushed by
-            # sqlalchemy_rls_context while app.tenant_id is still set.
+            # Same as create: no post-commit refresh (it would be RLS-hidden).
             return self._orm_to_dict(obj)
 
     async def _delete_db(self, tenant_id: str, template_id: str) -> bool:
@@ -544,11 +539,7 @@ class _TemplateStore:
 
         from app.db.models.template import GoalTemplate
 
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
+        async with self._tenant_session(tenant_id) as session:
             obj = (
                 await session.execute(
                     select(GoalTemplate).where(

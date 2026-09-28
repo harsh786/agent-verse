@@ -12,12 +12,17 @@ Phase 9 V1: static sites/SPAs built in sandbox (npm build)
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
+
+from app.core.errors import PlatformError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/builder", tags=["builder"])
 
@@ -75,7 +80,14 @@ async def create_builder_project(
                 execution_context={"builder_project_id": project_id, "workspace_id": workspace_id},
             )
             goal_id = result.get("goal_id")
+        except (HTTPException, PlatformError):
+            # Client-attributable refusals carry their own status: a plan limit is
+            # 429, an exhausted budget 402, an unknown agent 404, … (PlatformError
+            # is rendered by the app-wide handler). Collapsing them into 503 told a
+            # tenant at its concurrent-goal limit that the SERVER was unavailable.
+            raise
         except Exception as exc:
+            logger.exception("builder_goal_submit_failed project_id=%s", project_id)
             raise HTTPException(
                 status_code=503, detail=f"Could not start builder: {type(exc).__name__}"
             ) from exc

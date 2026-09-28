@@ -30,6 +30,7 @@ MISSION_ID = str(uuid.uuid4())
 DEPT_ID = str(uuid.uuid4())
 TASK_ID = str(uuid.uuid4())
 TEAM_ID = str(uuid.uuid4())
+SCHED_ID = str(uuid.uuid4())
 NOW = datetime(2026, 8, 17, 12, 0, 0, tzinfo=UTC)
 
 
@@ -1370,18 +1371,93 @@ def _fake_schedule(**kw: Any) -> MagicMock:
 
 
 class TestSchedules:
-    @pytest.mark.filterwarnings("ignore::starlette.exceptions.StarletteDeprecationWarning")
-    @pytest.mark.filterwarnings("ignore:.*HTTP_422_UNPROCESSABLE_ENTITY.*:DeprecationWarning")
     async def test_create_schedule_invalid_cron(self, client: AsyncClient) -> None:
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            r = await client.post(
-                f"/v1/org/{ORG_ID}/schedules",
-                json={"title": "Nightly", "cron_expression": "not-a-cron"},
-            )
+        # No warning suppression: the handler used the deprecated
+        # HTTP_422_UNPROCESSABLE_ENTITY alias, whose StarletteDeprecationWarning
+        # became an unhandled 500 under warnings-as-errors. This test used to
+        # silence that warning and so hid the 500; it must now pass as-is.
+        r = await client.post(
+            f"/v1/org/{ORG_ID}/schedules",
+            json={"title": "Nightly", "cron_expression": "not-a-cron"},
+        )
         assert r.status_code == 422
+        assert "Invalid cron expression" in r.text
+
+    @pytest.mark.parametrize(
+        ("extra", "field"),
+        [
+            ({"timezone": "Mars/Olympus_Mons"}, "timezone"),
+            ({"priority": "x" * 40}, "priority"),
+            ({"autonomy_level": 2**40}, "autonomy_level"),
+            ({"dept_id": "not-a-uuid"}, "dept_id"),
+        ],
+    )
+    async def test_create_schedule_rejects_unstorable_input_with_422(
+        self, client: AsyncClient, mock_service: MagicMock, extra: dict[str, Any], field: str
+    ) -> None:
+        # Each of these used to reach the DB/service and surface as a 500
+        # (VARCHAR(20) truncation, int32 overflow, uuid.UUID() ValueError) or,
+        # for the timezone, be stored and silently evaluated as UTC.
+        mock_service.create_mission_schedule = AsyncMock(return_value=_fake_schedule())
+        r = await client.post(
+            f"/v1/org/{ORG_ID}/schedules",
+            json={"title": "Nightly", "cron_expression": "0 0 * * *", **extra},
+        )
+        assert r.status_code == 422, r.text
+        assert field in r.text
+        mock_service.create_mission_schedule.assert_not_awaited()
+
+    async def test_create_schedule_normalizes_dept_id(
+        self, client: AsyncClient, mock_service: MagicMock
+    ) -> None:
+        created: dict[str, Any] = {}
+
+        async def _create(**kwargs: Any) -> MagicMock:
+            created.update(kwargs)
+            return _fake_schedule()
+
+        mock_service.create_mission_schedule = AsyncMock(side_effect=_create)
+        r = await client.post(
+            f"/v1/org/{ORG_ID}/schedules",
+            json={
+                "title": "Nightly",
+                "cron_expression": "0 0 * * *",
+                "timezone": "Asia/Kolkata",
+                "priority": "high",
+                "autonomy_level": 3,
+                "dept_id": uuid.UUID(DEPT_ID).hex.upper(),
+            },
+        )
+        assert r.status_code == 201, r.text
+        assert created["dept_id"] == DEPT_ID
+        assert created["timezone"] == "Asia/Kolkata"
+
+    @pytest.mark.parametrize(
+        ("method", "suffix", "body"),
+        [
+            ("PATCH", "", {"enabled": False}),
+            ("DELETE", "", None),
+            ("POST", "/approve-publishing", {"approved": True}),
+        ],
+    )
+    async def test_non_uuid_schedule_id_is_404_not_500(
+        self,
+        client: AsyncClient,
+        mock_service: MagicMock,
+        method: str,
+        suffix: str,
+        body: dict[str, Any] | None,
+    ) -> None:
+        # The real service does uuid.UUID(schedule_id); a non-UUID id raised
+        # ValueError there (500). It can never name a schedule, so it is a 404
+        # decided before the service is touched.
+        r = await client.request(
+            method, f"/v1/org/{ORG_ID}/schedules/not-a-uuid{suffix}", json=body
+        )
+        assert r.status_code == 404, r.text
+        mock_service.set_mission_schedule_enabled.assert_not_awaited()
+        mock_service.delete_mission_schedule.assert_not_awaited()
+        mock_service.approve_schedule_publishing.assert_not_awaited()
 
     async def test_create_schedule_org_not_found(
         self, client: AsyncClient, mock_service: MagicMock
@@ -1441,7 +1517,7 @@ class TestSchedules:
     ) -> None:
         mock_service.set_mission_schedule_enabled = AsyncMock(return_value=None)
         r = await client.patch(
-            f"/v1/org/{ORG_ID}/schedules/sched-1", json={"enabled": False}
+            f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}", json={"enabled": False}
         )
         assert r.status_code == 404
 
@@ -1450,7 +1526,7 @@ class TestSchedules:
             return_value=_fake_schedule(enabled=False)
         )
         r = await client.patch(
-            f"/v1/org/{ORG_ID}/schedules/sched-1", json={"enabled": False}
+            f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}", json={"enabled": False}
         )
         assert r.status_code == 200
         assert r.json()["enabled"] is False
@@ -1459,11 +1535,11 @@ class TestSchedules:
         self, client: AsyncClient, mock_service: MagicMock
     ) -> None:
         mock_service.delete_mission_schedule = AsyncMock(return_value=False)
-        r = await client.delete(f"/v1/org/{ORG_ID}/schedules/sched-1")
+        r = await client.delete(f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}")
         assert r.status_code == 404
 
     async def test_delete_schedule_ok(self, client: AsyncClient) -> None:
-        r = await client.delete(f"/v1/org/{ORG_ID}/schedules/sched-1")
+        r = await client.delete(f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}")
         assert r.status_code == 204
 
     async def test_approve_publishing_not_found(
@@ -1471,7 +1547,7 @@ class TestSchedules:
     ) -> None:
         mock_service.approve_schedule_publishing = AsyncMock(return_value=None)
         r = await client.post(
-            f"/v1/org/{ORG_ID}/schedules/sched-1/approve-publishing", json={"approved": True}
+            f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}/approve-publishing", json={"approved": True}
         )
         assert r.status_code == 404
 
@@ -1483,7 +1559,7 @@ class TestSchedules:
         with patch("app.scaling.tasks.publish_mission_deliverable") as task:
             task.apply_async = MagicMock()
             r = await client.post(
-                f"/v1/org/{ORG_ID}/schedules/sched-1/approve-publishing",
+                f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}/approve-publishing",
                 json={"approved": True},
             )
         assert r.status_code == 200
@@ -1495,7 +1571,7 @@ class TestSchedules:
     ) -> None:
         mock_service.approve_schedule_publishing = AsyncMock(return_value=_fake_schedule())
         r = await client.post(
-            f"/v1/org/{ORG_ID}/schedules/sched-1/approve-publishing",
+            f"/v1/org/{ORG_ID}/schedules/{SCHED_ID}/approve-publishing",
             json={"approved": False},
         )
         assert r.status_code == 200

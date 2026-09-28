@@ -39,13 +39,31 @@ def _require_platform_admin(request: Request) -> None:
     from it), so mutating it is an operator action — a regular tenant API key must
     not be able to change what models other tenants use. Requires the platform
     admin key (``PLATFORM_ADMIN_KEY`` via the ``X-Admin-Key`` header), matching
-    app/api/admin.py. 503 when unconfigured; 403 when missing/invalid.
+    app/api/admin.py.
+
+    Status codes describe the CALLER, not the deployment:
+
+    * no ``X-Admin-Key`` presented → 403, whether or not the deployment has an
+      admin key configured. A regular tenant key is simply not authorized for a
+      global mutation; answering 503 here (as before) reported a server fault for
+      what is an authorization refusal, and did so for every tenant request on a
+      deployment without ``PLATFORM_ADMIN_KEY``.
+    * an admin key presented but none configured → 503 with a clear
+      "set PLATFORM_ADMIN_KEY" message: the operator is trying to use a feature
+      this deployment has not enabled.
+    * an admin key presented that does not match → 403.
     """
     admin_key = os.getenv("PLATFORM_ADMIN_KEY", "")
-    if not admin_key:
-        raise HTTPException(503, "Platform admin not configured; registry is read-only")
     presented = request.headers.get("x-admin-key", "") or request.headers.get("X-Admin-Key", "")
-    if not presented or not hmac.compare_digest(presented.encode(), admin_key.encode()):
+    if not presented:
+        raise HTTPException(403, "Platform admin privileges required to modify the model registry")
+    if not admin_key:
+        raise HTTPException(
+            503,
+            "Platform admin is not configured on this deployment (set PLATFORM_ADMIN_KEY); "
+            "the model registry is read-only",
+        )
+    if not hmac.compare_digest(presented.encode(), admin_key.encode()):
         raise HTTPException(403, "Platform admin privileges required to modify the model registry")
 
 

@@ -130,3 +130,30 @@ def test_persistence_survives_reseed(monkeypatch):
     listing = client.get("/models/configured", headers=_HEADERS).json()
     rr = next(g for g in listing["capabilities"] if g["capability"] == "rerank")
     assert any(m["model_id"] == "persist-me" for m in rr["models"])
+
+
+def test_tenant_write_without_admin_key_is_403_even_when_admin_unconfigured(monkeypatch):
+    # Regression (cross-tenant sweep): on a deployment with no PLATFORM_ADMIN_KEY,
+    # a plain tenant POST /models/configured answered 503 — a "server error" for
+    # what is an authorization refusal. The caller lacks the privilege either way.
+    client = _client(monkeypatch)
+    monkeypatch.delenv("PLATFORM_ADMIN_KEY", raising=False)
+    payload = {"provider": "custom", "model_id": "m", "capabilities": ["text_generation"]}
+    assert client.post("/models/configured", headers=_HEADERS, json=payload).status_code == 403
+    assert client.post("/models/configured", headers=_HEADERS, json={}).status_code == 403
+    assert client.delete("/models/configured/custom/m", headers=_HEADERS).status_code == 403
+    assert client.post("/models/configured/reseed", headers=_HEADERS).status_code == 403
+
+
+def test_admin_key_presented_to_unconfigured_deployment_is_503_with_guidance(monkeypatch):
+    # An operator presenting an admin key where admin is not enabled gets the
+    # honest "feature not configured" answer, naming the setting to fix.
+    client = _client(monkeypatch)
+    monkeypatch.delenv("PLATFORM_ADMIN_KEY", raising=False)
+    r = client.post(
+        "/models/configured",
+        headers=_ADMIN_HEADERS,
+        json={"provider": "custom", "model_id": "m", "capabilities": ["text_generation"]},
+    )
+    assert r.status_code == 503
+    assert "PLATFORM_ADMIN_KEY" in r.json()["detail"]

@@ -99,6 +99,42 @@ async def get_coordination_session(request: Request, session_id: str) -> Any:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found") from exc
 
 
+async def _run_transition(
+    request: Request,
+    session_id: str,
+    *,
+    command: str,
+    expected_version: int,
+    idempotency_key: str,
+) -> Any:
+    """Run one session transition command, mapping domain errors to HTTP.
+
+    Every transition endpoint (legacy ``/coordination/v1`` and canonical
+    ``/api/v1``) goes through here, so a session the caller's tenant cannot see —
+    RLS hides it and the store raises ``KeyError`` — is a 404 everywhere, never
+    an unhandled 500. The legacy start/complete handlers previously skipped this
+    mapping entirely, so a foreign or unknown session id crashed the request.
+    """
+    tenant = _tenant(request)
+    method = getattr(_service(request), command)
+    try:
+        return await method(
+            tenant,
+            session_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+        )
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found") from exc
+    except (InvalidTransitionError, OptimisticConflictError) as exc:
+        # InvalidTransitionError subclasses ValueError — keep this clause first.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+
+
 async def _canonical_transition(
     request: Request,
     response: Response,
@@ -107,18 +143,13 @@ async def _canonical_transition(
     idempotency_key: str,
     command: str,
 ) -> Any:
-    try:
-        method = getattr(_service(request), command)
-        result = await method(
-            _tenant(request),
-            session_id,
-            expected_version=body.expected_version,
-            idempotency_key=idempotency_key,
-        )
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found") from exc
-    except (InvalidTransitionError, OptimisticConflictError) as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    result = await _run_transition(
+        request,
+        session_id,
+        command=command,
+        expected_version=body.expected_version,
+        idempotency_key=idempotency_key,
+    )
     response.headers["Location"] = f"/api/v1/coordination/sessions/{session_id}"
     return result
 
@@ -163,9 +194,10 @@ async def resume_coordination_session(
 async def start_session(
     request: Request, session_id: str, body: TransitionRequest
 ) -> dict[str, Any]:
-    result = await _service(request).start_session(
-        _tenant(request),
+    result = await _run_transition(
+        request,
         session_id,
+        command="start_session",
         expected_version=body.expected_version,
         idempotency_key=body.idempotency_key,
     )
@@ -176,9 +208,10 @@ async def start_session(
 async def complete_session(
     request: Request, session_id: str, body: TransitionRequest
 ) -> dict[str, Any]:
-    result = await _service(request).complete_session(
-        _tenant(request),
+    result = await _run_transition(
+        request,
         session_id,
+        command="complete_session",
         expected_version=body.expected_version,
         idempotency_key=body.idempotency_key,
     )
