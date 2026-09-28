@@ -55,6 +55,16 @@ def make_webhook_token(tenant_id: str, workflow_id: str) -> str:
     return f"{_b64(payload)}.{_b64(sig)}"
 
 
+def callback_signing_secret(tenant_id: str, workflow_id: str) -> str:
+    """Per-(tenant, workflow) HMAC key for signing run-completion callbacks.
+
+    Derived from ``WORKFLOW_WEBHOOK_SECRET`` with a distinct label so it can never
+    be confused with (or used to forge) an inbound webhook token signature.
+    """
+    msg = f"callback:{tenant_id}:{workflow_id}".encode()
+    return hmac.new(_secret(), msg, hashlib.sha256).hexdigest()
+
+
 def verify_webhook_token(token: str) -> tuple[str, str] | None:
     """Return (tenant_id, workflow_id) if the token's signature is valid, else None."""
     try:

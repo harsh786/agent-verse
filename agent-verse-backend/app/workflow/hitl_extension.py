@@ -25,6 +25,7 @@ Features (20):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import secrets
 import time
@@ -359,57 +360,80 @@ class HITLWorkflowGateway:
         request_id: str,
         action: str,
         base_url: str = "https://app.agentverse.ai",
+        tenant_id: str | None = None,
     ) -> str:
-        """Generate a single-use JWT magic link token.
+        """Generate a single-use magic link token bound to (request, action, tenant).
 
-        The token is stored in Redis with a TTL and invalidated on first use.
+        The token is an opaque random id whose payload lives in Redis with a TTL
+        and is atomically deleted on first use. Redis is REQUIRED: without it a
+        token could not be validated later, so generation refuses rather than
+        minting a link that either never works or (the old consume fallback)
+        works for any string.
         """
+        if self._redis is None:
+            raise RuntimeError("magic links require Redis (single-use token store)")
+        req = await self.get_request(request_id, tenant_id)
+        if req is None:
+            raise ValueError(f"HITL request not found: {request_id}")
         jti = secrets.token_urlsafe(32)
         payload = {
             "jti": jti,
             "request_id": request_id,
             "action": action,
+            "tenant_id": req.tenant_id,
             "exp": int(time.time()) + self.MAGIC_LINK_TTL_SECONDS,
         }
-
-        # Guard in Redis (single-use)
-        if self._redis is not None:
-            redis_key = f"hitl:magic:{jti}"
-            await self._redis.setex(
-                redis_key,
-                self.MAGIC_LINK_TTL_SECONDS,
-                json.dumps(payload),
-            )
+        await self._redis.setex(
+            f"hitl:magic:{jti}",
+            self.MAGIC_LINK_TTL_SECONDS,
+            json.dumps(payload),
+        )
 
         # Update request
-        req = await self.get_request(request_id)
-        if req:
-            req.magic_link_token = jti
-            from datetime import timedelta
+        req.magic_link_token = jti
+        from datetime import timedelta
 
-            req.magic_link_expires_at = (
-                datetime.now(UTC) + timedelta(seconds=self.MAGIC_LINK_TTL_SECONDS)
-            ).isoformat()
-            await self._save(req)
+        req.magic_link_expires_at = (
+            datetime.now(UTC) + timedelta(seconds=self.MAGIC_LINK_TTL_SECONDS)
+        ).isoformat()
+        await self._save(req)
 
-        return f"{base_url}/approvals/magic/{jti}?action={action}"
+        # The route is mounted under /api/v1 (router_hitl prefix /approvals).
+        return f"{base_url.rstrip('/')}/api/v1/approvals/magic/{jti}?action={action}"
 
     async def consume_magic_link(self, token: str) -> dict[str, Any] | None:
         """Validate and consume a magic link token (single-use).
 
-        Returns the payload dict on success, None if expired/already used.
-        """
-        if self._redis is not None:
-            redis_key = f"hitl:magic:{token}"
-            raw = await self._redis.get(redis_key)
-            if raw is None:
-                return None
-            # Single-use: delete immediately
-            await self._redis.delete(redis_key)
-            return json.loads(raw)
+        Returns the stored payload on success, None if unknown/expired/used.
 
-        # In-memory fallback (tests)
-        return {"token": token, "valid": True}
+        Old bug: without Redis this returned ``{"token": token, "valid": True}``
+        for ANY string, so anyone could hit /approvals/magic/<garbage>. It now
+        fails closed: no Redis -> no valid tokens. The read+delete is atomic
+        (GETDEL) so two concurrent clicks cannot both consume one token.
+        """
+        if self._redis is None or not token:
+            if self._redis is None:
+                _log.warning("hitl_magic_link_rejected_no_redis")
+            return None
+        redis_key = f"hitl:magic:{token}"
+        getdel = getattr(self._redis, "getdel", None)
+        if getdel is not None:
+            raw = await getdel(redis_key)
+        else:  # pragma: no cover - very old redis client without GETDEL
+            raw = await self._redis.get(redis_key)
+            if raw is not None:
+                await self._redis.delete(redis_key)
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not payload.get("request_id"):
+            return None
+        if int(payload.get("exp") or 0) < int(time.time()):
+            return None
+        return payload
 
     # ── Query ─────────────────────────────────────────────────────────────────
 
@@ -562,11 +586,31 @@ class HITLWorkflowGateway:
     async def _send_notification(self, req: WorkflowHITLRequest) -> None:
         if self._notify is None:
             return
+        body = f"Run {req.run_id} step {req.step_id} needs your approval"
+        # One-tap approve/reject links, minted only when the single-use token
+        # store (Redis) is wired — otherwise the notification carries no links
+        # rather than links that cannot be validated.
+        if self._redis is not None:
+            try:
+                base = "http://localhost:5173"
+                with contextlib.suppress(Exception):
+                    from app.core.config import get_settings
+
+                    base = get_settings().public_base_url or base
+                approve = await self.generate_magic_link(
+                    req.request_id, "approved", base_url=base, tenant_id=req.tenant_id
+                )
+                reject = await self.generate_magic_link(
+                    req.request_id, "rejected", base_url=base, tenant_id=req.tenant_id
+                )
+                body += f"\nApprove: {approve}\nReject: {reject}"
+            except Exception as exc:
+                _log.warning("hitl_magic_link_generation_failed", error=str(exc))
         try:
             await self._notify.send(
                 user_id=req.assigned_to,
                 subject="Action Required: Workflow approval",
-                body=f"Run {req.run_id} step {req.step_id} needs your approval",
+                body=body,
                 priority=req.priority,
             )
         except Exception as exc:

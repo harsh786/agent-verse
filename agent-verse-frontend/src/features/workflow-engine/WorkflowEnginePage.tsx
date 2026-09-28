@@ -8,7 +8,9 @@ interface WorkflowDef {
   id: string;
   name: string;
   description?: string;
-  status: 'active' | 'paused' | 'draft';
+  // Backend workflow lifecycle (app/workflow/service.py). 'active'/'paused' are
+  // accepted for older payloads.
+  status: 'published' | 'draft' | 'archived' | 'active' | 'paused';
   trigger_type: string;
   // Not always populated by the backend's WorkflowResponse (e.g. right after
   // creation), so callers must not assume it's present.
@@ -31,18 +33,26 @@ const STATUS_STYLES: Record<string, { label: string; color: string; dot: string 
   active:    { label: 'Active',    color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20', dot: 'bg-emerald-400' },
   paused:    { label: 'Paused',    color: 'text-amber-400 bg-amber-400/10 border-amber-400/20',       dot: 'bg-amber-400' },
   draft:     { label: 'Draft',     color: 'text-[#64748B] bg-[#64748B]/10 border-[#64748B]/20',       dot: 'bg-[#64748B]' },
+  published: { label: 'Active',    color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20', dot: 'bg-emerald-400' },
+  archived:  { label: 'Archived',  color: 'text-[#64748B] bg-[#64748B]/10 border-[#64748B]/20',       dot: 'bg-[#64748B]' },
   running:   { label: 'Running',   color: 'text-[#00D4FF] bg-[#00D4FF]/10 border-[#00D4FF]/20',      dot: 'bg-[#00D4FF] animate-pulse' },
   completed: { label: 'Completed', color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/20', dot: 'bg-emerald-400' },
   failed:    { label: 'Failed',    color: 'text-rose-400 bg-rose-400/10 border-rose-400/20',          dot: 'bg-rose-400' },
   cancelled: { label: 'Cancelled', color: 'text-[#64748B] bg-[#64748B]/10 border-[#64748B]/20',       dot: 'bg-[#64748B]' },
 };
 
+// A workflow is "active" (its schedule/webhook triggers fire) when published.
+function isActive(wf: WorkflowDef): boolean {
+  return wf.status === 'published' || wf.status === 'active';
+}
+
 function WorkflowCard({ wf, onRun, onToggle }: {
   wf: WorkflowDef;
   onRun: (id: string) => void;
-  onToggle: (id: string, paused: boolean) => void;
+  onToggle: (id: string, deactivate: boolean) => void;
 }) {
-  const st = STATUS_STYLES[wf.status];
+  const st = STATUS_STYLES[wf.status] ?? STATUS_STYLES.draft;
+  const active = isActive(wf);
   return (
     <JARVISStaggerItem interactive>
       <div className="rounded-xl border border-[#1E2535] bg-[#1A1F2E] p-4 hover:border-[#2D3748] transition-colors">
@@ -74,11 +84,11 @@ function WorkflowCard({ wf, onRun, onToggle }: {
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <button
-              onClick={() => onToggle(wf.id, wf.status === 'active')}
+              onClick={() => onToggle(wf.id, active)}
               className="p-1.5 rounded-lg text-[#64748B] hover:text-amber-400 hover:bg-amber-400/10 transition-colors"
-              title={wf.status === 'active' ? 'Pause' : 'Resume'}
+              title={active ? 'Pause' : 'Resume'}
             >
-              {wf.status === 'active' ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+              {active ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
             </button>
             <button
               onClick={() => onRun(wf.id)}
@@ -138,20 +148,30 @@ export function WorkflowEnginePage() {
 
   const triggerRun = useMutation({
     mutationFn: (id: string) =>
-      apiFetch(`/api/v1/workflows/${id}/trigger`, { method: 'POST' }),
+      // TriggerRequest is a required JSON body; an empty POST was a 422.
+      apiFetch(`/api/v1/workflows/${id}/trigger`, {
+        method: 'POST',
+        body: JSON.stringify({ inputs: {} }),
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workflow-engine-runs'] });
       setActiveTab('runs');
     },
   });
 
+  // Workflow-level pause/resume = unpublish/publish (stops/starts its schedule
+  // and webhook triggers). There is no /workflows/{id}/pause|resume route — the
+  // old calls 404'd; run-level pause/resume lives at /api/v1/runs/{id}/pause|resume.
   const toggleWorkflow = useMutation({
     mutationFn: ({ id, pause }: { id: string; pause: boolean }) =>
-      apiFetch(`/api/v1/workflows/${id}/${pause ? 'pause' : 'resume'}`, { method: 'POST' }),
+      apiFetch(`/api/v1/workflows/${id}/${pause ? 'unpublish' : 'publish'}`, {
+        method: 'POST',
+        body: '{}',
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-engine-list'] }),
   });
 
-  const activeCount = workflows.filter((w) => w.status === 'active').length;
+  const activeCount = workflows.filter(isActive).length;
   const runningRuns = runs.filter((r) => r.status === 'running').length;
   const failedRuns = runs.filter((r) => r.status === 'failed').length;
 

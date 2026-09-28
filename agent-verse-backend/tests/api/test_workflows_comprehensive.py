@@ -262,7 +262,7 @@ def test_delete_workflow_not_found() -> None:
 # ---------------------------------------------------------------------------
 
 def test_run_workflow_dry_run() -> None:
-    """Without GoalService, run falls back to dry_run mode."""
+    """A body ``dry_run`` flag is honoured (validate only, no execution)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/workflows",
@@ -279,10 +279,12 @@ def test_run_workflow_dry_run() -> None:
     assert resp.json()["status"] == "dry_run"
 
 
-def test_run_workflow_with_goal_service() -> None:
+def test_run_workflow_never_uses_goal_service() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     goal_svc = AsyncMock()
-    goal_svc.submit_goal = AsyncMock(return_value={"goal_id": "gid-1", "status": "planning"})
-
     client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
     cr = client.post(
         "/workflows",
@@ -291,13 +293,10 @@ def test_run_workflow_with_goal_service() -> None:
     )
     wf_id = cr.json()["id"]
     resp = client.post(
-        f"/workflows/{wf_id}/run",
-        json={},
-        headers={"X-API-Key": _VALID_KEY},
+        f"/workflows/{wf_id}/run", json={}, headers={"X-API-Key": _VALID_KEY}
     )
-    assert resp.status_code == 202
-    body = resp.json()
-    assert body.get("status") in ("submitted", "planning", "dry_run")
+    assert resp.status_code == 503
+    goal_svc.submit_goal.assert_not_awaited()
 
 
 def test_run_workflow_not_found() -> None:

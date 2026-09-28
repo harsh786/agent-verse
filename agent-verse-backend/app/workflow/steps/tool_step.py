@@ -9,6 +9,7 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
 from app.workflow.state import WorkflowState
+from app.workflow.steps import StepServiceUnavailableError
 
 _log = get_logger(__name__)
 
@@ -34,7 +35,20 @@ class ToolStepNode:
             output = (state["mock_overrides"] or {})[self.step.id]
             _log.debug("tool_step_mock", step_id=self.step.id)
         elif self.mcp_client is None:
-            output = {"_mock": True, "tool": self.step.tool, "input": resolved_input}
+            # Old bug: this returned {"_mock": True, ...} for REAL runs too, so a
+            # run whose MCP client failed to wire "succeeded" without calling
+            # anything. Only an explicit test/simulation run may simulate.
+            if not state.get("is_test_run"):
+                raise StepServiceUnavailableError(
+                    f"tool step {self.step.id!r}: no MCP client is configured, "
+                    f"cannot call tool {self.step.tool!r}"
+                )
+            output = {
+                "_mock": True,
+                "_simulated": True,
+                "tool": self.step.tool,
+                "input": resolved_input,
+            }
         else:
             # Real MCP dispatch: resolve the connector that exposes this tool and
             # call it. Use the initiator's real TenantContext when present; else

@@ -493,86 +493,53 @@ async def test_get_plan_tier_falls_back_to_free_on_lookup_error() -> None:
 
 
 # ── send_callback() ──────────────────────────────────────────────────────────
+# send_callback is now a thin, NON-BLOCKING dispatcher (the engine calls
+# _fire_callback on every terminal transition); delivery itself is covered in
+# test_run_callbacks_idempotency.py.
 
 
 async def test_send_callback_skips_when_not_configured() -> None:
     runner = WorkflowRunner(compiler=MagicMock())
     definition = _wf(callback=None)
-    # Must not raise / attempt any network call.
-    await runner.send_callback(definition, {"run_id": "r1"})
+    with patch("app.workflow.callbacks.dispatch_callback") as dispatch:
+        await runner.send_callback(definition, {"run_id": "r1"})
+    dispatch.assert_not_called()
 
 
 async def test_send_callback_skips_on_failure_unless_on_failure_flag() -> None:
     runner = WorkflowRunner(compiler=MagicMock())
     definition = _wf(callback=CallbackConfig(url="https://cb.example.com/hook", on_failure=False))
     state = {"run_id": "r1", "status": WorkflowRunStatus.FAILED}
-
-    posted = AsyncMock()
-
-    class _Client:
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            pass
-
-        async def post(self, *args: Any, **kwargs: Any) -> None:
-            posted(*args, **kwargs)
-
-    with patch.object(httpx, "AsyncClient", lambda **kw: _Client()):
+    with patch("app.workflow.callbacks.dispatch_callback") as dispatch:
         await runner.send_callback(definition, state)
+    dispatch.assert_not_called()
 
-    posted.assert_not_called()
 
-
-async def test_send_callback_posts_final_outputs_on_success() -> None:
+async def test_send_callback_dispatches_final_outputs_on_success() -> None:
     runner = WorkflowRunner(compiler=MagicMock())
     definition = _wf(callback=CallbackConfig(url="https://cb.example.com/hook", on_failure=True))
     state = {
         "run_id": "r1",
+        "workflow_id": "wf-1",
+        "tenant_id": "t-1",
         "status": WorkflowRunStatus.COMPLETE,
         "outputs": {"answer": 42},
         "labels": {"env": "prod"},
         "cost_usd": 0.05,
     }
-
-    posted = AsyncMock()
-
-    class _Client:
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            pass
-
-        async def post(self, url: str, json: dict[str, Any]) -> None:
-            posted(url, json)
-
-    with patch.object(httpx, "AsyncClient", lambda **kw: _Client()):
+    with patch("app.workflow.callbacks.dispatch_callback") as dispatch:
         await runner.send_callback(definition, state)
-
-    posted.assert_called_once()
-    url, payload = posted.call_args.args
+    dispatch.assert_called_once()
+    url, payload = dispatch.call_args.args
     assert url == "https://cb.example.com/hook"
     assert payload["outputs"] == {"answer": 42}
     assert payload["cost_usd"] == 0.05
 
 
-async def test_send_callback_swallows_post_error() -> None:
+async def test_send_callback_swallows_dispatch_error() -> None:
     runner = WorkflowRunner(compiler=MagicMock())
     definition = _wf(callback=CallbackConfig(url="https://cb.example.com/hook"))
     state = {"run_id": "r1", "status": WorkflowRunStatus.COMPLETE, "outputs": {}}
-
-    class _Client:
-        async def __aenter__(self) -> _Client:
-            return self
-
-        async def __aexit__(self, *args: Any) -> None:
-            pass
-
-        async def post(self, *args: Any, **kwargs: Any) -> None:
-            raise httpx.ConnectError("refused")
-
-    with patch.object(httpx, "AsyncClient", lambda **kw: _Client()):
+    with patch("app.workflow.callbacks.dispatch_callback", side_effect=httpx.ConnectError("x")):
         # Must not raise — callback failures are logged and swallowed.
         await runner.send_callback(definition, state)

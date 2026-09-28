@@ -44,7 +44,7 @@ function mockFetch(plan: FetchPlan = {}) {
       new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     if (url.includes('/api/v1/runs')) return ok(plan.runs ?? []);
-    if (/\/api\/v1\/workflows\/[^/]+\/(trigger|pause|resume)/.test(url) && method === 'POST')
+    if (/\/api\/v1\/workflows\/[^/]+\/(trigger|publish|unpublish)/.test(url) && method === 'POST')
       return ok({ status: 'ok' });
     if (url.includes('/api/v1/workflows')) return ok(plan.workflows ?? []);
     return ok({});
@@ -107,7 +107,7 @@ describe('WorkflowEnginePage', () => {
     await waitFor(() => expect(screen.getByText(/run-abcdef12/i)).toBeInTheDocument());
   });
 
-  test('pausing an active workflow POSTs to the pause endpoint', async () => {
+  test('pausing an active workflow unpublishes it (the real route)', async () => {
     const spy = mockFetch({ workflows: [wf()] });
     renderPage();
     await screen.findByText('Nightly Report');
@@ -115,13 +115,35 @@ describe('WorkflowEnginePage', () => {
     await waitFor(() =>
       expect(
         spy.mock.calls.some(([u, i]) =>
-          /\/api\/v1\/workflows\/wf-1\/pause/.test(String(u)) && (i as RequestInit)?.method === 'POST',
+          /\/api\/v1\/workflows\/wf-1\/unpublish$/.test(String(u)) && (i as RequestInit)?.method === 'POST',
         ),
       ).toBe(true),
     );
+    // The non-existent /workflows/{id}/pause route is never called.
+    expect(spy.mock.calls.some(([u]) => /\/workflows\/wf-1\/(pause|resume)/.test(String(u)))).toBe(false);
   });
 
-  test('a paused workflow offers a Resume toggle that hits the resume endpoint', async () => {
+  test('a published workflow (backend status) renders as Active', async () => {
+    mockFetch({ workflows: [wf({ status: 'published' })] });
+    renderPage();
+    await screen.findByText('Nightly Report');
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByTitle('Pause')).toBeInTheDocument();
+  });
+
+  test('trigger sends the required JSON body', async () => {
+    const spy = mockFetch({ workflows: [wf()], runs: [run()] });
+    renderPage();
+    await screen.findByText('Nightly Report');
+    fireEvent.click(screen.getByRole('button', { name: /^Run$/i }));
+    await waitFor(() => {
+      const call = spy.mock.calls.find(([u]) => /\/wf-1\/trigger/.test(String(u)));
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({ inputs: {} });
+    });
+  });
+
+  test('a paused workflow offers a Resume toggle that publishes it', async () => {
     const spy = mockFetch({ workflows: [wf({ status: 'paused', success_rate: 0.5 })] });
     renderPage();
     await screen.findByText('Nightly Report');
@@ -131,7 +153,7 @@ describe('WorkflowEnginePage', () => {
     fireEvent.click(screen.getByTitle('Resume'));
     await waitFor(() =>
       expect(
-        spy.mock.calls.some(([u]) => /\/api\/v1\/workflows\/wf-1\/resume/.test(String(u))),
+        spy.mock.calls.some(([u]) => /\/api\/v1\/workflows\/wf-1\/publish$/.test(String(u))),
       ).toBe(true),
     );
   });

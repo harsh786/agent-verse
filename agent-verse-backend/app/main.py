@@ -1627,6 +1627,10 @@ def create_app(
                     provider=_app_provider,
                     ocr_engine=_WFOcrEngine(),
                     knowledge_store=getattr(app.state, "knowledge_store", None),
+                    # Durable timer waits: woken by the Celery beat task
+                    # ``workflow.wake_due_timer_waits`` (this runner dispatches
+                    # via Celery), so a long wait never holds a slot.
+                    durable_timer_waits=True,
                 )
                 _wf_runner_db = _WFRunner(
                     compiler=_wf_compiler_db,

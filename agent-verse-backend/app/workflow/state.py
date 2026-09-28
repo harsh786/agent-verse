@@ -60,6 +60,9 @@ class WorkflowRunStatus(enum.StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     WAITING_HITL = "waiting_hitl"
+    # A durable timer ``wait`` step suspended the run: the wake time is persisted
+    # (workflow_runs.wake_at) and a beat scan re-dispatches the run once it passes.
+    WAITING_TIMER = "waiting_timer"
     PAUSED = "paused"
     COMPLETE = "complete"
     FAILED = "failed"

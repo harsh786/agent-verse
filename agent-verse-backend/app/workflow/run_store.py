@@ -75,7 +75,9 @@ class WorkflowRunStore(Protocol):
         inputs: dict[str, Any] | None = None,
         labels: dict[str, str] | None = None,
         is_test_run: bool = False,
-    ) -> None: ...
+        run_metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> str | None: ...
 
     async def get(self, tenant_id: str, run_id: str) -> dict[str, Any] | None: ...
 
@@ -233,32 +235,78 @@ class PostgresWorkflowRunStore:
         inputs: dict[str, Any] | None = None,
         labels: dict[str, str] | None = None,
         is_test_run: bool = False,
-    ) -> None:
+        run_metadata: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
+    ) -> str:
+        """Insert a ``pending`` run row and return the id of the run that owns it.
+
+        ``run_metadata`` (callback_url, retry lineage, ...) used to be accepted by
+        the runner but never written, so an out-of-process worker could not see
+        it. It is now persisted.
+
+        With an ``idempotency_key`` the insert is arbitrated by the partial UNIQUE
+        index ``uq_workflow_runs_idempotency`` (tenant_id, workflow_id, key): a
+        duplicate trigger conflicts and the EXISTING run's id is returned instead
+        of ``run_id``. The database (not an in-process check) picks the winner, so
+        this holds across API replicas and concurrent client retries.
+        """
         from sqlalchemy import text as sa_text
 
+        params: dict[str, Any] = {
+            "id": run_id,
+            "tenant_id": tenant_id,
+            "workflow_id": workflow_id,
+            "trigger_type": trigger_type,
+            "trigger_payload": json.dumps(trigger_payload) if trigger_payload else None,
+            "inputs": json.dumps(inputs or {}),
+            "labels": json.dumps(labels or {}),
+            "is_test_run": is_test_run,
+            "run_metadata": json.dumps(run_metadata or {}, default=str),
+            "idempotency_key": idempotency_key or None,
+        }
+        insert_sql = (
+            "INSERT INTO workflow_runs "
+            "(id, tenant_id, workflow_id, trigger_type, trigger_payload, inputs, "
+            " status, labels, is_test_run, run_metadata, idempotency_key, created_at) "
+            "VALUES (:id, CAST(:tenant_id AS uuid), CAST(:workflow_id AS uuid), "
+            " :trigger_type, CAST(:trigger_payload AS jsonb), CAST(:inputs AS jsonb), "
+            " 'pending', CAST(:labels AS jsonb), :is_test_run, "
+            " CAST(:run_metadata AS jsonb), :idempotency_key, NOW())"
+        )
         async with self._db() as session:
             await self._set_tenant(session, tenant_id)
-            await session.execute(
-                sa_text(
-                    "INSERT INTO workflow_runs "
-                    "(id, tenant_id, workflow_id, trigger_type, trigger_payload, inputs, "
-                    " status, labels, is_test_run, created_at) "
-                    "VALUES (:id, CAST(:tenant_id AS uuid), CAST(:workflow_id AS uuid), "
-                    " :trigger_type, CAST(:trigger_payload AS jsonb), CAST(:inputs AS jsonb), "
-                    " 'pending', CAST(:labels AS jsonb), :is_test_run, NOW())"
-                ),
-                {
-                    "id": run_id,
-                    "tenant_id": tenant_id,
-                    "workflow_id": workflow_id,
-                    "trigger_type": trigger_type,
-                    "trigger_payload": json.dumps(trigger_payload) if trigger_payload else None,
-                    "inputs": json.dumps(inputs or {}),
-                    "labels": json.dumps(labels or {}),
-                    "is_test_run": is_test_run,
-                },
-            )
+            if not idempotency_key:
+                await session.execute(sa_text(insert_sql), params)
+                await session.commit()
+                return run_id
+            inserted = (
+                await session.execute(
+                    sa_text(
+                        insert_sql
+                        + " ON CONFLICT (tenant_id, workflow_id, idempotency_key) "
+                        "WHERE idempotency_key IS NOT NULL DO NOTHING RETURNING id"
+                    ),
+                    params,
+                )
+            ).first()
+            if inserted is not None:
+                await session.commit()
+                return str(inserted[0])
+            existing = (
+                await session.execute(
+                    sa_text(
+                        "SELECT id FROM workflow_runs "
+                        "WHERE tenant_id = CAST(:tenant_id AS uuid) "
+                        "AND workflow_id = CAST(:workflow_id AS uuid) "
+                        "AND idempotency_key = :idempotency_key"
+                    ),
+                    params,
+                )
+            ).first()
             await session.commit()
+            if existing is None:  # pragma: no cover - conflicting row deleted meanwhile
+                raise RuntimeError("idempotent run insert conflicted but no run was found")
+            return str(existing[0])
 
     async def get(self, tenant_id: str, run_id: str) -> dict[str, Any] | None:
         from sqlalchemy import text as sa_text
@@ -553,6 +601,137 @@ class PostgresWorkflowRunStore:
                 )
             ).mappings().first()
             return self._row_to_step(row) if row else None
+
+    async def copy_completed_step_results(
+        self, tenant_id: str, from_run_id: str, to_run_id: str
+    ) -> int:
+        """Seed ``to_run_id`` with the COMPLETE step results of ``from_run_id``.
+
+        Used by retry. The engine's node_fn returns a step's persisted output
+        instead of re-executing it when that step is already COMPLETE for the
+        run, so copying the failed run's completed steps into the retry run makes
+        the retry continue after them instead of redoing them. Only the latest
+        attempt per step is copied.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            result = await session.execute(
+                sa_text(
+                    "INSERT INTO workflow_step_results "
+                    "(id, run_id, tenant_id, step_id, step_type, step_name, status, "
+                    " resolved_input, output, attempt_number, started_at, completed_at, "
+                    " duration_ms) "
+                    "SELECT gen_random_uuid(), CAST(:to_run AS uuid), s.tenant_id, s.step_id, "
+                    " s.step_type, s.step_name, s.status, s.resolved_input, s.output, 1, "
+                    " s.started_at, s.completed_at, s.duration_ms "
+                    "FROM ("
+                    "  SELECT DISTINCT ON (step_id) * FROM workflow_step_results "
+                    "  WHERE run_id = CAST(:from_run AS uuid) "
+                    "  ORDER BY step_id, attempt_number DESC, started_at DESC"
+                    ") s WHERE s.status = 'complete' AND s.output IS NOT NULL"
+                ),
+                {"from_run": from_run_id, "to_run": to_run_id},
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    # ── Durable timer waits ───────────────────────────────────────────────────
+    async def get_timer_wait(self, tenant_id: str, run_id: str, step_id: str) -> str | None:
+        """Return the persisted ISO wake time for ``step_id`` of a run, or None."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "SELECT run_metadata -> 'timer_waits' ->> :step_id "
+                        "FROM workflow_runs WHERE id = CAST(:rid AS uuid)"
+                    ),
+                    {"rid": run_id, "step_id": step_id},
+                )
+            ).first()
+            return str(row[0]) if row and row[0] else None
+
+    async def set_timer_wait(
+        self, tenant_id: str, run_id: str, step_id: str, wake_at: datetime
+    ) -> None:
+        """Persist a timer wait. ``run_metadata.timer_waits[step_id]`` keeps the
+        step's own wake time (stable across re-dispatches); the ``wake_at`` column
+        holds the EARLIEST pending wake, which the beat scan keys on."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            await session.execute(
+                sa_text(
+                    "UPDATE workflow_runs SET "
+                    " run_metadata = COALESCE(run_metadata, '{}'::jsonb) || "
+                    "   jsonb_build_object('timer_waits', "
+                    "     COALESCE(run_metadata -> 'timer_waits', '{}'::jsonb) || "
+                    "     jsonb_build_object(CAST(:step_id AS text), CAST(:iso AS text))), "
+                    " wake_at = LEAST(COALESCE(wake_at, :ts), :ts) "
+                    "WHERE id = CAST(:rid AS uuid)"
+                ),
+                {"rid": run_id, "step_id": step_id, "iso": wake_at.isoformat(), "ts": wake_at},
+            )
+            await session.commit()
+
+    async def claim_due_timer_waits(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Atomically claim runs whose timer wait is due (cross-tenant beat scan).
+
+        ``FOR UPDATE SKIP LOCKED`` plus flipping ``waiting_timer`` -> ``pending``
+        in one statement means two beat replicas (or overlapping scans) never
+        claim, and so never re-dispatch, the same run twice. ``wake_at`` is
+        cleared so a later re-suspend records a fresh earliest wake.
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.db.rls import system_session
+
+        system_db = self._system_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_runs r SET status = 'pending', wake_at = NULL "
+                        "FROM ("
+                        "  SELECT id FROM workflow_runs "
+                        "  WHERE status = 'waiting_timer' AND wake_at <= NOW() "
+                        "  ORDER BY wake_at LIMIT :lim FOR UPDATE SKIP LOCKED"
+                        ") due WHERE r.id = due.id "
+                        "RETURNING r.id, r.tenant_id, r.workflow_id, r.is_test_run"
+                    ),
+                    {"lim": limit},
+                )
+            ).mappings().all()
+            return [
+                {
+                    "run_id": str(r["id"]),
+                    "tenant_id": str(r["tenant_id"]),
+                    "workflow_id": str(r["workflow_id"]) if r["workflow_id"] else "",
+                    "is_test_run": bool(r["is_test_run"] or False),
+                }
+                for r in rows
+            ]
+
+    async def release_timer_claim(self, tenant_id: str, run_id: str) -> None:
+        """Undo a claim whose re-dispatch failed: back to ``waiting_timer`` and due
+        now, so the next beat scan retries instead of stranding it ``pending``."""
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            await session.execute(
+                sa_text(
+                    "UPDATE workflow_runs SET status = 'waiting_timer', wake_at = NOW() "
+                    "WHERE id = CAST(:rid AS uuid) AND status = 'pending'"
+                ),
+                {"rid": run_id},
+            )
+            await session.commit()
 
     # ── Maintenance (cross-tenant) ────────────────────────────────────────────
     async def get_retryable_webhooks(self, max_attempts: int = 3) -> list[dict[str, Any]]:
@@ -877,6 +1056,13 @@ class PostgresWorkflowRunStore:
             "step_count": int(row.get("step_count") or 0),
             "cost_usd": float(row["cost_usd"] or 0),
             "tokens_used": int(row.get("tokens_used") or 0),
+            "trigger_type": row.get("trigger_type"),
+            "is_test_run": bool(row.get("is_test_run") or False),
+            "labels": _as_obj(row.get("labels")) or {},
+            # Read by the out-of-process worker (callback_url, retry lineage).
+            "run_metadata": _as_obj(row.get("run_metadata")) or {},
+            "idempotency_key": row.get("idempotency_key"),
+            "wake_at": _iso(row.get("wake_at")),
         }
 
     @staticmethod

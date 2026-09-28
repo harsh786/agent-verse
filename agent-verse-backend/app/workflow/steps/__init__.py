@@ -30,6 +30,15 @@ from app.workflow.dsl import StepDefinition
 from app.workflow.state import WorkflowState
 
 
+class StepServiceUnavailableError(RuntimeError):
+    """A step's backing service (MCP client, LLM provider, ...) is not wired.
+
+    Raised instead of returning a success-shaped placeholder, so the engine's
+    on_failure policy (pause / abort / skip) applies and a run is never marked
+    COMPLETE having done nothing. Only explicit test/simulation runs simulate.
+    """
+
+
 @runtime_checkable
 class BaseStepNode(Protocol):
     """Structural protocol — no inheritance required."""

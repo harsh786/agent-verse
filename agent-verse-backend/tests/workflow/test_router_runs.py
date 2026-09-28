@@ -323,9 +323,13 @@ async def test_real_retry_only_failed(
     await _seed(store, "test-tenant", "run-ok", "complete")
     assert client.post("/api/v1/runs/run-ok/retry").status_code == 409  # not failed
     await _seed(store, "test-tenant", "run-bad", "failed")
+    # No workflow runner is wired in this app: the retry must be refused (503)
+    # rather than inserting a pending row that nothing will ever dispatch (the
+    # old bug). The dispatching path is covered in test_retry_dispatch.py.
+    before = set(store._runs)
     resp = client.post("/api/v1/runs/run-bad/retry")
-    assert resp.status_code == 202
-    assert resp.json()["run_id"] != "run-bad"  # a fresh run id
+    assert resp.status_code == 503
+    assert set(store._runs) == before
 
 
 async def test_real_debug_run(

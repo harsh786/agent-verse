@@ -221,6 +221,44 @@ async def test_create_inserts_and_commits() -> None:
     assert params["is_test_run"] is True
 
 
+async def test_create_persists_run_metadata() -> None:
+    db = FakeDBFactory([[FakeResult(), FakeResult()]])
+    store = PostgresWorkflowRunStore(db)
+    owner = await store.create(
+        run_id="run-1",
+        workflow_id="wf-1",
+        tenant_id="t1",
+        run_metadata={"callback_url": "https://93.184.216.34/cb"},
+    )
+    assert owner == "run-1"
+    sql, params = db.sessions[0].executed[1]
+    assert "run_metadata" in sql and "ON CONFLICT" not in sql
+    assert params["run_metadata"] == '{"callback_url": "https://93.184.216.34/cb"}'
+
+
+async def test_create_with_idempotency_key_new_row_returns_own_id() -> None:
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=("run-1",))]])
+    store = PostgresWorkflowRunStore(db)
+    owner = await store.create(
+        run_id="run-1", workflow_id="wf-1", tenant_id="t1", idempotency_key="k"
+    )
+    assert owner == "run-1"
+    sql, params = db.sessions[0].executed[1]
+    assert "ON CONFLICT (tenant_id, workflow_id, idempotency_key)" in sql
+    assert params["idempotency_key"] == "k"
+
+
+async def test_create_with_duplicate_idempotency_key_returns_existing_id() -> None:
+    # insert conflicts (RETURNING yields no row) -> SELECT finds the existing run
+    db = FakeDBFactory([[FakeResult(), FakeResult(first=None), FakeResult(first=("run-0",))]])
+    store = PostgresWorkflowRunStore(db)
+    owner = await store.create(
+        run_id="run-1", workflow_id="wf-1", tenant_id="t1", idempotency_key="k"
+    )
+    assert owner == "run-0"
+    assert "SELECT id FROM workflow_runs" in db.sessions[0].executed[2][0]
+
+
 async def test_get_found_and_not_found() -> None:
     row = {
         "id": "run-1",

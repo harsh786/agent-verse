@@ -55,9 +55,11 @@ async def test_tool_step_no_mcp_client() -> None:
     from app.workflow.steps.tool_step import ToolStepNode
     step = StepDefinition(id="s1", type="tool", tool="test.tool")
     node = ToolStepNode(step, _ctx())
-    state = _state()
-    result = await node.execute(state)  # type: ignore[arg-type]
-    # Without MCP client, returns mock output
+    # Without an MCP client only a test run may simulate; a real run fails.
+    from app.workflow.steps import StepServiceUnavailableError
+    with pytest.raises(StepServiceUnavailableError):
+        await node.execute(_state())  # type: ignore[arg-type]
+    result = await node.execute(_state(is_test_run=True))  # type: ignore[arg-type]
     assert "step_outputs" in result
 
 
@@ -86,7 +88,8 @@ async def test_llm_step_fake_provider() -> None:
     from app.workflow.steps.llm_step import LLMStepNode
     step = StepDefinition(id="llm1", type="llm", prompt="Summarize: {{inputs.text}}")
     node = LLMStepNode(step, _ctx())
-    state = _state(inputs={"text": "hello world"})
+    # No provider: only an explicit test run simulates (no fake success).
+    state = _state(inputs={"text": "hello world"}, is_test_run=True)
     result = await node.execute(state)  # type: ignore[arg-type]
     assert "step_outputs" in result
     assert "llm1" in result["step_outputs"]
@@ -97,7 +100,7 @@ async def test_llm_step_resolves_template() -> None:
     from app.workflow.steps.llm_step import LLMStepNode
     step = StepDefinition(id="llm1", type="llm", prompt="Process: {{inputs.value}}")
     node = LLMStepNode(step, _ctx())
-    state = _state(inputs={"value": "test input"})
+    state = _state(inputs={"value": "test input"}, is_test_run=True)
     result = await node.execute(state)  # type: ignore[arg-type]
     assert result["step_outputs"]["llm1"] is not None
 

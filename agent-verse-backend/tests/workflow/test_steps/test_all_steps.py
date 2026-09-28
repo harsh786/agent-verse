@@ -24,14 +24,16 @@ def make_state(**kwargs):
 
 @pytest.mark.asyncio
 async def test_tool_step_no_client():
-    """Without MCPClient, returns mock output."""
+    """Without MCPClient a REAL run fails the step (no fake success); only a
+    test run simulates. See test_no_fake_success.py."""
+    from app.workflow.steps import StepServiceUnavailableError
     from app.workflow.steps.tool_step import ToolStepNode
     step = StepDefinition(id="s1", type="tool", tool="test.tool", input={"x": "1"})
     ctx = ContextResolver()
     node = ToolStepNode(step, ctx)
-    state = make_state()
-    result = await node.execute(state)
-    assert "s1" in result["step_outputs"]
+    with pytest.raises(StepServiceUnavailableError):
+        await node.execute(make_state())
+    result = await node.execute(make_state(is_test_run=True))
     assert result["step_outputs"]["s1"].get("_mock") is True
 
 
@@ -54,10 +56,12 @@ async def test_llm_step_no_provider():
     step = StepDefinition(id="llm1", type="llm", prompt="Classify: {{inputs.text}}")
     ctx = ContextResolver()
     node = LLMStepNode(step, ctx)
-    state = make_state(inputs={"text": "hello"})
-    result = await node.execute(state)
+    from app.workflow.steps import StepServiceUnavailableError
+    with pytest.raises(StepServiceUnavailableError):
+        await node.execute(make_state(inputs={"text": "hello"}))
+    result = await node.execute(make_state(inputs={"text": "hello"}, is_test_run=True))
     out = result["step_outputs"]["llm1"]
-    assert "result" in out or "FakeProvider" in str(out)
+    assert out["_simulated"] is True
 
 
 # ── TransformStepNode ─────────────────────────────────────────────────────────
