@@ -257,10 +257,15 @@ class TestMainSSEPath:
             respx.post("http://localhost:8000/goals").mock(
                 return_value=httpx.Response(200, json={"goal_id": "goal-42"})
             )
+            # The real API: the answer is result_artifact.summary; the cost comes
+            # from the cost-metrics endpoint (GET /goals/{id} has no cost_usd).
             respx.get("http://localhost:8000/goals/goal-42").mock(
                 return_value=httpx.Response(
-                    200, json={"result": "all done", "cost_usd": 0.42}
+                    200, json={"status": "complete", "result_artifact": {"summary": "all done"}}
                 )
+            )
+            respx.get("http://localhost:8000/goals/goal-42/cost-metrics").mock(
+                return_value=httpx.Response(200, json={"total_cost_usd": 0.42})
             )
             await module.main()
 
@@ -387,8 +392,11 @@ class TestMainPollingPath:
             respx.get("http://localhost:8000/goals/goal-7").mock(
                 return_value=httpx.Response(
                     200,
-                    json={"status": "complete", "result": "polled result", "cost_usd": 1.5},
+                    json={"status": "complete", "result_artifact": {"summary": "polled result"}},
                 )
+            )
+            respx.get("http://localhost:8000/goals/goal-7/cost-metrics").mock(
+                return_value=httpx.Response(200, json={"total_cost_usd": 1.5})
             )
             await module.main()
 
@@ -560,3 +568,14 @@ class TestMainSubmissionErrors:
             )
             # Must not raise even though nothing consumes /dev/null's content.
             await module.main()
+
+
+
+def test_multiline_result_uses_a_delimiter(monkeypatch, tmp_path):
+    """Regression: result=<multi-line text> corrupted GITHUB_OUTPUT."""
+    output_file = tmp_path / "out.txt"
+    module = load_entrypoint(monkeypatch, GITHUB_OUTPUT=str(output_file))
+    module._write_output("result", "line one\nline two")
+    content = output_file.read_text()
+    assert content.startswith("result<<AGENTVERSE_EOF_")
+    assert "line one\nline two\n" in content

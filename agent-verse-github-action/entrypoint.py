@@ -50,10 +50,43 @@ def wait_for_completion_sse(goal_id: str) -> dict | None:
                             }
                     except json.JSONDecodeError:
                         pass
-    except Exception:
-        pass
+    except Exception as exc:
+        # Not fatal (we fall back to polling), but never silent.
+        print(f"::warning::SSE wait unavailable, polling instead: {exc}")
 
     return None
+
+
+def _write_output(name: str, value: str) -> None:
+    """Append one GitHub Actions output; multi-line values use a delimiter
+    (a raw newline in ``name=value`` corrupted every later output)."""
+    github_output = os.environ.get("GITHUB_OUTPUT", "/dev/null")
+    with open(github_output, "a") as f:
+        if "\n" in value:
+            delim = f"AGENTVERSE_EOF_{os.urandom(8).hex()}"
+            f.write(f"{name}<<{delim}\n{value}\n{delim}\n")
+        else:
+            f.write(f"{name}={value}\n")
+
+
+async def _write_completion_outputs(client: httpx.AsyncClient, goal_id: str, data: dict) -> None:
+    """The goal's answer and cost. GET /goals/{id} has no ``result``/``cost_usd``
+    fields (the action always reported an empty result and 0.0): the answer is
+    ``result_artifact.summary`` and the cost comes from the cost-metrics API."""
+    artifact = data.get("result_artifact") or {}
+    result = str(data.get("result") or artifact.get("summary") or "")[:2000]
+    cost = 0.0
+    try:
+        resp = await client.get(f"{BASE_URL}/goals/{goal_id}/cost-metrics")
+        if resp.is_success:
+            cost = float(resp.json().get("total_cost_usd") or 0.0)
+        else:
+            print(f"::warning::cost metrics unavailable: HTTP {resp.status_code}")
+    except Exception as exc:
+        print(f"::warning::cost metrics unavailable: {exc}")
+    _write_output("status", "complete")
+    _write_output("result", result)
+    _write_output("cost-usd", f"{cost}")
 
 
 async def main() -> None:
@@ -78,11 +111,7 @@ async def main() -> None:
                 # Fetch full result for output
                 resp = await client.get(f"{BASE_URL}/goals/{goal_id}")
                 data = resp.json() if resp.is_success else {}
-                with open(github_output, "a") as f:
-                    f.write("status=complete\n")
-                    result = (data.get("result") or "")[:2000]
-                    f.write(f"result={result}\n")
-                    f.write(f"cost-usd={data.get('cost_usd', 0.0)}\n")
+                await _write_completion_outputs(client, goal_id, data)
                 return
             if status in {"failed", "cancelled"}:
                 print(f"::error::Goal {status}: {goal_id}")
@@ -102,11 +131,7 @@ async def main() -> None:
 
             if status == "complete":
                 print("::notice::Goal completed successfully")
-                with open(github_output, "a") as f:
-                    f.write("status=complete\n")
-                    result = (data.get("result") or "")[:2000]
-                    f.write(f"result={result}\n")
-                    f.write(f"cost-usd={data.get('cost_usd', 0.0)}\n")
+                await _write_completion_outputs(client, goal_id, data)
                 return
 
             if status in {"failed", "cancelled"}:
