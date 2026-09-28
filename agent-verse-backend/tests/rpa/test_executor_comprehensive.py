@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.rpa.executor import RPAExecutor, RPAResult
 
 # ── RPAResult dataclass ───────────────────────────────────────────────────────
@@ -65,162 +67,35 @@ def _sim_executor() -> RPAExecutor:
     return ex
 
 
-async def test_execute_simulation_rpa_open_url() -> None:
+_ALL_TOOLS = [
+    ("rpa_open_url", {"url": "https://example.com"}),
+    ("rpa_click", {"selector": "#submit"}),
+    ("rpa_click", {"text": "Log in"}),
+    ("rpa_type", {"selector": "#q", "text": "hello"}),
+    ("rpa_extract_text", {"selector": "h1"}),
+    ("rpa_screenshot", {"name": "page"}),
+    ("rpa_wait_for_text", {"text": "Welcome"}),
+    ("rpa_select_option", {"selector": "#c", "value": "US"}),
+    ("rpa_upload_file", {"selector": "#f", "file_path": "/tmp/x.pdf"}),
+    ("rpa_download_file", {"selector": "#dl"}),
+    ("rpa_submit_form", {"field_values": {"#a": "1"}}),
+    ("rpa_submit_form", {}),
+    ("rpa_detect_captcha", {}),
+    ("rpa_request_human_help", {"reason": "blocked"}),
+    ("rpa_wait_for_network_idle", {"timeout_ms": 3000}),
+]
+
+
+@pytest.mark.parametrize(("tool", "args"), _ALL_TOOLS)
+async def test_execute_without_browser_is_not_implemented(
+    tool: str, args: dict[str, object]
+) -> None:
+    """No browser → an explicit NOT IMPLEMENTED failure, never fake success."""
     ex = _sim_executor()
-    result = await ex.execute(tool_name="rpa_open_url", arguments={"url": "https://example.com"})
-    assert result.success is True
-    assert "example.com" in result.output
-
-
-async def test_execute_simulation_rpa_click() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_click",
-        arguments={"selector": "#btn", "url": "https://example.com"},
-    )
-    assert result.success is True
-    assert "#btn" in result.output
-
-
-async def test_execute_simulation_rpa_click_with_text() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_click",
-        arguments={"text": "Submit"},
-    )
-    assert result.success is True
-    assert "Submit" in result.output
-
-
-async def test_execute_simulation_rpa_type() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_type",
-        arguments={"selector": "#input", "text": "hello world"},
-    )
-    assert result.success is True
-    assert "hello world" in result.output
-    assert "#input" in result.output
-
-
-async def test_execute_simulation_rpa_extract_text() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_extract_text",
-        arguments={"selector": ".content"},
-    )
-    assert result.success is True
-    assert ".content" in result.output
-
-
-async def test_execute_simulation_rpa_screenshot() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_screenshot",
-        arguments={"name": "myshot"},
-    )
-    assert result.success is True
-    assert "myshot" in result.output
-
-
-async def test_execute_simulation_rpa_wait_for_text() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_wait_for_text",
-        arguments={"text": "Loaded"},
-    )
-    assert result.success is True
-    assert "Loaded" in result.output
-
-
-async def test_execute_simulation_rpa_select_option() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_select_option",
-        arguments={"selector": "#dropdown", "value": "option1"},
-    )
-    assert result.success is True
-    assert "option1" in result.output
-
-
-async def test_execute_simulation_rpa_upload_file() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_upload_file",
-        arguments={"selector": "#upload", "file_path": "/tmp/file.txt"},
-    )
-    assert result.success is True
-    assert "file.txt" in result.output
-
-
-async def test_execute_simulation_rpa_download_file() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_download_file",
-        arguments={"selector": "#dl-btn"},
-    )
-    assert result.success is True
-    assert "#dl-btn" in result.output
-
-
-async def test_execute_simulation_rpa_submit_form() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_submit_form",
-        arguments={
-            "field_values": {"#name": "Alice", "#email": "alice@example.com"},
-            "submit_selector": "#submit-btn",
-        },
-    )
-    assert result.success is True
-    # Should mention field count
-    assert "2" in result.output
-
-
-async def test_execute_simulation_rpa_submit_form_empty_fields() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_submit_form",
-        arguments={"field_values": {}},
-    )
-    assert result.success is True
-
-
-# ── P1.2 Extension tools ──────────────────────────────────────────────────────
-
-
-async def test_execute_simulation_rpa_detect_captcha() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(tool_name="rpa_detect_captcha", arguments={})
-    assert result.success is True
-    assert "captcha" in result.output.lower()
-
-
-async def test_execute_simulation_rpa_request_human_help() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_request_human_help",
-        arguments={"reason": "Need CAPTCHA solved"},
-    )
-    assert result.success is True
-    assert "Need CAPTCHA solved" in result.output
-
-
-async def test_execute_simulation_rpa_request_human_help_default_reason() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(tool_name="rpa_request_human_help", arguments={})
-    assert result.success is True
-    assert "Assistance required" in result.output
-
-
-async def test_execute_simulation_rpa_wait_for_network_idle() -> None:
-    ex = _sim_executor()
-    result = await ex.execute(
-        tool_name="rpa_wait_for_network_idle",
-        arguments={"timeout_ms": 5000},
-    )
-    assert result.success is True
-    assert "5000" in result.output
+    result = await ex.execute(tool_name=tool, arguments=args)
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
+    assert "[simulated]" not in result.output
 
 
 async def test_execute_simulation_unknown_tool() -> None:
@@ -255,11 +130,12 @@ async def test_execute_credential_injector_resolves_args() -> None:
         arguments={"url": "vault://my-cred"},
     )
     injector.resolve_arguments.assert_called_once()
-    assert result.success is True
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
 
 
-async def test_execute_credential_injector_exception_continues() -> None:
-    """If credential injection fails, execution still proceeds (logs warning)."""
+async def test_execute_credential_injector_exception_fails_closed() -> None:
+    """If credential injection fails the command is NOT run with raw vault refs."""
     ex = _sim_executor()
     injector = AsyncMock()
     injector.resolve_arguments = AsyncMock(side_effect=RuntimeError("vault unreachable"))
@@ -269,8 +145,8 @@ async def test_execute_credential_injector_exception_continues() -> None:
         tool_name="rpa_open_url",
         arguments={"url": "https://example.com"},
     )
-    # Execution continues with original args
-    assert result.success is True
+    assert result.success is False
+    assert "credential injection failed" in (result.error or "")
 
 
 # ── Ephemeral session cleanup ─────────────────────────────────────────────────
@@ -308,8 +184,8 @@ async def test_execute_non_ephemeral_session_not_auto_closed() -> None:
 # ── Playwright available but no session manager → standalone ─────────────────
 
 
-async def test_execute_playwright_standalone_falls_to_simulation_on_import_error() -> None:
-    """If playwright import fails in standalone path, falls to simulation."""
+async def test_execute_playwright_standalone_import_error_is_not_implemented() -> None:
+    """If playwright import fails in standalone path, report it — no fake success."""
     ex = RPAExecutor()
     ex._playwright_available = True
     ex._session_manager = None
@@ -319,5 +195,5 @@ async def test_execute_playwright_standalone_falls_to_simulation_on_import_error
             tool_name="rpa_open_url",
             arguments={"url": "https://example.com"},
         )
-    # Should fall through to simulation
-    assert result.success is True
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")

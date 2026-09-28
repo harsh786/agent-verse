@@ -7,13 +7,44 @@ import base64
 import contextlib
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 # WS-13: tools that can produce REAL page text over a plain HTTP GET when no
-# browser (Playwright) is installed. Everything else keeps the simulation
-# fallback (a click/type without a browser has no real effect to model).
+# browser (Playwright) is installed. Everything else fails closed with a
+# NOT IMPLEMENTED error (a click/type without a browser has no real effect).
 _HTTP_FETCH_TOOLS = frozenset({"rpa_open_url", "rpa_extract_text", "rpa_screenshot"})
+
+_KNOWN_RPA_TOOLS = frozenset(
+    {
+        "rpa_open_url",
+        "rpa_click",
+        "rpa_type",
+        "rpa_extract_text",
+        "rpa_screenshot",
+        "rpa_wait_for_text",
+        "rpa_select_option",
+        "rpa_upload_file",
+        "rpa_download_file",
+        "rpa_submit_form",
+        "rpa_detect_captcha",
+        "rpa_request_human_help",
+        "rpa_wait_for_network_idle",
+    }
+)
+
+# Heuristic markers of common CAPTCHA widgets, checked against the live DOM.
+_CAPTCHA_MARKERS = (
+    "g-recaptcha",
+    "recaptcha/api",
+    "h-captcha",
+    "hcaptcha.com",
+    "cf-turnstile",
+    "challenges.cloudflare.com",
+    "arkoselabs",
+    "funcaptcha",
+)
 
 _DEFAULT_UPLOAD_ROOT = "/tmp/agentverse-rpa-uploads"
 
@@ -77,7 +108,7 @@ class RPAResult:
 
 
 class RPAExecutor:
-    """Executes RPA tool calls. Uses Playwright when available, falls back to simulation."""
+    """Executes RPA tool calls via Playwright; without a browser it fails closed."""
 
     def __init__(
         self,
@@ -86,8 +117,12 @@ class RPAExecutor:
         headless: bool = True,
         vision_provider: Any = None,
         allowed_domains: list[str] | None = None,
+        secret_store_resolver: Callable[[], Any] | None = None,
     ) -> None:
         self._playwright_available = self._check_playwright()
+        # Returns the tenant-aware connector secret store (read lazily so the
+        # lifespan's Redis-backed swap on app.state takes effect).
+        self._secret_store_resolver = secret_store_resolver
         self._headless = headless
         self._artifact_store = artifact_store
         self._session_manager = session_manager
@@ -134,14 +169,31 @@ class RPAExecutor:
         sid = session_id or uuid.uuid4().hex
         ephemeral = session_id is None
 
-        # P1.2: Resolve vault:// credential references before dispatching to Playwright
-        if self._credential_injector is not None:
+        # P1.2: Resolve vault:// credential references before dispatching to Playwright.
+        # A per-call, tenant-scoped injector is built from the app's connector
+        # secret store whenever the arguments carry a vault:// reference (the
+        # injector used to be declared but never constructed anywhere).
+        injector = self._credential_injector
+        if injector is None:
+            from app.rpa.credential_injector import CredentialInjector, contains_vault_ref
+
+            if contains_vault_ref(arguments):
+                store = self._secret_store_resolver() if self._secret_store_resolver else None
+                injector = CredentialInjector(secret_store=store, tenant_id=tenant_id)
+        if injector is not None:
             try:
-                arguments = await self._credential_injector.resolve_arguments(arguments)
+                arguments = await injector.resolve_arguments(arguments)
             except Exception as exc:
                 import logging
 
                 logging.getLogger(__name__).warning("credential_injection_failed error=%s", exc)
+                # Fail closed: continuing would type the raw ``vault://`` reference
+                # into the page (or run a login step without its secret).
+                return RPAResult(
+                    success=False,
+                    error=f"credential injection failed: {exc}",
+                    duration_ms=(time.monotonic() - start) * 1000,
+                )
 
         # SSRF egress guard: validate the target URL before ANY real navigation
         # or fetch. Both Playwright paths call page.goto(url) and the WS-13 http
@@ -399,47 +451,12 @@ class RPAExecutor:
                     return RPAResult(success=False, error=str(exc))
 
             elif tool_name == "rpa_download_file":
-                import os
-                import tempfile
-
                 selector = arguments.get("selector", "")
                 if not selector:
                     return RPAResult(success=False, error="selector argument required")
-                try:
-                    async with page.expect_download() as download_info:
-                        await page.click(selector)
-                    download = await download_info.value
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=f"_{download.suggested_filename}"
-                    ) as f:
-                        tmp_path = f.name
-                    await download.save_as(tmp_path)
-                    artifact_url = tmp_path
-                    if self._artifact_store is not None:
-                        try:
-                            with open(tmp_path, "rb") as f:
-                                content = f.read()
-                            artifact_url = await self._artifact_store.store_bytes(
-                                content=content,
-                                filename=download.suggested_filename,
-                                content_type="application/octet-stream",
-                                tenant_id=session_id or "rpa",
-                            )
-                        except Exception:
-                            pass
-                        finally:
-                            with contextlib.suppress(Exception):
-                                os.unlink(tmp_path)
-                    size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-                    session.touch()
-                    return RPAResult(
-                        success=True,
-                        output=f"Downloaded '{download.suggested_filename}' ({size} bytes)",
-                        artifact_url=artifact_url,
-                        artifact_name=download.suggested_filename,
-                    )
-                except Exception as exc:
-                    return RPAResult(success=False, error=str(exc))
+                result = await self._download_via_click(page, selector, goal_id=goal_id)
+                session.touch()
+                return result
 
             elif tool_name == "rpa_submit_form":
                 field_values: dict = arguments.get("field_values", {})
@@ -473,6 +490,24 @@ class RPAExecutor:
                 except Exception as exc:
                     return RPAResult(success=False, error=str(exc))
 
+            elif tool_name == "rpa_wait_for_network_idle":
+                timeout_ms = int(arguments.get("timeout_ms", 10000))
+                await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+                session.touch()
+                return RPAResult(success=True, output=f"Network idle (timeout: {timeout_ms}ms)")
+
+            elif tool_name == "rpa_detect_captcha":
+                if url:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    session.current_url = url
+                found = await self._detect_captcha(page)
+                session.touch()
+                return RPAResult(
+                    success=True,
+                    output=f"captcha_detected: {'true' if found else 'false'}"
+                    + (f" ({', '.join(found)})" if found else ""),
+                )
+
             else:
                 return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
 
@@ -495,7 +530,11 @@ class RPAExecutor:
         try:
             from playwright.async_api import async_playwright
         except ImportError:
-            return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
+            return RPAResult(
+                success=False,
+                error=f"NOT IMPLEMENTED: {tool_name} requires a real browser "
+                "(Playwright is not installed)",
+            )
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self._headless)
@@ -654,46 +693,11 @@ class RPAExecutor:
                         return RPAResult(success=False, error=str(exc))
 
                 elif tool_name == "rpa_download_file":
-                    import os
-                    import tempfile
-
                     selector = arguments.get("selector", "")
                     if not selector:
                         return RPAResult(success=False, error="selector argument required")
-                    try:
-                        async with page.expect_download() as download_info:
-                            await page.click(selector)
-                        download = await download_info.value
-                        with tempfile.NamedTemporaryFile(
-                            delete=False, suffix=f"_{download.suggested_filename}"
-                        ) as f:
-                            tmp_path = f.name
-                        await download.save_as(tmp_path)
-                        artifact_url = tmp_path
-                        if self._artifact_store is not None:
-                            try:
-                                with open(tmp_path, "rb") as f:
-                                    content = f.read()
-                                artifact_url = await self._artifact_store.store_bytes(
-                                    content=content,
-                                    filename=download.suggested_filename,
-                                    content_type="application/octet-stream",
-                                    tenant_id="rpa",
-                                )
-                            except Exception:
-                                pass
-                            finally:
-                                with contextlib.suppress(Exception):
-                                    os.unlink(tmp_path)
-                        size = os.path.getsize(tmp_path) if os.path.exists(tmp_path) else 0
-                        return RPAResult(
-                            success=True,
-                            output=f"Downloaded '{download.suggested_filename}' ({size} bytes)",
-                            artifact_url=artifact_url,
-                            artifact_name=download.suggested_filename,
-                        )
-                    except Exception as exc:
-                        return RPAResult(success=False, error=str(exc))
+                    result = await self._download_via_click(page, selector, goal_id=goal_id)
+                    return result
 
                 elif tool_name == "rpa_submit_form":
                     field_values: dict = arguments.get("field_values", {})
@@ -734,6 +738,62 @@ class RPAExecutor:
             finally:
                 await browser.close()
 
+    @staticmethod
+    async def _detect_captcha(page: Any) -> list[str]:
+        """Return the CAPTCHA markers present in the live DOM (empty if none)."""
+        html = (await page.content()).lower()
+        frame_urls = " ".join(str(getattr(f, "url", "")) for f in page.frames).lower()
+        haystack = html + " " + frame_urls
+        return [m for m in _CAPTCHA_MARKERS if m in haystack]
+
+    async def _download_via_click(self, page: Any, selector: str, *, goal_id: str) -> RPAResult:
+        """Click ``selector``, capture the download and persist it as an artifact.
+
+        Previously this called ``artifact_store.store_bytes`` (which no store
+        implements), swallowed the AttributeError, deleted the temp file and still
+        returned ``success=True`` with the deleted host temp path as the artifact
+        URL. Now the bytes go through the store's real ``write_bytes`` (sync or
+        async), the temp file never outlives the call, and any failure — including
+        having no artifact store to put the file in — is reported as a failure.
+        """
+        import inspect
+        import os
+        import tempfile
+
+        if self._artifact_store is None:
+            return RPAResult(
+                success=False,
+                error="rpa_download_file: no artifact store configured to persist the download",
+            )
+        tmp_path = ""
+        try:
+            async with page.expect_download() as download_info:
+                await page.click(selector)
+            download = await download_info.value
+            filename = str(download.suggested_filename or "download.bin")
+            with tempfile.NamedTemporaryFile(delete=False, suffix="_rpa_download") as f:
+                tmp_path = f.name
+            await download.save_as(tmp_path)
+            with open(tmp_path, "rb") as f:
+                content = f.read()
+            written = self._artifact_store.write_bytes(
+                goal_id=goal_id or "rpa-adhoc", name=filename, content=content
+            )
+            if inspect.isawaitable(written):
+                written = await written
+            return RPAResult(
+                success=True,
+                output=f"Downloaded '{filename}' ({len(content)} bytes)",
+                artifact_url=str(getattr(written, "uri", "") or ""),
+                artifact_name=str(getattr(written, "name", "") or filename),
+            )
+        except Exception as exc:
+            return RPAResult(success=False, error=f"rpa_download_file failed: {exc}")
+        finally:
+            if tmp_path:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+
     async def _execute_http_fallback(
         self, *, tool_name: str, arguments: dict[str, Any], session_id: str
     ) -> RPAResult:
@@ -770,26 +830,46 @@ class RPAExecutor:
             # whole page text (the selector is recorded by callers for provenance).
             return RPAResult(success=True, output=text[:50_000])
 
-        # rpa_screenshot: no browser → no image. Succeed with no artifact so a
-        # scrape sequence still yields its text sections.
+        # rpa_screenshot: no browser → no image. Say so instead of claiming success.
         return RPAResult(
-            success=True,
-            output="[no-screenshot] httpx fallback cannot capture screenshots",
+            success=False,
+            error="NOT IMPLEMENTED: rpa_screenshot requires a real browser "
+            "(httpx fallback cannot capture screenshots)",
         )
 
-    @staticmethod
-    async def _http_fetch_text(url: str) -> tuple[str, str]:
+    async def _http_fetch_text(self, url: str) -> tuple[str, str]:
         """Fetch ``url`` and return ``(cleaned_text, title)`` — no ``raise_for_status``.
 
         Error responses still carry a body; we surface whatever text is present so
         the scrape degrades gracefully rather than dropping the page entirely.
+
+        Redirects are followed manually and every hop is re-checked by the SSRF
+        guard: with ``follow_redirects=True`` a public URL could 302 straight to
+        ``169.254.169.254`` / loopback after only the first URL was validated.
         """
         import re
 
         import httpx
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "AgentVerse-RPA/1.0"})
+        from app.net.ssrf_guard import SSRFError, assert_public_url
+
+        max_redirects = 5
+        current = url
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            for _hop in range(max_redirects + 1):
+                await asyncio.to_thread(
+                    assert_public_url,
+                    current,
+                    allowed_domains=self._allowed_domains,
+                    context="rpa_http_fallback",
+                )
+                resp = await client.get(current, headers={"User-Agent": "AgentVerse-RPA/1.0"})
+                location = resp.headers.get("location", "") if resp.is_redirect else ""
+                if not location:
+                    break
+                current = str(resp.url.join(location))
+            else:
+                raise SSRFError(f"rpa_http_fallback: too many redirects (>{max_redirects})")
         raw = resp.text
         title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
         title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""
@@ -853,68 +933,33 @@ class RPAExecutor:
         }
 
     async def _execute_simulation(self, *, tool_name: str, arguments: dict[str, Any]) -> RPAResult:
-        """Simulated execution when Playwright is not available."""
-        # Add small delay to simulate real execution
-        await asyncio.sleep(0.1)
+        """Honest failure when no real browser can run the command.
 
-        sim_outputs = {
-            "rpa_open_url": lambda a: f"[simulated] Opened URL: {a.get('url', '?')}",
-            "rpa_click": lambda a: (
-                f"[simulated] Clicked: {a.get('selector') or a.get('text', '?')}"
-            ),
-            "rpa_type": lambda a: (
-                f"[simulated] Typed '{a.get('text', '')}' into {a.get('selector', '?')}"
-            ),
-            "rpa_extract_text": lambda a: (
-                f"[simulated] Extracted text from {a.get('selector', 'body')}: <simulated page content>"  # noqa: E501
-            ),
-            "rpa_screenshot": lambda a: (
-                f"[simulated] Screenshot captured: {a.get('name', 'screenshot')}"
-            ),
-            "rpa_wait_for_text": lambda a: (
-                f"[simulated] wait_for_text: Text '{a.get('text', '?')}' appeared on page"
-            ),
-            "rpa_select_option": lambda a: (
-                f"[simulated] Selected '{a.get('value', '?')}' in '{a.get('selector', '?')}'"
-            ),
-            "rpa_upload_file": lambda a: (
-                f"[simulated] Uploaded file '{a.get('file_path', '?')}' to '{a.get('selector', '?')}'"  # noqa: E501
-            ),
-            "rpa_download_file": lambda a: (
-                f"[simulated] Downloaded file from '{a.get('selector', '?')}'"
-            ),
-            "rpa_submit_form": lambda a: (
-                f"[simulated] Filled {len(a.get('field_values', {}))} fields and submitted form"
-            ),
-        }
-
-        output_fn = sim_outputs.get(tool_name)
-        if output_fn:
-            return RPAResult(success=True, output=output_fn(arguments))
-
-        # P1.2: New RPA tools — CAPTCHA detection, human help, network idle
-        if tool_name == "rpa_detect_captcha":
-            return RPAResult(
-                success=True,
-                output="captcha_detected: false",
-                duration_ms=50,
-            )
-
+        This used to return ``success=True`` with a ``[simulated] ...`` string for
+        every tool (and ``captcha_detected: false`` / "network idle" / "human help
+        requested" for the P1.2 tools), so an agent without Playwright "clicked",
+        "submitted forms" and "downloaded files" that never happened and the
+        verifier marked the step complete. It now fails closed with an explicit
+        NOT IMPLEMENTED error; callers that only need page text opt into the real
+        httpx fallback via ``allow_http_fetch``.
+        """
+        del arguments
+        if tool_name not in _KNOWN_RPA_TOOLS:
+            return RPAResult(success=False, error=f"Unknown RPA tool: {tool_name}")
         if tool_name == "rpa_request_human_help":
-            reason = arguments.get("reason", "Assistance required")
-            takeover_url = "/rpa/live"
             return RPAResult(
-                success=True,
-                output=f"Human help requested: {reason}. Takeover URL: {takeover_url}",
-                duration_ms=10,
+                success=False,
+                error=(
+                    "NOT IMPLEMENTED: rpa_request_human_help has no live takeover channel; "
+                    "use an HITL approval step instead"
+                ),
             )
-
-        if tool_name == "rpa_wait_for_network_idle":
-            timeout_ms = int(arguments.get("timeout_ms", 10000))
-            return RPAResult(
-                success=True,
-                output=f"Network idle (simulated, timeout: {timeout_ms}ms)",
-                duration_ms=timeout_ms // 10,
-            )
-
-        return RPAResult(success=False, error=f"Unknown RPA tool: {tool_name}")
+        reason = (
+            "Playwright is not installed"
+            if not self._playwright_available
+            else "no live browser page is available for this command"
+        )
+        return RPAResult(
+            success=False,
+            error=f"NOT IMPLEMENTED: {tool_name} requires a real browser ({reason})",
+        )

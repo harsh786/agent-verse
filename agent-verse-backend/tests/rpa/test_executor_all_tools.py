@@ -53,174 +53,37 @@ def test_rpa_result_with_artifact():
     assert r.duration_ms == 123.4
 
 
-# ── _execute_simulation: all standard tools ──────────────────────────────────
+# ── _execute_simulation: no browser → honest NOT IMPLEMENTED ─────────────────
+# These used to assert "[simulated] ..." strings with success=True — i.e. that
+# the executor claimed clicks, form submissions and downloads it never did.
 
-@pytest.mark.asyncio
-async def test_simulate_open_url(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_open_url", arguments={"url": "https://example.com"}
-    )
-    assert r.success is True
-    assert "example.com" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_click_with_selector(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_click", arguments={"selector": "#submit-btn"}
-    )
-    assert r.success is True
-    assert "#submit-btn" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_click_with_text(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_click", arguments={"text": "Login"}
-    )
-    assert r.success is True
-    assert "Login" in r.output
+_ALL_TOOLS = [
+    ("rpa_open_url", {"url": "https://example.com"}),
+    ("rpa_click", {"selector": "#btn"}),
+    ("rpa_click", {"text": "Sign in"}),
+    ("rpa_type", {"selector": "#q", "text": "hi"}),
+    ("rpa_extract_text", {"selector": "h1"}),
+    ("rpa_screenshot", {"name": "snap"}),
+    ("rpa_wait_for_text", {"text": "Done"}),
+    ("rpa_select_option", {"selector": "#s", "value": "a"}),
+    ("rpa_upload_file", {"selector": "#f", "file_path": "x.pdf"}),
+    ("rpa_download_file", {"selector": "#d"}),
+    ("rpa_submit_form", {"field_values": {"#a": "1", "#b": "2"}}),
+    ("rpa_submit_form", {}),
+    ("rpa_detect_captcha", {}),
+    ("rpa_request_human_help", {"reason": "stuck"}),
+    ("rpa_wait_for_network_idle", {"timeout_ms": 5000}),
+]
 
 
 @pytest.mark.asyncio
-async def test_simulate_type(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_type",
-        arguments={"selector": "#email", "text": "hello@world.com"},
-    )
-    assert r.success is True
-    assert "hello@world.com" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_extract_text(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_extract_text", arguments={"selector": "#content"}
-    )
-    assert r.success is True
-    assert "#content" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_screenshot(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_screenshot", arguments={"name": "dashboard_snap"}
-    )
-    assert r.success is True
-    assert "dashboard_snap" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_wait_for_text(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_wait_for_text", arguments={"text": "Welcome back!"}
-    )
-    assert r.success is True
-    assert "Welcome back!" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_select_option(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_select_option",
-        arguments={"selector": "#country", "value": "US"},
-    )
-    assert r.success is True
-    assert "US" in r.output
-    assert "#country" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_upload_file(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_upload_file",
-        arguments={"selector": "#file-input", "file_path": "/tmp/report.csv"},
-    )
-    assert r.success is True
-    assert "/tmp/report.csv" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_download_file(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_download_file", arguments={"selector": "#dl-link"}
-    )
-    assert r.success is True
-    assert "#dl-link" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_submit_form_counts_fields(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_submit_form",
-        arguments={
-            "field_values": {
-                "#name": "Alice",
-                "#email": "alice@example.com",
-                "#phone": "555-1234",
-            }
-        },
-    )
-    assert r.success is True
-    assert "3" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_submit_form_empty_fields(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_submit_form", arguments={}
-    )
-    assert r.success is True
-    assert "0" in r.output
-
-
-# ── _execute_simulation: P1.2 extended tools ─────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_simulate_detect_captcha(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_detect_captcha", arguments={}
-    )
-    assert r.success is True
-    assert "captcha_detected" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_request_human_help(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_request_human_help",
-        arguments={"reason": "CAPTCHA cannot be solved automatically"},
-    )
-    assert r.success is True
-    assert "CAPTCHA cannot be solved" in r.output
-    assert "takeover" in r.output.lower() or "/rpa/live" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_request_human_help_default_reason(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_request_human_help", arguments={}
-    )
-    assert r.success is True
-    assert "Assistance required" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_wait_for_network_idle(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_wait_for_network_idle", arguments={"timeout_ms": 5000}
-    )
-    assert r.success is True
-    assert "5000" in r.output
-
-
-@pytest.mark.asyncio
-async def test_simulate_wait_for_network_idle_default_timeout(executor):
-    r = await executor._execute_simulation(
-        tool_name="rpa_wait_for_network_idle", arguments={}
-    )
-    assert r.success is True
-    assert "10000" in r.output  # default 10000ms
+@pytest.mark.parametrize(("tool", "args"), _ALL_TOOLS)
+async def test_no_browser_never_fakes_success(executor, tool, args):
+    r = await executor._execute_simulation(tool_name=tool, arguments=args)
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
+    assert "[simulated]" not in r.output
+    assert r.output == ""
 
 
 @pytest.mark.asyncio
@@ -235,12 +98,13 @@ async def test_simulate_unknown_tool(executor):
 # ── execute() top-level dispatch ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_execute_dispatches_to_simulation(executor):
+async def test_execute_without_browser_fails_closed(executor):
     r = await executor.execute(
         tool_name="rpa_open_url",
         arguments={"url": "https://test.example.com"},
     )
-    assert r.success is True
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
     assert r.duration_ms >= 0
 
 
@@ -249,7 +113,7 @@ async def test_execute_sets_duration_ms(executor):
     r = await executor.execute(
         tool_name="rpa_screenshot", arguments={"name": "snap"}
     )
-    assert r.duration_ms > 0  # simulation adds asyncio.sleep(0.1)
+    assert r.duration_ms >= 0
 
 
 @pytest.mark.asyncio
@@ -267,7 +131,8 @@ async def test_execute_ephemeral_session_calls_close():
         arguments={"name": "snap"},
         # session_id=None (default) → ephemeral
     )
-    assert r.success is True
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
     mock_sm.close.assert_awaited_once()
 
 
@@ -286,7 +151,8 @@ async def test_execute_non_ephemeral_session_no_close():
         arguments={"url": "http://a.com"},
         session_id="existing-session-id",
     )
-    assert r.success is True
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
     mock_sm.close.assert_not_awaited()
 
 
@@ -304,7 +170,8 @@ async def test_execute_with_credential_injector():
         tool_name="rpa_open_url",
         arguments={"url": "vault://creds/my-url"},
     )
-    assert r.success is True
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
     injector.resolve_arguments.assert_awaited_once_with({"url": "vault://creds/my-url"})
 
 
@@ -322,8 +189,9 @@ async def test_execute_credential_injector_failure_continues():
         tool_name="rpa_screenshot",
         arguments={"name": "fallback"},
     )
-    # Should still succeed (original args used)
-    assert r.success is True
+    # Fail closed: never run the command with the raw vault:// reference.
+    assert r.success is False
+    assert "credential injection failed" in (r.error or "")
 
 
 @pytest.mark.asyncio
@@ -334,7 +202,8 @@ async def test_execute_with_tenant_and_goal_ids(executor):
         tenant_id="tenant-001",
         goal_id="goal-abc",
     )
-    assert r.success is True
+    assert r.success is False
+    assert "NOT IMPLEMENTED" in (r.error or "")
 
 
 # ── _check_playwright ─────────────────────────────────────────────────────────

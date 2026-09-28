@@ -367,60 +367,49 @@ def test_browser_session_manager_get_page_returns_none_not_found() -> None:
 
 @pytest.mark.asyncio
 async def test_credential_injector_secret_store_exception() -> None:
-    """Lines 57-58: secret_store.get_secret raises → warning logged, tries vault."""
-    from app.rpa.credential_injector import CredentialInjector
+    """A secret-store error fails closed — it used to return the raw vault:// ref."""
+    from app.rpa.credential_injector import CredentialInjector, CredentialResolutionError
 
     mock_store = AsyncMock()
-    mock_store.get_secret = AsyncMock(side_effect=RuntimeError("store unreachable"))
+    mock_store.resolve = AsyncMock(side_effect=RuntimeError("store unreachable"))
 
     injector = CredentialInjector(secret_store=mock_store, tenant_id="t1")
-    result = await injector.resolve("vault://my-server/my-key")
-
-    # Falls through to unresolved path — returns original ref
-    assert result == "vault://my-server/my-key"
+    with pytest.raises(CredentialResolutionError, match="store unreachable"):
+        await injector.resolve("vault://my-server/my-key")
 
 
 @pytest.mark.asyncio
-async def test_credential_injector_vault_resolves_secret() -> None:
-    """Lines 63-66: vault.get_secret returns a value → resolved."""
-    from app.rpa.credential_injector import CredentialInjector
+async def test_credential_injector_vault_only_is_not_a_lookup_source() -> None:
+    """``vault=`` alone cannot resolve (CredentialVault has no get_secret); the
+    injector reports that instead of passing the raw reference through."""
+    from app.rpa.credential_injector import CredentialInjector, CredentialResolutionError
 
     mock_vault = AsyncMock()
     mock_vault.get_secret = AsyncMock(return_value="secret-password")
 
     injector = CredentialInjector(vault=mock_vault, tenant_id="t1")
-    result = await injector.resolve("vault://my-secret")
-
-    assert result == "secret-password"
+    with pytest.raises(CredentialResolutionError, match="no secret store"):
+        await injector.resolve("vault://my-server/my-secret")
+    mock_vault.get_secret.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_credential_injector_vault_exception() -> None:
-    """Lines 67-68: vault.get_secret raises → warning logged, returns original ref."""
-    from app.rpa.credential_injector import CredentialInjector
+async def test_credential_injector_malformed_ref_fails_closed() -> None:
+    from app.rpa.credential_injector import CredentialInjector, CredentialResolutionError
 
-    mock_vault = AsyncMock()
-    mock_vault.get_secret = AsyncMock(side_effect=RuntimeError("vault down"))
-
-    injector = CredentialInjector(vault=mock_vault, tenant_id="t1")
-    result = await injector.resolve("vault://unreachable-secret")
-
-    assert result == "vault://unreachable-secret"
+    injector = CredentialInjector(secret_store=AsyncMock(), tenant_id="t1")
+    with pytest.raises(CredentialResolutionError, match="malformed"):
+        await injector.resolve("vault://only-one-part")
 
 
 @pytest.mark.asyncio
 async def test_credential_injector_resolve_arguments_recursive() -> None:
-    """Line 80: resolve_arguments handles nested dicts recursively."""
+    """resolve_arguments handles nested dicts recursively."""
     from app.rpa.credential_injector import CredentialInjector
 
-    resolved_calls: list[str] = []
-
-    injector = CredentialInjector(tenant_id="t1")
-
-    # Provide mock vault that resolves secrets
-    mock_vault = AsyncMock()
-    mock_vault.get_secret = AsyncMock(return_value="resolved-value")
-    injector._vault = mock_vault
+    mock_store = AsyncMock()
+    mock_store.resolve = AsyncMock(return_value="resolved-value")
+    injector = CredentialInjector(secret_store=mock_store, tenant_id="t1")
 
     args = {
         "url": "vault://server/url",
@@ -431,8 +420,11 @@ async def test_credential_injector_resolve_arguments_recursive() -> None:
     }
     result = await injector.resolve_arguments(args)
     assert result["url"] == "resolved-value"
-    assert result["nested"]["password"] == "resolved-value"  # line 80: recursive
+    assert result["nested"]["password"] == "resolved-value"
     assert result["plain"] == "no-vault-here"
+    refs = [c.args[0] for c in mock_store.resolve.await_args_list]
+    assert refs == ["vault://connectors/server/url", "vault://connectors/server/pass"]
+    assert all(c.kwargs["tenant_ctx"].tenant_id == "t1" for c in mock_store.resolve.await_args_list)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

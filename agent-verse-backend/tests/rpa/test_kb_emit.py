@@ -29,7 +29,7 @@ def _ctx(tid: str) -> TenantContext:
 
 
 def _mock_httpx(text: str) -> Any:
-    resp = MagicMock()
+    resp = MagicMock(is_redirect=False)
     resp.text = text
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=ctx)

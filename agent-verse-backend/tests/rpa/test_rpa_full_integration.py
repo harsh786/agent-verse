@@ -148,39 +148,24 @@ def test_executor_vision_provider_defaults_to_none():
 # ── Gap 5: All 5 tools in standalone mode ─────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_standalone_click_succeeds_when_playwright_unavailable():
-    """rpa_click returns simulation result when Playwright not installed."""
-    executor = RPAExecutor()
-    # Force simulation path
-    executor._playwright_available = False
-    result = await executor._execute_simulation(
-        tool_name="rpa_click",
-        arguments={"selector": "#btn"},
-    )
-    assert result.success is True
-    assert "simulated" in result.output.lower() or "clicked" in result.output.lower()
-
-
-@pytest.mark.asyncio
-async def test_standalone_type_succeeds_when_playwright_unavailable():
+@pytest.mark.parametrize(
+    ("tool_name", "args"),
+    [
+        ("rpa_click", {"selector": "#btn"}),
+        ("rpa_type", {"selector": "#inp", "text": "hello"}),
+        ("rpa_extract_text", {"selector": "body"}),
+    ],
+)
+async def test_standalone_tool_is_not_implemented_when_playwright_unavailable(
+    tool_name, args
+):
+    """Without Playwright the executor reports NOT IMPLEMENTED — it used to
+    return success=True with a "[simulated]" string for actions never taken."""
     executor = RPAExecutor()
     executor._playwright_available = False
-    result = await executor._execute_simulation(
-        tool_name="rpa_type",
-        arguments={"selector": "#inp", "text": "hello"},
-    )
-    assert result.success is True
-
-
-@pytest.mark.asyncio
-async def test_standalone_extract_text_succeeds_when_playwright_unavailable():
-    executor = RPAExecutor()
-    executor._playwright_available = False
-    result = await executor._execute_simulation(
-        tool_name="rpa_extract_text",
-        arguments={"selector": "body"},
-    )
-    assert result.success is True
+    result = await executor._execute_simulation(tool_name=tool_name, arguments=args)
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
 
 
 @pytest.mark.asyncio

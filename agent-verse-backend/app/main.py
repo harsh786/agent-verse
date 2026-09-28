@@ -2726,6 +2726,11 @@ def create_app(
     app.state.collab_store = CollaborationStore()
     # RPA
     app.state.rpa_executor = _rpa_executor
+    # vault:// refs in RPA arguments resolve through the tenant-aware connector
+    # secret store; read lazily so the lifespan's Redis-backed swap applies.
+    _rpa_executor._secret_store_resolver = lambda: getattr(
+        app.state, "connector_secret_store", None
+    )
     app.state.rpa_session_store = _rpa_session_store
     app.state.rpa_session_manager = _rpa_session_manager
     app.state.rpa_artifact_store = _rpa_artifact_store

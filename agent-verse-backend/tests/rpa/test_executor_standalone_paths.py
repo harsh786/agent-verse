@@ -531,111 +531,111 @@ async def test_pw_download_file_missing_selector() -> None:
     assert "selector argument required" in result.error
 
 
-@pytest.mark.asyncio
-async def test_pw_download_file_success_no_artifact_store(tmp_path) -> None:
-    """Download succeeds, file is saved to tmp_path (no artifact store)."""
-    ex, page = _build_executor()
-    # Write a real file first so getsize works
-    real_file = tmp_path / "downloaded_file.pdf"
-    real_file.write_bytes(b"PDFCONTENT")
-
+def _download_page(page: MagicMock, content: bytes = b"PDFCONTENT") -> MagicMock:
+    """Wire ``page.expect_download`` to a download whose save_as writes ``content``."""
     download = MagicMock()
     download.suggested_filename = "downloaded_file.pdf"
-    download.save_as = AsyncMock()
-    page.expect_download = MagicMock(return_value=_make_download_cm(download))
 
-    # Patch tempfile.NamedTemporaryFile to return our real file path
-    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-        mock_file = MagicMock()
-        mock_file.name = str(real_file)
-        mock_file.__enter__ = MagicMock(return_value=mock_file)
-        mock_file.__exit__ = MagicMock(return_value=None)
-        mock_tmp_factory.return_value = mock_file
+    async def _save_as(path: str) -> None:
+        with open(path, "wb") as fh:
+            fh.write(content)
+
+    download.save_as = AsyncMock(side_effect=_save_as)
+    page.expect_download = MagicMock(return_value=_make_download_cm(download))
+    return download
+
+
+@pytest.mark.asyncio
+async def test_pw_download_file_without_artifact_store_fails_honestly() -> None:
+    """No store to put the file in → failure, not success with a deleted tmp path."""
+    ex, page = _build_executor()
+    _download_page(page)
+    with _inject(page):
         result = await ex._execute_playwright_standalone(
             tool_name="rpa_download_file",
             arguments={"selector": "#dl-btn"},
             goal_id="g1",
         )
-    assert result.success is True
-    assert "downloaded_file.pdf" in result.output
-    assert "bytes" in result.output
+    assert result.success is False
+    assert "no artifact store" in (result.error or "")
 
 
 @pytest.mark.asyncio
-async def test_pw_download_file_with_artifact_store(tmp_path) -> None:
-    store = MagicMock()
-    store.store_bytes = AsyncMock(return_value="s3://bucket/downloaded_file.pdf")
-    store.write_bytes = AsyncMock()
+async def test_pw_download_file_persists_via_write_bytes() -> None:
+    """Regression: the executor called ``store_bytes`` (no store implements it),
+    swallowed the AttributeError and reported success with a host tmp path."""
+    from app.rpa.artifacts import RPAArtifact
 
+    store = MagicMock(spec=["write_bytes"])
+    store.write_bytes = AsyncMock(
+        return_value=RPAArtifact(uri="s3://bucket/g1/downloaded_file.pdf", name="downloaded_file.pdf")
+    )
     ex, page = _build_executor(artifact_store=store)
-    real_file = tmp_path / "downloaded_file.pdf"
-    real_file.write_bytes(b"PDFCONTENT")
+    _download_page(page)
+    saved: list[str] = []
+    real_unlink = __import__("os").unlink
 
-    download = MagicMock()
-    download.suggested_filename = "downloaded_file.pdf"
-    download.save_as = AsyncMock()
-    page.expect_download = MagicMock(return_value=_make_download_cm(download))
+    def _unlink(path: str) -> None:
+        saved.append(path)
+        real_unlink(path)
 
-    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-        mock_file = MagicMock()
-        mock_file.name = str(real_file)
-        mock_file.__enter__ = MagicMock(return_value=mock_file)
-        mock_file.__exit__ = MagicMock(return_value=None)
-        mock_tmp_factory.return_value = mock_file
-        # Patch os.unlink so we can prove the finally block runs
-        with patch("os.unlink") as mock_unlink:
-            result = await ex._execute_playwright_standalone(
-                tool_name="rpa_download_file",
-                arguments={"selector": "#dl-btn"},
-                goal_id="g1",
-            )
-    assert result.success is True
-    assert result.artifact_url == "s3://bucket/downloaded_file.pdf"
-    store.store_bytes.assert_awaited_once()
-    # Finally clause runs os.unlink — proves the cleanup path executed
-    mock_unlink.assert_called_once_with(str(real_file))
+    with _inject(page), patch("os.unlink", side_effect=_unlink):
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_download_file",
+            arguments={"selector": "#dl-btn"},
+            goal_id="g1",
+        )
+    assert result.success is True, result.error
+    assert result.artifact_url == "s3://bucket/g1/downloaded_file.pdf"
+    assert "10 bytes" in result.output
+    store.write_bytes.assert_awaited_once_with(
+        goal_id="g1", name="downloaded_file.pdf", content=b"PDFCONTENT"
+    )
+    assert len(saved) == 1  # temp file never outlives the call
 
 
 @pytest.mark.asyncio
-async def test_pw_download_file_artifact_store_failure_falls_back_to_tmp_path(
-    tmp_path,
-) -> None:
-    """If artifact_store.store_bytes raises (lines 580-581 except/pass),
-    the result still succeeds using the local tmp_path as the artifact URL."""
-    store = MagicMock()
-    store.store_bytes = AsyncMock(side_effect=Exception("S3 unreachable"))
-    store.write_bytes = AsyncMock()
+async def test_pw_download_file_with_sync_local_store(tmp_path) -> None:
+    """``RPAArtifactStore.write_bytes`` is synchronous; it must still work."""
+    from app.rpa.artifacts import RPAArtifactStore
 
+    store = RPAArtifactStore(base_dir=tmp_path)
     ex, page = _build_executor(artifact_store=store)
-    real_file = tmp_path / "downloaded_file.pdf"
-    real_file.write_bytes(b"PDFCONTENT")
+    _download_page(page, b"hello")
+    with _inject(page):
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_download_file",
+            arguments={"selector": "#dl-btn"},
+            goal_id="g1",
+        )
+    assert result.success is True, result.error
+    assert (tmp_path / "g1" / "downloaded_file.pdf").read_bytes() == b"hello"
 
-    download = MagicMock()
-    download.suggested_filename = "downloaded_file.pdf"
-    download.save_as = AsyncMock()
-    page.expect_download = MagicMock(return_value=_make_download_cm(download))
 
-    with _inject(page), patch("tempfile.NamedTemporaryFile") as mock_tmp_factory:
-        mock_file = MagicMock()
-        mock_file.name = str(real_file)
-        mock_file.__enter__ = MagicMock(return_value=mock_file)
-        mock_file.__exit__ = MagicMock(return_value=None)
-        mock_tmp_factory.return_value = mock_file
-        with patch("os.unlink"):  # avoid real unlink so getsize below works
-            result = await ex._execute_playwright_standalone(
-                tool_name="rpa_download_file",
-                arguments={"selector": "#dl-btn"},
-                goal_id="g1",
-            )
-    assert result.success is True
-    # artifact_url fell back to tmp_path because store_bytes raised
-    assert result.artifact_url == str(real_file)
-    store.store_bytes.assert_awaited_once()
+@pytest.mark.asyncio
+async def test_pw_download_file_store_failure_is_reported() -> None:
+    """A failing artifact store is a failed download — not a success pointing at
+    a (deleted) local temp path."""
+    store = MagicMock(spec=["write_bytes"])
+    store.write_bytes = AsyncMock(side_effect=Exception("S3 unreachable"))
+    ex, page = _build_executor(artifact_store=store)
+    _download_page(page)
+    with _inject(page):
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_download_file",
+            arguments={"selector": "#dl-btn"},
+            goal_id="g1",
+        )
+    assert result.success is False
+    assert "S3 unreachable" in (result.error or "")
+    assert result.artifact_url is None
 
 
 @pytest.mark.asyncio
 async def test_pw_download_file_exception_returns_error() -> None:
-    ex, page = _build_executor()
+    store = MagicMock(spec=["write_bytes"])
+    store.write_bytes = AsyncMock()
+    ex, page = _build_executor(artifact_store=store)
     page.click = AsyncMock(side_effect=Exception("click timeout"))
     with _inject(page):
         result = await ex._execute_playwright_standalone(
@@ -793,7 +793,7 @@ async def test_pw_unknown_tool_falls_back_to_simulation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pw_standalone_import_failure_falls_back_to_simulation() -> None:
+async def test_pw_standalone_import_failure_is_not_implemented() -> None:
     """If `from playwright.async_api import async_playwright` raises inside standalone,
     executor returns simulation result instead."""
     ex, page = _build_executor()
@@ -807,9 +807,9 @@ async def test_pw_standalone_import_failure_falls_back_to_simulation() -> None:
         result = await ex._execute_playwright_standalone(
             tool_name="rpa_open_url", arguments={"url": "https://example.com"}, goal_id="g1"
         )
-    # Falls through to simulation → success
-    assert result.success is True
-    assert "[simulated]" in result.output
+    # No fake "[simulated]" success — an honest NOT IMPLEMENTED
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
 
 
 # ── execute() routing — standalone path with playwright available ────────────

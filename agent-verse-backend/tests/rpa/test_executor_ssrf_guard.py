@@ -54,7 +54,7 @@ def _ok_httpx(html: str = "<html><body>public</body></html>") -> Any:
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=ctx)
         ctx.__aexit__ = AsyncMock(return_value=False)
-        resp = AsyncMock()
+        resp = AsyncMock(is_redirect=False)
         resp.text = html
         resp.raise_for_status = lambda: None
         ctx.get = AsyncMock(return_value=resp)
@@ -120,18 +120,66 @@ async def test_public_url_passes_the_guard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_simulation_path_is_exempt_from_the_guard() -> None:
-    """Without allow_http_fetch (and no browser) nothing is fetched, so an
-    internal-looking URL is harmless and must not be blocked — it stays a
-    simulation placeholder."""
+async def test_no_browser_path_fetches_nothing_and_fails_honestly() -> None:
+    """Without allow_http_fetch (and no browser) nothing is fetched; the call
+    reports NOT IMPLEMENTED instead of a fake "[simulated]" success."""
     ex = RPAExecutor()
-    result = await ex.execute(
-        tool_name="rpa_open_url",
-        arguments={"url": "http://127.0.0.1/whatever"},
-        session_id="s-sim",
-    )
-    assert result.success is True
-    assert "SSRF guard" not in (result.error or "")
+    ex._playwright_available = False
+    with patch("httpx.AsyncClient", _explode_httpx()):
+        result = await ex.execute(
+            tool_name="rpa_open_url",
+            arguments={"url": "http://127.0.0.1/whatever"},
+            session_id="s-sim",
+        )
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
+
+
+def _redirecting_httpx(location: str, calls: list[str]) -> Any:
+    """A fake client whose first GET 302s to ``location``; records every URL hit."""
+    import httpx
+
+    def _factory(*args: Any, **kwargs: Any) -> Any:
+        assert kwargs.get("follow_redirects") is False, "fallback must not auto-follow"
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=ctx)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        async def _get(url: str, **_kw: Any) -> Any:
+            calls.append(url)
+            if len(calls) == 1:
+                return httpx.Response(
+                    302, headers={"location": location}, request=httpx.Request("GET", url)
+                )
+            return httpx.Response(200, text="<html>internal</html>", request=httpx.Request("GET", url))
+
+        ctx.get = _get
+        return ctx
+
+    return _factory
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "location",
+    ["http://169.254.169.254/latest/meta-data/", "http://127.0.0.1:6379/", "http://10.0.0.5/x"],
+)
+async def test_http_fallback_revalidates_every_redirect_hop(location: str) -> None:
+    """A public URL that 302s to an internal address must be refused at the hop,
+    not fetched (``follow_redirects=True`` used to check only the first URL)."""
+    ex = RPAExecutor()
+    ex._playwright_available = False
+    calls: list[str] = []
+    with patch("httpx.AsyncClient", _redirecting_httpx(location, calls)):
+        result = await ex.execute(
+            tool_name="rpa_open_url",
+            arguments={"url": "https://1.1.1.1/start"},
+            session_id="s-redir",
+            allow_http_fetch=True,
+        )
+    assert result.success is False
+    assert "SSRF guard" in (result.error or "")
+    assert calls == ["https://1.1.1.1/start"]  # the internal hop was never requested
 
 
 @pytest.mark.asyncio

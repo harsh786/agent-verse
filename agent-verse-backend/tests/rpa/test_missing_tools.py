@@ -39,7 +39,8 @@ async def test_rpa_wait_for_text_simulation():
         session_id=None,
         tenant_id="test-tenant",
     )
-    assert result.success or "wait_for_text" in result.output.lower() or result.output != ""
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
 
 
 @pytest.mark.asyncio
@@ -150,7 +151,7 @@ async def test_all_new_tools_return_valid_rpa_result():
 
 @pytest.mark.asyncio
 async def test_new_tools_simulation_output_content():
-    """Simulation outputs contain expected keywords."""
+    """Without a browser every tool names itself in an honest NOT IMPLEMENTED error."""
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
@@ -161,18 +162,18 @@ async def test_new_tools_simulation_output_content():
         arguments={"text": "Confirm"},
         tenant_id="test",
     )
-    assert "Confirm" in r.output
+    assert r.success is False and "rpa_wait_for_text" in (r.error or "")
 
     r = await executor.execute(
         tool_name="rpa_select_option",
         arguments={"selector": "#lang", "value": "en"},
         tenant_id="test",
     )
-    assert "en" in r.output
+    assert r.success is False and "rpa_select_option" in (r.error or "")
 
     r = await executor.execute(
         tool_name="rpa_submit_form",
         arguments={"field_values": {"#a": "1", "#b": "2"}},
         tenant_id="test",
     )
-    assert "2" in r.output  # "Filled 2 fields..."
+    assert r.success is False and "rpa_submit_form" in (r.error or "")

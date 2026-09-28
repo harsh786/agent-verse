@@ -67,7 +67,7 @@ def _make_client():
 
 def _mock_httpx_client(html: str):
     """Patch httpx.AsyncClient to return ``html`` for any GET (the executor path)."""
-    mock_response = MagicMock()
+    mock_response = MagicMock(is_redirect=False)
     mock_response.text = html
     mock_ctx = AsyncMock()
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
@@ -180,7 +180,7 @@ class TestRpaUrlIngest:
 
         async def mock_get(*args, **kwargs):
             counter["n"] += 1
-            m = MagicMock()
+            m = MagicMock(is_redirect=False)
             m.text = (
                 f"<html><body>Content for URL {counter['n']}. "
                 "Enough text to chunk.</body></html>"

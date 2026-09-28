@@ -29,7 +29,7 @@ def _sim_executor() -> RPAExecutor:
 
 
 def _mock_httpx(text: str) -> Any:
-    resp = MagicMock()
+    resp = MagicMock(is_redirect=False)
     resp.text = text
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=ctx)
@@ -63,14 +63,16 @@ async def test_open_then_extract_returns_real_text() -> None:
 
 
 @pytest.mark.asyncio
-async def test_flag_off_keeps_simulation() -> None:
+async def test_flag_off_fails_closed_without_browser() -> None:
     ex = _sim_executor()
-    # No allow_http_fetch → the classic simulation placeholder (no network call).
+    # No allow_http_fetch and no browser → an honest NOT IMPLEMENTED failure,
+    # never a fake "[simulated]" success (and no network call).
     result = await ex.execute(
         tool_name="rpa_extract_text", arguments={"selector": ".x"}
     )
-    assert result.success
-    assert "[simulated]" in result.output
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
+    assert "[simulated]" not in result.output
 
 
 @pytest.mark.asyncio
@@ -109,7 +111,7 @@ async def test_open_url_fetch_error_is_reported() -> None:
 
 
 @pytest.mark.asyncio
-async def test_screenshot_is_graceful_noop_over_httpx() -> None:
+async def test_screenshot_over_httpx_is_an_honest_failure() -> None:
     ex = _sim_executor()
     result = await ex.execute(
         tool_name="rpa_screenshot",
@@ -117,5 +119,6 @@ async def test_screenshot_is_graceful_noop_over_httpx() -> None:
         session_id="s4",
         allow_http_fetch=True,
     )
-    assert result.success is True
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
     assert result.artifact_url is None

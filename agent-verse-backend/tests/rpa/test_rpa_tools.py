@@ -261,8 +261,8 @@ def test_classify_rpa_tool_risk_all_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rpa_executor_simulation() -> None:
-    """RPAExecutor falls back to simulation when Playwright is not available."""
+async def test_rpa_executor_without_browser_fails_closed() -> None:
+    """Without Playwright the executor reports NOT IMPLEMENTED, never fake success."""
     from app.rpa.executor import RPAExecutor
 
     executor = RPAExecutor()
@@ -272,8 +272,8 @@ async def test_rpa_executor_simulation() -> None:
         arguments={"url": "https://example.com"},
         tenant_id="test",
     )
-    assert result.success is True
-    assert "example.com" in result.output or "simulated" in result.output
+    assert result.success is False
+    assert "NOT IMPLEMENTED" in (result.error or "")
     assert result.duration_ms >= 0
 
 

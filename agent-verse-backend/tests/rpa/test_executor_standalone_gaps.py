@@ -64,7 +64,7 @@ def _make_playwright_sys_modules(pw, page):
 # ── _execute_playwright_standalone: no playwright (fallback to simulation) ────
 
 @pytest.mark.asyncio
-async def test_standalone_falls_back_to_simulation_when_no_playwright():
+async def test_standalone_is_not_implemented_when_no_playwright():
     """When playwright can't be imported, executor._playwright_available=False → simulation."""
     executor = RPAExecutor(headless=True)
     executor._playwright_available = False
@@ -73,7 +73,8 @@ async def test_standalone_falls_back_to_simulation_when_no_playwright():
         tool_name="rpa_open_url",
         arguments={"url": "https://example.com"},
     )
-    assert result.success is True  # simulation always succeeds
+    assert result.success is False  # no browser → honest NOT IMPLEMENTED
+    assert "NOT IMPLEMENTED" in (result.error or "")
 
 
 # ── _execute_playwright_standalone: rpa_open_url ─────────────────────────────
