@@ -1282,7 +1282,10 @@ class GoalService:
         # Phase 25: Wire self-optimizer for automatic improvement on poor performance
         from app.intelligence.self_optimization import SelfOptimizer
 
-        _self_optimizer = getattr(app_state, "self_optimizer", None) if app_state else None
+        # app_state may be the FastAPI app; the optimizer is on app.state. The
+        # direct lookup always missed and every graph got a throwaway instance.
+        _opt_state = getattr(app_state, "state", app_state) if app_state else None
+        _self_optimizer = getattr(_opt_state, "self_optimizer", None) if _opt_state else None
         if _self_optimizer is None:
             _self_optimizer = SelfOptimizer()
         graph._self_optimizer = _self_optimizer
@@ -1953,7 +1956,10 @@ class GoalService:
                     self._eval_scores[goal_id] = scorecard
                     # Trigger self-optimizer when score falls below threshold.
                     if scorecard.average_score() < 0.7:
-                        self_optimizer = getattr(self._app_state, "self_optimizer", None)
+                        # self_optimizer lives on app.state (self._app_state is the
+                        # app): this lookup always missed, so low scores never
+                        # triggered the optimizer.
+                        self_optimizer = getattr(_eval_aps, "self_optimizer", None)
                         if self_optimizer is not None:
                             try:
                                 failed_events = [
