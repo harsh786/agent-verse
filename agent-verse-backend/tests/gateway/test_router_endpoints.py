@@ -29,6 +29,9 @@ from fastapi.testclient import TestClient
 from app.gateway import router as gw
 from app.gateway.channel_registry import ChannelRegistry
 from app.gateway.command import CommandFile, OrgCommand
+from tests.gateway.conftest import SignedClient
+
+pytestmark = pytest.mark.usefixtures("signed_channels")
 
 
 def _bare_app() -> FastAPI:
@@ -38,7 +41,7 @@ def _bare_app() -> FastAPI:
 
 
 def _client() -> TestClient:
-    return TestClient(_bare_app())
+    return SignedClient(_bare_app())
 
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
@@ -53,10 +56,9 @@ class TestTelegramWebhook:
             json={"message": {"chat": {"id": "1"}, "from": {"id": "2"}, "text": "hi"}},
             headers={"x-telegram-bot-api-secret-token": "wrong"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_schedules_processing_when_text_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
         mock = AsyncMock()
         monkeypatch.setattr(gw, "_process_command", mock)
         client = _client()
@@ -80,7 +82,6 @@ class TestTelegramWebhook:
     def test_skips_processing_when_normalize_yields_no_text(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
         mock = AsyncMock()
         monkeypatch.setattr(gw, "_process_command", mock)
         client = _client()
@@ -125,7 +126,7 @@ class TestSlackEvents:
             json={"command": "/goal", "text": "ship it", "user_id": "u1", "channel_id": "c1"},
             headers={"x-slack-request-timestamp": "1", "x-slack-signature": "v0=bad"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_schedules_processing_for_slash_command(
         self, monkeypatch: pytest.MonkeyPatch
@@ -188,7 +189,7 @@ class TestWhatsAppWebhook:
             json={"entry": []},
             headers={"x-hub-signature-256": "sha256=bad"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_accepts_genuinely_valid_signature_over_raw_body(
         self, monkeypatch: pytest.MonkeyPatch
@@ -319,7 +320,7 @@ class TestGenericWebhook:
             json={"command": "do it"},
             headers={"x-webhook-signature": "sha256=bad"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_valid_signature_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gw._webhook, "_secret", "shh")
@@ -342,7 +343,6 @@ class TestGenericWebhook:
         """Unlike the chat channels, the generic webhook queues unconditionally —
         even a trigger-only payload with no natural text is turned into one via
         ``_infer_command_from_trigger`` and processed."""
-        monkeypatch.setattr(gw._webhook, "_secret", "")
         mock = AsyncMock()
         monkeypatch.setattr(gw, "_process_command", mock)
         client = _client()
@@ -372,30 +372,30 @@ class TestChannelChatBranches:
 
     def test_unknown_channel_returns_404(self) -> None:
         app = self._app_with_state(chat_service=object())
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post("/v1/gateway/discord/chat", json={})
         assert r.status_code == 404
 
     def test_missing_chat_service_returns_404(self) -> None:
         app = self._app_with_state()
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post("/v1/gateway/telegram/chat", json={})
         assert r.status_code == 404
 
-    async def test_invalid_signature_returns_403(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_invalid_signature_returns_401(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(gw._webhook, "_secret", "shh")
         app = self._app_with_state(chat_service=object())
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post(
             "/v1/gateway/webhook/chat",
             json={"text": "hi"},
             headers={"x-webhook-signature": "sha256=bad"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_no_tenant_mapping_is_ignored(self) -> None:
         app = self._app_with_state(chat_service=object(), channel_registry=ChannelRegistry())
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post(
             "/v1/gateway/telegram/chat",
             json={"addressee": "unmapped-bot", "message": {"from": {"id": "1"}, "chat": {"id": "1"}}},
@@ -407,7 +407,7 @@ class TestChannelChatBranches:
         reg = ChannelRegistry()
         reg.register("telegram", "bot-1", "tenant-a")
         app = self._app_with_state(chat_service=object(), channel_registry=reg)
-        client = TestClient(app)
+        client = SignedClient(app)
         # Message present but with neither "text" nor "caption" → normalize gives
         # a non-empty "(attachment)" text... use callback_query-free/message-free
         # payload to get a genuinely empty OrgCommand.text.
@@ -433,7 +433,7 @@ class TestChannelChatBranches:
         sent_mock = AsyncMock(return_value=None)
         monkeypatch.setattr(gw._telegram, "send_message", sent_mock)
 
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post(
             "/v1/gateway/telegram/chat",
             json={
@@ -457,7 +457,7 @@ class TestChannelChatBranches:
         chat = ChatService(answer_generator=FakeProvider(responses=["hi there"]))
         chat.attach_engine(identity_service=IdentityService())
         app = self._app_with_state(chat_service=chat, channel_registry=reg)
-        client = TestClient(app)
+        client = SignedClient(app)
         r = client.post(
             "/v1/gateway/telegram/chat",
             json={

@@ -37,9 +37,13 @@ _BROKER_URL = _build_celery_broker_url()
 
 # ── Per-plan queue routing ─────────────────────────────────────────────────────
 # Enterprise tenants get dedicated queues to prevent noisy-neighbour effects.
-# Worker -Q flag must include all plan queues:
-#   -Q goals,goals.free,goals.starter,goals.professional,goals.enterprise,
-#      goals_dlq,schedules,maintenance
+# The shipped workers (infra/docker-compose*.yml, infra/k8s/worker-deployment.yaml,
+# infra/helm/agentverse/values.yaml) must together consume EVERY queue a task is
+# routed to — tests/scaling/test_worker_queue_coverage.py enforces this:
+#   celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,
+#   goals_dlq,schedules,maintenance,governance,ingestion,
+#   workflows.free,workflows.starter,workflows.professional,workflows.enterprise,
+#   workflows.maintenance
 PLAN_QUEUE_MAP = {
     "free": "goals.free",
     "starter": "goals.starter",
@@ -55,6 +59,10 @@ celery_app = Celery(
     include=[
         "app.scaling.tasks",
         "app.workflow.celery_tasks",  # Workflow Automation Engine tasks
+        # Ingestion scheduler (shared_tasks): beat schedules
+        # ingestion.dispatch_due_sources / retry_dlq_entries, which were never
+        # registered on the worker without this import.
+        "app.ingestion.scheduler",
     ],
 )
 
@@ -99,6 +107,9 @@ celery_app.conf.update(
         "agentverse.goals.run_goal_enterprise": {"queue": "goals.enterprise"},
         "agentverse.goals.run_goal_dlq": {"queue": "goals_dlq"},
         "agentverse.schedules.*": {"queue": "schedules"},
+        # Ingestion tasks (sync_source is enqueued by dispatch_due_sources with no
+        # explicit queue) share the beat entries' ``ingestion`` queue.
+        "ingestion.*": {"queue": "ingestion"},
         "agentverse.maintenance.*": {"queue": "maintenance"},
         # Civilization tasks
         "app.scaling.tasks.civilization_tick": {"queue": "maintenance"},

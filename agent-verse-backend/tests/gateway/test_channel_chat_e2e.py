@@ -10,13 +10,16 @@ non-JSON reply comes back — plus cross-channel continuity to one principal.
 from __future__ import annotations
 
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
 
 from app.chat.service import ChatService
 from app.gateway.channel_registry import ChannelRegistry
 from app.gateway.router import router as gateway_router
 from app.identity import IdentityService
 from app.providers.fake import FakeProvider
+from tests.gateway.conftest import SignedClient
+
+pytestmark = pytest.mark.usefixtures("signed_channels")
 
 TENANT = "tenant-msg"
 TG_BOT = "bot-1"
@@ -57,7 +60,7 @@ def _whatsapp_payload(from_number: str, text: str) -> dict:
 
 def test_telegram_inbound_routes_through_chatservice() -> None:
     app, chat, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     r = client.post("/v1/gateway/telegram/chat", json=_telegram_payload("42", "what can you do?"))
     assert r.status_code == 200, r.text
     body = r.json()
@@ -72,7 +75,7 @@ def test_telegram_inbound_routes_through_chatservice() -> None:
 
 def test_whatsapp_inbound_routes_through_chatservice() -> None:
     app, chat, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     r = client.post("/v1/gateway/whatsapp/chat", json=_whatsapp_payload("15551234567", "hello"))
     assert r.status_code == 200, r.text
     body = r.json()
@@ -82,7 +85,7 @@ def test_whatsapp_inbound_routes_through_chatservice() -> None:
 
 def test_unknown_addressee_does_no_tenant_work() -> None:
     app, _, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     r = client.post("/v1/gateway/telegram/chat",
                     json={"addressee": "unknown-bot", "message": {"from": {"id": "1"},
                           "chat": {"id": "1"}, "text": "hi"}})
@@ -92,7 +95,7 @@ def test_unknown_addressee_does_no_tenant_work() -> None:
 
 def test_repeat_telegram_messages_continue_one_session() -> None:
     app, chat, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     client.post("/v1/gateway/telegram/chat", json=_telegram_payload("99", "first message"))
     client.post("/v1/gateway/telegram/chat", json=_telegram_payload("99", "second message"))
     session = chat.get_or_create_channel_session(
@@ -114,7 +117,7 @@ def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
     nothing.
     """
     app, chat, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     user_id = "tg-replay-1"
     payload = _telegram_payload(user_id, "book me a meeting")
     payload["message"]["message_id"] = 4242
@@ -139,7 +142,7 @@ def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
 
 def test_a_genuinely_new_message_from_the_same_user_still_goes_through() -> None:
     app, chat, _ = _app()
-    client = TestClient(app)
+    client = SignedClient(app)
     user_id = "tg-replay-2"
     for i, text in enumerate(("first question", "second question"), start=1):
         payload = _telegram_payload(user_id, text)

@@ -27,7 +27,9 @@ spec:
             - "worker"
             - "--loglevel=info"
             - "-Q"
-            - "goals,schedules,maintenance"
+            # Every queue celery_app routes to (goals.{plan}, workflows.*, ingestion,
+            # governance, default "celery") — see tests/scaling/test_worker_queue_coverage.py.
+            - "celery,goals,goals.free,goals.starter,goals.professional,goals.enterprise,goals_dlq,schedules,maintenance,governance,ingestion,workflows.free,workflows.starter,workflows.professional,workflows.enterprise,workflows.maintenance"
             - "--concurrency=4"
             - "--max-tasks-per-child=100"
           envFrom:

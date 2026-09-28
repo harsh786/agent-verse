@@ -131,6 +131,11 @@ class SlackChannelAdapter(ChannelAdapter):
             _log.warning("slack.post_message.failed", error=str(exc))
             return None
 
+    @property
+    def is_configured(self) -> bool:
+        """True when SLACK_SIGNING_SECRET is set (inbound auth is possible)."""
+        return bool(self._signing_secret)
+
     async def verify_auth(
         self,
         request_headers: dict[str, str],
@@ -150,7 +155,7 @@ class SlackChannelAdapter(ChannelAdapter):
         against a reconstruction that can never match.
         """
         if not self._signing_secret:
-            return True
+            return False  # fail CLOSED when SLACK_SIGNING_SECRET is unset (router → 503)
         if raw_body is None:
             _log.warning("slack.verify_auth.missing_raw_body")
             return False

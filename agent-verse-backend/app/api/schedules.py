@@ -216,6 +216,83 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
     return _record_to_dict(record)
 
 
+def _analytics_trigger_type(rec: dict[str, Any]) -> str:
+    """Trigger type of a store record; ``spec`` is a TriggerSpec, not a dict.
+
+    (The analytics handler used ``(rec["spec"] or {}).get(...)``, which only
+    never crashed because the route was unreachable — see below.)
+    """
+    explicit = rec.get("trigger_type")
+    if explicit:
+        return str(explicit)
+    spec = rec.get("spec")
+    if isinstance(spec, dict):
+        ttype = spec.get("trigger_type")
+    else:
+        ttype = getattr(spec, "trigger_type", "")
+    return str(getattr(ttype, "value", ttype) or "unknown")
+
+
+# Declared BEFORE ``/{schedule_id}``: FastAPI matches routes in order, so the
+# parameterized route used to swallow GET /schedules/analytics (→ 404).
+@router.get("/analytics")
+async def get_schedule_analytics(request: Request) -> dict[str, Any]:
+    """Aggregate analytics across all schedules for this tenant.
+
+    Returns counts by status and trigger type, plus a simple 7-day
+    firing cadence derived from last_fired_at timestamps.
+    """
+    tenant_ctx: TenantContext = _require_tenant(request)
+    store = _schedule_store(request)
+    records = store.list_all(tenant_ctx=tenant_ctx)
+
+    total = len(records)
+    active = sum(1 for r in records if not r.get("paused", False))
+    paused = total - active
+
+    by_type: dict[str, int] = {}
+    for r in records:
+        ttype = _analytics_trigger_type(r)
+        by_type[ttype] = by_type.get(ttype, 0) + 1
+
+    # Build a rough 7-day cadence histogram using last_fired_at
+    now = datetime.now(UTC)
+    fired_by_day: dict[str, int] = {}
+    for i in range(7):
+        day_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
+        fired_by_day[day_str] = 0
+
+    for r in records:
+        lf = r.get("last_fired_at")
+        if lf:
+            try:
+                dt = datetime.fromisoformat(str(lf).replace("Z", "+00:00"))
+                day_str = dt.strftime("%Y-%m-%d")
+                if day_str in fired_by_day:
+                    fired_by_day[day_str] += 1
+            except (ValueError, TypeError):
+                pass
+
+    return {
+        "total": total,
+        "active": active,
+        "paused": paused,
+        "by_trigger_type": by_type,
+        "fired_last_7_days": fired_by_day,
+        "schedules_summary": [
+            {
+                "schedule_id": r.get("schedule_id", ""),
+                "goal_template": r.get("goal_template", ""),
+                "trigger_type": _analytics_trigger_type(r),
+                "status": "paused" if r.get("paused") else "active",
+                "last_fired_at": r.get("last_fired_at"),
+                "next_run_at": r.get("next_run_at"),
+            }
+            for r in records[:20]  # cap at 20 for response size
+        ],
+    }
+
+
 @router.get("/{schedule_id}")
 async def get_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -519,66 +596,6 @@ async def events_stream(request: Request) -> StreamingResponse:
 class SuggestScheduleRequest(BaseModel):
     goal_description: str
     context: str = ""  # optional additional context
-
-
-@router.get("/analytics")
-async def get_schedule_analytics(request: Request) -> dict[str, Any]:
-    """Aggregate analytics across all schedules for this tenant.
-
-    Returns counts by status and trigger type, plus a simple 7-day
-    firing cadence derived from last_fired_at timestamps.
-    """
-    tenant_ctx: TenantContext = _require_tenant(request)
-    store = _schedule_store(request)
-    records = store.list_all(tenant_ctx=tenant_ctx)
-
-    total = len(records)
-    active = sum(1 for r in records if not r.get("paused", False))
-    paused = total - active
-
-    by_type: dict[str, int] = {}
-    for r in records:
-        ttype = r.get("trigger_type") or (r.get("spec") or {}).get("trigger_type") or "unknown"
-        by_type[ttype] = by_type.get(ttype, 0) + 1
-
-    # Build a rough 7-day cadence histogram using last_fired_at
-    now = datetime.now(UTC)
-    fired_by_day: dict[str, int] = {}
-    for i in range(7):
-        day_str = (now - timedelta(days=i)).strftime("%Y-%m-%d")
-        fired_by_day[day_str] = 0
-
-    for r in records:
-        lf = r.get("last_fired_at")
-        if lf:
-            try:
-                dt = datetime.fromisoformat(str(lf).replace("Z", "+00:00"))
-                day_str = dt.strftime("%Y-%m-%d")
-                if day_str in fired_by_day:
-                    fired_by_day[day_str] += 1
-            except (ValueError, TypeError):
-                pass
-
-    return {
-        "total": total,
-        "active": active,
-        "paused": paused,
-        "by_trigger_type": by_type,
-        "fired_last_7_days": fired_by_day,
-        "schedules_summary": [
-            {
-                "schedule_id": r.get("schedule_id", ""),
-                "goal_template": r.get("goal_template", ""),
-                "trigger_type": r.get("trigger_type")
-                or (r.get("spec") or {}).get("trigger_type")
-                or "unknown",
-                "status": "paused" if r.get("paused") else "active",
-                "last_fired_at": r.get("last_fired_at"),
-                "next_run_at": r.get("next_run_at"),
-            }
-            for r in records[:20]  # cap at 20 for response size
-        ],
-    }
 
 
 @router.post("/suggest")

@@ -201,6 +201,13 @@ class TelegramChannelAdapter(ChannelAdapter):
         """
         secret_token = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
         if not secret_token:
-            return True  # no secret configured, allow all
+            # Fail CLOSED: this route bypasses tenant auth, so an unset secret
+            # used to accept every forged update (the router answers 503).
+            return False
         header_token = request_headers.get("x-telegram-bot-api-secret-token", "")
-        return hmac.compare_digest(secret_token, header_token)
+        return hmac.compare_digest(secret_token.encode(), header_token.encode())
+
+    @property
+    def is_configured(self) -> bool:
+        """True when TELEGRAM_WEBHOOK_SECRET is set (inbound auth is possible)."""
+        return bool(os.getenv("TELEGRAM_WEBHOOK_SECRET", ""))

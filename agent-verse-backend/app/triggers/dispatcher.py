@@ -244,19 +244,32 @@ class TriggerDispatcher:
 
         try:
             # ── Step 8: Condition evaluation ─────────────────────────────────
-            if trigger_spec.condition:
+            # CONDITION triggers store their expression in ``condition_expression``
+            # (the API maps ``condition_cel`` there); ``condition`` is the legacy /
+            # generic gate. Reading only ``condition`` let every event fire every
+            # CONDITION trigger. Every configured expression must hold; a parse or
+            # evaluation error fails CLOSED and is audited as ``condition_error``.
+            expressions = [
+                e
+                for e in (
+                    getattr(trigger_spec, "condition_expression", "") or "",
+                    trigger_spec.condition or "",
+                )
+                if e.strip()
+            ]
+            for expression in expressions:
                 try:
-                    if not self._evaluate_condition(trigger_spec.condition, payload):
-                        return self._make_skip_event(
-                            trigger_id,
-                            tenant_id,
-                            payload,
-                            idempotency_key,
-                            "condition_false",
-                        )
+                    holds = self._evaluate_condition(expression, payload)
                 except Exception as exc:
                     _log.warning("condition_eval_error trigger=%s: %s", trigger_id, exc)
-                    # Treat condition error as condition_false
+                    return self._make_skip_event(
+                        trigger_id,
+                        tenant_id,
+                        payload,
+                        idempotency_key,
+                        "condition_error",
+                    )
+                if not holds:
                     return self._make_skip_event(
                         trigger_id,
                         tenant_id,
@@ -427,32 +440,15 @@ class TriggerDispatcher:
             return False
 
     def _evaluate_condition(self, expression: str, payload: dict) -> bool:
-        """Evaluate a simple CEL-like condition.
+        """Evaluate a CEL condition; raises on a parse/evaluation error.
 
-        Falls back to a basic Python eval-free checker.
-        For production use install `cel-python`.
+        Delegates to ``CELEvaluator`` (cel-python when installed, else the
+        dependency-free fail-closed ``safe_eval``). The previous inline version
+        returned True whenever cel-python was missing — i.e. always.
         """
-        if not expression.strip():
-            return True
-        try:
-            import celpy  # type: ignore[import]
+        from app.triggers.condition.evaluator import CELEvaluator
 
-            env = celpy.Environment()
-            ast = env.compile(expression)
-            prog = env.program(ast)
-            import celpy.celtypes as ct  # type: ignore[import]
-
-            activation = {
-                "payload": ct.MapType(
-                    {ct.StringType(k): ct.StringType(str(v)) for k, v in payload.items()}
-                )
-            }
-            return bool(prog.evaluate(activation))
-        except ImportError:
-            # cel-python not installed — simple fallback: expression is truthy
-            return True
-        except Exception:
-            return False
+        return CELEvaluator().evaluate(expression, payload)
 
     def _render_template(self, template: str, payload: dict, **extra: str) -> str:
         """Render a Jinja2 sandboxed goal template."""

@@ -49,6 +49,38 @@ _webhook = WebhookChannelAdapter()
 _voice_phone = VoicePhoneChannelAdapter()
 
 
+async def _authenticate_channel(
+    adapter: Any,
+    channel: str,
+    headers: dict[str, str],
+    raw: dict[str, Any],
+    raw_body: bytes | None = None,
+) -> None:
+    """Fail-closed channel-secret check for the public (auth-bypassed) webhooks.
+
+    These routes sit in TenantMiddleware's bypass list, so the channel secret is
+    their ONLY authentication. Telegram / WhatsApp / Slack / generic used to
+    accept every request when their secret was unset. Now: unconfigured → 503,
+    bad/missing credential (or a verifier error) → 401 — the same contract as
+    app/api/channels/ingestion.py.
+    """
+    if not getattr(adapter, "is_configured", False):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{channel} webhook is not configured (no signing secret set)",
+        )
+    try:
+        verified = await adapter.verify_auth(headers, raw, raw_body=raw_body)
+    except Exception as exc:
+        _log.warning("gateway.channel_auth_error", channel=channel, error=str(exc)[:160])
+        verified = False
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid {channel} webhook credentials",
+        )
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
@@ -395,8 +427,7 @@ async def telegram_webhook(
     raw = await request.json()
     headers = dict(request.headers)
 
-    if not await _telegram.verify_auth(headers, raw):
-        raise HTTPException(status_code=403, detail="Invalid Telegram webhook token")
+    await _authenticate_channel(_telegram, "telegram", headers, raw)
 
     tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _telegram.normalize(raw, tenant_id=tenant_id, org_id=org_id)
@@ -437,8 +468,7 @@ async def slack_events(
     if raw.get("type") == "url_verification":
         return {"challenge": raw.get("challenge", "")}
 
-    if not await _slack.verify_auth(headers, raw, raw_body=raw_body):
-        raise HTTPException(status_code=403, detail="Invalid Slack signature")
+    await _authenticate_channel(_slack, "slack", headers, raw, raw_body=raw_body)
 
     tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _slack.normalize(raw, tenant_id=tenant_id, org_id=org_id)
@@ -462,10 +492,24 @@ async def whatsapp_verify(
     hub_verify_token: str = "",
     hub_challenge: str = "",
 ) -> Any:
+    import hmac
     import os
 
-    if hub_mode == "subscribe" and hub_verify_token == os.getenv("WHATSAPP_VERIFY_TOKEN", ""):
-        return int(hub_challenge)
+    # Fail closed: an unset WHATSAPP_VERIFY_TOKEN used to match an empty
+    # hub_verify_token ("" == ""), letting anyone complete the subscription.
+    expected = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="whatsapp webhook verification is not configured",
+        )
+    if hub_mode == "subscribe" and hmac.compare_digest(
+        hub_verify_token.encode(), expected.encode()
+    ):
+        try:
+            return int(hub_challenge)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid hub_challenge") from None
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
@@ -483,8 +527,7 @@ async def whatsapp_webhook(
     raw = await request.json()
     headers = dict(request.headers)
 
-    if not await _whatsapp.verify_auth(headers, raw, raw_body=raw_body):
-        raise HTTPException(status_code=403, detail="Invalid WhatsApp signature")
+    await _authenticate_channel(_whatsapp, "whatsapp", headers, raw, raw_body=raw_body)
 
     tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _whatsapp.normalize(raw, tenant_id=tenant_id, org_id=org_id)
@@ -689,8 +732,7 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
     # and-reserialized `raw` dict is never guaranteed byte-identical to what the
     # caller actually signed); telegram only checks a static secret header and
     # ignores raw_body entirely, so passing it here is a no-op for that adapter.
-    if not await adapter.verify_auth(headers, raw, raw_body=raw_body):
-        raise HTTPException(status_code=403, detail=f"invalid {channel} signature")
+    await _authenticate_channel(adapter, channel, headers, raw, raw_body=raw_body)
 
     # Resolve tenant from the addressee (bot id / number) or the trusted relay header.
     addressee = str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
@@ -772,8 +814,7 @@ async def generic_webhook(
     raw = await request.json()
     headers = dict(request.headers)
 
-    if not await _webhook.verify_auth(headers, raw, raw_body=raw_body):
-        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    await _authenticate_channel(_webhook, "webhook", headers, raw, raw_body=raw_body)
 
     tenant_id = trusted_gateway_tenant(headers)  # spoof-proof: gated by ingress secret
     command = await _webhook.normalize(raw, tenant_id=tenant_id, org_id=org_id)

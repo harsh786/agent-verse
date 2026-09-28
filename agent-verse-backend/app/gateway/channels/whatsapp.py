@@ -102,6 +102,11 @@ class WhatsAppChannelAdapter(ChannelAdapter):
             _log.warning("whatsapp.send_message.failed", error=str(exc))
             return None
 
+    @property
+    def is_configured(self) -> bool:
+        """True when WHATSAPP_APP_SECRET is set (inbound auth is possible)."""
+        return bool(self._app_secret)
+
     async def verify_auth(
         self,
         request_headers: dict[str, str],
@@ -120,7 +125,7 @@ class WhatsAppChannelAdapter(ChannelAdapter):
         the untouched raw request body; without it we fail closed.
         """
         if not self._app_secret:
-            return True
+            return False  # fail CLOSED when WHATSAPP_APP_SECRET is unset (router → 503)
         if raw_body is None:
             _log.warning("whatsapp.verify_auth.missing_raw_body")
             return False

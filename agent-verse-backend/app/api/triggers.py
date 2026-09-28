@@ -448,27 +448,45 @@ async def retry_dlq_entry(dlq_id: str, request: Request) -> dict[str, Any]:
             {"n": attempt, "next": next_retry_at, "id": dlq_id, "tid": tenant_ctx.tenant_id},
         )
 
+    # Re-dispatch with the dispatcher's real signature (spec, payload, tenant_ctx).
+    # The old call passed tenant_id=/payload= keywords, raised a TypeError that
+    # contextlib.suppress swallowed, and answered "queued" without ever firing.
+    # A per-attempt message_id gives the retry its own idempotency key so the
+    # durable dedup gate does not drop it as a replay of the original firing.
     dispatched = False
+    status_str = "scheduled"  # attempt recorded; nothing to re-fire right now
+    skip_reason: str | None = None
+    goal_id: str | None = None
     dispatcher = _get_dispatcher(request)
     store = _get_store(request)
-    if dispatcher is not None and store is not None:
-        rec = await _store_get(store, trigger_id, tenant_ctx)
-        if rec is not None:
-            with contextlib.suppress(Exception):
-                await dispatcher.dispatch(
-                    _spec_for_dispatch(rec),
-                    tenant_id=tenant_ctx.tenant_id,
-                    payload=raw_payload,
-                )
-                dispatched = True
+    rec = await _store_get(store, trigger_id, tenant_ctx) if store is not None else None
+    if dispatcher is not None and rec is not None:
+        try:
+            event = await dispatcher.dispatch(
+                _spec_for_dispatch(rec),
+                raw_payload,
+                tenant_ctx,
+                message_id=f"dlq-retry:{dlq_id}:{attempt}",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"DLQ retry recorded but re-dispatch failed: {str(exc)[:200]}",
+            ) from exc
+        skip_reason = getattr(event, "skip_reason", None)
+        goal_id = getattr(event, "goal_id", None)
+        dispatched = bool(getattr(event, "goal_created", False))
+        status_str = "skipped" if skip_reason else ("dispatched" if dispatched else "failed")
 
     return {
-        "status": "queued",
+        "status": status_str,
         "dlq_id": dlq_id,
         "trigger_id": trigger_id,
         "retry_count": attempt,
         "next_retry_at": next_retry_at.isoformat(),
         "dispatched": dispatched,
+        "goal_id": goal_id,
+        "skip_reason": skip_reason,
     }
 
 

@@ -188,10 +188,11 @@ async def test_post_message_exception_returns_none():
 # ── verify_auth ───────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_verify_auth_no_signing_secret_allows():
+async def test_verify_auth_no_signing_secret_fails_closed():
+    # Fail closed: an unset SLACK_SIGNING_SECRET used to accept every request.
     adapter = SlackChannelAdapter(signing_secret="")
     ok = await adapter.verify_auth({}, {})
-    assert ok is True
+    assert ok is False
 
 
 @pytest.mark.asyncio

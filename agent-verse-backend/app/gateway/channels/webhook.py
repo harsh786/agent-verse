@@ -66,6 +66,11 @@ class WebhookChannelAdapter(ChannelAdapter):
             "requires_action": response.requires_action,
         }
 
+    @property
+    def is_configured(self) -> bool:
+        """True when WEBHOOK_SECRET is set (inbound auth is possible)."""
+        return bool(self._secret)
+
     async def verify_auth(
         self,
         request_headers: dict[str, str],
@@ -82,7 +87,7 @@ class WebhookChannelAdapter(ChannelAdapter):
         the untouched raw request body; without it we fail closed.
         """
         if not self._secret:
-            return True
+            return False  # fail CLOSED when WEBHOOK_SECRET is unset (router → 503)
         if raw_body is None:
             _log.warning("webhook.verify_auth.missing_raw_body")
             return False

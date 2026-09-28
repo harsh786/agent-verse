@@ -11,7 +11,9 @@ _log = logging.getLogger(__name__)
 class CELEvaluator:
     """Evaluate CEL expressions against a payload dict.
 
-    Falls back to a permissive mode when cel-python is not installed.
+    Falls back to the dependency-free, fail-closed ``safe_eval`` evaluator when
+    cel-python is not installed (it used to treat every expression as TRUE).
+    Raises on a parse/evaluation error; callers treat that as condition FALSE.
     """
 
     TIMEOUT_SECONDS: float = 0.5
@@ -35,7 +37,13 @@ class CELEvaluator:
         try:
             import celpy  # type: ignore[import]
             import celpy.celtypes as ct  # type: ignore[import]
+        except ImportError:
+            # No cel-python: evaluate with the AST-whitelist evaluator (fail closed).
+            from app.triggers.condition.safe_eval import evaluate_condition
 
+            safe_payload = {k: v for k, v in payload.items() if k not in self.BLOCKED_ATTRIBUTES}
+            return evaluate_condition(expression, safe_payload)
+        try:
             env = celpy.Environment()
             ast = env.compile(expression)
             prog = env.program(ast)
@@ -49,9 +57,6 @@ class CELEvaluator:
                 )
             }
             return bool(prog.evaluate(activation))
-        except ImportError:
-            _log.debug("cel-python not installed, condition assumed True")
-            return True
         except Exception as exc:
             _log.warning("cel_eval_error expr='%s': %s", expression, exc)
             raise

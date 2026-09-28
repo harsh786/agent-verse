@@ -142,6 +142,14 @@ class ConditionTriggerConsumer:
         except Exception as exc:
             _log.warning("condition_dispatch_error: %s", exc)
 
+    def _safe_eval(self, expr: str, payload: dict) -> bool:
+        """Evaluate a sub-condition; an error counts as FALSE (fail closed)."""
+        try:
+            return bool(self._cel.evaluate(expr, payload))
+        except Exception as exc:
+            _log.warning("compound_subcondition_error: %s", exc)
+            return False
+
     def _should_fire(
         self,
         ttype: str,
@@ -152,7 +160,14 @@ class ConditionTriggerConsumer:
     ) -> bool:
         if ttype == "condition":
             expr = getattr(spec, "condition_expression", "") or getattr(spec, "condition", "")
-            return self._cel.evaluate(expr, payload)
+            try:
+                return bool(self._cel.evaluate(expr, payload))
+            except Exception as exc:
+                # Forward a broken expression to the dispatcher: its gate fails
+                # closed and audits the skip as ``condition_error`` (a silent drop
+                # here would leave the operator no trace of why it never fires).
+                _log.warning("condition_eval_error trigger=%s: %s", trigger_id, exc)
+                return True
 
         if ttype == "counter_threshold":
             key = f"{trigger_id}:{getattr(spec, 'counter_key', '') or 'default'}"
@@ -205,7 +220,7 @@ class ConditionTriggerConsumer:
                     if sub is not None
                     else ""
                 )
-                states[str(sid)] = self._cel.evaluate(expr, payload) if sub is not None else False
+                states[str(sid)] = self._safe_eval(expr, payload) if sub is not None else False
             return self._compound.evaluate_compound(
                 getattr(spec, "compound_logic", "AND") or "AND", states
             )

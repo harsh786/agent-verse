@@ -2795,12 +2795,18 @@ def _build_worker_goal_service() -> tuple[Any, Any]:
     try:
         from app.db.session import get_session_factory
         from app.services.event_store import EventStore
+        from app.services.goal_queue import CeleryGoalTaskQueue
         from app.services.goal_service import GoalService
 
         db_factory = get_session_factory()
+        # task_queue is REQUIRED here: without it submit_goal runs the goal as an
+        # asyncio task inside _run_async's throwaway loop, which is closed as soon
+        # as this Celery task returns — the scheduled goal was silently killed.
+        # With it the goal is persisted and handed to run_goal (per-plan queue).
         goal_service = GoalService(
             db_session_factory=db_factory,
             event_store=EventStore(db_factory),
+            task_queue=CeleryGoalTaskQueue(),
         )
         return goal_service, db_factory
     except Exception as exc:
@@ -4813,7 +4819,15 @@ async def _do_check_email_goals() -> dict[str, Any]:
 
         db_factory = _get_fresh_db()
         event_store = EventStore(db_factory)
-        goal_service = GoalService(db_session_factory=db_factory, event_store=event_store)
+        from app.services.goal_queue import CeleryGoalTaskQueue
+
+        # Enqueue via run_goal: an in-process asyncio task would die with
+        # _run_async's event loop the moment this Celery task returns.
+        goal_service = GoalService(
+            db_session_factory=db_factory,
+            event_store=event_store,
+            task_queue=CeleryGoalTaskQueue(),
+        )
 
         email_tenant_id = os.getenv("IMAP_TENANT_ID", "email-default")
         ctx = TenantContext(

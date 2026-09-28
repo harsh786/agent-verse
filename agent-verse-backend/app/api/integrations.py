@@ -350,7 +350,14 @@ async def receive_alertmanager_event(
                     plan=PlanTier.PROFESSIONAL,
                     api_key_id="alertmanager",
                 )
-                result = await goal_service.submit_goal(goal=goal_text, tenant_ctx=tenant_ctx)
+                # priority/dry_run are required by submit_goal; omitting them
+                # raised a TypeError (swallowed below) so no goal was ever made.
+                result = await goal_service.submit_goal(
+                    goal=goal_text,
+                    priority="high" if severity == "critical" else "normal",
+                    dry_run=False,
+                    tenant_ctx=tenant_ctx,
+                )
                 created_goals.append(result.get("goal_id", ""))
             except Exception as exc:
                 import logging
@@ -414,7 +421,13 @@ async def receive_datadog_event(
                     plan=PlanTier.PROFESSIONAL,
                     api_key_id="datadog",
                 )
-                result = await goal_service.submit_goal(goal=goal_text, tenant_ctx=ctx)
+                # priority/dry_run are required by submit_goal (see alertmanager).
+                result = await goal_service.submit_goal(
+                    goal=goal_text,
+                    priority="normal" if payload.alert_type == "warning" else "high",
+                    dry_run=False,
+                    tenant_ctx=ctx,
+                )
                 goal_id = result.get("goal_id")
             except Exception as exc:
                 import logging
