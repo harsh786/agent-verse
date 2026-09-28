@@ -521,7 +521,12 @@ async def add_golden_task(*, eval_suite_id: str, task: GoldenTask, tenant_id: st
         sqlalchemy_rls_context(session, tenant_id),
     ):
         tid = task.task_id or uuid.uuid4().hex
-        await session.execute(
+        # `id` is a global primary key and the caller may supply it. The upsert
+        # used to overwrite whatever row owned that id — another tenant's golden
+        # task included. It now only ever updates the caller's own row; a
+        # collision with a row the caller does not own updates nothing (and
+        # under RLS that row is not even visible), which is reported below.
+        written = await session.execute(
             text("""
                 INSERT INTO golden_tasks
                     (id, eval_suite_id, tenant_id, goal, expected_output_contains,
@@ -529,6 +534,8 @@ async def add_golden_task(*, eval_suite_id: str, task: GoldenTask, tenant_id: st
                 VALUES (:id, :suite, :tid, :goal, :expected, CAST(:tools AS jsonb),
                         CAST(:forbidden AS jsonb), :min_score, CAST(:tags AS jsonb), NOW())
                 ON CONFLICT (id) DO UPDATE SET goal = EXCLUDED.goal
+                    WHERE golden_tasks.tenant_id = EXCLUDED.tenant_id
+                RETURNING id
             """),
             {
                 "id": tid,
@@ -542,6 +549,8 @@ async def add_golden_task(*, eval_suite_id: str, task: GoldenTask, tenant_id: st
                 "tags": json.dumps(task.tags),
             },
         )
+        if written.first() is None:
+            raise ValueError(f"golden task id {tid!r} is already in use")
     return tid
 
 

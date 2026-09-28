@@ -1502,7 +1502,13 @@ async def start_gdpr_export(request: Request) -> dict[str, Any]:
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            # gdpr_export_jobs is tenant-isolated by RLS; under the API's
+            # NOBYPASSRLS role the INSERT is rejected unless the tenant GUC is set.
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, ctx.tenant_id),
+            ):
                 await session.execute(
                     text("""
                     INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at)
@@ -1547,7 +1553,11 @@ async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any
         }
     from sqlalchemy import text
 
-    async with db() as session:
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, ctx.tenant_id),
+    ):
         row = (
             await session.execute(
                 text("""
@@ -1585,7 +1595,11 @@ async def record_consent(request: Request, body: ConsentRequest) -> dict[str, An
 
             ip = request.client.host if request.client else ""
             ua = request.headers.get("user-agent", "")
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, ctx.tenant_id),
+            ):
                 await session.execute(
                     text("""
                     INSERT INTO consent_records
@@ -1617,7 +1631,11 @@ async def revoke_consent(request: Request, purpose: str) -> dict[str, Any]:
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, ctx.tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE consent_records SET revoked_at = NOW()
@@ -1687,7 +1705,11 @@ async def list_contracts(request: Request) -> list[dict[str, Any]]:
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             rows = (
                 await session.execute(
                     text("""
@@ -1740,7 +1762,11 @@ async def sign_contract(
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             await session.execute(
                 text("""
                 INSERT INTO enterprise_contracts

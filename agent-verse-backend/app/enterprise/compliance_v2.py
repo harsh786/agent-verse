@@ -173,14 +173,17 @@ class ComplianceChecker:
                 "note": None if dpa else "Data Processing Agreement not signed",
             }
 
-            # 2. Data portability: must have at least one completed GDPR export in 90 days
+            # 2. Data portability: must have at least one completed GDPR export in 90 days.
+            # The export worker (run_gdpr_export in app/scaling/tasks.py) marks a
+            # finished job status='complete'; this used to match only 'completed',
+            # so the control could never pass however many exports had succeeded.
             try:
                 recent_exports = (
                     await db.execute(
                         _t("""
                             SELECT COUNT(*) FROM gdpr_export_jobs
                             WHERE tenant_id = :tid
-                              AND status = 'completed'
+                              AND status IN ('complete', 'completed')
                               AND completed_at > NOW() - INTERVAL '90 days'
                         """),
                         {"tid": tenant_id},

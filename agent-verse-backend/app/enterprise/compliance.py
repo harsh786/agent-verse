@@ -167,12 +167,27 @@ class ComplianceController:
             return None
 
     async def _db_save_deletion(self, tenant_id: str) -> None:
+        """Record the tenant's own pending-erasure request.
+
+        ``deleted_tenants`` is a tenant-scoped table (one row per tenant, keyed by
+        ``tenant_id``): this runs on the tenant's own request path, so it is
+        written under that tenant's RLS context — never the maintenance role.
+        Under the API's NOBYPASSRLS role an unscoped INSERT is rejected by the
+        table's tenant policy and the erasure request would silently never be
+        recorded.
+        """
         if self._db is None:
             return
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(
                         "INSERT INTO deleted_tenants (tenant_id, requested_at) "
@@ -200,7 +215,16 @@ class ComplianceController:
                 try:
                     from sqlalchemy import text as _text
 
-                    async with db() as _sess:
+                    from app.db.rls import sqlalchemy_rls_context
+
+                    # `goals` is FORCE ROW LEVEL SECURITY: without the tenant GUC
+                    # this read matched zero rows under the API's NOBYPASSRLS role
+                    # and the GDPR export silently contained no goals at all.
+                    async with (
+                        db() as _sess,
+                        _sess.begin(),
+                        sqlalchemy_rls_context(_sess, tenant_ctx.tenant_id),
+                    ):
                         # FIX: The previous cap has been removed.
                         # GDPR Art. 20 right to portability requires exporting ALL data.
                         # Large tenants use async Celery export (compliance_router).

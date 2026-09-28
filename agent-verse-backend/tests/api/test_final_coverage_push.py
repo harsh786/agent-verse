@@ -1710,7 +1710,10 @@ class TestEvalSuiteExtra:
             "__aenter__": AsyncMock(return_value=None),
             "__aexit__": AsyncMock(return_value=False),
         })())
-        mock_session.execute = AsyncMock()
+        # The upsert RETURNs the row it wrote (see add_golden_task).
+        written = MagicMock()
+        written.first = MagicMock(return_value=("gt-1",))
+        mock_session.execute = AsyncMock(return_value=written)
 
         def _db():
             return mock_session

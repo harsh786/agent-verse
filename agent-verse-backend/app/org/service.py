@@ -1981,8 +1981,18 @@ class OrgService:
 
     # ── Blueprint CRUD ────────────────────────────────────────────────────────
 
+    def _visible_blueprint(self) -> Any:
+        """Blueprints this tenant may read: the global ones plus its own.
+
+        ``org_blueprints.tenant_id`` is NULL for a global template. The table's
+        RLS policy enforces the same rule; this predicate keeps the app correct
+        on its own (defense in depth) — these reads used to return every
+        tenant's private blueprints.
+        """
+        return or_(OrgBlueprint.tenant_id.is_(None), OrgBlueprint.tenant_id == self._tenant_id)
+
     async def list_blueprints(self, *, domain: str | None = None) -> list[OrgBlueprint]:
-        q = select(OrgBlueprint)
+        q = select(OrgBlueprint).where(self._visible_blueprint())
         if domain:
             q = q.where(OrgBlueprint.domain == domain)
         result = await self._session.execute(q.order_by(OrgBlueprint.name))
@@ -1990,12 +2000,16 @@ class OrgService:
 
     async def get_blueprint(self, blueprint_id: str) -> OrgBlueprint | None:
         result = await self._session.execute(
-            select(OrgBlueprint).where(OrgBlueprint.id == uuid.UUID(blueprint_id))
+            select(OrgBlueprint).where(
+                OrgBlueprint.id == uuid.UUID(blueprint_id), self._visible_blueprint()
+            )
         )
         return result.scalar_one_or_none()
 
     async def get_blueprint_by_slug(self, slug: str) -> OrgBlueprint | None:
-        result = await self._session.execute(select(OrgBlueprint).where(OrgBlueprint.slug == slug))
+        result = await self._session.execute(
+            select(OrgBlueprint).where(OrgBlueprint.slug == slug, self._visible_blueprint())
+        )
         return result.scalar_one_or_none()
 
     # ── Workstream CRUD ───────────────────────────────────────────────────────

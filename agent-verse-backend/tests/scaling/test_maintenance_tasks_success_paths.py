@@ -151,12 +151,16 @@ class TestRunGdprExport:
         #   5. sqlalchemy_rls_context enter -- compliance_requests write
         #   6. INSERT INTO compliance_requests
         #   7. sqlalchemy_rls_context exit (reset app.tenant_id)
-        #   8. UPDATE gdpr_export_jobs
+        #   8. sqlalchemy_rls_context enter -- gdpr_export_jobs update
+        #   9. UPDATE gdpr_export_jobs
+        #  10. sqlalchemy_rls_context exit (reset app.tenant_id)
         session = _session_with_begin(
             execute_side_effect=[
                 MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[(1, "goal text", "completed", None)])),
                 MagicMock(fetchall=MagicMock(return_value=[(1, 1, "tool_x", "ok")])),
+                MagicMock(),
+                MagicMock(),
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -172,6 +176,18 @@ class TestRunGdprExport:
         assert "download_url" in result
         assert result["download_url"] == "/enterprise/compliance/export/job-1/download"
 
+        # gdpr_export_jobs is tenant-isolated by RLS: the completion UPDATE must
+        # run right after the tenant GUC is set, and carry its own tenant predicate.
+        calls = session.execute.call_args_list
+        update_idx = next(
+            i for i, c in enumerate(calls) if "UPDATE gdpr_export_jobs" in str(c.args[0])
+        )
+        guc = calls[update_idx - 1]
+        assert "set_config('app.tenant_id'" in str(guc.args[0])
+        assert guc.args[1] == {"tid": "t1"}
+        assert "tenant_id = :tid" in str(calls[update_idx].args[0])
+        assert calls[update_idx].args[1]["tid"] == "t1"
+
     def test_audit_query_failure_is_tolerated(self):
         from app.scaling.tasks import run_gdpr_export
 
@@ -183,6 +199,8 @@ class TestRunGdprExport:
                 MagicMock(),
                 MagicMock(fetchall=MagicMock(return_value=[])),
                 RuntimeError("audit_log missing"),
+                MagicMock(),
+                MagicMock(),
                 MagicMock(),
                 MagicMock(),
                 MagicMock(),
@@ -201,13 +219,22 @@ class TestRunGdprExport:
         session = _session_with_begin(
             execute_side_effect=[
                 RuntimeError("db exploded"),
+                MagicMock(),  # failure path: set app.tenant_id
                 MagicMock(),  # failure-path UPDATE gdpr_export_jobs
+                MagicMock(),  # failure path: reset app.tenant_id
             ]
         )
         db_factory = _db_factory(session)
         with patch("app.db.session.get_session_factory", return_value=db_factory):
             with pytest.raises(RuntimeError, match="db exploded"):
                 run_gdpr_export.run(job_id="job-3", tenant_id="t1")
+
+        # The failure mark is scoped to the job's tenant too.
+        calls = session.execute.call_args_list
+        assert "set_config('app.tenant_id'" in str(calls[1].args[0])
+        assert calls[1].args[1] == {"tid": "t1"}
+        assert "UPDATE gdpr_export_jobs SET status = 'failed'" in str(calls[2].args[0])
+        assert calls[2].args[1]["tid"] == "t1"
 
 
 # ── warm_jwks_cache ───────────────────────────────────────────────────────────

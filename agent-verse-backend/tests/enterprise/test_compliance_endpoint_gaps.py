@@ -66,6 +66,18 @@ def _make_app(
 _HDR = {"X-API-Key": _VALID_KEY}
 
 
+def _assert_single_statement_under_tenant_guc(mock_session: MagicMock, sql_prefix: str) -> None:
+    """Exactly one data statement ran, between setting and resetting app.tenant_id."""
+    calls = mock_session.execute.await_args_list
+    assert len(calls) == 3, [str(c.args[0]) for c in calls]
+    set_guc, stmt, reset_guc = calls
+    assert "set_config('app.tenant_id'" in str(set_guc.args[0])
+    assert set_guc.args[1] == {"tid": _CTX.tenant_id}
+    assert sql_prefix in str(stmt.args[0])
+    assert stmt.args[1]["tid"] == _CTX.tenant_id
+    assert "set_config('app.tenant_id', ''" in str(reset_guc.args[0])
+
+
 # ── POST /compliance/consent ─────────────────────────────────────────────────
 
 
@@ -112,8 +124,9 @@ def test_post_consent_with_db_calls_insert() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["purpose"] == "marketing"
-    # The execute should have been called with a text() statement for INSERT
-    mock_session.execute.assert_awaited_once()
+    # consent_records is tenant-isolated by RLS: the INSERT must run inside the
+    # caller's tenant context (GUC set first, reset after).
+    _assert_single_statement_under_tenant_guc(mock_session, "INSERT INTO consent_records")
 
 
 def test_post_consent_db_exception_returns_recorded_anyway() -> None:
@@ -189,7 +202,7 @@ def test_delete_consent_with_db_calls_update() -> None:
     body = resp.json()
     assert body["purpose"] == "marketing"
     assert body["status"] == "revoked"
-    mock_session.execute.assert_awaited_once()
+    _assert_single_statement_under_tenant_guc(mock_session, "UPDATE consent_records")
 
 
 def test_delete_consent_db_exception_returns_revoked_anyway() -> None:

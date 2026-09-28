@@ -4699,27 +4699,38 @@ def run_gdpr_export(self: Any, job_id: str, tenant_id: str) -> dict[str, Any]:
                     },
                 )
 
-            async with db() as session, session.begin():
+            # gdpr_export_jobs is tenant-isolated by RLS. This task works for ONE
+            # tenant (it is enqueued by that tenant's own request), so it runs
+            # under that tenant's context — not the maintenance role. Unscoped,
+            # the UPDATE matched zero rows under a NOBYPASSRLS role and the job
+            # sat at 'pending' forever although the export had been written.
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE gdpr_export_jobs
                     SET status = 'complete', completed_at = NOW(), download_url = :url
-                    WHERE id = :jid
+                    WHERE id = :jid AND tenant_id = :tid
                 """),
-                    {"url": download_url, "jid": job_id},
+                    {"url": download_url, "jid": job_id, "tid": tenant_id},
                 )
 
             return {"status": "complete", "job_id": job_id, "download_url": download_url}
 
         except Exception as exc:
             try:
-                async with db() as session, session.begin():
+                from app.db.rls import sqlalchemy_rls_context as _rls
+
+                async with db() as session, session.begin(), _rls(session, tenant_id):
                     await session.execute(
                         text(
                             "UPDATE gdpr_export_jobs SET status = 'failed', "
-                            "error_message = :err WHERE id = :jid"
+                            "error_message = :err WHERE id = :jid AND tenant_id = :tid"
                         ),
-                        {"err": str(exc)[:500], "jid": job_id},
+                        {"err": str(exc)[:500], "jid": job_id, "tid": tenant_id},
                     )
             except Exception:
                 pass
