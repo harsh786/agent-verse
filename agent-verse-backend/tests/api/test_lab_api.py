@@ -46,73 +46,62 @@ def test_lab_run_simulation_no_runner_503() -> None:
     assert resp.status_code == 503
 
 
-def test_lab_run_simulation_success() -> None:
-    runner = MagicMock()
-    runner.run = AsyncMock(return_value={"steps": 3, "outcome": "success"})
-    client = TestClient(_make_app(simulation_runner=runner), raise_server_exceptions=False)
+def test_lab_run_simulation_uses_the_real_runner() -> None:
+    """Regression: /lab/run called SimulationRunner.run(), which does not exist
+    (the mocks hid it), so every lab simulation was a 500. Use the real runner."""
+    from app.enterprise.simulation import SimulationRunner
+
+    client = TestClient(
+        _make_app(simulation_runner=SimulationRunner()), raise_server_exceptions=False
+    )
     resp = client.post(
         "/lab/run",
-        json={"goal": "book a flight", "agent_id": "a1", "mock_tools": {"flights": {}}},
+        json={"goal": "search the flights", "mock_tools": {"flights.search": "3 results"}},
         headers=AUTH_HEADERS,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["mode"] == "simulation"
-    assert body["result"]["outcome"] == "success"
-    runner.run.assert_awaited_once_with(
-        goal="book a flight", agent_id="a1", mock_tools={"flights": {}}
-    )
+    assert body["run_id"]
+    assert body["used_real_llm"] is False
+    assert body["result"]["mock_tools_used"] == ["flights.search"]
 
 
-def test_lab_run_simulation_default_mock_tools_empty_dict() -> None:
+def test_lab_run_simulation_passes_tenant_and_app_state() -> None:
+    run = MagicMock(run_id="r1", status="completed", used_real_llm=False, result={"x": 1})
     runner = MagicMock()
-    runner.run = AsyncMock(return_value={})
-    client = TestClient(_make_app(simulation_runner=runner), raise_server_exceptions=False)
+    runner.start = AsyncMock(return_value=run)
+    app = _make_app(simulation_runner=runner)
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/lab/run", json={"goal": "g"}, headers=AUTH_HEADERS)
     assert resp.status_code == 200
-    runner.run.assert_awaited_once_with(goal="g", agent_id=None, mock_tools={})
+    kwargs = runner.start.await_args.kwargs
+    assert kwargs["goal"] == "g" and kwargs["mock_tools"] == {}
+    assert kwargs["tenant_ctx"].tenant_id == _CTX.tenant_id
+    assert kwargs["app_state"] is app.state
 
 
-def test_lab_run_simulation_runner_raises_returns_500() -> None:
+def test_lab_run_simulation_runner_raises_returns_500_without_leaking() -> None:
     runner = MagicMock()
-    runner.run = AsyncMock(side_effect=ValueError("bad input"))
+    runner.start = AsyncMock(side_effect=ValueError("secret internals"))
     client = TestClient(_make_app(simulation_runner=runner), raise_server_exceptions=False)
     resp = client.post("/lab/run", json={"goal": "g"}, headers=AUTH_HEADERS)
     assert resp.status_code == 500
-    assert "ValueError" in resp.json()["detail"]
+    assert "secret internals" not in resp.text
 
 
-def test_lab_run_comparison_default_models() -> None:
+@pytest.mark.parametrize("mode", ["comparison", "live"])
+def test_lab_run_unimplemented_modes_are_501(mode: str) -> None:
+    """comparison returned a note and live a fake 'queued' while doing nothing."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/lab/run", json={"goal": "g", "mode": "comparison"}, headers=AUTH_HEADERS
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["mode"] == "comparison"
-    assert body["models"] == ["claude-haiku-3-5", "gpt-3.5-turbo"]
-    assert body["goal"] == "g"
+    resp = client.post("/lab/run", json={"goal": "g", "mode": mode}, headers=AUTH_HEADERS)
+    assert resp.status_code == 501
 
 
-def test_lab_run_comparison_explicit_models() -> None:
+def test_lab_run_unknown_mode_is_422() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/lab/run",
-        json={"goal": "g", "mode": "comparison", "models": ["m1", "m2"]},
-        headers=AUTH_HEADERS,
-    )
-    assert resp.status_code == 200
-    assert resp.json()["models"] == ["m1", "m2"]
-
-
-def test_lab_run_unknown_mode_returns_queued() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post(
-        "/lab/run", json={"goal": "g", "mode": "live"}, headers=AUTH_HEADERS
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"mode": "live", "goal": "g", "status": "queued"}
+    resp = client.post("/lab/run", json={"goal": "g", "mode": "bogus"}, headers=AUTH_HEADERS)
+    assert resp.status_code == 422
 
 
 def test_lab_run_default_mode_is_simulation() -> None:
@@ -150,13 +139,28 @@ def test_list_lab_tools_no_mcp_client() -> None:
     assert resp.json() == {"tools": [], "total": 0}
 
 
-def test_list_lab_tools_with_mcp_client() -> None:
-    client = TestClient(_make_app(mcp_client=MagicMock()), raise_server_exceptions=False)
+def test_list_lab_tools_with_mcp_client_lists_discovered_tools() -> None:
+    """Regression: discovery was a stub that always returned []."""
+    from app.mcp.client import ToolDefinition
+
+    mcp = MagicMock()
+    mcp.discover_all_tools = AsyncMock(
+        return_value=[ToolDefinition(name="gh.search", description="d", server_id="s1")]
+    )
+    client = TestClient(_make_app(mcp_client=mcp), raise_server_exceptions=False)
     resp = client.get("/lab/tools", headers=AUTH_HEADERS)
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["tools"] == []
-    assert body["total"] == 0
+    assert resp.json() == {
+        "tools": [{"name": "gh.search", "description": "d", "server_id": "s1"}],
+        "total": 1,
+    }
+
+
+def test_list_lab_tools_discovery_failure_is_503() -> None:
+    mcp = MagicMock()
+    mcp.discover_all_tools = AsyncMock(side_effect=RuntimeError("down"))
+    client = TestClient(_make_app(mcp_client=mcp), raise_server_exceptions=False)
+    assert client.get("/lab/tools", headers=AUTH_HEADERS).status_code == 503
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,15 @@ def _parse_created_at(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
+def _real_provider(provider: Any) -> Any:
+    """``provider`` unless it is the deterministic no-key FakeProvider (→ None)."""
+    if provider is None:
+        return None
+    from app.providers.fake import FakeProvider
+
+    return None if isinstance(provider, FakeProvider) else provider
+
+
 class SimulationRunner:
     """Runs goals in a mock-tool sandbox environment."""
 
@@ -127,6 +136,12 @@ class SimulationRunner:
         self._provider: Any = None
         # Postgres run store, bound by the lifespan (None = process-memory fallback).
         self._db: Any = None
+
+    def set_provider(self, provider: Any) -> None:
+        """Bind the app's LLM provider (create_app). ``_provider`` was never set, so
+        every simulation — including the SSE stream — fell back to the keyword stub
+        even with a real LLM configured. The no-key FakeProvider is not bound."""
+        self._provider = _real_provider(provider)
 
     async def start(
         self,
@@ -149,10 +164,12 @@ class SimulationRunner:
         # Build a mock MCP client that returns pre-configured responses
         mock_client = MockMCPClient(mock_responses=_mock_tools)
 
-        # Resolve provider: explicit arg > app_state > stored
+        # Resolve provider: explicit arg > app_state > stored. The app-level
+        # provider is the deterministic FakeProvider when no LLM key is configured;
+        # a run planned by it must not be reported as a real-LLM simulation.
         _provider = (
             provider
-            or (getattr(app_state, "_app_provider", None) if app_state else None)
+            or _real_provider(getattr(app_state, "_app_provider", None) if app_state else None)
             or self._provider
         )
 
@@ -210,11 +227,15 @@ class SimulationRunner:
                 for s in steps_raw
             ]
 
+            # Report the pipeline's real outcome — this was hardcoded "complete"
+            # / "success (simulated)" even when the graph failed.
+            _final = str(getattr(result, "status", "") or "")
+            _ok = _final == "complete"
             run = SimulationRun(
                 run_id=run_id,
                 goal=goal,
                 mock_tools=_mock_tools,
-                status="complete",
+                status="complete" if _ok else (_final or "failed"),
                 steps_executed=steps_executed,
                 tools_called=tools_called,
                 mock_tools_used=list(_mock_tools.keys()),
@@ -223,7 +244,8 @@ class SimulationRunner:
                 risk_level="simulated",
                 result={
                     "goal": goal,
-                    "status": "completed",
+                    "status": "completed" if _ok else (_final or "failed"),
+                    "error": "" if _ok else str(getattr(result, "error_message", "") or ""),
                     "steps": [
                         {"step": s["description"], "tool": s["tool"], "output": s["output"]}
                         for s in steps_executed
@@ -232,7 +254,7 @@ class SimulationRunner:
                     "iterations": len(steps_raw),
                     "message": f"Simulation complete: {len(steps_raw)} steps",
                     "simulated_steps": [s["description"] for s in steps_executed],
-                    "outcome": "success (simulated)",
+                    "outcome": "success (simulated)" if _ok else "failed (simulated)",
                     "side_effects": [],
                     "mock_tools_used": list(_mock_tools.keys()),
                     "note": "Simulation complete — no real tools were called",

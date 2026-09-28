@@ -196,7 +196,7 @@ class SimulationRequest(BaseModel):
 async def run_simulation(request: Request, body: SimulationRequest) -> dict[str, Any]:
     ctx = _require_tenant(request)
     run = await _simulation(request).start(
-        goal=body.goal, mock_tools=body.mock_tools, tenant_ctx=ctx
+        goal=body.goal, mock_tools=body.mock_tools, tenant_ctx=ctx, app_state=request.app.state
     )
     # Flatten result fields to top-level so frontend SimulationResult type is satisfied
     return {

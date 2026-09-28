@@ -697,6 +697,7 @@ def create_app(
     _eval_suite_runner = EvalSuiteRunner()
     _compliance_controller = ComplianceController()
     _simulation_runner = SimulationRunner()
+    _simulation_runner.set_provider(_app_provider)
     _red_team_runner = RedTeamRunner()
     _marketplace = Marketplace(agent_store=_agent_store)
     _marketplace_v2 = MarketplaceV2(db_factory=None)  # upgraded in lifespan
