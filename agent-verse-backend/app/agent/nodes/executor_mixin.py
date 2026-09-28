@@ -211,15 +211,21 @@ class ExecutorMixin:
         if not rules:
             return None
         counts: dict[str, int] = state.context.setdefault("_agent_perm_calls", {})
-        level, _rule, reason = resolve_level(
+        level, rule, reason = resolve_level(
             rules,
             tool_name,
             scope_value=_extract_scope_value(step),
             goal_call_count=int(counts.get(tool_name, 0)),
         )
-        if level is None or level in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
-            if level is not None:
-                counts[tool_name] = int(counts.get(tool_name, 0)) + 1
+        if level is None:
+            return None
+        if level in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
+            daily_denial = await self._reserve_daily_permission_call(
+                tenant_ctx, agent_id, tool_name, rule
+            )
+            if daily_denial is not None:
+                return daily_denial
+            counts[tool_name] = int(counts.get(tool_name, 0)) + 1
             return None
         if level is ActionLevel.DENY:
             return f"denied by agent permission ({reason})"
@@ -240,9 +246,34 @@ class ExecutorMixin:
         )
         if final_status != ApprovalStatus.APPROVED:
             return f"agent permission approval {str(final_status).lower()}"
+        daily_denial = await self._reserve_daily_permission_call(
+            tenant_ctx, agent_id, tool_name, rule
+        )
+        if daily_denial is not None:
+            return daily_denial
         counts[tool_name] = int(counts.get(tool_name, 0)) + 1
         await self._emit({"type": "approval_granted", "request_id": req_id})
         return None
+
+    async def _reserve_daily_permission_call(
+        self, tenant_ctx: TenantContext, agent_id: str, tool_name: str, rule: Any
+    ) -> str | None:
+        """Enforce the matched rule's ``daily_limit``; a denial reason or None."""
+        limit = getattr(rule, "daily_limit", None)
+        if not limit:
+            return None
+        from app.governance.agent_permissions import (
+            DailyLimitUnavailableError,
+            reserve_daily_call,
+        )
+
+        aps: Any = getattr(self, "_app_state", None)
+        redis = getattr(getattr(aps, "state", aps), "_redis", None) if aps is not None else None
+        try:
+            ok = await reserve_daily_call(redis, tenant_ctx.tenant_id, agent_id, tool_name, limit)
+        except DailyLimitUnavailableError:
+            return "agent permission daily limit could not be checked; failing closed"
+        return None if ok else f"denied by agent permission (daily_limit {limit} reached)"
 
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
