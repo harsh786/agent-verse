@@ -602,8 +602,15 @@ async def test_eval_scorecard_is_produced_and_persisted_to_postgres(
     database_url, _redis_url = _migrated_backends
     engine = create_async_engine(database_url)
     try:
+        from app.db.rls import sqlalchemy_rls_context
+
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
-        async with session_factory() as session:
+        # Read as the tenant (FORCE RLS hides the row from an unscoped app role).
+        async with (
+            session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, scenario["tenant_id"]),
+        ):
             rows = (
                 await session.execute(
                     text(

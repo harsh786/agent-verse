@@ -141,7 +141,10 @@ async def test_partition_maintenance_runs_on_maintenance_role() -> None:
     for table in _RANGE_PARTITIONED_TABLES:
         assert len(result["created"][table]) == _MONTHS_AHEAD + 1
     assert sys_session.calls == [(session,)]
-    assert all("PARTITION OF" in sql for sql in _sql(session))
+    ddl = [sql for sql in _sql(session) if "PARTITION OF" in sql]
+    rls = [sql for sql in _sql(session) if "app_apply_parent_rls" in sql]
+    assert ddl and len(rls) == len(ddl)  # every new partition gets the parent's RLS
+    assert all("PARTITION OF" in sql or "app_apply_parent_rls" in sql for sql in _sql(session))
 
 
 @pytest.mark.asyncio

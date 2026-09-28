@@ -26,6 +26,8 @@ Regression coverage for two classes of bug found by reading the live
 
 from __future__ import annotations
 
+from app.db.rls import sqlalchemy_rls_context
+
 import uuid
 from typing import Any
 
@@ -97,7 +99,13 @@ async def test_episodic_memory_record_persists_to_real_postgres(
 
     await episodic.record(state=state, tenant_ctx=tenant_ctx, quality_score=0.9)
 
-    async with db_factory() as session:
+    # Read back AS the tenant: under E2E_LEAST_PRIVILEGE the app role only sees
+    # rows of the tenant in app.tenant_id (FORCE RLS).
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
         row = (
             await session.execute(
                 text(
@@ -151,7 +159,13 @@ async def test_long_term_memory_recall_finds_stored_memory_via_pgvector(
         memory=memory, tenant_ctx=tenant_ctx, db=db_factory, embedder=embedder
     )
 
-    async with db_factory() as session:
+    # Read back AS the tenant: under E2E_LEAST_PRIVILEGE the app role only sees
+    # rows of the tenant in app.tenant_id (FORCE RLS).
+    async with (
+        db_factory() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+    ):
         row = (
             await session.execute(
                 text(

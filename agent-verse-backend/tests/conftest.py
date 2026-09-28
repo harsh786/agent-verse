@@ -221,7 +221,7 @@ async def signed_up_client(app):
 
 
 @pytest.fixture(autouse=True)
-def _reset_no_db_store_fallbacks():
+def _reset_no_db_store_fallbacks(request: pytest.FixtureRequest):
     """Clear the process-local fallbacks the DB-backed stores use without a database.
 
     Also unbinds the module-global PromptOptimizer from any test's database.
@@ -235,8 +235,12 @@ def _reset_no_db_store_fallbacks():
     from app.intelligence.prompt_optimizer import _default_optimizer
     from app.org import runtime_store
 
-    # A lifespan test binds the process-global optimizer to its (fake) DB.
-    _default_optimizer.__dict__.pop("_db", None)
+    # A lifespan test binds the process-global optimizer to its (fake) DB. Not in
+    # the e2e tiers: there the session-scoped app bound it to the real database,
+    # and unbinding it after the first test silently took every later test out
+    # of DB mode.
+    if "e2e" not in str(getattr(request.node, "path", "")):
+        _default_optimizer.__dict__.pop("_db", None)
 
     for store in (
         eval_suite_store._MEM_SUITES,

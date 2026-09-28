@@ -151,12 +151,6 @@ _RLS_EXEMPT = {
 }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Open finding: ~37 tenant tables still lack ENABLE+FORCE RLS with a policy "
-    "(listed by this test). Their access paths must be moved off system_session "
-    "first; remove this marker when the audit is clean.",
-)
 async def test_every_tenant_table_has_forced_rls_with_a_policy(app: Any) -> None:
     """Checked against the LIVE migrated schema, not migration text.
 

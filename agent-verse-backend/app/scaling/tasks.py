@@ -4293,6 +4293,14 @@ async def _ensure_future_partitions() -> dict[str, Any]:
                                     f"FOR VALUES FROM ('{start}') TO ('{end}')"
                                 )
                             )
+                            # A new partition does not inherit the parent's RLS:
+                            # queried by name it would be readable across
+                            # tenants. Copy ENABLE/FORCE + policies onto it
+                            # (function from migration b4c5d6e7f8a9).
+                            await session.execute(
+                                text("SELECT app_apply_parent_rls(CAST(:t AS regclass))"),
+                                {"t": tname},
+                            )
                             created[table].append(tname)
                     except Exception as exc:
                         # A DEFAULT partition already claiming this range (or any
