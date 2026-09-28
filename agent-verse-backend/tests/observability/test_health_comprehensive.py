@@ -82,7 +82,8 @@ async def test_one_failing_check_overall_unhealthy():
     assert healthy is False
     assert report["postgres"]["status"] == "up"
     assert report["redis"]["status"] == "down"
-    assert "Cannot connect" in report["redis"]["error"]
+    # Exception text is logged, not exposed on the public /health report.
+    assert "Cannot connect" not in report["redis"]["error"]
 
 
 @pytest.mark.asyncio
@@ -129,10 +130,12 @@ async def test_checks_run_concurrently():
     assert healthy is True
 
 
-# ── 6. Exception message in report ────────────────────────────────────────────
+# ── 6. Exception message NOT in report ────────────────────────────────────────
+# The report backs the unauthenticated GET /health, so the raw exception text
+# (DSNs, hostnames, driver errors) must stay server-side.
 
 @pytest.mark.asyncio
-async def test_check_error_message_in_report():
+async def test_check_error_message_not_in_report():
     registry = HealthRegistry()
 
     async def failing():
@@ -141,7 +144,8 @@ async def test_check_error_message_in_report():
     registry.register(HealthCheck(name="failing_svc", check=failing))
 
     healthy, report = await registry.run()
-    assert "specific error message" in report["failing_svc"]["error"]
+    assert report["failing_svc"]["status"] == "down"
+    assert "specific error message" not in report["failing_svc"]["error"]
 
 
 # ── 7. Multiple registrations ─────────────────────────────────────────────────

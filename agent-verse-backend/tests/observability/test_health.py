@@ -32,7 +32,61 @@ async def test_run_failing_check_marks_unhealthy():
     healthy, report = await registry.run()
     assert healthy is False
     assert report["redis"]["status"] == "down"
-    assert "connection refused" in report["redis"]["error"]
+    # The raw exception text is logged server-side, never returned (see below).
+    assert "connection refused" not in report["redis"]["error"]
+
+
+# ── /health must not leak exception detail ──────────────────────────────────
+
+_DSN_ERROR = (
+    "could not connect to postgresql://agentverse:s3cr3t@db-primary.internal:5432/agentverse"
+)
+
+
+@pytest.mark.asyncio
+async def test_failing_check_detail_is_logged_not_returned():
+    """Regression: HealthRegistry.run() put ``str(exc)`` in each failing check's
+    report, and the public, unauthenticated GET /health returned it verbatim —
+    leaking DSNs (with credentials), internal hostnames and driver messages.
+    The report now carries a generic status; the detail goes to the log."""
+    import structlog.testing
+
+    registry = HealthRegistry()
+
+    async def bad():
+        raise ConnectionError(_DSN_ERROR)
+
+    registry.register(HealthCheck(name="postgres", check=bad))
+    with structlog.testing.capture_logs() as logs:
+        healthy, report = await registry.run()
+
+    assert healthy is False
+    assert report["postgres"]["status"] == "down"
+    assert "s3cr3t" not in str(report) and "db-primary" not in str(report)
+    assert any(_DSN_ERROR in str(entry.get("error", "")) for entry in logs), logs
+
+
+def test_health_endpoint_does_not_leak_dependency_errors():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.system import router as system_router
+
+    registry = HealthRegistry()
+
+    async def bad():
+        raise RuntimeError(_DSN_ERROR)
+
+    registry.register(HealthCheck(name="postgres", check=bad))
+    app = FastAPI()
+    app.include_router(system_router)
+    app.state.health = registry
+
+    resp = TestClient(app).get("/health")
+    assert resp.status_code == 503
+    assert resp.json()["checks"]["postgres"]["status"] == "down"
+    for secret in ("s3cr3t", "db-primary", "postgresql://"):
+        assert secret not in resp.text, resp.text
 
 
 # ── Health endpoint response shape ─────────────────────────────────────────────

@@ -13,6 +13,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.observability.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass(frozen=True, slots=True)
 class HealthCheck:
@@ -37,7 +41,17 @@ class HealthRegistry:
                 await hc.check()
                 return hc.name, {"status": "up"}
             except Exception as exc:  # surface any failure as "down"
-                return hc.name, {"status": "down", "error": str(exc)}
+                # The report is served by the unauthenticated GET /health. It used
+                # to carry ``str(exc)``, leaking DSNs (with credentials), internal
+                # hostnames and driver errors to anyone. Log the detail; return a
+                # generic marker (the "error" key is kept for response-shape compat).
+                logger.warning(
+                    "health_check_failed",
+                    check=hc.name,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                return hc.name, {"status": "down", "error": "check failed"}
 
         results = await asyncio.gather(*(_run_one(hc) for hc in self.checks))
         report = dict(results)
