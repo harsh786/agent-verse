@@ -1057,8 +1057,13 @@ async def test_rollback_point_registered_after_successful_tool_call() -> None:
 
     await graph._execute_step("check status", state, T)
 
-    rollback.register.assert_called_once()
-    assert rollback.register.call_args.kwargs["action"] == "check status"
+    # The undo record carries the tool OUTPUT and the real tenant context.
+    rollback.register_tool_call.assert_called_once()
+    kw = rollback.register_tool_call.call_args.kwargs
+    assert kw["action"] == "check status"
+    assert kw["output"] == {"ok": True}
+    assert kw["tenant_ctx"] is T
+    assert "get_status" in kw["tool_names"]
 
 
 async def test_connector_auto_approve_bypasses_hitl_for_write_high_tool() -> None:

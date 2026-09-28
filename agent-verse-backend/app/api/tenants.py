@@ -953,10 +953,25 @@ async def update_notifications(request: Request) -> dict:
 
 
 @router.get("/me/sessions")
-async def list_sessions(request: Request) -> list:
-    """List active sessions for the tenant (returns empty list — future: session tracking)."""
+async def list_sessions(request: Request) -> None:
+    """List login sessions — not implemented (501).
+
+    This always returned ``[]`` although nothing records sessions, so the UI
+    showed "no other sessions" as if that were verified. See app/api/sessions.py.
+    """
+    from app.api.sessions import raise_sessions_not_implemented
+
     _require_tenant(request)
-    return []
+    raise_sessions_not_implemented(request)
+
+
+@router.delete("/me/sessions/{session_id}")
+async def revoke_tenant_session(session_id: str, request: Request) -> None:
+    """Revoke a login session — not implemented (501); the UI calls this path."""
+    from app.api.sessions import raise_sessions_not_implemented
+
+    _require_tenant(request)
+    raise_sessions_not_implemented(request)
 
 
 # ── Data export ───────────────────────────────────────────────────────────────

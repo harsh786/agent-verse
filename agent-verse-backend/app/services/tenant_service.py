@@ -130,7 +130,18 @@ class TenantService:
         }
 
     async def get_tenant(self, tenant_id: str) -> dict[str, Any]:
-        """Return tenant profile.  Raises :class:`~app.core.errors.NotFoundError` if missing."""
+        """Return tenant profile.  Raises :class:`~app.core.errors.NotFoundError` if missing.
+
+        Multi-pod: when a DB is wired it is authoritative — a tenant created on
+        another pod is not in this pod's memory until restart, so reading only
+        ``self._tenants`` answered 404 for GET /tenants/me there. The in-memory
+        dict is used only when no DB is configured (tests / dev).
+        """
+        if self._db is not None:
+            profile = await self._db_get_tenant(tenant_id)
+            if profile is None:
+                raise NotFoundError(f"Tenant not found: {tenant_id}")
+            return profile
         tenant = self._tenants.get(tenant_id)
         if tenant is None:
             raise NotFoundError(f"Tenant not found: {tenant_id}")
@@ -140,6 +151,9 @@ class TenantService:
 
     async def list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
         """Return all keys for *tenant_id* — raw keys and hashes are **never** included."""
+        if self._db is not None:
+            # DB-authoritative (see get_tenant): keys created on other pods must list.
+            return await self._db_list_api_keys(tenant_id)
         key_ids = self._tenant_keys.get(tenant_id, [])
         return [
             {
@@ -161,16 +175,25 @@ class TenantService:
         scopes: list[str],
         expires_at: datetime | None = None,
     ) -> dict[str, Any]:
-        """Create a new API key.  The raw key is returned once and never stored."""
-        tenant = self._tenants.get(tenant_id)
-        if tenant is None:
-            raise NotFoundError(f"Tenant not found: {tenant_id}")
+        """Create a new API key.  The raw key is returned once and never stored.
+
+        Multi-pod: the tenant is looked up in the DB (authoritative) and the key
+        row must be durable before the raw key is handed out — auth resolves
+        keys against the DB only, so a key that failed to persist would be
+        unusable on every pod. The in-memory path is for the no-DB build.
+        """
+        tenant = await self.get_tenant(tenant_id)
 
         plan: str = tenant["plan"]
         raw_key = _generate_raw_key(plan)
         key_id = uuid.uuid4().hex
         key_hash = _hash_key(raw_key)
         created_at = datetime.now(UTC).isoformat()
+
+        if self._db is not None:
+            await self._db_create_api_key(
+                key_id, tenant_id, name, key_hash, scopes, expires_at, raise_on_error=True
+            )
 
         self._keys[key_id] = {
             "key_id": key_id,
@@ -185,8 +208,6 @@ class TenantService:
         self._hash_to_key_id[key_hash] = key_id
         self._tenant_keys.setdefault(tenant_id, []).append(key_id)
 
-        # DB persistence (transactional — await to ensure key is durable before returning)
-        await self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
         # Invalidate tenant cache since the key roster changed
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
@@ -402,6 +423,8 @@ class TenantService:
         key_hash: str,
         scopes: list[str],
         expires_at: datetime | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> None:
         """Persist API key to PostgreSQL."""
         if self._db is None:
@@ -426,6 +449,79 @@ class TenantService:
                 session.add(k)
         except Exception as exc:
             logging.getLogger(__name__).warning("DB persist api_key failed: %s", exc)
+            if raise_on_error:
+                raise
+
+    async def _db_get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
+        """Authoritative tenant profile read (``tenants`` has no RLS; the tenant GUC
+        is still set so the read is shaped like every other tenant-scoped access)."""
+        from sqlalchemy import select
+
+        from app.db.models.tenant import Tenant
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            t = (
+                await session.execute(
+                    select(Tenant).where(
+                        Tenant.id == tenant_id,
+                        Tenant.is_active == True,  # noqa: E712
+                    )
+                )
+            ).scalar_one_or_none()
+        if t is None:
+            return None
+        profile: dict[str, Any] = {
+            "tenant_id": t.id,
+            "name": t.name,
+            "email": t.email,
+            "plan": t.plan_tier,
+            "created_at": t.created_at.isoformat() if t.created_at else "",
+        }
+        # Warm this pod's cache for the helpers that still read memory (SSO lookups).
+        self._tenants.setdefault(t.id, dict(profile))
+        self._email_index.setdefault(t.email.lower(), t.id)
+        return profile
+
+    async def _db_list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
+        """Authoritative key listing under the tenant's RLS context
+        (``api_keys_tenant_isolation`` filters on ``app.tenant_id``)."""
+        from sqlalchemy import select
+
+        from app.db.models.tenant import ApiKey
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (
+                (
+                    await session.execute(
+                        select(ApiKey)
+                        .where(ApiKey.tenant_id == tenant_id)
+                        .order_by(ApiKey.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            {
+                "key_id": k.id,
+                "name": k.name,
+                "scopes": list(k.scopes or []),
+                "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+                "is_active": bool(k.is_active),
+                "created_at": k.created_at.isoformat() if k.created_at else "",
+            }
+            for k in rows
+        ]
 
     async def _db_revoke_api_key(self, key_id: str, tenant_id: str) -> str | None:
         """Mark API key as inactive in PostgreSQL; return its key_hash (for cache
