@@ -3702,10 +3702,12 @@ class GoalService:
         if store is None:
             return None
         try:
+            cfg = await store.get_config(tenant_ctx.tenant_id, strict=True)
+        except TypeError:
+            # A store without strict reads (tests/fakes).
             cfg = await store.get_config(tenant_ctx.tenant_id)
-        except Exception as exc:
-            _svc_logger.warning("tenant_llm_config_read_failed", error=str(exc))
-            return None
+        # LLMConfigReadError propagates: the goal fails instead of silently
+        # running on the platform provider when the tenant's BYOK is unknown.
         return dict(cfg) if cfg else None
 
     async def _suspend_for_approval(self, goal_id: str, tenant_ctx: TenantContext) -> None:

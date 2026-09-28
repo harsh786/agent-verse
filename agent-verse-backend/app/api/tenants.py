@@ -338,6 +338,16 @@ async def set_llm_config(
     be kept in this replica's memory (which the goal path read) plus Redis, so
     the provider applied only on the replica that handled this request.
     """
+    if body.base_url:
+        from app.providers.tenant_provider import (
+            TenantProviderError,
+            _assert_tenant_base_url_allowed,
+        )
+
+        try:
+            _assert_tenant_base_url_allowed(body.base_url)
+        except TenantProviderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     vault = get_vault()
     encrypted_key = vault.encrypt(body.api_key)
     masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"

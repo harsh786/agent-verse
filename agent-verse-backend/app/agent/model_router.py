@@ -90,6 +90,17 @@ _PROVIDER_DEFAULTS: dict[str, ModelRouterConfig] = {
 }
 
 
+_ROLE_PIN_ENV: dict[str, str] = {
+    "planning": "DEFAULT_PLANNING_MODEL",
+    "reflection": "DEFAULT_PLANNING_MODEL",
+    "think": "DEFAULT_PLANNING_MODEL",
+    "thinking": "DEFAULT_PLANNING_MODEL",
+    "execution": "DEFAULT_EXECUTION_MODEL",
+    "classification": "DEFAULT_EXECUTION_MODEL",
+    "verification": "DEFAULT_VERIFICATION_MODEL",
+}
+
+
 def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
     """Apply env-configured model overrides on top of a provider's default profile.
 
@@ -184,6 +195,13 @@ class ModelRouter:
         _role = _ROLE_ALIASES.get(task_type, task_type)
         if self._role_map.get(_role):
             return self._role_map[_role]
+
+        # Explicit per-role env pins (DEFAULT_PLANNING_MODEL, …) win over the
+        # cost-aware registry, as documented above — the registry lookup used to
+        # run first and replace an operator's pin with the cheapest model.
+        _pin_env = _ROLE_PIN_ENV.get(task_type)
+        if _pin_env and os.getenv(_pin_env):
+            return str(os.getenv(_pin_env))
 
         if task_type in self._REGISTRY_TASKS:
             try:
