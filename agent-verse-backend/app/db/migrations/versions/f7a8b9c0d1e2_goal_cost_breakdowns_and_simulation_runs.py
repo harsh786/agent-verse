@@ -14,7 +14,7 @@ Both tables are tenant-isolated by FORCE'd RLS using ``app_current_tenant_uuid()
 (``c9d0e1f2a3b4``), which matches dashless tenant ids and never raises.
 
 Revision ID: f7a8b9c0d1e2
-Revises: b4c5d6e7f8a9
+Revises: d6e7f8a9b0c1
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "f7a8b9c0d1e2"
-down_revision = "b4c5d6e7f8a9"
+down_revision = "d6e7f8a9b0c1"
 branch_labels = None
 depends_on = None
 
