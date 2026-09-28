@@ -81,7 +81,7 @@ async def test_provider_raises_typed_error_without_library() -> None:
 async def test_acs_endpoint_is_501_not_500() -> None:
     with patch("app.auth.saml_provider.SAML_AVAILABLE", False):
         with pytest.raises(HTTPException) as exc:
-            await ent.saml_acs(_request())
+            await ent.saml_acs(_request(), "t1")
     assert exc.value.status_code == 501
     assert "SAML not installed" in str(exc.value.detail)
 

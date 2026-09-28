@@ -84,6 +84,9 @@ _BYPASS_PREFIXES = (
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
+    "/enterprise/saml/acs/",  # SAML ACS: the IdP's signed assertion is the auth
+    # (validated per tenant in app.api.enterprise.saml_acs); an IdP POST never
+    # carries a tenant API key, so this was unreachable.
     "/scim/v2",  # SCIM 2.0 provisioning — IdPs send their own hashed bearer token
     # (require_scim_auth checks it against scim_tokens), never a tenant API key.
     # Without this bypass every SCIM request from an IdP (Okta, Azure AD, ...)

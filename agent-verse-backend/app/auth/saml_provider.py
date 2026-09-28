@@ -10,10 +10,10 @@ SP metadata still renders from a static template.
 Amendment 8.4: SAML replay protection via Redis assertion-ID cache.
 
 Flow:
-  1. GET /api/enterprise/saml/login → redirect to IdP SSO URL
-  2. IdP authenticates → POST to /api/enterprise/saml/acs
+  1. GET /enterprise/saml/login → redirect to IdP SSO URL
+  2. IdP authenticates → POST to /enterprise/saml/acs/{tenant_id}
   3. ACS validates assertion, checks replay, extracts attributes,
-     JIT-provisions user, returns session JWT
+     (session issuance: NOT IMPLEMENTED — the ACS answers 501)
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlparse
 
 from app.observability.logging import get_logger
 
@@ -44,6 +45,13 @@ class SAMLNotInstalledError(RuntimeError):
             "SAML not installed: python3-saml is not installed. Install the optional "
             "'saml' extra (uv sync --extra saml); it requires native libxmlsec1."
         )
+
+
+class SAMLReplayCheckUnavailableError(RuntimeError):
+    """The assertion replay cache (Redis) is unavailable — refuse the login (→ 503)."""
+
+    def __init__(self) -> None:
+        super().__init__("SAML replay protection is unavailable (Redis); retry shortly.")
 
 
 @dataclass
@@ -123,7 +131,8 @@ class SAMLProvider:
         https_val: Any = True if sys.version_info >= (3, 11) else "on"
         request_data = {
             "http_host": self._acs_url.split("/")[2] if "/" in self._acs_url else "localhost",
-            "script_name": "/api/enterprise/saml/acs",
+            # Must be the ACS path python3-saml checks Destination against.
+            "script_name": urlparse(self._acs_url).path or "/",
             "post_data": {"SAMLResponse": saml_response},
             "https": https_val,
         }
@@ -138,7 +147,13 @@ class SAMLProvider:
         session_index = auth.get_session_index() or ""
         name_id = auth.get_nameid() or ""
         assertion_id = f"{name_id}:{session_index}"
-        if self._redis is not None and assertion_id and await self._check_saml_replay(assertion_id):
+        # Fail closed: without a working replay cache a captured assertion
+        # could be POSTed again for its whole validity window. The check used to
+        # be skipped without Redis (and app.state.redis — what the ACS passed —
+        # is never set, so it was ALWAYS skipped) and failed open on errors.
+        if self._redis is None:
+            raise SAMLReplayCheckUnavailableError()
+        if await self._check_saml_replay(assertion_id):
             raise ValueError("SAML assertion replay detected")
 
         attrs = auth.get_attributes() or {}
@@ -198,7 +213,7 @@ class SAMLProvider:
             return is_replay
         except Exception as exc:
             logger.warning("saml_replay_check_failed", error=str(exc))
-            return False  # fail-open on Redis error to not block SSO
+            raise SAMLReplayCheckUnavailableError() from exc
 
     def _build_saml_settings(self) -> dict[str, Any]:
         return {

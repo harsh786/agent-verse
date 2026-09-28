@@ -141,8 +141,15 @@ async def test_process_acs_without_saml_raises_runtime_error():
 # ---------------------------------------------------------------------------
 
 
+def _fresh_redis() -> AsyncMock:
+    redis_mock = AsyncMock()
+    redis_mock.exists = AsyncMock(return_value=0)
+    redis_mock.setex = AsyncMock()
+    return redis_mock
+
+
 async def test_process_acs_successful_extracts_identity():
-    provider = _make_provider()
+    provider = _make_provider(redis=_fresh_redis())
     mock_auth = MagicMock()
     mock_auth.is_authenticated.return_value = True
     mock_auth.get_nameid.return_value = "user@corp.com"
@@ -224,7 +231,9 @@ async def test_process_acs_no_replay_stores_assertion_id():
 
 
 async def test_process_acs_uses_attribute_mapping():
-    provider = _make_provider(attribute_mapping={"email": "mail", "first_name": "givenName"})
+    provider = _make_provider(
+        attribute_mapping={"email": "mail", "first_name": "givenName"}, redis=_fresh_redis()
+    )
     mock_auth = MagicMock()
     mock_auth.is_authenticated.return_value = True
     mock_auth.get_nameid.return_value = "uid-999"
@@ -273,14 +282,33 @@ async def test_check_saml_replay_stores_key_and_returns_false_if_new():
     assert args[1] == 3600
 
 
-async def test_check_saml_replay_fails_open_on_redis_error():
+async def test_check_saml_replay_fails_closed_on_redis_error():
+    from app.auth.saml_provider import SAMLReplayCheckUnavailableError
+
     redis_mock = AsyncMock()
     redis_mock.exists = AsyncMock(side_effect=ConnectionError("redis down"))
     provider = _make_provider(redis=redis_mock)
 
-    result = await provider._check_saml_replay("user@corp.com:sess-3")
-    # Fail-open: no replay detected when Redis is unavailable
-    assert result is False
+    # A replay cache that cannot be read must not wave a (possibly replayed)
+    # assertion through.
+    with pytest.raises(SAMLReplayCheckUnavailableError):
+        await provider._check_saml_replay("user@corp.com:sess-3")
+
+
+async def test_process_acs_without_redis_refuses_instead_of_skipping_replay_check():
+    from app.auth.saml_provider import SAMLReplayCheckUnavailableError
+
+    provider = _make_provider()  # no redis
+    mock_auth = MagicMock()
+    mock_auth.is_authenticated.return_value = True
+    mock_auth.get_nameid.return_value = "user@corp.com"
+    mock_auth.get_session_index.return_value = "s"
+    with (
+        patch("app.auth.saml_provider.SAML_AVAILABLE", True),
+        patch("app.auth.saml_provider.OneLogin_Saml2_Auth", return_value=mock_auth, create=True),
+    ):
+        with pytest.raises(SAMLReplayCheckUnavailableError):
+            await provider.process_acs("resp")
 
 
 # ---------------------------------------------------------------------------
