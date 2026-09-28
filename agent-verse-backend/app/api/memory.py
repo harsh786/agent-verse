@@ -26,15 +26,45 @@ def _get_ltm(request: Request) -> Any:
 
 
 def _get_db(request: Request) -> Any:
-    db = getattr(request.app.state, "db_session_factory", None)
-    if db is None:
-        try:
-            from app.db.session import get_session_factory
+    """The configured DB session factory, or None when no DB is wired.
 
-            db = get_session_factory()
-        except Exception:
-            pass
-    return db
+    Only ``app.state.db_session_factory`` (set by the lifespan once pools are up)
+    counts as "a DB is configured". This used to fall back to building the
+    global engine, so a DB-less build tried a phantom DB on every call and
+    relied on the error fallback below to reach the cache. With a DB configured
+    the DB is authoritative: failures are 503, never a cache answer.
+    """
+    return getattr(request.app.state, "db_session_factory", None)
+
+
+def _db_unavailable(op: str, exc: Exception) -> HTTPException:
+    import logging
+
+    logging.getLogger(__name__).warning("%s_db_failed: %s", op, exc)
+    return HTTPException(status_code=503, detail="Memory store unavailable; please retry")
+
+
+async def _db_delete_memory(db: Any, tenant_id: str, memory_id: str) -> bool:
+    """Delete one row under RLS. True if a row was deleted. Raises on DB error."""
+    from sqlalchemy import text
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, tenant_id),
+    ):
+        result = await session.execute(
+            text("DELETE FROM long_term_memory WHERE id=:id AND tenant_id=:tid"),
+            {"id": memory_id, "tid": tenant_id},
+        )
+    return bool(result.rowcount)
+
+
+def _evict_cached(request: Request, tenant_ctx: Any, memory_id: str) -> bool:
+    mem = _get_ltm(request)
+    if mem is None:
+        return False
+    return bool(mem.delete(memory_id=memory_id, tenant_ctx=tenant_ctx))
 
 
 class CreateMemoryRequest(BaseModel):
@@ -166,11 +196,12 @@ async def list_memories(
                 for r in rows
             ]
         except Exception as exc:
-            import logging
+            # Was: log and serve this replica's cache as if it were the tenant's
+            # memories. With a DB configured the DB is the only truth.
+            raise _db_unavailable("list_memories", exc) from exc
 
-            logging.getLogger(__name__).warning("list_memories_db_failed: %s", exc)
-
-    # In-memory fallback — _memories is dict[tenant_id, list[LongTermMemory]]
+    # In-memory fallback (no DB configured: tests / single-process dev).
+    # _memories is dict[tenant_id, list[LongTermMemory]].
     if ltm is not None:
         raw = getattr(ltm, "_memories", {})
         tenant_memories: list = raw.get(tenant_ctx.tenant_id, []) if isinstance(raw, dict) else []
@@ -347,29 +378,19 @@ async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
     db = _get_db(request)
 
     if db is not None:
+        # GDPR erasure: the DB row is the record. A DB error used to fall
+        # through to deleting only this replica's cache and answering "ok" —
+        # the row survived. Now: 503, and the cache is left alone.
         try:
-            from sqlalchemy import text
-
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
-            ):
-                result = await session.execute(
-                    text("DELETE FROM long_term_memory WHERE id=:id AND tenant_id=:tid"),
-                    {"id": memory_id, "tid": tenant_ctx.tenant_id},
-                )
-                if result.rowcount == 0:
-                    raise HTTPException(404, f"Memory {memory_id} not found")
-            return {"deleted": memory_id, "status": "ok"}
-        except HTTPException:
-            raise
+            deleted = await _db_delete_memory(db, tenant_ctx.tenant_id, memory_id)
         except Exception as exc:
-            import logging
+            raise _db_unavailable("delete_memory", exc) from exc
+        _evict_cached(request, tenant_ctx, memory_id)  # keep this replica's cache in sync
+        if not deleted:
+            raise HTTPException(404, f"Memory {memory_id} not found")
+        return {"deleted": memory_id, "status": "ok"}
 
-            logging.getLogger(__name__).warning("delete_memory_db_failed: %s", exc)
-
-    # Fallback to in-memory store
+    # No DB configured: the in-memory store is the only store.
     mem = _get_ltm(request)
     if mem is None:
         raise HTTPException(503, "Memory store not available")
@@ -383,6 +404,17 @@ async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
 async def delete_memory(request: Request, memory_id: str) -> None:
     """Delete a specific long-term memory."""
     tenant = _require_tenant(request)
+    db = _get_db(request)
+    if db is not None:
+        # Was cache-only even with a DB: the row survived the "deleted" 204.
+        try:
+            deleted = await _db_delete_memory(db, tenant.tenant_id, memory_id)
+        except Exception as exc:
+            raise _db_unavailable("delete_long_term_memory", exc) from exc
+        _evict_cached(request, tenant, memory_id)
+        if not deleted:
+            raise HTTPException(404, "Memory not found")
+        return
     mem = getattr(request.app.state, "long_term_memory", None)
     if mem is None:
         raise HTTPException(404, "Memory store not available")
@@ -420,13 +452,17 @@ async def clear_all_memories(request: Request) -> None:
                     text("DELETE FROM long_term_memory WHERE tenant_id=:tid"),
                     {"tid": tenant_ctx.tenant_id},
                 )
-            return
         except Exception as exc:
-            import logging
+            # Was: clear only this replica's cache and answer 204 — a faked
+            # GDPR erasure. The DB is the record; fail loudly instead.
+            raise _db_unavailable("clear_all_memories", exc) from exc
+        mem = _get_ltm(request)
+        raw = getattr(mem, "_memories", {}) if mem is not None else {}
+        if isinstance(raw, dict):
+            raw.pop(tenant_ctx.tenant_id, None)  # keep this replica's cache in sync
+        return
 
-            logging.getLogger(__name__).warning("clear_all_memories_db_failed: %s", exc)
-
-    # In-memory fallback
+    # In-memory fallback (no DB configured)
     mem = _get_ltm(request)
     if mem is None:
         return

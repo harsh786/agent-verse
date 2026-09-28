@@ -606,13 +606,14 @@ def test_list_suggestions() -> None:
 
 
 def test_apply_suggestion_not_found() -> None:
-    """apply_suggestion → 404 when not found."""
+    """Deprecated v1 apply → 410 Gone; it never touches the optimizer."""
     opt = MagicMock()
     opt.apply_suggestion = MagicMock(return_value=False)
 
     client = TestClient(_make_app(self_optimizer=opt), raise_server_exceptions=False)
     resp = client.post("/intelligence/suggestions/bad-id/apply", headers=_headers())
-    assert resp.status_code == 404
+    assert resp.status_code == 410
+    opt.apply_suggestion.assert_not_called()
 
 
 def test_reject_suggestion_not_found() -> None:

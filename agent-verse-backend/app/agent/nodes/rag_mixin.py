@@ -98,9 +98,20 @@ class RAGMixin:
                 )
             except Exception as _em_exc:
                 self._logger.warning("exec_memory_recall_failed", error=str(_em_exc))
-                exec_plans = self._exec_memory.recall(
-                    goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                # With a DB configured the process-local cache is not the tenant's
+                # history (other replicas never see it) — plan without it.
+                exec_plans = (
+                    []
+                    if self._db_session_factory is not None
+                    else self._exec_memory.recall(
+                        goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                    )
                 )
+            if getattr(exec_plans, "degraded", False):
+                # recall_async could not read the DB and returned nothing on
+                # purpose; surface it rather than planning as if there were no
+                # history.
+                agent_state.context["_execution_memory_degraded"] = True
             if exec_plans:
                 mem_text = "\n".join(f"- Past plan: {m.get('plan', [])}" for m in exec_plans)
                 context_parts.append(f"[Past winning plans]\n{mem_text}")
@@ -129,9 +140,15 @@ class RAGMixin:
                         self._logger.warning(
                             "exec_memory_recall_failures_failed", error=str(_rf_exc)
                         )
-                        failures = self._exec_memory.recall_failures(
-                            goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                        failures = (
+                            []
+                            if self._db_session_factory is not None
+                            else self._exec_memory.recall_failures(
+                                goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3
+                            )
                         )
+                    if getattr(failures, "degraded", False):
+                        agent_state.context["_execution_memory_degraded"] = True
                 else:
                     failures = self._exec_memory.recall_failures(
                         goal_hint=agent_state.goal, tenant_ctx=tenant_ctx, top_k=3

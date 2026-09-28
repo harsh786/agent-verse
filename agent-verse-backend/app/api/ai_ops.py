@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import uuid
 from typing import Any
@@ -46,6 +47,12 @@ class CreateDatasetRequest(BaseModel):
 class RunEvalRequest(BaseModel):
     dataset_id: str = ""
     goal_id: str | None = None
+    # Agent that executes every case (a golden task's own ``agent_id`` wins);
+    # omitted → the platform's goal auto-routing picks one.
+    agent_id: str | None = None
+    # A judge created via POST /ai-ops/judges; scores every case LLM-as-judge.
+    judge_id: str | None = None
+    # Ad-hoc judge model (default dimensions) when no ``judge_id`` is given.
     judge_model: str = ""
 
 
@@ -110,9 +117,125 @@ async def list_eval_datasets(request: Request) -> dict[str, Any]:
     return {"datasets": datasets, "total": len(datasets)}
 
 
-@router.post("/datasets/{dataset_id}/run")
+#: A ``running`` result older than this is reported ``abandoned``: the replica
+#: executing it died (the background task is per-process), so it never claims a
+#: result it does not have. Mirrors eval_suite_store.STALE_RUN_AFTER.
+STALE_RUN_AFTER = datetime.timedelta(hours=1)
+
+
+async def _load_judge(request: Request, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
+    store = _store(request)
+    if store is not None:
+        judge: dict[str, Any] | None = await store.get_judge(tenant_id, judge_id)
+        return judge
+    return _judges.get(f"{tenant_id}:{judge_id}")
+
+
+async def _save_result(request: Request, tenant_id: str, result: dict[str, Any]) -> None:
+    store = _store(request)
+    if store is not None:
+        await store.update_eval_result(
+            tenant_id=tenant_id, result_id=result["result_id"], payload=result
+        )
+    # In-memory fallback: the dict in _eval_results is mutated in place.
+
+
+async def _finish_eval_run(
+    request: Request,
+    *,
+    tenant: Any,
+    dataset: dict[str, Any],
+    result: dict[str, Any],
+    goal_service: Any,
+    judge: dict[str, Any] | None,
+    provider: Any,
+    agent_id: str | None,
+) -> None:
+    """Background body of a dataset run: execute every case, score, persist."""
+    from app.evals.ai_ops_runner import run_dataset
+    from app.observability.logging import get_logger
+
+    log = get_logger(__name__)
+    tenant_id = tenant.tenant_id
+    store = _store(request)
+    try:
+        outcome = await run_dataset(
+            dataset=dataset,
+            goal_service=goal_service,
+            tenant_ctx=tenant,
+            agent_id=agent_id,
+            judge=judge,
+            provider=provider,
+        )
+        result.update(outcome)
+        result["finished_at"] = datetime.datetime.now(datetime.UTC).isoformat()
+        await _save_result(request, tenant_id, result)
+    except Exception as exc:
+        log.warning("ai_ops_eval_run_failed", result_id=result["result_id"], error=str(exc)[:300])
+        result.update(status="failed", passed=False, error=str(exc)[:2000])
+        try:
+            await _save_result(request, tenant_id, result)
+        except Exception as store_exc:
+            log.error(
+                "ai_ops_eval_run_status_lost", result_id=result["result_id"], error=str(store_exc)
+            )
+        return
+
+    # Regression / baseline bookkeeping only for a run that actually completed.
+    avg_score = float(result["avg_score"])
+    metric = f"eval_{result['dataset_id']}"
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    # `is None`, not truthiness: a legitimate baseline of 0.0 is falsy, which
+    # previously made every run look like a first run.
+    try:
+        if store is not None:
+            baseline = await store.get_baseline(tenant_id, metric)
+        else:
+            baseline = _baselines.get(tenant_id, {}).get(metric)
+
+        if baseline is not None and avg_score < baseline - 0.05:  # 5% regression
+            alert = {
+                "alert_id": str(uuid.uuid4()),
+                "tenant_id": tenant_id,
+                "drift_type": "model_output",
+                "severity": "warning",
+                "metric_name": metric,
+                "baseline_value": baseline,
+                "current_value": avg_score,
+                "drift_score": baseline - avg_score,
+                "message": f"Eval score regressed: {baseline:.2f} → {avg_score:.2f}",
+                "created_at": now,
+            }
+            if store is not None:
+                await store.add_alert(tenant_id=tenant_id, alert=alert)
+            else:
+                _drift_alerts.setdefault(tenant_id, []).append(alert)
+
+        # Auto-set baseline on first run only; never clobber an existing one.
+        if baseline is None:
+            if store is not None:
+                await store.set_baseline_if_absent(
+                    tenant_id=tenant_id, metric_name=metric, value=avg_score
+                )
+            else:
+                _baselines.setdefault(tenant_id, {})[metric] = avg_score
+    except Exception as exc:
+        log.warning("ai_ops_eval_baseline_update_failed", metric=metric, error=str(exc)[:300])
+
+
+@router.post("/datasets/{dataset_id}/run", status_code=202)
 async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> dict[str, Any]:
-    """Run an evaluation suite against a dataset."""
+    """Start a run of a dataset's golden tasks against the live agent.
+
+    Every case is executed as a real goal (tenant-scoped, through GoalService)
+    and scored against its REAL output — by the configured LLM judge when
+    ``judge_id`` (or an ad-hoc ``judge_model``) is given, else by lexical
+    overlap with ``expected_output``. Returns 202 with a ``result_id``; poll
+    ``GET /ai-ops/eval-results/{result_id}``.
+
+    This used to score each case's ``expected_output`` against itself (1.0 →
+    every run passed without executing anything) and ignored created judges.
+    """
     tenant = _require_tenant(request)
     store = _store(request)
     if store is not None:
@@ -121,125 +244,112 @@ async def run_eval(request: Request, dataset_id: str, body: RunEvalRequest) -> d
         dataset = _datasets.get(f"{tenant.tenant_id}:{dataset_id}")
     if not dataset:
         raise HTTPException(404, "Dataset not found")
+    if not dataset.get("golden_tasks"):
+        raise HTTPException(422, "Dataset has no golden tasks to evaluate")
+
+    goal_service = getattr(request.app.state, "goal_service", None)
+    if goal_service is None:
+        # No agent execution path → nothing can be evaluated; never fake a score.
+        raise HTTPException(503, "Agent execution unavailable; eval not run")
+
+    judge: dict[str, Any] | None = None
+    if body.judge_id:
+        judge = await _load_judge(request, tenant.tenant_id, body.judge_id)
+        if judge is None:
+            raise HTTPException(404, "Judge not found")
+    elif body.judge_model:
+        judge = {"judge_id": None, "name": "ad-hoc", "model": body.judge_model}
+    provider = getattr(request.app.state, "_app_provider", None)
+    if judge is not None and provider is None:
+        raise HTTPException(503, "Judge configured but no LLM provider is available")
 
     now = datetime.datetime.now(datetime.UTC).isoformat()
     result_id = str(uuid.uuid4())
-
-    # Evaluate using LLM judge if available
-    provider = getattr(request.app.state, "_app_provider", None)
-
-    scores: dict[str, float] = {}
-    failed_tasks = []
-
-    for task in dataset["golden_tasks"][:10]:  # Limit to 10 for performance
-        expected = str(task.get("expected_output", ""))
-        # Use expected as default when actual_output is absent
-        actual = str(task.get("actual_output", task.get("expected_output", "")))
-
-        if provider:
-            try:
-                from app.providers.base import CompletionRequest, Message
-
-                judge_prompt = (
-                    "Rate this output on a scale of 0 to 1 for: "
-                    "accuracy, relevance, completeness.\n"
-                    f"Expected: {expected[:200]}\n"
-                    f"Actual: {actual[:200]}\n"
-                    f"Return JSON only: "
-                    '{"accuracy": 0.0, "relevance": 0.0, "completeness": 0.0}'
-                )
-                resp = await provider.complete(
-                    CompletionRequest(
-                        messages=[Message(role="user", content=judge_prompt)],
-                        model="",
-                        max_tokens=100,
-                    )
-                )
-                import json
-
-                task_scores = json.loads(resp.content.strip())
-                for dim, score in task_scores.items():
-                    scores[dim] = scores.get(dim, 0) + float(score)
-            except Exception:
-                pass
-
-        # Simple deterministic scoring fallback
-        overlap = len(set(expected.lower().split()) & set(actual.lower().split()))
-        total = max(len(set(expected.lower().split())), 1)
-        similarity = overlap / total
-        scores["lexical_similarity"] = scores.get("lexical_similarity", 0) + similarity
-
-        if similarity < 0.3:
-            failed_tasks.append(
-                {
-                    "task": str(task.get("input", ""))[:100],
-                    "expected": expected[:100],
-                    "actual": actual[:100],
-                    "score": similarity,
-                }
-            )
-
-    n = max(len(dataset["golden_tasks"]), 1)
-    normalized_scores = {k: round(v / n, 3) for k, v in scores.items()}
-    avg_score = sum(normalized_scores.values()) / max(len(normalized_scores), 1)
-
-    result = {
+    result: dict[str, Any] = {
         "result_id": result_id,
         "dataset_id": dataset_id,
         "tenant_id": tenant.tenant_id,
         "goal_id": body.goal_id,
-        "scores": normalized_scores,
-        "avg_score": round(avg_score, 3),
-        "passed": avg_score >= 0.7,
-        "failed_task_count": len(failed_tasks),
-        "failed_tasks": failed_tasks[:5],
-        "judge_model": body.judge_model,
+        "agent_id": body.agent_id,
+        "status": "running",
+        "passed": False,
+        "total_cases": len(dataset["golden_tasks"]),
+        "judge_model": (judge or {}).get("model", ""),
+        "judge": (
+            {
+                "judge_id": judge.get("judge_id"),
+                "name": judge.get("name"),
+                "provider": judge.get("provider"),
+                "model": judge.get("model"),
+                "evaluation_dimensions": judge.get("evaluation_dimensions"),
+            }
+            if judge is not None
+            else None
+        ),
         "created_at": now,
     }
-    metric = f"eval_{dataset_id}"
-    # `is None`, not truthiness: a legitimate baseline of 0.0 is falsy, which
-    # previously made every run look like a first run — the regression check was
-    # skipped and the baseline re-set on each eval.
     if store is not None:
         await store.add_eval_result(
-            tenant_id=tenant.tenant_id,
-            result_id=result_id,
-            dataset_id=dataset_id,
-            payload=result,
+            tenant_id=tenant.tenant_id, result_id=result_id, dataset_id=dataset_id, payload=result
         )
-        baseline = await store.get_baseline(tenant.tenant_id, metric)
     else:
         _eval_results.setdefault(tenant.tenant_id, []).append(result)
-        baseline = _baselines.get(tenant.tenant_id, {}).get(metric)
 
-    if baseline is not None and avg_score < baseline - 0.05:  # 5% regression
-        alert = {
-            "alert_id": str(uuid.uuid4()),
-            "tenant_id": tenant.tenant_id,
-            "drift_type": "model_output",
-            "severity": "warning",
-            "metric_name": metric,
-            "baseline_value": baseline,
-            "current_value": avg_score,
-            "drift_score": baseline - avg_score,
-            "message": f"Eval score regressed: {baseline:.2f} → {avg_score:.2f}",
-            "created_at": now,
-        }
-        if store is not None:
-            await store.add_alert(tenant_id=tenant.tenant_id, alert=alert)
-        else:
-            _drift_alerts.setdefault(tenant.tenant_id, []).append(alert)
+    running: set[asyncio.Task[None]] = request.app.state.__dict__.setdefault(
+        "_ai_ops_run_tasks", set()
+    )
+    task = asyncio.create_task(
+        _finish_eval_run(
+            request,
+            tenant=tenant,
+            dataset=dataset,
+            result=result,
+            goal_service=goal_service,
+            judge=judge,
+            provider=provider,
+            agent_id=body.agent_id,
+        )
+    )
+    running.add(task)  # strong reference until it finishes
+    task.add_done_callback(running.discard)
+    return {
+        "result_id": result_id,
+        "dataset_id": dataset_id,
+        "status": "running",
+        "total": len(dataset["golden_tasks"]),
+    }
 
-    # Auto-set baseline on first run only; never clobber an existing one.
-    if baseline is None:
-        if store is not None:
-            await store.set_baseline_if_absent(
-                tenant_id=tenant.tenant_id, metric_name=metric, value=avg_score
-            )
-        else:
-            _baselines.setdefault(tenant.tenant_id, {})[metric] = avg_score
 
+def _with_staleness(result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("status") != "running":
+        return result
+    try:
+        created = datetime.datetime.fromisoformat(str(result.get("created_at")))
+    except ValueError:
+        return result
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.UTC)
+    if datetime.datetime.now(datetime.UTC) - created > STALE_RUN_AFTER:
+        return {**result, "status": "abandoned", "passed": False}
     return result
+
+
+@router.get("/eval-results/{result_id}")
+async def get_eval_result(request: Request, result_id: str) -> dict[str, Any]:
+    """One eval result (poll target for a 202 dataset run)."""
+    tenant = _require_tenant(request)
+    store = _store(request)
+    found: dict[str, Any] | None
+    if store is not None:
+        found = await store.get_eval_result(tenant.tenant_id, result_id)
+    else:
+        found = next(
+            (r for r in _eval_results.get(tenant.tenant_id, []) if r.get("result_id") == result_id),
+            None,
+        )
+    if found is None:
+        raise HTTPException(404, "Eval result not found")
+    return _with_staleness(found)
 
 
 @router.get("/eval-results")

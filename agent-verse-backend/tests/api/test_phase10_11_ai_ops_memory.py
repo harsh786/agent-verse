@@ -58,23 +58,21 @@ def test_run_eval_suite():
     }, headers=_HEADERS)
     dataset_id = create.json()["dataset_id"]
 
+    # No goal service wired → no agent can execute the cases → honest 503
+    # (previously expected_output was scored against itself and "passed").
+    # Real execution: tests/api/test_ai_ops_eval_run_honest.py.
     resp = client.post(f"/ai-ops/datasets/{dataset_id}/run", json={}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "result_id" in data
-    assert "avg_score" in data
-    assert "passed" in data
-    assert 0.0 <= data["avg_score"] <= 1.0
+    assert resp.status_code == 503
 
-def test_eval_result_persisted():
+def test_eval_run_on_empty_dataset_is_rejected():
     client = TestClient(_make_app())
     create = client.post("/ai-ops/datasets", json={"name": "Persist Test"}, headers=_HEADERS)
     dataset_id = create.json()["dataset_id"]
-    client.post(f"/ai-ops/datasets/{dataset_id}/run", json={}, headers=_HEADERS)
+    resp = client.post(f"/ai-ops/datasets/{dataset_id}/run", json={}, headers=_HEADERS)
+    assert resp.status_code == 422
 
     results = client.get("/ai-ops/eval-results", headers=_HEADERS)
     assert results.status_code == 200
-    assert results.json()["total"] >= 1
 
 def test_set_baseline_and_compute_drift():
     client = TestClient(_make_app())

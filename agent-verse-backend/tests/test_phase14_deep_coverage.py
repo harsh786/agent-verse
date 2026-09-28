@@ -487,13 +487,14 @@ def test_eval_dataset_lifecycle():
     assert create.status_code == 200
     did = create.json()["dataset_id"]
 
+    # No agent execution path is wired in this app: the run must fail honestly
+    # (it used to score expected_output against itself and "pass").
+    # Real execution is covered in tests/api/test_ai_ops_eval_run_honest.py.
     run = client.post(f"/ai-ops/datasets/{did}/run", json={}, headers=_HDRS_A)
-    assert run.status_code == 200
-    assert 0.0 <= run.json()["avg_score"] <= 1.0
+    assert run.status_code == 503
 
     results = client.get("/ai-ops/eval-results", headers=_HDRS_A)
     assert results.status_code == 200
-    assert results.json()["total"] >= 1
 
 
 def test_drift_detection_workflow():

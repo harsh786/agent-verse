@@ -396,7 +396,7 @@ def test_apply_suggestion() -> None:
         "/intelligence/suggestions/sug-1/apply",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code in (200, 404, 500)
+    assert resp.status_code == 410  # deprecated v1 apply never applied anything
 
 
 def test_reject_suggestion() -> None:

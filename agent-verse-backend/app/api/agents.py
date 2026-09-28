@@ -532,6 +532,10 @@ class UpdateKnowledgeBindingRequest(BaseModel):
 class MetaAgentCreateRequest(BaseModel):
     command: str
     autorun: bool = False
+    # Explicit confirmation to create the agent from a heuristic draft when the
+    # LLM could not design one (error / timeout / non-JSON). Without it the
+    # endpoint answers 502 with the draft and creates nothing.
+    accept_heuristic: bool = False
 
 
 def _connector_lookup_key(value: Any) -> str:
@@ -748,6 +752,37 @@ async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dic
     planner = _meta_agent(request)
 
     config = await planner.plan(command=body.command, tenant_ctx=tenant_ctx)
+    generated_by = str(getattr(config, "generated_by", "llm") or "llm")
+
+    # The planner could not reach/parse the LLM and fell back to a name-and-
+    # command guess. That used to be persisted with 201 as if it were a
+    # designed agent. Safer contract: refuse (502, the upstream LLM failed) and
+    # hand back the labelled draft; create only on explicit confirmation.
+    if generated_by == "heuristic" and not body.accept_heuristic:
+        from fastapi.responses import JSONResponse
+
+        # `detail` stays a plain string (clients render it); the draft rides
+        # alongside it.
+        return JSONResponse(  # type: ignore[return-value]
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={
+                "detail": (
+                    "The agent designer LLM did not return a usable config; no agent "
+                    "was created. Retry, or resend with accept_heuristic=true to "
+                    "create the heuristic draft."
+                ),
+                "error_code": "meta_agent_llm_unavailable",
+                "generated_by": "heuristic",
+                "fallback_reason": str(getattr(config, "fallback_reason", "")),
+                "draft_config": {
+                    "name": config.name,
+                    "goal_template": config.goal_template,
+                    "connectors": list(config.connectors),
+                    "trigger_type": config.trigger_type,
+                    "autonomy_mode": config.autonomy_mode,
+                },
+            },
+        )
 
     # FIX 4: enforce agent limit via DB-backed list_async
     from app.tenancy.limits import check_agent_limit
@@ -799,6 +834,8 @@ async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dic
             "interval_seconds": config.interval_seconds,
             "autonomy_mode": config.autonomy_mode,
             "policy_suggestions": config.policy_suggestions,
+            "generated_by": generated_by,
+            "fallback_reason": str(getattr(config, "fallback_reason", "")),
         },
     }
 
