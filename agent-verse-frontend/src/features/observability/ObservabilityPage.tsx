@@ -13,7 +13,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { useAuthStore, getAuthHeader } from '@/stores/auth';
-import { observabilityApi, logsApi, API_BASE, type LogEntry } from '@/lib/api/client';
+import { observabilityApi, logsApi, API_BASE, apiFetch, type LogEntry } from '@/lib/api/client';
 import { TraceExplorer } from './TraceExplorer';
 import { RuntimeDecisionPanel } from './RuntimeDecisionPanel';
 
@@ -948,22 +948,30 @@ function LogsTab({ since, until }: { since: string; until: string }) {
   useEffect(() => {
     if (paused) return;
     let es: EventSource | null = null;
-    const { apiKey: key } = useAuthStore.getState();
+    let cancelled = false;
     const params = new URLSearchParams({ limit: '20' });
-    if (key) params.set('api_key', key);
     if (since) params.set('since', since);
-    try {
-      es = new EventSource(`${API_BASE}/observability/logs/stream?${params.toString()}`);
-      es.onmessage = (event) => {
-        if (paused) return;
-        try {
-          const log: LogEntry = JSON.parse(event.data as string);
-          setLogs((prev) => [log, ...prev.slice(0, 99)]);
-        } catch { /* ignore malformed events */ }
-      };
-      es.onerror = () => { es?.close(); };
-    } catch { /* SSE not available */ }
-    return () => es?.close();
+    // Authenticate with a short-lived read-only stream token. The permanent API
+    // key used to go in the URL (?api_key=), leaking into logs and history.
+    void apiFetch<{ token: string }>('/tenants/stream-token')
+      .then(({ token }) => {
+        if (cancelled) return;
+        params.set('token', token);
+        es = new EventSource(`${API_BASE}/observability/logs/stream?${params.toString()}`);
+        es.onmessage = (event) => {
+          if (paused) return;
+          try {
+            const log: LogEntry = JSON.parse(event.data as string);
+            setLogs((prev) => [log, ...prev.slice(0, 99)]);
+          } catch { /* ignore malformed events */ }
+        };
+        es.onerror = () => { es?.close(); };
+      })
+      .catch(() => { /* no live stream without a token; the log table still loads */ });
+    return () => {
+      cancelled = true;
+      es?.close();
+    };
   }, [paused, since]);
 
   // Auto-scroll to latest when not paused
