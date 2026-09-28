@@ -240,12 +240,21 @@ def test_seeded_templates_instantiable() -> None:
         assert "test-value" in instantiated
 
 
-async def test_db_backed_list_falls_back_to_builtins_when_db_unavailable() -> None:
-    """DB-backed template listing must not blank the UI when DB reads fail."""
+async def test_db_backed_list_raises_when_db_unavailable() -> None:
+    """Regression: a DB failure fell back to in-memory built-ins whose ids exist
+    in no database, so every listed template then 404'd on get/instantiate. The
+    failure now propagates (the route answers 503)."""
 
     class FailingSession:
         async def execute(self, *_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("database unavailable")
+
+        def begin(self) -> Any:
+            @asynccontextmanager
+            async def _b() -> Any:
+                yield None
+
+            return _b()
 
         async def __aenter__(self) -> FailingSession:
             return self
@@ -260,9 +269,5 @@ async def test_db_backed_list_falls_back_to_builtins_when_db_unavailable() -> No
     store = _TemplateStore(seed_builtins=True)
     store.set_db(failing_db)
 
-    templates = await store.list("tenant-db-down")
-
-    assert len(templates) >= 15
-    # YAML templates use different domain names; verify overlap with known domains
-    all_domains = {t["domain"] for t in templates}
-    assert all_domains & {"devops", "legal", "marketing", "software", "engineering", "operations"}
+    with pytest.raises(Exception, match="database unavailable"):
+        await store.list("tenant-db-down")

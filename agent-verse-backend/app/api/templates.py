@@ -94,8 +94,9 @@ def _load_yaml_goal_templates() -> list[dict[str, Any]]:
                 for t in loader.goal_templates
                 if t.get("name") and t.get("goal_text")
             ]
-    except Exception:
-        pass
+    except Exception as exc:
+        # Was a silent `pass`: a malformed content pack vanished without a trace.
+        logger.error("goal_template_content_load_failed: %s", exc)
     return []
 
 
@@ -320,23 +321,11 @@ class _TemplateStore:
     async def list(self, tenant_id: str, domain: str | None = None) -> list[dict[str, Any]]:
         if self._db:
             # Seed built-ins on first request per tenant (idempotent via ON CONFLICT)
-            try:
-                await self._seed_builtins_db(tenant_id)
-                rows = await self._list_db(tenant_id, domain)
-                if rows or not self._seed_builtins:
-                    return rows
-            except Exception as exc:
-                logger.warning("template_db_list_failed_falling_back_to_memory: %s", exc)
-
-            # If DB is down, migrated incompletely, or built-in seeding failed,
-            # keep user-facing template/domain pages useful with deterministic
-            # in-memory built-ins instead of surfacing a 500/blank page.
-            self._seeded_tenants.discard(tenant_id)
-            self._seed_builtins_for_tenant(tenant_id)
-            rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]
-            if domain:
-                rows = [t for t in rows if t["domain"] == domain]
-            return sorted(rows, key=lambda t: t["created_at"], reverse=True)
+            await self._seed_builtins_db(tenant_id)
+            # A DB failure propagates (the route answers 503). It used to fall
+            # back to in-memory built-ins whose ids exist in no database, so every
+            # get/instantiate of a listed template then 404'd.
+            return await self._list_db(tenant_id, domain)
         # In-memory mode: seed built-ins on first request per tenant
         self._seed_builtins_for_tenant(tenant_id)
         rows = [t for t in self._mem.values() if t["tenant_id"] == tenant_id]
@@ -584,7 +573,11 @@ async def list_templates(
     search: str | None = Query(default=None),
 ) -> list[dict[str, Any]]:
     tenant = _require_tenant(request)
-    results = await template_store.list(tenant.tenant_id, domain)
+    try:
+        results = await template_store.list(tenant.tenant_id, domain)
+    except Exception as exc:
+        logger.error("template_list_failed tenant=%s: %s", tenant.tenant_id, exc)
+        raise HTTPException(status_code=503, detail="Templates unavailable; retry") from exc
     if search:
         q = search.lower()
         results = [
