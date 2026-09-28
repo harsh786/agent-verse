@@ -13,12 +13,26 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_dsn
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _mongo_uri(cc: dict) -> str:
+    """The tenant's URI, or one built from host/port — never a localhost default
+    (that is the platform's own infrastructure, not the tenant's database)."""
+    from urllib.parse import quote
+
+    if cc.get("uri"):
+        return str(cc["uri"])
+    user = quote(str(cc.get("username", "")), safe="")
+    pwd = quote(str(cc.get("password", "")), safe="")
+    creds = f"{user}:{pwd}@" if user or pwd else ""
+    return f"mongodb://{creds}{cc.get('host', '')}:{cc.get('port', 27017)}/"
 
 
 def _flatten_doc(doc: dict, max_depth: int = 5) -> str:
@@ -52,14 +66,13 @@ class MongoDBConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            cc = config.connection_config
+            uri = _mongo_uri(cc)
+            # Every host in the URI (and SRV targets) must resolve public.
+            await check_source_dsn(uri, context="mongodb")
             from pymongo import MongoClient  # type: ignore[import-not-found]
 
-            cc = config.connection_config
-            client = MongoClient(
-                cc.get("uri")
-                or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/",  # noqa: E501
-                serverSelectionTimeoutMS=5000,
-            )
+            client = MongoClient(uri, serverSelectionTimeoutMS=5000)
             client.admin.command("ping")
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"host": cc.get("host")})
@@ -73,6 +86,9 @@ class MongoDBConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        cc = config.connection_config
+        uri = _mongo_uri(cc)
+        await check_source_dsn(uri, context="mongodb")
         try:
             from bson import ObjectId  # type: ignore[import-not-found]
             from pymongo import MongoClient  # type: ignore[import-not-found]
@@ -82,11 +98,6 @@ class MongoDBConnector(BaseConnector):
 
         import asyncio
 
-        cc = config.connection_config
-        uri = (
-            cc.get("uri")
-            or f"mongodb://{cc.get('username', '')}:{cc.get('password', '')}@{cc.get('host', 'localhost')}:{cc.get('port', 27017)}/"  # noqa: E501
-        )
         db_name = cc.get("database", "")
         collection_name = cc.get("collection", "")
         batch_size = int(cc.get("batch_size", 500))

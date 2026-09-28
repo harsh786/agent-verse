@@ -142,8 +142,17 @@ class KnowledgeIngestTool:
             try:
                 import httpx
 
-                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as c:
-                    r = await c.get(content_or_url)
+                from app.net.ssrf_guard import request_public
+
+                # The URL is agent/workflow-controlled (often straight from a
+                # trigger payload) and the response is indexed into the tenant's
+                # knowledge base. It used to be fetched with follow_redirects=True
+                # and no egress guard at all: request_public checks the URL and
+                # re-validates every redirect hop.
+                async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
+                    r = await request_public(
+                        c, "GET", content_or_url, context="knowledge.ingest"
+                    )
                     r.raise_for_status()
                     content_bytes = r.content
                     content_type = r.headers.get("content-type", "text/html").split(";")[0]

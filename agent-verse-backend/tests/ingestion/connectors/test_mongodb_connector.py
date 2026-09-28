@@ -21,7 +21,7 @@ def _make_config(conn_config: dict | None = None) -> SourceConfig:
         family="nosql_database",
         source_type="mongodb",
         enabled=True,
-        connection_config=conn_config or {"host": "localhost", "database": "db", "collection": "col"},
+        connection_config=conn_config or {"host": "mongo.test", "database": "db", "collection": "col"},
     )
 
 

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, cast
 
 import httpx
 
+from app.ingestion.connector_egress import assert_source_url
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,6 +39,12 @@ class JiraIngestor:
         chunks: list[dict[str, Any]] = []
         start = 0
 
+        # base_url is tenant-supplied (/ingest/jira); whatever it returns is
+        # indexed into the tenant's collection — egress-guard it (SSRF). The
+        # client does not follow redirects, so the one check covers every page.
+        await asyncio.to_thread(
+            assert_source_url, f"{self._base}/rest/api/3/search", context="jira_ingest"
+        )
         while len(chunks) // 2 < max_issues:  # rough estimate
             params: dict[str, str | int] = {
                 "jql": jql,

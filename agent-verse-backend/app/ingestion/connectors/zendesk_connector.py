@@ -7,17 +7,47 @@ Supports incremental export via Zendesk's Incremental Exports API.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import ConnectorEgressBlockedError
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+_SUBDOMAIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+def _zendesk_base(subdomain: object) -> str:
+    """``https://<subdomain>.zendesk.com/api/v2`` for a *label-only* subdomain.
+
+    The subdomain used to be interpolated raw, so ``"127.0.0.1:1/#"`` produced
+    ``https://127.0.0.1:1/#.zendesk.com/...`` — the tenant chose the host. A
+    single DNS label pins every request to Zendesk's own domain.
+    """
+    value = str(subdomain or "")
+    if not _SUBDOMAIN_RE.match(value):
+        raise ConnectorEgressBlockedError(
+            f"SSRF guard [zendesk]: subdomain {value[:60]!r} is not a DNS label — blocked"
+        )
+    return f"https://{value}.zendesk.com/api/v2"
+
+
+def _check_next_page(url: str, base: str) -> str:
+    """``next_page`` comes from the response body — it must stay on the tenant's host."""
+    if urlsplit(url).hostname != urlsplit(base).hostname or urlsplit(url).scheme != "https":
+        raise ConnectorEgressBlockedError(
+            "SSRF guard [zendesk]: next_page left the Zendesk host — blocked"
+        )
+    return url
 
 
 @register("zendesk", feature_flag="ingestion_connector_zendesk_enabled")
@@ -37,7 +67,7 @@ class ZendeskConnector(BaseConnector):
             subdomain = cc.get("subdomain", "")
             token = cc.get("api_token", "")
             email = cc.get("email", "")
-            base = f"https://{subdomain}.zendesk.com/api/v2"
+            base = _zendesk_base(subdomain)
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(
                     f"{base}/users/me.json",
@@ -65,7 +95,7 @@ class ZendeskConnector(BaseConnector):
         subdomain = cc.get("subdomain", "")
         token = cc.get("api_token", "")
         email = cc.get("email", "")
-        base = f"https://{subdomain}.zendesk.com/api/v2"
+        base = _zendesk_base(subdomain)
         auth = (f"{email}/token", token)
         ingest_types = cc.get("ingest_types") or ["tickets"]
         new_cursor = cursor or ""
@@ -111,7 +141,8 @@ class ZendeskConnector(BaseConnector):
                         yield doc, new_cursor
                     if data.get("end_of_stream"):
                         break
-                    url = data.get("next_page")
+                    next_page = data.get("next_page")
+                    url = _check_next_page(next_page, base) if next_page else None
                     params = {}
 
             if "articles" in ingest_types:
@@ -146,5 +177,6 @@ class ZendeskConnector(BaseConnector):
                             },
                         )
                         yield doc, new_cursor
-                    url = data.get("next_page")
+                    next_page = data.get("next_page")
+                    url = _check_next_page(next_page, base) if next_page else None
                     params = {}

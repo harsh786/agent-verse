@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_dsn
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,11 +32,13 @@ class Neo4jConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            cc = config.connection_config
+            # No bolt://localhost default, and the host must resolve public.
+            await check_source_dsn(cc.get("uri", ""), context="neo4j")
             from neo4j import GraphDatabase  # type: ignore[import-not-found]
 
-            cc = config.connection_config
             with GraphDatabase.driver(
-                cc.get("uri", "bolt://localhost:7687"),
+                cc.get("uri", ""),
                 auth=(cc.get("username", "neo4j"), cc.get("password", "")),
             ) as driver:
                 driver.verify_connectivity()
@@ -51,6 +54,9 @@ class Neo4jConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        cc = config.connection_config
+        neo4j_uri = cc.get("uri", "")
+        await check_source_dsn(neo4j_uri, context="neo4j")
         try:
             from neo4j import GraphDatabase  # type: ignore[import-not-found]
         except ImportError:
@@ -59,8 +65,6 @@ class Neo4jConnector(BaseConnector):
 
         import asyncio
 
-        cc = config.connection_config
-        neo4j_uri = cc.get("uri", "bolt://localhost:7687")
         auth = (cc.get("username", "neo4j"), cc.get("password", ""))
         cypher = cc.get("cypher", "")
         node_labels = cc.get("node_labels") or []

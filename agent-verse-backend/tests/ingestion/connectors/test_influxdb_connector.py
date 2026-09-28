@@ -24,7 +24,7 @@ def _make_config(conn_config: dict | None = None) -> SourceConfig:
         family="iot_telemetry",
         source_type="influxdb",
         enabled=True,
-        connection_config=conn_config or {},
+        connection_config={"url": "http://influx.test:8086", **(conn_config or {})},
     )
 
 

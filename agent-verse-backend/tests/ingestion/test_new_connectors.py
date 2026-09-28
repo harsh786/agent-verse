@@ -118,7 +118,15 @@ class TestRSSConnector:
         config = _make_config("rss", {"url": "http://example.com/feed.rss", "max_entries": 10})
         connector = RSSConnector()
 
-        with patch("feedparser.parse") as mock_parse:
+        # The feed is fetched through the egress guard now; stub the fetch.
+        with (
+            patch(
+                "app.ingestion.connectors.rss_connector._fetch_feed",
+                new_callable=AsyncMock,
+                return_value=b"<rss/>",
+            ),
+            patch("feedparser.parse") as mock_parse,
+        ):
             mock_entry = MagicMock()
             mock_entry.get = lambda k, d="": {
                 "id": "item-1", "title": "Entry 1", "link": "http://example.com/1",

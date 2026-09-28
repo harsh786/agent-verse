@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import assert_source_url
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -27,17 +28,34 @@ class S3Connector(BaseConnector):
     source_type = "s3"
     supports_streaming = True
     supports_deletion_tracking = True
+    # S3-compatible stores (MinIO) have no public default endpoint.
+    _requires_endpoint = False
+
+    def _endpoint_url(self, config: SourceConfig) -> str | None:
+        """The tenant's ``endpoint_url``, egress-guarded.
+
+        boto3 sends every request (with the tenant's signed credentials) to this
+        URL, and the objects it returns are indexed into the tenant's collection —
+        so an endpoint of ``http://169.254.169.254`` / the platform's own MinIO was
+        an SSRF straight into the knowledge base. ``None`` (no endpoint) means
+        AWS's own regional endpoint, which needs no check.
+        """
+        endpoint = config.connection_config.get("endpoint_url") or None
+        if endpoint is None and not self._requires_endpoint:
+            return None
+        assert_source_url(str(endpoint or ""), context=self.source_type, config=config)
+        return str(endpoint)
 
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
         t0 = time.perf_counter()
         try:
+            endpoint_url = self._endpoint_url(config)
             import boto3  # type: ignore[import-not-found]
 
             bucket = config.connection_config.get("bucket", "")
             region = config.connection_config.get("region", "us-east-1")
-            endpoint_url = config.connection_config.get("endpoint_url") or None
             credentials = config.connection_config.get("credentials", {})
 
             session = boto3.Session(
@@ -71,6 +89,7 @@ class S3Connector(BaseConnector):
         """List S3 objects sorted by LastModified, yield those newer than cursor."""
         from app.ingestion.source_config import RawDocument
 
+        endpoint_url = self._endpoint_url(config)
         try:
             import boto3  # type: ignore[import-not-found]
         except ImportError:
@@ -80,7 +99,6 @@ class S3Connector(BaseConnector):
         bucket = config.connection_config.get("bucket", "")
         prefix = config.connection_config.get("prefix", "")
         region = config.connection_config.get("region", "us-east-1")
-        endpoint_url = config.connection_config.get("endpoint_url") or None
         credentials = config.connection_config.get("credentials", {})
         include_patterns = config.include_patterns
         exclude_patterns = config.exclude_patterns
@@ -191,7 +209,7 @@ class S3Connector(BaseConnector):
                 aws_access_key_id=credentials.get("access_key_id"),
                 aws_secret_access_key=credentials.get("secret_access_key"),
                 region_name=config.connection_config.get("region", "us-east-1"),
-                endpoint_url=config.connection_config.get("endpoint_url") or None,
+                endpoint_url=self._endpoint_url(config),
             )
             response = s3.get_object(Bucket=bucket, Key=key)
             content_bytes = response["Body"].read()
@@ -219,6 +237,7 @@ class S3Connector(BaseConnector):
                 aws_access_key_id=credentials.get("access_key_id"),
                 aws_secret_access_key=credentials.get("secret_access_key"),
                 region_name=config.connection_config.get("region", "us-east-1"),
+                endpoint_url=self._endpoint_url(config),
             )
             resp = s3.list_objects_v2(
                 Bucket=config.connection_config.get("bucket", ""),

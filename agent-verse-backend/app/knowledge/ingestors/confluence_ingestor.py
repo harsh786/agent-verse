@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any, cast
 
 import httpx
 
+from app.ingestion.connector_egress import assert_source_url
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -31,6 +33,9 @@ class ConfluenceIngestor:
         self, space_key: str, start: int = 0, limit: int = 50
     ) -> list[dict[str, Any]]:
         url = f"{self._base}/rest/api/content"
+        # base_url is tenant-supplied (/ingest/confluence); whatever it returns
+        # is indexed into the tenant's collection — egress-guard it (SSRF).
+        await asyncio.to_thread(assert_source_url, url, context="confluence_ingest")
         params: dict[str, str | int] = {
             "spaceKey": space_key,
             "type": "page",

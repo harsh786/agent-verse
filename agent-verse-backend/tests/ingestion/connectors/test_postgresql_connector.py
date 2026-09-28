@@ -24,7 +24,7 @@ def _make_config(conn_config: dict | None = None) -> SourceConfig:
         name="Test PG",
         family="oltp_database",
         source_type="postgresql",
-        connection_config=conn_config or {},
+        connection_config={"host": "pg.test", **(conn_config or {})},
     )
 
 
@@ -47,8 +47,9 @@ class TestHelpers:
         assert "id=7" in text
 
     def test_build_dsn_defaults(self):
+        # No localhost default any more (that is the platform's own DB).
         dsn = _build_dsn({})
-        assert dsn == "postgresql://postgres:@localhost:5432/postgres"
+        assert dsn == "postgresql://postgres:@:5432/postgres"
 
     def test_build_dsn_custom(self):
         dsn = _build_dsn(

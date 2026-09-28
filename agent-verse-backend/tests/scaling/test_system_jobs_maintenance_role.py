@@ -195,15 +195,23 @@ async def test_hitl_expiry_runs_on_maintenance_role() -> None:
 async def test_document_retention_runs_on_maintenance_role() -> None:
     from app.scaling.tasks import _expire_stale_documents
 
+    from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
+
     session = _session([MagicMock(fetchall=MagicMock(return_value=[]))])
+    # One more maintenance session per chunk table: the knowledge_chunks_<dim>
+    # expiry scan (cross-tenant) also runs on the maintenance role. Nothing is
+    # expired here, so the application factory (per-tenant deletes) is never
+    # opened — _system_patches booby-traps it.
+    scans = [_session() for _ in SUPPORTED_EMBEDDING_DIMENSIONS]
     sys_session = _Recorder()
-    p = _system_patches(_factory(session), sys_session)
+    p = _system_patches(_factory(session, *scans), sys_session)
     with p[0], p[1], p[2]:
         result = await _expire_stale_documents(90)
 
     assert result["status"] == "ok", result
-    assert sys_session.calls == [(session,)]
+    assert sys_session.calls == [(session,), *[(s,) for s in scans]]
     assert "DELETE FROM documents" in _sql(session)[0]
+    assert all("expires_at < now()" in _sql(s)[0] for s in scans)
 
 
 @pytest.mark.asyncio

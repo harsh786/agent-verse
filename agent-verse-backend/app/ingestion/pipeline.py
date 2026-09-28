@@ -631,10 +631,16 @@ class IngestionPipeline:
         texts = [c["text"] for c in enriched_chunks]
         try:
             from app.providers.base import embed_texts
+            from app.providers.embedder_factory import embedder_model_name
 
             embeddings = await embed_texts(texts, provider=self._embedder)
+            # LAW-08: record which model produced each vector, so a model change
+            # is detectable per chunk (and re-embeddable) instead of silently
+            # mixing vector spaces.
+            model = embedder_model_name(self._embedder)
             for chunk, embedding in zip(enriched_chunks, embeddings, strict=False):
                 chunk["embedding"] = embedding
+                chunk["embedding_model"] = model if embedding else ""
         except Exception as e:
             _log.warning("pipeline_embed_error: %s", e)
             for chunk in enriched_chunks:
@@ -740,6 +746,7 @@ class IngestionPipeline:
                 "content_hash": c.get("content_hash", ""),
                 "doc_content_hash": content_hash,
                 "correlation_id": c.get("correlation_id", ""),
+                "embedding_model": c.get("embedding_model", ""),
             }
             if prov:
                 metadata["ingestion_provenance"] = prov

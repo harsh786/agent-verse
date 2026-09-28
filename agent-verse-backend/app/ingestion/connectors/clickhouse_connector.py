@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_host
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,11 +32,15 @@ class ClickHouseConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
+            cc = config.connection_config
+            # The tenant-chosen host must resolve public (SSRF guard).
+            await check_source_host(
+                cc.get("host", ""), cc.get("port", 8123), context="clickhouse"
+            )
             import clickhouse_connect  # type: ignore[import-not-found]
 
-            cc = config.connection_config
             client = clickhouse_connect.get_client(
-                host=cc.get("host", "localhost"),
+                host=cc.get("host", ""),
                 port=int(cc.get("port", 8123)),
                 username=cc.get("username", "default"),
                 password=cc.get("password", ""),
@@ -56,15 +61,16 @@ class ClickHouseConnector(BaseConnector):
     ) -> AsyncIterator[tuple[RawDocument, str]]:
         from app.ingestion.source_config import RawDocument
 
+        cc = config.connection_config
+        await check_source_host(cc.get("host", ""), cc.get("port", 8123), context="clickhouse")
         try:
             import clickhouse_connect  # type: ignore[import-not-found]
         except ImportError:
             _log.error("clickhouse-connect not installed")
             return
 
-        cc = config.connection_config
         client = clickhouse_connect.get_client(
-            host=cc.get("host", "localhost"),
+            host=cc.get("host", ""),
             port=int(cc.get("port", 8123)),
             username=cc.get("username", "default"),
             password=cc.get("password", ""),

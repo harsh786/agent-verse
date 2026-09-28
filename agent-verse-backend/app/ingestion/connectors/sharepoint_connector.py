@@ -6,18 +6,25 @@ Requires an Azure AD app registration with Sites.Read.All permission.
 
 from __future__ import annotations
 
+import asyncio
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
+    assert_source_url,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+_AZURE_TENANT_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$")
 _TOKEN_URL = "https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
 _SCOPE = "https://graph.microsoft.com/.default"
 
@@ -36,6 +43,12 @@ class SharePointConnector:
     """
 
     def __init__(self, tenant_id: str, client_id: str, client_secret: str) -> None:
+        # tenant_id is interpolated into the token URL path; a GUID or a
+        # directory domain is all it can legitimately be.
+        if tenant_id and not _AZURE_TENANT_RE.match(tenant_id):
+            raise ConnectorEgressBlockedError(
+                "SSRF guard [sharepoint]: tenant_id must be a GUID or domain — blocked"
+            )
         self._tenant_id = tenant_id
         self._client_id = client_id
         self._client_secret = client_secret
@@ -89,7 +102,11 @@ class SharePointConnector:
     async def _download(self, download_url: str) -> bytes:
         import httpx
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # ``@microsoft.graph.downloadUrl`` comes from a response body, so it is
+        # checked like any tenant-influenced URL before it is fetched (the client
+        # does not follow redirects, so this one check covers the request).
+        await asyncio.to_thread(assert_source_url, download_url, context="sharepoint")
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             return resp.content

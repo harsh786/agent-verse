@@ -82,8 +82,35 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
+def _json_param(field_name: str, value: Any) -> str:
+    """JSON-encode a JSON column for the DB; credentials are encrypted first.
+
+    ``connection_config`` secrets are vault-encrypted at rest (see
+    ``app.ingestion.source_secrets``) — they used to be stored in plaintext.
+    """
+    import json as _json
+
+    if field_name == "connection_config":
+        from app.ingestion.source_secrets import encrypt_connection_config
+
+        value = encrypt_connection_config(value)
+    return _json.dumps(value)
+
+
 def _row_to_config(row: Any) -> SourceConfig:
     """Map a source_configs row (SQLAlchemy mapping) to a SourceConfig."""
+    return _row_to_config_checked(row)[0]
+
+
+def _row_to_config_checked(row: Any) -> tuple[SourceConfig, bool]:
+    """Like :func:`_row_to_config`, also reporting a legacy plaintext secret.
+
+    The in-memory SourceConfig always carries decrypted credentials (connectors
+    need them); the bool is True when the row still stores a secret unencrypted,
+    so the caller can re-encrypt it (read-through migration of legacy rows).
+    """
+    from app.ingestion.source_secrets import decrypt_connection_config
+
     d = dict(row)
     family_raw = d.get("family") or SourceFamily.WEB.value
     try:
@@ -106,10 +133,42 @@ def _row_to_config(row: Any) -> SourceConfig:
         val = d.get(f)
         if val is not None:
             kwargs[f] = val
+    legacy_plaintext = False
+    if isinstance(kwargs.get("connection_config"), dict):
+        kwargs["connection_config"], legacy_plaintext = decrypt_connection_config(
+            kwargs["connection_config"]
+        )
     kwargs["last_synced_at"] = _iso(d.get("last_synced_at")) or None
     kwargs["created_at"] = _iso(d.get("created_at"))
     kwargs["updated_at"] = _iso(d.get("updated_at"))
-    return SourceConfig(**kwargs)
+    return SourceConfig(**kwargs), legacy_plaintext
+
+
+async def _reencrypt_legacy(session: Any, config: SourceConfig) -> None:
+    """Rewrite a legacy plaintext ``connection_config`` encrypted, in the caller's
+    (tenant RLS) transaction. Best-effort: a failure here must not fail the read."""
+    from sqlalchemy import text
+
+    try:
+        async with session.begin_nested():
+            await session.execute(
+                text(
+                    "UPDATE source_configs SET connection_config = CAST(:cc AS jsonb) "
+                    "WHERE id = :id AND tenant_id = :tid"
+                ),
+                {
+                    "cc": _json_param("connection_config", config.connection_config),
+                    "id": config.source_id,
+                    "tid": config.tenant_id,
+                },
+            )
+        _log.info("source.credentials_reencrypted", source_id=config.source_id)
+    except Exception as exc:
+        _log.warning(
+            "source.credentials_reencrypt_failed",
+            source_id=config.source_id,
+            error=type(exc).__name__,
+        )
 
 
 class SourceConfigStore:
@@ -140,10 +199,8 @@ class SourceConfigStore:
         for f in _SCALAR_FIELDS:
             if f != "family":
                 params[f] = getattr(config, f)
-        import json as _json
-
         for f in _JSON_FIELDS:
-            params[f] = _json.dumps(getattr(config, f))
+            params[f] = _json_param(f, getattr(config, f))
         cols = ["id", "tenant_id", "family", *[f for f in _SCALAR_FIELDS if f != "family"]]
         json_cols = list(_JSON_FIELDS)
         placeholders = [f":{c}" for c in cols] + [f"CAST(:{c} AS jsonb)" for c in json_cols]
@@ -176,8 +233,6 @@ class SourceConfigStore:
             return cfg
         if not fields:
             return await self.get(source_id, tenant_id)
-        import json as _json
-
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -187,7 +242,7 @@ class SourceConfigStore:
         for k, v in fields.items():
             if k in _JSON_FIELDS:
                 set_parts.append(f"{k} = CAST(:{k} AS jsonb)")
-                params[k] = _json.dumps(v)
+                params[k] = _json_param(k, v)
             elif k == "family":
                 set_parts.append("family = :family")
                 params["family"] = v.value if hasattr(v, "value") else str(v)
@@ -294,7 +349,12 @@ class SourceConfigStore:
                     {"id": source_id, "tid": tenant_id},
                 )
             ).mappings().first()
-        return _row_to_config(row) if row else None
+            if row is None:
+                return None
+            config, legacy = _row_to_config_checked(row)
+            if legacy:
+                await _reencrypt_legacy(session, config)
+        return config
 
     async def list(self, tenant_id: str) -> list[SourceConfig]:
         if self._db is None:
@@ -314,7 +374,13 @@ class SourceConfigStore:
                     {"tid": tenant_id},
                 )
             ).mappings().all()
-        return [_row_to_config(r) for r in rows]
+            configs: list[SourceConfig] = []
+            for r in rows:
+                config, legacy = _row_to_config_checked(r)
+                if legacy:
+                    await _reencrypt_legacy(session, config)
+                configs.append(config)
+        return configs
 
     async def list_due(self) -> list[tuple[str, str]]:
         """System-wide scan of enabled, non-streaming sources whose next sync is
