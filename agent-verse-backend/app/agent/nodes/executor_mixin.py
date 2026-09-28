@@ -8,6 +8,7 @@ import json
 import time
 from typing import Any
 
+from app.agent.checkpoint_resume import COMPLETED_STEPS_KEY, RESUME_COMPLETED_KEY
 from app.agent.prompts import (
     EXECUTOR_SYSTEM,
 )
@@ -333,9 +334,32 @@ class ExecutorMixin:
             except Exception as _bp_exc:
                 self._logger.debug("batch_cache_prefetch_skipped", error=str(_bp_exc)[:80])
 
+        # Crash resume: steps a previous (crashed) run of this goal already
+        # finished. They are not re-run — their tools may have had side effects.
+        _resumed_done: dict[str, str] = agent_state.context.pop(RESUME_COMPLETED_KEY, None) or {}
+        _ckpt_done: dict[str, str] = agent_state.context.setdefault(COMPLETED_STEPS_KEY, {})
+
         for wave_idx, wave in enumerate(waves):
+            # Honour an operator pause between steps (never mid-tool-call).
+            _pause_gate = getattr(self, "_pause_gate", None)
+            if _pause_gate is not None:
+                await _pause_gate()
             # P1.1: Filter out steps whose condition evaluates to False
             eligible_steps = [s for s in wave if s.should_execute(_completed_steps)]
+            if _resumed_done:
+                _already = [s for s in eligible_steps if s.id in _resumed_done]
+                for _done in _already:
+                    _done.output = _resumed_done[_done.id]
+                    _done.status = "complete"
+                    _completed_steps[_done.id] = _done
+                    await self._emit(
+                        {"type": "step_resumed_from_checkpoint", "step": _done.description}
+                    )
+                if _already:
+                    step_global_index += len(_already)
+                    eligible_steps = [s for s in eligible_steps if s.id not in _resumed_done]
+                    if not eligible_steps:
+                        continue
             if not eligible_steps:
                 self._logger.info(
                     "wave_all_steps_skipped_by_condition",
@@ -389,6 +413,7 @@ class ExecutorMixin:
                 struct_step.output = output
                 struct_step.status = "complete"
                 _completed_steps[struct_step.id] = struct_step
+                _ckpt_done[struct_step.id] = output or ""
                 await self._emit({"type": "step_complete", "step": step_desc, "output": output})
                 # Persist tool outcome for cross-restart trust scores
                 try:
@@ -533,6 +558,8 @@ class ExecutorMixin:
                         "complete" if parallel_steps[i].status == StepStatus.COMPLETE else "failed"
                     )
                     _completed_steps[struct_step_par.id] = struct_step_par
+                    if parallel_steps[i].status == StepStatus.COMPLETE:
+                        _ckpt_done[struct_step_par.id] = parallel_steps[i].output or ""
 
                 for i in range(len(eligible_steps)):
                     await self._write_checkpoint(

@@ -15,7 +15,7 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -30,6 +30,7 @@ _svc_logger = _get_logger(__name__)
 
 # Module-level pause event registry (not a class attr to avoid circular)
 _GOAL_PAUSE_EVENTS: dict[str, asyncio.Event] = {}
+_PAUSE_POLL_SECONDS = 2.0
 from app.agent.sanitization import sanitize_event
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
@@ -2299,9 +2300,7 @@ class GoalService:
                 execution_context=record.execution_context if record is not None else None,
                 **_profile_kwargs,
             )
-            # Store graph instance on record so HITL resume can re-invoke from checkpoint
-            if record is not None:
-                record._graph_instance = loop
+            loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
             _agent_collection_ids: list[str] = []
             if record is not None and record.agent_id:
@@ -3607,6 +3606,45 @@ class GoalService:
 
         return {"goal_id": goal_id, "status": "paused"}
 
+    def _make_pause_gate(
+        self, goal_id: str, tenant_ctx: TenantContext
+    ) -> Callable[[], Awaitable[None]]:
+        """Return the gate the agent loop awaits between steps.
+
+        It blocks while the goal is paused — by ``pause_goal`` on this replica
+        (in-process event) or on any other replica (Redis pause flag) — and
+        raises ``GoalCancelledError`` if the goal is cancelled while paused.
+        """
+        from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled, is_paused
+
+        async def _gate() -> None:
+            announced = False
+            while True:
+                evt = _GOAL_PAUSE_EVENTS.get(goal_id)
+                local = evt is not None and not evt.is_set()
+                redis = getattr(self, "_redis", None)
+                remote = not local and redis is not None and await is_paused(goal_id, redis)
+                if not (local or remote):
+                    break
+                if not announced:
+                    announced = True
+                    await self._dispatch_event(
+                        goal_id, {"type": "goal_paused_at_step_boundary"}, tenant_ctx=tenant_ctx
+                    )
+                if local and evt is not None:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(evt.wait(), timeout=_PAUSE_POLL_SECONDS)
+                else:
+                    await asyncio.sleep(_PAUSE_POLL_SECONDS)
+                if redis is not None and await is_cancelled(goal_id, redis):
+                    raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+            if announced:
+                await self._dispatch_event(
+                    goal_id, {"type": "goal_execution_resumed"}, tenant_ctx=tenant_ctx
+                )
+
+        return _gate
+
     async def resume_goal(
         self,
         goal_id: str,
@@ -3665,52 +3703,12 @@ class GoalService:
         record.execution_context["hitl_approved"] = True
         record.execution_context["hitl_feedback"] = feedback
 
-        # Attempt LangGraph checkpoint re-invocation when a graph instance is stored
-        graph = getattr(record, "_graph_instance", None)
-        if graph is not None:
-            config = {"configurable": {"thread_id": goal_id}}
-            try:
-                import asyncio as _asyncio
-
-                async def _resume_graph() -> None:
-                    resume_input = {
-                        "hitl_decision": "approved",
-                        "hitl_feedback": feedback,
-                    }
-                    try:
-                        async for _ in graph._graph.astream(resume_input, config=config):
-                            pass
-                    except Exception as _inner_exc:
-                        _svc_logger.warning(
-                            "hitl_checkpoint_resume_task_failed", error=str(_inner_exc)
-                        )
-                        # Fallback: fire asyncio pause event
-                        evt = _GOAL_PAUSE_EVENTS.pop(goal_id, None)
-                        if evt is not None:
-                            evt.set()
-
-                _asyncio.create_task(_resume_graph())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                record.status = GoalStatus.EXECUTING
-                await self._db_update_goal_status(
-                    goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
-                )
-                # C4 fix: clear Redis pause flag on checkpoint-based resume path too
-                try:
-                    from app.reliability.goal_lifecycle import signal_resume as _signal_resume_cp
-
-                    _redis_cp = getattr(self, "_redis", None)
-                    if _redis_cp is not None:
-                        _asyncio.ensure_future(_signal_resume_cp(goal_id, _redis_cp))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                except Exception:
-                    pass
-                await self._dispatch_event(
-                    goal_id, {"type": "goal_resumed", "method": "checkpoint"}, tenant_ctx=tenant_ctx
-                )
-                return {"goal_id": goal_id, "status": "resumed"}
-            except Exception as exc:
-                _svc_logger.warning("hitl_checkpoint_resume_failed", error=str(exc))
-
-        # Fallback: fire any waiting asyncio pause-event (legacy path)
+        # The running goal is blocked in its pause gate at a step boundary (see
+        # _make_pause_gate); releasing the gate resumes it where it stopped. This
+        # used to re-invoke the LangGraph graph via astream() on a thread id that
+        # never matched the one run() uses and without the goal in the input, so
+        # it always errored into this path — and had the ids matched it would
+        # have started a second concurrent execution of the same goal.
         record.status = GoalStatus.EXECUTING
         await self._db_update_goal_status(
             goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value

@@ -117,65 +117,53 @@ async def test_resume_goal_raises_for_terminal_goal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_goal_uses_graph_checkpoint_when_instance_stored() -> None:
-    """When a graph instance is stored on the record, resume should attempt checkpoint re-invocation."""
+async def test_pause_gate_blocks_the_running_goal_until_resume() -> None:
+    """Regression: pause_goal created an event nothing waited on, so a paused
+    in-process goal kept executing. The agent loop now awaits a pause gate at
+    every step boundary; resume_goal releases it."""
     svc = GoalService()
-    record = _make_waiting_goal(svc)
+    record = _make_waiting_goal(svc, goal_id="g-gate-1")
+    _GOAL_PAUSE_EVENTS["g-gate-1"] = asyncio.Event()  # what pause_goal installs
+    gate = svc._make_pause_gate("g-gate-1", _CTX)
 
-    streamed_inputs: list[Any] = []
-
-    class FakeGraph:
-        async def astream(self, input_state: Any, config: Any):
-            streamed_inputs.append(input_state)
-            yield {"result": "ok"}
-
-    class FakeAgentGraph:
-        _graph = FakeGraph()
-
-    record._graph_instance = FakeAgentGraph()
-
-    result = await svc.resume_goal("g-hitl-1", _CTX, approved=True, feedback="looks good")
-
-    # Wait a tick for the create_task to run
+    task = asyncio.create_task(gate())
     await asyncio.sleep(0.05)
+    assert not task.done(), "a paused goal must not pass the step boundary"
 
-    assert result["status"] == "resumed"
+    await svc.resume_goal("g-gate-1", _CTX, approved=True)
+    await asyncio.wait_for(task, timeout=1.0)
     assert record.status == GoalStatus.EXECUTING
-    # The graph's astream should have been invoked
-    assert streamed_inputs, "graph.astream was not called for checkpoint resume"
-    assert streamed_inputs[0].get("hitl_decision") == "approved"
+    types = [e.get("type") for e in record.events]
+    assert "goal_paused_at_step_boundary" in types
+    assert "goal_execution_resumed" in types
 
 
 @pytest.mark.asyncio
-async def test_resume_goal_checkpoint_failure_fires_fallback_event() -> None:
-    """If graph.astream raises, the _resume_graph task catches it and fires the pause event."""
+async def test_pause_gate_passes_straight_through_when_not_paused() -> None:
     svc = GoalService()
-    record = _make_waiting_goal(svc)
+    _GOAL_PAUSE_EVENTS.pop("g-gate-2", None)
+    await asyncio.wait_for(svc._make_pause_gate("g-gate-2", _CTX)(), timeout=0.5)
 
-    # Graph that raises on first iteration
-    class BrokenGraph:
-        async def astream(self, input_state: Any, config: Any):
-            raise RuntimeError("checkpoint unavailable")
-            yield  # make it a generator  # pragma: no cover
 
-    class BrokenAgentGraph:
-        _graph = BrokenGraph()
+@pytest.mark.asyncio
+async def test_pause_gate_honours_a_pause_issued_on_another_replica() -> None:
+    """A pause handled by a different API replica only sets the Redis flag."""
+    from app.reliability.goal_lifecycle import GoalCancelledError
 
-    record._graph_instance = BrokenAgentGraph()
+    svc = GoalService()
+    flags = {"goal_paused:g-gate-3": "1"}
 
-    evt = asyncio.Event()
-    _GOAL_PAUSE_EVENTS["g-hitl-1"] = evt
+    class _Redis:
+        async def get(self, key: str) -> str | None:
+            return flags.get(key)
 
-    result = await svc.resume_goal("g-hitl-1", _CTX, approved=True)
-
-    # The coroutine is fire-and-forget, wait for it to execute
+    svc._redis = _Redis()
+    task = asyncio.create_task(svc._make_pause_gate("g-gate-3", _CTX)())
     await asyncio.sleep(0.05)
-
-    # Status should be EXECUTING (set before the task runs)
-    assert result["status"] == "resumed"
-    assert record.status == GoalStatus.EXECUTING
-    # The fallback inside _resume_graph should have set the event
-    assert evt.is_set(), "fallback pause event must be set when checkpoint fails"
+    assert not task.done()
+    flags["goal_cancelled:g-gate-3"] = "1"
+    with pytest.raises(GoalCancelledError):
+        await asyncio.wait_for(task, timeout=5.0)
 
 
 @pytest.mark.asyncio
@@ -203,33 +191,11 @@ async def test_resume_goal_dispatches_resumed_event() -> None:
 
 @pytest.mark.asyncio
 async def test_resume_goal_concurrent_calls_do_not_double_resume() -> None:
-    """Regression (race): racing two resume_goal() calls must not both succeed.
-
-    resume_goal() used to only reject already-*terminal* statuses. A duplicate
-    or racing call (double-click "Approve", a retried HTTP request, two
-    replicas both handling the same webhook) arriving after the first call had
-    already flipped record.status from WAITING_HUMAN to EXECUTING would still
-    pass that guard (EXECUTING is not terminal) and re-run the whole method —
-    including scheduling a *second* fire-and-forget
-    ``graph._graph.astream(resume_input, config=config)`` task against the
-    exact same LangGraph checkpoint thread_id, concurrently with the first.
-    Races two resume_goal() calls with asyncio.gather and asserts the graph's
-    astream() is invoked exactly once.
-    """
+    """Regression (race): racing two resume_goal() calls must not both succeed
+    (double-click "Approve", a retried HTTP request, two replicas handling the
+    same webhook)."""
     svc = GoalService()
     record = _make_waiting_goal(svc, goal_id="g-race-1")
-
-    streamed_inputs: list[Any] = []
-
-    class FakeGraph:
-        async def astream(self, input_state: Any, config: Any):
-            streamed_inputs.append(input_state)
-            yield {"result": "ok"}
-
-    class FakeAgentGraph:
-        _graph = FakeGraph()
-
-    record._graph_instance = FakeAgentGraph()
 
     results = await asyncio.gather(
         svc.resume_goal("g-race-1", _CTX, approved=True, feedback="a"),
@@ -237,17 +203,9 @@ async def test_resume_goal_concurrent_calls_do_not_double_resume() -> None:
         return_exceptions=True,
     )
 
-    # Let both fire-and-forget _resume_graph() tasks (if more than one was
-    # scheduled) actually run.
-    await asyncio.sleep(0.05)
-
     successes = [r for r in results if not isinstance(r, BaseException)]
     failures = [r for r in results if isinstance(r, BaseException)]
-
     assert len(successes) == 1, f"exactly one resume_goal call should succeed, got {results}"
     assert len(failures) == 1
     assert isinstance(failures[0], ValueError)
-    assert len(streamed_inputs) == 1, (
-        "graph.astream() must be invoked exactly once even when two resume_goal "
-        f"calls race — got {len(streamed_inputs)} invocations"
-    )
+    assert [e.get("type") for e in record.events].count("goal_resumed") == 1

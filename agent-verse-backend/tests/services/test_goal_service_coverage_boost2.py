@@ -259,53 +259,6 @@ async def test_cancel_goal_signals_redis_for_cross_process_workers() -> None:
     ), "signal_cancel must publish on the goal_cancel:<id> channel"
 
 
-# ── resume_goal: checkpoint dispatch failure falls back to legacy resume ──
-
-
-@pytest.mark.asyncio
-async def test_resume_goal_falls_back_when_checkpoint_dispatch_raises() -> None:
-    """If dispatching the checkpoint 'goal_resumed' event itself raises, the
-    outer handler must log and fall through to the legacy asyncio pause-event
-    resume path instead of leaving the caller with an unhandled exception."""
-    svc = _svc()
-    record = GoalRecord(
-        goal_id="g-cp",
-        goal_text="test",
-        status=GoalStatus.WAITING_HUMAN,
-        tenant_id="cb2-t1",
-        priority="normal",
-        dry_run=False,
-        created_at=datetime.now(UTC).isoformat(),
-    )
-    svc._goals["g-cp"] = record
-
-    class FakeGraph:
-        async def astream(self, input_state: Any, config: Any):
-            yield {"result": "ok"}
-
-    class FakeAgentGraph:
-        _graph = FakeGraph()
-
-    record._graph_instance = FakeAgentGraph()
-
-    calls = {"n": 0}
-
-    async def _dispatch_side_effect(*args: Any, **kwargs: Any) -> None:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("dispatch transport down")
-        return None
-
-    svc._dispatch_event = AsyncMock(side_effect=_dispatch_side_effect)  # type: ignore[method-assign]
-
-    result = await svc.resume_goal("g-cp", _ctx(tenant_id="cb2-t1"), approved=True)
-
-    assert result["status"] == "resumed"
-    assert record.status == GoalStatus.EXECUTING
-    # Fell through to the legacy path, which dispatches goal_resumed again.
-    assert calls["n"] == 2
-
-
 # ── resume_goal: cross-replica Redis pause-flag clearing ───────────────────
 
 
@@ -323,36 +276,6 @@ async def test_resume_goal_fallback_path_clears_redis_pause_flag() -> None:
 
     result = await svc.resume_goal("g-resume-redis", _ctx(tenant_id="cb2-t1"), approved=True)
     await asyncio.sleep(0.02)  # let the fire-and-forget signal_resume() run
-
-    assert result["status"] == "resumed"
-    assert record.status == GoalStatus.EXECUTING
-    redis.delete.assert_awaited_once()
-    assert redis.publish.await_count >= 1
-
-
-@pytest.mark.asyncio
-async def test_resume_goal_checkpoint_path_clears_redis_pause_flag() -> None:
-    """The checkpoint re-invocation resume path must also clear the Redis
-    pause flag for cross-process workers, mirroring the legacy path."""
-    svc = _svc()
-    record = _inject_goal(svc, goal_id="g-resume-redis-cp", status=GoalStatus.WAITING_HUMAN)
-
-    class FakeGraph:
-        async def astream(self, input_state: Any, config: Any):
-            yield {"result": "ok"}
-
-    class FakeAgentGraph:
-        _graph = FakeGraph()
-
-    record._graph_instance = FakeAgentGraph()
-
-    redis = AsyncMock()
-    redis.delete = AsyncMock()
-    redis.publish = AsyncMock()
-    svc._redis = redis
-
-    result = await svc.resume_goal("g-resume-redis-cp", _ctx(tenant_id="cb2-t1"), approved=True)
-    await asyncio.sleep(0.02)  # let both fire-and-forget tasks run
 
     assert result["status"] == "resumed"
     assert record.status == GoalStatus.EXECUTING

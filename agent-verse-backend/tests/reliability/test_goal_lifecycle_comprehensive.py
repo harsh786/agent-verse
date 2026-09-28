@@ -9,6 +9,7 @@ import pytest
 from app.reliability.goal_lifecycle import (
     _CANCEL_FLAG,
     _FLAG_TTL,
+    _PAUSE_TTL,
     _PAUSE_FLAG,
     GoalCancelledError,
     check_pause_cancel,
@@ -26,8 +27,10 @@ class TestSignalPause:
     async def test_sets_pause_flag(self) -> None:
         mock_redis = AsyncMock()
         await signal_pause("goal-1", mock_redis)
+        # A pause outlives the 2 h signal TTL: it used to expire and silently
+        # resume the goal.
         mock_redis.set.assert_called_once_with(
-            _PAUSE_FLAG.format(goal_id="goal-1"), "1", ex=_FLAG_TTL
+            _PAUSE_FLAG.format(goal_id="goal-1"), "1", ex=_PAUSE_TTL
         )
 
     async def test_publishes_pause_channel(self) -> None:

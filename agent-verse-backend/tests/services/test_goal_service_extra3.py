@@ -668,36 +668,6 @@ class TestResumeGoal:
         assert result["status"] == "resumed"
         assert svc._goals["g1"].status == GoalStatus.EXECUTING
 
-    async def test_resume_graph_instance_creates_task(self):
-        """Lines 1950-1979: checkpoint resume via graph instance."""
-        svc = _svc()
-        record = _inject_goal(svc, "g1", status="waiting_human")
-        mock_graph = MagicMock()
-
-        async def _astream(*a, **kw):
-            return
-            yield  # unreachable, required to make this an async generator
-
-        mock_graph._graph = MagicMock()
-        mock_graph._graph.astream = _astream
-        record._graph_instance = mock_graph
-
-        result = await svc.resume_goal("g1", _ctx(), approved=True)
-        assert result["status"] == "resumed"
-
-    async def test_resume_graph_exception_falls_back(self):
-        """Lines 1980-1981: exception in graph resume → legacy fallback."""
-        svc = _svc()
-        record = _inject_goal(svc, "g1", status="waiting_human")
-        mock_graph = MagicMock()
-        mock_graph._graph = MagicMock()
-        # astream raises when called
-        mock_graph._graph.astream = MagicMock(side_effect=Exception("checkpoint gone"))
-        record._graph_instance = mock_graph
-
-        result = await svc.resume_goal("g1", _ctx(), approved=True)
-        assert "status" in result
-
 
 # ── get_metrics ───────────────────────────────────────────────────────────────
 

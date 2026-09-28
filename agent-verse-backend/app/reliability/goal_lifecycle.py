@@ -30,6 +30,10 @@ _CANCEL_FLAG = "goal_cancelled:{goal_id}"
 _PAUSE_CHANNEL = "goal_pause:{goal_id}"
 _CANCEL_CHANNEL = "goal_cancel:{goal_id}"
 _FLAG_TTL = 7200  # 2 hours
+# A pause is an operator decision and must outlive a lunch break: with the
+# 2-hour flag TTL a paused goal silently resumed itself once the key expired.
+# The TTL only garbage-collects flags of goals that never came back.
+_PAUSE_TTL = 7 * 24 * 3600
 
 
 class GoalCancelledError(Exception):
@@ -41,7 +45,7 @@ async def signal_pause(goal_id: str, redis: Any) -> None:
     try:
         key = _PAUSE_FLAG.format(goal_id=goal_id)
         channel = _PAUSE_CHANNEL.format(goal_id=goal_id)
-        await redis.set(key, "1", ex=_FLAG_TTL)
+        await redis.set(key, "1", ex=_PAUSE_TTL)
         await redis.publish(channel, "pause")
         logger.info("goal_pause_signalled", goal_id=goal_id)
     except Exception as exc:
@@ -79,6 +83,22 @@ async def clear_signals(goal_id: str, redis: Any) -> None:
             _PAUSE_FLAG.format(goal_id=goal_id),
             _CANCEL_FLAG.format(goal_id=goal_id),
         )
+
+
+async def is_paused(goal_id: str, redis: Any) -> bool:
+    """Async check of the cross-process pause flag (API-server / in-process runs)."""
+    try:
+        return bool(await redis.get(_PAUSE_FLAG.format(goal_id=goal_id)))
+    except Exception:
+        return False
+
+
+async def is_cancelled(goal_id: str, redis: Any) -> bool:
+    """Async check of the cross-process cancel flag."""
+    try:
+        return bool(await redis.get(_CANCEL_FLAG.format(goal_id=goal_id)))
+    except Exception:
+        return False
 
 
 def is_paused_sync(goal_id: str, redis_sync: Any) -> bool:

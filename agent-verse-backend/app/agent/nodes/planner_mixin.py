@@ -6,6 +6,11 @@ import asyncio
 import time
 from typing import Any
 
+from app.agent.checkpoint_resume import (
+    COMPLETED_STEPS_KEY,
+    EXECUTABLE_PLAN_KEY,
+    RESUME_PLAN_KEY,
+)
 from app.agent.prompts import (
     PLANNER_SYSTEM,
     STRUCTURED_PLANNER_SYSTEM,
@@ -49,6 +54,16 @@ class PlannerMixin:
 
         agent_state.status = GoalStatus.PLANNING
         agent_state.iterations = iteration
+
+        # Crash resume: reuse the checkpointed plan so its step ids line up with
+        # the completed steps the executor will skip. Replanning here would
+        # produce different steps and re-run tools that already ran.
+        _resume_plan = agent_state.context.pop(RESUME_PLAN_KEY, None)
+        if _resume_plan:
+            await self._emit(
+                {"type": "plan_resumed_from_checkpoint", "steps": list(agent_state.plan)}
+            )
+            return {"agent_state": agent_state, "plan": list(_resume_plan), "iteration": iteration}
 
         # ── Adaptive execution strategy (A/B/C) ────────────────────────────────
         # Resolve the per-model strategy once per goal (first plan) and stash it
@@ -722,4 +737,7 @@ class PlannerMixin:
             _pf_task = asyncio.create_task(_prefetch_steps())
             self._background_tasks.add(_pf_task)
             _pf_task.add_done_callback(self._background_tasks.discard)
+        # A new plan has new step ids: earlier completions no longer map onto it.
+        agent_state.context[EXECUTABLE_PLAN_KEY] = list(plan)
+        agent_state.context[COMPLETED_STEPS_KEY] = {}
         return {"agent_state": agent_state, "plan": plan, "iteration": iteration}

@@ -24,6 +24,7 @@ from typing import Any, cast
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.checkpoint_resume import checkpoint_payload, restore_from_checkpoint
 from app.agent.state import AgentState, GoalStatus, StepStatus
 from app.governance.audit import AuditLog
 from app.governance.cost import CostController
@@ -289,6 +290,9 @@ class AgentGraph(
 
         self._tracer = _otel_trace.get_tracer(__name__)
         self._db_session_factory: Any = None  # Set by main.py after construction
+        # Awaited at every step boundary; blocks while the goal is paused. Wired
+        # by GoalService (in-process event + cross-replica Redis flag).
+        self._pause_gate: Any = None
         self._rpa_executor: Any = None  # Set externally to dispatch RPA tool calls directly
         self._tool_context: Any = None  # Settable from outside; used by _extract_tool_name
         self._prompt_optimizer: Any = None  # Settable from outside; PromptOptimizer instance
@@ -710,21 +714,28 @@ class AgentGraph(
                 try:
                     if goal_id:
                         checkpoint_state = await self._load_checkpoint(goal_id, tenant_ctx)
-                        if checkpoint_state is not None:
-                            saved_state = checkpoint_state.get("agent_state")
-                            if (
-                                saved_state is not None
-                                and hasattr(saved_state, "steps")
-                                and saved_state.steps
-                            ):
-                                input_state = checkpoint_state
-                                from app.observability.logging import get_logger
+                        # This used to look for an "agent_state" key the writer
+                        # never stored, so a goal re-delivered after a worker crash
+                        # always started over and re-ran every side-effecting tool.
+                        resumed = restore_from_checkpoint(
+                            checkpoint_state,
+                            input_state.get("agent_state"),
+                            goal=goal,
+                            tenant_ctx=tenant_ctx,
+                            goal_id=goal_id,
+                        )
+                        if resumed is not None:
+                            input_state["agent_state"] = resumed
+                            input_state["iteration"] = max(0, resumed.iterations - 1)
+                            from app.observability.logging import get_logger
 
-                                get_logger(__name__).info(
-                                    "goal_resumed_from_checkpoint",
-                                    goal_id=goal_id,
-                                    steps_already_done=len(saved_state.steps),
-                                )
+                            get_logger(__name__).info(
+                                "goal_resumed_from_checkpoint",
+                                goal_id=goal_id,
+                                steps_already_done=len(
+                                    resumed.context.get("_resume_completed", {})
+                                ),
+                            )
                 except Exception:
                     pass  # checkpoint load never blocks execution
 
@@ -920,12 +931,8 @@ class AgentGraph(
             from app.db.models.goal import GoalCheckpoint
             from app.db.rls import sqlalchemy_rls_context
 
-            payload = {
-                "step_index": step_index,
-                "plan": getattr(state, "plan", []),
-                "iterations": getattr(state, "iterations", 0),
-                "completed_at": datetime.now(UTC).isoformat(),
-            }
+            payload = checkpoint_payload(state, step_index)
+            payload["completed_at"] = datetime.now(UTC).isoformat()
             checkpoint_key = f"step_{step_index}"
             async with (
                 self._db_session_factory() as session,
@@ -1016,7 +1023,10 @@ class AgentGraph(
                         GoalCheckpoint.goal_id == goal_id,
                         GoalCheckpoint.tenant_id == tenant_ctx.tenant_id,
                     )
-                    .order_by(GoalCheckpoint.sequence.desc())
+                    # Latest write wins, not the highest step index: a replan
+                    # restarts step numbering, so step_0 of iteration 2 is newer
+                    # than step_3 of iteration 1.
+                    .order_by(GoalCheckpoint.updated_at.desc(), GoalCheckpoint.sequence.desc())
                     .limit(1)
                 )
                 row = result.scalar_one_or_none()
