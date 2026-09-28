@@ -225,9 +225,23 @@ class BrowserAgent:
             finally:
                 await browser.close()
 
-    async def analyze_screenshot(self, screenshot_b64: str, question: str) -> str:
-        """Analyze a screenshot with a vision LLM."""
-        if self._vision is None or not self._vision.supports_vision():
+    @property
+    def has_vision(self) -> bool:
+        """True when a vision-capable provider is configured."""
+        return self._vision is not None and bool(self._vision.supports_vision())
+
+    async def analyze_screenshot(
+        self, screenshot_b64: str, question: str, *, raise_errors: bool = False
+    ) -> str:
+        """Analyze a screenshot with a vision LLM.
+
+        With ``raise_errors`` a missing provider or a provider failure raises
+        instead of being returned as if it were the analysis text (API callers
+        used to answer 200 with "No vision provider configured." as the result).
+        """
+        if not self.has_vision:
+            if raise_errors:
+                raise RuntimeError("No vision provider configured.")
             return "No vision provider configured."
 
         try:
@@ -252,6 +266,8 @@ class BrowserAgent:
             resp = await self._vision.complete(req)
             return resp.content  # type: ignore[no-any-return]
         except Exception as exc:
+            if raise_errors:
+                raise
             return f"Vision analysis failed: {exc}"
 
     async def run_action(self, action: BrowserAction) -> BrowserResult:

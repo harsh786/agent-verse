@@ -273,8 +273,15 @@ def test_extract_failure_returns_empty_text() -> None:
 
 # ── POST /perception/goal-with-image ─────────────────────────────────────────
 
-def test_goal_with_image_no_goal_service_returns_503() -> None:
+def _vision_agent(analysis: str = "a revenue dashboard") -> MagicMock:
     agent = MagicMock()
+    agent.has_vision = True
+    agent.analyze_screenshot = AsyncMock(return_value=analysis)
+    return agent
+
+
+def test_goal_with_image_no_goal_service_returns_503() -> None:
+    agent = _vision_agent()
     app = _make_app(agent)
     # No goal_service on app.state
     client = TestClient(app)
@@ -287,7 +294,9 @@ def test_goal_with_image_no_goal_service_returns_503() -> None:
 
 
 def test_goal_with_image_with_image_b64() -> None:
-    agent = MagicMock()
+    """The attached image is analysed and its description reaches the goal
+    (it used to be dropped, leaving only an "[Image attached]" note)."""
+    agent = _vision_agent("a revenue dashboard showing Q3 down 12%")
     app = _make_app(agent)
     mock_svc = MagicMock()
     mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "g1", "status": "planning"})
@@ -307,6 +316,48 @@ def test_goal_with_image_with_image_b64() -> None:
     assert data["goal_id"] == "g1"
     assert data["has_visual_context"] is True
     assert data["original_goal"] == "Describe what you see"
+    assert agent.analyze_screenshot.await_args.args[0] == "base64encodedimage"
+    submitted_goal = mock_svc.submit_goal.await_args.kwargs["goal"]
+    assert "Q3 down 12%" in submitted_goal
+
+
+def test_goal_with_image_b64_without_vision_is_501() -> None:
+    agent = MagicMock()
+    agent.has_vision = False
+    app = _make_app(agent)
+    mock_svc = MagicMock()
+    mock_svc.submit_goal = AsyncMock()
+    app.state.goal_service = mock_svc
+    client = TestClient(app)
+    resp = client.post(
+        "/perception/goal-with-image",
+        json={"goal": "Describe", "image_b64": "abc"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 501
+    mock_svc.submit_goal.assert_not_called()
+
+
+def test_analyze_without_vision_is_501_not_fake_analysis() -> None:
+    agent = MagicMock()
+    agent.has_vision = False
+    client = TestClient(_make_app(agent))
+    resp = client.post(
+        "/perception/analyze", json={"screenshot_b64": "abc"}, headers=_HEADERS
+    )
+    assert resp.status_code == 501
+
+
+def test_analyze_provider_failure_is_502() -> None:
+    agent = MagicMock()
+    agent.has_vision = True
+    agent.analyze_screenshot = AsyncMock(side_effect=RuntimeError("rate limited"))
+    client = TestClient(_make_app(agent))
+    resp = client.post(
+        "/perception/analyze", json={"screenshot_b64": "abc"}, headers=_HEADERS
+    )
+    assert resp.status_code == 502
+    assert "rate limited" in resp.json()["detail"]
 
 
 def test_goal_with_image_with_invalid_image_url_returns_400() -> None:

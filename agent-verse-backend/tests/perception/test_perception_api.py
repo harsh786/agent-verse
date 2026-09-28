@@ -103,10 +103,10 @@ async def test_analyze_with_screenshot_b64(authed_client: AsyncClient):
         "/perception/analyze",
         json={"screenshot_b64": tiny_png, "question": "What do you see?"},
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "analysis" in data
-    assert "question" in data
+    # No vision provider in the test app: an honest 501, not a 200 whose
+    # "analysis" is the string "No vision provider configured."
+    assert resp.status_code == 501
+    assert "NOT IMPLEMENTED" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

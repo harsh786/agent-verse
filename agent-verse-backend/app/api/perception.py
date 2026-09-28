@@ -103,6 +103,13 @@ async def analyze_page(request: Request, body: AnalyzeRequest) -> dict[str, Any]
     _require_tenant(request)
 
     agent = _browser_agent(request)
+    if not body.screenshot_b64 and not body.url:
+        raise HTTPException(status_code=400, detail="Either screenshot_b64 or url is required")
+    if not agent.has_vision:
+        # Used to answer 200 with "No vision provider configured." as the analysis.
+        raise HTTPException(
+            status_code=501, detail="NOT IMPLEMENTED: no vision-capable provider is configured"
+        )
 
     screenshot_b64 = body.screenshot_b64
     if not screenshot_b64 and body.url:
@@ -115,7 +122,12 @@ async def analyze_page(request: Request, body: AnalyzeRequest) -> dict[str, Any]
     if not screenshot_b64:
         raise HTTPException(status_code=400, detail="Either screenshot_b64 or url is required")
 
-    analysis = await agent.analyze_screenshot(screenshot_b64, body.question)
+    try:
+        analysis = await agent.analyze_screenshot(
+            screenshot_b64, body.question, raise_errors=True
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Vision analysis failed: {exc}") from exc
     return {
         "analysis": analysis,
         "question": body.question,
@@ -224,7 +236,27 @@ async def submit_goal_with_image(request: Request, body: GoalWithImageRequest) -
                     image_context += f"\nPage analysis: {vision_text}"
 
     if body.image_b64:
-        image_context += f"\n[Image attached: {body.image_description or 'user-provided image'}]"
+        # The attached image used to be dropped: only a "[Image attached]" note
+        # reached the goal, so the agent planned as if it had seen it. Describe
+        # it with the vision provider, or refuse rather than pretend.
+        agent = _browser_agent(request)
+        if not agent.has_vision:
+            raise HTTPException(
+                status_code=501,
+                detail="NOT IMPLEMENTED: image_b64 needs a vision-capable provider",
+            )
+        try:
+            image_text = await agent.analyze_screenshot(
+                body.image_b64,
+                f"Describe this image as it relates to the goal: {body.goal}",
+                raise_errors=True,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Image analysis failed: {exc}"
+            ) from exc
+        label = body.image_description or "user-provided image"
+        image_context += f"\n[Attached image ({label}) analysis: {image_text}]"
 
     if image_context:
         enriched_goal = f"{body.goal}\n{image_context}"
