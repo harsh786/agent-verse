@@ -182,9 +182,11 @@ class TestAgentStore:
             )
 
         assert updated is True
-        assert "connector_ids = CAST(:connector_ids AS jsonb)" in session.statements[0]
-        assert "::jsonb" not in session.statements[0]
-        assert session.params[0]["connector_ids"] == json.dumps(["jira-server"])
+        # update_async now resolves the agent DB-first (a SELECT) before the UPDATE.
+        (update_sql,) = [q for q in session.statements if q.startswith("UPDATE agents")]
+        assert "connector_ids = CAST(:connector_ids AS jsonb)" in update_sql
+        assert "::jsonb" not in update_sql
+        assert session.params[-1]["connector_ids"] == json.dumps(["jira-server"])
 
     @pytest.mark.asyncio
     async def test_sync_from_db_returns_zero_without_db(self):

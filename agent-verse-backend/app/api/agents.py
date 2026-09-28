@@ -370,11 +370,13 @@ class AgentStore:
             except Exception as exc:
                 from app.observability.logging import get_logger
 
-                get_logger(__name__).warning("agent_delete_db_failed", error=str(exc))
-                # Fall through to in-memory-only delete so the endpoint still
-                # returns a meaningful response when DB is temporarily unavailable.
-                if key not in self._data:
-                    return False
+                # Was: fall through to an in-memory-only delete and report success
+                # while the agent stayed active in the DB (and on every replica).
+                get_logger(__name__).error("agent_delete_db_failed", error=str(exc))
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Agent store unavailable; the agent was not deleted",
+                ) from exc
         elif key not in self._data:
             return False
         # Evict from in-memory cache
@@ -393,14 +395,22 @@ class AgentStore:
     async def update_async(
         self, agent_id: str, data: dict[str, Any], *, tenant_ctx: TenantContext
     ) -> bool:
-        """Merge data into agent record and persist to DB."""
-        # Update in-memory cache
-        rec = self.get(agent_id, tenant_ctx=tenant_ctx)
+        """Merge data into the agent record, DB first.
+
+        The old version mutated the process cache first, then swallowed any DB
+        error and returned True — PUT / rollback / knowledge binding reported a
+        change that was never persisted (and differed per replica). It also
+        looked the agent up in this replica's cache only, so an agent created on
+        another replica was a 404. Now: DB-authoritative lookup, DB write first,
+        503 when the write fails, cache refreshed only after it succeeds.
+        """
+        rec = await self.get_async(agent_id, tenant_ctx=tenant_ctx)
         if rec is None:
             return False
-        rec.update(data)
 
-        # Persist to DB
+        if self._db is None:
+            rec.update(data)
+            return True
         if self._db is not None:
             try:
                 from sqlalchemy import text
@@ -424,6 +434,7 @@ class AgentStore:
                 }
                 updates = {k: v for k, v in data.items() if k in allowed}
                 if not updates:
+                    rec.update(data)
                     return True
 
                 # JSON-encode list/dict fields
@@ -450,12 +461,19 @@ class AgentStore:
                         ),
                         params,
                     )
-                    return result.rowcount > 0
+                    updated = result.rowcount > 0
             except Exception as exc:
                 from app.observability.logging import get_logger
 
-                get_logger(__name__).warning("agent_update_db_failed", error=str(exc))
-        return True
+                get_logger(__name__).error("agent_update_db_failed", error=str(exc))
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Agent store unavailable; the change was not saved",
+                ) from exc
+        if updated:
+            rec.update(data)
+            self._data[(tenant_ctx.tenant_id, agent_id)] = rec
+        return updated
 
     def update_permissions(
         self,
@@ -1064,15 +1082,15 @@ async def update_knowledge_binding(
     """Bind knowledge collections to this agent."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
-    agent = store.get(agent_id, tenant_ctx=tenant)
-    if agent is None:
+    # The knowledge ACL used the sync, cache-only update: lost on restart and
+    # different on every replica. It now persists through update_async.
+    if not await store.update_async(
+        agent_id, {"allowed_collection_ids": list(body.collection_ids)}, tenant_ctx=tenant
+    ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} not found",
         )
-    update_data = dict(agent)
-    update_data["allowed_collection_ids"] = body.collection_ids
-    store.update(agent_id, update_data, tenant_ctx=tenant)
     return {
         "agent_id": agent_id,
         "allowed_collection_ids": body.collection_ids,
@@ -1085,15 +1103,16 @@ async def assign_knowledge_collection(request: Request, agent_id: str, knowledge
     """Add a single knowledge collection to this agent's allowed list."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
-    agent = store.get(agent_id, tenant_ctx=tenant)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     current_ids: list[str] = list(agent.get("allowed_collection_ids") or [])
     if knowledge_id not in current_ids:
         current_ids.append(knowledge_id)
-        update_data = dict(agent)
-        update_data["allowed_collection_ids"] = current_ids
-        store.update(agent_id, update_data, tenant_ctx=tenant)
+        if not await store.update_async(
+            agent_id, {"allowed_collection_ids": current_ids}, tenant_ctx=tenant
+        ):
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
 
 @router.delete("/{agent_id}/knowledge/{knowledge_id}", status_code=204)
@@ -1101,15 +1120,16 @@ async def remove_knowledge_collection(request: Request, agent_id: str, knowledge
     """Remove a single knowledge collection from this agent's allowed list."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
-    agent = store.get(agent_id, tenant_ctx=tenant)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
     current_ids: list[str] = [
         i for i in (agent.get("allowed_collection_ids") or []) if i != knowledge_id
     ]
-    update_data = dict(agent)
-    update_data["allowed_collection_ids"] = current_ids
-    store.update(agent_id, update_data, tenant_ctx=tenant)
+    if not await store.update_async(
+        agent_id, {"allowed_collection_ids": current_ids}, tenant_ctx=tenant
+    ):
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
 
 @router.get("/{agent_id}/versions")
@@ -1130,7 +1150,7 @@ async def snapshot_agent(request: Request, agent_id: str) -> dict[str, Any]:
     """Save a version snapshot of the current agent config."""
     tenant = _require_tenant(request)
     store = _agent_store(request)
-    agent = store.get(agent_id, tenant_ctx=tenant)
+    agent = await store.get_async(agent_id, tenant_ctx=tenant)
     if agent is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
 
