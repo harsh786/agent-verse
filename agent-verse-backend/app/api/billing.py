@@ -216,6 +216,11 @@ async def create_checkout_session(
             ),
             client_reference_id=tenant.tenant_id,
             metadata={"tenant_id": tenant.tenant_id, "plan": body.plan},
+            # Copied onto the Subscription so its lifecycle events
+            # (customer.subscription.deleted) identify the tenant.
+            subscription_data={
+                "metadata": {"tenant_id": tenant.tenant_id, "plan": body.plan}
+            },
         )
         return {"checkout_url": session.url, "session_id": session.id}
     except ImportError as _b904_exc:
@@ -685,8 +690,9 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
     try:
         event = json.loads(body)
     except Exception as exc:
+        # Signed but unparseable: a 400, never a 200 that drops the event.
         _log.error("Webhook processing error: %s", exc)
-        return {"status": "error", "message": str(exc)}
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed webhook payload") from exc
     event_type: str = event.get("event", "")
 
     if event_type in ("payment.captured", "order.paid"):
@@ -726,3 +732,70 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
         _log.warning("webhook_subscription_charged_ignored: no server-side order record")
 
     return {"status": "ok", "event": event_type}
+
+
+# ── Stripe (legacy checkout) webhook ──────────────────────────────────────────
+
+_STRIPE_PAID_PLANS = frozenset({"starter", "professional", "enterprise"})
+
+
+@router.post("/webhook/stripe")
+async def stripe_webhook(request: Request) -> dict[str, Any]:
+    """Apply Stripe Checkout subscription events to the tenant's plan.
+
+    ``POST /billing/checkout`` created a Stripe subscription session, but no
+    webhook ever consumed its result, so a paying customer was never moved to
+    the plan they bought. This endpoint (public — under ``/billing/webhook`` in
+    TenantMiddleware's bypass list; authenticated by the ``Stripe-Signature``
+    header, verified against ``STRIPE_WEBHOOK_SECRET``):
+
+    * ``checkout.session.completed`` (subscription mode, paid) → upgrade the
+      tenant in ``client_reference_id`` to ``metadata.plan`` (both written
+      server-side at session creation; they must agree);
+    * ``customer.subscription.deleted`` → downgrade that tenant to ``free``.
+
+    A plan change that cannot be recorded answers 503 so Stripe retries.
+    """
+    from app.triggers.webhooks.verifier import WebhookSignatureVerifier
+
+    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+    if not secret:
+        raise HTTPException(503, "Stripe webhook not configured. Set STRIPE_WEBHOOK_SECRET.")
+    body = await request.body()
+    header = request.headers.get("stripe-signature", "")
+    if not WebhookSignatureVerifier().verify_stripe(body, header, secret):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid Stripe signature")
+    try:
+        event = json.loads(body)
+        event_type = str(event.get("type", ""))
+        obj = (event.get("data") or {}).get("object") or {}
+    except Exception as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Malformed Stripe payload") from exc
+
+    if event_type == "checkout.session.completed":
+        metadata = obj.get("metadata") or {}
+        tenant_id = str(obj.get("client_reference_id") or "")
+        plan = str(metadata.get("plan") or "").lower()
+        if (
+            obj.get("mode") != "subscription"
+            or obj.get("payment_status") not in ("paid", "no_payment_required")
+            or not tenant_id
+            or str(metadata.get("tenant_id") or "") != tenant_id
+            or plan not in _STRIPE_PAID_PLANS
+        ):
+            _log.warning("stripe_checkout_ignored event=%s", event.get("id"))
+            return {"status": "ignored", "event": event_type}
+        await _upgrade_tenant_plan(request, tenant_id, plan)
+        _log.info("Plan upgraded via Stripe: tenant=%s → %s", tenant_id, plan)
+        return {"status": "ok", "event": event_type, "plan": plan}
+
+    if event_type == "customer.subscription.deleted":
+        tenant_id = str((obj.get("metadata") or {}).get("tenant_id") or "")
+        if not tenant_id:
+            _log.warning("stripe_subscription_deleted_without_tenant id=%s", obj.get("id"))
+            return {"status": "ignored", "event": event_type}
+        await _upgrade_tenant_plan(request, tenant_id, "free")
+        _log.info("Plan downgraded via Stripe cancellation: tenant=%s", tenant_id)
+        return {"status": "ok", "event": event_type, "plan": "free"}
+
+    return {"status": "ignored", "event": event_type}

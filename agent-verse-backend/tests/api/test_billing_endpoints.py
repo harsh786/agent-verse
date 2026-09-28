@@ -715,10 +715,10 @@ def test_webhook_unknown_event(client: TestClient, monkeypatch: pytest.MonkeyPat
     assert resp.json()["event"] == "something.else"
 
 
-def test_webhook_processing_error_returns_error_status(
+def test_webhook_malformed_payload_after_signature_is_400(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A body that isn't valid JSON after signature check triggers the except branch."""
+    """Signed but unparseable body → 400 (it used to answer 200 {"status": "error"})."""
     _clear_billing_env(monkeypatch)
     monkeypatch.setenv("RAZORPAY_WEBHOOK_SECRET", "whsecret")
     body = b"not-json"
@@ -728,6 +728,4 @@ def test_webhook_processing_error_returns_error_status(
         content=body,
         headers={"x-razorpay-signature": sig, "content-type": "application/json"},
     )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "error"
+    assert resp.status_code == 400
