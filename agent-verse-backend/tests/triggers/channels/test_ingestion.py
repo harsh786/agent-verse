@@ -113,74 +113,106 @@ def channel_client(channel_app):
     return TestClient(channel_app)
 
 
-def test_slack_url_verification(channel_client):
-    """Slack sends a challenge during URL verification."""
+# The inbound routes authenticate the caller themselves (fail-closed); these
+# used to accept unsigned Slack/Teams/Discord posts and a spoofed X-Tenant-ID.
+# Positive signature paths are covered in tests/api/test_channel_webhook_auth.py.
+
+
+def test_slack_url_verification_requires_signature(channel_client):
     resp = channel_client.post(
         "/channels/slack/events",
         json={"type": "url_verification", "challenge": "test_challenge_123"},
         headers={"X-Slack-Signature": "", "X-Slack-Request-Timestamp": ""},
     )
+    assert resp.status_code in (401, 503)
+
+
+def test_slack_url_verification_signed(channel_app):
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    channel_app.state.slack_signing_secret = "shhh"
+    body = json.dumps({"type": "url_verification", "challenge": "test_challenge_123"}).encode()
+    ts = str(int(time.time()))
+    sig = "v0=" + hmac.new(b"shhh", f"v0:{ts}:{body.decode()}".encode(), hashlib.sha256).hexdigest()
+    resp = TestClient(channel_app).post(
+        "/channels/slack/events",
+        content=body,
+        headers={
+            "X-Slack-Signature": sig,
+            "X-Slack-Request-Timestamp": ts,
+            "Content-Type": "application/json",
+        },
+    )
     assert resp.status_code == 200
     assert resp.json()["challenge"] == "test_challenge_123"
 
 
-def test_slack_event_returns_ok(channel_client):
-    resp = channel_client.post(
+def test_slack_event_unsigned_rejected(channel_app):
+    channel_app.state.slack_signing_secret = "shhh"
+    resp = TestClient(channel_app).post(
         "/channels/slack/events",
         json={"type": "event_callback", "team_id": "T123", "event": {"type": "message"}},
         headers={"X-Slack-Signature": "", "X-Slack-Request-Timestamp": ""},
     )
-    assert resp.status_code == 200
-    assert resp.json()["ok"] is True
+    assert resp.status_code == 401
 
 
-def test_teams_event_returns_message(channel_client):
+def test_teams_event_unauthenticated_rejected(channel_client):
     resp = channel_client.post(
         "/channels/teams/events",
         json={"type": "message", "serviceUrl": "https://teams.microsoft.com"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["type"] == "message"
+    assert resp.status_code == 401
 
 
-def test_discord_ping_returns_pong(channel_client):
-    resp = channel_client.post(
-        "/channels/discord/events",
-        json={"type": 1},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["type"] == 1
+def test_discord_ping_unsigned_rejected(channel_client):
+    resp = channel_client.post("/channels/discord/events", json={"type": 1})
+    assert resp.status_code == 401
 
 
-def test_discord_interaction_accepted(channel_client):
-    resp = channel_client.post(
-        "/channels/discord/events",
-        json={"type": 2, "guild_id": "G123"},
-    )
-    assert resp.status_code == 200
+def test_discord_interaction_unsigned_rejected(channel_client):
+    resp = channel_client.post("/channels/discord/events", json={"type": 2, "guild_id": "G123"})
+    assert resp.status_code == 401
 
 
-def test_voice_transcript_requires_tenant_header(channel_client):
-    resp = channel_client.post(
+def test_voice_transcript_requires_tenant_header(channel_app):
+    channel_app.state.channel_webhook_secrets = {"voice": "s"}
+    resp = TestClient(channel_app).post(
         "/channels/voice/transcript",
         json={"transcript": "Meeting ended"},
+        headers={"X-Webhook-Secret": "s"},
     )
     assert resp.status_code == 401
 
 
-def test_voice_transcript_with_tenant(channel_client):
+def test_voice_transcript_with_tenant(channel_app):
+    channel_app.state.channel_webhook_secrets = {"voice": "s"}
+    resp = TestClient(channel_app).post(
+        "/channels/voice/transcript",
+        json={"transcript": "Meeting ended"},
+        headers={"X-Tenant-ID": "t1", "X-Webhook-Secret": "s"},
+    )
+    assert resp.status_code == 200
+
+
+def test_voice_transcript_spoofed_tenant_without_secret_rejected(channel_client):
     resp = channel_client.post(
         "/channels/voice/transcript",
         json={"transcript": "Meeting ended"},
         headers={"X-Tenant-ID": "t1"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code in (401, 503)
 
 
-def test_form_submission_requires_tenant(channel_client):
-    resp = channel_client.post(
+def test_form_submission_requires_tenant(channel_app):
+    channel_app.state.channel_webhook_secrets = {"form": "s"}
+    resp = TestClient(channel_app).post(
         "/channels/forms/form-123",
         json={"field": "value"},
+        headers={"X-Webhook-Secret": "s"},
     )
     assert resp.status_code == 401
 

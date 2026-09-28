@@ -1,8 +1,11 @@
 """SAML 2.0 provider — enterprise SSO integration.
 
-Supports python3-saml (onelogin/python3-saml) when installed.
-Falls back to a minimal stub implementation when the library is absent,
-so the module can always be imported in environments without python3-saml.
+Supports python3-saml (onelogin/python3-saml) when installed. It is an OPTIONAL
+extra (``uv sync --extra saml`` / ``pip install "agent-verse-backend[saml]"``)
+because it pulls in ``xmlsec``, which needs the native libxmlsec1/libxml2
+libraries at build time. The module always imports; without the library the
+login/ACS flows raise :class:`SAMLNotInstalledError`, which the API maps to 501.
+SP metadata still renders from a static template.
 
 Amendment 8.4: SAML replay protection via Redis assertion-ID cache.
 
@@ -31,6 +34,16 @@ try:
 except ImportError:
     SAML_AVAILABLE = False
     logger.info("python3_saml_not_installed; SAML SSO unavailable until installed")
+
+
+class SAMLNotInstalledError(RuntimeError):
+    """python3-saml is absent — SAML SSO is unavailable on this install (→ HTTP 501)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "SAML not installed: python3-saml is not installed. Install the optional "
+            "'saml' extra (uv sync --extra saml); it requires native libxmlsec1."
+        )
 
 
 @dataclass
@@ -81,7 +94,10 @@ class SAMLProvider:
     def initiate_login(self, relay_state: str = "") -> str:
         """Return the redirect URL to the IdP SSO endpoint."""
         if not SAML_AVAILABLE:
-            return self._idp_sso_url
+            # Used to return the bare IdP SSO URL: a redirect with no AuthnRequest
+            # whose response could never be processed here anyway (ACS needs the
+            # library too). Fail explicitly instead.
+            raise SAMLNotInstalledError()
         try:
             settings = self._build_saml_settings()
             request_data = self._build_empty_request_data()
@@ -99,7 +115,8 @@ class SAMLProvider:
         Raises ValueError on authentication failure or replay.
         """
         if not SAML_AVAILABLE:
-            raise RuntimeError("python3-saml is not installed. Run: pip install python3-saml")
+            # Was a bare RuntimeError → the endpoint's catch-all returned 500.
+            raise SAMLNotInstalledError()
 
         settings = self._build_saml_settings()
         # python3-saml version-compatible https flag
@@ -205,7 +222,11 @@ class SAMLProvider:
                 "wantAssertionsSigned": True,
                 "requestedAuthnContext": False,
             },
-            "strict": False,
+            # MUST be strict. With strict=False python3-saml skips the
+            # "assertion must be signed" (wantAssertionsSigned), Destination,
+            # Audience and InResponseTo checks, so an unsigned forged
+            # SAMLResponse authenticated as any user.
+            "strict": True,
         }
 
     @staticmethod

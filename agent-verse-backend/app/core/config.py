@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:5173"]
     )
+    # Comma-separated IPs/CIDRs of the reverse proxies / load balancers whose
+    # X-Forwarded-For (or X-Real-IP) may be believed, e.g. the ingress
+    # controller's pod CIDR. Empty (default) = trust NO proxy: the client IP is
+    # the TCP peer. Never list a range that untrusted workloads can originate
+    # from — any host in it can then claim any source IP (IP allowlists, rate
+    # limits). The client IP is the right-most XFF hop not in this list.
+    trusted_proxies: str = ""
 
     # --- triggers ---
     # DB_ROW_CHANGE trigger: comma-separated allowlist of tables safe to poll.

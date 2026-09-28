@@ -2158,6 +2158,22 @@ def create_app(
                 except Exception as _mw_exc:
                     logger.warning("onprem_model_window_probe_failed", error=str(_mw_exc))
 
+            # ── Tenant LLM configs (BYOK): Postgres is the source of truth ───────
+            # Redis stays a read-through cache; before, it was the only store.
+            try:
+                from app.services.llm_config_store import (
+                    LLMConfigStore,
+                    get_llm_config_store,
+                    set_llm_config_store,
+                )
+
+                _llm_cfg_store = get_llm_config_store() or LLMConfigStore()
+                _llm_cfg_store.set_db(db_factory)
+                set_llm_config_store(_llm_cfg_store)
+                app.state.llm_config_store = _llm_cfg_store
+            except Exception as _lc_exc:
+                logger.warning("llm_config_store_db_wire_failed", error=str(_lc_exc))
+
             # ── PromptOptimizer: Postgres is the source of truth ─────────────────
             # It used to load EVERY tenant's variants into each replica here (an
             # unbounded fleet-wide read that diverged across replicas and, under

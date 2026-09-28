@@ -275,7 +275,10 @@ def test_required_scope_longer_prefix_wins():
 # ---------------------------------------------------------------------------
 
 
-def test_client_ip_from_x_forwarded_for():
+def test_client_ip_from_x_forwarded_for(monkeypatch):
+    # XFF is believed only from configured proxies (loopback/RFC-1918 are no
+    # longer auto-trusted); the client is the right-most untrusted hop.
+    monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1,10.0.0.0/8")
     request = MagicMock()
     request.headers = {"X-Forwarded-For": "1.2.3.4, 10.0.0.1"}
     request.client = MagicMock()
@@ -285,7 +288,8 @@ def test_client_ip_from_x_forwarded_for():
     assert ip == "1.2.3.4"
 
 
-def test_client_ip_from_x_real_ip():
+def test_client_ip_from_x_real_ip(monkeypatch):
+    monkeypatch.setenv("TRUSTED_PROXIES", "127.0.0.1")
     request = MagicMock()
     request.headers = {"X-Real-IP": "5.6.7.8"}
     request.client = MagicMock()

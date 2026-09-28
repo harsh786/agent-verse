@@ -115,12 +115,34 @@ TOOL_DEFINITIONS = [
 ]
 
 
+_OUTBOUND_TOOLS = frozenset({"twilio_send_sms", "twilio_send_whatsapp", "twilio_make_call"})
+
+
 async def call_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     sid = os.getenv("TWILIO_ACCOUNT_SID", "")
     if not sid or not os.getenv("TWILIO_AUTH_TOKEN"):
         return {"error": "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN required"}
 
     from_default = os.getenv("TWILIO_FROM_NUMBER", "")
+
+    # Outbound consent — default DENY. These tools used to text / phone any
+    # number the agent chose, with no opt-in and no STOP honouring. The built-in
+    # server runs on the platform Twilio account (no tenant context reaches this
+    # handler), so consent is checked against the platform ledger entry.
+    if tool_name in _OUTBOUND_TOOLS:
+        from app.gateway.telephony_consent import (
+            PLATFORM_TENANT,
+            get_telephony_consent_ledger,
+        )
+
+        to = str(arguments.get("to", "") or "")
+        if not get_telephony_consent_ledger().allows_outbound(PLATFORM_TENANT, to):
+            return {
+                "error": (
+                    f"No recorded SMS/voice consent for {to!r}: the recipient must opt in "
+                    "(e.g. reply START) before outbound messages or calls are sent"
+                )
+            }
 
     try:
         if tool_name == "twilio_lookup_number":

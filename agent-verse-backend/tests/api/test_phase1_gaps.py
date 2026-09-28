@@ -81,14 +81,17 @@ def test_llm_config_get_returns_empty_by_default() -> None:
 
 def test_llm_config_save_and_retrieve() -> None:
     client = TestClient(_make_app())
+    key = {"provider": "anthropic", "api_key": "sk-ant-test-000000000000"}
+    assert client.put("/tenants/me/llm", json=key, headers=_HEADERS).status_code == 200
     config = {"provider": "anthropic", "model": "claude-sonnet-4-5"}
     resp = client.put("/tenants/me/llm-config", json=config, headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert data.get("status") in ("saved", "saved_in_memory")
-    # The stored fields are echoed back
+    assert data.get("status") == "saved"
     assert data.get("provider") == "anthropic"
-    assert data.get("model") == "claude-sonnet-4-5"
+    assert data.get("default_model") == "claude-sonnet-4-5"
+    got = client.get("/tenants/me/llm-config", headers=_HEADERS).json()
+    assert got["default_model"] == "claude-sonnet-4-5" and "encrypted_key" not in got
 
 
 def test_llm_config_save_requires_auth() -> None:

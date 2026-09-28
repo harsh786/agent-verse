@@ -16,6 +16,7 @@ class FakeWebSocket {
   static CLOSED = 3;
   static instances: FakeWebSocket[] = [];
   url: string;
+  protocols: string[];
   readyState = 0;
   sent: string[] = [];
   closed = false;
@@ -24,7 +25,11 @@ class FakeWebSocket {
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
 
-  constructor(url: string) { this.url = url; FakeWebSocket.instances.push(this); }
+  constructor(url: string, protocols: string[] = []) {
+    this.url = url;
+    this.protocols = protocols;
+    FakeWebSocket.instances.push(this);
+  }
   send(data: string) { this.sent.push(data); }
   close() { this.closed = true; this.readyState = FakeWebSocket.CLOSED; }
 
@@ -102,6 +107,9 @@ describe('useVoiceStream', () => {
     await act(async () => { await result.current.connect(); });
     const ws = FakeWebSocket.latest();
     expect(ws.url).toContain('/v1/voice/stream/org-1');
+    // Regression: the API key must never appear in the URL (access logs).
+    expect(ws.url).not.toContain('api_key');
+    expect(ws.protocols).toEqual([`av.v1.${btoa('k')}`.replace(/=+$/g, '')]);
     expect(result.current.state).toBe('connecting');
 
     act(() => ws.simulateOpen());
