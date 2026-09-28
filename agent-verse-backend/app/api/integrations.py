@@ -308,7 +308,19 @@ async def receive_alertmanager_event(
     request: Request,
     payload: AlertmanagerPayload,
 ) -> dict:
-    """Receive Alertmanager webhook and create goals for firing alerts."""
+    """Receive Alertmanager webhook and create goals for firing alerts.
+
+    Authenticated with a bearer token (Alertmanager ``http_config.authorization``)
+    matching ALERTMANAGER_WEBHOOK_TOKEN. It had no authentication at all: anyone
+    could submit autonomous agent goals into the configured tenant.
+    """
+    from app.integrations.webhook_auth import require_bearer_token
+
+    require_bearer_token(
+        request.headers.get("Authorization", ""),
+        env_var="ALERTMANAGER_WEBHOOK_TOKEN",
+        label="Alertmanager",
+    )
     goal_service = getattr(request.app.state, "goal_service", None)
     created_goals: list[str] = []
 
@@ -368,19 +380,19 @@ async def receive_datadog_event(
     request: Request,
     payload: DatadogWebhookPayload,
 ) -> dict:
-    """Receive Datadog webhook events and create goals for critical alerts."""
-    secret = os.getenv("DATADOG_WEBHOOK_SECRET", "")
-    if secret:
-        import hashlib
-        import hmac
+    """Receive Datadog webhook events and create goals for critical alerts.
 
-        body = await request.body()
-        sig = request.headers.get("X-Datadog-Signature", "")
-        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected, sig):
-            from fastapi import HTTPException
+    The HMAC signature (DATADOG_WEBHOOK_SECRET) is always required; it used to be
+    checked only when the secret happened to be set, i.e. open by default.
+    """
+    from app.integrations.webhook_auth import require_hmac_body_signature
 
-            raise HTTPException(401, "Invalid Datadog signature")
+    require_hmac_body_signature(
+        await request.body(),
+        request.headers.get("X-Datadog-Signature", ""),
+        env_var="DATADOG_WEBHOOK_SECRET",
+        label="Datadog",
+    )
 
     if payload.alert_type not in ("error", "critical", "warning"):
         return {
@@ -418,7 +430,15 @@ async def receive_datadog_event(
 
 @router.get("/zapier/goals")
 async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
-    """Zapier polling trigger — returns recently completed goals."""
+    """Zapier polling trigger — returns recently completed goals.
+
+    Requires the same X-Zapier-Secret as /zapier/trigger; it had none, so anyone
+    could read the Zapier tenant's completed goals (goal text and results).
+    """
+    from app.integrations.zapier.handler import verify_zapier_secret
+
+    if not verify_zapier_secret(request.headers.get("X-Zapier-Secret", "")):
+        raise HTTPException(403, "Invalid Zapier secret")
     goal_service = getattr(request.app.state, "goal_service", None)
     if not goal_service:
         return []
@@ -448,14 +468,19 @@ async def zapier_poll_completed_goals(request: Request) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/webhooks/github/push")
-async def github_push_webhook(request: Request) -> dict[str, Any]:
-    """Handle GitHub push events and queue re-ingestion of changed files.
+async def _authenticated_reingest_target(
+    request: Request, signature_header: str
+) -> tuple[str, str]:
+    """Resolve and AUTHENTICATE (tenant_id, collection_id) for a re-ingest webhook.
 
-    Expects a GitHub webhook payload (push event). The tenant and collection
-    are resolved from the X-AgentVerse-Collection-Id header or query param.
+    The ids come from the webhook URL (query) or headers, but are only trusted
+    once the body carries a valid HMAC signature under that collection's secret
+    (``webhook_auth.reingest_signing_secret``) and the collection exists for that
+    tenant. These routes were unauthenticated: anyone could queue ingestion of an
+    attacker-chosen repository/page into any tenant's collection.
     """
-    payload = await request.json()
+    from app.integrations.webhook_auth import verify_reingest_signature
+
     collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
         "collection_id", ""
     )
@@ -463,7 +488,32 @@ async def github_push_webhook(request: Request) -> dict[str, Any]:
         "tenant_id", ""
     )
     if not collection_id or not tenant_id:
-        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
+        raise HTTPException(400, "collection_id and tenant_id are required")
+    verify_reingest_signature(
+        await request.body(),
+        request.headers.get(signature_header, ""),
+        tenant_id=tenant_id,
+        collection_id=collection_id,
+    )
+    store = getattr(request.app.state, "knowledge_store", None)
+    if store is not None:
+        from app.tenancy.context import PlanTier, TenantContext
+
+        ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="reingest-webhook")
+        if await store.get_collection_async(collection_id, tenant_ctx=ctx) is None:
+            raise HTTPException(404, "Collection not found")
+    return tenant_id, collection_id
+
+
+@router.post("/webhooks/github/push")
+async def github_push_webhook(request: Request) -> dict[str, Any]:
+    """Handle GitHub push events and queue re-ingestion of changed files.
+
+    Expects a GitHub webhook payload (push event). The tenant and collection
+    are resolved from the X-AgentVerse-Collection-Id header or query param.
+    """
+    tenant_id, collection_id = await _authenticated_reingest_target(request, "X-Hub-Signature-256")
+    payload = await request.json()
 
     # Queue a delta re-ingest Celery task
     try:
@@ -488,15 +538,10 @@ async def github_push_webhook(request: Request) -> dict[str, Any]:
 @router.post("/webhooks/confluence/page-updated")
 async def confluence_page_webhook(request: Request) -> dict[str, Any]:
     """Handle Confluence page_updated events and queue re-ingestion."""
+    tenant_id, collection_id = await _authenticated_reingest_target(
+        request, "X-AgentVerse-Signature"
+    )
     payload = await request.json()
-    collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
-        "collection_id", ""
-    )
-    tenant_id = request.headers.get("X-AgentVerse-Tenant-Id") or request.query_params.get(
-        "tenant_id", ""
-    )
-    if not collection_id or not tenant_id:
-        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
 
     page_id = payload.get("page", {}).get("id", "")
     space_key = payload.get("space", {}).get("key", "")
@@ -517,15 +562,10 @@ async def confluence_page_webhook(request: Request) -> dict[str, Any]:
 @router.post("/webhooks/notion/page-updated")
 async def notion_page_webhook(request: Request) -> dict[str, Any]:
     """Handle Notion webhook events and queue re-ingestion of updated pages."""
+    tenant_id, collection_id = await _authenticated_reingest_target(
+        request, "X-AgentVerse-Signature"
+    )
     payload = await request.json()
-    collection_id = request.headers.get("X-AgentVerse-Collection-Id") or request.query_params.get(
-        "collection_id", ""
-    )
-    tenant_id = request.headers.get("X-AgentVerse-Tenant-Id") or request.query_params.get(
-        "tenant_id", ""
-    )
-    if not collection_id or not tenant_id:
-        return {"status": "ignored", "reason": "missing collection_id or tenant_id"}
 
     page_id = payload.get("entity", {}).get("id", "") or payload.get("page_id", "")
     try:

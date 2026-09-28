@@ -1236,6 +1236,7 @@ class TestIntegrationsExtra:
     # lines 342–345 — alertmanager: goal creation exception is logged
     def test_alertmanager_goal_creation_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ALERTMANAGER_TENANT_ID", "am-tenant")
+        monkeypatch.setenv("ALERTMANAGER_WEBHOOK_TOKEN", "am-token")
 
         mock_goal_service = AsyncMock()
         mock_goal_service.submit_goal = AsyncMock(side_effect=RuntimeError("goal service down"))
@@ -1253,7 +1254,11 @@ class TestIntegrationsExtra:
                 }
             ],
         }
-        resp = client.post("/integrations/events/alertmanager", json=payload)
+        resp = client.post(
+            "/integrations/events/alertmanager",
+            json=payload,
+            headers={"Authorization": "Bearer am-token"},
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["received"] == 1
@@ -1274,7 +1279,11 @@ class TestIntegrationsExtra:
 
     # lines 408–411 — datadog events: goal creation exception is logged
     def test_datadog_goal_creation_exception(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("DATADOG_WEBHOOK_SECRET", raising=False)
+        import hashlib
+        import hmac
+        import json as _json
+
+        monkeypatch.setenv("DATADOG_WEBHOOK_SECRET", "dd-secret")
         monkeypatch.setenv("DATADOG_TENANT_ID", "dd-tenant")
 
         mock_goal_service = AsyncMock()
@@ -1282,9 +1291,14 @@ class TestIntegrationsExtra:
 
         app = _make_integrations_app(goal_service=mock_goal_service)
         client = TestClient(app, raise_server_exceptions=False)
+        body = _json.dumps(
+            {"title": "Disk full", "alert_type": "critical", "text": "sda1 full"}
+        ).encode()
+        sig = hmac.new(b"dd-secret", body, hashlib.sha256).hexdigest()
         resp = client.post(
             "/integrations/events/datadog",
-            json={"title": "Disk full", "alert_type": "critical", "text": "sda1 full"},
+            content=body,
+            headers={"X-Datadog-Signature": sig, "Content-Type": "application/json"},
         )
         assert resp.status_code == 200
         data = resp.json()

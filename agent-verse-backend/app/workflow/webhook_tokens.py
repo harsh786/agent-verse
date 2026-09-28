@@ -22,9 +22,19 @@ _log = get_logger(__name__)
 _DEV_SECRET = "agentverse-dev-webhook-secret-change-me"  # dev fallback only
 
 
+class WebhookSecretNotConfiguredError(RuntimeError):
+    """WORKFLOW_WEBHOOK_SECRET is unset in production."""
+
+
 def _secret() -> bytes:
     s = os.getenv("WORKFLOW_WEBHOOK_SECRET", "")
     if not s:
+        # The dev key is public (it is in this file): with it anyone can forge a
+        # valid token for any tenant's workflow. Never use it in production.
+        if os.getenv("ENVIRONMENT", "development").lower() == "production":
+            raise WebhookSecretNotConfiguredError(
+                "WORKFLOW_WEBHOOK_SECRET must be set in production"
+            )
         _log.warning("workflow_webhook_secret_unset_using_dev_default")
         s = _DEV_SECRET
     return s.encode()

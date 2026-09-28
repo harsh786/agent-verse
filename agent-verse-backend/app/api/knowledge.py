@@ -2262,6 +2262,35 @@ async def _owned_collection_or_404(request: Request, collection_id: str, tenant:
     return store
 
 
+@router.get("/collections/{collection_id}/reingest-webhook")
+async def get_reingest_webhook(request: Request, collection_id: str) -> dict[str, Any]:
+    """URLs + signing secret for this collection's push-to-reingest webhooks.
+
+    Configure the secret in the source system (GitHub "Secret" field; for
+    Confluence/Notion sign the raw body as ``X-AgentVerse-Signature:
+    sha256=<hex HMAC-SHA256>``). The secret is derived per (tenant, collection),
+    so it authenticates only this collection.
+    """
+    from app.integrations.webhook_auth import reingest_signing_secret
+
+    tenant = _require_tenant(request)
+    await _owned_collection_or_404(request, collection_id, tenant)
+    secret = reingest_signing_secret(tenant.tenant_id, collection_id)
+    if secret is None:
+        raise HTTPException(503, "Re-ingest webhooks are not configured (REINGEST_WEBHOOK_SECRET)")
+    qs = f"tenant_id={tenant.tenant_id}&collection_id={collection_id}"
+    return {
+        "collection_id": collection_id,
+        "secret": secret,
+        "signature_header": {"github": "X-Hub-Signature-256", "other": "X-AgentVerse-Signature"},
+        "urls": {
+            "github": f"/integrations/webhooks/github/push?{qs}",
+            "confluence": f"/integrations/webhooks/confluence/page-updated?{qs}",
+            "notion": f"/integrations/webhooks/notion/page-updated?{qs}",
+        },
+    }
+
+
 @router.delete("/collections/{collection_id}/documents/{document_id}")
 async def delete_document(
     collection_id: str,

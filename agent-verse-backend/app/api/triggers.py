@@ -641,9 +641,6 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     if store is None or dispatcher is None:
         return {"status": "accepted", "webhook_type": webhook_type}
 
-    # Find matching trigger by webhook token (token matches webhook_signature_secret prefix)
-    from types import SimpleNamespace
-
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
     verifier = WebhookSignatureVerifier()
@@ -673,15 +670,22 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         except Exception:
             pass
 
-    # Attempt dispatch — the token is used as a lookup key; for now just broadcast to matching type
-    # In production: token would be hashed and matched against stored webhook_token field
-    tenant_id = request.headers.get("X-Tenant-ID", "")
-    if not tenant_id:
-        # Return accepted regardless (Slack, GitHub etc. expect 200 quickly)
-        return {"status": "accepted"}
+    # Tenant = the AUTHENTICATED caller only. This used to take the tenant from an
+    # ``X-Tenant-ID`` header and ignore the path token ("for now just
+    # broadcast"): any API-key holder could fire every trigger of any other
+    # tenant by naming it in the header. It now fires only the caller's trigger
+    # whose webhook_token matches the path token, and a trigger with a signing
+    # secret requires a valid signature (a missing signature header no longer
+    # skips verification).
+    import hmac
 
-    tenant_ctx = SimpleNamespace(tenant_id=tenant_id, plan="free")
+    caller = getattr(request.state, "tenant", None)
+    tenant_id = str(getattr(caller, "tenant_id", "") or "")
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
+    matched = 0
     for trigger in triggers:
         # Bind the record-level goal_template / agent refs onto the spec (as the
         # manual fire and simulate paths do) so an inbound webhook renders the
@@ -689,13 +693,19 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         if isinstance(trigger, dict) and "spec" in trigger:
             spec = _spec_for_dispatch(trigger)
         else:
-            spec = trigger.get("spec", trigger)
+            spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
+        stored_token = str(getattr(spec, "webhook_token", "") or "")
+        if not stored_token or not hmac.compare_digest(stored_token, token):
+            continue
         secret = getattr(spec, "webhook_signature_secret", "") or ""
-        if secret and sig_header:
-            valid = await verifier.verify(body_bytes, sig_header, secret)
-            if not valid:
-                continue
+        if secret and (
+            not sig_header or not await verifier.verify(body_bytes, sig_header, secret)
+        ):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+        matched += 1
         with contextlib.suppress(Exception):
-            await dispatcher.dispatch(spec, enriched, tenant_ctx)
+            await dispatcher.dispatch(spec, enriched, caller)
 
+    if not matched:
+        raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
     return {"status": "accepted", "webhook_type": webhook_type}

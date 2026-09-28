@@ -1,6 +1,8 @@
 """Comprehensive tests for app/api/integrations.py — targets the 20% baseline."""
 from __future__ import annotations
 
+import pytest
+
 import hashlib
 import hmac
 import time
@@ -13,6 +15,16 @@ from fastapi.testclient import TestClient
 
 from app.api.integrations import router as integrations_router
 
+
+
+@pytest.fixture(autouse=True)
+def _webhook_auth_satisfied(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests cover alert → goal logic; webhook authentication is covered in
+    tests/integrations/test_webhook_auth.py."""
+    from app.integrations import webhook_auth
+
+    monkeypatch.setattr(webhook_auth, "require_bearer_token", lambda *a, **k: None)
+    monkeypatch.setattr(webhook_auth, "require_hmac_body_signature", lambda *a, **k: None)
 
 def _make_app(goal_service: Any = None, hitl_gateway: Any = None) -> FastAPI:
     from types import SimpleNamespace
