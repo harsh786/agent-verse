@@ -1201,6 +1201,23 @@ def run_goal_dlq(
     }
 
 
+async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
+    """Mark a goal an emergency stop prevented from running as cancelled."""
+    from sqlalchemy import update
+
+    from app.db.models.goal import Goal
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        await session.execute(
+            update(Goal)
+            .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            .values(status="cancelled", error_message=f"Blocked by emergency stop: {reason}")
+        )
+
+
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
@@ -1303,6 +1320,12 @@ def run_goal(
                 tenant_id,
                 _stop_reason,
             )
+            # Record it: the goal row used to stay "queued" forever and keep its
+            # concurrency slot, so the stop looked like a hang.
+            with contextlib.suppress(Exception):
+                _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
+            with contextlib.suppress(Exception):
+                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "blocked", "reason": _stop_reason}
     except Exception as _es_exc:
         logger.warning("emergency_stop_check_failed: %s", _es_exc)

@@ -137,3 +137,23 @@ async def test_agent_graph_refuses_to_run_for_stopped_org() -> None:
     assert state.status == GoalStatus.FAILED
     assert ORG_STOP_REASON in state.error_message
     g._graph.ainvoke.assert_not_awaited()
+
+
+def test_a_goal_blocked_by_an_emergency_stop_is_recorded_and_frees_its_slot(monkeypatch) -> None:
+    """Regression: a blocked goal returned {"status": "blocked"} but its row stayed
+    queued forever and its concurrency slot was never released."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    import app.scaling.tasks as tasks
+
+    fake_redis = MagicMock()
+    fake_redis.get = MagicMock(side_effect=lambda k: b"1" if k == "emergency_stop:t-es" else None)
+    monkeypatch.setattr(tasks, "_get_sync_redis", lambda: fake_redis)
+    marked = AsyncMock()
+    freed = AsyncMock()
+    monkeypatch.setattr(tasks, "_mark_goal_blocked", marked)
+    monkeypatch.setattr(tasks, "_decrement_after_completion", freed)
+    result = tasks.run_goal.run(goal_id="g-es", tenant_id="t-es", goal_text="x", plan="free")
+    assert result["status"] == "blocked"
+    marked.assert_awaited_once()
+    freed.assert_awaited_once()
