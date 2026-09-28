@@ -722,8 +722,15 @@ class IngestionPipeline:
         downstream consumers see how the text was obtained; RPA/OCR agents set
         the same ``ingestion_provenance`` field on their own chunks.
         """
-        if self._kb is None or not config.collection_id:
-            return []
+        # This used to ``return []`` and the document was then reported
+        # ``status="indexed"`` with nothing written anywhere. Fail the document
+        # instead so the sync/job shows the real outcome (and it lands in the DLQ).
+        if self._kb is None:
+            raise RuntimeError("no knowledge store is configured for this pipeline")
+        if not config.collection_id:
+            raise RuntimeError(
+                f"source {config.source_id} has no collection_id; nothing can be indexed"
+            )
 
         import uuid as _uuid
 
