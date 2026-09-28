@@ -1885,7 +1885,14 @@ class MarketplaceV2:
         body: str = "",
         verified_install: bool = False,
     ) -> dict[str, Any]:
-        """Add or update a review; update rating_avg on the template."""
+        """Add or update a review; update rating_avg on the template.
+
+        ``verified_install`` is DERIVED from the reviewer's own install record;
+        the argument is ignored. It used to be taken from the request body, so
+        any tenant could badge its review "verified install" (and reviews are
+        ranked by it) without ever installing the template.
+        """
+        del verified_install
         if not 1 <= rating <= 5:
             return {"success": False, "error": "Rating must be between 1 and 5"}
 
@@ -1898,6 +1905,16 @@ class MarketplaceV2:
                         _t("SELECT set_config('app.tenant_id', :tid, true)"),
                         {"tid": tenant_ctx.tenant_id},
                     )
+                    verified_install = (
+                        await session.execute(
+                            _t(
+                                "SELECT 1 FROM marketplace_installs "
+                                "WHERE template_id = :tid AND installer_tenant_id = :reviewer "
+                                "AND uninstalled_at IS NULL LIMIT 1"
+                            ),
+                            {"tid": template_id, "reviewer": tenant_ctx.tenant_id},
+                        )
+                    ).first() is not None
                     await session.execute(
                         _t("""
                             INSERT INTO marketplace_reviews
@@ -1945,6 +1962,10 @@ class MarketplaceV2:
                 return {"success": False, "error": str(exc)}
         else:
             # In-memory
+            verified_install = any(
+                i.get("template_id") == template_id and i.get("tenant_id") == tenant_ctx.tenant_id
+                for i in self._installs
+            )
             self._reviews.append(
                 {
                     "review_id": review_id,

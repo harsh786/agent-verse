@@ -602,7 +602,8 @@ async def add_review_v2(
         rating=body.rating,
         title=body.title,
         body=body.body,
-        verified_install=body.verified_install,
+        # verified_install is derived server-side from the tenant's install
+        # record; a client-supplied flag is ignored.
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Review failed"))

@@ -389,6 +389,21 @@ async def test_rating_avg_updates_after_review() -> None:
     assert tpl_after_two.get("rating_avg") == pytest.approx(4.0)
 
 
+@pytest.mark.asyncio
+async def test_verified_install_is_derived_not_client_asserted() -> None:
+    """Regression: verified_install came from the request body, so any tenant
+    could badge its review as a verified install without installing."""
+    svc = MarketplaceV2(db_factory=None)
+    await svc.publish_template(data=_SAFE_TEMPLATE, tenant_ctx=T_A, run_security_review=False)
+    await svc.add_review(
+        template_id="tpl-test-safe", tenant_ctx=T_B, rating=5, verified_install=True
+    )
+    assert svc._reviews[-1]["verified_install"] is False
+    svc._installs.append({"template_id": "tpl-test-safe", "tenant_id": T_B.tenant_id})
+    await svc.add_review(template_id="tpl-test-safe", tenant_ctx=T_B, rating=4)
+    assert svc._reviews[-1]["verified_install"] is True
+
+
 # ---------------------------------------------------------------------------
 # 8. Tenant isolation: private templates not visible to other tenants
 # ---------------------------------------------------------------------------
