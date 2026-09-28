@@ -270,10 +270,11 @@ async def test_node_verify_with_model_router() -> None:
 # ===========================================================================
 
 @pytest.mark.asyncio
-async def test_execute_step_dedup_cache_hit_returns_early() -> None:
-    """When the dedup cache marks a step as duplicate, skip the LLM call."""
+async def test_execute_step_dedup_hit_serves_real_cached_output() -> None:
+    """A duplicate step is served its REAL recorded output, skipping the LLM call."""
     mock_dedup = MagicMock(spec=DeduplicationCache)
     mock_dedup.is_duplicate.return_value = True
+    mock_dedup.get_result.return_value = "the real cached search output"
     mock_dedup.mark_seen = MagicMock()
 
     executor = FakeProvider(responses=["this should not be returned"])
@@ -282,7 +283,7 @@ async def test_execute_step_dedup_cache_hit_returns_early() -> None:
     agent_state = _make_agent_state("test goal for dedup")
     result = await graph._execute_step("call search tool", agent_state, T)
 
-    assert result == "Duplicate step, returning cached result."
+    assert result == "the real cached search output"
     # FakeProvider executor should NOT have been called
     assert len(executor.call_history) == 0
 
@@ -359,9 +360,11 @@ async def test_execute_step_circuit_breaker_open_skips_execution() -> None:
     )
 
     agent_state = _make_agent_state("failing repeatedly")
-    result = await graph._execute_step("llm call to endpoint", agent_state, T)
+    from app.agent.graph_types import StepNotExecutedError
 
-    assert "Circuit open" in result
+    # The step fails honestly instead of returning a skip message as its output.
+    with pytest.raises(StepNotExecutedError, match="Circuit breaker open"):
+        await graph._execute_step("llm call to endpoint", agent_state, T)
     assert len(executor.call_history) == 0
 
 

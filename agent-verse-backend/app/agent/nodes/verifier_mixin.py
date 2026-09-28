@@ -31,7 +31,11 @@ except ImportError:
 
 import contextlib
 
-from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+from app.agent.graph_types import (  # noqa: F401
+    STEP_FAILURES_KEY,
+    GraphState,
+    RetrievalEntryPointError,
+)
 from app.agent.nodes._helpers import (
     _build_verifier_summary,
     _guardrail_should_fail_closed,
@@ -134,22 +138,18 @@ class VerifierMixin:
                 except (RuntimeError, TimeoutError) as cb_exc:
                     raise PermissionError(f"Verification unavailable: {cb_exc}") from cb_exc
                 record_verify_duration(time.monotonic() - _verify_start)
-            # 2.3: Per-goal verifier cost tracking
-            try:
-                # Durable (Postgres, tenant-scoped) when bound — not this process's memory.
-                from app.observability.cost_breakdown import arecord_role_cost as _rrc
+            # 2.3: Charge the verifier call through the executor's cost path (budget,
+            # ledger, grant spend, per-role breakdown) — it used to log cost=0.0.
+            from app.agent.nodes.llm_cost import charge_llm_call
 
-                await _rrc(
-                    goal_id=agent_state.goal_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                    role="verifier",
-                    model=_verify_model,
-                    input_tok=getattr(resp, "input_tokens", 0),
-                    output_tok=getattr(resp, "output_tokens", 0),
-                    cost=0.0,
-                )
-            except Exception:
-                pass
+            await charge_llm_call(
+                self,
+                resp=resp,
+                role="verifier",
+                model=_verify_model,
+                agent_state=agent_state,
+                tenant_ctx=tenant_ctx,
+            )
             # Store in LLM cache — only on successful, non-error responses
             if _llm_rc is not None:
                 try:
@@ -177,6 +177,16 @@ class VerifierMixin:
         reason: str = self._sanitize_tool_raw_output(parsed.get("reason", ""))
         # Store retry flag for routing: True = can replan, False = permanently blocked
         retry: bool = bool(parsed.get("retry", True)) if not success else True
+        # Deterministic gate: a step that never executed in this pass (open circuit,
+        # etc.) cannot be verified as done, whatever the LLM verifier says.
+        _not_executed = agent_state.context.get(STEP_FAILURES_KEY) or []
+        if _not_executed and success:
+            success = False
+            retry = True
+            reason = "Step(s) not executed: " + "; ".join(
+                f"{f.get('step', '?')[:80]} ({f.get('reason', '')[:120]})"
+                for f in _not_executed[:3]
+            )
         agent_state.context["verification_retry"] = retry
 
         # C5: 3-way consensus for high-risk goals

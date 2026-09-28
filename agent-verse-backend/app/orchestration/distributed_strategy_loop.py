@@ -75,6 +75,7 @@ class DistributedStrategyLoop:
                 goal_text=goal,
                 provider=self.provider,
                 initial_context=initial_context or {},
+                tenant_ctx=tenant_ctx,
             ),
         )
         try:

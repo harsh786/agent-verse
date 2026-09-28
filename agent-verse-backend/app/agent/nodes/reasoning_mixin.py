@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agent.nodes.llm_cost import ChargingProvider, charge_llm_call
 from app.agent.prompts import (
     CHAIN_OF_THOUGHT_SYSTEM,
     REFLECTION_SYSTEM,
@@ -30,6 +31,16 @@ from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: 
 
 class ReasoningMixin:
     """Mixin: CoT/reflection nodes (think, reflect, self_consistency, tree_of_thoughts, peer_review, supervisor, debate, refine)."""  # noqa: E501
+
+    def _charging(self, provider: Any, role: str, agent_state: AgentState) -> Any:
+        """Wrap *provider* so pattern-internal LLM calls are charged to the goal/tenant."""
+        return ChargingProvider(
+            provider,
+            graph=self,
+            role=role,
+            agent_state=agent_state,
+            tenant_ctx=agent_state.tenant_ctx,
+        )
 
     async def _node_refine(self, state: GraphState) -> dict:
         """Self-Refine node — improves last step output before verification (doc-1 §3.4).
@@ -78,6 +89,14 @@ class ReasoningMixin:
                 )
             )
 
+            await charge_llm_call(
+                self,
+                resp=resp,
+                role="refine",
+                model="",
+                agent_state=agent_state,
+                tenant_ctx=agent_state.tenant_ctx,
+            )
             refined = resp.content.strip() if resp.content else ""
             if refined and not refined.startswith("NO_CHANGES_NEEDED"):
                 last_step.output = refined
@@ -120,6 +139,14 @@ class ReasoningMixin:
             )
         except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
+        await charge_llm_call(
+            self,
+            resp=resp,
+            role="think",
+            model=req.model,
+            agent_state=agent_state,
+            tenant_ctx=state.get("tenant_ctx") or agent_state.tenant_ctx,
+        )
         # The provider's private reasoning is intentionally discarded. Only
         # aggregate execution evidence is checkpointed or exposed.
         agent_state.context.setdefault("reasoning_evidence", []).append(
@@ -178,6 +205,14 @@ class ReasoningMixin:
             )
         except (RuntimeError, TimeoutError) as cb_exc:
             raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
+        await charge_llm_call(
+            self,
+            resp=resp,
+            role="reflection",
+            model=_reflect_model,
+            agent_state=agent_state,
+            tenant_ctx=state.get("tenant_ctx") or agent_state.tenant_ctx,
+        )
         from app.agent.reasoning_evidence import critique_categories
 
         categories = critique_categories(resp.content or "")
@@ -218,7 +253,7 @@ class ReasoningMixin:
             pattern = SelfConsistencyPattern(n_samples=3)
             execution = await pattern.execute_with_evidence(
                 prompt=f"Goal: {agent_state.goal}\nCurrent answer: {last_step.output}",
-                provider=self._executor,
+                provider=self._charging(self._executor, "self_consistency", agent_state),
                 call_limit=self.runtime_profile.effective_limits.calls
                 if self.runtime_profile is not None
                 else None,
@@ -250,7 +285,7 @@ class ReasoningMixin:
             pattern = TreeOfThoughtsPattern(n_thoughts=3, max_depth=2)
             execution = await pattern.execute_with_evidence(
                 problem=agent_state.goal,
-                provider=self._planner,
+                provider=self._charging(self._planner, "tree_of_thoughts", agent_state),
             )
             answer = str(execution.result)
             agent_state.context.setdefault("reasoning_evidence", []).append(
@@ -294,7 +329,7 @@ class ReasoningMixin:
             execution = await pattern.execute_with_evidence(
                 output=last_step.output,
                 goal=agent_state.goal,
-                provider=self._verifier,
+                provider=self._charging(self._verifier, "peer_review", agent_state),
                 producer_identity=producer_identity,
                 reviewer_identity=reviewer_identity,
             )
@@ -362,7 +397,7 @@ class ReasoningMixin:
                 self, "_tenant_ctx_ref", None
             )
             supervisor = SupervisorAgent(
-                planner_provider=self._planner,
+                planner_provider=self._charging(self._planner, "supervisor", agent_state),
                 goal_service=goal_service,
                 agent_router=getattr(self, "_agent_router", None),
             )
@@ -408,7 +443,9 @@ class ReasoningMixin:
         try:
             from app.agent.debate import DebateOrchestrator
 
-            orchestrator = DebateOrchestrator(provider=self._planner)
+            orchestrator = DebateOrchestrator(
+                provider=self._charging(self._planner, "debate", agent_state)
+            )
             result = await orchestrator.run(
                 goal=agent_state.goal,
                 context=str(agent_state.context.get("rag_context", "")),

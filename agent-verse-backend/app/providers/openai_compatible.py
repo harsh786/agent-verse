@@ -537,12 +537,16 @@ class OpenAICompatibleProvider:
             "max_completion_tokens" if _use_ct else "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "stream": True,
+            # Ask for the final usage chunk: without it a streamed completion carries
+            # no token counts, so the call was never charged to the cost ledger.
+            "stream_options": {"include_usage": True},
             **({"extra_body": _sb} if (_sb := getattr(self, "_extra_body", None)) else {}),
         }
 
         full_text = ""
         prompt_tokens = 0
         completion_tokens = 0
+        served_model: str = model
 
         try:
             stream = await self._client.chat.completions.create(**kwargs)
@@ -554,8 +558,11 @@ class OpenAICompatibleProvider:
                 # Pick up usage from the final chunk when available
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:
-                    prompt_tokens = getattr(usage, "prompt_tokens", prompt_tokens)
-                    completion_tokens = getattr(usage, "completion_tokens", completion_tokens)
+                    prompt_tokens = int(getattr(usage, "prompt_tokens", prompt_tokens) or 0)
+                    completion_tokens = int(
+                        getattr(usage, "completion_tokens", completion_tokens) or 0
+                    )
+                    served_model = getattr(chunk, "model", None) or served_model
         except Exception as exc:
             _logging.getLogger(__name__).warning(
                 "openai_stream_tokens_failed error=%s fallback=True", str(exc)
@@ -564,9 +571,18 @@ class OpenAICompatibleProvider:
 
         return CompletionResponse(
             content=full_text,
-            model=model,
+            model=served_model,
             input_tokens=prompt_tokens,
             output_tokens=completion_tokens,
+            usage=(
+                TokenUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                )
+                if (prompt_tokens or completion_tokens)
+                else None
+            ),
         )
 
     @staticmethod

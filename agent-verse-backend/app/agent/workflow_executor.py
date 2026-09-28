@@ -15,6 +15,7 @@ from app.agent.structured_executor import (
 )
 from app.agent.structured_plan import StructuredPlan, StructuredStep
 from app.agent.tool_context import ToolContext, ToolRef
+from app.agent.tool_gate import GovernedToolGate
 from app.agent.workflow_nodes import (
     execute_decision_node,
     execute_delay_node,
@@ -33,6 +34,10 @@ from app.orchestration.strategy_contracts import PatternLimits
 from app.tenancy.context import TenantContext
 
 WorkflowEventCallback = Callable[[dict[str, Any]], Awaitable[None]]
+
+# Step statuses that mean "ran and produced a real result".
+_DONE_STATUSES = frozenset({"complete", "executed"})
+_SEP = chr(10) * 2
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +63,17 @@ class WorkflowExecutor:
         llm_provider: Any = None,
         embedder: Any = None,
         retrieval_gateway: Any = None,
+        tool_gate: GovernedToolGate | None = None,
+        goal_id: str = "",
     ) -> None:
         self._provider = provider
+        # Every MCP tool call goes through the same governed gate as the AgentGraph
+        # executor (guardrails, permissions, policy, grants, risk/HITL, budget). It
+        # used to call tools with no check at all. Without explicit services the
+        # default gate still applies guardrails + risk classification (write_high /
+        # unknown tools are refused without an approval gateway; destructive denied).
+        self._tool_gate = tool_gate if tool_gate is not None else GovernedToolGate()
+        self._goal_id = goal_id
         self._mcp_client = mcp_client
         # llm_provider is the dedicated LLM interface used by node types that
         # need LLM access (decision, etc.).  Falls back to provider if not given.
@@ -148,8 +162,26 @@ class WorkflowExecutor:
         final_outputs = [
             r.get("output", "")
             for r in results.values()
-            if isinstance(r, dict) and r.get("status") == "complete"
+            if isinstance(r, dict) and r.get("status") in _DONE_STATUSES
         ]
+        # A workflow is only "complete" when every step produced a real result —
+        # steps that were planned-but-not-executed, denied, or whose tool failed
+        # used to be swept into a "complete" workflow (and a goal_complete event).
+        not_done = {
+            sid: r.get("reason") or r.get("error") or r.get("status")
+            for sid, r in results.items()
+            if not (isinstance(r, dict) and r.get("status") in _DONE_STATUSES)
+        }
+        if not_done:
+            return {
+                "status": "incomplete",
+                "reason": "steps without a real result: "
+                + "; ".join(f"{k}: {v}" for k, v in not_done.items()),
+                "steps_executed": len(results) - len(not_done),
+                "waves": len(waves),
+                "results": results,
+                "summary": _SEP.join(filter(None, final_outputs)),
+            }
 
         return {
             "status": "complete",
@@ -290,8 +322,12 @@ class WorkflowExecutor:
                     **skill_result,
                 }
 
-            # ── Prefer tool execution via MCP when a tool name is specified
-            if step.tool and self._mcp_client is not None:
+            # ── A tool step runs ONLY via a governed MCP call. It used to fall back
+            # to an LLM "Execute this task" completion (or a stub) when the tool was
+            # unavailable or raised, and report the step complete.
+            if step.tool:
+                if self._mcp_client is None:
+                    raise RuntimeError(f"no MCP client available to run tool '{step.tool}'")
                 try:
                     server_id = ""
                     # If server_id is empty, resolve it from the registry
@@ -309,22 +345,42 @@ class WorkflowExecutor:
                                     break
                         except Exception:
                             pass
+                    tool_args = {"description": step.description, "context": prior_context}
+                    decision = await self._tool_gate.authorize(
+                        tool_name=step.tool,
+                        arguments=tool_args,
+                        tenant_ctx=tenant_ctx,
+                        goal_id=self._goal_id,
+                        step_description=step.description,
+                    )
+                    if not decision.allowed:
+                        step.status = "failed"
+                        step.error = decision.reason
+                        return {
+                            "status": "denied",
+                            "error": decision.reason,
+                            "tool": step.tool,
+                            "step_id": step.id,
+                        }
                     result = await self._mcp_client.call_tool(
                         server_id=server_id,
                         tool_name=step.tool,
-                        arguments={
-                            "description": step.description,
-                            "context": prior_context,
-                        },
+                        arguments=tool_args,
                         tenant_ctx=tenant_ctx,
                     )
-                    step.status = "complete"
-                    step.result = str(result)
-                    return {"status": "complete", "output": str(result), "tool": step.tool}
                 except Exception as tool_exc:
                     import logging
 
                     logging.getLogger(__name__).warning("workflow_step_tool_failed: %s", tool_exc)
+                    raise
+                if getattr(result, "success", True) is False:
+                    raise RuntimeError(
+                        f"tool '{step.tool}' failed: {getattr(result, 'error', '') or 'error'}"
+                    )
+                output = getattr(result, "output", result)
+                step.status = "complete"
+                step.result = str(output)
+                return {"status": "complete", "output": str(output), "tool": step.tool}
 
             # Fall back to LLM completion
             if self._provider is not None:
@@ -344,14 +400,21 @@ class WorkflowExecutor:
                         max_tokens=1000,
                     )
                 )
+                if not await self._tool_gate.charge_llm(
+                    goal_id=self._goal_id, tenant_ctx=tenant_ctx, resp=resp
+                ):
+                    raise RuntimeError("budget_exceeded: workflow step LLM spend denied")
+                if not (resp.content or "").strip():
+                    raise RuntimeError("LLM returned no output for the step")
                 step.status = "complete"
                 step.result = resp.content
                 return {"status": "complete", "output": resp.content}
 
-            # No provider and no tool — return a stub completion
-            step.status = "complete"
-            step.result = f"Completed: {step.description}"
-            return {"status": "complete", "output": step.result}
+            # No provider and no tool: nothing can execute this step. Never report a
+            # stub "Completed: ..." as done.
+            step.status = "failed"
+            step.error = "no tool and no LLM provider available to execute the step"
+            return {"status": "failed", "error": step.error, "step_id": step.id}
 
         except Exception as exc:
             step.status = "failed"
@@ -389,12 +452,6 @@ class WorkflowExecutor:
         tool_context: ToolContext | None,
         previous_outputs: dict[str, Any],
     ) -> dict[str, Any]:
-        if step.requires_approval:
-            return {
-                "status": "planned_not_executed",
-                "reason": "approval_required",
-            }
-
         tool = self._find_matching_tool(step, tool_context)
         if tool is None or self._mcp_client is None:
             return {
@@ -403,6 +460,25 @@ class WorkflowExecutor:
             }
 
         arguments = _arguments_for_step(step, previous_outputs)
+        # Governed gate (was: no checks at all). ``requires_approval`` steps are
+        # routed through HITL instead of being silently parked.
+        decision = await self._tool_gate.authorize(
+            tool_name=tool.name,
+            server_name=tool.server_name,
+            arguments=arguments,
+            tenant_ctx=tenant_ctx,
+            goal_id=self._goal_id,
+            step_description=step.intent,
+            requires_approval=bool(step.requires_approval),
+            auto_approve=bool(getattr(tool, "auto_approve", False)),
+        )
+        if not decision.allowed:
+            return {
+                "status": "planned_not_executed",
+                "reason": decision.reason,
+                "tool": tool.name,
+                "server_id": tool.server_id,
+            }
         result = await self._mcp_client.call_tool(
             server_id=tool.server_id,
             tool_name=tool.name,
