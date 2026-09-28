@@ -110,6 +110,33 @@ class AIOpsStore:
             )
             await s.commit()
 
+    async def update_eval_result(
+        self, *, tenant_id: str, result_id: str, payload: dict[str, Any]
+    ) -> None:
+        """Replace a result's payload (a 202 run records ``running`` then its outcome)."""
+        async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
+            await s.execute(
+                text(
+                    "UPDATE ai_ops_eval_results SET payload = CAST(:p AS jsonb) "
+                    "WHERE tenant_id = :t AND id = :id"
+                ),
+                {"id": result_id, "t": tenant_id, "p": json.dumps(payload)},
+            )
+            await s.commit()
+
+    async def get_eval_result(self, tenant_id: str, result_id: str) -> dict[str, Any] | None:
+        async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT payload FROM ai_ops_eval_results "
+                        "WHERE tenant_id = :t AND id = :id"
+                    ),
+                    {"t": tenant_id, "id": result_id},
+                )
+            ).fetchone()
+        return dict(row[0] or {}) if row is not None else None
+
     async def list_eval_results(self, tenant_id: str, limit: int = 50) -> list[dict[str, Any]]:
         async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
             rows = (
@@ -147,6 +174,16 @@ class AIOpsStore:
                 {"id": judge_id, "t": tenant_id, "p": json.dumps(payload)},
             )
             await s.commit()
+
+    async def get_judge(self, tenant_id: str, judge_id: str) -> dict[str, Any] | None:
+        async with self._db() as s, sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text("SELECT payload FROM ai_ops_judges WHERE tenant_id = :t AND id = :id"),
+                    {"t": tenant_id, "id": judge_id},
+                )
+            ).fetchone()
+        return dict(row[0] or {}) if row is not None else None
 
     # ── baselines ───────────────────────────────────────────────────────────
     async def set_baseline(self, *, tenant_id: str, metric_name: str, value: float) -> None:

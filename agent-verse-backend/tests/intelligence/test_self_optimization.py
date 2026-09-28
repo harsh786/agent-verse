@@ -132,3 +132,45 @@ def test_applied_changes_are_tracked() -> None:
     assert changes[0]["suggestion_id"] == "s6"
     assert changes[0]["change_type"] == "add_tool_access"
     assert changes[0]["agent_config_mutated"] is True
+
+
+def test_analyze_and_suggest_sets_change_type_on_every_suggestion() -> None:
+    """Regression: analyze_and_suggest never set change_type, so apply_suggestion
+    matched no branch and 'applied' nothing while reporting success."""
+    from app.intelligence.eval import EvalScorecard
+
+    opt = SelfOptimizer()
+    suggestions = opt.analyze_and_suggest(
+        goal="g",
+        scorecard=EvalScorecard(
+            goal_id="g1",
+            scores={"task_completion": 0.1, "accuracy": 0.1, "efficiency": 0.1},
+        ),
+        error_log="tool not found",
+        tenant_ctx=T,
+    )
+    by_cat = {s.category: s.change_type for s in suggestions}
+    assert by_cat == {
+        "prompt": "improve_planner_prompt",
+        "tool_selection": "improve_executor_prompt",
+        "retry_strategy": "decrease_iterations",
+    }
+
+
+def test_decrease_iterations_suggestion_applies_its_number() -> None:
+    from app.intelligence.eval import EvalScorecard
+
+    opt = SelfOptimizer()
+    [s] = [
+        x
+        for x in opt.analyze_and_suggest(
+            goal="g",
+            scorecard=EvalScorecard(goal_id="g2", scores={"efficiency": 0.1}),
+            error_log="",
+            tenant_ctx=T,
+        )
+        if x.category == "retry_strategy"
+    ]
+    cfg: dict = {"goal_template": "", "max_iterations": 15}
+    assert opt.apply_suggestion(suggestion_id=s.suggestion_id, tenant_ctx=T, agent_config=cfg)
+    assert cfg["max_iterations"] == 8

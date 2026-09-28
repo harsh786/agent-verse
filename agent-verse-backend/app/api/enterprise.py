@@ -919,13 +919,26 @@ async def list_suggestions(request: Request, applied: bool | None = None) -> lis
     ]
 
 
-@intelligence_router.post("/suggestions/{suggestion_id}/apply")
+@intelligence_router.post("/suggestions/{suggestion_id}/apply", status_code=410)
 async def apply_suggestion(request: Request, suggestion_id: str) -> dict[str, Any]:
-    ctx = _require_tenant(request)
-    ok = _self_optimizer(request).apply_suggestion(suggestion_id=suggestion_id, tenant_ctx=ctx)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Suggestion not found")
-    return {"suggestion_id": suggestion_id, "applied": True}
+    """Deprecated v1 apply — 410 Gone.
+
+    It called the v1 ``SelfOptimizer.apply_suggestion`` with no agent config, so
+    nothing was ever changed: it flipped an in-process ``applied`` flag (lost on
+    restart, invisible to other replicas) and answered ``applied: true``. v1
+    suggestions carry no agent id or candidate config, so there is nothing to
+    delegate to ``SelfOptimizerV2.apply_suggestion``. Refuse honestly and point
+    at the v2 path, which really updates the agent's config in the DB.
+    """
+    _require_tenant(request)
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Applying v1 optimization suggestions is no longer supported: it never changed "
+            "any agent. Use POST /intelligence/experiments/{experiment_id}/apply to apply a "
+            "self-optimizer v2 candidate config."
+        ),
+    )
 
 
 @intelligence_router.post("/suggestions/{suggestion_id}/reject")

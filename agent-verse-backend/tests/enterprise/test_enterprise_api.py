@@ -316,22 +316,21 @@ def test_api_suggestions_apply() -> None:
     app = _make_app(self_optimizer=opt)
     client = TestClient(app, raise_server_exceptions=False)
 
+    # The deprecated v1 apply only flipped a flag (no agent config was ever
+    # mutated) and answered applied:true. It now refuses honestly.
     resp = client.post(f"/intelligence/suggestions/{sid}/apply", headers=_HDR)
-    assert resp.status_code == 200
-    assert resp.json()["applied"] is True
+    assert resp.status_code == 410
+    assert "experiments" in resp.json()["detail"]
 
-    # Confirm it appears in the applied filter (suggestion_id returned as "id" in response)
     list_resp = client.get("/intelligence/suggestions?applied=true", headers=_HDR)
-    assert any(
-        s.get("id") == sid or s.get("suggestion_id") == sid
-        for s in list_resp.json()
-    )
+    assert not any(s.get("id") == sid for s in list_resp.json())
+    assert suggestions[0].applied is False
 
 
 def test_api_suggestions_apply_not_found() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post("/intelligence/suggestions/ghost-sid/apply", headers=_HDR)
-    assert resp.status_code == 404
+    assert resp.status_code == 410
 
 
 def test_api_suggestions_reject() -> None:
