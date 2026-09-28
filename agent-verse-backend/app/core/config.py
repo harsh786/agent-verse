@@ -217,8 +217,8 @@ class Settings(BaseSettings):
     rag_embedding_cache_enabled: bool = True
 
     # Grantex governance: when True, every agent tool call must pass a covering,
-    # active, unrevoked grant (fail-closed). Default off so it is opt-in per
-    # deployment — enable once grants are being issued for agents.
+    # active, unrevoked grant (fail-closed). Default ON (secure by default);
+    # set ENFORCE_AGENT_GRANTS=false only for a deployment that issues no grants.
     enforce_agent_grants: bool = True
 
     # Use the richer GroundingPolicy (per-claim scoring + embedding paraphrase tier

@@ -101,6 +101,9 @@ async def test_grant_api_reports_unrecorded_audit_instead_of_silently_dropping()
     app = make_app(router)
     app.state.grant_store = InMemoryGrantStore()
     app.state.audit_chain = _FailingChain()
+    grantee = MagicMock()  # the grantee agent must exist in the tenant
+    grantee.get_async = AsyncMock(return_value={"agent_id": "a1"})
+    app.state.agent_store = grantee
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.post(
             "/grants",
