@@ -133,56 +133,76 @@ def verify_agent_token(token: str, public_key_pem: str, tenant_id: str) -> dict[
 # ---------------------------------------------------------------------------
 
 
-async def _build_jwks(db_factory: Any) -> list[dict[str, Any]]:
+async def _build_jwks(db_factory: Any, *, tenant_id: str | None = None) -> list[dict[str, Any]]:
     """Build JWKS payload from all active agent credentials with RSA public keys.
 
     Queries up to 500 active (non-revoked, non-expired) credentials and converts
     each RSA public key to JWK (RFC 7517) format.
+
+    ``agent_credentials`` is FORCE-RLS tenant data. This used to query it with no
+    ``app.tenant_id`` GUC, so under the NOBYPASSRLS API role it returned ZERO rows
+    and the published JWKS was empty (every agent JWT then failed verification).
+    Now: the platform-wide set (``tenant_id=None``) is read inside a
+    ``system_session`` — pass the maintenance factory
+    (``get_system_session_factory()`` / ``app.state.system_db_session_factory``);
+    a per-tenant set is read under that tenant's RLS context. Only public keys and
+    kids leave this function.
     """
+    from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey as _RSAPublicKey
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
     from sqlalchemy import text as _t
+
+    from app.db.rls import sqlalchemy_rls_context, system_session
+
+    def _to_base64url(n: int) -> str:
+        length = (n.bit_length() + 7) // 8
+        return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
 
     keys: list[dict[str, Any]] = []
     try:
-        async with db_factory() as session:
-            rows = (
-                await session.execute(
-                    _t("""
-                        SELECT key_id, public_key FROM agent_credentials
-                        WHERE revoked_at IS NULL
-                          AND (expires_at IS NULL OR expires_at > NOW())
-                          AND public_key IS NOT NULL
-                        LIMIT 500
-                    """)
-                )
-            ).fetchall()
+        async with db_factory() as session, session.begin():
+            scope = (
+                system_session(session)
+                if tenant_id is None
+                else sqlalchemy_rls_context(session, tenant_id)
+            )
+            async with scope:
+                rows = (
+                    await session.execute(
+                        _t("""
+                            SELECT key_id, public_key FROM agent_credentials
+                            WHERE revoked_at IS NULL
+                              AND (expires_at IS NULL OR expires_at > NOW())
+                              AND public_key IS NOT NULL
+                            LIMIT 500
+                        """)
+                    )
+                ).fetchall()
+    except Exception as exc:
+        # Surface it: a silently-empty JWKS makes every agent JWT fail verification.
+        import logging
 
-            for key_id, public_pem in rows:
-                from cryptography.hazmat.primitives.asymmetric.rsa import (
-                    RSAPublicKey as _RSAPublicKey,
-                )
-                from cryptography.hazmat.primitives.serialization import load_pem_public_key
+        logging.getLogger(__name__).warning("jwks_build_failed: %s", exc)
+        return keys
 
-                pub_key = load_pem_public_key(public_pem.encode())
-                if not isinstance(pub_key, _RSAPublicKey):
-                    continue
-                pub_numbers = pub_key.public_numbers()
-
-                def _to_base64url(n: int) -> str:
-                    length = (n.bit_length() + 7) // 8
-                    return base64.urlsafe_b64encode(n.to_bytes(length, "big")).rstrip(b"=").decode()
-
-                keys.append(
-                    {
-                        "kty": "RSA",
-                        "use": "sig",
-                        "alg": "RS256",
-                        "kid": key_id,
-                        "n": _to_base64url(pub_numbers.n),
-                        "e": _to_base64url(pub_numbers.e),
-                    }
-                )
-    except Exception:
-        pass
+    for key_id, public_pem in rows:
+        try:
+            pub_key = load_pem_public_key(public_pem.encode())
+        except ValueError:
+            continue
+        if not isinstance(pub_key, _RSAPublicKey):
+            continue
+        pub_numbers = pub_key.public_numbers()
+        keys.append(
+            {
+                "kty": "RSA",
+                "use": "sig",
+                "alg": "RS256",
+                "kid": key_id,
+                "n": _to_base64url(pub_numbers.n),
+                "e": _to_base64url(pub_numbers.e),
+            }
+        )
     return keys
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +21,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.channels.ingestion import (
-    _channel_verified,
     _emit_chat_event,
     _resolve_tenant_from_channel,
     router,
@@ -86,36 +86,6 @@ async def test_resolve_tenant_db_error_returns_none():
     assert result is None
 
 
-# ── _channel_verified ────────────────────────────────────────────────────
-
-
-def test_channel_verified_slack_uses_slack_ok_flag():
-    request = MagicMock()
-    assert _channel_verified(request, "slack", slack_ok=True) is True
-    assert _channel_verified(request, "slack", slack_ok=False) is False
-
-
-def test_channel_verified_no_secret_configured_is_unverified():
-    request = MagicMock()
-    request.app.state = SimpleNamespace(channel_webhook_secrets=None)
-    request.headers = {}
-    assert _channel_verified(request, "teams") is False
-
-
-def test_channel_verified_matching_secret_is_verified():
-    request = MagicMock()
-    request.app.state = SimpleNamespace(channel_webhook_secrets={"teams": "s3cret"})
-    request.headers = {"X-Webhook-Secret": "s3cret"}
-    assert _channel_verified(request, "teams") is True
-
-
-def test_channel_verified_mismatched_secret_is_unverified():
-    request = MagicMock()
-    request.app.state = SimpleNamespace(channel_webhook_secrets={"teams": "s3cret"})
-    request.headers = {"X-Webhook-Secret": "wrong"}
-    assert _channel_verified(request, "teams") is False
-
-
 # ── _emit_chat_event ─────────────────────────────────────────────────────
 
 
@@ -174,6 +144,17 @@ async def test_emit_chat_event_publish_failure_is_swallowed(monkeypatch):
 # ── Slack HMAC signature verification (full app) ────────────────────────
 
 
+def _slack_headers(body: bytes, secret: str = "shhh") -> dict[str, str]:
+    ts = str(int(time.time()))
+    basestring = f"v0:{ts}:{body.decode()}"
+    sig = "v0=" + hmac.new(secret.encode(), basestring.encode(), hashlib.sha256).hexdigest()
+    return {
+        "X-Slack-Signature": sig,
+        "X-Slack-Request-Timestamp": ts,
+        "Content-Type": "application/json",
+    }
+
+
 @pytest.fixture
 def app_with_secret():
     app = FastAPI()
@@ -193,18 +174,7 @@ def app_with_secret():
 
 def test_slack_event_valid_signature_is_accepted(app_with_secret):
     body = json.dumps({"type": "event_callback", "team_id": "T1"}).encode()
-    ts = "12345"
-    basestring = f"v0:{ts}:{body.decode()}"
-    sig = "v0=" + hmac.new(b"shhh", basestring.encode(), hashlib.sha256).hexdigest()
-    resp = app_with_secret.post(
-        "/channels/slack/events",
-        content=body,
-        headers={
-            "X-Slack-Signature": sig,
-            "X-Slack-Request-Timestamp": ts,
-            "Content-Type": "application/json",
-        },
-    )
+    resp = app_with_secret.post("/channels/slack/events", content=body, headers=_slack_headers(body))
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
 
@@ -216,31 +186,37 @@ def test_slack_event_invalid_signature_rejected(app_with_secret):
         content=body,
         headers={
             "X-Slack-Signature": "v0=deadbeef",
-            "X-Slack-Request-Timestamp": "12345",
+            "X-Slack-Request-Timestamp": str(int(time.time())),
             "Content-Type": "application/json",
         },
     )
     assert resp.status_code == 401
 
 
-# ── gateway.ingest called when tenant resolves ──────────────────────────
+# ── gateway.ingest called when tenant resolves (authenticated requests) ──
+
+_RELAY_SECRET = "relay-secret"
+_RELAY = {"X-Webhook-Secret": _RELAY_SECRET}
 
 
 @pytest.fixture
-def app_with_gateway_and_db():
+def app_with_gateway_and_db(monkeypatch):
+    from app.gateway.channels.discord import DiscordChannelAdapter
+    from app.gateway.channels.teams import MicrosoftTeamsAdapter
+
+    # Adapter signature schemes are covered in tests/gateway/channels; here we
+    # only exercise the post-auth tenant resolution + ingestion path.
+    monkeypatch.setattr(MicrosoftTeamsAdapter, "verify_auth", AsyncMock(return_value=True))
+    monkeypatch.setattr(DiscordChannelAdapter, "verify_auth", AsyncMock(return_value=True))
     app = FastAPI()
     app.include_router(router)
     gateway = AsyncMock()
     app.state.channel_gateway = gateway
     app.state.trigger_event_redis = None
+    app.state.slack_signing_secret = "shhh"
+    app.state.channel_webhook_secrets = dict.fromkeys(("email", "sms", "voice", "form", "meeting"), _RELAY_SECRET)
     db = _fake_db(("tenant-xyz",))
     app.state.db = db
-
-    @app.middleware("http")
-    async def inject_tenant(req, call_next):
-        req.state.tenant = SimpleNamespace(tenant_id="tenant-xyz", plan="free")
-        return await call_next(req)
-
     return app, gateway
 
 
@@ -273,6 +249,7 @@ def test_email_inbound_full_flow(app_with_gateway_and_db):
     resp = client.post(
         "/channels/email/inbound",
         data={"to": "support@t1.example.com", "from": "a@b.com", "subject": "Hi", "text": "body"},
+        headers=_RELAY,
     )
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
@@ -288,6 +265,7 @@ def test_sms_inbound_full_flow(app_with_gateway_and_db):
     resp = client.post(
         "/channels/sms/inbound",
         data={"To": "+15550001111", "From": "+15551112222", "Body": "hello", "MessageSid": "SM1"},
+        headers=_RELAY,
     )
     assert resp.status_code == 200
     assert "<Response>" in resp.text
@@ -300,6 +278,7 @@ def test_meeting_ended_full_flow(app_with_gateway_and_db):
     resp = client.post(
         "/channels/meeting/ended",
         json={"account_id": "acct-1", "summary": "notes"},
+        headers=_RELAY,
     )
     assert resp.status_code == 200
     gateway.ingest.assert_awaited_once()
@@ -308,14 +287,26 @@ def test_meeting_ended_full_flow(app_with_gateway_and_db):
 def test_slack_event_with_resolvable_tenant_calls_gateway(app_with_gateway_and_db):
     app, gateway = app_with_gateway_and_db
     client = TestClient(app)
-    resp = client.post(
-        "/channels/slack/events",
-        json={"type": "event_callback", "team_id": "T1", "event": {"type": "message"}},
-        headers={"X-Slack-Signature": "", "X-Slack-Request-Timestamp": ""},
-    )
+    body = json.dumps(
+        {"type": "event_callback", "team_id": "T1", "event": {"type": "message"}}
+    ).encode()
+    resp = client.post("/channels/slack/events", content=body, headers=_slack_headers(body))
     assert resp.status_code == 200
     gateway.ingest.assert_awaited_once()
     assert gateway.ingest.call_args.kwargs["tenant_id"] == "tenant-xyz"
+
+
+def test_slack_event_unsigned_is_rejected_and_skips_gateway(app_with_gateway_and_db):
+    # Used to be accepted: empty signature headers skipped verification.
+    app, gateway = app_with_gateway_and_db
+    client = TestClient(app)
+    resp = client.post(
+        "/channels/slack/events",
+        json={"type": "event_callback", "team_id": "T1"},
+        headers={"X-Slack-Signature": "", "X-Slack-Request-Timestamp": ""},
+    )
+    assert resp.status_code == 401
+    gateway.ingest.assert_not_called()
 
 
 def test_slack_event_unresolvable_tenant_logs_warning_and_skips_gateway():
@@ -324,13 +315,11 @@ def test_slack_event_unresolvable_tenant_logs_warning_and_skips_gateway():
     gateway = AsyncMock()
     app.state.channel_gateway = gateway
     app.state.trigger_event_redis = None
+    app.state.slack_signing_secret = "shhh"
     app.state.db = None  # no mapping -> tenant unresolvable
     client = TestClient(app)
-    resp = client.post(
-        "/channels/slack/events",
-        json={"type": "event_callback", "team_id": "unknown-team"},
-        headers={"X-Slack-Signature": "", "X-Slack-Request-Timestamp": ""},
-    )
+    body = json.dumps({"type": "event_callback", "team_id": "unknown-team"}).encode()
+    resp = client.post("/channels/slack/events", content=body, headers=_slack_headers(body))
     assert resp.status_code == 200
     gateway.ingest.assert_not_called()
 
@@ -341,7 +330,7 @@ def test_voice_transcript_calls_gateway_when_present(app_with_gateway_and_db):
     resp = client.post(
         "/channels/voice/transcript",
         json={"transcript": "hello"},
-        headers={"X-Tenant-ID": "t1"},
+        headers={"X-Tenant-ID": "t1", **_RELAY},
     )
     assert resp.status_code == 200
     gateway.ingest.assert_awaited_once()
@@ -355,15 +344,16 @@ def test_meeting_ended_unresolvable_tenant_401():
     app.state.channel_gateway = None
     app.state.db = None
     app.state.trigger_event_redis = None
+    app.state.channel_webhook_secrets = {"meeting": _RELAY_SECRET}
     client = TestClient(app)
-    resp = client.post("/channels/meeting/ended", json={"account_id": "unknown"})
+    resp = client.post("/channels/meeting/ended", json={"account_id": "unknown"}, headers=_RELAY)
     assert resp.status_code == 401
 
 
 def test_form_submission_resolves_tenant_from_db(app_with_gateway_and_db):
     app, gateway = app_with_gateway_and_db
     client = TestClient(app)
-    resp = client.post("/channels/forms/form-1", json={"field": "value"})
+    resp = client.post("/channels/forms/form-1", json={"field": "value"}, headers=_RELAY)
     assert resp.status_code == 200
     gateway.ingest.assert_awaited_once()
     channel, body = gateway.ingest.call_args.args
@@ -376,10 +366,21 @@ def test_form_submission_header_tenant_takes_priority(app_with_gateway_and_db):
     resp = client.post(
         "/channels/forms/form-1",
         json={"field": "value"},
-        headers={"X-Tenant-ID": "header-tenant"},
+        headers={"X-Tenant-ID": "header-tenant", **_RELAY},
     )
     assert resp.status_code == 200
     assert gateway.ingest.call_args.kwargs["tenant_id"] == "header-tenant"
+
+
+def test_form_submission_header_tenant_ignored_without_secret(app_with_gateway_and_db):
+    # Used to be trusted from anyone: a spoofed X-Tenant-ID picked the tenant.
+    app, gateway = app_with_gateway_and_db
+    client = TestClient(app)
+    resp = client.post(
+        "/channels/forms/form-1", json={"field": "value"}, headers={"X-Tenant-ID": "victim"}
+    )
+    assert resp.status_code == 401
+    gateway.ingest.assert_not_called()
 
 
 # ── channel mappings CRUD, DB present ────────────────────────────────────

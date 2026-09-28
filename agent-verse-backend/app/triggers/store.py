@@ -455,6 +455,58 @@ class ScheduleStore:
                 result.append(rec)
         return result
 
+    async def find_tenant_by_webhook_token(
+        self, token: str, *, system_db: Any = None
+    ) -> str | None:
+        """Resolve the tenant owning a webhook token — the PRE-AUTH lookup for
+        third-party typed-webhook delivery, where the caller has no API key.
+
+        In-memory records are checked first with ``hmac.compare_digest``. A token
+        registered by more than one tenant (the in-memory map does not enforce
+        the DB's unique index) is ambiguous and resolves to nobody. On a miss
+        (trigger created on another replica), the ``schedules`` row is looked up
+        through ``system_db`` — the maintenance/BYPASSRLS factory, the only one
+        that can see a row before its tenant is known — and the stored token is
+        re-confirmed in constant time. Only the tenant id leaves this method;
+        callers do all further work under that tenant.
+        """
+        import hmac
+
+        if not token:
+            return None
+        owners: set[str] = set()
+        for (tid, _), rec in self._data.items():
+            stored = str(getattr(rec.get("spec"), "webhook_token", "") or "")
+            if stored and hmac.compare_digest(stored.encode(), token.encode()):
+                owners.add(tid)
+        if len(owners) == 1:
+            return owners.pop()
+        if owners or system_db is None:
+            return None
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import system_session
+
+            async with system_db() as session, session.begin(), system_session(session):
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT tenant_id, webhook_token FROM schedules "
+                            "WHERE webhook_token = :tok AND webhook_token <> '' LIMIT 1"
+                        ),
+                        {"tok": token},
+                    )
+                ).fetchone()
+        except Exception as exc:
+            _log.warning("webhook token lookup failed: %s", exc)
+            return None
+        if row is None:
+            return None
+        if not hmac.compare_digest(str(row[1] or "").encode(), token.encode()):
+            return None
+        return str(row[0])
+
     async def find_by_type_async(
         self,
         trigger_type: str | None = None,

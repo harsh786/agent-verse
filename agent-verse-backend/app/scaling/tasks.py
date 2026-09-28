@@ -4942,10 +4942,15 @@ def warm_jwks_cache() -> dict:
     async def _run() -> dict:
         try:
             from app.auth.agent_identity import _build_jwks  # type: ignore[import]
-            from app.db.session import get_session_factory as _get_fresh_db
+            from app.db.session import get_system_session_factory
 
-            db = _get_fresh_db()
+            # Cross-tenant read of FORCE-RLS agent_credentials: the maintenance
+            # (BYPASSRLS) factory. The request factory saw zero rows under the
+            # NOBYPASSRLS role, and this task then cached that EMPTY set.
+            db = get_system_session_factory()
             jwks_keys = await _build_jwks(db)
+            if not jwks_keys:
+                return {"warmed": 0}
             import redis as _redis
 
             r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))
