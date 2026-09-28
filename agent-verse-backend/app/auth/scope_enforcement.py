@@ -57,6 +57,10 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("POST", "/connectors"): "mcp:write",
     ("DELETE", "/connectors"): "mcp:write",
     ("PATCH", "/connectors"): "mcp:write",
+    # PUT /connectors/{id} (URL, credentials, auto_approve) had no scope, and an
+    # unregistered endpoint passes through: a viewer key could rewrite a
+    # connector's target and switch off its human approval.
+    ("PUT", "/connectors"): "mcp:write",
     # Governance & HITL
     ("GET", "/governance"): "governance:read",
     ("POST", "/governance"): "governance:write",

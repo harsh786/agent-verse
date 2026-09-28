@@ -295,10 +295,17 @@ class CodeInterpreter:
             else:
                 return CodeResult("", "Unsupported language", 1)
 
+            # Scrubbed environment: the child must not inherit the API process's
+            # secrets (DB URLs, vault master key, provider keys).
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env={
+                    "PATH": os.getenv("PATH", "/usr/bin:/bin"),
+                    "HOME": tempfile.gettempdir(),
+                    "LANG": "C.UTF-8",
+                },
             )
             try:
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(

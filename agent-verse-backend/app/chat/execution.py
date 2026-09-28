@@ -1,18 +1,22 @@
-"""Inline code execution sandbox for chat sessions.
+"""Inline code execution for chat sessions — always inside the code sandbox.
 
-Wraps the existing execution_environment sandbox (or subprocess fallback).
-Supports Python 3.12, JavaScript (Node), Bash.
-Limits: 30s timeout, 256MB memory, no network, no fs writes outside /tmp.
+This used to run the snippet with ``subprocess.run([python, "-c", code])`` /
+``bash -c`` directly on the API host, inheriting the API process's environment
+(database credentials, the vault master key, provider API keys), and any tenant
+key — even a viewer's — could call it: remote code execution on the control
+plane. Snippets now run through :class:`app.tools.code_interpreter.CodeInterpreter`
+(a throw-away Docker container with no network, memory/CPU limits and no
+persistent filesystem). Without Docker it fails closed, except for the explicit
+development-only opt-in ``AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true`` (never in
+production), which also runs with a scrubbed environment.
 """
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 
-SUPPORTED_LANGUAGES = {"python", "javascript", "bash", "sh"}
+SUPPORTED_LANGUAGES = {"python", "javascript", "bash"}
 
 LANGUAGE_ALIASES: dict[str, str] = {
     "python3": "python",
@@ -39,84 +43,59 @@ class ExecutionResult:
 
 
 class ChatCodeExecutor:
-    """Execute short code snippets inside a sandbox.
+    """Execute short code snippets in the sandboxed code interpreter."""
 
-    In dev/test mode uses subprocess. Production wraps the Docker executor.
-    """
-
-    def execute(
+    async def execute(
         self,
         code: str,
         language: str,
         session_id: str,
         timeout: int = TIMEOUT_SECONDS,
+        *,
+        tenant_id: str | None = None,
     ) -> ExecutionResult:
-        """Run *code* synchronously and return the result."""
+        """Run *code* in the sandbox and return the result."""
         lang = LANGUAGE_ALIASES.get(language.lower(), language.lower())
         if lang not in SUPPORTED_LANGUAGES:
             return ExecutionResult(
                 exit_code=1,
                 stdout="",
                 stderr=(
-                    f"Unsupported language: {language}. Supported: {', '.join(SUPPORTED_LANGUAGES)}"
+                    f"Unsupported language: {language}. "
+                    f"Supported: {', '.join(sorted(SUPPORTED_LANGUAGES))}"
                 ),
                 language=language,
                 duration_ms=0,
                 error="unsupported_language",
             )
 
+        from app.tools.code_interpreter import CodeInterpreter
+
         start = time.monotonic()
         try:
-            cmd, stdin_data = self._build_command(lang, code)
-            proc = subprocess.run(
-                cmd,
-                input=stdin_data,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+            result = await CodeInterpreter(default_timeout=timeout).execute(
+                code, lang, timeout, tenant_id=tenant_id
             )
-            duration_ms = (time.monotonic() - start) * 1000
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-            truncated = False
-
-            if len(stdout) + len(stderr) > MAX_OUTPUT_CHARS:
-                stdout = stdout[:MAX_OUTPUT_CHARS]
-                truncated = True
-
-            return ExecutionResult(
-                exit_code=proc.returncode,
-                stdout=stdout,
-                stderr=stderr,
-                language=lang,
-                duration_ms=round(duration_ms, 2),
-                truncated=truncated,
-            )
-
-        except subprocess.TimeoutExpired:
-            return ExecutionResult(
-                exit_code=124,
-                stdout="",
-                stderr=f"Execution timed out after {timeout}s",
-                language=lang,
-                duration_ms=timeout * 1000,
-                error="timeout",
-            )
-        except Exception as exc:
+        except RuntimeError as exc:
+            # No sandbox (production without Docker): refuse, never run on the host.
             return ExecutionResult(
                 exit_code=1,
                 stdout="",
                 stderr=str(exc),
                 language=lang,
                 duration_ms=(time.monotonic() - start) * 1000,
-                error="execution_error",
+                error="sandbox_unavailable",
             )
-
-    def _build_command(self, lang: str, code: str) -> tuple[list[str], str | None]:
-        if lang == "python":
-            return [sys.executable, "-c", code], None
-        if lang == "javascript":
-            return ["node", "--input-type=module", "-e", code], None
-        if lang in ("bash", "sh"):
-            return ["bash", "-c", code], None
-        raise ValueError(f"Unsupported: {lang}")
+        stdout, stderr = result.stdout or "", result.stderr or ""
+        truncated = len(stdout) + len(stderr) > MAX_OUTPUT_CHARS
+        if truncated:
+            stdout = stdout[:MAX_OUTPUT_CHARS]
+        return ExecutionResult(
+            exit_code=124 if result.timed_out else result.exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            language=lang,
+            duration_ms=round(result.execution_time_ms or (time.monotonic() - start) * 1000, 2),
+            truncated=truncated,
+            error="timeout" if result.timed_out else None,
+        )

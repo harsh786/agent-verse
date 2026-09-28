@@ -8,7 +8,17 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, File, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field, field_validator
 from starlette.responses import Response, StreamingResponse
 
@@ -24,6 +34,7 @@ from app.chat.stream import (
 )
 from app.chat.templates import BUILT_IN_TEMPLATES, TemplateStore
 from app.tenancy.context import TenantContext
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -592,14 +603,20 @@ class ExecuteCodeRequest(BaseModel):
 
 @router.post("/sessions/{session_id}/execute")
 async def execute_code(
-    session_id: str, body: ExecuteCodeRequest, request: Request
+    session_id: str,
+    body: ExecuteCodeRequest,
+    request: Request,
+    # Running code is an operator action; a viewer key used to be enough.
+    _rbac: None = Depends(require_role("operator")),
 ) -> dict[str, Any]:
     tenant = _tenant(request)
     svc = _svc(request)
     s = await svc.aget_session(session_id, tenant.tenant_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
-    result = _executor.execute(body.code, body.language, session_id)
+    result = await _executor.execute(
+        body.code, body.language, session_id, tenant_id=tenant.tenant_id
+    )
     return {
         "exit_code": result.exit_code,
         "stdout": result.stdout,

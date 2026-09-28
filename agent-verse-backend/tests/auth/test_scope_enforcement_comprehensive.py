@@ -542,3 +542,11 @@ async def test_dispatch_ip_blocked_returns_403():
 
     assert resp.status_code == 403
     assert resp.json()["error"] == "IP_NOT_ALLOWED"
+
+
+def test_connector_update_requires_mcp_write() -> None:
+    """Regression: PUT /connectors/{id} was unregistered, so it passed through."""
+    from app.auth.scope_enforcement import ScopeEnforcementMiddleware
+
+    mw = ScopeEnforcementMiddleware.__new__(ScopeEnforcementMiddleware)
+    assert mw._required_scope("PUT", "/connectors/abc") == "mcp:write"
