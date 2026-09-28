@@ -562,6 +562,59 @@ Respond with ONLY valid JSON:
             logger.error("rollback_error", error=str(exc))
             return False
 
+    async def get_arm_assignment(
+        self, tenant_id: str, agent_id: str, goal_id: str
+    ) -> dict[str, Any]:
+        """The experiment arm for *goal_id* plus what the arm changes.
+
+        Returns ``{"arm": "control"|"candidate", "experiment_id": str|None,
+        "config": <arm config>, "changed_keys": [...]}``. ``changed_keys`` are the
+        top-level config keys whose value differs between the candidate and the
+        control config — the part of the arm the caller must actually apply for
+        the experiment to measure anything.
+        """
+        state = await self._state.get(tenant_id, agent_id)
+        exp_id = state.get("current_experiment_id")
+        arm = await self._get_arm_for_goal(tenant_id, agent_id, goal_id)
+        control = await self._read_current_agent_config(tenant_id, agent_id) or {}
+        if not exp_id:
+            return {"arm": "control", "experiment_id": None, "config": control, "changed_keys": []}
+        # The diff is needed for both arms so the caller can tell whether the
+        # experiment is realizable at all (both arms are excluded otherwise).
+        candidate = await self._candidate_config(tenant_id, str(exp_id))
+        changed = sorted(
+            key
+            for key in set(control) | set(candidate)
+            if control.get(key) != candidate.get(key)
+        )
+        return {
+            "arm": arm,
+            "experiment_id": exp_id,
+            "config": control if arm == "control" else candidate,
+            "changed_keys": changed,
+        }
+
+    async def _candidate_config(self, tenant_id: str, exp_id: str) -> dict[str, Any]:
+        from sqlalchemy import text as _t
+
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            row = (
+                await db.execute(
+                    _t(
+                        "SELECT candidate_config FROM improvement_experiments "
+                        "WHERE id = :id AND tenant_id = :tenant_id"
+                    ),
+                    {"id": exp_id, "tenant_id": tenant_id},
+                )
+            ).fetchone()
+        if not row:
+            return {}
+        cfg = row[0]
+        return cfg if isinstance(cfg, dict) else json.loads(cfg or "{}")
+
     async def get_arm_config(self, tenant_id: str, agent_id: str, goal_id: str) -> dict[str, Any]:
         """Return the agent config for a specific goal (control or candidate arm)."""
         arm = await self._get_arm_for_goal(tenant_id, agent_id, goal_id)

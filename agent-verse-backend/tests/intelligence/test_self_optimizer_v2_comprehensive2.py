@@ -546,3 +546,43 @@ async def test_list_experiments_db_error_returns_empty():
     opt = SelfOptimizerV2(redis=redis, db_factory=lambda: mock_session, llm_provider_factory=AsyncMock())
     result = await opt.list_experiments("t1")
     assert result == []
+
+
+# ── get_arm_assignment (arm + what it changes) ───────────────────────────────
+
+
+async def test_get_arm_assignment_no_experiment_is_control_with_no_changes() -> None:
+    opt = SelfOptimizerV2(redis=_make_redis(), db_factory=MagicMock(), llm_provider_factory=None)
+    with patch.object(
+        opt, "_read_current_agent_config", AsyncMock(return_value={"system_prompt": "A"})
+    ):
+        out = await opt.get_arm_assignment("t1", "a1", "g1")
+    assert out == {
+        "arm": "control",
+        "experiment_id": None,
+        "config": {"system_prompt": "A"},
+        "changed_keys": [],
+    }
+
+
+async def test_get_arm_assignment_candidate_reports_changed_keys() -> None:
+    redis = _make_redis({"optstate:t1:a1": json.dumps({"current_experiment_id": "exp-1"})})
+    opt = SelfOptimizerV2(redis=redis, db_factory=MagicMock(), llm_provider_factory=None)
+    with (
+        patch.object(
+            opt,
+            "_read_current_agent_config",
+            AsyncMock(return_value={"system_prompt": "A", "max_iterations": 5}),
+        ),
+        patch.object(opt, "_get_arm_for_goal", AsyncMock(return_value="candidate")),
+        patch.object(
+            opt,
+            "_candidate_config",
+            AsyncMock(return_value={"system_prompt": "B", "max_iterations": 5}),
+        ),
+    ):
+        out = await opt.get_arm_assignment("t1", "a1", "g1")
+    assert out["arm"] == "candidate"
+    assert out["experiment_id"] == "exp-1"
+    assert out["config"]["system_prompt"] == "B"
+    assert out["changed_keys"] == ["system_prompt"]
