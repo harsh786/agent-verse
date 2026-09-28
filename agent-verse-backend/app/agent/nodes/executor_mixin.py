@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from app.agent.checkpoint_resume import COMPLETED_STEPS_KEY, RESUME_COMPLETED_KEY
+from app.agent.nodes.planner_mixin import GRANTED_TOOLS_KEY
 from app.agent.prompts import (
     EXECUTOR_SYSTEM,
 )
@@ -1014,8 +1015,13 @@ class ExecutorMixin:
         # is invalid and causes OpenAI to return text instead of a tool call.
         _tool_defs: list[ToolDefinition] = []
         _tc_ctx = state.context.get("tool_context")
+        # Grant enforcement: offer the model only granted tools (computed by the
+        # planner, see PlannerMixin._granted_tool_names); dispatch still checks.
+        _granted_names = state.context.get(GRANTED_TOOLS_KEY)
         if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
             for _t in _tc_ctx.tools:
+                if isinstance(_granted_names, list) and _t.name not in _granted_names:
+                    continue
                 import re as _re
 
                 # Use only the bare tool name, sanitized to valid function-name chars
