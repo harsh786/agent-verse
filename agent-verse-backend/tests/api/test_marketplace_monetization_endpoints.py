@@ -95,6 +95,27 @@ async def test_set_price_no_db_returns_503():
     assert exc.value.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_set_price_on_a_template_the_caller_does_not_own_is_404():
+    """Regression: no ownership predicate (and a non-existent column)."""
+    session = _fake_session(lambda *a, **k: MagicMock(rowcount=0))
+    with pytest.raises(HTTPException) as exc:
+        await set_template_price(
+            PricingRequest(template_id="someone-elses", price_usd=5.0),
+            _request(tenant=_tenant("t1"), db=lambda: session),
+        )
+    assert exc.value.status_code == 404
+    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert any("WHERE id = :tmpl_id AND tenant_id = :tid" in q for q in sqls)
+
+
+def test_pricing_rejects_negative_price():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PricingRequest(template_id="t", price_usd=-1.0)
+
+
 # ── purchase ─────────────────────────────────────────────────────────────
 
 
@@ -197,26 +218,54 @@ async def test_onboard_author_success_returns_onboarding_url(fake_stripe):
     fake_stripe.Account.create.return_value = SimpleNamespace(id="acct_123")
     fake_stripe.AccountLink.create.return_value = SimpleNamespace(url="https://stripe/onboard")
 
+    upd = MagicMock(rowcount=0)
+    session = _fake_session(lambda *a, **k: upd)
+
     result = await onboard_author(
         OnboardAuthorRequest(payout_email="author@example.com"),
-        _request(tenant=_tenant("t1")),
+        _request(tenant=_tenant("t1"), db=lambda: session),
     )
 
     assert result == {"onboarding_url": "https://stripe/onboard", "stripe_account_id": "acct_123"}
     fake_stripe.Account.create.assert_called_once()
     assert fake_stripe.Account.create.call_args.kwargs["metadata"] == {"tenant_id": "t1"}
+    # Regression: the account id was returned but never stored.
+    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert any("INSERT INTO marketplace_author_accounts" in q for q in sqls)
+    insert = next(
+        c for c in session.execute.await_args_list
+        if "INSERT INTO marketplace_author_accounts" in str(c.args[0])
+    )
+    assert insert.args[1]["acct"] == "acct_123" and insert.args[1]["tid"] == "t1"
 
 
 @pytest.mark.asyncio
-async def test_onboard_author_stripe_error_returns_500(fake_stripe):
+async def test_onboard_author_persist_failure_is_503(fake_stripe):
+    fake_stripe.Account.create.return_value = SimpleNamespace(id="acct_9")
+    fake_stripe.AccountLink.create.return_value = SimpleNamespace(url="u")
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    session = _fake_session(_boom)
+    with pytest.raises(HTTPException) as exc:
+        await onboard_author(
+            OnboardAuthorRequest(payout_email="author@example.com"),
+            _request(tenant=_tenant("t1"), db=lambda: session),
+        )
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_onboard_author_stripe_error_returns_502(fake_stripe):
     fake_stripe.Account.create.side_effect = RuntimeError("stripe API error")
 
     with pytest.raises(HTTPException) as exc:
         await onboard_author(
             OnboardAuthorRequest(payout_email="author@example.com"),
-            _request(tenant=_tenant()),
+            _request(tenant=_tenant(), db=lambda: _fake_session()),
         )
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 502
 
 
 @pytest.mark.asyncio
@@ -229,7 +278,13 @@ async def test_purchase_paid_template_success_returns_client_secret(fake_stripe)
 
     result = await purchase_template("paid-tpl", _request(tenant=_tenant("t1"), db=db))
 
-    assert result == {"client_secret": "secret_abc", "amount_usd": 29.99}
+    assert result["client_secret"] == "secret_abc" and result["amount_usd"] == 29.99
+    # A pending purchase row is recorded (it used to write nothing).
+    assert result["status"] == "pending" and result["purchase_id"]
+    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert any("INSERT INTO marketplace_purchases" in q for q in sqls)
+    # Column is `id` (not the non-existent `template_id`).
+    assert any("FROM marketplace_templates WHERE id = :tid" in q for q in sqls)
     kwargs = fake_stripe.PaymentIntent.create.call_args.kwargs
     assert kwargs["amount"] == 2999
     assert kwargs["metadata"]["template_id"] == "paid-tpl"
@@ -246,4 +301,4 @@ async def test_purchase_paid_template_stripe_error_returns_500(fake_stripe):
 
     with pytest.raises(HTTPException) as exc:
         await purchase_template("paid-tpl", _request(tenant=_tenant(), db=db))
-    assert exc.value.status_code == 500
+    assert exc.value.status_code == 502
