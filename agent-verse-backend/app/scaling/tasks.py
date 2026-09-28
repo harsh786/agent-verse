@@ -555,6 +555,38 @@ async def _run_with_signals(
     return await run_task
 
 
+class _WorkerSubgoalService:
+    """GoalService facade the worker graph uses to dispatch and await sub-goals.
+
+    ``submit_goal`` persists + enqueues the sub-goal (CeleryGoalTaskQueue), then
+    drops the worker-local in-memory record: the sub-goal runs on another worker,
+    so its events never reach that record. Without a local record
+    ``subscribe_events`` takes GoalService's cross-process path (persisted-event
+    replay + Redis ``goal_events:{tenant}:{goal}`` subscription), which is where
+    the executing worker publishes.
+    """
+
+    def __init__(self, goal_service: Any) -> None:
+        self._gs = goal_service
+
+    async def submit_goal(self, **kwargs: Any) -> dict[str, Any]:
+        result: dict[str, Any] = await self._gs.submit_goal(**kwargs)
+        goal_id = str(result.get("goal_id") or "")
+        if goal_id and not result.get("deduplicated"):
+            self._gs._goals.pop(goal_id, None)
+        return result
+
+    def subscribe_events(
+        self, goal_id: str, tenant_ctx: Any, since_sequence: int = 0
+    ) -> Any:
+        return self._gs.subscribe_events(
+            goal_id=goal_id, tenant_ctx=tenant_ctx, since_sequence=since_sequence
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._gs, name)
+
+
 class _WorkerMCPAgentRunner:
     def __init__(self, runner: Any, context_factory: Any, system_prompt: str = "") -> None:
         self._runner = runner
@@ -2291,6 +2323,16 @@ def run_goal(
             _agent_runner._agent_collection_ids = list(_agent_collection_ids)
             # Grants are keyed by agent id.
             _agent_runner._agent_id = agent_id
+            # Sub-goal dispatch (in-graph supervisor, civilization spawn). The API
+            # path sets graph._goal_service; the worker never did, so the
+            # supervisor node silently no-op'd and every spawn failed here.
+            try:
+                _subgoal_gs, _ = _build_worker_goal_service()
+                if _subgoal_gs is not None:
+                    _subgoal_gs._redis_url_for_pubsub = REDIS_URL
+                    _agent_runner._goal_service = _WorkerSubgoalService(_subgoal_gs)
+            except Exception as _sgs_exc:
+                logger.warning("worker_subgoal_service_wire_failed: %s", _sgs_exc)
             # Wire SelfOptimizer and PromptOptimizer so A/B testing and
             # failure suggestions run during real goal execution.
             try:
