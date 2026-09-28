@@ -500,8 +500,11 @@ class OpenAICompatibleProvider:
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     yield delta
-        except Exception as exc:
-            yield f"[stream error: {exc}]"
+        except Exception:
+            # Never yield the provider error AS model output (it used to emit
+            # "[stream error: ...]" as content, which callers rendered/saved as
+            # the answer). Propagate so callers can fail over or report it.
+            raise
 
     async def stream_tokens(
         self,

@@ -69,7 +69,106 @@ async def test_embed_maps_query_and_document_tasks() -> None:
     assert models.embed_calls[1]["config"].task_type == "RETRIEVAL_DOCUMENT"
 
 
-def test_capability_flags_follow_model() -> None:
+def test_capability_flags_are_honest() -> None:
+    """Tools and images are not sent by this adapter, so it must not claim them."""
     provider, _ = _provider()
-    assert provider.supports_vision()
-    assert provider.supports_tool_use()
+    assert provider.supports_vision() is False
+    assert provider.supports_tool_use() is False
+
+
+async def test_complete_with_tools_raises_instead_of_dropping_them() -> None:
+    import pytest
+
+    from app.providers.base import ToolDefinition
+
+    provider, models = _provider()
+    with pytest.raises(NotImplementedError, match="tool calling"):
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="list issues")],
+                model="gemini-2.5-pro",
+                tools=[ToolDefinition(name="jira_search", description="d", input_schema={})],
+            )
+        )
+    assert models.generate_calls == []
+
+
+async def test_complete_with_image_raises() -> None:
+    import pytest
+
+    provider, models = _provider()
+    with pytest.raises(NotImplementedError, match="image"):
+        await provider.complete(
+            CompletionRequest(
+                messages=[Message(role="user", content="what is this", image_data="aGk=")],
+                model="gemini-2.5-pro",
+            )
+        )
+    assert models.generate_calls == []
+
+
+async def test_response_schema_requests_json_mode_and_states_schema() -> None:
+    provider, models = _provider()
+    await provider.complete(
+        CompletionRequest(
+            messages=[Message(role="user", content="hi")],
+            model="gemini-2.5-pro",
+            response_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+        )
+    )
+    call = models.generate_calls[0]
+    assert call["config"].kwargs["response_mime_type"] == "application/json"
+    assert '"ok"' in call["contents"]
+
+
+async def test_stream_tokens_mid_stream_failure_does_not_rerun_complete() -> None:
+    import pytest
+
+    provider, models = _provider()
+
+    async def _broken_stream(**kwargs: object) -> object:
+        async def gen():  # type: ignore[no-untyped-def]
+            yield SimpleNamespace(text="partial ", usage_metadata=None)
+            raise ConnectionError("dropped")
+
+        return gen()
+
+    models.generate_content_stream = _broken_stream  # type: ignore[attr-defined]
+    tokens: list[str] = []
+
+    async def on_token(tok: str) -> None:
+        tokens.append(tok)
+
+    with pytest.raises(ConnectionError):
+        await provider.stream_tokens(
+            CompletionRequest(messages=[Message(role="user", content="hi")], model="m"),
+            on_token,
+        )
+    assert tokens == ["partial "]
+    assert models.generate_calls == []  # complete() was not re-run
+
+
+async def test_stream_tokens_reports_usage() -> None:
+    provider, models = _provider()
+
+    async def _stream(**kwargs: object) -> object:
+        async def gen():  # type: ignore[no-untyped-def]
+            yield SimpleNamespace(text="a", usage_metadata=None)
+            yield SimpleNamespace(
+                text="b",
+                usage_metadata=SimpleNamespace(prompt_token_count=4, candidates_token_count=2),
+            )
+
+        return gen()
+
+    models.generate_content_stream = _stream  # type: ignore[attr-defined]
+
+    async def on_token(tok: str) -> None:
+        return None
+
+    resp = await provider.stream_tokens(
+        CompletionRequest(messages=[Message(role="user", content="hi")], model="m"), on_token
+    )
+    assert resp.content == "ab"
+    assert resp.total_tokens == 6
+    assert resp.usage is not None and resp.usage.total_tokens == 6

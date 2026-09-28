@@ -1351,6 +1351,7 @@ class ChatService:
         parts: list[str] = []
         stall_timeout = _llm_stall_timeout_seconds()
         stalled = False
+        provider_failed = False
         streamer = getattr(self._answer_generator, "stream_complete", None)
         try:
             if callable(streamer):
@@ -1392,8 +1393,21 @@ class ChatService:
                     "waiting. Please try again."
                 ),
             )
+        except Exception as exc:
+            # A provider failure is reported as an error event — a partial
+            # answer is never saved as the assistant's reply.
+            provider_failed = True
+            _logger.warning(
+                "chat_qa_llm_failed", session_id=session_id, error=str(exc)[:200]
+            )
+            yield sse_event(
+                ChatEventType.ERROR,
+                session_id=session_id,
+                message_id=message_id,
+                message="The language model request failed. Please try again.",
+            )
         answer = _strip_reasoning("".join(parts))
-        if answer or not stalled:
+        if not provider_failed and (answer or not stalled):
             await self.asave_message(
                 session_id=session_id, tenant_id=tenant_id, role="assistant", content=answer
             )
