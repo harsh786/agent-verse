@@ -1228,11 +1228,19 @@ class ExecutorMixin:
         try:
             try:
                 async with track_tool_call(tool_name=tool_name, tenant_id=tenant_ctx.tenant_id):
-                    resp = await self._executor.stream_tokens(req, _on_token)
+                    resp = await self._stream_with_failover(req, _on_token, _token_buffer)
                 if _active_breaker is not None:
                     _active_breaker.record_success()
-                # D-13: feed provider health so ModelOrchestrator failover learns.
-                self._record_provider_health(_exec_model, ok=True, start=_llm_call_start)
+                # D-13: feed provider health so ModelOrchestrator failover learns —
+                # attributed to the model that actually served (after failover) and
+                # a failure for each model that did not.
+                for _failed_model in getattr(self, "_failed_models", []) or []:
+                    self._record_provider_health(_failed_model, ok=False, start=_llm_call_start)
+                self._record_provider_health(
+                    getattr(self, "_last_served_model", "") or _exec_model,
+                    ok=True,
+                    start=_llm_call_start,
+                )
             except Exception:
                 if _active_breaker is not None:
                     _active_breaker.record_failure()

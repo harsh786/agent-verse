@@ -345,6 +345,31 @@ class ModelOrchestratorAdapter:
         self._default_tier = default_tier
         self._cached_assignment: ModelRoleAssignment | None = None
         self._last_budget_ratio: float = 0.0
+        self._override = ""
+        self._role_map: dict[str, str] = {}
+
+    def set_role_map(self, role_map: dict[str, str]) -> None:
+        """Pin roles to models the goal's provider serves (deployment_roles)."""
+        self._role_map = dict(role_map)
+
+    @property
+    def role_map(self) -> dict[str, str]:
+        return dict(self._role_map)
+
+    def with_override(self, model: str) -> ModelOrchestratorAdapter:
+        """Copy-on-write adapter with every reasoning role pinned to *model*.
+
+        Missing before: goal_service calls ``with_override`` for an agent's
+        ``model_override`` inside ``suppress(Exception)``, so on this adapter
+        (the one goals actually use) every per-agent override was silently
+        ignored.
+        """
+        from copy import copy
+
+        clone = copy(self)
+        clone._override = model
+        clone._role_map = dict(self._role_map)
+        return clone
 
     def update_from_profile(
         self,
@@ -394,6 +419,17 @@ class ModelOrchestratorAdapter:
             "planning", "execution", "verification", "classification",
             "reflection", "think", "thinking",
         ):
+            # A per-agent model_override wins; then the per-goal role map (models
+            # the goal's provider serves: pins, then hybrid/on-prem/NVIDIA
+            # profile) — "cheapest configured" cannot tell roles apart when
+            # every self-hosted model costs 0.
+            if self._override:
+                return self._override
+            from app.ai_router.deployment_roles import ROLE_ALIASES
+
+            _role = ROLE_ALIASES.get(task_type, task_type)
+            if self._role_map.get(_role):
+                return self._role_map[_role]
             try:
                 from app.ai_router.selection import select_configured_model_id
 

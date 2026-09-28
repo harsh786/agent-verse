@@ -143,12 +143,13 @@ def _apply_onprem_settings(settings: Settings) -> None:
     elif not settings.default_model:
         settings.default_model = settings.onprem_qwen_model
 
-    # Hybrid per-role routing: NVIDIA plans + is fallback, Qwen executes, Gemma verifies.
+    # Hybrid per-role routing is the per-goal role map (app/ai_router/
+    # deployment_roles.py). This used to write DEFAULT_*_MODEL into os.environ,
+    # which later code could not tell apart from operator pins — so it overrode
+    # the profile and the context-window guard, and pinned verification to Gemma
+    # even with no Gemma endpoint configured.
     if nvidia_on and onprem_on:
         settings.default_llm_provider = "hybrid"
-        _os.environ.setdefault("DEFAULT_PLANNING_MODEL", settings.nvidia_model)
-        _os.environ.setdefault("DEFAULT_EXECUTION_MODEL", settings.onprem_qwen_model)
-        _os.environ.setdefault("DEFAULT_VERIFICATION_MODEL", settings.onprem_gemma_model)
 
     # Embeddings: NVIDIA embedding model wins when set (dim must match the DB),
     # else the on-prem embedding endpoint. Only fill when not already configured.
@@ -2071,6 +2072,31 @@ def create_app(
                     logger.info("observability_log_store_wired_to_redis")
                 except Exception as _obs_exc:
                     logger.warning("observability_log_store_wire_failed", error=str(_obs_exc))
+
+            # ── On-prem context windows: never give a reasoning role to a model
+            # whose window cannot hold an agent prompt (vLLM /v1/models) ────────
+            if settings.onprem_enabled:
+                try:
+                    from app.ai_router.deployment_roles import (
+                        MIN_ROLE_CONTEXT,
+                        deployment_role_models,
+                        probe_model_windows,
+                    )
+
+                    _windows = await probe_model_windows(settings)
+                    _small = {m: w for m, w in _windows.items() if w < MIN_ROLE_CONTEXT}
+                    logger.info(
+                        "onprem_model_windows",
+                        windows=_windows,
+                        roles=deployment_role_models(settings, servable=set(_windows) or None),
+                    )
+                    if _small:
+                        logger.warning(
+                            "onprem_model_context_too_small_for_agent_roles", models=_small,
+                            minimum=MIN_ROLE_CONTEXT,
+                        )
+                except Exception as _mw_exc:
+                    logger.warning("onprem_model_window_probe_failed", error=str(_mw_exc))
 
             # ── PromptOptimizer: Postgres is the source of truth ─────────────────
             # It used to load EVERY tenant's variants into each replica here (an

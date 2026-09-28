@@ -806,6 +806,62 @@ class AgentGraph(
     # Internal helpers
     # ------------------------------------------------------------------
 
+    async def _stream_with_failover(
+        self, request: Any, on_token: Any, token_buffer: list[str]
+    ) -> Any:
+        """Executor LLM call with a timeout and ordered model failover.
+
+        The executor used to call ``stream_tokens`` once, with no timeout: a hung
+        endpoint hung the goal, and one bad model (a hosted reasoning model that
+        returned empty completions) failed the goal while another configured
+        model was healthy. Partial tokens from a failed attempt are discarded.
+        """
+        import dataclasses
+        import os
+
+        # Wall-clock cap per attempt. Generous by default so a long healthy
+        # generation is not cut off; tune per deployment.
+        timeout = float(os.getenv("AGENTVERSE_EXECUTOR_CALL_TIMEOUT_SECONDS", "300"))
+        primary = getattr(request, "model", "") or ""
+        models = [primary, *(m for m in self._role_fallback_models() if m != primary)]
+        self._last_served_model = primary
+        self._failed_models: list[str] = []
+        last_exc: BaseException | None = None
+        for i, model in enumerate(models):
+            attempt = request if i == 0 else dataclasses.replace(request, model=model)
+            try:
+                resp = await asyncio.wait_for(
+                    self._executor.stream_tokens(attempt, on_token), timeout=timeout
+                )
+                self._last_served_model = model
+                return resp
+            except Exception as exc:
+                last_exc = exc
+                self._failed_models.append(model)
+                token_buffer.clear()
+                if i + 1 < len(models):
+                    # Tokens of the failed attempt already reached SSE clients;
+                    # tell them to discard the partial text before the retry.
+                    await self._emit({"type": "token_reset", "reason": "model_failover"})
+                    self._logger.warning(
+                        "executor_model_failover",
+                        from_model=model, to_model=models[i + 1], error=str(exc)[:200],
+                    )
+        if last_exc is None:  # pragma: no cover - models always has one entry
+            raise RuntimeError("no executor model to call")
+        raise last_exc
+
+    def _routed_model(self, task_type: str, provider: Any) -> str:
+        router = getattr(self, "_model_router", None)
+        if router is not None:
+            try:
+                routed = router.model_for(task_type)
+                if routed:
+                    return str(routed)
+            except Exception:
+                pass
+        return str(getattr(provider, "_default_model", "") or "")
+
     def _role_fallback_models(self) -> list[str]:
         """Other configured models an LLM role may fail over to, in preference order.
 
@@ -822,6 +878,11 @@ class AgentGraph(
                 except Exception:
                     continue
         candidates.append(getattr(getattr(self, "_executor", None), "_default_model", "") or "")
+        role_map = getattr(router, "role_map", None) if router is not None else None
+        if isinstance(role_map, dict) and role_map:
+            from app.ai_router.deployment_roles import role_fallback_chain
+
+            candidates.extend(role_fallback_chain(role_map))
         return [m for i, m in enumerate(candidates) if m and m not in candidates[:i]]
 
     async def _emit(self, event: dict[str, Any]) -> None:

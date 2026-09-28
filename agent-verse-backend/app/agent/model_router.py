@@ -17,6 +17,7 @@ import os
 from dataclasses import dataclass, replace
 from typing import Any
 
+from app.ai_router.deployment_roles import ROLE_ALIASES as _ROLE_ALIASES
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -109,6 +110,8 @@ def _apply_env_model_overrides(base: ModelRouterConfig) -> ModelRouterConfig:
     # A single configured model (NVIDIA, self-hosted vLLM, …) should serve every
     # role, so no hardcoded profile slug (gpt-5.2, claude-…) is ever routed to an
     # endpoint that cannot serve it. NVIDIA is included even without OPENAI_BASE_URL.
+    # (Multi-model hybrid/on-prem routing is the per-goal role map instead — see
+    # ModelRouter.set_role_map / app/ai_router/deployment_roles.py.)
     is_single_model = is_self_hosted or bool(os.getenv("NVIDIA_API_KEY"))
     single = ""
     if is_single_model:
@@ -143,6 +146,16 @@ class ModelRouter:
             ModelRouterConfig(),
         )
         self._config = _apply_env_model_overrides(self._config)
+        self._override = ""
+        self._role_map: dict[str, str] = {}
+
+    def set_role_map(self, role_map: dict[str, str]) -> None:
+        """Pin roles to models the goal's provider serves (deployment_roles)."""
+        self._role_map = dict(role_map)
+
+    @property
+    def role_map(self) -> dict[str, str]:
+        return dict(self._role_map)
 
     # Reasoning roles that route through the generic configured-model registry.
     _REGISTRY_TASKS = frozenset(
@@ -163,15 +176,14 @@ class ModelRouter:
         # Explicit per-role operator intent wins over the cost-aware registry — so a
         # hybrid deployment can pin NVIDIA to planning, Qwen to execution, Gemma to
         # verification (the registry would otherwise pick the cheapest for every role).
-        _explicit_env = {
-            "planning": "DEFAULT_PLANNING_MODEL",
-            "execution": "DEFAULT_EXECUTION_MODEL",
-            "verification": "DEFAULT_VERIFICATION_MODEL",
-        }.get(task_type)
-        if _explicit_env:
-            _pinned = (os.getenv(_explicit_env) or "").strip()
-            if _pinned:
-                return _pinned
+        # A per-agent model_override (with_override) wins over everything; then the
+        # per-goal role map built from what the goal's provider can actually serve
+        # (set_role_map — see app/ai_router/deployment_roles.py).
+        if self._override:
+            return self._override
+        _role = _ROLE_ALIASES.get(task_type, task_type)
+        if self._role_map.get(_role):
+            return self._role_map[_role]
 
         if task_type in self._REGISTRY_TASKS:
             try:
@@ -232,8 +244,10 @@ class ModelRouter:
             return base_model
         tier = self.complexity_tier(goal)
         if tier == "simple" and task_type == "planning":
-            # Downgrade: use execution model for simple planning (cheaper)
-            cheaper = self._config.execution_model
+            # Downgrade: use execution model for simple planning (cheaper). Through
+            # model_for so an override / the role map applies (the raw profile slug
+            # could name a model the goal's provider cannot serve).
+            cheaper = self.model_for("execution")
             if cheaper:
                 logger.debug(
                     "model_downgraded_simple_goal",
@@ -259,6 +273,7 @@ class ModelRouter:
             fallback_model=model,
         )
         new_router._config = new_config
+        new_router._override = model
         return new_router
 
 

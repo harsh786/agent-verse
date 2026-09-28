@@ -38,6 +38,20 @@ _RR = ModelCapability.RERANK
 
 def _provider_for_model(model_id: str) -> str:
     """Infer a provider label from a model slug / configured env."""
+    onprem_ids = {
+        (os.getenv("ONPREM_QWEN_MODEL") or "").strip(),
+        (os.getenv("ONPREM_GEMMA_MODEL") or "").strip(),
+    } - {""}
+    try:
+        from app.core.config import get_settings
+
+        _s = get_settings()
+        if _s.onprem_enabled:
+            onprem_ids |= {_s.onprem_qwen_model, _s.onprem_gemma_model} - {""}
+    except Exception:  # pragma: no cover
+        pass
+    if model_id in onprem_ids:
+        return "onprem"
     mid = model_id.lower()
     if os.getenv("NVIDIA_API_KEY") and (
         mid.startswith(("nvidia/", "meta/", "openai/gpt-oss")) or os.getenv("NVIDIA_MODEL")
@@ -65,8 +79,19 @@ def _dedupe(*names: str) -> list[str]:
 
 
 def _reasoning_model_ids() -> list[str]:
-    """Every distinct reasoning/tooling model this deployment is configured with."""
+    """Every distinct reasoning/tooling model this deployment is configured with.
+
+    Includes the on-prem cluster's models — they used to be missing, leaving the
+    hosted NVIDIA model as the only candidate for every role.
+    """
+    try:
+        from app.ai_router.deployment_roles import deployment_role_models
+
+        role_models = list(deployment_role_models().values())
+    except Exception:  # pragma: no cover - never block seeding
+        role_models = []
     return _dedupe(
+        *role_models,
         configured_default_model(),
         os.getenv("DEFAULT_PLANNING_MODEL", ""),
         os.getenv("DEFAULT_EXECUTION_MODEL", ""),

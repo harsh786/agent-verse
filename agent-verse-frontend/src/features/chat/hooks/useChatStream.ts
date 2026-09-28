@@ -79,12 +79,16 @@ export function useChatStream(
         // Accumulate the ordered sequence of STRUCTURAL events (plan/step/tool/
         // knowledge/hitl/…) for the execution timeline; skip high-frequency
         // token/reasoning deltas which are already folded into tokens/reasoning.
-        if (event.type !== 'token' && event.type !== 'reasoning') {
+        if (event.type !== 'token' && event.type !== 'reasoning' && event.type !== 'token_reset') {
           eventsRef.current = [...eventsRef.current, event];
         }
         const events = eventsRef.current;
 
-        if (event.type === 'token') {
+        if (event.type === 'token_reset') {
+          // Executor model failover: the partial text of the failed attempt is void.
+          tokensRef.current = '';
+          setState((prev) => ({ ...prev, tokens: '', currentEvent: event, reconnecting: false }));
+        } else if (event.type === 'token') {
           tokensRef.current += (event.token as string) ?? '';
           setState((prev) => ({ ...prev, tokens: tokensRef.current, currentEvent: event, reconnecting: false }));
         } else if (event.type === 'reasoning') {

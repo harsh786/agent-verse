@@ -1033,6 +1033,20 @@ class GoalService:
         _max_iterations = int(_agent_config.get("max_iterations", 6))
         _model_override = str(_agent_config.get("model_override", "") or "")
 
+        # Per-goal role map: which configured model serves planning/execution/
+        # verification, restricted to models THIS goal's provider can route (a
+        # tenant-configured Anthropic/OpenAI provider gets none and keeps the
+        # router's previous behaviour). See app/ai_router/deployment_roles.py.
+        if _model_router is not None and hasattr(_model_router, "set_role_map"):
+            try:
+                from app.ai_router.deployment_roles import deployment_role_models, servable_models
+
+                _servable = servable_models(provider)
+                if _servable:
+                    _model_router.set_role_map(deployment_role_models(servable=_servable))
+            except Exception as _rm_exc:
+                _svc_logger.warning("model_role_map_failed", error=str(_rm_exc))
+
         # Apply model override to the model router before building the graph
         if _model_override and _model_router is not None:
             with suppress(Exception):  # Model router may not support override — use default

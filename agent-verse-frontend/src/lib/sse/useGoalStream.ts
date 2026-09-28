@@ -186,6 +186,12 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
                 const etype = parsed.type;
 
                 // token_chunk — update streaming state, do NOT push to events array
+                if (etype === "token_reset") {
+                  // Executor model failover: discard the failed attempt's partial text.
+                  setStreamingToken(null);
+                  onEventRef.current?.(parsed);
+                  continue;
+                }
                 if (etype === "token_chunk") {
                   const step = (parsed.step as string | undefined) ?? "";
                   const cumulative = (parsed.cumulative as string | undefined) ?? "";

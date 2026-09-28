@@ -99,6 +99,7 @@ _IDENTITY: frozenset[str] = frozenset(
         "artifact_created",
         "clarify_needed",
         "reasoning",
+        "token_reset",  # executor model failover: discard the partial streamed text
     }
 )
 

@@ -455,8 +455,11 @@ class PlannerMixin:
                     _sse_mr.model_route_selected(
                         goal_id=agent_state.goal_id,
                         planner=planning_model,
-                        executor=getattr(self._executor, "_default_model", "") or "",
-                        verifier=getattr(self._verifier, "_default_model", "") or "",
+                        # The models that will actually serve those roles (the
+                        # router's choice) — not the providers' defaults, which
+                        # misreported the executor as Qwen while it ran on NVIDIA.
+                        executor=self._routed_model("execution", self._executor),
+                        verifier=self._routed_model("verification", self._verifier),
                         cost_class=(
                             _runtime_prof_mr.model_plan.cost_class
                             if _runtime_prof_mr is not None
