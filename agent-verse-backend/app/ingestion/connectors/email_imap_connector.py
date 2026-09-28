@@ -16,6 +16,7 @@ from email.header import decode_header as _decode_header
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import check_source_host
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -75,6 +76,8 @@ class EmailIMAPConnector(BaseConnector):
             ssl = cc.get("ssl", True)
             user = cc.get("username", "")
             password = cc.get("password", "")
+            # Tenant-supplied host: never let the API/worker dial internal IMAP.
+            await check_source_host(host, port, context="imap_connector")
 
             conn = imaplib.IMAP4_SSL(host, port) if ssl else imaplib.IMAP4(host, port)
 
@@ -105,6 +108,7 @@ class EmailIMAPConnector(BaseConnector):
         password = cc.get("password", "")
         mailbox = cc.get("mailbox", "INBOX")
         batch_size = int(cc.get("batch_size", 100))
+        await check_source_host(host, port, context="imap_connector")
 
         # IMAP is sync — run in executor
         def _fetch_emails() -> list[tuple[str, str, dict]]:

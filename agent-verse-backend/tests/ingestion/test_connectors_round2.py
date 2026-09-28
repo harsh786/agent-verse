@@ -469,7 +469,7 @@ class TestKafkaConnector:
     def test_validate_connection_not_installed(self):
         from app.ingestion.connectors.kafka_connector import KafkaConnector
 
-        config = _make_config("kafka", {"bootstrap_servers": "localhost:9092"})
+        config = _make_config("kafka", {"bootstrap_servers": "kafka.test:9092"})
         connector = KafkaConnector()
 
         with patch.dict(sys.modules, {"confluent_kafka": None, "confluent_kafka.admin": None}):
@@ -487,7 +487,7 @@ class TestKafkaConnector:
         metadata.topics = {"t1": "x"}
         fake_admin.AdminClient.return_value.list_topics.return_value = metadata
 
-        config = _make_config("kafka", {"bootstrap_servers": "localhost:9092"})
+        config = _make_config("kafka", {"bootstrap_servers": "kafka.test:9092"})
         connector = KafkaConnector()
 
         with patch.dict(sys.modules, {"confluent_kafka": fake_pkg, "confluent_kafka.admin": fake_admin}):
@@ -503,7 +503,7 @@ class TestKafkaConnector:
         fake_pkg, fake_admin = _install_fake_confluent_kafka()
         fake_admin.AdminClient.side_effect = RuntimeError("conn refused")
 
-        config = _make_config("kafka", {})
+        config = _make_config("kafka", {"bootstrap_servers": "kafka.test:9092"})
         connector = KafkaConnector()
 
         with patch.dict(sys.modules, {"confluent_kafka": fake_pkg, "confluent_kafka.admin": fake_admin}):
@@ -551,7 +551,7 @@ class TestKafkaConnector:
         fake_pkg.Consumer = MagicMock(return_value=fake_consumer_instance)
 
         config = _make_config(
-            "kafka", {"topics": ["orders"], "bootstrap_servers": "b:9092", "batch_size": 10}
+            "kafka", {"topics": ["orders"], "bootstrap_servers": "b.test:9092", "batch_size": 10}
         )
         connector = KafkaConnector()
 
@@ -599,7 +599,7 @@ class TestMQTTConnector:
     def test_validate_connection_not_installed(self):
         from app.ingestion.connectors.mqtt_connector import MQTTConnector
 
-        config = _make_config("mqtt", {"host": "localhost"})
+        config = _make_config("mqtt", {"host": "mqtt.test"})
         connector = MQTTConnector()
 
         with patch.dict(sys.modules, {"paho": None, "paho.mqtt": None, "paho.mqtt.client": None}):
@@ -622,7 +622,7 @@ class TestMQTTConnector:
         client_instance.connect_async.side_effect = fake_connect_async
         fake_client_mod.Client.return_value = client_instance
 
-        config = _make_config("mqtt", {"host": "localhost", "port": 1883, "username": "u"})
+        config = _make_config("mqtt", {"host": "mqtt.test", "port": 1883, "username": "u"})
         connector = MQTTConnector()
 
         with patch.dict(
@@ -632,7 +632,7 @@ class TestMQTTConnector:
             health = asyncio.run(connector.validate_connection(config))
 
         assert health.ok is True
-        assert health.metadata["host"] == "localhost"
+        assert health.metadata["host"] == "mqtt.test"
         client_instance.username_pw_set.assert_called_once()
 
     def test_validate_connection_timeout(self):
@@ -642,7 +642,7 @@ class TestMQTTConnector:
         client_instance = MagicMock()
         fake_client_mod.Client.return_value = client_instance
 
-        config = _make_config("mqtt", {"host": "localhost"})
+        config = _make_config("mqtt", {"host": "mqtt.test"})
         connector = MQTTConnector()
 
         with patch.dict(
@@ -660,7 +660,7 @@ class TestMQTTConnector:
         fake_paho, fake_mqtt, fake_client_mod = _install_fake_paho()
         fake_client_mod.Client.side_effect = RuntimeError("bad host")
 
-        config = _make_config("mqtt", {})
+        config = _make_config("mqtt", {"host": "mqtt.test"})
         connector = MQTTConnector()
 
         with patch.dict(
@@ -705,7 +705,7 @@ class TestMQTTConnector:
         fake_client_mod.Client.return_value = client_instance
 
         config = _make_config(
-            "mqtt", {"host": "localhost", "topics": ["sensors/#"], "timeout_seconds": 0}
+            "mqtt", {"host": "mqtt.test", "topics": ["sensors/#"], "timeout_seconds": 0}
         )
         connector = MQTTConnector()
 

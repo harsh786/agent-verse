@@ -10,15 +10,29 @@ import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import ConnectorEgressBlockedError, check_source_host
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+async def _vetted_broker(cc: dict[str, Any]) -> str:
+    """Return the tenant broker host after the egress (SSRF) check.
+
+    No ``localhost`` default: an unset host used to make the API/worker dial its
+    own loopback on the tenant's behalf.
+    """
+    host = str(cc.get("host") or "").strip()
+    if not host:
+        raise ConnectorEgressBlockedError("mqtt: host is required")
+    await check_source_host(host, cc.get("port", 1883), context="mqtt_connector")
+    return host
 
 
 @register("mqtt", feature_flag="ingestion_connector_mqtt_enabled")
@@ -36,7 +50,7 @@ class MQTTConnector(BaseConnector):
             import paho.mqtt.client as mqtt  # type: ignore[import-not-found]
 
             cc = config.connection_config
-            host = cc.get("host", "localhost")
+            host = await _vetted_broker(cc)
             port = int(cc.get("port", 1883))
 
             connected = False
@@ -86,7 +100,7 @@ class MQTTConnector(BaseConnector):
             return
 
         cc = config.connection_config
-        host = cc.get("host", "localhost")
+        host = await _vetted_broker(cc)
         port = int(cc.get("port", 1883))
         topics = cc.get("topics") or ["#"]
         max_messages = int(cc.get("max_messages", 1000))

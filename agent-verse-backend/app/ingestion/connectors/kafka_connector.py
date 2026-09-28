@@ -7,19 +7,56 @@ Supports: any Kafka-compatible broker (MSK, Confluent Cloud, Redpanda).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
+from app.ingestion.connector_egress import ConnectorEgressBlockedError, assert_source_host
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+
+def _split_host(entry: str) -> str:
+    """Return the host of a ``[PROTO://]host[:port]`` bootstrap entry."""
+    entry = entry.strip()
+    if "://" in entry:
+        entry = entry.split("://", 1)[1]
+    if entry.startswith("["):  # [v6]:port
+        return entry[1 : entry.find("]")] if "]" in entry else entry
+    return entry.rsplit(":", 1)[0] if entry.count(":") == 1 else entry
+
+
+def _require_bootstrap(cc: dict[str, Any]) -> str:
+    """Return the tenant-supplied bootstrap list after SSRF-vetting every broker.
+
+    There is deliberately no ``localhost`` default: an unset value used to make
+    the API/worker host dial its own loopback on the tenant's behalf.
+    """
+    bootstrap = str(cc.get("bootstrap_servers") or "").strip()
+    if not bootstrap:
+        raise ConnectorEgressBlockedError("kafka: bootstrap_servers is required")
+    for entry in bootstrap.split(","):
+        if entry.strip():
+            assert_source_host(_split_host(entry), context="kafka_connector")
+    return bootstrap
+
+
+def _check_advertised_brokers(metadata: Any) -> None:
+    """Brokers advertise their own listener addresses; a hostile broker could
+    point the client at internal hosts after the bootstrap check. Vet them too."""
+    brokers = getattr(metadata, "brokers", None) or {}
+    for broker in brokers.values():
+        host = getattr(broker, "host", None)
+        if isinstance(host, str) and host:
+            assert_source_host(host, context="kafka_connector.advertised_broker")
 
 
 @register("kafka", feature_flag="ingestion_connector_kafka_enabled")
@@ -37,10 +74,10 @@ class KafkaConnector(BaseConnector):
             from confluent_kafka.admin import AdminClient  # type: ignore[import-not-found]
 
             cc = config.connection_config
-            admin = AdminClient(
-                {"bootstrap.servers": cc.get("bootstrap_servers", "localhost:9092")}
-            )
+            bootstrap = await asyncio.to_thread(_require_bootstrap, cc)
+            admin = AdminClient({"bootstrap.servers": bootstrap})
             metadata = admin.list_topics(timeout=10)
+            _check_advertised_brokers(metadata)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
                 ok=True,
@@ -60,19 +97,18 @@ class KafkaConnector(BaseConnector):
         from app.ingestion.source_config import RawDocument
 
         try:
-            from confluent_kafka import Consumer, KafkaError  # type: ignore[import-not-found]
+            from confluent_kafka import Consumer, KafkaError
+            from confluent_kafka.admin import AdminClient
         except ImportError:
             _log.error("confluent-kafka not installed")
             return
-
-        import asyncio
 
         cc = config.connection_config
         topics = cc.get("topics") or []
         batch_size = int(cc.get("batch_size", 500))
         timeout_seconds = float(cc.get("poll_timeout_seconds", 5.0))
         group_id = cc.get("group_id") or f"agentverse-ingestor-{config.source_id[:8]}"
-        bootstrap = cc.get("bootstrap_servers", "localhost:9092")
+        bootstrap = await asyncio.to_thread(_require_bootstrap, cc)
 
         conf = {
             "bootstrap.servers": bootstrap,
@@ -88,6 +124,13 @@ class KafkaConnector(BaseConnector):
             conf["sasl.password"] = cc.get("sasl_password", "")
 
         def _consume_batch():
+            # Vet the brokers the cluster advertises before consuming from them.
+            admin_conf = {
+                k: v
+                for k, v in conf.items()
+                if not k.startswith(("group.", "auto.", "enable."))
+            }
+            _check_advertised_brokers(AdminClient(admin_conf).list_topics(timeout=10))
             consumer = Consumer(conf)
             consumer.subscribe(topics)
             msgs = []
