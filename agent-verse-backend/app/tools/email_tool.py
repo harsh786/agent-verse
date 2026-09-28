@@ -214,18 +214,65 @@ class EmailTool:
 # ── Module-level convenience wrapper for simple SMTP sends ────────────────────
 
 
+def platform_sender() -> str:
+    """The only ``From`` address the platform SMTP relay may send as.
+
+    ``SMTP_FROM`` (the operator-verified sender) → ``SMTP_USER`` → a local
+    placeholder. Tenant input never reaches the ``From`` header: the platform
+    relay is authenticated with *platform* credentials, so honouring a
+    caller-supplied From let any tenant send mail that passes SPF/DKIM as e.g.
+    ``ceo@bank.com`` or another tenant's domain.
+    """
+    return (
+        os.getenv("SMTP_FROM", "").strip()
+        or os.getenv("SMTP_USER", "").strip()
+        or "noreply@agentverse.local"
+    )
+
+
+def _check_header_safe(value: str, what: str) -> None:
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{what} must not contain line breaks")
+
+
 async def email_send(
     to: str | list[str],
     subject: str,
     body: str,
     *,
     from_addr: str | None = None,
+    reply_to: str | None = None,
+    tenant_id: str = "",
 ) -> dict[str, Any]:
     """Send an email via aiosmtplib using environment-variable SMTP config.
 
     For local dev, point SMTP_HOST=localhost SMTP_PORT=1025 (MailHog).
     Returns ``{"success": True, ...}`` or ``{"success": False, "error": ...}``.
+
+    ``From`` is always :func:`platform_sender`. A ``from_addr`` other than that
+    address is refused (fail closed) rather than silently rewritten; a caller
+    that wants replies elsewhere passes ``reply_to``.
     """
+    sender = platform_sender()
+    recipients = [to] if isinstance(to, str) else list(to)
+    try:
+        if from_addr and from_addr.strip().lower() != sender.lower():
+            raise ValueError(
+                f"from_addr {from_addr!r} is not the platform-verified sender; "
+                "use reply_to to direct replies"
+            )
+        if not recipients:
+            raise ValueError("at least one recipient is required")
+        for addr in recipients:
+            _check_header_safe(addr, "recipient")
+            _validate_email(addr)
+        if reply_to:
+            _check_header_safe(reply_to, "reply_to")
+            _validate_email(reply_to)
+        _check_header_safe(subject, "subject")
+    except ValueError as exc:
+        return {"success": False, "error": str(exc), "rejected": True}
+
     try:
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
@@ -243,13 +290,14 @@ async def email_send(
     password = os.getenv("SMTP_PASSWORD", "")
     use_tls = os.getenv("SMTP_TLS", "false").lower() in {"true", "1"}
 
-    recipients = [to] if isinstance(to, str) else to
-    sender = from_addr or username or "noreply@agentverse.local"
-
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
+    if reply_to:
+        msg["Reply-To"] = reply_to
+    if tenant_id:
+        msg["X-AgentVerse-Tenant"] = tenant_id
     msg.attach(MIMEText(body, "plain"))
 
     try:

@@ -451,22 +451,65 @@ async def test_email_send_multiple_recipients(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_email_send_custom_from_addr(monkeypatch):
+async def test_email_send_refuses_spoofed_from_addr(monkeypatch):
+    """Regression: a caller-chosen from_addr went straight into the From header
+    of mail relayed with *platform* SMTP credentials (sender spoofing)."""
     monkeypatch.setenv("SMTP_HOST", "localhost")
     monkeypatch.setenv("SMTP_PORT", "1025")
+    monkeypatch.setenv("SMTP_FROM", "noreply@platform.example")
 
     with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
         result = await email_send(
             to="r@x.com",
             subject="Custom from",
             body="Body",
-            from_addr="custom@domain.com",
+            from_addr="ceo@bank.com",
+        )
+    assert result["success"] is False
+    assert result["rejected"] is True
+    mock_send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_email_send_forces_platform_sender_and_reply_to(monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "localhost")
+    monkeypatch.setenv("SMTP_PORT", "1025")
+    monkeypatch.setenv("SMTP_FROM", "noreply@platform.example")
+
+    with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
+        result = await email_send(
+            to="r@x.com",
+            subject="Hi",
+            body="Body",
+            from_addr="NoReply@platform.example",  # the verified sender is accepted
+            reply_to="team@tenant.example",
+            tenant_id="tenant-1",
         )
     assert result["success"] is True
-    # Verify the msg From header was set
-    args, kwargs = mock_send.call_args
-    msg = args[0]
-    assert msg["From"] == "custom@domain.com"
+    msg = mock_send.call_args.args[0]
+    assert msg["From"] == "noreply@platform.example"
+    assert msg["Reply-To"] == "team@tenant.example"
+    assert msg["X-AgentVerse-Tenant"] == "tenant-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"to": "r@x.com\r\nBcc: victim@x.com"},
+        {"to": "not-an-address"},
+        {"to": "r@x.com", "subject": "hi\r\nBcc: victim@x.com"},
+        {"to": "r@x.com", "reply_to": "a@b.com\nBcc: c@d.com"},
+    ],
+)
+async def test_email_send_rejects_header_injection(monkeypatch, kwargs):
+    monkeypatch.setenv("SMTP_HOST", "localhost")
+    with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
+        result = await email_send(
+            subject=kwargs.pop("subject", "s"), body="b", **kwargs
+        )
+    assert result["success"] is False
+    mock_send.assert_not_called()
 
 
 @pytest.mark.asyncio

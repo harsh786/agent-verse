@@ -132,18 +132,34 @@ class SendEmailRequest(BaseModel):
     to: str | list[str]
     subject: str
     body: str
+    # Only the platform-verified sender is accepted here (anything else → 400);
+    # use ``reply_to`` to direct replies to a tenant address.
     from_addr: str | None = None
+    reply_to: str | None = None
 
 
 @router.post("/email/send")
 async def send_email(request: Request, body: SendEmailRequest) -> dict[str, Any]:
-    """Send an email via SMTP (uses env-var config; MailHog in dev)."""
+    """Send an email via SMTP (uses env-var config; MailHog in dev).
+
+    The ``From`` header is always the platform-verified sender: this relay uses
+    platform SMTP credentials, so a tenant-chosen From was sender spoofing.
+    """
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     from app.tools.email_tool import email_send
 
-    result = await email_send(body.to, body.subject, body.body, from_addr=body.from_addr)
+    result = await email_send(
+        body.to,
+        body.subject,
+        body.body,
+        from_addr=body.from_addr,
+        reply_to=body.reply_to,
+        tenant_id=str(ctx.tenant_id),
+    )
+    if result.get("rejected"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("error"))
     if not result.get("success", True):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

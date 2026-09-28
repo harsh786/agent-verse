@@ -274,7 +274,7 @@ def test_send_email_requires_auth() -> None:
 
 
 def test_send_email_success(monkeypatch) -> None:
-    async def mock_email_send(to, subject, body, from_addr=None):
+    async def mock_email_send(to, subject, body, from_addr=None, **_kw):
         return {"status": "sent", "message_id": "msg-001"}
 
     monkeypatch.setattr("app.tools.email_tool.email_send", mock_email_send)
@@ -289,7 +289,7 @@ def test_send_email_success(monkeypatch) -> None:
 
 
 def test_send_email_list_recipients(monkeypatch) -> None:
-    async def mock_email_send(to, subject, body, from_addr=None):
+    async def mock_email_send(to, subject, body, from_addr=None, **_kw):
         return {"status": "sent", "recipient_count": len(to) if isinstance(to, list) else 1}
 
     monkeypatch.setattr("app.tools.email_tool.email_send", mock_email_send)
@@ -304,3 +304,25 @@ def test_send_email_list_recipients(monkeypatch) -> None:
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 200
+
+
+def test_send_email_spoofed_from_is_400_and_never_sent(monkeypatch) -> None:
+    """The platform relay must not send as a tenant-chosen From address."""
+    from unittest.mock import AsyncMock, patch
+
+    monkeypatch.setenv("SMTP_FROM", "noreply@platform.example")
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    with patch("aiosmtplib.send", new_callable=AsyncMock) as mock_send:
+        resp = client.post(
+            "/tools/email/send",
+            json={
+                "to": "victim@example.com",
+                "subject": "Wire transfer",
+                "body": "Please pay",
+                "from_addr": "ceo@bank.com",
+            },
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert resp.status_code == 400
+    assert "platform-verified sender" in resp.json()["detail"]
+    mock_send.assert_not_called()

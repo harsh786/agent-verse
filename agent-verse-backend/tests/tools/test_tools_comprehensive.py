@@ -611,8 +611,8 @@ class TestEmailSendModuleFunction:
         assert "SMTP down" in result["error"]
 
     @pytest.mark.asyncio
-    async def test_email_send_uses_from_addr_kwarg(self):
-        """from_addr kwarg is used as the sender when provided."""
+    async def test_email_send_never_uses_caller_from_addr(self):
+        """A caller-chosen from_addr is refused — never put in the From header."""
         from app.tools.email_tool import email_send
 
         captured_msg = []
@@ -621,15 +621,15 @@ class TestEmailSendModuleFunction:
             captured_msg.append(msg)
 
         with patch("aiosmtplib.send", side_effect=capture):
-            await email_send(
+            result = await email_send(
                 to="u@example.com",
                 subject="s",
                 body="b",
                 from_addr="custom@sender.com",
             )
 
-        assert len(captured_msg) == 1
-        assert captured_msg[0]["From"] == "custom@sender.com"
+        assert result["success"] is False
+        assert captured_msg == []
 
     @pytest.mark.asyncio
     async def test_email_send_env_var_smtp_host(self):
