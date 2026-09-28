@@ -52,9 +52,10 @@ async def test_scheduled_fire_dedups_on_replay(tenant_client: Any) -> None:
     schedule_id = await _create_cron_trigger(tenant_client)
 
     # ── First scheduled fire: a real goal is created ──────────────────────────
+    tick = "2026-09-28T09:00:00+00:00"
     first = await tenant_client.post(
         f"/triggers/{schedule_id}/fire",
-        json={"payload": {"tick": "A", "n": 1}},
+        json={"payload": {"tick": "A", "n": 1}, "scheduled_fire_time": tick},
     )
     assert first.status_code == 200, f"first fire failed: {first.status_code} {first.text}"
     first_body = first.json()
@@ -73,7 +74,7 @@ async def test_scheduled_fire_dedups_on_replay(tenant_client: Any) -> None:
     # tick and is governed away — no second goal.
     second = await tenant_client.post(
         f"/triggers/{schedule_id}/fire",
-        json={"payload": {"tick": "B", "n": 2}},
+        json={"payload": {"tick": "B", "n": 2}, "scheduled_fire_time": tick},
     )
     assert second.status_code == 200, f"second fire failed: {second.status_code} {second.text}"
     second_body = second.json()
@@ -84,3 +85,25 @@ async def test_scheduled_fire_dedups_on_replay(tenant_client: Any) -> None:
     assert second_body.get("goal_id") in (None, ""), (
         f"dedup fire must not mint a new goal, got {second_body!r}"
     )
+
+
+async def test_independent_manual_fires_are_not_deduplicated(tenant_client: Any) -> None:
+    """Regression: with no fire time the key was the constant 'now', so a
+    trigger's manual fire worked exactly once and every later one was a 'dup'."""
+    schedule_id = await _create_cron_trigger(tenant_client)
+    bodies = []
+    for n in (1, 2):
+        r = await tenant_client.post(f"/triggers/{schedule_id}/fire", json={"payload": {"n": n}})
+        assert r.status_code == 200, r.text
+        bodies.append(r.json())
+    assert bodies[0].get("goal_created") is True, bodies
+    # The second fire is NOT a trigger-level duplicate. It either creates its own
+    # goal or — while the identical first goal is still in flight — is folded
+    # into it and says so honestly (never reported as a newly created goal).
+    second = bodies[1]
+    assert second.get("skip_reason") != "dedup", bodies
+    if second.get("goal_id") == bodies[0]["goal_id"]:
+        assert second.get("goal_created") is False
+        assert second.get("skip_reason") == "goal_in_progress"
+    else:
+        assert second.get("goal_created") is True

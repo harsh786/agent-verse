@@ -135,6 +135,10 @@ class SimulateRequest(BaseModel):
 
 class FireRequest(BaseModel):
     payload: dict[str, Any] | None = None
+    # Identity of the firing for time-based triggers: a replay of the same tick
+    # (same scheduled_fire_time) is deduplicated. Without it each call is an
+    # independent manual fire.
+    scheduled_fire_time: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -607,7 +611,9 @@ async def fire_trigger_now(schedule_id: str, request: Request, body: FireRequest
     if dispatcher is None:
         raise HTTPException(status_code=503, detail="Dispatcher unavailable")
 
-    event = await dispatcher.dispatch(spec, sample, tenant_ctx)
+    event = await dispatcher.dispatch(
+        spec, sample, tenant_ctx, scheduled_fire_time=getattr(body, "scheduled_fire_time", None)
+    )
     return {
         "goal_id": getattr(event, "goal_id", None),  # WT-2/G3: field is goal_id
         "goal_created": getattr(event, "goal_created", None),

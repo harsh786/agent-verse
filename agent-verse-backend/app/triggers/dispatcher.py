@@ -310,13 +310,18 @@ class TriggerDispatcher:
 
             # ── Step 11: Goal creation ────────────────────────────────────────
             goal_id: str | None = None
+            goal_deduplicated = False
             try:
-                goal_id = await self._create_goal(
+                _created = await self._create_goal(
                     trigger_spec,
                     goal_text,
                     tenant_ctx,
                     idempotency_key,
                 )
+                if isinstance(_created, tuple):
+                    goal_id, goal_deduplicated = _created
+                else:  # overridden/mocked _create_goal returning just the id
+                    goal_id = _created
                 cb.record_success()
             except Exception as exc:
                 cb.record_failure()
@@ -340,9 +345,11 @@ class TriggerDispatcher:
                 idempotency_key=idempotency_key,
                 fired_at=datetime.now(UTC),
                 payload=payload,
-                goal_created=goal_id is not None,
+                # Folded into an identical goal already in progress: no goal was
+                # created by this firing (it used to report goal_created=True).
+                goal_created=goal_id is not None and not goal_deduplicated,
                 goal_id=goal_id,
-                skip_reason=None,
+                skip_reason="goal_in_progress" if goal_deduplicated else None,
                 processing_ms=processing_ms,
             )
             await self._persist_event(event)
@@ -491,9 +498,10 @@ class TriggerDispatcher:
         goal_text: str,
         tenant_ctx: object,
         idempotency_key: str,
-    ) -> str | None:
+    ) -> tuple[str | None, bool]:
+        """Create the goal; returns (goal_id, deduplicated_into_an_existing_goal)."""
         if self._goal_service is None:
-            return None
+            return None, False
         try:
             result = await self._goal_service.create_goal(
                 tenant_ctx=tenant_ctx,
@@ -508,10 +516,10 @@ class TriggerDispatcher:
                 idempotency_key=idempotency_key,
             )
             if hasattr(result, "goal_id"):
-                return result.goal_id
+                return result.goal_id, bool(getattr(result, "deduplicated", False))
             if isinstance(result, dict):
-                return result.get("goal_id")
-            return str(result) if result else None
+                return result.get("goal_id"), bool(result.get("deduplicated"))
+            return (str(result) if result else None), False
         except Exception as exc:
             raise RuntimeError(f"goal_service.create_goal failed: {exc}") from exc
 
