@@ -270,7 +270,29 @@ async def voice_persona_upload(
                 "detail": "Reference audio must be <= 5 MB",
             },
         )
-    await _cache_persona(request.app, tenant_id, org_id, content, ref_text, language)
+    # The persona lives in Redis (that is what _get_persona reads). This used to
+    # swallow a missing/failed Redis and answer 200 with nothing stored.
+    if _voice_redis(request.app) is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "persona-store-unavailable",
+                "status": 503,
+                "detail": "Voice persona storage (Redis) is not configured",
+            },
+        )
+    try:
+        await _cache_persona(request.app, tenant_id, org_id, content, ref_text, language)
+    except Exception as exc:
+        log.error("voice.persona_store_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "type": "persona-store-unavailable",
+                "status": 503,
+                "detail": "Voice persona could not be stored; retry",
+            },
+        ) from exc
     url = await _store_persona_audio(tenant_id, org_id, content)
     import datetime
 
@@ -280,7 +302,7 @@ async def voice_persona_upload(
         ref_audio_url=url,
         ref_text=ref_text,
         language=language,
-        created_at=datetime.datetime.utcnow().isoformat(),
+        created_at=datetime.datetime.now(datetime.UTC).isoformat(),
     )
 
 
@@ -289,7 +311,14 @@ async def voice_persona_upload(
 )
 async def voice_persona_delete(org_id: str, request: Request) -> None:
     ctx = _require_tenant(request)
-    await _delete_persona(request.app, _tenant_id(ctx), org_id)
+    if _voice_redis(request.app) is None:
+        raise HTTPException(status_code=503, detail="Voice persona storage is not configured")
+    try:
+        await _delete_persona(request.app, _tenant_id(ctx), org_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Voice persona could not be deleted; retry"
+        ) from exc
 
 
 @router.websocket("/stream/{org_id}")
@@ -386,7 +415,9 @@ def _fallback_health(org_id: str) -> dict:
     return {
         "org_id": org_id,
         "org_name": "your organisation",
-        "overall_health": "healthy",
+        # Unknown, not "healthy": this is the fallback when the real org health
+        # could not be read.
+        "overall_health": "unknown",
         "active_missions": 0,
         "active_teams": 0,
         "pending_approvals": 0,
@@ -416,9 +447,17 @@ async def _fetch_wywa(app: Any, org_id: str, tenant_id: str) -> tuple[int, str]:
         return 0, ""
 
 
+def _voice_redis(app: Any) -> Any:
+    """Binary-safe Redis for voice caches: an explicitly injected
+    ``app.state.redis`` (tests / embedders; never set by create_app), else the
+    lifespan's ``app.state.voice_redis``."""
+    state = getattr(app, "state", None)
+    return getattr(state, "redis", None) or getattr(state, "voice_redis", None)
+
+
 async def _get_persona(app: Any, tid: str, org_id: str) -> tuple[bytes | None, str | None]:
     try:
-        redis = getattr(getattr(app, "state", None), "redis", None)
+        redis = _voice_redis(app)
         if not redis:
             return None, None
         import base64
@@ -436,36 +475,33 @@ async def _get_persona(app: Any, tid: str, org_id: str) -> tuple[bytes | None, s
 async def _cache_persona(
     app: Any, tid: str, org_id: str, audio: bytes, ref_text: str, lang: str
 ) -> None:
-    try:
-        redis = getattr(getattr(app, "state", None), "redis", None)
-        if not redis:
-            return
-        import base64
+    """Store the persona. Raises on a Redis failure (callers must not report a
+    persona that was not stored); a no-op only when no Redis is wired."""
+    redis = _voice_redis(app)
+    if not redis:
+        return
+    import base64
 
-        await redis.hset(
-            f"voice:persona:{tid}:{org_id}",
-            mapping={
-                "audio": base64.b64encode(audio).decode(),
-                "text": ref_text,
-                "language": lang,
-            },
-        )
-    except Exception:
-        pass
+    await redis.hset(
+        f"voice:persona:{tid}:{org_id}",
+        mapping={
+            "audio": base64.b64encode(audio).decode(),
+            "text": ref_text,
+            "language": lang,
+        },
+    )
 
 
 async def _delete_persona(app: Any, tid: str, org_id: str) -> None:
-    try:
-        redis = getattr(getattr(app, "state", None), "redis", None)
-        if redis:
-            await redis.delete(f"voice:persona:{tid}:{org_id}")
-    except Exception:
-        pass
+    """Delete the persona. Raises on a Redis failure (never a fake 204)."""
+    redis = _voice_redis(app)
+    if redis:
+        await redis.delete(f"voice:persona:{tid}:{org_id}")
 
 
 async def _redis_get(app: Any, key: str) -> bytes | None:
     try:
-        redis = getattr(getattr(app, "state", None), "redis", None)
+        redis = _voice_redis(app)
         return await redis.get(key) if redis else None
     except Exception:
         return None
@@ -473,14 +509,16 @@ async def _redis_get(app: Any, key: str) -> bytes | None:
 
 async def _redis_set(app: Any, key: str, value: bytes, ttl: int) -> None:
     try:
-        redis = getattr(getattr(app, "state", None), "redis", None)
+        redis = _voice_redis(app)
         if redis:
             await redis.setex(key, ttl, value)
     except Exception:
         pass
 
 
-async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str:
+async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str | None:
+    """Archive the reference audio in S3; ``None`` when that fails. It used to
+    return a fabricated ``local://`` URL for a file that was written nowhere."""
     try:
         import boto3
 
@@ -494,8 +532,9 @@ async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str:
         key = f"{tid}/{org_id}/ref.wav"
         s3.put_object(Bucket=bucket, Key=key, Body=audio, ContentType="audio/wav")
         return f"s3://{bucket}/{key}"
-    except Exception:
-        return f"local://{tid}/{org_id}/ref.wav"
+    except Exception as exc:
+        log.warning("voice.persona_s3_archive_failed", error=str(exc)[:200])
+        return None
 
 
 async def _ws_auth(ws: WebSocket) -> str | None:

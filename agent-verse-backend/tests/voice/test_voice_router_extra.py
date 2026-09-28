@@ -298,7 +298,8 @@ async def test_fetch_org_health_no_db_returns_fallback() -> None:
     app.state = MagicMock(spec=[])  # no db_session_factory attribute
     health = await voice_router_module._fetch_org_health(app, "org-1", "t1")
     assert health["org_id"] == "org-1"
-    assert health["overall_health"] == "healthy"
+    # Unread health is "unknown", never a fabricated "healthy".
+    assert health["overall_health"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -330,7 +331,7 @@ async def test_fetch_org_health_exception_falls_back() -> None:
     app = MagicMock()
     app.state.db_session_factory = _boom
     health = await voice_router_module._fetch_org_health(app, "org-1", "t1")
-    assert health["overall_health"] == "healthy"
+    assert health["overall_health"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -433,12 +434,14 @@ async def test_cache_persona_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cache_persona_exception_is_swallowed() -> None:
+async def test_cache_persona_exception_propagates() -> None:
+    """A failed store must surface (the route turns it into 503), not be swallowed."""
     app = MagicMock()
     redis = MagicMock()
     redis.hset = AsyncMock(side_effect=RuntimeError("boom"))
     app.state.redis = redis
-    await voice_router_module._cache_persona(app, "t1", "org-1", b"audio", "text", "en")
+    with pytest.raises(RuntimeError):
+        await voice_router_module._cache_persona(app, "t1", "org-1", b"audio", "text", "en")
 
 
 @pytest.mark.asyncio
@@ -459,12 +462,13 @@ async def test_delete_persona_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_persona_exception_is_swallowed() -> None:
+async def test_delete_persona_exception_propagates() -> None:
     app = MagicMock()
     redis = MagicMock()
     redis.delete = AsyncMock(side_effect=RuntimeError("boom"))
     app.state.redis = redis
-    await voice_router_module._delete_persona(app, "t1", "org-1")
+    with pytest.raises(RuntimeError):
+        await voice_router_module._delete_persona(app, "t1", "org-1")
 
 
 @pytest.mark.asyncio
@@ -530,12 +534,13 @@ async def test_store_persona_audio_success_via_s3() -> None:
 
 
 @pytest.mark.asyncio
-async def test_store_persona_audio_falls_back_to_local_on_failure() -> None:
+async def test_store_persona_audio_returns_none_on_failure() -> None:
+    """It used to fabricate a local:// URL for a file written nowhere."""
     mock_boto3 = MagicMock()
     mock_boto3.client.side_effect = RuntimeError("no creds")
     with patch.dict("sys.modules", {"boto3": mock_boto3}):
         url = await voice_router_module._store_persona_audio("t1", "org-1", b"audio")
-    assert url == "local://t1/org-1/ref.wav"
+    assert url is None
 
 
 def _ws_with_key(key: str | None) -> MagicMock:

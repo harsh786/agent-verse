@@ -34,7 +34,9 @@ class SpeakRequest(BaseModel):
 class PersonaResponse(BaseModel):
     org_id: str
     tenant_id: str
-    ref_audio_url: str
+    # s3:// URL of the archived reference audio; None when it was not archived
+    # (the persona itself is stored in Redis either way).
+    ref_audio_url: str | None = None
     ref_text: str
     language: str = "en"
     created_at: str

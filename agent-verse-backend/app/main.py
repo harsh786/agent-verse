@@ -976,6 +976,59 @@ def create_app(
 
             await close_default_cross_encoder()
 
+        async def start_voice_runtime() -> None:
+            """Voice OS warmup + proactive alert manager + binary voice Redis.
+
+            This block used to sit AFTER the lifespan's ``yield`` — i.e. it ran at
+            shutdown, so the voice providers were never warmed and the alert
+            manager was never started while the app served traffic.
+            """
+            if not getattr(settings, "voice_enabled", True):
+                return
+            # Voice persona / greeting caches store raw WAV bytes and read bytes
+            # keys; the runtime client decodes responses to str, and
+            # app.state.redis (what the voice router read) was never set — so a
+            # persona upload answered 200 while storing nothing. A dedicated
+            # binary-safe client backs them.
+            if getattr(app.state, "_redis", None) is not None:
+                try:
+                    import redis.asyncio as _voice_aioredis
+
+                    app.state.voice_redis = _voice_aioredis.from_url(
+                        settings.redis_url, decode_responses=False
+                    )
+                except Exception as _vr_exc:
+                    logger.warning("voice_redis_unavailable", error=str(_vr_exc))
+            try:
+                import asyncio as _voice_asyncio
+
+                from app.voice.providers import warmup_providers as _voice_warmup
+
+                _voice_asyncio.create_task(_voice_warmup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
+                logger.info("voice_providers_warmup_scheduled")
+                # D-6: Start proactive voice alert manager
+                from app.voice.alerts import VoiceAlertManager
+
+                # app.state._redis is the runtime redis client (set at the pool
+                # wiring above); app.state.redis is never set.
+                _alert_mgr = VoiceAlertManager(redis=getattr(app.state, "_redis", None))
+                await _alert_mgr.start()
+                app.state.voice_alert_manager = _alert_mgr
+                logger.info("voice_alert_manager_started")
+            except Exception as _voice_exc:
+                logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
+
+        async def stop_voice_runtime() -> None:
+            import contextlib as _vr_contextlib
+
+            if (_am := getattr(app.state, "voice_alert_manager", None)) is not None:
+                with _vr_contextlib.suppress(Exception):
+                    await _am.stop()
+            if (_vr := getattr(app.state, "voice_redis", None)) is not None:
+                with _vr_contextlib.suppress(Exception):
+                    await _vr.aclose()
+                app.state.voice_redis = None
+
         if manage_pools:
             active = pools or ConnectionPools(settings=settings)
             await active.startup()
@@ -2379,9 +2432,11 @@ def create_app(
             except Exception as _vision_exc:
                 logger.warning("vision_model_warmup_skipped", error=str(_vision_exc))
 
+            await start_voice_runtime()
             try:
                 yield
             finally:
+                await stop_voice_runtime()
                 # WT-4: Stop the trigger consumers (cancel + await all tasks).
                 _tc = getattr(app.state, "trigger_consumers", None)
                 if _tc is not None:
@@ -2424,34 +2479,13 @@ def create_app(
                     logger.warning("guardrails_repository_unbind_failed", error=str(_ge_stop_exc))
                 await active.shutdown()
         else:
+            await start_voice_runtime()
             try:
                 yield
             finally:
+                await stop_voice_runtime()
                 await close_retrieval_gateways()
                 await close_process_rerankers()
-
-        # ── Voice OS warmup (non-blocking — loads STT/TTS providers in background)
-        if getattr(settings, "voice_enabled", True):
-            try:
-                import asyncio as _voice_asyncio
-
-                from app.voice.providers import warmup_providers as _voice_warmup
-
-                _voice_asyncio.create_task(_voice_warmup())  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                logger.info("voice_providers_warmup_scheduled")
-                # D-6: Start proactive voice alert manager
-                from app.voice.alerts import VoiceAlertManager
-
-                # app.state._redis is the runtime redis client (set at the pool
-                # wiring above); app.state.redis is never set — reading it left
-                # the alert manager with no redis, so proactive voice alerts were
-                # silently never delivered.
-                _alert_mgr = VoiceAlertManager(redis=getattr(app.state, "_redis", None))
-                await _alert_mgr.start()
-                app.state.voice_alert_manager = _alert_mgr
-                logger.info("voice_alert_manager_started")
-            except Exception as _voice_exc:
-                logger.warning("voice_providers_warmup_skipped", error=str(_voice_exc))
 
     app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 

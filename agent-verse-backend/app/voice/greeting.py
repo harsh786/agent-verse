@@ -73,6 +73,12 @@ _TEMPLATES: dict[str, str] = {
         "{active_missions} mission{m_pl} in flight. "
         "{wywa_summary}"
     ),
+    # Org health could not be read — say so rather than "operating smoothly".
+    "unknown": (
+        "Good {tod}, {first_name}. "
+        "I couldn't check on {org_name} right now. "
+        "{wywa_summary}"
+    ),
 }
 
 
@@ -101,8 +107,8 @@ async def build_greeting_script(
     else:
         tod = "evening"
 
-    health_status = health.get("overall_health", "healthy")
-    template = _TEMPLATES.get(health_status, _TEMPLATES["healthy"])
+    health_status = health.get("overall_health", "unknown")
+    template = _TEMPLATES.get(health_status, _TEMPLATES["unknown"])
     first_name = (user_name or "there").split()[0]
     active_missions = int(health.get("active_missions", 0))
     active_teams = int(health.get("active_teams", 0))

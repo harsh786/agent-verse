@@ -184,26 +184,86 @@ async def test_greeting_ok(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-async def test_persona_upload_ok(client: AsyncClient) -> None:
-    """Persona upload stores ref audio."""
-    with patch("app.voice.router._cache_persona", AsyncMock()), \
-         patch("app.voice.router._store_persona_audio", AsyncMock(return_value="local://test")):
-        resp = await client.post(
-            "/v1/voice/persona/org-1?ref_text=hello&language=en",
-            files={"audio": ("ref.wav", _make_silent_wav(), "audio/wav")},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["org_id"] == "org-1"
-    assert data["ref_text"] == "hello"
+async def _voice_client(redis: Any) -> AsyncClient:
+    app = _make_app()
+    app.state.voice_redis = redis
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.hashes: dict[str, dict[str, str]] = {}
+
+    async def hset(self, key: str, mapping: dict[str, str]) -> None:
+        self.hashes[key] = dict(mapping)
+
+    async def hgetall(self, key: str) -> dict[bytes, bytes]:
+        return {k.encode(): v.encode() for k, v in self.hashes.get(key, {}).items()}
+
+    async def delete(self, key: str) -> None:
+        self.hashes.pop(key, None)
 
 
 @pytest.mark.asyncio
-async def test_persona_delete_ok(client: AsyncClient) -> None:
-    """Persona delete returns 204."""
-    with patch("app.voice.router._delete_persona", AsyncMock()):
-        resp = await client.delete("/v1/voice/persona/org-1")
+async def test_persona_upload_stores_the_persona() -> None:
+    """Persona upload stores the ref audio where _get_persona reads it."""
+    import base64
+
+    redis = _FakeRedis()
+    async with await _voice_client(redis) as c:
+        with patch(
+            "app.voice.router._store_persona_audio", AsyncMock(return_value=None)
+        ):
+            resp = await c.post(
+                "/v1/voice/persona/org-1?ref_text=hello&language=en",
+                files={"audio": ("ref.wav", _make_silent_wav(), "audio/wav")},
+            )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["org_id"] == "org-1" and data["ref_text"] == "hello"
+    assert data["ref_audio_url"] is None
+    stored = redis.hashes[f"voice:persona:{TENANT_ID}:org-1"]
+    assert base64.b64decode(stored["audio"]) == _make_silent_wav()
+
+
+@pytest.mark.asyncio
+async def test_persona_upload_without_store_is_503(client: AsyncClient) -> None:
+    """Regression: app.state.redis was never set, so the upload answered 200
+    while storing nothing."""
+    resp = await client.post(
+        "/v1/voice/persona/org-1?ref_text=hello&language=en",
+        files={"audio": ("ref.wav", _make_silent_wav(), "audio/wav")},
+    )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_persona_upload_store_failure_is_503() -> None:
+    redis = _FakeRedis()
+    redis.hset = AsyncMock(side_effect=RuntimeError("down"))  # type: ignore[method-assign]
+    async with await _voice_client(redis) as c:
+        resp = await c.post(
+            "/v1/voice/persona/org-1?ref_text=hello&language=en",
+            files={"audio": ("ref.wav", _make_silent_wav(), "audio/wav")},
+        )
+    assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_persona_delete_ok() -> None:
+    """Persona delete removes the stored persona and returns 204."""
+    redis = _FakeRedis()
+    redis.hashes[f"voice:persona:{TENANT_ID}:org-1"] = {"audio": "", "text": ""}
+    async with await _voice_client(redis) as c:
+        resp = await c.delete("/v1/voice/persona/org-1")
     assert resp.status_code == 204
+    assert redis.hashes == {}
+
+
+@pytest.mark.asyncio
+async def test_persona_delete_without_store_is_503(client: AsyncClient) -> None:
+    resp = await client.delete("/v1/voice/persona/org-1")
+    assert resp.status_code == 503
 
 
 # ── GET /v1/voice/alerts/stream ────────────────────────────────────────────────
