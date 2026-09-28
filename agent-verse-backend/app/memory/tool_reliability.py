@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -14,6 +15,13 @@ class ToolReliabilityStore:
 
     Table: tool_reliability_memory
     Key: (tenant_id, tool_name)
+
+    The table is FORCE ROW LEVEL SECURITY. Every statement here runs for one
+    known tenant (a goal's tool call, or a tenant's own API request), so each
+    opens a transaction with the tenant GUC set and keeps its explicit
+    ``tenant_id`` predicate as defense in depth. Without the GUC, a NOBYPASSRLS
+    application role rejects every upsert and reads back zero rows — both of
+    which the broad ``except`` blocks below would otherwise hide.
     """
 
     def __init__(self, db_session_factory: Any = None) -> None:
@@ -51,7 +59,11 @@ class ToolReliabilityStore:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                     INSERT INTO tool_reliability_memory
@@ -81,7 +93,11 @@ class ToolReliabilityStore:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text("""
@@ -126,7 +142,11 @@ class ToolReliabilityStore:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""

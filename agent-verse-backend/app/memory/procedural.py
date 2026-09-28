@@ -201,8 +201,12 @@ class ProceduralMemoryStore:
         from sqlalchemy import text
 
         where_domain = "AND domain = :domain" if domain else ""
+        # Explicit transaction: the GUC set by sqlalchemy_rls_context is
+        # transaction-local (SET LOCAL semantics), so it must share one
+        # transaction with the SELECT rather than rely on autobegin ordering.
         async with (
             self._db() as session,
+            session.begin(),
             sqlalchemy_rls_context(session, tenant_id),
         ):
             rows = (

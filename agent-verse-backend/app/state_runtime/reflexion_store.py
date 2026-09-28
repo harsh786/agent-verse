@@ -2,6 +2,11 @@
 
 In-memory deque for hot path; async DB persistence via record_async()
 to the `reflexion_lessons` table (migration 0087).
+
+``reflexion_lessons`` is FORCE ROW LEVEL SECURITY. Every DB call here is for a
+single known tenant (a goal's own failure, or its planner's recall), so each
+runs in a transaction with the tenant GUC set via ``sqlalchemy_rls_context`` —
+never the maintenance role — and keeps its explicit ``tenant_id`` predicate.
 """
 
 from __future__ import annotations
@@ -10,6 +15,8 @@ import time
 import uuid
 from collections import deque
 from typing import Any
+
+from app.db.rls import sqlalchemy_rls_context
 
 # Re-hydrate a tenant's recent-lessons cache from the DB at most this often.
 # recall() only re-pulls from the DB when its LOCAL deque is empty for that
@@ -108,7 +115,11 @@ class ReflexionStore:
             from sqlalchemy import text
 
             lesson_id = uuid.uuid4().hex
-            async with db_factory() as session, session.begin():
+            async with (
+                db_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO reflexion_lessons
@@ -146,7 +157,11 @@ class ReflexionStore:
         try:
             from sqlalchemy import text
 
-            async with db_factory() as session:
+            async with (
+                db_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""

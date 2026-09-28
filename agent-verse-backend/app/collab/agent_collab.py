@@ -147,7 +147,18 @@ class AgentCollabSession:
 
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            # debate_sessions / debate_proposals are FORCE RLS. The debate runs
+            # for one tenant, so both inserts go through that tenant's GUC. The
+            # ON CONFLICT update is additionally pinned to the same tenant so a
+            # colliding session id owned by another tenant is never touched
+            # (defense in depth on top of the policy).
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO debate_sessions
@@ -158,6 +169,7 @@ class AgentCollabSession:
                              :conf, :rounds, 'complete', NOW(), NOW())
                         ON CONFLICT (id) DO UPDATE
                             SET status='complete', completed_at=NOW()
+                            WHERE debate_sessions.tenant_id = EXCLUDED.tenant_id
                     """),
                     {
                         "id": session_id,

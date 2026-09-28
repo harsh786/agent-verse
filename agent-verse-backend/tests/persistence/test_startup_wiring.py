@@ -88,8 +88,14 @@ def test_ab_testing_engine_accepts_db_factory():
     assert "db_factory" in sig.parameters
 
 
-async def test_orchestration_persistence_wildcard_loads_all():
-    """load_tool_trust_from_db('*') must load all tenants, not return 0 rows."""
+async def test_orchestration_persistence_wildcard_load_is_refused():
+    """load_tool_trust_from_db('*') must NOT scan every tenant's tool_trust_records.
+
+    This test used to assert the opposite (a startup warm-up that SELECTed all
+    tenants' rows in one unscoped query). Under the NOBYPASSRLS application role
+    that query matched nothing, and running it as the maintenance role would be
+    a privilege escalation for a cache warm-up. Loads are per tenant, under RLS.
+    """
     from app.services.orchestration_persistence import OrchestrationPersistence
     from app.tool_runtime.tool_trust_store import ToolTrustStore
 
@@ -107,11 +113,11 @@ async def test_orchestration_persistence_wildcard_loads_all():
     mock_session.execute = AsyncMock(return_value=mock_result)
     db_factory = MagicMock(return_value=mock_session)
 
-    await persist.load_tool_trust_from_db("*", db=db_factory)
+    loaded = await persist.load_tool_trust_from_db("*", db=db_factory)
 
-    # Both tools must now be in the trust store
-    history = store.get_history("jira.search")
-    assert len(history) >= 1, "jira.search must be loaded from wildcard query"
+    assert loaded == 0
+    db_factory.assert_not_called()  # no session opened, no unscoped SELECT issued
+    assert store.get_history("jira.search") == []
 
 
 def test_kg_sync_read_on_db_backed_store_refuses_instead_of_hydrating():

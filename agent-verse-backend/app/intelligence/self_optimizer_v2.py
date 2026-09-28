@@ -400,9 +400,9 @@ Respond with ONLY valid JSON:
                     _t("""
                         UPDATE improvement_experiments
                         SET status = 'completed', applied_at = NOW(), winner = 'candidate'
-                        WHERE id = :exp_id
+                        WHERE id = :exp_id AND tenant_id = :tenant_id
                     """),
-                    {"exp_id": experiment_id},
+                    {"exp_id": experiment_id, "tenant_id": tenant_id},
                 )
                 await db.commit()
         except Exception as exc:
@@ -497,8 +497,11 @@ Respond with ONLY valid JSON:
             ):
                 row = (
                     await db.execute(
-                        _t("SELECT control_config FROM improvement_experiments WHERE id = :id"),
-                        {"id": experiment_id},
+                        _t(
+                            "SELECT control_config FROM improvement_experiments "
+                            "WHERE id = :id AND tenant_id = :tenant_id"
+                        ),
+                        {"id": experiment_id, "tenant_id": tenant_id},
                     )
                 ).fetchone()
                 if not row:
@@ -525,9 +528,9 @@ Respond with ONLY valid JSON:
                         UPDATE improvement_experiments
                         SET status = 'rolled_back', rolled_back_at = NOW(),
                             rolled_back_reason = :reason, winner = 'control'
-                        WHERE id = :id
+                        WHERE id = :id AND tenant_id = :tenant_id
                     """),
-                    {"reason": reason, "id": experiment_id},
+                    {"reason": reason, "id": experiment_id, "tenant_id": tenant_id},
                 )
                 await db.commit()
 
@@ -568,8 +571,11 @@ Respond with ONLY valid JSON:
         ):
             row = (
                 await db.execute(
-                    _t("SELECT candidate_config FROM improvement_experiments WHERE id = :id"),
-                    {"id": exp_id},
+                    _t(
+                        "SELECT candidate_config FROM improvement_experiments "
+                        "WHERE id = :id AND tenant_id = :tenant_id"
+                    ),
+                    {"id": exp_id, "tenant_id": tenant_id},
                 )
             ).fetchone()
             if row:
@@ -766,7 +772,8 @@ Respond with ONLY valid JSON:
                             AVG(CASE WHEN r.arm = 'control'   THEN r.metric_value END) AS ctrl_mean,
                             AVG(CASE WHEN r.arm = 'candidate' THEN r.metric_value END) AS cand_mean
                         FROM improvement_experiments e
-                        LEFT JOIN improvement_results r ON r.experiment_id = e.id
+                        LEFT JOIN improvement_results r
+                               ON r.experiment_id = e.id AND r.tenant_id = e.tenant_id
                         WHERE e.id = :exp_id AND e.tenant_id = :tenant_id
                         GROUP BY e.id, e.min_samples_per_arm, e.significance_threshold,
                                  e.success_metric, e.agent_id, e.candidate_config
@@ -818,7 +825,7 @@ Respond with ONLY valid JSON:
                                       THEN 'completed' ELSE status END,
                         completed_at = CASE WHEN :winner != 'inconclusive'
                                             THEN NOW() ELSE completed_at END
-                    WHERE id = :exp_id
+                    WHERE id = :exp_id AND tenant_id = :tenant_id
                 """),
                 {
                     "ctrl_n": ctrl_n,
@@ -829,6 +836,7 @@ Respond with ONLY valid JSON:
                     "prob": round(posterior_prob, 3),
                     "winner": winner,
                     "exp_id": experiment_id,
+                    "tenant_id": tenant_id,
                 },
             )
             await db.commit()
@@ -907,8 +915,11 @@ Respond with ONLY valid JSON:
             ):
                 row = (
                     await db.execute(
-                        _t("SELECT traffic_split_pct FROM improvement_experiments WHERE id = :id"),
-                        {"id": exp_id},
+                        _t(
+                            "SELECT traffic_split_pct FROM improvement_experiments "
+                            "WHERE id = :id AND tenant_id = :tenant_id"
+                        ),
+                        {"id": exp_id, "tenant_id": tenant_id},
                     )
                 ).fetchone()
                 if row:

@@ -434,6 +434,11 @@ class TestReflexionStore:
                 )
             )
         )
+        # load_from_db reads inside session.begin() + the tenant RLS context.
+        mock_begin = AsyncMock()
+        mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+        mock_begin.__aexit__ = AsyncMock(return_value=False)
+        mock_session.begin = MagicMock(return_value=mock_begin)
         mock_ctx = AsyncMock()
         mock_ctx.__aenter__ = AsyncMock(return_value=mock_session)
         mock_ctx.__aexit__ = AsyncMock(return_value=None)

@@ -70,6 +70,11 @@ async def test_reflexion_store_load_from_db_seeds_memory():
         ["t1", "loaded lesson", "g_old", "auth_failure"]
     ])
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # load_from_db reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
 
     db_factory = MagicMock(return_value=mock_session)
 
@@ -161,6 +166,11 @@ async def test_reflexion_store_load_from_db_with_malformed_row_does_not_raise():
     # Malformed row: missing the failure_class column entirely.
     mock_result.fetchall = MagicMock(return_value=[["t1", "malformed lesson"]])
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # load_from_db reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
 
     db_factory = MagicMock(return_value=mock_session)
 
@@ -190,6 +200,11 @@ async def test_reflexion_store_recall_triggers_lazy_hydration_when_event_loop_ru
         return_value=[["t1", "lazy hydrated lesson", "g1", "auth"]]
     )
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # load_from_db reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
     db_factory = MagicMock(return_value=mock_session)
 
     store = ReflexionStore(db_factory=db_factory)

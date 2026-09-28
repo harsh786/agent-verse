@@ -2308,18 +2308,19 @@ def create_app(
             except Exception as _del_exc:
                 logger.warning("deletion_orchestrator_wire_failed", error=str(_del_exc))
 
-            # Orchestration persistence: hydrate tool trust from DB (always-on, no flag gate)
+            # Orchestration persistence (always-on, no flag gate). There is no
+            # startup warm-up: it used to SELECT every tenant's tool_trust_records
+            # in one unscoped query, which under the NOBYPASSRLS app role matched
+            # nothing, and running a cache warm-up as the maintenance role would
+            # be a privilege escalation. Writes and any per-tenant load run under
+            # that tenant's RLS context (see OrchestrationPersistence).
             try:
                 from app.services.orchestration_persistence import OrchestrationPersistence
 
-                _orch_persistence = OrchestrationPersistence(db=db_factory)
-                import asyncio as _asyncio
-
-                _asyncio.create_task(_orch_persistence.load_tool_trust_from_db("*", db=db_factory))  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                app.state.orchestration_persistence = _orch_persistence
-                logger.info("orchestration_persistence_hydration_started")
+                app.state.orchestration_persistence = OrchestrationPersistence(db=db_factory)
+                logger.info("orchestration_persistence_wired")
             except Exception as _orch_exc:
-                logger.warning("orchestration_state_hydration_failed", error=str(_orch_exc))
+                logger.warning("orchestration_persistence_wire_failed", error=str(_orch_exc))
 
             # ── WT-4: Start the long-running trigger consumers ────────────────────
             # Owns chain/HITL/memory consumer tasks; each subscribes to Redis

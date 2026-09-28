@@ -124,6 +124,11 @@ async def test_episodic_recall_db_ordering_prefers_relevance_then_quality(tenant
         ]
     )
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # recall() reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
     db_factory = MagicMock(return_value=mock_session)
 
     store = EpisodicMemoryStore(db_factory=db_factory)
@@ -202,6 +207,11 @@ async def test_episodic_recall_db_malformed_tools_used_json_does_not_raise(tenan
         return_value=[("e1", "g1", "goal text", "summary", "success", "", 0.5, 1, "{not valid json")]
     )
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # recall() reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
     db_factory = MagicMock(return_value=mock_session)
 
     store = EpisodicMemoryStore(db_factory=db_factory)
@@ -398,6 +408,11 @@ async def test_procedural_recall_db_malformed_tool_sequence_json_does_not_raise(
         return_value=[("s1", "goal pattern", "jira", "{not valid json", 1, 0.9)]
     )
     mock_session.execute = AsyncMock(return_value=mock_result)
+    # recall() reads inside session.begin() + the tenant RLS context.
+    mock_begin = AsyncMock()
+    mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
+    mock_begin.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=mock_begin)
     db_factory = MagicMock(return_value=mock_session)
 
     store = ProceduralMemoryStore(db_factory=db_factory)

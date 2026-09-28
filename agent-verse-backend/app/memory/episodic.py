@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.db.rls import sqlalchemy_rls_context
+
 if TYPE_CHECKING:
     from app.agent.state import AgentState
     from app.tenancy.context import TenantContext
@@ -128,7 +130,14 @@ class EpisodicMemoryStore:
 
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                # episodic_memories is FORCE ROW LEVEL SECURITY: the INSERT must
+                # carry the tenant GUC or a NOBYPASSRLS role rejects it (and the
+                # except below would swallow that, silently losing the episode).
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
                     await session.execute(
                         text("""
                         INSERT INTO episodic_memories
@@ -203,7 +212,14 @@ class EpisodicMemoryStore:
         from sqlalchemy import text
 
         where_outcome = "AND outcome = :outcome" if outcome_filter else ""
-        async with self._db() as session:
+        # Tenant GUC for RLS plus the explicit tenant_id predicate (defense in
+        # depth). Without the GUC a NOBYPASSRLS role sees zero rows and recall
+        # silently degrades to the per-process cache.
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             rows = (
                 await session.execute(
                     text(f"""

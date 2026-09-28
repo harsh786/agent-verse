@@ -151,10 +151,19 @@ class OrchestrationPersistence:
         try:
             from sqlalchemy import text
 
-            lessons = self._reflexion_store.recall(tenant_id=state.tenant_ctx.tenant_id, limit=1)
+            from app.db.rls import sqlalchemy_rls_context
+
+            tenant_id = state.tenant_ctx.tenant_id
+            lessons = self._reflexion_store.recall(tenant_id=tenant_id, limit=1)
             if lessons:
                 latest = lessons[-1]
-                async with effective_db() as session, session.begin():
+                # reflexion_lessons is FORCE RLS; this runs inside the goal, so the
+                # tenant is known — tenant GUC, never the maintenance role.
+                async with (
+                    effective_db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     await session.execute(
                         text("""
                             INSERT INTO reflexion_lessons
@@ -167,7 +176,7 @@ class OrchestrationPersistence:
                         """),
                         {
                             "id": uuid.uuid4().hex,
-                            "tenant_id": state.tenant_ctx.tenant_id,
+                            "tenant_id": tenant_id,
                             "lesson": latest["lesson"],
                             "source_goal_id": state.goal_id,
                             "failure_class": latest.get("failure_class", "unknown"),
@@ -269,7 +278,15 @@ class OrchestrationPersistence:
         try:
             from sqlalchemy import text
 
-            async with effective_db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            # tool_trust_records is FORCE RLS; the outcome belongs to the goal's
+            # tenant, so write under that tenant's GUC.
+            async with (
+                effective_db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO tool_trust_records
@@ -292,41 +309,62 @@ class OrchestrationPersistence:
 
             get_logger(__name__).warning("tool_trust_persist_failed", error=str(exc))
 
-    async def load_tool_trust_from_db(self, tenant_id: str, db: Any = None) -> None:
-        """Load tool trust history from Postgres into in-memory store on startup."""
+    async def load_tool_trust_from_db(self, tenant_id: str, db: Any = None) -> int:
+        """Seed the in-memory trust store from ONE tenant's persisted history.
+
+        Returns the number of rows loaded (0 when there is no DB, nothing
+        persisted, or the load failed).
+
+        This used to accept ``"*"`` and was fired at startup to pull every
+        tenant's ``tool_trust_records`` in one unscoped SELECT. That scan is
+        gone: under the least-privilege (NOBYPASSRLS) application role it
+        matched zero rows (no tenant GUC), and using the maintenance role for it
+        would have been a privilege escalation for a cache warm-up whose
+        in-memory store has no readers that depend on it being warm. A tenant's
+        history is now loaded only on request, scoped by RLS and by an explicit
+        ``tenant_id`` predicate. A wildcard/empty tenant id is refused.
+        """
         effective_db = db or self._db
         if effective_db is None:
-            return
+            return 0
+        if not tenant_id or tenant_id == "*":
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(
+                "tool_trust_cross_tenant_load_refused",
+                tenant_id=tenant_id,
+                reason="tool trust history is loaded per tenant only",
+            )
+            return 0
         try:
             from sqlalchemy import text
 
-            async with effective_db() as session:
-                if tenant_id == "*":
-                    # Load ALL tenants' tool trust history
-                    rows = (
-                        await session.execute(
-                            text("""
-                                SELECT tool_name, success, latency_ms
-                                FROM tool_trust_records
-                                ORDER BY created_at DESC
-                                LIMIT 5000
-                            """)
-                        )
-                    ).fetchall()
-                else:
-                    rows = (
-                        await session.execute(
-                            text("""
-                                SELECT tool_name, success, latency_ms
-                                FROM tool_trust_records
-                                WHERE tenant_id = :tenant_id
-                                ORDER BY created_at DESC
-                                LIMIT 1000
-                            """),
-                            {"tenant_id": tenant_id},
-                        )
-                    ).fetchall()
-                for row in rows:
-                    self._tool_trust_store.record_outcome(row[0], success=row[1], latency_ms=row[2])
-        except Exception:
-            pass
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                effective_db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        text("""
+                            SELECT tool_name, success, latency_ms
+                            FROM tool_trust_records
+                            WHERE tenant_id = :tenant_id
+                            ORDER BY created_at DESC
+                            LIMIT 1000
+                        """),
+                        {"tenant_id": tenant_id},
+                    )
+                ).fetchall()
+            for row in rows:
+                self._tool_trust_store.record_outcome(row[0], success=row[1], latency_ms=row[2])
+            return len(rows)
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(
+                "tool_trust_load_failed", tenant_id=tenant_id, error=str(exc)
+            )
+            return 0
