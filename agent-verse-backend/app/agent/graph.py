@@ -763,8 +763,35 @@ class AgentGraph(
                                     resumed.context.get("_resume_completed", {})
                                 ),
                             )
-                except Exception:
-                    pass  # checkpoint load never blocks execution
+                except Exception as _ckpt_exc:
+                    # Fail closed: when the goal's checkpoints cannot be read we do
+                    # not know which side-effecting steps already ran. Starting
+                    # over (this used to be ``except: pass``) could re-run them —
+                    # a duplicate email, ticket, payment. Fail the goal honestly;
+                    # a redelivery retries once the store is readable.
+                    from app.observability.logging import get_logger
+
+                    get_logger(__name__).warning(
+                        "checkpoint_resume_failed_closed",
+                        goal_id=goal_id,
+                        error=str(_ckpt_exc)[:200],
+                    )
+                    fail_state = input_state.get("agent_state") or AgentState(
+                        goal=goal, tenant_ctx=tenant_ctx
+                    )
+                    if goal_id:
+                        fail_state.goal_id = goal_id
+                    fail_state.status = GoalStatus.FAILED
+                    fail_state.error_message = (
+                        "checkpoint_unavailable: the goal's checkpoints could not be read, "
+                        "so it was not re-run (completed side-effecting steps could repeat)."
+                    )
+                    fail_state.context["terminal_reason"] = "checkpoint_unavailable"
+                    if event_callback:
+                        await self._emit(
+                            {"type": "goal_failed", "reason": fail_state.error_message}
+                        )
+                    return fail_state
 
                 # N3: Track goal start time for latency scoring.
                 # Stamp the current monotonic time into agent_state.context so that
@@ -1075,7 +1102,8 @@ class AgentGraph(
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("checkpoint_load_failed", goal_id=goal_id, error=str(exc))
-            return None
+            # "Could not read" is not "no checkpoint": the caller fails closed.
+            raise RuntimeError(f"checkpoint load failed: {exc}") from exc
 
     def _extract_tool_name(self, step: str, tool_calls_result: list | None = None) -> str:
         """Extract tool name — prefers structured tool_calls, then registry, then heuristic.
