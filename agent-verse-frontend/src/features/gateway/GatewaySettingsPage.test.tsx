@@ -90,4 +90,15 @@ describe('GatewaySettingsPage', () => {
         String(u).includes('/v1/org/org-7/emergency-stop') && (i as RequestInit)?.method === 'POST')).toBe(true),
     );
   });
+
+  test('an unavailable config is shown as unknown, not as an invented one', async () => {
+    // Regression: the query's catch fabricated a config (REST "connected",
+    // 100/hour limit) whenever /v1/gateway/config failed — which is always.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/configuration is unavailable/i);
+    expect(screen.queryByText(/commands\/hour/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Connected')).not.toBeInTheDocument();
+  });
 });

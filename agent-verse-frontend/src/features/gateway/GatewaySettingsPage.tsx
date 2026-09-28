@@ -56,11 +56,12 @@ const apiClient = {
 function useGatewayConfig() {
   return useQuery<GatewayConfig>({
     queryKey: ['gateway-config'],
-    queryFn: () => apiClient.get<GatewayConfig>('/v1/gateway/config').catch(() => ({
-      max_commands_per_hour: 100,
-      require_2fa_for: ['approve', 'change-autonomy', 'delete'],
-      channels: STATIC_CHANNELS,
-    })),
+    // No fabricated fallback: the backend has no /v1/gateway/config (per-org
+    // gateway config is NOT IMPLEMENTED server-side), and the old catch
+    // rendered an invented config — "1 channel active", a 100/hour limit and
+    // 2FA rules — as if the server had returned it.
+    queryFn: () => apiClient.get<GatewayConfig>('/v1/gateway/config'),
+    retry: false,
     staleTime: 60_000,
   });
 }
@@ -320,8 +321,10 @@ interface GatewaySettingsPageProps {
 }
 
 export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
-  const { data: config } = useGatewayConfig();
-  const channels = config?.channels ?? STATIC_CHANNELS;
+  const { data: config, isError: configError } = useGatewayConfig();
+  // Without a server config the catalogue is shown for reference only; no
+  // channel is claimed as connected.
+  const channels = config?.channels ?? STATIC_CHANNELS.map(c => ({ ...c, status: 'disconnected' as const }));
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const connectedCount = channels.filter(c => c.status === 'connected').length;
 
@@ -335,10 +338,16 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
     <JARVISPageShell className="max-w-3xl mx-auto px-6 py-8">
       <div className="mb-8">
         <h1 className="text-[24px] font-bold text-[#F1F5F9] [text-wrap:balance]">Command Gateway</h1>
-        <p className="text-[14px] text-[#64748B] mt-1 tabular-nums">
-          {connectedCount} channel{connectedCount !== 1 ? 's' : ''} active
-          · Limit: {config?.max_commands_per_hour ?? 100} commands/hour
-        </p>
+        {config ? (
+          <p className="text-[14px] text-[#64748B] mt-1 tabular-nums">
+            {connectedCount} channel{connectedCount !== 1 ? 's' : ''} active
+            · Limit: {config.max_commands_per_hour} commands/hour
+          </p>
+        ) : configError ? (
+          <p role="alert" className="text-[14px] text-amber-400 mt-1">
+            Gateway configuration is unavailable from the server; channel status is unknown.
+          </p>
+        ) : null}
       </div>
 
       {orgId && (
