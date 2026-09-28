@@ -28,6 +28,10 @@ def _final_answer(event: dict[str, Any], step_outputs: list[str]) -> str:
     return "\n\n".join(o for o in step_outputs if o.strip())
 
 
+
+# execution_context / agent-state context key set on goals a supervisor spawned.
+SUBGOAL_MARKER = "_supervisor_parent_goal_id"
+
 @dataclass
 class SubAgentTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
@@ -83,6 +87,7 @@ class SupervisorAgent:
         goal: str,
         tenant_ctx: Any,
         event_callback: Any = None,
+        parent_goal_id: str | None = None,
     ) -> SupervisionResult:
         """Decompose and execute goal across multiple sub-agents."""
 
@@ -100,6 +105,11 @@ class SupervisorAgent:
                 "tasks": [t.goal for t in sub_tasks],
             }
         )
+
+        # A single sub-task is the goal itself: supervising it only spawns a
+        # redundant copy and waits on it. Let the normal loop handle it.
+        if len(sub_tasks) <= 1:
+            return SupervisionResult(success=False, tasks=sub_tasks)
 
         # Step 2: Execute sub-tasks in parallel batches
         semaphore = asyncio.Semaphore(self._max_parallel)
@@ -122,8 +132,16 @@ class SupervisorAgent:
                         dry_run=False,
                         tenant_ctx=tenant_ctx,
                         agent_id=task.agent_id,
+                        # Marks the sub-goal so its own graph does not run the
+                        # supervisor again: without it every sub-goal decomposed
+                        # itself, recursively, each parent waiting on children
+                        # that never finished (goals stuck in "planning").
+                        execution_context={SUBGOAL_MARKER: parent_goal_id or "supervisor"},
                     )
                     goal_id = sub["goal_id"]
+                    if parent_goal_id and str(goal_id) == str(parent_goal_id):
+                        # Never wait on ourselves (deadlock).
+                        raise RuntimeError("sub-goal resolved to the parent goal")
                     task.goal_id = str(goal_id)
                     await emit(
                         {

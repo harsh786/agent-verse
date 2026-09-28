@@ -43,15 +43,20 @@ async def test_sub_task_result_is_real_output_not_literal_completed() -> None:
             "find the price": [
                 {"type": "step_complete", "step": "s", "output": "The price is $42."},
                 {"type": "goal_complete"},
-            ]
+            ],
+            "find the stock": [
+                {"type": "step_complete", "step": "s", "output": "In stock."},
+                {"type": "goal_complete"},
+            ],
         }
     )
-    result = await SupervisorAgent(planner_provider=_planner("find the price"), goal_service=svc).run(
-        goal="g", tenant_ctx=T
-    )
-    assert result.tasks[0].status == "complete"
-    assert result.tasks[0].result == "The price is $42."
-    assert result.tasks[0].result != "completed"
+    result = await SupervisorAgent(
+        planner_provider=_planner("find the price", "find the stock"), goal_service=svc
+    ).run(goal="g", tenant_ctx=T)
+    by_goal = {t.goal: t for t in result.tasks}
+    assert by_goal["find the price"].status == "complete"
+    assert by_goal["find the price"].result == "The price is $42."
+    assert by_goal["find the price"].result != "completed"
 
 
 async def test_failures_and_empty_completions_are_surfaced() -> None:

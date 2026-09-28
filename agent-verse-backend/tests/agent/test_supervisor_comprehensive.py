@@ -145,7 +145,7 @@ async def test_run_success_all_tasks_complete() -> None:
 
 
 async def test_run_failed_tasks_due_to_goal_failed_event() -> None:
-    decomp_json = '{"sub_tasks": [{"goal": "Task A"}]}'
+    decomp_json = '{"sub_tasks": [{"goal": "Task A"}, {"goal": "Task A2"}]}'
     synth_response = "Partial"
     fake = FakeProvider(responses=[decomp_json, synth_response])
 
@@ -168,7 +168,7 @@ async def test_run_failed_tasks_due_to_goal_failed_event() -> None:
 
 
 async def test_run_timeout_marks_task_failed() -> None:
-    decomp_json = '{"sub_tasks": [{"goal": "Slow task"}]}'
+    decomp_json = '{"sub_tasks": [{"goal": "Slow task"}, {"goal": "Slow task 2"}]}'
     synth_response = "Timed out"
     fake = FakeProvider(responses=[decomp_json, synth_response])
 
@@ -192,7 +192,7 @@ async def test_run_timeout_marks_task_failed() -> None:
 
 
 async def test_run_submit_goal_exception_marks_failed() -> None:
-    decomp_json = '{"sub_tasks": [{"goal": "Task"}]}'
+    decomp_json = '{"sub_tasks": [{"goal": "Task"}, {"goal": "Task 2"}]}'
     synth_response = "Failure"
     fake = FakeProvider(responses=[decomp_json, synth_response])
 
@@ -216,7 +216,7 @@ async def test_run_event_callback_receives_events() -> None:
     async def cb(evt: dict) -> None:
         events.append(evt)
 
-    decomp_json = '{"sub_tasks": [{"goal": "Task"}]}'
+    decomp_json = '{"sub_tasks": [{"goal": "Task"}, {"goal": "Task 2"}]}'
     synth_response = "Done"
     fake = FakeProvider(responses=[decomp_json, synth_response])
     goal_service = await _make_goal_service_mock()
@@ -268,7 +268,7 @@ async def test_run_event_callback_exception_swallowed() -> None:
     async def bad_cb(evt: dict) -> None:
         raise RuntimeError("callback crash")
 
-    decomp_json = '{"sub_tasks": [{"goal": "Task"}]}'
+    decomp_json = '{"sub_tasks": [{"goal": "Task"}, {"goal": "Task 2"}]}'
     synth_response = "Done"
     fake = FakeProvider(responses=[decomp_json, synth_response])
     goal_service = await _make_goal_service_mock()

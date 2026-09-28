@@ -2435,6 +2435,10 @@ class GoalService:
             _agent_system_prompt = getattr(loop, "_agent_system_prompt", "")
             if _agent_system_prompt:
                 initial_context["system_prompt"] = _agent_system_prompt
+            from app.agent.supervisor import SUBGOAL_MARKER
+
+            if record is not None and record.execution_context.get(SUBGOAL_MARKER):
+                initial_context[SUBGOAL_MARKER] = record.execution_context[SUBGOAL_MARKER]
             # N2: Load reflexion lessons to feed back into planning (close the feedback loop).
             # Lessons written by ReflexionWirer on failure are recalled here for the next goal.
             try:
@@ -2833,7 +2837,17 @@ class GoalService:
                 if _dedup_redis is not None and not hasattr(_goal_dedup, "_redis_wired"):
                     _goal_dedup._redis = _dedup_redis
                     _goal_dedup._redis_wired = True  # type: ignore[attr-defined]
-                _existing_id = await _goal_dedup.get_existing(tenant_ctx.tenant_id, goal)
+                from app.agent.supervisor import SUBGOAL_MARKER
+
+                # A supervisor's sub-goal is a distinct unit of work even when its
+                # text matches an in-flight goal — typically its own parent, which
+                # dedup returned, so the parent waited on itself forever.
+                _is_subgoal = bool((execution_context or {}).get(SUBGOAL_MARKER))
+                _existing_id = (
+                    None
+                    if _is_subgoal
+                    else await _goal_dedup.get_existing(tenant_ctx.tenant_id, goal)
+                )
                 if _existing_id:
                     return {
                         "goal_id": _existing_id,

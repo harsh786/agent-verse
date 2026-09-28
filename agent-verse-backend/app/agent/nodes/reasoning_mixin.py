@@ -387,6 +387,11 @@ class ReasoningMixin:
             return {}
         if agent_state.context.get("supervisor_applied"):
             return {"agent_state": agent_state}
+        from app.agent.supervisor import SUBGOAL_MARKER
+
+        # A goal the supervisor spawned never decomposes again (no recursion).
+        if agent_state.context.get(SUBGOAL_MARKER):
+            return {"agent_state": agent_state}
         goal_service = getattr(self, "_goal_service", None)
         if goal_service is None:
             return {"agent_state": agent_state}
@@ -405,6 +410,7 @@ class ReasoningMixin:
                 goal=agent_state.goal,
                 tenant_ctx=tenant_ctx,
                 event_callback=getattr(self, "_event_callback", None),
+                parent_goal_id=getattr(agent_state, "goal_id", None),
             )
             agent_state.context["supervisor_applied"] = True
             synthesized = getattr(result, "synthesized_result", "") or ""
@@ -439,6 +445,10 @@ class ReasoningMixin:
         if agent_state is None:
             return {}
         if agent_state.context.get("debate_applied"):
+            return {"agent_state": agent_state}
+        from app.agent.supervisor import SUBGOAL_MARKER
+
+        if agent_state.context.get(SUBGOAL_MARKER):
             return {"agent_state": agent_state}
         try:
             from app.agent.debate import DebateOrchestrator

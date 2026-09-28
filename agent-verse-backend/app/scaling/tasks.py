@@ -1201,6 +1201,33 @@ def run_goal_dlq(
     }
 
 
+async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | None:
+    """Carry a supervisor sub-goal's marker into the worker graph (no re-decomposition)."""
+    from app.agent.supervisor import SUBGOAL_MARKER
+
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+            value = (
+                await session.execute(
+                    text(
+                        "SELECT execution_context::jsonb ->> :k FROM goals "
+                        "WHERE id = :g AND tenant_id = :t"
+                    ),
+                    {"k": SUBGOAL_MARKER, "g": goal_id, "t": tenant_id},
+                )
+            ).scalar()
+    except Exception as exc:
+        logger.warning("subgoal_context_lookup_failed goal=%s: %s", goal_id, exc)
+        return None
+    return {SUBGOAL_MARKER: value} if value else None
+
+
 async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
     """Mark a goal an emergency stop prevented from running as cancelled."""
     from sqlalchemy import update
@@ -2399,6 +2426,7 @@ def run_goal(
                         tenant_ctx,
                         worker_event_callback,
                         goal_id,
+                        initial_context=_run_async(_subgoal_context(goal_id, tenant_id)),
                     ),
                     timeout=float(goal_timeout_s),
                 )
