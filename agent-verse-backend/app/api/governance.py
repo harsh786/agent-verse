@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (used in SSE generators)
-import contextlib
 import json as _json
 import uuid
 from collections.abc import AsyncGenerator
@@ -1067,11 +1066,24 @@ async def query_audit(
 # ---------------------------------------------------------------------------
 
 
+async def _effective_budget(request: Request, tenant_id: str) -> BudgetConfig:
+    """The budget the cost controllers actually enforce for this tenant."""
+    for name in ("redis_cost_controller", "cost_controller"):
+        cc = getattr(request.app.state, name, None)
+        if cc is not None and hasattr(cc, "resolve_config"):
+            try:
+                return await cc.resolve_config(tenant_id)  # type: ignore[no-any-return]
+            except Exception as exc:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, "Budget store unavailable"
+                ) from exc
+    return _budget_config(request).get(tenant_id, BudgetConfig())
+
+
 @router.get("/budget")
 async def get_budget(request: Request) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
-    configs = _budget_config(request)
-    cfg = configs.get(tenant_ctx.tenant_id, BudgetConfig())
+    cfg = await _effective_budget(request, tenant_ctx.tenant_id)
     return {
         "tenant_id": tenant_ctx.tenant_id,
         "per_goal_usd": cfg.per_goal_usd,
@@ -1085,13 +1097,40 @@ async def set_budget(
     body: SetBudgetRequest,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    """Set the tenant budget — persisted to budget_configs (same store as /costs/budgets).
+
+    This used to write only a per-replica dict that nothing enforced; now the
+    row is DB-authoritative and applied to the cost controllers.
+    """
     tenant_ctx: TenantContext = _require_tenant(request)
-    configs = _budget_config(request)
     cfg = BudgetConfig(
         per_goal_usd=body.per_goal_usd,
         per_tenant_daily_usd=body.per_tenant_daily_usd,
     )
-    configs[tenant_ctx.tenant_id] = cfg
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is not None:
+        from app.governance.cost import persist_tenant_budget
+
+        try:
+            await persist_tenant_budget(
+                db,
+                tenant_ctx.tenant_id,
+                per_goal_usd=cfg.per_goal_usd,
+                per_tenant_daily_usd=cfg.per_tenant_daily_usd,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Budget could not be persisted"
+            ) from exc
+    _budget_config(request)[tenant_ctx.tenant_id] = cfg
+    for name in ("redis_cost_controller", "cost_controller"):
+        cc = getattr(request.app.state, name, None)
+        if cc is None:
+            continue
+        if hasattr(cc, "invalidate_tenant_budget"):
+            cc.invalidate_tenant_budget(tenant_ctx.tenant_id)
+        if hasattr(cc, "configure_tenant_budget"):
+            cc.configure_tenant_budget(tenant_ctx.tenant_id, cfg)
     return {
         "tenant_id": tenant_ctx.tenant_id,
         "per_goal_usd": cfg.per_goal_usd,

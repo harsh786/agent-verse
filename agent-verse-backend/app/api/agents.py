@@ -898,7 +898,15 @@ async def get_permissions(request: Request, agent_id: str) -> dict[str, Any]:
         try:
             from sqlalchemy import text
 
-            async with db() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            # agent_permissions is FORCE RLS: without the tenant GUC the read
+            # returned zero rows under the NOBYPASSRLS role.
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text(
@@ -949,7 +957,15 @@ async def update_permissions(
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            # FORCE RLS table: the write needs the tenant GUC, or under the
+            # NOBYPASSRLS role it failed, was swallowed, and answered "updated".
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 # Delete existing permissions for this agent+tenant
                 await session.execute(
                     text(
@@ -987,6 +1003,15 @@ async def update_permissions(
             import logging
 
             logging.getLogger(__name__).warning("permissions_write_failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Agent permissions could not be persisted",
+            ) from exc
+        # Enforcement reads these rows (app.governance.agent_permissions) with a
+        # short TTL cache; drop this process's copy so the change binds now.
+        from app.governance.agent_permissions import invalidate_agent_permissions
+
+        invalidate_agent_permissions(tenant_ctx.tenant_id, agent_id)
 
     # Also update in-memory cache (legacy path / no-DB mode)
     in_mem_perms = body.permissions if isinstance(body.permissions, dict) else {}

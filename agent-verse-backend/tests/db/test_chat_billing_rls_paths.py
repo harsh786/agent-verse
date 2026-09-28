@@ -84,7 +84,14 @@ def test_budget_out_of_range_is_422_not_500(body: dict) -> None:
     from app.tenancy.middleware import TenantMiddleware
 
     async def _resolve(key: str) -> TenantContext | None:
-        return _ctx() if key == "k" else None
+        # PUT /costs/budgets is admin-only; validation is what is under test.
+        return (
+            TenantContext(
+                tenant_id=TID, plan=PlanTier.PROFESSIONAL, api_key_id="k", roles=("admin",)
+            )
+            if key == "k"
+            else None
+        )
 
     app = FastAPI()
     app.add_middleware(TenantMiddleware, key_resolver=_resolve)

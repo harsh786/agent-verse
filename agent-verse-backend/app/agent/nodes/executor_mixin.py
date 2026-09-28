@@ -157,6 +157,77 @@ class ExecutorMixin:
         except Exception:
             pass
 
+    async def _agent_permission_gate(
+        self,
+        *,
+        state: AgentState,
+        tenant_ctx: TenantContext,
+        tool_name: str,
+        step: str,
+    ) -> str | None:
+        """Enforce the agent's persisted ``agent_permissions`` rules for one tool call.
+
+        Returns ``None`` to allow, or a denial reason. APPROVAL blocks on a HITL
+        decision (denied when no gateway is wired). A load failure fails CLOSED
+        for high-risk tools and open (with a warning) for read-only ones.
+        """
+        agent_id = getattr(self, "_agent_id", None)
+        db = getattr(self, "_db_session_factory", None)
+        if not agent_id or db is None or tenant_ctx is None:
+            return None
+        from app.governance.agent_permissions import (
+            AgentPermissionsUnavailableError,
+            load_agent_permissions,
+            resolve_level,
+        )
+
+        try:
+            rules = await load_agent_permissions(db, tenant_ctx.tenant_id, agent_id)
+        except AgentPermissionsUnavailableError:
+            if classify_tool_risk(tool_name) in ("write_high", "destructive") or (
+                _guardrail_should_fail_closed(step, state.context.get("_risk_level"))
+            ):
+                return "agent permissions unavailable; failing closed for a high-risk tool"
+            self._logger.warning(
+                "agent_permissions_unavailable_allowing_low_risk", tool=tool_name
+            )
+            return None
+        if not rules:
+            return None
+        counts: dict[str, int] = state.context.setdefault("_agent_perm_calls", {})
+        level, _rule, reason = resolve_level(
+            rules,
+            tool_name,
+            scope_value=_extract_scope_value(step),
+            goal_call_count=int(counts.get(tool_name, 0)),
+        )
+        if level is None or level in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
+            if level is not None:
+                counts[tool_name] = int(counts.get(tool_name, 0)) + 1
+            return None
+        if level is ActionLevel.DENY:
+            return f"denied by agent permission ({reason})"
+        # APPROVAL: a persisted per-agent approval rule must actually block.
+        if self._hitl_gateway is None:
+            return "agent permission requires approval but no approval gateway is configured"
+        req_id = str(
+            self._hitl_gateway.request_approval(
+                goal_id=state.goal_id,
+                action=f"{tool_name}: {step}"[:500],
+                risk_level="high",
+                tenant_ctx=tenant_ctx,
+            )
+        )
+        await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+        final_status = await self._hitl_gateway.wait_for_approval(
+            req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+        )
+        if final_status != ApprovalStatus.APPROVED:
+            return f"agent permission approval {str(final_status).lower()}"
+        counts[tool_name] = int(counts.get(tool_name, 0)) + 1
+        await self._emit({"type": "approval_granted", "request_id": req_id})
+        return None
+
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -1542,11 +1613,17 @@ class ExecutorMixin:
                     if tool_context is not None and hasattr(tool_context, "find_tool")
                     else None
                 )
+                # Persisted per-agent permissions (agent_permissions): these were
+                # written by PUT /agents/{id}/permissions but never enforced.
+                _perm_tool_name = tool_ref.name if tool_ref is not None else tool_call.tool
+                _perm_denial = await self._agent_permission_gate(
+                    state=state, tenant_ctx=tenant_ctx, tool_name=_perm_tool_name, step=step
+                )
                 # Grantex governance gate (mandatory, opt-in): an agent may only
                 # run a tool it holds a covering, active, unrevoked grant for.
                 # Pass-through until enforcement is enabled for the deploy.
                 _grant_denial = None
-                if tool_ref is not None:
+                if tool_ref is not None and _perm_denial is None:
                     _grant_decision = await enforce_tool_call(
                         self._grant_store,
                         tenant_id=tenant_ctx.tenant_id,
@@ -1556,7 +1633,22 @@ class ExecutorMixin:
                     )
                     if not _grant_decision.allowed:
                         _grant_denial = _grant_decision
-                if _grant_denial is not None:
+                if _perm_denial is not None:
+                    await self._emit(
+                        {
+                            "type": "tool_call_blocked_by_agent_permission",
+                            "tool": _perm_tool_name,
+                            "reason": _perm_denial,
+                        }
+                    )
+                    record_tool_call(_perm_tool_name, "agent_permission", "denied", 0.0)
+                    raw_output = self._sanitize_tool_raw_output(
+                        f"Tool call denied: '{_perm_tool_name}' is not permitted for this "
+                        f"agent ({_perm_denial}). Do not call it again; complete the step "
+                        "with the information already available or other permitted tools."
+                    )
+                    raw_output_sanitized = True
+                elif _grant_denial is not None:
                     # The tool is NOT run. The refusal used to raise and fail the
                     # whole goal — a real model that reached for an ungranted tool
                     # (with the answer already in its retrieved context) killed an

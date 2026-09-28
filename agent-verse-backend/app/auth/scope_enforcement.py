@@ -62,6 +62,8 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("POST", "/governance"): "governance:write",
     ("DELETE", "/governance"): "governance:write",
     ("PATCH", "/governance"): "governance:write",
+    # PUT /governance/budget mutates budgets; it had no scope at all.
+    ("PUT", "/governance"): "governance:write",
     # Analytics
     ("GET", "/analytics"): "audit:read",
     # Tenancy settings
@@ -102,6 +104,8 @@ ENDPOINT_SCOPES: dict[tuple[str, str], str] = {
     ("GET", "/costs"): "costs:read",
     ("POST", "/costs"): "costs:admin",
     ("DELETE", "/costs"): "costs:admin",
+    # PUT /costs/budgets was unscoped: any key could rewrite the tenant budget.
+    ("PUT", "/costs"): "costs:admin",
     # Memory
     ("GET", "/memory"): "memory:read",
     ("POST", "/memory"): "memory:write",

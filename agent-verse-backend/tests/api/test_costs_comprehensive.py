@@ -12,7 +12,11 @@ from app.api.costs import router as costs_router
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-costs-comp", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1")
+# Admin: PUT /costs/budgets is admin-only (non-admin → 403 is covered in
+# tests/governance/test_tenant_budget_enforced.py).
+_CTX = TenantContext(
+    tenant_id="tid-costs-comp", plan=PlanTier.PROFESSIONAL, api_key_id="kid-1", roles=("admin",)
+)
 _VALID_KEY = "av_test_costs_comp"
 
 
@@ -326,7 +330,7 @@ def test_get_budgets_success() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_update_budgets_success_no_db() -> None:
+def test_update_budgets_no_db_is_503_not_fake_success() -> None:
     tracker = _make_tracker()
     tracker._db = None
     client = TestClient(_make_app(tracker), raise_server_exceptions=False)
@@ -340,16 +344,22 @@ def test_update_budgets_success_no_db() -> None:
         },
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["per_goal_usd"] == 5.0
-    assert body["per_tenant_daily_usd"] == 200.0
-    assert body["tenant_id"] == _CTX.tenant_id
+    assert resp.status_code == 503
 
 
 def test_update_budgets_defaults() -> None:
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    begin = MagicMock()
+    begin.__aenter__ = AsyncMock(return_value=session)
+    begin.__aexit__ = AsyncMock(return_value=False)
+    session.begin = MagicMock(return_value=begin)
+    session.execute = AsyncMock()
     tracker = _make_tracker()
-    tracker._db = None
+    tracker._db = MagicMock(return_value=session)
     client = TestClient(_make_app(tracker), raise_server_exceptions=False)
     resp = client.put("/costs/budgets", json={}, headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200

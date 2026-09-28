@@ -20,7 +20,6 @@ from sqlalchemy.exc import IntegrityError
 from app.db.rls import sqlalchemy_rls_context
 from app.governance.audit_chain import _GENESIS, compute_hash
 
-
 # Bounded retry for the (tenant_id, seq) PK race: two replicas (or two requests
 # on one replica) read the same tip and both try to INSERT seq N+1; the loser
 # gets a unique violation. Re-reading the tip and re-hashing is always correct
@@ -50,7 +49,7 @@ class PersistentAuditChain:
             except IntegrityError as exc:
                 last_exc = exc
                 # Jittered backoff so the colliding writers spread out.
-                await asyncio.sleep(random.uniform(0, 0.01 * (2**attempt)))  # noqa: S311
+                await asyncio.sleep(random.uniform(0, 0.01 * (2**attempt)))
         raise AuditChainAppendError(
             f"audit chain append for tenant {tenant_id} lost {APPEND_MAX_ATTEMPTS} "
             "consecutive seq races"

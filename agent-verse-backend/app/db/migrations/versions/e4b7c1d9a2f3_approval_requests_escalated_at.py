@@ -8,7 +8,7 @@ tenant's ``approval_sla_configs``. ``escalated_at`` records that a pending
 request breached its response SLA so it is escalated exactly once.
 
 Revision ID: e4b7c1d9a2f3
-Revises: f7a8b9c0d1e2
+Revises: e8f9a0b1c2d3
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "e4b7c1d9a2f3"
-down_revision = "f7a8b9c0d1e2"
+down_revision = "e8f9a0b1c2d3"
 branch_labels = None
 depends_on = None
 

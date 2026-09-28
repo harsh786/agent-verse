@@ -1712,6 +1712,9 @@ def run_goal(
                     )
                 except Exception:
                     pass
+            # Workers enforce the tenant's configured budget_configs row too.
+            if db_factory is not None:
+                _cost.set_budget_db(db_factory)
 
             # Build a model router matched to the provider type so the graph
             # uses the correct model names (e.g. gpt-4-turbo not claude-opus-4-8).

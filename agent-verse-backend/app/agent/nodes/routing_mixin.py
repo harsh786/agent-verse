@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from app.agent.state import AgentState, GoalStatus
 from app.observability.metrics import (
     record_goal_failed,
@@ -47,6 +49,9 @@ class RoutingMixin:
 
         if state.get("terminal_reason") == "guardrail_rejected":
             return "max_iter"  # Terminate immediately
+
+        if self._fail_if_budget_exhausted(agent_state):
+            return "max_iter"
 
         if agent_state.verification_success:
             return "complete"
@@ -175,8 +180,32 @@ class RoutingMixin:
             return "max_iter"
         return "replan"
 
+    @staticmethod
+    def _fail_if_budget_exhausted(agent_state: AgentState) -> bool:
+        """Hard-stop a goal whose LLM spend was denied by the cost controller.
+
+        The executor latches ``_budget_exhausted`` and skips every further step,
+        but the goal used to keep verifying/replanning until max_iterations and
+        then fail with an unrelated reason. Fail it now, with a budget reason.
+        """
+        if not agent_state.context.get("_budget_exhausted"):
+            return False
+        if agent_state.status is not GoalStatus.FAILED:
+            agent_state.status = GoalStatus.FAILED
+            agent_state.error_message = (
+                "budget_exceeded: the goal hit its per-goal or the tenant's daily cost "
+                "budget; execution was stopped."
+            )
+            agent_state.context["terminal_reason"] = "budget_exceeded"
+            agent_state.context["error_class"] = "budget_exceeded"
+            with contextlib.suppress(Exception):
+                record_goal_failed(tenant_id=agent_state.tenant_ctx.tenant_id)
+        return True
+
     def _route_after_execute(self, state: GraphState) -> str:
         agent_state: AgentState = state["agent_state"]
+        if self._fail_if_budget_exhausted(agent_state):
+            return "failed"
         return "failed" if agent_state.status is GoalStatus.FAILED else "continue"
 
     # ------------------------------------------------------------------

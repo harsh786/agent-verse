@@ -576,7 +576,7 @@ class HashChainVerifier:
     ) -> dict[str, Any]:
         from sqlalchemy import text
 
-        AuditEvent = _v2_module.AuditEvent
+        audit_event_cls = _v2_module.AuditEvent
         try:
             # audit_events is FORCE ROW LEVEL SECURITY: without the tenant GUC a
             # NOBYPASSRLS session sees zero rows and "verifies" an empty chain.
@@ -628,7 +628,7 @@ class HashChainVerifier:
                 created_iso = created.astimezone(UTC).isoformat()
             else:
                 created_iso = str(created)
-            ae = AuditEvent(
+            ae = audit_event_cls(
                 id=str(row.id),
                 tenant_id=tenant_id,
                 event_type=row.event_type,
@@ -644,7 +644,7 @@ class HashChainVerifier:
             hashes.add(str(row.event_hash))
 
         # 2. Linkage: exactly one entry point, no forks, no dangling predecessors.
-        for prev, children in by_prev.items():
+        for children in by_prev.values():
             if len(children) > 1:
                 return _broken(str(children[1].id), "chain fork (shared predecessor)", 0)
         entry_points = [p for p in by_prev if p not in hashes]

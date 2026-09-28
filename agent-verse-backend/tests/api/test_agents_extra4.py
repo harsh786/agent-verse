@@ -554,8 +554,9 @@ def test_update_permissions_dict_format_no_db() -> None:
     assert resp.status_code == 200
 
 
-def test_update_permissions_db_exception_non_fatal() -> None:
-    """Lines 826-828: DB exception is logged but non-fatal."""
+def test_update_permissions_db_exception_is_503() -> None:
+    """A failed permissions write is a 503 — it used to answer "updated" while the
+    persisted (and now enforced) agent_permissions rows were unchanged."""
     # Create agent in memory first, then inject failing DB
     store = AgentStore()
     agent_id = asyncio.run(store.create({"name": "Perm Exc Agent"}, tenant_ctx=_CTX))
@@ -585,7 +586,7 @@ def test_update_permissions_db_exception_non_fatal() -> None:
         json={"permissions": [{"tool_name": "*", "level": "allow"}]},
         headers=H,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
