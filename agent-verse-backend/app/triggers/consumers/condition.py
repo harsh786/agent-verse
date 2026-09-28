@@ -198,8 +198,17 @@ class ConditionTriggerConsumer:
             current = str(payload.get("state", "") or "")
             if not current:
                 return False
-            prev = self._last_state.get(trigger_id)
-            self._last_state[trigger_id] = current
+            # A trigger bound to a machine only reacts to THAT machine's
+            # transitions (any event carrying a "state" field used to match).
+            machine = getattr(spec, "state_machine_id", "") or ""
+            if machine and str(payload.get("state_machine_id", "") or "") != machine:
+                return False
+            key = f"{trigger_id}:{payload.get('entity_id', '')}"
+            tracked = self._last_state.get(key)
+            self._last_state[key] = current
+            # Prefer the publisher's authoritative from_state (state machines
+            # publish it) over this consumer's per-process memory.
+            prev = str(payload.get("from_state") or "") or tracked
             if prev == current:
                 return False  # only on an actual change
             to_state = getattr(spec, "to_state", "") or ""

@@ -161,7 +161,48 @@ async def transition_instance(
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if result.get("transitioned"):
+        result["trigger_event_published"] = await _publish_transition(
+            request, tenant.tenant_id, machine_id, entity_id, result
+        )
     return result
+
+
+STATE_TRANSITION_CHANNEL = "trigger:event:state_machine.transition"
+
+
+async def _publish_transition(
+    request: Request, tenant_id: str, machine_id: str, entity_id: str, result: dict
+) -> bool:
+    """Publish the transition on the trigger EVENT bus.
+
+    STATE_TRANSITION triggers are evaluated by ConditionTriggerConsumer on
+    ``trigger:event:*``, but a state-machine transition published nothing, so
+    those triggers could never fire. Returns whether the event was published
+    (the transition itself is already durable either way).
+    """
+    import json
+
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is None:
+        return False
+    event = {
+        "tenant_id": tenant_id,
+        "event_type": "state_machine.transition",
+        "state_machine_id": machine_id,
+        "entity_id": entity_id,
+        "state": result.get("to_state", ""),
+        "from_state": result.get("from_state", ""),
+        "event": result.get("event", ""),
+    }
+    try:
+        await redis.publish(STATE_TRANSITION_CHANNEL, json.dumps(event))
+        return True
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("state_transition_publish_failed: %s", exc)
+        return False
 
 
 @router.get("/{machine_id}/instances/{entity_id}")
