@@ -1380,8 +1380,16 @@ def run_goal_dlq(
 
 
 async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | None:
-    """Carry a supervisor sub-goal's marker into the worker graph (no re-decomposition)."""
+    """Initial graph context carried from goals.execution_context.
+
+    The supervisor sub-goal marker (no re-decomposition) plus the allow-listed
+    pre-execution pattern results (API debate consensus, supervisor fallback) —
+    the API path forwards the same keys (goal_service.GRAPH_CONTEXT_KEYS).
+    """
+    import json as _json
+
     from app.agent.supervisor import SUBGOAL_MARKER
+    from app.services.goal_service import graph_context_from_execution_context
 
     try:
         from sqlalchemy import text
@@ -1391,19 +1399,25 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
 
         db = get_session_factory()
         async with db() as session, sqlalchemy_rls_context(session, tenant_id):
-            value = (
+            raw = (
                 await session.execute(
-                    text(
-                        "SELECT execution_context::jsonb ->> :k FROM goals "
-                        "WHERE id = :g AND tenant_id = :t"
-                    ),
-                    {"k": SUBGOAL_MARKER, "g": goal_id, "t": tenant_id},
+                    text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                    {"g": goal_id, "t": tenant_id},
                 )
             ).scalar()
     except Exception as exc:
         logger.warning("subgoal_context_lookup_failed goal=%s: %s", goal_id, exc)
         return None
-    return {SUBGOAL_MARKER: value} if value else None
+    try:
+        ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        ctx = {}
+    if not isinstance(ctx, dict):
+        return None
+    out = graph_context_from_execution_context(ctx)
+    if ctx.get(SUBGOAL_MARKER):
+        out[SUBGOAL_MARKER] = ctx[SUBGOAL_MARKER]
+    return out or None
 
 
 async def _goal_model_override(goal_id: str, tenant_id: str) -> str:

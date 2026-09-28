@@ -55,3 +55,44 @@ def test_run_goal_wires_goal_service_onto_the_worker_graph() -> None:
     src = inspect.getsource(tasks.run_goal)
     assert "_agent_runner._goal_service = _WorkerSubgoalService(" in src
     assert "_redis_url_for_pubsub = REDIS_URL" in src
+
+
+def test_graph_context_allow_list_forwards_pattern_results_only() -> None:
+    from app.services.goal_service import graph_context_from_execution_context
+
+    ctx = graph_context_from_execution_context(
+        {
+            "debate_consensus": "use plan B",
+            "supervisor_fallback": "ran as a single goal",
+            "runtime_profile": {"big": "blob"},
+            "trigger_idempotency_key": "x",
+        }
+    )
+    assert ctx == {"debate_consensus": "use plan B", "supervisor_fallback": "ran as a single goal"}
+    assert graph_context_from_execution_context(None) == {}
+
+
+@pytest.mark.asyncio
+async def test_worker_initial_context_carries_marker_and_debate_consensus() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.agent.supervisor import SUBGOAL_MARKER
+
+    session = MagicMock()
+    exec_ctx = {SUBGOAL_MARKER: "parent-1", "debate_consensus": "plan B", "other": 1}
+    session.execute = AsyncMock(return_value=MagicMock(scalar=MagicMock(return_value=exec_ctx)))
+
+    class _Ctx:
+        async def __aenter__(self) -> Any:
+            return session
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    with (
+        patch("app.db.session.get_session_factory", return_value=lambda: _Ctx()),
+        patch("app.db.rls.sqlalchemy_rls_context", return_value=_Ctx()),
+    ):
+        ctx = await tasks._subgoal_context("g1", "t1")
+
+    assert ctx == {SUBGOAL_MARKER: "parent-1", "debate_consensus": "plan B"}

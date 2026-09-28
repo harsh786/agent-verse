@@ -434,6 +434,26 @@ async def resolve_effective_autonomy_mode(
 # ── service ───────────────────────────────────────────────────────────────────
 
 
+
+# execution_context keys (set by POST /goals before the goal runs) that the agent
+# graph reads from its state context. Only an allow-list is forwarded: the rest of
+# execution_context (runtime profile, trigger metadata, ...) is not graph state.
+GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
+    "debate_consensus",
+    "debate_confidence",
+    "debate_winning_agent",
+    "debate_error",
+    "supervisor_applied",
+    "supervisor_fallback",
+)
+
+
+def graph_context_from_execution_context(execution_context: Any) -> dict[str, Any]:
+    """The allow-listed execution_context entries that belong in the graph's context."""
+    if not isinstance(execution_context, dict):
+        return {}
+    return {k: execution_context[k] for k in GRAPH_CONTEXT_KEYS if k in execution_context}
+
 class GoalService:
     """In-memory goal service.
 
@@ -2478,6 +2498,11 @@ class GoalService:
 
             if record is not None and record.execution_context.get(SUBGOAL_MARKER):
                 initial_context[SUBGOAL_MARKER] = record.execution_context[SUBGOAL_MARKER]
+            # Pre-execution pattern results from the API (debate consensus,
+            # supervisor fallback) were written to execution_context and never
+            # reached the graph, so the planner could not use them.
+            if record is not None:
+                initial_context.update(graph_context_from_execution_context(record.execution_context))
             # N2: Load reflexion lessons to feed back into planning (close the feedback loop).
             # Lessons written by ReflexionWirer on failure are recalled here for the next goal.
             try:
