@@ -795,7 +795,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
     the verifier regardless of what the engine said. Now it must actually act
     on the verdict."""
     executor = FakeProvider(responses=['{"tool": "get_status", "arguments": {}}'])
-    mcp = _RecordingMCPClient(output={"content": "sk-live-totally-real-secret-key-12345"})
+    mcp = _RecordingMCPClient(output={"content": "PHI: patient record MRN-778812"})
     graph = _make_graph(executor=executor, mcp_client=mcp)
     state = _make_state(step_desc="check status")
     state.context["tool_context"] = _tool_context(("get_status", "Custom", {}))
@@ -803,7 +803,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
     async def fake_evaluate(*, content, layer, **_kwargs):
         from app.guardrails_v2.models import GuardrailLayer
 
-        if layer == GuardrailLayer.TOOL_OUTPUT and "sk-live" in content:
+        if layer == GuardrailLayer.TOOL_OUTPUT and "MRN-778812" in content:
             return {"blocked": True, "violations": [{"rule_name": "secret_exfiltration"}]}
         return {"blocked": False, "violations": []}
 
@@ -811,7 +811,7 @@ async def test_guardrails_v2_engine_redacts_tool_output() -> None:
         mock_engine.evaluate = AsyncMock(side_effect=fake_evaluate)
         output = await graph._execute_step("check status", state, T)
 
-    assert "sk-live-totally-real-secret-key-12345" not in output
+    assert "MRN-778812" not in output
     assert "[redacted by guardrail policy]" in output
 
 

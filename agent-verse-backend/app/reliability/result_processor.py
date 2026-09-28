@@ -11,13 +11,21 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# Patterns that look like secret values (whole-match replacement)
+from app.agent.sanitization import BARE_SECRET_PATTERNS
+
+# Patterns that look like secret values (whole-match replacement). The shared bare
+# patterns add AWS access key ids, JWTs and PEM private-key blocks, which this list
+# used to miss entirely.
 _SECRET_PATTERNS = [
     re.compile(r"sk-[A-Za-z0-9]{8,}"),  # OpenAI-style keys
     re.compile(r"ghp_[A-Za-z0-9]{36,}"),  # GitHub personal tokens
     re.compile(r"xoxb-[A-Za-z0-9\-]+"),  # Slack bot tokens
     re.compile(r"Bearer [A-Za-z0-9\-._~+/]+=*"),  # Bearer tokens
+    *BARE_SECRET_PATTERNS,
 ]
+
+# C0/C1 control characters except \t \n \r (which carry formatting), plus DEL.
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
 
 # Context-aware base64 redaction — only redacts when preceded by a credential
 # keyword so commit SHAs, UUIDs, and other legitimate base64-ish strings are
@@ -41,7 +49,8 @@ class ResultProcessor:
     def process(self, raw: str, tenant_ctx: Any = None) -> str:
         result = self._redact(raw)
         result = self._truncate(result)
-        return result
+        # Step 3 of the documented pipeline — it was promised but never done.
+        return _CONTROL_CHARS.sub("", result)
 
     def _redact(self, text: str) -> str:
         for pattern in _SECRET_PATTERNS:
