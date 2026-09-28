@@ -2566,7 +2566,14 @@ def create_app(
     app.state.strategy_goal_context_store = StrategyGoalContextStore()
     app.state.strategy_runner = StrategyRunner(
         app.state.strategy_registry,
-        executor=DistributedStrategyExecutor(context_store=app.state.strategy_goal_context_store),
+        executor=DistributedStrategyExecutor(
+            context_store=app.state.strategy_goal_context_store,
+            # Getter: the lifespan swaps in the Redis-backed controller later.
+            cost_controller=lambda: (
+                getattr(app.state, "redis_cost_controller", None)
+                or getattr(app.state, "cost_controller", None)
+            ),
+        ),
         admission=default_distributed_admission,
     )
     app.state.graph_factory = GraphFactory()

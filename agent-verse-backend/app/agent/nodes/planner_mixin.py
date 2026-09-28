@@ -622,22 +622,19 @@ class PlannerMixin:
                 except (RuntimeError, TimeoutError) as cb_exc:
                     raise PermissionError(f"Planning unavailable: {cb_exc}") from cb_exc
                 record_plan_duration(agent_state.iterations, time.monotonic() - _plan_start)
-            # 2.3: Per-goal planner cost tracking
-            try:
-                # Durable (Postgres, tenant-scoped) when bound — not this process's memory.
-                from app.observability.cost_breakdown import arecord_role_cost as _rrc
+            # 2.3: Charge the planner call through the same cost path as the executor
+            # (budget + ledger + grant spend + per-role breakdown). It used to log
+            # cost=0.0 and was never charged to the tenant's budget.
+            from app.agent.nodes.llm_cost import charge_llm_call
 
-                await _rrc(
-                    goal_id=agent_state.goal_id,
-                    tenant_id=tenant_ctx.tenant_id,
-                    role="planner",
-                    model=planning_model,
-                    input_tok=getattr(resp, "input_tokens", 0),
-                    output_tok=getattr(resp, "output_tokens", 0),
-                    cost=0.0,
-                )
-            except Exception:
-                pass
+            await charge_llm_call(
+                self,
+                resp=resp,
+                role="planner",
+                model=planning_model,
+                agent_state=agent_state,
+                tenant_ctx=tenant_ctx,
+            )
             # Store in LLM cache — only on successful, non-error responses
             if _llm_rc is not None:
                 try:

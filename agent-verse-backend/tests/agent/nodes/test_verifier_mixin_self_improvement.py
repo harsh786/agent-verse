@@ -20,7 +20,7 @@ thresholds would be caught here.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -567,7 +567,8 @@ async def test_prompt_optimizer_records_and_persists_winning_outcome() -> None:
     await asyncio.sleep(0)
 
     prompt_optimizer.record_result.assert_called_once_with(
-        variant_id="variant-win", eval_score=0.9, cost_usd=None, latency_ms=None
+        # cost_usd is now the goal's real (planner+verifier) LLM spend, not None.
+        variant_id="variant-win", eval_score=0.9, cost_usd=ANY, latency_ms=None
     )
     prompt_optimizer.persist_outcome.assert_called_once()
     _, po_kwargs = prompt_optimizer.persist_outcome.call_args

@@ -348,14 +348,39 @@ async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
             )
             for agent_id in body.agent_ids[:5]  # cap at 5
         ]
+        dispatched_ids = body.agent_ids[:5]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         valid = [r for r in results if isinstance(r, dict) and "goal_id" in r]
+        # Failed submissions used to be dropped silently; surface each one.
+        failed_submissions = [
+            {
+                "agent_id": aid,
+                "error": (
+                    str(r.detail)
+                    if isinstance(r, HTTPException)
+                    else str(r)
+                    if isinstance(r, BaseException)
+                    else "submission returned no goal_id"
+                ),
+                **({"status_code": r.status_code} if isinstance(r, HTTPException) else {}),
+            }
+            for aid, r in zip(dispatched_ids, results, strict=True)
+            if not (isinstance(r, dict) and "goal_id" in r)
+        ]
+        if not valid:
+            first = next((r for r in results if isinstance(r, HTTPException)), None)
+            raise HTTPException(
+                first.status_code if first is not None else status.HTTP_502_BAD_GATEWAY,
+                {"message": "No agent accepted the goal", "failed_submissions": failed_submissions},
+            )
         return {
-            "id": valid[0]["goal_id"] if valid else "",
-            "goal_id": valid[0]["goal_id"] if valid else "",
+            "id": valid[0]["goal_id"],
+            "goal_id": valid[0]["goal_id"],
             "status": "multi_agent",
             "mode": "multi_agent",
+            "success": not failed_submissions,
             "sub_goal_ids": [r["goal_id"] for r in valid],
+            "failed_submissions": failed_submissions,
             "goal": body.goal,
         }
 

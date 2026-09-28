@@ -109,19 +109,42 @@ async def execute_spawn_tool(
         )
         agent_id = agent_record.get("agent_id", "unknown")
 
-        # Submit the goal for the new agent
-        goal_id = None
-        if goal_service is not None:
-            try:
-                result = await goal_service.submit_goal(
-                    goal=goal,
-                    tenant_ctx=tenant_ctx,
-                    agent_id=agent_id,
-                    priority=priority,
-                )
-                goal_id = result.get("goal_id")
-            except Exception as exc:
-                logger.warning("spawn_tool_goal_submit_failed", error=str(exc))
+        # Submit the goal for the new agent. A spawn whose child never received its
+        # goal did no work, so it is reported as a failure — it used to return
+        # success:True with goal_id None (goal_service was never wired, and the call
+        # also omitted submit_goal's required ``dry_run`` argument).
+        if goal_service is None:
+            return {
+                "success": False,
+                "agent_id": agent_id,
+                "goal_id": None,
+                "error": "Child agent created but no goal service is available to run its "
+                "goal — nothing was executed.",
+            }
+        try:
+            result = await goal_service.submit_goal(
+                goal=goal,
+                priority=priority,
+                dry_run=False,
+                tenant_ctx=tenant_ctx,
+                agent_id=agent_id,
+            )
+            goal_id = result.get("goal_id") if isinstance(result, dict) else None
+        except Exception as exc:
+            logger.warning("spawn_tool_goal_submit_failed", error=str(exc))
+            return {
+                "success": False,
+                "agent_id": agent_id,
+                "goal_id": None,
+                "error": f"Child agent created but its goal could not be submitted: {exc}",
+            }
+        if not goal_id:
+            return {
+                "success": False,
+                "agent_id": agent_id,
+                "goal_id": None,
+                "error": "Child agent created but goal submission returned no goal id.",
+            }
 
         return {
             "success": True,

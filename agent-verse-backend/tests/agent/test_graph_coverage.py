@@ -7,7 +7,7 @@ import pytest
 
 from app.agent.graph import AgentGraph
 from app.agent.nodes._helpers import _extract_scope_value, _extract_tool_name, _parse_json
-from app.agent.state import GoalStatus
+from app.agent.state import GoalStatus, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
 from app.governance.audit import AuditLog
 from app.governance.cost import BudgetConfig, CostController
@@ -1073,8 +1073,11 @@ async def test_graph_circuit_breaker_open_returns_skip() -> None:
     state = await g.run(goal="circuit test", tenant_ctx=T)
 
     assert state is not None
-    if state.steps:
-        assert "Circuit open" in state.steps[0].output
+    assert state.steps
+    # FAILED with the reason — never a COMPLETE step whose output is a skip message.
+    assert state.steps[0].status == StepStatus.FAILED
+    assert "Circuit breaker open" in (state.steps[0].error or "")
+    # A later (half-open) retry may legitimately complete; the skipped step never does.
 
 
 async def test_graph_cost_exceeded_skips_step() -> None:
@@ -1114,10 +1117,10 @@ async def test_graph_cost_controller_records_cost_metric(
     state = await g.run(goal="cost metric test", tenant_ctx=T)
 
     assert state.status == GoalStatus.COMPLETE
-    # Cost is now calculated from real token usage, not hardcoded $0.01
-    assert len(recorded) == 1
-    assert recorded[0][0] == "tool"
-    assert recorded[0][1] > 0.0
+    # Cost is calculated from real token usage — and planner + executor + verifier
+    # calls are ALL charged (planner/verifier used to be free).
+    assert len(recorded) == 3
+    assert all(scope == "tool" and amount > 0.0 for scope, amount in recorded)
 
 
 async def test_graph_dedup_marks_seen() -> None:
@@ -1135,10 +1138,8 @@ async def test_graph_dedup_marks_seen() -> None:
     state = await g.run(goal="dedup test", tenant_ctx=T)
     assert state is not None
     if len(state.steps) >= 2:
-        assert state.steps[1].output in {
-            "Duplicate step, returning cached result.",
-            state.steps[0].output,
-        }
+        # The duplicate is served the first step's REAL output, never a placeholder.
+        assert state.steps[1].output == state.steps[0].output
 
 
 async def test_graph_verify_calls_eval_runner() -> None:

@@ -78,9 +78,9 @@ def test_salesforce_query_is_read() -> None:
 
 # ── default / unknown ─────────────────────────────────────────────────────────
 
-def test_unknown_tool_defaults_to_read() -> None:
-    """Unrecognised tools must default to 'read' (safe)."""
-    assert classify_tool_risk("frobnicate_widget", "unknown_connector") == "read"
+def test_unknown_tool_defaults_to_approval_required() -> None:
+    """Unrecognised tools default to 'write_high' so they require human approval."""
+    assert classify_tool_risk("frobnicate_blob", "mystery_connector") == "write_high"
 
 
 def test_empty_names_default_to_read() -> None:

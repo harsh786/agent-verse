@@ -84,12 +84,13 @@ def test_summarize_inputs_with_data() -> None:
 
 # ── WorkflowExecutor._execute_step ────────────────────────────────────────────
 
-async def test_execute_step_no_provider_no_tool_returns_stub() -> None:
+async def test_execute_step_no_provider_no_tool_fails_instead_of_stub() -> None:
+    # Nothing can run the step: it must fail, never report a stub "Completed: ...".
     executor = WorkflowExecutor(provider=None, mcp_client=None)
     step = WorkflowStep(id="s1", description="Do something")
     result = await executor._execute_step(step, _CTX, prior_results={})
-    assert result["status"] == "complete"
-    assert "Completed:" in result["output"]
+    assert result["status"] == "failed"
+    assert "output" not in result
 
 
 async def test_execute_step_with_provider_uses_llm() -> None:
@@ -111,25 +112,26 @@ async def test_execute_step_with_tool_and_mcp_client() -> None:
     assert result["tool"] == "jira_search"
 
 
-async def test_execute_step_tool_failure_falls_back_to_llm() -> None:
+async def test_execute_step_tool_failure_does_not_fall_back_to_llm() -> None:
+    # A failed tool call is a failed step — LLM prose is not a tool result.
     mcp = MagicMock()
     mcp.call_tool = AsyncMock(side_effect=RuntimeError("tool failed"))
     fake = FakeProvider(responses=["LLM fallback result"])
     executor = WorkflowExecutor(provider=fake, mcp_client=mcp)
-    step = WorkflowStep(id="s1", description="Step with tool", tool="failing_tool")
+    step = WorkflowStep(id="s1", description="Step with tool", tool="search_records")
     result = await executor._execute_step(step, _CTX, prior_results={})
-    assert result["status"] == "complete"
-    assert result["output"] == "LLM fallback result"
+    assert result["status"] == "failed"
+    assert "tool failed" in result["error"]
+    assert fake.call_history == []
 
 
-async def test_execute_step_tool_failure_no_provider_returns_stub() -> None:
+async def test_execute_step_tool_failure_no_provider_fails() -> None:
     mcp = MagicMock()
     mcp.call_tool = AsyncMock(side_effect=RuntimeError("tool failed"))
     executor = WorkflowExecutor(provider=None, mcp_client=mcp)
-    step = WorkflowStep(id="s1", description="Step", tool="failing_tool")
+    step = WorkflowStep(id="s1", description="Step", tool="search_records")
     result = await executor._execute_step(step, _CTX, prior_results={})
-    # Falls to stub
-    assert result["status"] == "complete"
+    assert result["status"] == "failed"
 
 
 async def test_execute_step_with_prior_context() -> None:
@@ -361,7 +363,7 @@ async def test_run_legacy_mcp_tool_failure_returns_tool_call_failed() -> None:
     jira_tool = ToolRef(
         server_id="jira-srv",
         server_name="Jira",
-        name="issue",
+        name="search_issue",
         description="jira search issue",
         input_schema={},
     )

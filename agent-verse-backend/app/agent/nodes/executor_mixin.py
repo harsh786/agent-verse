@@ -51,7 +51,12 @@ except ImportError:
 
 import contextlib
 
-from app.agent.graph_types import GraphState, RetrievalEntryPointError  # noqa: F401
+from app.agent.graph_types import (  # noqa: F401
+    STEP_FAILURES_KEY,
+    GraphState,
+    RetrievalEntryPointError,
+    StepNotExecutedError,
+)
 from app.agent.nodes._helpers import (
     _extract_scope_value,
     _guardrail_should_fail_closed,
@@ -97,6 +102,16 @@ _EMPTY_RESULT_MARKERS = (
     '{"items": []}',
     "[]",
     "{}",
+)
+
+
+# Pipeline outputs that are refusals/skips, not step results — never dedup-cached.
+_DEDUP_NON_RESULT_PREFIXES = (
+    "Step skipped",
+    "Guardrail blocked",
+    "GuardrailEnforcer blocked",
+    "Action blocked",
+    "[Bulkhead",
 )
 
 
@@ -235,6 +250,9 @@ class ExecutorMixin:
         plan: list[str] = state.get("plan") or agent_state.plan
 
         agent_state.status = GoalStatus.EXECUTING
+        # Steps that could not run in THIS execute pass (StepNotExecutedError). The
+        # verifier fails verification deterministically when this is non-empty.
+        agent_state.context[STEP_FAILURES_KEY] = []
 
         # Goal-tree decomposition: delegate large plans to parallel sub-agents
         if self._enable_goal_tree and len(plan) >= self._goal_tree_threshold:
@@ -478,6 +496,14 @@ class ExecutorMixin:
                         step.status = StepStatus.FAILED
                         step.error = str(exc)
                         raise  # re-raise so LangGraph propagates it out of ainvoke
+                    except StepNotExecutedError as exc:
+                        # The step never ran (e.g. open circuit). Record it as FAILED —
+                        # never as a completed step whose "output" is a skip message —
+                        # and stop this pass: later steps depend on it.
+                        await self._record_step_not_executed(
+                            agent_state, step, struct_step, _completed_steps, exc
+                        )
+                        break
 
                 step.output = output
                 step.status = StepStatus.COMPLETE
@@ -602,6 +628,13 @@ class ExecutorMixin:
                             sr.status = StepStatus.FAILED
                             sr.error = str(exc)
                         raise
+                    except StepNotExecutedError as exc:
+                        # Not executed (e.g. open circuit): FAILED, not a fake output.
+                        # Siblings in the wave still finish; later waves are skipped.
+                        async with _state_lock:  # noqa: B023  # see note above
+                            await self._record_step_not_executed(
+                                agent_state, sr, None, None, exc
+                            )
                     except Exception as exc:
                         async with _state_lock:  # noqa: B023  # closure runs + is awaited within the same wave iteration that defines _state_lock (gather() below completes before the next wave), so the late-binding this rule warns about never happens here
                             sr.status = StepStatus.FAILED
@@ -646,8 +679,32 @@ class ExecutorMixin:
                         "count": len(eligible_steps),
                     }
                 )
+                if any(p.status == StepStatus.FAILED for p in parallel_steps):
+                    break  # a step did not execute — later waves depend on it
 
         return {"agent_state": agent_state}
+
+    async def _record_step_not_executed(
+        self,
+        agent_state: AgentState,
+        step: StepResult,
+        struct_step: Any,
+        completed_steps: dict[str, Any] | None,
+        exc: StepNotExecutedError,
+    ) -> None:
+        """Mark a step that never ran as FAILED with its reason (no fake output)."""
+        reason = str(exc)
+        step.status = StepStatus.FAILED
+        step.error = reason
+        step.output = ""
+        if struct_step is not None:
+            struct_step.status = "failed"
+            if completed_steps is not None:
+                completed_steps[struct_step.id] = struct_step
+        agent_state.context.setdefault(STEP_FAILURES_KEY, []).append(
+            {"step": step.description, "reason": reason}
+        )
+        await self._emit({"type": "step_failed", "step": step.description, "error": reason})
 
     async def _execute_step_with_loop(
         self,
@@ -701,7 +758,56 @@ class ExecutorMixin:
         )
         return step.output  # Return last output
 
+    @staticmethod
+    def _dedup_hash(step: str, state: AgentState) -> str:
+        # Scoped to the goal run: identical text in a *different* goal is not a dup.
+        return hashlib.sha256(f"{state.goal_id}:{step}:{state.goal}".encode()).hexdigest()
+
+    def _dedup_lookup(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str | None:
+        """Return the real recorded output of an already-executed identical step, or None."""
+        cache = self._dedup_cache
+        if cache is None:
+            return None
+        content_hash = self._dedup_hash(step, state)
+        if not cache.is_duplicate(content_hash=content_hash, tenant_ctx=tenant_ctx):
+            cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
+            return None
+        get_result = getattr(cache, "get_result", None)
+        cached = (
+            get_result(content_hash=content_hash, tenant_ctx=tenant_ctx)
+            if callable(get_result)
+            else None
+        )
+        if isinstance(cached, str) and not _is_uncacheable_output(cached):
+            return cached
+        return None  # seen, but nothing real cached → re-execute
+
+    def _dedup_store(
+        self, step: str, state: AgentState, tenant_ctx: TenantContext, output: str
+    ) -> None:
+        cache = self._dedup_cache
+        store = getattr(cache, "store_result", None) if cache is not None else None
+        if (
+            callable(store)
+            and not _is_uncacheable_output(output)
+            and not output.startswith(_DEDUP_NON_RESULT_PREFIXES)
+        ):
+            with contextlib.suppress(Exception):
+                store(
+                    content_hash=self._dedup_hash(step, state),
+                    output=output,
+                    tenant_ctx=tenant_ctx,
+                )
+
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
+        """Run the governed per-step pipeline and record its real output for dedup."""
+        output = await self._execute_step_pipeline(step, state, tenant_ctx)
+        self._dedup_store(step, state, tenant_ctx, output)
+        return output
+
+    async def _execute_step_pipeline(
+        self, step: str, state: AgentState, tenant_ctx: TenantContext
+    ) -> str:
         """Run the canonical governed per-step execution pipeline."""
         tool_name = self._extract_tool_name(step)
 
@@ -801,12 +907,9 @@ class ExecutorMixin:
 
         # 2. Exec memory recall — already done in rag_retrieval; skip here.
 
-        # 3. Dedup
-        if self._dedup_cache is not None:
-            content_hash = hashlib.sha256(f"{step}:{state.goal}".encode()).hexdigest()
-            if self._dedup_cache.is_duplicate(content_hash=content_hash, tenant_ctx=tenant_ctx):
-                return "Duplicate step, returning cached result."
-            self._dedup_cache.mark_seen(content_hash=content_hash, tenant_ctx=tenant_ctx)
+        # 3. Dedup — moved below the governance gates (see "8-pre. Dedup"): a
+        # duplicate used to return the literal "Duplicate step, returning cached
+        # result." with no cache behind it, and did so before permission/policy/HITL.
 
         # 3b. Smart context fetch (per-step RAG)
         app_state = getattr(self._app_state, "state", self._app_state)
@@ -833,7 +936,11 @@ class ExecutorMixin:
             breaker = self._circuit_breakers.get("llm") or self._circuit_breakers.get(tool_name)
             if breaker is not None:
                 if not breaker.can_call():
-                    return "Circuit open, step skipped."
+                    # Fail the step honestly — returning a skip message here made it
+                    # the step's "output" and the step was marked COMPLETE.
+                    raise StepNotExecutedError(
+                        f"Circuit breaker open for '{tool_name or 'llm'}': step was not executed."
+                    )
                 _active_breaker = breaker  # track for success/failure recording
 
         # 5. Governance — permission check with scope extraction
@@ -950,6 +1057,13 @@ class ExecutorMixin:
                         raise PermissionError(
                             f"Step '{step}' was rejected by human approver via policy."
                         )
+                    # Only an explicit APPROVED lets the step run: a timed-out (or
+                    # still-pending) policy approval used to fall through and execute.
+                    if final_status != ApprovalStatus.APPROVED:
+                        raise PermissionError(
+                            f"Step '{step}' policy approval not granted ({final_status})."
+                        )
+                    await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 7. HITL gate
         if not _hitl_already_requested and self._hitl_gateway is not None:
@@ -975,10 +1089,19 @@ class ExecutorMixin:
                     record_approval_wait(time.monotonic() - approval_started)
                     if final_status == ApprovalStatus.REJECTED:
                         raise PermissionError(f"Step '{step}' was rejected by human approver.")
-                    elif final_status == ApprovalStatus.TIMED_OUT:
+                    elif final_status != ApprovalStatus.APPROVED:
                         raise PermissionError(f"Step '{step}' approval timed out.")
                     await self._emit({"type": "approval_granted", "request_id": req_id})
                 # In bounded/fully-autonomous: just log, don't block
+
+        # 8-pre. Dedup — AFTER every governance gate above, so a duplicate is never
+        # a governance bypass. A hit serves the step's REAL recorded output; a hash
+        # that was seen but has no stored output is re-executed (never a fake
+        # "Duplicate step" placeholder presented as the result).
+        _cached_dup = self._dedup_lookup(step, state, tenant_ctx)
+        if _cached_dup is not None:
+            await self._emit({"type": "dedup_hit", "step": step})
+            return _cached_dup
 
         # 8. Execute via LLM executor
         recent_outputs = "\n".join(
@@ -1402,16 +1525,21 @@ class ExecutorMixin:
                 state.context["_budget_exhausted"] = True
                 return "Step skipped: budget exceeded."
 
-        # 1b. Record ACTUAL token cost via CostTracker when usage is available
-        if self._cost_tracker is not None and getattr(resp, "usage", None) is not None:
+        # 1b. Record ACTUAL token cost via CostTracker. Uses provider ``usage`` when
+        # present, else the response token totals: streamed (tool-less) steps carry
+        # no ``usage`` object, and used to skip the ledger entirely.
+        from app.agent.nodes.llm_cost import llm_call_tokens as _llm_tokens
+
+        _ledger_prompt_tok, _ledger_completion_tok = _llm_tokens(resp)
+        if self._cost_tracker is not None and (_ledger_prompt_tok or _ledger_completion_tok):
             try:
                 from app.intelligence.cost_tracker import calculate_cost as _calc_cost
 
                 _model_name = resp.model if hasattr(resp, "model") and resp.model else _exec_model
                 _real_cost = _calc_cost(
                     _model_name,
-                    resp.usage.prompt_tokens,
-                    resp.usage.completion_tokens,
+                    _ledger_prompt_tok,
+                    _ledger_completion_tok,
                 )
                 async with self._state_lock:
                     # This is the SAME LLM call already charged above (via the
@@ -1425,8 +1553,8 @@ class ExecutorMixin:
                     )
                 await self._cost_tracker.record_llm_usage(
                     model=_model_name,
-                    prompt_tokens=resp.usage.prompt_tokens,
-                    completion_tokens=resp.usage.completion_tokens,
+                    prompt_tokens=_ledger_prompt_tok,
+                    completion_tokens=_ledger_completion_tok,
                     tenant_ctx=tenant_ctx,
                     goal_id=state.goal_id or "",
                     agent_id=state.context.get("agent_id"),
@@ -1475,7 +1603,11 @@ class ExecutorMixin:
                 model=_exec_model,
                 input_tok=getattr(resp, "input_tokens", 0),
                 output_tok=getattr(resp, "output_tokens", 0),
-                cost=_actual_cost if "_actual_cost" in locals() else 0.0,
+                cost=(
+                    _real_cost
+                    if "_real_cost" in locals()
+                    else (_actual_cost if "_actual_cost" in locals() else 0.0)
+                ),
             )
         except Exception:
             pass

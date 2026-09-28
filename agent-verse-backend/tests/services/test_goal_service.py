@@ -754,8 +754,11 @@ async def test_submit_goal_multi_agent_emits_workflow_events() -> None:
         "workflow_step_complete",
         "workflow_step_started",
         "workflow_step_complete",
-        "goal_complete",
+        # No connector tools are wired, so no step actually ran: the goal fails
+        # honestly instead of emitting goal_complete for planned-only steps.
+        "goal_failed",
     ]
+    assert "no_matching_connector_tool" in events[-1]["reason"]
     assert events[1]["steps"] == [
         {
             "id": "step_1",
@@ -911,8 +914,30 @@ async def test_submit_goal_multi_agent_calls_matching_connector_tool() -> None:
             )
 
     mcp_client = FakeMCPClient()
+    # Workflow tool calls are now governed like AgentGraph's (grants enforced by
+    # default), so the agent needs a covering grant for the call to be dispatched.
+    from datetime import UTC, datetime, timedelta
+
+    from app.governance.grants.models import Grant
+    from app.governance.grants.store import InMemoryGrantStore
+
+    grant_store = InMemoryGrantStore()
+    _now = datetime.now(UTC)
+    await grant_store.issue(
+        Grant(
+            grant_id="g-wf",
+            tenant_id=_CTX_A.tenant_id,
+            grantor="owner",
+            grantee_agent_id="agent-123",
+            scopes=("*",),
+            not_before=_now - timedelta(minutes=1),
+            expires_at=_now + timedelta(hours=1),
+        )
+    )
     svc = GoalService(
-        app_state=SimpleNamespace(agent_store=FakeAgentStore(), mcp_client=mcp_client)
+        app_state=SimpleNamespace(
+            agent_store=FakeAgentStore(), mcp_client=mcp_client, grant_store=grant_store
+        )
     )
 
     result = await svc.submit_goal(

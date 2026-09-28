@@ -210,9 +210,10 @@ async def test_semantic_cache_stored_on_miss() -> None:
 
 
 async def test_dedup_cache_returns_early() -> None:
-    """Dedup is_duplicate=True causes step to return cached-result early (line 785)."""
+    """Dedup is_duplicate=True with no cached output re-executes (never a placeholder)."""
     dedup = MagicMock()
     dedup.is_duplicate.return_value = True
+    dedup.get_result.return_value = None
     dedup.mark_seen.return_value = None
 
     p = FakeProvider(
@@ -225,7 +226,7 @@ async def test_dedup_cache_returns_early() -> None:
     state = await g.run(goal="process data", tenant_ctx=T)
     assert state.goal == "process data"
     if state.steps:
-        assert "Duplicate step" in (state.steps[0].output or "")
+        assert "Duplicate step" not in (state.steps[0].output or "")
 
 
 # ---------------------------------------------------------------------------
@@ -250,8 +251,9 @@ async def test_circuit_breaker_open_returns_early() -> None:
     )
     state = await g.run(goal="find data", tenant_ctx=T)
     assert state.goal == "find data"
-    if state.steps:
-        assert "Circuit open" in (state.steps[0].output or "")
+    assert state.steps
+    assert all(s.output != "Circuit open, step skipped." for s in state.steps)
+    assert "Circuit breaker open" in (state.steps[0].error or "")
 
 
 # ---------------------------------------------------------------------------

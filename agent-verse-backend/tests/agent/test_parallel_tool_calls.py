@@ -112,17 +112,17 @@ async def test_one_failure_does_not_sink_batch():
     class _FlakyMCP(_RecordingMCP):
         async def call_tool(self, *, server_id, tool_name, arguments, tenant_ctx):
             self.calls.append(tool_name)
-            if tool_name == "boom":
+            if tool_name == "search_boom":
                 raise RuntimeError("kaboom")
             return SimpleNamespace(success=True, output=f"out-{tool_name}", error=None)
 
     mcp = _FlakyMCP()
     g = _graph(mcp)
-    st = _state([_tool("boom"), _tool("search_b")])
+    st = _state([_tool("search_boom"), _tool("search_b")])
     res = await g._dispatch_parallel_extra_tool_calls(
-        [{"name": "boom", "arguments": {}}, {"name": "search_b", "arguments": {}}],
-        "step", st, T, {"boom", "search_b"},
+        [{"name": "search_boom", "arguments": {}}, {"name": "search_b", "arguments": {}}],
+        "step", st, T, {"search_boom", "search_b"},
     )
     outs = dict(res)
-    assert "error" in outs["boom"].lower()
+    assert "error" in outs["search_boom"].lower()
     assert outs["search_b"] == "out-search_b"
