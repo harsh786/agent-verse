@@ -34,7 +34,9 @@ def _mock_httpx(text: str) -> Any:
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=ctx)
     ctx.__aexit__ = AsyncMock(return_value=False)
+    resp.is_redirect = False  # request_public follows redirects hop by hop
     ctx.get = AsyncMock(return_value=resp)
+    ctx.request = ctx.get
     return MagicMock(return_value=ctx)
 
 

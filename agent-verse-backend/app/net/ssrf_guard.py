@@ -61,8 +61,33 @@ _METADATA_HOSTNAMES = frozenset(
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 
+# Never reachable, not even for an operator-allowlisted domain: link-local
+# (cloud metadata 169.254.169.254, fd00:ec2::254 via ULA is separately private),
+# the unspecified address and multicast.
+_ALWAYS_BLOCKED = [
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("0.0.0.0/8"),
+    ipaddress.ip_network("fe80::/10"),
+    ipaddress.ip_network("::/128"),
+    ipaddress.ip_network("fd00:ec2::254/128"),  # AWS IMDS over IPv6
+]
+
+
 class SSRFError(ValueError):
     """Raised when a URL is blocked by the SSRF guard."""
+
+
+def _is_always_blocked_ip(ip_str: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return addr.is_multicast or any(
+        addr.version == net.version and addr in net for net in _ALWAYS_BLOCKED
+    )
 
 
 def _is_blocked_ip(ip_str: str) -> bool:
@@ -124,11 +149,34 @@ def assert_public_url(
     if not hostname:
         raise SSRFError(f"SSRF guard [{context}]: no hostname in URL '{url}'")
 
-    # Allowed-domain check (allowlist takes priority)
+    # Allowed-domain check. An operator allowlist may open PRIVATE ranges for
+    # its own (sub)domains — that is its purpose — but it used to skip every IP
+    # check (``return []``), so an allowlisted name whose DNS points at the
+    # cloud metadata service (169.254.169.254) or 0.0.0.0 was fetched. It is
+    # still resolved (fail closed) and the always-blocked ranges still apply.
     if allowed_domains:
         for domain in allowed_domains:
             if hostname == domain.lower() or hostname.endswith("." + domain.lower()):
-                return []  # explicitly allowed; repository pinning never uses this bypass
+                if hostname in _METADATA_HOSTNAMES:
+                    raise SSRFError(
+                        f"SSRF guard [{context}]: metadata service hostname '{hostname}' blocked"
+                    )
+                try:
+                    allowed_ips = _resolve_host(hostname)
+                except Exception:
+                    # An operator-allowlisted internal name may not resolve from
+                    # here (split-horizon DNS / the connector's own driver
+                    # resolves it). Nothing to check; the pinned client
+                    # (public_async_client) re-checks at connect time.
+                    logger.warning("ssrf_allowlisted_host_unresolved", hostname=hostname)
+                    return []
+                for ip in allowed_ips:
+                    if _is_always_blocked_ip(ip):
+                        raise SSRFError(
+                            f"SSRF guard [{context}]: allowlisted host '{hostname}' resolved "
+                            f"to never-reachable IP '{ip}'"
+                        )
+                return allowed_ips
 
     # Metadata hostname block
     if hostname in _METADATA_HOSTNAMES:
@@ -167,11 +215,15 @@ def assert_public_url(
     return ips
 
 
-async def assert_public_url_async(url: str, *, context: str = "") -> list[str]:
+async def assert_public_url_async(
+    url: str, *, context: str = "", allowed_domains: list[str] | None = None
+) -> list[str]:
     """:func:`assert_public_url` without blocking the event loop on DNS."""
     import asyncio
 
-    return await asyncio.to_thread(assert_public_url, url, context=context)
+    return await asyncio.to_thread(
+        assert_public_url, url, context=context, allowed_domains=allowed_domains
+    )
 
 
 async def request_public(
@@ -181,6 +233,7 @@ async def request_public(
     *,
     context: str = "",
     max_redirects: int = 5,
+    allowed_domains: list[str] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Send ``method url`` with ``client`` re-validating the URL at EVERY hop.
@@ -192,7 +245,7 @@ async def request_public(
     """
     current_url, current_method = url, method.upper()
     for _hop in range(max_redirects + 1):
-        await assert_public_url_async(current_url, context=context)
+        await assert_public_url_async(current_url, context=context, allowed_domains=allowed_domains)
         resp = await client.request(current_method, current_url, **kwargs)
         if not resp.is_redirect:
             return resp
@@ -204,6 +257,90 @@ async def request_public(
             current_method = "GET"
             kwargs = {k: v for k, v in kwargs.items() if k not in ("json", "content", "data")}
     raise SSRFError(f"SSRF guard [{context}]: too many redirects (>{max_redirects})")
+
+
+def resolve_and_check_host(host: str, *, allowed_domains: list[str] | None = None) -> list[str]:
+    """Resolve *host* and validate every address; return the checked IPs.
+
+    Used at CONNECT time by :class:`PinnedNetworkBackend`, so the address the
+    socket connects to is the address that was checked.
+    """
+    return assert_public_url(
+        f"http://{host}/" if ":" not in host else f"http://[{host}]/",
+        allowed_domains=allowed_domains,
+        context="connect",
+    )
+
+
+class PinnedNetworkBackend:
+    """httpcore network backend that resolves + validates the host AT CONNECT.
+
+    ``assert_public_url`` followed by an ordinary client request is
+    validate-then-connect: the client resolves the name again, and a DNS answer
+    with a tiny TTL can flip from a public IP (checked) to 127.0.0.1 / 10.x /
+    169.254.169.254 (connected) — DNS rebinding. This backend resolves once,
+    rejects blocked addresses, and connects the socket to the checked IP. TLS
+    still uses the request's hostname for SNI and certificate verification
+    (httpcore passes the origin host to ``start_tls``, not the connect address).
+    """
+
+    def __init__(self, *, allowed_domains: list[str] | None = None) -> None:
+        import httpcore
+
+        self._inner = httpcore.AnyIOBackend()
+        self._allowed_domains = allowed_domains
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        import asyncio
+
+        ips = await asyncio.to_thread(
+            resolve_and_check_host, host, allowed_domains=self._allowed_domains
+        )
+        last_exc: Exception | None = None
+        for ip in ips:
+            try:
+                return await self._inner.connect_tcp(
+                    ip,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:  # try the next checked address
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise SSRFError("SSRF guard: unix sockets are not reachable from a public client")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def public_async_client(*, allowed_domains: list[str] | None = None, **kwargs: Any) -> Any:
+    """An ``httpx.AsyncClient`` whose connections are pinned to validated IPs.
+
+    Redirects are never followed automatically (``follow_redirects=False``) —
+    use :func:`request_public`, which re-validates every hop. Proxy env vars are
+    ignored (``trust_env=False``): a proxy would resolve the name itself.
+    """
+    import httpx
+
+    kwargs["follow_redirects"] = False
+    kwargs.setdefault("trust_env", False)
+    transport = httpx.AsyncHTTPTransport()
+    # httpcore>=1.0 AsyncConnectionPool keeps its backend here (pinned in
+    # uv.lock; tests/net/test_ssrf_guard_pinning.py fails if it moves).
+    transport._pool._network_backend = PinnedNetworkBackend(allowed_domains=allowed_domains)
+    return httpx.AsyncClient(transport=transport, **kwargs)
 
 
 def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool:

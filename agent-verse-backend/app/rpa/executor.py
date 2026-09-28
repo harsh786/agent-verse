@@ -750,7 +750,7 @@ class RPAExecutor:
             if not url:
                 return RPAResult(success=False, error="url argument required")
             try:
-                text, title = await self._http_fetch_text(url)
+                text, title = await self._http_fetch_text(url, self._allowed_domains)
             except Exception as exc:
                 return RPAResult(success=False, error=str(exc))
             self._http_pages[session_id] = text
@@ -760,7 +760,7 @@ class RPAExecutor:
             url = arguments.get("url", "")
             if url:
                 try:
-                    text, _ = await self._http_fetch_text(url)
+                    text, _ = await self._http_fetch_text(url, self._allowed_domains)
                 except Exception as exc:
                     return RPAResult(success=False, error=str(exc))
                 self._http_pages[session_id] = text
@@ -778,7 +778,9 @@ class RPAExecutor:
         )
 
     @staticmethod
-    async def _http_fetch_text(url: str) -> tuple[str, str]:
+    async def _http_fetch_text(
+        url: str, allowed_domains: list[str] | None = None
+    ) -> tuple[str, str]:
         """Fetch ``url`` and return ``(cleaned_text, title)`` — no ``raise_for_status``.
 
         Error responses still carry a body; we surface whatever text is present so
@@ -786,10 +788,21 @@ class RPAExecutor:
         """
         import re
 
-        import httpx
+        from app.net.ssrf_guard import public_async_client, request_public
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "AgentVerse-RPA/1.0"})
+        # Was follow_redirects=True after a single up-front check: a public URL
+        # could 302 to 169.254.169.254 / localhost and the redirect was fetched.
+        # Every hop is now re-validated and each connection pinned to the
+        # validated IP (no DNS-rebinding window).
+        async with public_async_client(timeout=30.0, allowed_domains=allowed_domains) as client:
+            resp = await request_public(
+                client,
+                "GET",
+                url,
+                context="rpa_http_fetch",
+                allowed_domains=allowed_domains,
+                headers={"User-Agent": "AgentVerse-RPA/1.0"},
+            )
         raw = resp.text
         title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
         title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""

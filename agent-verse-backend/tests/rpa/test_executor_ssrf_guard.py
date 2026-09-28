@@ -57,7 +57,9 @@ def _ok_httpx(html: str = "<html><body>public</body></html>") -> Any:
         resp = AsyncMock()
         resp.text = html
         resp.raise_for_status = lambda: None
+        resp.is_redirect = False  # request_public follows redirects hop by hop
         ctx.get = AsyncMock(return_value=resp)
+        ctx.request = ctx.get
         return ctx
 
     return _factory
