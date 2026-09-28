@@ -1,7 +1,10 @@
 """GitHub MCP server wrapper — wraps GitHub REST API in MCP protocol.
 
+Credentials come ONLY from the calling tenant's connector (``credentials``:
+``token`` / ``api_token`` / ``password``). The platform's GITHUB_TOKEN is never
+used: it made every tenant's agent act with the platform's GitHub identity.
+
 Environment variables:
-  GITHUB_TOKEN: Personal access token or GitHub App token
   GITHUB_BASE_URL: Override for GitHub Enterprise (default: https://api.github.com)
 """
 
@@ -110,17 +113,6 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def _headers() -> dict[str, str]:
-    token = os.getenv("GITHUB_TOKEN", "")
-    h: dict[str, str] = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
-
-
 async def call_tool(
     tool_name: str,
     arguments: dict[str, Any],
@@ -128,12 +120,10 @@ async def call_tool(
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creds = credentials or {}
-    token = (
-        creds.get("token")
-        or creds.get("api_token")
-        or creds.get("password")
-        or os.getenv("GITHUB_TOKEN", "")
-    )
+    # No os.getenv("GITHUB_TOKEN") fallback (confused deputy — same fix as
+    # app/knowledge/ingestors/github_ingestor.py): without a tenant token the
+    # call is anonymous. The unused env-reading _headers() helper is removed too.
+    token = creds.get("token") or creds.get("api_token") or creds.get("password") or ""
     base_url = str(
         creds.get("url")
         or creds.get("base_url")

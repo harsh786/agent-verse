@@ -572,7 +572,28 @@ class MCPClient:
                         resolved[k] = v
                 credentials = resolved
             except Exception:
-                pass  # Best-effort: handler may still work with env-var fallbacks
+                pass  # Best-effort: an unresolved ref is passed through as-is
+        # Confused-deputy guard: most built-in handlers still fall back to the
+        # platform's env credentials (os.getenv("GITHUB_TOKEN"), ...) when the
+        # tenant supplied none, so a tenant connector without its own credentials
+        # used to run as the PLATFORM's identity. Refuse before the handler runs.
+        from app.mcp.servers.registry_wiring import (
+            builtin_required_env,
+            has_tenant_credentials,
+        )
+
+        _required_env = builtin_required_env(server.server_id, server.name)
+        if _required_env and not has_tenant_credentials(credentials, _required_env):
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=(
+                    f"Connector '{server.name}' has no credentials configured for this "
+                    "tenant. Add your own credentials to the connector; platform "
+                    "credentials are never used for tenant tool calls."
+                ),
+                server_id=server.server_id,
+            )
         try:
             # Detect credentials support once via signature to avoid double-invocation
             # and to prevent masking TypeErrors raised inside the handler body.
@@ -613,22 +634,90 @@ class MCPClient:
         server: MCPServerConfig,
         tool_def: dict[str, Any],
         arguments: dict[str, Any],
+        tenant_ctx: TenantContext | None = None,
     ) -> ToolCallResult:
-        """Dispatch an HTTP call for an OpenAPI-imported tool definition."""
+        """Dispatch an HTTP call for an OpenAPI-imported tool definition.
+
+        Bug fixed: this used to send only ``Content-Type`` — the connector's
+        configured credentials were never attached, so every authenticated API
+        answered 401. It now applies the connector's auth (bearer / API key /
+        basic / custom header / OAuth, via ``_build_auth_headers``), honouring an
+        API key's spec placement (``auth_config["in"]``: header | query | cookie).
+        Secrets are scrubbed from any returned error, and the SSRF guard runs on
+        the FINAL request URL (the caller's check used ``url or base_url`` while
+        this used ``base_url or url``, and the registry-miss fallback had none).
+        """
+        from urllib.parse import quote
+
         effective_base = server.base_url or server.url
         http_method = tool_def.get("http_method", "POST").upper()
-        http_path = tool_def.get("http_path", "")
+        http_path = str(tool_def.get("http_path", ""))
         tool_name = tool_def.get("name") or tool_def.get("tool_name", "")
 
+        # Substitute OpenAPI path parameters ({item_id}) and drop them from the
+        # query/body — they were previously sent literally as "{item_id}".
+        args = dict(arguments)
+        for key in list(args):
+            placeholder = "{" + key + "}"
+            if placeholder in http_path:
+                http_path = http_path.replace(placeholder, quote(str(args.pop(key)), safe=""))
         url = effective_base.rstrip("/") + "/" + http_path.lstrip("/")
-        headers = {"Content-Type": "application/json"}
+
+        try:
+            assert_public_url(url, context=f"OpenAPI tool {tool_name}")
+        except SSRFError as exc:
+            logger.warning("ssrf_guard_blocked_openapi: server_id=%s", server.server_id)
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=f"Target URL blocked by SSRF guard: {exc}",
+                server_id=server.server_id,
+            )
+
+        try:
+            auth_headers = await self._build_auth_headers(
+                server, tenant_ctx=tenant_ctx, server_id=server.server_id
+            )
+        except Exception:
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error="Could not resolve the connector's credentials",
+                server_id=server.server_id,
+            )
+        auth_params: dict[str, str] = {}
+        auth_cfg = server.auth_config or {}
+        placement = str(auth_cfg.get("in", "header")).lower()
+        if server.auth_type == "api_key" and placement in {"query", "cookie"}:
+            header_name = str(auth_cfg.get("header_name", "X-API-Key"))
+            param_name = str(auth_cfg.get("param_name") or header_name)
+            key_value = auth_headers.pop(header_name, "")
+            if key_value and placement == "query":
+                auth_params[param_name] = key_value
+            elif key_value:
+                auth_headers["Cookie"] = f"{param_name}={key_value}"
+        secrets = [v for v in (*auth_headers.values(), *auth_params.values()) if v]
+        secrets += [s.split(" ", 1)[1] for s in secrets if " " in s]  # "Bearer <tok>"
+
+        def _scrub(text: str) -> str:
+            for secret in secrets:
+                text = text.replace(secret, "***")
+            return text
+
+        headers = {"Content-Type": "application/json", **auth_headers}
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 if http_method == "GET":
-                    resp = await client.get(url, params=arguments, headers=headers)
+                    resp = await client.get(url, params={**args, **auth_params}, headers=headers)
                 else:
-                    resp = await client.request(http_method, url, json=arguments, headers=headers)
+                    resp = await client.request(
+                        http_method,
+                        url,
+                        params=auth_params or None,
+                        json=args,
+                        headers=headers,
+                    )
                 resp.raise_for_status()
                 body = resp.json()
                 # H1 Fix: HTTP 200 with {"error": "..."} body must be treated as failure
@@ -646,11 +735,20 @@ class MCPClient:
                     output=body,
                     server_id=server.server_id,
                 )
+        except httpx.HTTPStatusError as exc:
+            # Built from the response, not str(exc): that message embeds the
+            # request URL — including a query-string API key.
+            return ToolCallResult(
+                tool_name=tool_name,
+                success=False,
+                error=_scrub(f"HTTP {exc.response.status_code}: {exc.response.text[:500]}"),
+                server_id=server.server_id,
+            )
         except Exception as exc:
             return ToolCallResult(
                 tool_name=tool_name,
                 success=False,
-                error=str(exc),
+                error=_scrub(str(exc)),
                 server_id=server.server_id,
             )
 
@@ -858,7 +956,7 @@ class MCPClient:
         if cfg.tool_definitions:
             for tdef in cfg.tool_definitions:
                 if tdef.get("name") == tool_name or tdef.get("tool_name") == tool_name:
-                    return await self._dispatch_openapi_tool(cfg, tdef, arguments)
+                    return await self._dispatch_openapi_tool(cfg, tdef, arguments, tenant_ctx)
 
         # 3. Jira REST connector registered with an Atlassian base URL
         if _is_jira_rest_endpoint(cfg):
@@ -1034,6 +1132,7 @@ class MCPClient:
                                     server=server,
                                     tool_def=tdef,
                                     arguments=arguments,
+                                    tenant_ctx=tenant_ctx,
                                 )
             except Exception:
                 pass

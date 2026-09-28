@@ -174,3 +174,52 @@ def test_oauth_manager_no_vault_stores_plaintext() -> None:
     result = mgr._encrypt_token("token123")
     # Without vault, returns unchanged
     assert result == "token123"
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_uses_redirect_uri_stored_at_start() -> None:
+    """Regression: the token request must carry the SAME redirect_uri as the
+    authorize request (RFC 6749 §4.1.3). start_flow stores it with the PKCE state
+    and exchange_code reuses it instead of trusting the caller's value."""
+    from urllib.parse import parse_qs
+
+    manager = OAuthFlowManager()
+    params = manager.start_flow(
+        server_id="srv-1", tenant_ctx=TENANT, redirect_uri="https://api.example/cb?server_id=srv-1"
+    )
+    with respx.mock:
+        route = respx.post("http://auth.example.com/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "tok"})
+        )
+        token = await manager.exchange_code(
+            code="c",
+            state=params["state"],
+            token_url="http://auth.example.com/token",
+            client_id="cid",
+            redirect_uri="https://somewhere-else.example/cb",
+            tenant_ctx=TENANT,
+        )
+    assert token is not None
+    sent = parse_qs(route.calls.last.request.content.decode())
+    assert sent["redirect_uri"] == ["https://api.example/cb?server_id=srv-1"]
+
+
+@pytest.mark.asyncio
+async def test_exchange_code_rejects_flow_started_by_another_tenant() -> None:
+    manager = OAuthFlowManager()
+    params = manager.start_flow(server_id="srv-1", tenant_ctx=TENANT, redirect_uri="https://x/cb")
+    other = TenantContext(tenant_id="someone-else", plan=PlanTier.FREE, api_key_id="k")
+    with respx.mock:
+        route = respx.post("http://auth.example.com/token").mock(
+            return_value=httpx.Response(200, json={"access_token": "tok"})
+        )
+        token = await manager.exchange_code(
+            code="c",
+            state=params["state"],
+            token_url="http://auth.example.com/token",
+            client_id="cid",
+            redirect_uri="https://x/cb",
+            tenant_ctx=other,
+        )
+    assert token is None
+    assert not route.called

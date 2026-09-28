@@ -1399,11 +1399,11 @@ def create_app(
                 _marketplace_state._agent_store = _agent_store_with_db
                 logger.info("marketplace_agent_store_rewired")
 
-            # Register built-in MCP servers for every active tenant when their
-            # required env vars are present. Without this, catalog connectors
-            # can exist in Redis with no tool_definitions/handler, causing
-            # agents to fail with "Tool not found" even though the connector
-            # appears registered in the UI.
+            # Wire built-in MCP servers for every active tenant: handlers plus
+            # tool definitions for connectors the tenant configured itself, and
+            # credential-free built-ins inserted only if absent. Platform env
+            # credentials (GITHUB_TOKEN, ...) are never wired into a tenant's
+            # connectors — see register_builtin_servers for the old bug.
             try:
                 from app.mcp.servers.registry_wiring import register_builtin_servers
                 from app.tenancy.context import PlanTier, TenantContext

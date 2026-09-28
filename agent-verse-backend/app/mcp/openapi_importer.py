@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.mcp.registry import AuthType
 
 
 def _to_tool_name(method: str, path: str) -> str:
@@ -192,6 +195,62 @@ async def persist_tools(
         return 0
 
 
+def _primary_security_scheme(spec: dict[str, Any]) -> dict[str, Any]:
+    """The scheme named by the spec's top-level ``security``, else the first one."""
+    components = spec.get("components")
+    schemes = components.get("securitySchemes") if isinstance(components, dict) else None
+    if not isinstance(schemes, dict) or not schemes:
+        return {}
+    for requirement in spec.get("security") or []:
+        if isinstance(requirement, dict):
+            for name in requirement:
+                scheme = schemes.get(name)
+                if isinstance(scheme, dict):
+                    return scheme
+    first = next(iter(schemes.values()))
+    return first if isinstance(first, dict) else {}
+
+
+def resolve_auth_from_spec(
+    spec: dict[str, Any], auth_config: dict[str, Any]
+) -> tuple[AuthType, dict[str, Any]]:
+    """Map the caller's credential + the spec's securityScheme to (AuthType, auth_config).
+
+    The credential stays whatever the caller supplied (``api_key`` / ``token`` /
+    ``username``+``password``, possibly a vault ref). The spec only decides the
+    type and where it goes (``header_name`` / ``in`` / ``param_name``); values the
+    caller set explicitly always win.
+    """
+    from app.mcp.registry import AuthType
+
+    cfg = dict(auth_config)
+    secret = cfg.get("api_key") or cfg.get("token")
+    scheme = _primary_security_scheme(spec)
+    stype = str(scheme.get("type", "")).lower()
+    if secret and stype == "apikey":
+        cfg.setdefault("api_key", secret)
+        location = str(scheme.get("in", "header")).lower()
+        name = str(scheme.get("name", "") or "")
+        cfg.setdefault("in", location)
+        if name:
+            cfg.setdefault("header_name" if location == "header" else "param_name", name)
+        return AuthType.API_KEY, cfg
+    is_basic = stype == "http" and str(scheme.get("scheme", "")).lower() == "basic"
+    if is_basic and cfg.get("username"):
+        return AuthType.BASIC, cfg
+    if secret and stype in {"http", "oauth2", "openidconnect"}:
+        cfg.setdefault("token", secret)
+        return AuthType.BEARER, cfg
+    # No usable scheme in the spec: infer from the credential the caller gave.
+    if "api_key" in cfg:
+        return AuthType.API_KEY, cfg
+    if "token" in cfg:
+        return AuthType.BEARER, cfg
+    if cfg.get("username"):
+        return AuthType.BASIC, cfg
+    return AuthType.NONE, cfg
+
+
 async def import_and_register(
     *,
     spec_content: str,
@@ -214,7 +273,7 @@ async def import_and_register(
     Returns:
         {"server_id": ..., "tool_count": ...} or {"error": ..., "server_id": None}
     """
-    from app.mcp.registry import AuthType, MCPServerConfig
+    from app.mcp.registry import MCPServerConfig
 
     # 1. Parse the spec
     try:
@@ -242,14 +301,16 @@ async def import_and_register(
         for t in raw_tools
     ]
 
-    # 4. Build MCPServerConfig
-    auth_type = AuthType.API_KEY if auth_config and "api_key" in auth_config else AuthType.NONE
+    # 4. Build MCPServerConfig. Auth type and placement come from the spec's
+    # securitySchemes (previously ignored: only an "api_key" entry was noticed,
+    # always sent as X-API-Key, and a bearer "token" left auth_type=NONE).
+    auth_type, resolved_auth = resolve_auth_from_spec(spec, auth_config or {})
     server_config = MCPServerConfig(
         server_id=server_id,
         name=server_name,
         base_url=base_url,
         auth_type=auth_type,
-        auth_config=auth_config or {},
+        auth_config=resolved_auth,
         capabilities=list({t["name"] for t in tools}),
         enabled=True,
         tool_definitions=tools,

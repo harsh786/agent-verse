@@ -111,9 +111,21 @@ class OAuthFlowManager:
             return None
         return flow
 
-    def start_flow(self, *, server_id: str, tenant_ctx: TenantContext) -> dict[str, str]:
-        """Initiate a PKCE OAuth flow. Returns the PKCE parameters and state token."""
-        flow = OAuthState(server_id=server_id)
+    def start_flow(
+        self, *, server_id: str, tenant_ctx: TenantContext, redirect_uri: str = ""
+    ) -> dict[str, str]:
+        """Initiate a PKCE OAuth flow. Returns the PKCE parameters and state token.
+
+        ``redirect_uri`` is the exact value sent in the authorize request. It is
+        stored with the PKCE state so :meth:`exchange_code` can send the identical
+        value (RFC 6749 §4.1.3) — previously the callback route re-derived a
+        different URI and every real provider rejected the exchange (invalid_grant).
+        """
+        flow = OAuthState(
+            server_id=server_id,
+            tenant_id=getattr(tenant_ctx, "tenant_id", "") or "",
+            redirect_uri=redirect_uri,
+        )
         self._pending_flows[flow.state_token] = flow
         return {
             "state": flow.state_token,
@@ -132,13 +144,24 @@ class OAuthFlowManager:
         redirect_uri: str,
         tenant_ctx: TenantContext,
     ) -> OAuthToken | None:
-        """Exchange authorization code for tokens (PKCE flow)."""
+        """Exchange authorization code for tokens (PKCE flow).
+
+        The redirect_uri stored by :meth:`start_flow` takes precedence over the
+        ``redirect_uri`` argument, which is only a fallback for flows started
+        without one. The token request must repeat the authorize request's value.
+        """
         # Validate expiry before consuming the flow
-        if self.get_pending_flow(state) is None:
+        pending = self.get_pending_flow(state)
+        if pending is None:
+            return None
+        # A flow is bound to the tenant that started it: another tenant holding
+        # the state must not complete it into its own token store.
+        if pending.tenant_id and pending.tenant_id != getattr(tenant_ctx, "tenant_id", ""):
             return None
         flow = self._pending_flows.pop(state, None)
         if flow is None:
             return None
+        effective_redirect_uri = flow.redirect_uri or redirect_uri
 
         data: dict[str, Any]
         try:
@@ -148,7 +171,7 @@ class OAuthFlowManager:
                     data={
                         "grant_type": "authorization_code",
                         "code": code,
-                        "redirect_uri": redirect_uri,
+                        "redirect_uri": effective_redirect_uri,
                         "client_id": client_id,
                         "code_verifier": flow.code_verifier,
                     },

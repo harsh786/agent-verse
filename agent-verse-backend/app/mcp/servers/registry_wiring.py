@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import functools
 from typing import Any
 
-# Some env vars are shared or repurposed and their mere presence is not enough to
-# activate the matching built-in server. The clearest case: OPENAI_API_KEY is set
-# to a NON-OpenAI key when the platform runs on an OpenAI-*compatible* provider
-# (e.g. NVIDIA/vLLM), yet the built-in OpenAI server hardcodes api.openai.com — so
-# activating it offers a dead, recursive `openai_chat_completion` tool that weaker
-# models call back on themselves, corrupting the agent's output. Validate the
-# VALUE (a real "sk-" OpenAI key), not just that the var is non-empty.
-_ENV_VALUE_VALIDATORS: dict[str, Callable[[str], bool]] = {
-    "OPENAI_API_KEY": lambda v: v.startswith("sk-"),
-}
+# NOTE: built-ins are no longer activated from platform env vars at all (see
+# register_builtin_servers), so the old per-vendor env-value validators (e.g. the
+# "sk-" OPENAI_API_KEY check) that gated that activation are gone with it.
 
 
 def get_builtin_server_configs() -> list[dict]:
@@ -3356,64 +3349,122 @@ def get_builtin_server_configs() -> list[dict]:
     return deduplicated
 
 
-async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
-    """Register all built-in MCP servers that have their required env vars set.
+@functools.lru_cache(maxsize=1)
+def _required_env_index() -> dict[str, tuple[str, ...]]:
+    """server_id / lower-cased name → the env vars a built-in's vendor API needs."""
+    index: dict[str, tuple[str, ...]] = {}
+    for cfg in get_builtin_server_configs():
+        required = tuple(cfg.get("requires_env", []) or ())
+        index[str(cfg["server_id"])] = required
+        index.setdefault(f"name:{str(cfg.get('name', '')).strip().lower()}", required)
+    return index
 
-    Returns the number of servers successfully registered.
+
+def builtin_required_env(server_id: str, name: str = "") -> tuple[str, ...]:
+    """The vendor credentials a built-in server needs (empty = credential-free)."""
+    index = _required_env_index()
+    if server_id in index:
+        return index[server_id]
+    return index.get(f"name:{name.strip().lower()}", ())
+
+
+_ENDPOINT_KEYS = frozenset({"url", "base_url"})
+
+
+def has_tenant_credentials(credentials: dict[str, Any], required_env: tuple[str, ...]) -> bool:
+    """True when a tenant's connector supplies its OWN credentials for a built-in.
+
+    A bare endpoint URL is not a credential — except for a server whose only
+    requirement IS an endpoint/DSN (e.g. POSTGRES_MCP_URL), where the connector's
+    own URL is exactly what the tenant supplies.
+    """
+    if any(
+        isinstance(v, str) and v.strip() for k, v in credentials.items() if k not in _ENDPOINT_KEYS
+    ):
+        return True
+    endpoint_only = bool(required_env) and all(e.endswith("_URL") for e in required_env)
+    return endpoint_only and any(credentials.get(k) for k in _ENDPOINT_KEYS)
+
+
+async def register_builtin_servers(registry: Any, tenant_ctx: Any) -> int:
+    """Wire the built-in MCP servers for one tenant.
+
+    * Every handler is registered in the process-local handler registry, so a
+      connector the tenant configured with its OWN credentials resolves it.
+    * Only CREDENTIAL-FREE built-ins (no ``requires_env``) are inserted as tenant
+      connectors, and only when the tenant has no entry under that id yet.
+
+    Bug fixed here: this used to ``register()`` a fresh config for every server
+    whose platform env var was set (GITHUB_TOKEN, SLACK_BOT_TOKEN, ...). That
+    (a) overwrote the tenant's own connector stored under the same canonical id
+    (``builtin-github``) on every restart, dropping its credentials, and (b)
+    gave every tenant a connector whose handler fell back to the PLATFORM's
+    token — a confused deputy where each tenant's agent acted as the platform.
+    Platform env credentials are never wired into tenant connectors now; a
+    tenant must add its own credentials (vault-backed auth_config) instead.
+
+    Returns the number of connectors newly inserted for this tenant.
     """
     import contextlib
     import logging
-    import os
 
     from app.mcp.registry import MCPRegistry, MCPServerConfig
 
-    def _env_ok(env: str) -> bool:
-        val = os.getenv(env, "")
-        if not val:
-            return False
-        validator = _ENV_VALUE_VALIDATORS.get(env)
-        return validator(val) if validator else True
-
+    log = logging.getLogger(__name__)
     count = 0
     for cfg in get_builtin_server_configs():
-        # Only register if all required env vars are present, non-empty AND valid
-        # for that vendor (so a repurposed OPENAI_API_KEY does not activate a dead,
-        # recursive OpenAI tool — see _ENV_VALUE_VALIDATORS above).
-        if all(_env_ok(env) for env in cfg.get("requires_env", [])):
-            try:
-                server_config = MCPServerConfig(
-                    server_id=cfg["server_id"],
+        server_id = cfg["server_id"]
+        requires_env = tuple(cfg.get("requires_env", []) or ())
+        # The handler is a stateless callable; credentials come from the calling
+        # tenant's connector at dispatch time (see MCPClient._dispatch_builtin_tool).
+        MCPRegistry.register_builtin_handler(server_id, cfg["handler"])
+        try:
+            existing = await registry.get(server_id, tenant_ctx=tenant_ctx)
+        except Exception as exc:
+            log.warning("builtin_server_lookup_failed: %s %s", cfg["name"], exc)
+            continue
+
+        if existing is not None:
+            # Insert-if-absent: never replace a tenant's config. Only refresh the
+            # tool list — always for a credential-free built-in (the platform owns
+            # its tools), and for any other only when it has none at all.
+            creds = dict(existing.auth_config or {})
+            if existing.url and not existing.url.startswith("builtin://"):
+                creds.setdefault("url", existing.url)
+            if (
+                requires_env
+                and (existing.base_url or "").startswith("builtin://")
+                and not has_tenant_credentials(creds, requires_env)
+            ):
+                # A credential-less entry the old env-driven wiring created. It
+                # can only ever have run on platform credentials — remove it.
+                with contextlib.suppress(Exception):
+                    await registry.unregister(server_id, tenant_ctx=tenant_ctx)
+                continue
+            refresh = not requires_env or not existing.tool_definitions
+            if refresh and existing.tool_definitions != cfg["tool_definitions"]:
+                existing.tool_definitions = cfg["tool_definitions"]
+                with contextlib.suppress(Exception):
+                    await registry.register(existing, tenant_ctx=tenant_ctx)
+            continue
+
+        if requires_env:
+            continue  # the tenant must configure its own credentials for this one
+
+        try:
+            await registry.register(
+                MCPServerConfig(
+                    server_id=server_id,
                     name=cfg["name"],
                     description=cfg.get("description", ""),
                     base_url="builtin://",
                     enabled=True,
                     tool_definitions=cfg["tool_definitions"],
                     builtin_handler=cfg["handler"],
-                )
-                await registry.register(server_config, tenant_ctx=tenant_ctx)
-                # Also register handler in the process-local registry so it
-                # survives Redis serialization round-trips (builtin_handler is
-                # excluded from JSON).
-                MCPRegistry.register_builtin_handler(cfg["server_id"], cfg["handler"])
-                count += 1
-            except Exception as exc:
-                logging.getLogger(__name__).warning(
-                    "builtin_server_register_failed: %s %s", cfg["name"], exc
-                )
-        else:
-            # Env not set for this server. Preserve a user-registered connector
-            # that carries its own credentials in auth_config (added via the
-            # Connectors UI) — its key comes from the connector, not the env, so
-            # it must survive restarts. Re-wire its handler + tool defs so it
-            # stays usable. Only remove a stale registration that has NO user
-            # creds (e.g. builtin-openai lingering after OPENAI_API_KEY changed).
-            with contextlib.suppress(Exception):
-                existing = await registry.get(cfg["server_id"], tenant_ctx=tenant_ctx)
-                if existing is not None and existing.auth_config:
-                    MCPRegistry.register_builtin_handler(cfg["server_id"], cfg["handler"])
-                    if not existing.tool_definitions:
-                        existing.tool_definitions = cfg["tool_definitions"]
-                        await registry.register(existing, tenant_ctx=tenant_ctx)
-                else:
-                    await registry.unregister(cfg["server_id"], tenant_ctx=tenant_ctx)
+                ),
+                tenant_ctx=tenant_ctx,
+            )
+            count += 1
+        except Exception as exc:
+            log.warning("builtin_server_register_failed: %s %s", cfg["name"], exc)
     return count
