@@ -25,13 +25,16 @@ async def test_create_tenant_fires_background_db_task():
     def fake_db_factory() -> _ErrorSession:
         return _ErrorSession()
 
-    # Create service WITH a failing DB factory.
-    # The in-memory operation should still succeed.
+    # With a DB configured, a failed durable write fails the signup: a tenant
+    # that exists only in one pod's memory cannot authenticate anywhere else.
+    import pytest
+
+    from app.services.tenant_service import KeyStoreUnavailableError
+
     svc = TenantService(db_session_factory=fake_db_factory)
-    result = await svc.create_tenant(name="Test Corp", email="test@corp.com")
-    assert "tenant_id" in result
-    assert result["name"] == "Test Corp"
-    # Don't assert call_log — asyncio.create_task is scheduled, may not have run yet
+    with pytest.raises(KeyStoreUnavailableError):
+        await svc.create_tenant(name="Test Corp", email="test@corp.com")
+    assert call_log == ["called"]
 
 
 async def test_create_tenant_persists_tenant_and_default_key_before_return():

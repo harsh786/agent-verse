@@ -447,7 +447,19 @@ class TenantService:
                     )
                 )
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB persist tenant/default api_key failed: %s", exc)
+            # This was a warning and signup carried on: the tenant and its first
+            # key then existed only in this pod's memory — the key authenticated
+            # nowhere else (auth is DB-authoritative) and vanished on restart.
+            from sqlalchemy.exc import IntegrityError
+
+            logging.getLogger(__name__).error("DB persist tenant/default api_key failed: %s", exc)
+            if isinstance(exc, IntegrityError):
+                # The e-mail check above only sees this pod's memory; the DB
+                # unique constraint is what catches a signup made on another pod.
+                raise ConflictError(f"Email already registered: {email}") from exc
+            raise KeyStoreUnavailableError(
+                "Tenant could not be persisted; signup did not complete.", cause=exc
+            ) from exc
 
     async def _db_create_api_key(
         self,

@@ -170,3 +170,19 @@ async def test_no_db_keeps_in_memory_behaviour() -> None:
     assert (await svc.get_tenant(tid))["name"] == "Mem"
     await svc.create_api_key(tenant_id=tid, name="k2", scopes=[])
     assert len(await svc.list_api_keys(tid)) == 2
+
+
+async def test_signup_fails_when_the_tenant_cannot_be_persisted() -> None:
+    """Regression: a failed DB write was a warning and signup carried on, so the
+    first key existed only in one pod's memory and authenticated nowhere else."""
+    import pytest
+
+    from app.services.tenant_service import KeyStoreUnavailableError, TenantService
+
+    def _broken() -> None:
+        raise ConnectionError("db down")
+
+    svc = TenantService(db_session_factory=_broken)
+    with pytest.raises(KeyStoreUnavailableError):
+        await svc.create_tenant(name="Acme", email="acme@x.test")
+    assert svc._tenants == {} and svc._keys == {}
