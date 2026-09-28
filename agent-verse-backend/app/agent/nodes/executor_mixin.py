@@ -1463,23 +1463,29 @@ class ExecutorMixin:
                 if hasattr(_bulkhead, "acquire"):
                     # RedisBulkhead path
                     _bulkhead_acquired = await _bulkhead.acquire()
-                    if not _bulkhead_acquired:
-                        self._logger.warning(
-                            "bulkhead_full",
-                            tenant_id=getattr(tenant_ctx, "tenant_id", ""),
-                            step=step[:100],
-                        )
-                        return (
-                            "[Bulkhead: too many concurrent operations for this tenant."
-                            " Please retry.]"
-                        )
                 else:
                     # asyncio.Semaphore fallback
                     await _bulkhead.acquire()
                     _bulkhead_acquired = True
             except Exception as bulkhead_exc:
+                # Fail closed: the concurrency limit could not be checked, so the
+                # step does not run unthrottled (it used to proceed without a slot).
                 self._logger.warning("bulkhead_acquire_failed", error=str(bulkhead_exc))
-                _bulkhead_acquired = False
+                raise StepNotExecutedError(
+                    f"Tenant concurrency limit could not be checked "
+                    f"({type(bulkhead_exc).__name__}); step was not executed."
+                ) from bulkhead_exc
+            if not _bulkhead_acquired:
+                self._logger.warning(
+                    "bulkhead_full",
+                    tenant_id=getattr(tenant_ctx, "tenant_id", ""),
+                    step=step[:100],
+                )
+                # Not a step result: it used to be returned AS the step's output.
+                raise StepNotExecutedError(
+                    "Bulkhead: too many concurrent operations for this tenant; "
+                    "step was not executed."
+                )
 
         # Token streaming — buffer for accumulation and closure for on_token callback.
         # Defined before the bulkhead try so the closure captures step by value.

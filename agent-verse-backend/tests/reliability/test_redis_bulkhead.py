@@ -90,8 +90,8 @@ async def test_redis_bulkhead_context_manager_releases_on_exception():
 
 
 @pytest.mark.asyncio
-async def test_redis_bulkhead_fail_open_when_redis_unavailable():
-    """When Redis is unavailable, acquire() returns True (fail-open)."""
+async def test_redis_bulkhead_denies_when_redis_unavailable_without_fallback():
+    """Redis down and no local fallback: deny (it used to return True, no limit)."""
     from app.reliability.bulkhead import RedisBulkhead
 
     mock_redis = AsyncMock()
@@ -99,7 +99,28 @@ async def test_redis_bulkhead_fail_open_when_redis_unavailable():
 
     bh = RedisBulkhead("tenant-1", max_concurrent=5, redis=mock_redis)
     result = await bh.acquire()
-    assert result is True, "Must fail-open when Redis unavailable"
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_redis_bulkhead_degrades_to_local_limit_when_redis_unavailable():
+    """With the registry's local semaphore the limit still binds per replica."""
+    import asyncio
+
+    from app.reliability.bulkhead import RedisBulkhead
+
+    mock_redis = AsyncMock()
+    mock_redis.eval = AsyncMock(side_effect=ConnectionError("Redis down"))
+    local = asyncio.Semaphore(1)
+
+    first = RedisBulkhead("tenant-1", max_concurrent=5, redis=mock_redis, fallback=local)
+    second = RedisBulkhead("tenant-1", max_concurrent=5, redis=mock_redis, fallback=local)
+    assert await first.acquire() is True
+    assert await second.acquire() is False  # local limit (1) reached
+    await first.release()
+    assert await second.acquire() is True
+    await second.release()
+    assert not local.locked()
 
 
 @pytest.mark.asyncio

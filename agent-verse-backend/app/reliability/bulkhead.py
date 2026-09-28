@@ -97,24 +97,49 @@ class RedisBulkhead:
 
     _SLOT_TTL = 300  # 5 minutes — safety TTL if release not called (e.g., crash)
 
-    def __init__(self, tenant_id: str, max_concurrent: int, redis: Any) -> None:
+    def __init__(
+        self,
+        tenant_id: str,
+        max_concurrent: int,
+        redis: Any,
+        *,
+        fallback: asyncio.Semaphore | None = None,
+    ) -> None:
         self._tenant_id = tenant_id
         self._max = max_concurrent
         self._redis = redis
         self._key = f"bulkhead:{tenant_id}"
+        # Process-local limit used while Redis is unreachable.
+        self._fallback = fallback
+        self._holding_fallback = False
 
     async def acquire(self) -> bool:
-        """Try to acquire a slot. Returns True if acquired, False if at limit."""
+        """Try to acquire a slot. Returns True if acquired, False if at limit.
+
+        When Redis is unreachable the call used to return True (fail-open: no
+        limit at all). It now degrades to the process-local semaphore when one
+        was supplied (still bounded per replica), and otherwise denies.
+        """
         try:
             result = await self._redis.eval(
                 self._LUA_ACQUIRE, 1, self._key, str(self._max), str(self._SLOT_TTL)
             )
             return int(result) >= 0
         except Exception:
-            return True  # fail-open: allow if Redis unavailable
+            if self._fallback is None:
+                return False
+            if self._fallback.locked():
+                return False
+            await self._fallback.acquire()
+            self._holding_fallback = True
+            return True
 
     async def release(self) -> None:
         """Release a previously acquired slot."""
+        if self._holding_fallback and self._fallback is not None:
+            self._holding_fallback = False
+            self._fallback.release()
+            return
         with contextlib.suppress(Exception):
             await self._redis.eval(self._LUA_RELEASE, 1, self._key)
 
@@ -168,7 +193,9 @@ class RedisBulkheadRegistry:
         """Get a bulkhead for a tenant (Redis if available, local otherwise)."""
         limit = self._limits.get(tenant_id, self._default_max)
         if self._redis is not None:
-            return RedisBulkhead(tenant_id, limit, self._redis)
+            return RedisBulkhead(
+                tenant_id, limit, self._redis, fallback=self._local.get(tenant_id)
+            )
         return self._local.get(tenant_id)
 
     # Expose local registry's get() for backward compat
