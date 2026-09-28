@@ -703,10 +703,12 @@ def resweep_stuck_missions(self: Any) -> dict[str, Any]:
     from sqlalchemy import text
 
     from app.db.rls import system_session
-    from app.db.session import get_session_factory
+    from app.db.session import get_system_session_factory
 
     async def _sweep() -> int:
-        db = get_session_factory()
+        # Cross-tenant beat scan: the maintenance (BYPASSRLS) role. Under the
+        # NOBYPASSRLS application role system_session() fails every statement.
+        db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             rows = (
                 await session.execute(
@@ -763,11 +765,15 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
     from sqlalchemy import text
 
     from app.db.rls import sqlalchemy_rls_context, system_session
-    from app.db.session import get_session_factory
+    from app.db.session import get_session_factory, get_system_session_factory
     from app.org.service import OrgService, _next_cron_fire
 
     async def _fire() -> int:
+        # Two roles, deliberately: the cross-tenant claim below is system work
+        # (maintenance role); creating each mission is per-tenant work and runs
+        # on the application role inside that tenant's RLS context.
         db = get_session_factory()
+        system_db = get_system_session_factory()
         # 1. ATOMIC CLAIM (multi-pod at-most-once): select due schedules with
         # FOR UPDATE SKIP LOCKED so no other worker can see them, and advance
         # next_fire_at in the SAME transaction — so by the time the lock is
@@ -777,7 +783,7 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
         # mission means a crash here SKIPS a fire rather than double-launching an
         # autonomous mission — the safe direction for unattended execution.
         claimed: list[Any] = []
-        async with db() as s, s.begin(), system_session(s):
+        async with system_db() as s, s.begin(), system_session(s):
             due = (
                 await s.execute(
                     text(
@@ -839,9 +845,10 @@ def fire_due_org_mission_schedules(self: Any) -> dict[str, Any]:
                     await s2.execute(
                         text(
                             "UPDATE org_mission_schedules "
-                            "SET last_mission_id = :m WHERE id = :sid"
+                            "SET last_mission_id = :m "
+                            "WHERE id = :sid AND tenant_id = :tid"
                         ),
-                        {"m": mission.id, "sid": r.id},
+                        {"m": mission.id, "sid": r.id, "tid": r.tenant_id},
                     )
                 execute_org_mission.apply_async(
                     kwargs={
@@ -1132,12 +1139,20 @@ async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
     from sqlalchemy import update
 
     from app.db.models.goal import Goal
-    from app.db.rls import system_session
+    from app.db.rls import sqlalchemy_rls_context
     from app.db.session import get_session_factory as _get_fresh_db
 
     try:
+        # Per-tenant, not system work: the goal and its tenant are known, so this
+        # runs on the application role inside that tenant's RLS context. (It used
+        # to open system_session — an RLS bypass for a single-tenant write, which
+        # under the NOBYPASSRLS role failed outright and left the goal "running".)
         db = _get_fresh_db()
-        async with db() as session, session.begin(), system_session(session):
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             await session.execute(
                 update(Goal)
                 .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
@@ -4115,9 +4130,10 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # Cross-tenant beat scan → maintenance (BYPASSRLS) role.
+        db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text("""UPDATE goals
@@ -4166,9 +4182,10 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # Fleet-wide retention → maintenance (BYPASSRLS) role.
+        db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             for table in ["goal_events", "decision_traces"]:
                 # Each table's DELETE runs in its own SAVEPOINT. Postgres aborts
@@ -4239,9 +4256,15 @@ async def _ensure_future_partitions() -> dict[str, Any]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # Schema maintenance is system work: it runs on the maintenance role,
+        # never on the NOBYPASSRLS application role (which also lacks the
+        # ownership CREATE TABLE ... PARTITION OF requires). The maintenance role
+        # must therefore be able to create partitions of these parents — i.e. be
+        # a member of the role that owns them; per-partition failures (including
+        # "must be owner of table") are reported in ``errors``, not swallowed.
+        db = get_system_session_factory()
         now = datetime.now(UTC)
         # Month index 0..N relative to the current month, in calendar order.
         months: list[tuple[int, int]] = []
@@ -4318,11 +4341,16 @@ async def _notify_expired_approvals(expired_ids: list[str]) -> list[str]:
     try:
         from sqlalchemy import text
 
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # The expired ids span every tenant (see _expire_db_approvals), so this
+        # read is system work too. It used to run on the application role with
+        # no RLS context: under the NOBYPASSRLS role it matched zero rows, and
+        # no timeout notification was ever sent.
+        db = get_system_session_factory()
         notified: list[str] = []
-        async with db() as session:
+        async with db() as session, session.begin(), system_session(session):
             rows = (
                 await session.execute(
                     text(
@@ -4363,9 +4391,10 @@ async def _expire_db_approvals() -> list[str]:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # Cross-tenant beat scan → maintenance (BYPASSRLS) role.
+        db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
                 text(
@@ -5085,9 +5114,10 @@ async def _expire_stale_documents(retention_days: int) -> dict:
         from sqlalchemy import text
 
         from app.db.rls import system_session
-        from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.session import get_system_session_factory
 
-        db = _get_fresh_db()
+        # Fleet-wide retention → maintenance (BYPASSRLS) role.
+        db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             # make_interval(days => :days) rather than interpolating the value
             # into the SQL string.

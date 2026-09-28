@@ -162,7 +162,7 @@ async def test_expiring_a_document_also_expires_its_graph(
     from app.db import session as db_session
     from app.scaling.tasks import _expire_stale_documents
 
-    monkeypatch.setattr(db_session, "get_session_factory", lambda: seeded)
+    monkeypatch.setattr(db_session, "get_system_session_factory", lambda: seeded)
 
     result = await _expire_stale_documents(RETENTION_DAYS)
     assert result["status"] == "ok", result
@@ -191,7 +191,7 @@ async def test_retention_is_a_no_op_when_nothing_is_expired(
     from app.db import session as db_session
     from app.scaling.tasks import _expire_stale_documents
 
-    monkeypatch.setattr(db_session, "get_session_factory", lambda: seeded)
+    monkeypatch.setattr(db_session, "get_system_session_factory", lambda: seeded)
 
     result = await _expire_stale_documents(3650)
     assert result == {

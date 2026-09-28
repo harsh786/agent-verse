@@ -186,11 +186,31 @@ class WorkflowRunStore(Protocol):
 class PostgresWorkflowRunStore:
     """Async SQLAlchemy-backed run store with per-query RLS enforcement."""
 
-    def __init__(self, db_factory: Any) -> None:
+    def __init__(self, db_factory: Any, *, system_db_factory: Any | None = None) -> None:
         """Args:
-        db_factory: async SQLAlchemy ``async_sessionmaker`` (``app.state.db_session_factory``).
+        db_factory: async SQLAlchemy ``async_sessionmaker`` (``app.state.db_session_factory``)
+            — the application role; every tenant-scoped method uses it.
+        system_db_factory: session factory for the cross-tenant maintenance
+            methods ONLY (``get_retryable_webhooks``, ``delete_expired_runs``) —
+            the maintenance (BYPASSRLS) role. ``None`` resolves
+            ``app.db.session.get_system_session_factory()`` at call time.
         """
         self._db = db_factory
+        self._system_db = system_db_factory
+
+    def _system_factory(self) -> Any:
+        """Session factory for cross-tenant maintenance — never tenant paths.
+
+        ``system_session`` only works on the maintenance role: on the NOBYPASSRLS
+        application role (``self._db`` in production) every statement after it
+        fails with "query would be affected by row-level security policy", so
+        the webhook DLQ retry and run retention never did anything.
+        """
+        if self._system_db is not None:
+            return self._system_db
+        from app.db.session import get_system_session_factory
+
+        return get_system_session_factory()
 
     # ── RLS helper ────────────────────────────────────────────────────────────
     @staticmethod
@@ -540,7 +560,8 @@ class PostgresWorkflowRunStore:
 
         from app.db.rls import system_session
 
-        async with self._db() as session, session.begin(), system_session(session):
+        system_db = self._system_factory()
+        async with system_db() as session, session.begin(), system_session(session):
             rows = (
                 await session.execute(
                     sa_text(
@@ -566,7 +587,8 @@ class PostgresWorkflowRunStore:
 
         from app.db.rls import system_session
 
-        async with self._db() as session, session.begin():
+        system_db = self._system_factory()
+        async with system_db() as session, session.begin():
             async with system_session(session):
                 result = await session.execute(
                     sa_text(

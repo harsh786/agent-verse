@@ -40,6 +40,9 @@ def _build_worker_runner() -> Any:
     from app.workflow.runner import WorkflowRunner
 
     db_factory = get_session_factory()
+    # Tenant-scoped run/step I/O goes through db_factory (application role). The
+    # store's cross-tenant maintenance methods resolve the maintenance-role
+    # factory per call (get_system_session_factory), so it is not captured here.
     run_store = PostgresWorkflowRunStore(db_factory)
     # WS-3: reuse the API server's hitl_workflow_gateway when this worker
     # shares process state with it (e.g. tests, single-process deployments);
@@ -352,11 +355,19 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
     pages, across all tenants (RLS-bypassed system scan). A Redis SETNX keyed on
     the occurrence timestamp makes each occurrence fire exactly once even with
     overlapping scans or multiple beat replicas.
+
+    Only the SCAN is system work: it runs on the maintenance (BYPASSRLS) role
+    via ``get_system_session_factory``. On the NOBYPASSRLS application role
+    ``system_session`` makes every statement fail ("query would be affected by
+    row-level security policy for table workflows"), so no schedule ever fired.
+    Each firing is per-tenant: ``runner.run`` persists the run through the
+    RLS-scoped run store on the application role, in the owning tenant's
+    context.
     """
     from sqlalchemy import text as sa_text
 
     from app.db.rls import system_session
-    from app.db.session import get_session_factory
+    from app.db.session import get_system_session_factory
     from app.workflow.trigger_extract import extract_triggers, schedule_cron
 
     runner = _get_runner()
@@ -365,14 +376,14 @@ async def fire_due_workflow_schedules_async() -> dict[str, int]:
         return {"scanned": 0, "fired": 0}
 
     now = datetime.now(UTC)
-    db_factory = get_session_factory()
+    system_db = get_system_session_factory()
     redis = _sched_redis()
     scanned = 0
     fired = 0
     cursor: str | None = None
 
     while True:
-        async with db_factory() as session, session.begin(), system_session(session):
+        async with system_db() as session, session.begin(), system_session(session):
             rows = (
                 await session.execute(
                     sa_text(

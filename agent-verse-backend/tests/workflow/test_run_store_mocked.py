@@ -450,6 +450,17 @@ async def test_list_step_results_maps_all_rows() -> None:
 
 
 # ── Maintenance (cross-tenant) ──────────────────────────────────────────────────
+#
+# These two methods are the store's only cross-tenant system work. They must run
+# on the MAINTENANCE role (``system_db_factory`` / get_system_session_factory),
+# never the application-role ``db_factory``: under the NOBYPASSRLS application
+# role ``system_session`` fails every statement, so the webhook DLQ retry and run
+# retention previously never did anything in production.
+
+
+def _app_role_db() -> FakeDBFactory:
+    """An application-role factory that must not be touched by maintenance."""
+    return FakeDBFactory()
 
 
 async def test_get_retryable_webhooks_maps_rows() -> None:
@@ -459,29 +470,68 @@ async def test_get_retryable_webhooks_maps_rows() -> None:
         "workflow_id": "wf-1",
         "payload": '{"hello": "world"}',
     }
-    db = FakeDBFactory([[FakeResult(), FakeResult(mapping_all=[row])]])
-    store = PostgresWorkflowRunStore(db)
+    app_db = _app_role_db()
+    system_db = FakeDBFactory([[FakeResult(), FakeResult(mapping_all=[row])]])
+    store = PostgresWorkflowRunStore(app_db, system_db_factory=system_db)
     events = await store.get_retryable_webhooks(max_attempts=5)
     assert events[0]["id"] == "evt-1"
     assert events[0]["payload"] == {"hello": "world"}
+    assert app_db.sessions == [], "maintenance scan ran on the application role"
+    # system_session's SET LOCAL, then the scan — on the maintenance session.
+    (session,) = system_db.sessions
+    assert "row_security = off" in session.executed[0][0]
+    assert "workflow_webhook_events" in session.executed[1][0]
 
 
 async def test_get_retryable_webhooks_empty() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult(mapping_all=[])]])
-    store = PostgresWorkflowRunStore(db)
+    system_db = FakeDBFactory([[FakeResult(), FakeResult(mapping_all=[])]])
+    store = PostgresWorkflowRunStore(_app_role_db(), system_db_factory=system_db)
     assert await store.get_retryable_webhooks() == []
 
 
 async def test_delete_expired_runs_returns_rowcount() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=7)]])
-    store = PostgresWorkflowRunStore(db)
+    app_db = _app_role_db()
+    system_db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=7)]])
+    store = PostgresWorkflowRunStore(app_db, system_db_factory=system_db)
     assert await store.delete_expired_runs() == 7
+    assert app_db.sessions == [], "run retention ran on the application role"
+    (session,) = system_db.sessions
+    assert "row_security = off" in session.executed[0][0]
+    assert "DELETE FROM workflow_runs" in session.executed[1][0]
 
 
 async def test_delete_expired_runs_none_deleted() -> None:
-    db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=None)]])
-    store = PostgresWorkflowRunStore(db)
+    system_db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=None)]])
+    store = PostgresWorkflowRunStore(_app_role_db(), system_db_factory=system_db)
     assert await store.delete_expired_runs() == 0
+
+
+async def test_maintenance_defaults_to_the_system_session_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no explicit ``system_db_factory`` (how the lifespan and the worker
+    build the store) maintenance resolves get_system_session_factory() at call
+    time — so it follows MAINTENANCE_DATABASE_URL and a per-loop engine reset."""
+    app_db = _app_role_db()
+    system_db = FakeDBFactory([[FakeResult(), FakeResult(rowcount=3)]])
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: system_db)
+    store = PostgresWorkflowRunStore(app_db)
+    assert await store.delete_expired_runs() == 3
+    assert app_db.sessions == []
+    assert len(system_db.sessions) == 1
+
+
+async def test_tenant_methods_never_use_the_system_factory() -> None:
+    """The maintenance factory is for the two cross-tenant methods only; every
+    tenant-scoped read/write stays on the application role, RLS-scoped."""
+    system_db = FakeDBFactory()
+    app_db = FakeDBFactory([[FakeResult(), FakeResult(first=("running",))]])
+    store = PostgresWorkflowRunStore(app_db, system_db_factory=system_db)
+    assert await store.get_status("t1", "run-1") == "running"
+    assert system_db.sessions == []
+    (session,) = app_db.sessions
+    assert "app.tenant_id" in session.executed[0][0]
+    assert session.executed[0][1] == {"tid": "t1"}
 
 
 # ── Versions ────────────────────────────────────────────────────────────────────

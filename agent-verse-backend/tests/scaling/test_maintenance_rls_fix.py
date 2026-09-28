@@ -48,7 +48,7 @@ class TestMaintenanceRLS:
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_factory = _make_session_factory_patch(mock_session)
 
-            with patch("app.db.session.get_session_factory", return_value=mock_factory.return_value):
+            with patch("app.db.session.get_system_session_factory", return_value=mock_factory.return_value):
                 from app.scaling.tasks import _find_and_fail_stuck_goals
                 await _find_and_fail_stuck_goals()
 
@@ -73,7 +73,7 @@ class TestMaintenanceRLS:
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_factory = _make_session_factory_patch(mock_session)
 
-            with patch("app.db.session.get_session_factory", return_value=mock_factory.return_value):
+            with patch("app.db.session.get_system_session_factory", return_value=mock_factory.return_value):
                 from app.scaling.tasks import _delete_expired_records
                 await _delete_expired_records(90)
 
@@ -94,7 +94,7 @@ class TestMaintenanceRLS:
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_factory = _make_session_factory_patch(mock_session)
 
-            _sf_target = "app.db.session.get_session_factory"
+            _sf_target = "app.db.session.get_system_session_factory"
             with patch(_sf_target, return_value=mock_factory.return_value):
                 from app.scaling.tasks import _delete_expired_records
                 await _delete_expired_records(90)
@@ -117,29 +117,51 @@ class TestMaintenanceRLS:
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
             mock_factory = _make_session_factory_patch(mock_session)
 
-            with patch("app.db.session.get_session_factory", return_value=mock_factory.return_value):
+            with patch("app.db.session.get_system_session_factory", return_value=mock_factory.return_value):
                 from app.scaling.tasks import _expire_db_approvals
                 await _expire_db_approvals()
 
             mock_sys.assert_called()
 
     @pytest.mark.asyncio
-    async def test_update_goal_dlq_uses_system_session(self) -> None:
-        """_update_goal_dlq must invoke system_session."""
+    async def test_update_goal_dlq_is_tenant_scoped_not_system(self) -> None:
+        """_update_goal_dlq writes ONE tenant's goal: tenant RLS context, app role.
+
+        It used to open ``system_session`` — an RLS bypass for a single-tenant
+        write. Under the NOBYPASSRLS application role that failed every
+        statement (the dead-lettered goal stayed "running"); and moving it to
+        the maintenance role would be a privilege escalation on a per-tenant
+        path. The correct scope is the goal's own tenant.
+        """
         from app.db import rls as rls_module
 
         mock_session = _make_mock_session()
+        mock_factory = _make_session_factory_patch(mock_session)
 
-        with patch.object(rls_module, "system_session") as mock_sys:
-            mock_sys.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
-            mock_factory = _make_session_factory_patch(mock_session)
+        with (
+            patch.object(rls_module, "system_session") as mock_sys,
+            patch.object(rls_module, "sqlalchemy_rls_context") as mock_rls,
+            patch(
+                "app.db.session.get_session_factory", return_value=mock_factory.return_value
+            ),
+            patch(
+                "app.db.session.get_system_session_factory",
+                side_effect=AssertionError("per-tenant DLQ write used the maintenance role"),
+            ),
+        ):
+            mock_rls.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_rls.return_value.__aexit__ = AsyncMock(return_value=False)
+            from app.scaling.tasks import _update_goal_dlq
 
-            with patch("app.db.session.get_session_factory", return_value=mock_factory.return_value):
-                from app.scaling.tasks import _update_goal_dlq
-                await _update_goal_dlq("goal-1", "tenant-1", "test reason")
+            await _update_goal_dlq("goal-1", "tenant-1", "test reason")
 
-            mock_sys.assert_called()
+        mock_sys.assert_not_called()
+        mock_rls.assert_called_once_with(mock_session, "tenant-1")
+        # The UPDATE ran, and still carries its explicit tenant predicate.
+        mock_session.execute.assert_awaited_once()
+        compiled = mock_session.execute.await_args.args[0].compile()
+        assert "goals.tenant_id" in str(compiled)
+        assert "tenant-1" in compiled.params.values()
 
 
 class TestEngineLeakFix:
@@ -344,7 +366,7 @@ class TestDeleteExpiredRecordsSavepointIsolation:
             mock_sys.return_value.__aenter__ = AsyncMock(return_value=session)
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            with patch("app.db.session.get_session_factory", return_value=db_factory):
+            with patch("app.db.session.get_system_session_factory", return_value=db_factory):
                 from app.scaling.tasks import _delete_expired_records
 
                 result = await _delete_expired_records(90)
@@ -382,7 +404,7 @@ class TestDeleteExpiredRecordsSavepointIsolation:
             mock_sys.return_value.__aenter__ = AsyncMock(return_value=session)
             mock_sys.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            with patch("app.db.session.get_session_factory", return_value=db_factory):
+            with patch("app.db.session.get_system_session_factory", return_value=db_factory):
                 from app.scaling.tasks import _delete_expired_records
 
                 result = await _delete_expired_records(90)

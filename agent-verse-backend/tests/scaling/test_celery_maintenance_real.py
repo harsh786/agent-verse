@@ -142,7 +142,7 @@ async def test_ensure_future_partitions_creates_current_and_lookahead_months() -
         yield fake_session
 
     with (
-        patch("app.db.session.get_session_factory", return_value=_fake_db),
+        patch("app.db.session.get_system_session_factory", return_value=_fake_db),
         patch("app.db.rls.system_session", new=_fake_begin),
     ):
         result = await _ensure_future_partitions()

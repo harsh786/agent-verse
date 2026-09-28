@@ -170,6 +170,18 @@ def _least_privilege_url(
             await conn.execute(
                 f"GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO {role}"
             )
+            if bypass_rls:
+                # Partition maintenance (ensure_future_partitions) is DDL:
+                # CREATE TABLE ... PARTITION OF requires the privileges of the
+                # partitioned parent's owner. In production the maintenance role
+                # is a member of the schema-owner role for exactly this; mirror
+                # that here. The application role never gets it.
+                owner = await conn.fetchval(
+                    "SELECT tableowner FROM pg_tables "
+                    "WHERE schemaname = 'public' AND tablename = 'cost_ledger'"
+                )
+                if owner:
+                    await conn.execute(f'GRANT "{owner}" TO {role}')
         finally:
             await conn.close()
 

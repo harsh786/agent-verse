@@ -347,9 +347,19 @@ class _FakeSession:
         return self
 
 
+def _app_role_forbidden() -> None:
+    raise AssertionError(
+        "the cross-tenant schedule scan opened a session on the application role; "
+        "it must use get_system_session_factory() (the maintenance role)"
+    )
+
+
 def _patch_db_rows(monkeypatch: pytest.MonkeyPatch, rows: list[tuple]) -> None:
+    # The scan is system work: it must come from the maintenance-role factory.
+    # The application factory is booby-trapped so a regression fails loudly.
     session = _FakeSession(rows)
-    monkeypatch.setattr("app.db.session.get_session_factory", lambda: (lambda: session))
+    monkeypatch.setattr("app.db.session.get_system_session_factory", lambda: (lambda: session))
+    monkeypatch.setattr("app.db.session.get_session_factory", _app_role_forbidden)
 
 
 @pytest.mark.asyncio
@@ -571,7 +581,7 @@ async def test_fire_due_schedules_top_level_exception_returns_zeroed_result(
     def _raise() -> None:
         raise RuntimeError("db factory unavailable")
 
-    monkeypatch.setattr("app.db.session.get_session_factory", _raise)
+    monkeypatch.setattr("app.db.session.get_system_session_factory", _raise)
     result = ct.fire_due_workflow_schedules.run()
     assert result == {"scanned": 0, "fired": 0}
 

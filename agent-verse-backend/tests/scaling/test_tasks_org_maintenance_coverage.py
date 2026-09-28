@@ -189,6 +189,9 @@ class TestResweepStuckMissions:
 
         with (
             patch("app.db.session.get_session_factory", return_value=db_factory),
+            # The cross-tenant scan/claim uses the maintenance-role factory;
+            # here both roles share one fake so session order is preserved.
+            patch("app.db.session.get_system_session_factory", return_value=db_factory),
             patch("app.db.rls.system_session", side_effect=_null_rls_ctx),
         ):
             result = resweep_stuck_missions.run()
@@ -218,6 +221,9 @@ class TestResweepStuckMissions:
 
         with (
             patch("app.db.session.get_session_factory", return_value=db_factory),
+            # The cross-tenant scan/claim uses the maintenance-role factory;
+            # here both roles share one fake so session order is preserved.
+            patch("app.db.session.get_system_session_factory", return_value=db_factory),
             patch("app.db.rls.system_session", side_effect=_null_rls_ctx),
             patch("app.scaling.tasks.execute_org_mission.apply_async") as mock_apply,
         ):
@@ -242,6 +248,9 @@ class TestFireDueOrgMissionSchedules:
 
         with (
             patch("app.db.session.get_session_factory", return_value=db_factory),
+            # The cross-tenant scan/claim uses the maintenance-role factory;
+            # here both roles share one fake so session order is preserved.
+            patch("app.db.session.get_system_session_factory", return_value=db_factory),
             patch("app.db.rls.system_session", side_effect=_null_rls_ctx),
             patch("redis.from_url", side_effect=Exception("no redis")),
         ):
@@ -285,6 +294,9 @@ class TestFireDueOrgMissionSchedules:
 
         with (
             patch("app.db.session.get_session_factory", return_value=db_factory),
+            # The cross-tenant scan/claim uses the maintenance-role factory;
+            # here both roles share one fake so session order is preserved.
+            patch("app.db.session.get_system_session_factory", return_value=db_factory),
             patch("app.db.rls.system_session", side_effect=_null_rls_ctx),
             patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
             patch("app.org.service.OrgService", return_value=mock_svc),
@@ -332,6 +344,9 @@ class TestFireDueOrgMissionSchedules:
 
         with (
             patch("app.db.session.get_session_factory", return_value=db_factory),
+            # The cross-tenant scan/claim uses the maintenance-role factory;
+            # here both roles share one fake so session order is preserved.
+            patch("app.db.session.get_system_session_factory", return_value=db_factory),
             patch("app.db.rls.system_session", side_effect=_null_rls_ctx),
             patch("app.db.rls.sqlalchemy_rls_context", side_effect=_null_rls_ctx),
             patch("app.org.service.OrgService", side_effect=RuntimeError("svc build failed")),

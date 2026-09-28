@@ -99,7 +99,18 @@ async def test_far_future_row_lands_in_default_partition_not_rejected(
 async def test_ensure_future_partitions_provisions_ahead_of_default(
     _migrated_backends: tuple[str, str],
 ) -> None:
-    """The maintenance task's own DB logic, run directly against real Postgres."""
+    """The maintenance task's own DB logic, run directly against real Postgres.
+
+    Partition maintenance is system work: it must open its session on the
+    MAINTENANCE role (``get_system_session_factory``), never the application
+    role. Under ``E2E_LEAST_PRIVILEGE=1`` the application role is NOBYPASSRLS
+    and not the owner, so it can neither use ``system_session`` nor create
+    partitions — the task used to run on it and provisioned nothing. The
+    application factory is booby-trapped here so any regression back onto it
+    fails loudly, and the row is then written by the APPLICATION role to prove
+    ordinary tenant writes route into the new partition.
+    """
+    import os
     import uuid
     from datetime import UTC, datetime
 
@@ -109,13 +120,27 @@ async def test_ensure_future_partitions_provisions_ahead_of_default(
     from app.scaling.tasks import _ensure_future_partitions
 
     database_url, _ = _migrated_backends
+    # Maintenance DSN when the least-privilege harness provisioned one; otherwise
+    # (superuser dev mode) both roles are the same connection, as in production
+    # without MAINTENANCE_DATABASE_URL.
+    maint_url = os.environ.get("MAINTENANCE_DATABASE_URL") or database_url
     engine = create_async_engine(database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    maint_engine = create_async_engine(maint_url)
+    maint_factory = async_sessionmaker(maint_engine, expire_on_commit=False)
 
     import app.db.session as _dbsession_mod
 
+    def _app_role_forbidden() -> None:
+        raise AssertionError(
+            "partition maintenance opened its session on the application role; "
+            "it must use get_system_session_factory() (the maintenance role)"
+        )
+
     prev_factory = _dbsession_mod.get_session_factory
-    _dbsession_mod.get_session_factory = lambda: session_factory  # type: ignore[assignment]
+    prev_system_factory = _dbsession_mod.get_system_session_factory
+    _dbsession_mod.get_session_factory = _app_role_forbidden  # type: ignore[assignment]
+    _dbsession_mod.get_system_session_factory = lambda: maint_factory  # type: ignore[assignment]
     try:
         result = await _ensure_future_partitions()
         assert "error" not in result, result
@@ -125,7 +150,12 @@ async def test_ensure_future_partitions_provisions_ahead_of_default(
         future_year = now.year + (0 if future_month <= 12 else 1)
         future_month = ((future_month - 1) % 12) + 1
         expected = f"cost_ledger_{future_year}_{future_month:02d}"
-        assert expected in result["created"]["cost_ledger"], result["created"]["cost_ledger"]
+        assert expected in result["created"]["cost_ledger"], (
+            result["created"]["cost_ledger"],
+            result.get("errors"),
+        )
+        # Restore the real application factory accessor before the app-role write.
+        _dbsession_mod.get_session_factory = prev_factory  # type: ignore[assignment]
 
         tenant_id = f"e2e-partition-fut-{uuid.uuid4().hex[:8]}"
         target_dt = datetime(future_year, future_month, 10, tzinfo=UTC)
@@ -153,5 +183,7 @@ async def test_ensure_future_partitions_provisions_ahead_of_default(
                 f"{expected} — ensure_future_partitions did not actually keep DEFAULT empty"
             )
     finally:
-        _dbsession_mod.get_session_factory = prev_factory
+        _dbsession_mod.get_session_factory = prev_factory  # type: ignore[assignment]
+        _dbsession_mod.get_system_session_factory = prev_system_factory  # type: ignore[assignment]
         await engine.dispose()
+        await maint_engine.dispose()

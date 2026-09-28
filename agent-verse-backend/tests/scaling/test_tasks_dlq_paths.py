@@ -27,17 +27,22 @@ async def test_update_goal_dlq_success_path() -> None:
     fake_models_module = MagicMock()
     fake_models_module.Goal = MagicMock(name="Goal-model")
 
+    # A single goal's DLQ write is per-tenant work: it runs in that tenant's RLS
+    # context on the application role — never system_session / the maintenance
+    # role (that would be an RLS bypass for a single-tenant write).
     fake_db_rls_module = MagicMock()
-    fake_system_session_cm = MagicMock()
-    fake_system_session_cm.__aenter__ = AsyncMock(return_value=MagicMock())
-    fake_system_session_cm.__aexit__ = AsyncMock(return_value=None)
-    fake_db_rls_module.system_session = MagicMock(return_value=fake_system_session_cm)
+    fake_tenant_cm = MagicMock()
+    fake_tenant_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    fake_tenant_cm.__aexit__ = AsyncMock(return_value=None)
+    fake_db_rls_module.sqlalchemy_rls_context = MagicMock(return_value=fake_tenant_cm)
 
     fake_sqlalchemy_module = MagicMock()
     fake_sqlalchemy_module.update = MagicMock(return_value=MagicMock(name="update-stmt"))
 
+    db_session = MagicMock()
+    db_session.execute = AsyncMock(return_value=MagicMock())
     session_cm = MagicMock()
-    session_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    session_cm.__aenter__ = AsyncMock(return_value=db_session)
     session_cm.__aexit__ = AsyncMock(return_value=None)
     session_factory = MagicMock(return_value=session_cm)
     fake_session_module.get_session_factory = MagicMock(return_value=session_factory)
@@ -53,6 +58,11 @@ async def test_update_goal_dlq_success_path() -> None:
     ):
         # Should not raise
         await tasks._update_goal_dlq("goal-1", "tenant-1", "dead-lettered")
+
+    fake_db_rls_module.sqlalchemy_rls_context.assert_called_once_with(db_session, "tenant-1")
+    fake_db_rls_module.system_session.assert_not_called()
+    fake_session_module.get_system_session_factory.assert_not_called()
+    db_session.execute.assert_awaited_once()
 
 
 # ── _update_goal_dlq exception path (lines 485-486, 489) ─────────────────────
@@ -98,12 +108,12 @@ async def test_update_goal_dlq_swallows_session_execution_exception() -> None:
     fake_session_module = MagicMock()
     fake_session_module.get_session_factory = MagicMock(return_value=session_factory)
 
-    # system_session returns an async context manager too
-    fake_system_session_cm = MagicMock()
-    fake_system_session_cm.__aenter__ = AsyncMock(return_value=None)
-    fake_system_session_cm.__aexit__ = AsyncMock(return_value=None)
+    # The tenant RLS context returns an async context manager too
+    fake_tenant_cm = MagicMock()
+    fake_tenant_cm.__aenter__ = AsyncMock(return_value=None)
+    fake_tenant_cm.__aexit__ = AsyncMock(return_value=None)
     fake_db_rls_module = MagicMock()
-    fake_db_rls_module.system_session = MagicMock(return_value=fake_system_session_cm)
+    fake_db_rls_module.sqlalchemy_rls_context = MagicMock(return_value=fake_tenant_cm)
 
     fake_models_module = MagicMock()
     fake_sqlalchemy_module = MagicMock()
