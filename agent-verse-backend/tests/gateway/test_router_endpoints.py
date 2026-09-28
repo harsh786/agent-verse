@@ -494,6 +494,11 @@ class TestVoiceIncomingExceptionFallback:
         # test targets the handler's exception fallback, so accept the request.
         adapter.verify_auth = AsyncMock(return_value=True)  # type: ignore[method-assign]
         app.state.voice_phone_adapter = adapter
+        from app.voice.consent import VoiceConsentPolicy
+
+        policy = VoiceConsentPolicy()
+        policy.record_consent("tenant-voice", "+15559998888", purpose="voice_phone")
+        app.state.voice_consent_policy = policy
         return app
 
     def test_handler_exception_speaks_safe_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,6 +17,7 @@ New endpoints:
 
 from __future__ import annotations
 
+import re
 from contextlib import suppress
 from typing import Any
 
@@ -593,6 +594,38 @@ async def teams_messages(
 # ── Voice / phone (Twilio-style call webhook) ─────────────────────────────────
 
 
+_VOICE_CONSENT_PROMPT = (
+    "Hi, you're connected to an AI assistant. This call is transcribed and "
+    "processed to answer you. Say yes to continue, or stop to end the call."
+)
+_AFFIRMATIVE = re.compile(r"^\W*(yes|yeah|yep|i agree|i consent|agree|consent)\b", re.I)
+
+
+def _is_affirmative(text: str) -> bool:
+    return bool(_AFFIRMATIVE.match(text))
+
+
+def _is_opt_out(text: str) -> bool:
+    from app.gateway.telephony_consent import OPT_OUT_KEYWORDS
+
+    return text.strip().strip(".!").upper() in OPT_OUT_KEYWORDS
+
+
+def _voice_consent_policy(state: Any) -> Any:
+    """The app's fail-closed voice consent policy, created on first use.
+
+    LIMITATION: VoiceConsentPolicy is process-local, so a caller who consented on
+    one replica is asked again on another (fail closed, never open).
+    """
+    from app.voice.consent import VoiceConsentPolicy
+
+    policy = getattr(state, "voice_consent_policy", None)
+    if policy is None:
+        policy = VoiceConsentPolicy(fail_closed=True)
+        state.voice_consent_policy = policy
+    return policy
+
+
 @router.post(
     "/voice/incoming",
     operation_id="gateway_voice_incoming",
@@ -651,6 +684,27 @@ async def voice_incoming(request: Request) -> Response:
         )["twiml"]
         return Response(content=twiml, media_type="application/xml")
 
+    # Consent gate — fail CLOSED. `voice_consent_policy` was read from app.state
+    # but nothing ever set it, so handle_voice_turn got None and processed and
+    # persisted every caller's speech with no recorded consent. A fail-closed
+    # policy now always exists; until the caller says "yes" to the spoken
+    # notice, nothing they say is processed or stored.
+    consent_policy = _voice_consent_policy(state)
+    tenant_id = binding.tenant_id
+    if transcript and _is_opt_out(transcript):
+        consent_policy.revoke(tenant_id, from_number)
+        twiml = adapter.format_reply(
+            "Okay, I won't process this call. Goodbye.", gather=False
+        )["twiml"]
+        return Response(content=twiml, media_type="application/xml")
+    if not consent_policy.has_consent(tenant_id, from_number):
+        if transcript and _is_affirmative(transcript):
+            consent_policy.record_consent(tenant_id, from_number, purpose="voice_phone")
+            twiml = adapter.format_reply("Thank you. How can I help?")["twiml"]
+        else:
+            twiml = adapter.format_reply(_VOICE_CONSENT_PROMPT)["twiml"]
+        return Response(content=twiml, media_type="application/xml")
+
     if not transcript:
         # Call connected but nothing said yet — greet and gather the first turn.
         twiml = adapter.format_reply("Hi, you're connected to your assistant. How can I help?")[
@@ -661,10 +715,10 @@ async def voice_incoming(request: Request) -> Response:
     try:
         result = await handle_voice_turn(
             chat_service=chat_service,
-            tenant_id=binding.tenant_id,
+            tenant_id=tenant_id,
             caller_id=from_number,
             transcript=transcript,
-            consent_policy=getattr(state, "voice_consent_policy", None),
+            consent_policy=consent_policy,
             # A caller can speak an SSN / card number. app/voice/retention.py
             # documents PII redaction as the DEFAULT ("transcripts are
             # PII-redacted by default before they are kept or forwarded") and

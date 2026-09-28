@@ -22,6 +22,7 @@ from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
 from app.gateway.router import router as gateway_router
 from app.gateway.voice_registry import VoicePhoneRegistry
 from app.identity import IdentityService
+from app.voice.consent import VoiceConsentPolicy
 
 TENANT = "tenant-voice"
 LINE = "+15550001111"   # the provisioned number (To)
@@ -29,7 +30,7 @@ AUTH_TOKEN = "voice-e2e-token"  # test fixture; the webhook fails closed without
 CALLER = "+15559998888"  # the caller (From)
 
 
-def _app() -> tuple[FastAPI, ChatService]:
+def _app(*, consented: bool = True) -> tuple[FastAPI, ChatService]:
     app = FastAPI()
     app.include_router(gateway_router)
     chat = ChatService()
@@ -39,6 +40,10 @@ def _app() -> tuple[FastAPI, ChatService]:
     app.state.chat_service = chat
     app.state.voice_phone_registry = reg
     app.state.voice_phone_adapter = VoicePhoneChannelAdapter(auth_token=AUTH_TOKEN)
+    if consented:
+        policy = VoiceConsentPolicy()
+        policy.record_consent(TENANT, CALLER, purpose="voice_phone")
+        app.state.voice_consent_policy = policy
     return app, chat
 
 
@@ -175,3 +180,52 @@ def test_inbound_call_redacts_pii_from_the_persisted_transcript() -> None:
     assert "123-45-6789" not in persisted, f"SSN persisted verbatim: {persisted!r}"
     assert "4111111111111111" not in persisted, f"card persisted verbatim: {persisted!r}"
     assert "[REDACTED]" in persisted
+
+
+# ── Consent gate (regression: voice_consent_policy was never set → no gate) ──
+
+
+def _history(chat: ChatService) -> list[str]:
+    session = chat.get_or_create_channel_session(
+        tenant_id=TENANT, channel="voice_phone", channel_user_id=CALLER
+    )
+    return [m.content for m in chat.list_messages(session.id, TENANT)]
+
+
+def test_speech_without_consent_is_not_processed_or_persisted() -> None:
+    app, chat = _app(consented=False)
+    client = TestClient(app)
+    r = _post(client, **{
+        "From": CALLER, "To": LINE, "CallSid": "CC1",
+        "SpeechResult": "my account number is 998877",
+    })
+    assert r.status_code == 200
+    assert "Say yes to continue" in r.text
+    assert not any("998877" in c for c in _history(chat))
+
+
+def test_greeting_without_consent_speaks_the_notice() -> None:
+    app, _ = _app(consented=False)
+    r = _post(TestClient(app), **{"From": CALLER, "To": LINE, "CallSid": "CC2"})
+    assert "Say yes to continue" in r.text and "<Gather" in r.text
+
+
+def test_saying_yes_records_consent_then_turns_are_processed() -> None:
+    app, chat = _app(consented=False)
+    client = TestClient(app)
+    yes = _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CC3", "SpeechResult": "Yes."})
+    assert "How can I help" in yes.text
+    assert app.state.voice_consent_policy.has_consent(TENANT, CALLER)
+    _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CC3",
+                     "SpeechResult": "book the dentist"})
+    assert any("dentist" in c for c in _history(chat))
+
+
+def test_stop_revokes_consent_and_ends_the_call() -> None:
+    app, chat = _app()
+    client = TestClient(app)
+    r = _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CC4", "SpeechResult": "stop"})
+    assert "Goodbye" in r.text and "<Gather" not in r.text
+    assert not app.state.voice_consent_policy.has_consent(TENANT, CALLER)
+    _post(client, **{"From": CALLER, "To": LINE, "CallSid": "CC4", "SpeechResult": "secret 42"})
+    assert not any("secret 42" in c for c in _history(chat))
