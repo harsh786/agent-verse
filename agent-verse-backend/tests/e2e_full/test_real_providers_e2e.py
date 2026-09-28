@@ -182,6 +182,7 @@ async def test_real_goal_answers_from_the_knowledge_base(
         ev = _parse(raw) or {}
         if ev.get("type") in (
             "model_route_selected", "plan_ready", "step_complete", "claim_grounding_warning",
+            "knowledge_retrieved",
             "verification_done", "goal_complete", "goal_failed", "error",
         ):
             print(f"[real] event {ev.get('type')}: {json.dumps(ev)[:700]}")

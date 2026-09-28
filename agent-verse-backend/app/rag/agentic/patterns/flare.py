@@ -115,11 +115,41 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
 
         provider = context.llm.provider
         model = context.llm.model
+        evidence: list[dict[str, Any]] = []
+        follow_ups: list[dict[str, Any]] = []
+        # Initial retrieval with the user input, as in Jiang et al. 2023 (FLARE
+        # retrieves with the input before generating the first sentence, then
+        # actively retrieves on low-confidence spans). Without it FLARE only ever
+        # retrieved when its own draft hedged: a model that answered confidently
+        # (right or wrong) got zero retrieval, so a goal routed to FLARE lost its
+        # knowledge grounding entirely (observed live: chunks_found=0 and the
+        # agent reported the knowledge base as unavailable).
+        initial_embedding = await _embed_text(context, request.query, self.strategy)
+        initial_evidence: list[dict[str, Any]] = []
+        retained: list[RetrievalResult] = await _search_persisted(
+            context,
+            request,
+            query=request.query,
+            embedding=initial_embedding,
+            retrieval_mode="hybrid",
+            evidence=initial_evidence,
+        )
+        for item in initial_evidence:
+            item.update({"iteration": "initial"})
+        evidence.extend(initial_evidence)
+        initial_context = "\n\n".join(item.content for item in retained)
         response = await provider.complete(
             CompletionRequest(
                 messages=[
                     Message(role="system", content=_FLARE_GENERATE_SYSTEM),
-                    Message(role="user", content=request.query),
+                    Message(
+                        role="user",
+                        content=(
+                            f"Context:\n{initial_context}\n\nQuestion: {request.query}"
+                            if initial_context
+                            else request.query
+                        ),
+                    ),
                 ],
                 model=model,
                 max_tokens=800,
@@ -127,9 +157,6 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
             )
         )
         answer = response.content.strip()
-        evidence: list[dict[str, Any]] = []
-        retained: list[RetrievalResult] = []
-        follow_ups: list[dict[str, Any]] = []
 
         for iteration in range(self._max_iterations):
             if not _detect_uncertainty(answer):
@@ -215,6 +242,7 @@ class FLARERAGRuntimeAdapter(FLARERAGRuntimeContract):
                     action="flare_follow_up",
                     status="complete",
                     detail={
+                        "initial_result_count": len(initial_evidence),
                         "follow_ups": follow_ups,
                         "stop_reason": (
                             "uncertainty_resolved"

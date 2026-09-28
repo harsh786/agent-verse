@@ -605,8 +605,14 @@ async def test_flare_embeds_each_new_follow_up_and_continues_generation() -> Non
         )
 
     follow_up = "What is the authoritative retention period in years?"
-    assert embedder.texts == [follow_up]
-    assert searches == [(follow_up, [float(len(follow_up)), 0.5])]
+    query = request_for(RAGStrategy.FLARE).query
+    # Initial retrieval with the user input (Jiang et al. 2023), then one
+    # independently embedded follow-up for the hedged span.
+    assert embedder.texts == [query, follow_up]
+    assert searches == [
+        (query, [float(len(query)), 0.5]),
+        (follow_up, [float(len(follow_up)), 0.5]),
+    ]
     flare_trace = next(
         item for item in result.strategy_trace if item.action == "flare_follow_up"
     )
@@ -720,3 +726,23 @@ def test_reasoning_strategies_are_registered_without_relabeling() -> None:
     assert isinstance(capabilities[RAGStrategy.AGENTIC].adapter, AgenticRAGRuntimeAdapter)
     assert isinstance(capabilities[RAGStrategy.SELF_RAG].adapter, SelfRAGRuntimeAdapter)
     assert isinstance(capabilities[RAGStrategy.FLARE].adapter, FLARERAGRuntimeAdapter)
+
+
+
+async def test_flare_retrieves_even_when_the_first_draft_is_confident() -> None:
+    """Regression: FLARE retrieved only when its draft hedged, so a confident
+    model got zero retrieval and the goal lost its grounding (live run:
+    chunks_found=0)."""
+    provider = RoutedProvider(lambda request: "The retention period is seven years.")
+    embedder = RecordingEmbedder()
+
+    async def search(*args: object, **kwargs: object) -> list[RetrievalResult]:
+        kwargs["evidence"].append({"component": "hybrid", "result_count": 1})
+        return [evidence("c1", "Policy states seven years.", 0.92)]
+
+    with patch("app.rag.gateway._search_persisted", side_effect=search):
+        result = await FLARERAGRuntimeAdapter(max_iterations=2).execute(
+            request_for(RAGStrategy.FLARE),
+            context_for(RAGStrategy.FLARE, provider, embedder),
+        )
+    assert [c.chunk_id for c in result.citations] == ["c1"]

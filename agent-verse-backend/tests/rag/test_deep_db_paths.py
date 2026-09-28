@@ -129,7 +129,10 @@ class TestExecutionMemoryDBFallbackBreak:
         results = await mem.recall_async(
             "deploy service", tenant_id="t-break", db=_FailDB(), limit=2
         )
-        assert len(results) == 2
+        # With a DB configured, a DB failure no longer serves this replica's
+        # process-local plans as truth: empty and flagged degraded.
+        assert list(results) == []
+        assert getattr(results, "degraded", False) is True
 
 
 # ── rag/store.py _db_ingest_chunk (lines 180-194) ────────────────────────────

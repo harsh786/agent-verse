@@ -1128,6 +1128,10 @@ class ExecutorMixin:
             try:
                 _tools_list = getattr(_tc_ctx, "tools", []) or []
                 _allowed_tools_set = {t.name for t in _tools_list if hasattr(t, "name")}
+                if isinstance(_granted_names, list):
+                    # The ALLOWED TOOLS grounding must not list ungranted tools
+                    # either: the model called them from this list.
+                    _allowed_tools_set &= set(_granted_names)
             except Exception:
                 pass
 
