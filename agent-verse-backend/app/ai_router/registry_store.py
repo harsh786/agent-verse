@@ -19,6 +19,7 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 _KEY = "model_registry:configured"
+_POLICY_KEY_PREFIX = "model_registry:route_policies:"
 
 # Whitelisted fields persisted per endpoint (mirrors ModelEndpoint).
 _FIELDS = (
@@ -78,6 +79,28 @@ class ModelRegistryStore:
             return False
         self._save(kept)
         return True
+
+
+    # ── Tenant routing policies (PUT /models/routing-policies/{task_type}) ──────
+    # Per-tenant JSON object ``{task_type: policy_dict}``. They used to live only in
+    # the API process's ModelRegistry, so another replica / the Celery worker never
+    # saw them. Reads and writes raise on a Redis error (callers decide).
+
+    @staticmethod
+    def _policy_key(tenant_id: str) -> str:
+        return f"{_POLICY_KEY_PREFIX}{tenant_id}"
+
+    def get_route_policies(self, tenant_id: str) -> dict[str, dict[str, Any]]:
+        raw = self._redis.get(self._policy_key(tenant_id))
+        if not raw:
+            return {}
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+
+    def set_route_policy(self, tenant_id: str, task_type: str, policy: dict[str, Any]) -> None:
+        policies = self.get_route_policies(tenant_id)
+        policies[task_type] = policy
+        self._redis.set(self._policy_key(tenant_id), json.dumps(policies))
 
 
 # ── Module-level singleton (wired from create_app when Redis is available) ──────

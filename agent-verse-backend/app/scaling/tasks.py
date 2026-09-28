@@ -1989,6 +1989,20 @@ def run_goal(
             # (empty for a tenant-configured single provider) — the same map
             # GoalService.set_role_map applies on the API path.
             _worker_roles = _worker_role_map(real_provider) if real_provider else {}
+            # Tenant routing policies (PUT /models/routing-policies) — same as the
+            # API path; they were stored in one API process and never applied.
+            try:
+                from app.ai_router.deployment_roles import servable_models as _sm
+                from app.ai_router.registry import tenant_policy_role_models
+
+                _worker_roles = {
+                    **_worker_roles,
+                    **tenant_policy_role_models(
+                        tenant_id, servable=_sm(real_provider) if real_provider else None
+                    ),
+                }
+            except Exception as _tp_exc:
+                logger.warning("worker_tenant_routing_policy_failed: %s", _tp_exc)
             if _worker_roles:
                 try:
                     if _model_router is None:

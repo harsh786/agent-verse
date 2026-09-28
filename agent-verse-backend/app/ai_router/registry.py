@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from app.ai_router.models import (
     ModelCapability,
     ModelEndpoint,
     ModelRoutePolicy,
     ProviderHealth,
+    RoutingMode,
     TaskType,
 )
 
@@ -260,10 +262,97 @@ class ModelRegistry:
     def set_route_policy(
         self, tenant_id: str, task_type: TaskType, policy: ModelRoutePolicy
     ) -> None:
+        """Save a tenant routing policy — durably when the Redis store is wired.
+
+        Raises when the durable write fails (the API maps it to 503) instead of
+        keeping a policy only this process can see.
+        """
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        if store is not None:
+            store.set_route_policy(tenant_id, task_type.value, _policy_to_dict(policy))
         self._tenant_policies.setdefault(tenant_id, {})[task_type.value] = policy
 
+    def list_route_policies(self, tenant_id: str) -> dict[str, ModelRoutePolicy]:
+        """All of a tenant's policies; the shared store is authoritative when wired."""
+        from app.ai_router.registry_store import get_model_registry_store
+
+        store = get_model_registry_store()
+        if store is None:
+            return dict(self._tenant_policies.get(tenant_id, {}))
+        out: dict[str, ModelRoutePolicy] = {}
+        for task, data in store.get_route_policies(tenant_id).items():
+            policy = _policy_from_dict(task, data)
+            if policy is not None:
+                out[task] = policy
+        return out
+
     def get_route_policy(self, tenant_id: str, task_type: TaskType) -> ModelRoutePolicy | None:
-        return self._tenant_policies.get(tenant_id, {}).get(task_type.value)
+        try:
+            return self.list_route_policies(tenant_id).get(task_type.value)
+        except Exception:
+            # Read path used for model *selection*: degrade to this process's copy.
+            return self._tenant_policies.get(tenant_id, {}).get(task_type.value)
+
+
+# Roles the agent graph routes, keyed by the TaskType a policy is saved under.
+_POLICY_GRAPH_ROLES: dict[str, str] = {
+    "planning": "planning",
+    "execution": "execution",
+    "verification": "verification",
+}
+
+
+def _policy_to_dict(policy: ModelRoutePolicy) -> dict[str, Any]:
+    return {
+        "routing_mode": policy.routing_mode.value,
+        "preferred_provider": policy.preferred_provider,
+        "preferred_model": policy.preferred_model,
+        "fallback_chain": list(policy.fallback_chain),
+    }
+
+
+def _policy_from_dict(task: str, data: Any) -> ModelRoutePolicy | None:
+    if not isinstance(data, dict):
+        return None
+    try:
+        return ModelRoutePolicy(
+            task_type=TaskType(task),
+            routing_mode=RoutingMode(data.get("routing_mode", "tenant_default")),
+            preferred_provider=data.get("preferred_provider"),
+            preferred_model=data.get("preferred_model"),
+            fallback_chain=list(data.get("fallback_chain") or []),
+        )
+    except ValueError:
+        return None
+
+
+def policy_is_enforced(policy: ModelRoutePolicy) -> bool:
+    """True when goals actually honour *policy* (see tenant_policy_role_models)."""
+    return policy.task_type.value in _POLICY_GRAPH_ROLES and bool(policy.preferred_model)
+
+
+def tenant_policy_role_models(
+    tenant_id: str, *, servable: set[str] | None = None
+) -> dict[str, str]:
+    """``{role: model}`` pins from the tenant's routing policies for the agent graph.
+
+    A planning/execution/verification policy with a ``preferred_model`` pins that
+    role. With ``servable`` (a multi-endpoint provider), a model the provider
+    cannot route is skipped. Other routing modes (cheapest, fastest, …) are not
+    enforced on goals — the API reports that when the policy is saved.
+    """
+    roles: dict[str, str] = {}
+    for task, policy in model_registry.list_route_policies(tenant_id).items():
+        role = _POLICY_GRAPH_ROLES.get(task)
+        model = (policy.preferred_model or "").strip()
+        if role is None or not model:
+            continue
+        if servable is not None and model not in servable:
+            continue
+        roles[role] = model
+    return roles
 
 
 # Module-level singleton

@@ -1070,6 +1070,20 @@ class GoalService:
                     _model_router.set_role_map(deployment_role_models(servable=_servable))
             except Exception as _rm_exc:
                 _svc_logger.warning("model_role_map_failed", error=str(_rm_exc))
+            # Tenant routing policies (PUT /models/routing-policies): a preferred
+            # model for planning/execution/verification pins that role. They were
+            # saved and never applied to any goal.
+            try:
+                from app.ai_router.deployment_roles import servable_models as _sm
+                from app.ai_router.registry import tenant_policy_role_models
+
+                _policy_roles = tenant_policy_role_models(
+                    tenant_ctx.tenant_id, servable=_sm(provider)
+                )
+                if _policy_roles:
+                    _model_router.set_role_map({**_model_router.role_map, **_policy_roles})
+            except Exception as _tp_exc:
+                _svc_logger.warning("tenant_routing_policy_apply_failed", error=str(_tp_exc))
 
         # Apply model override to the model router before building the graph
         if _model_override:
