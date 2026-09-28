@@ -165,7 +165,7 @@ async def test_saml_acs_reads_under_tenant_guc() -> None:
     request = _request(factory)
     request.form = AsyncMock(return_value={"SAMLResponse": "PHNhbWw+"})
     try:
-        await ent.saml_acs(request)
+        await ent.saml_acs(request, TENANT)
     except HTTPException:
         pass  # assertion validation itself is not under test here
     _assert_tenant_scoped(factory.sessions[0], "FROM saml_configs", TENANT)

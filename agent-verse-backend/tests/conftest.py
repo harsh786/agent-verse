@@ -107,6 +107,21 @@ def _reset_worker_deployment_provider_cache():
 
 
 @pytest.fixture(autouse=True)
+def _reset_ip_rate_limit_windows():
+    """Reset the in-process per-IP limiter (signup / SSO token endpoints).
+
+    Without Redis it keeps a per-IP sliding window in process memory; every
+    TestClient request comes from the same "testclient" peer, so windows filled
+    by one test would 429 the next.
+    """
+    from app.tenancy import ip_rate_limit
+
+    ip_rate_limit._local_windows.clear()
+    yield
+    ip_rate_limit._local_windows.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_process_embedding_cache():
     """Reset the process-wide RAG embedding cache between tests.
 

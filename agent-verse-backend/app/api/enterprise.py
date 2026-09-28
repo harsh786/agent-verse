@@ -9,11 +9,12 @@ import json
 import uuid
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
-from app.auth.saml_provider import SAMLNotInstalledError
+from app.auth.saml_provider import SAMLNotInstalledError, SAMLReplayCheckUnavailableError
 from app.db.rls import sqlalchemy_rls_context
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
@@ -1787,6 +1788,16 @@ async def sign_contract(
 # =============================================================================
 
 
+def _saml_acs_url(request: Request, tenant_id: str) -> str:
+    """The ACS URL advertised to the IdP — the route that actually serves it.
+
+    It used to be ``{base}/api/enterprise/saml/acs`` while the route is
+    ``/enterprise/saml/acs`` (no ``/api``), and that route required a tenant API
+    key an IdP POST never carries. The tenant is now named in the path.
+    """
+    return f"{str(request.base_url).rstrip('/')}/enterprise/saml/acs/{tenant_id}"
+
+
 @router.get("/saml/metadata", response_class=Response)
 async def get_saml_metadata(request: Request) -> Response:
     """Return SP metadata XML for IdP configuration."""
@@ -1816,14 +1827,13 @@ async def get_saml_metadata(request: Request) -> Response:
             ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured for this tenant")
-        base_url = str(request.base_url).rstrip("/")
         provider = SAMLProvider(
             tenant_id=ctx.tenant_id,
             idp_entity_id=row[0],
             idp_sso_url=row[1],
             idp_cert=row[2],
             sp_entity_id=row[3],
-            acs_url=f"{base_url}/api/enterprise/saml/acs",
+            acs_url=_saml_acs_url(request, ctx.tenant_id),
             attribute_mapping=row[4] or {},
             name_id_format=row[5] or "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
         )
@@ -1926,14 +1936,13 @@ async def saml_login(request: Request) -> Response:
             ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured")
-        base_url = str(request.base_url).rstrip("/")
         provider = SAMLProvider(
             tenant_id=ctx.tenant_id,
             idp_entity_id=row[0],
             idp_sso_url=row[1],
             idp_cert=row[2],
             sp_entity_id=row[3],
-            acs_url=f"{base_url}/api/enterprise/saml/acs",
+            acs_url=_saml_acs_url(request, ctx.tenant_id),
         )
         redirect_url = provider.initiate_login()
         return RedirectResponse(url=redirect_url)
@@ -1945,13 +1954,20 @@ async def saml_login(request: Request) -> Response:
         raise HTTPException(500, f"SAML login error: {exc}") from exc
 
 
-@router.post("/saml/acs")
-async def saml_acs(request: Request) -> dict[str, Any]:
+@router.post("/saml/acs/{tenant_id}")
+async def saml_acs(request: Request, tenant_id: str) -> JSONResponse:
+    """SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).
+
+    Public by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the
+    signed assertion, validated against the tenant's configured IdP
+    certificate in python3-saml strict mode, is the authentication. Replay
+    protection (Redis) fails closed (503).
+
+    NOT IMPLEMENTED: turning a verified identity into an AgentVerse session (JIT
+    user provisioning + a credential TenantMiddleware accepts). The endpoint
+    used to answer 200 ``{"authenticated": true}`` with no session at all; it
+    now answers 501 after verifying the assertion.
     """
-    SAML Assertion Consumer Service — validate assertion and return user identity.
-    Amendment 8.4: Replay protection via Redis.
-    """
-    ctx = _require_tenant(request)
     db = _get_db(request)
     if db is None:
         raise HTTPException(503, "Database not configured")
@@ -1967,7 +1983,7 @@ async def saml_acs(request: Request) -> dict[str, Any]:
         async with (
             db() as session,
             session.begin(),
-            sqlalchemy_rls_context(session, ctx.tenant_id),
+            sqlalchemy_rls_context(session, tenant_id),
         ):
             row = (
                 await session.execute(
@@ -1976,41 +1992,49 @@ async def saml_acs(request: Request) -> dict[str, Any]:
                        attribute_mapping
                 FROM saml_configs WHERE tenant_id = :tid AND is_active = TRUE
             """),
-                    {"tid": ctx.tenant_id},
+                    {"tid": tenant_id},
                 )
             ).fetchone()
         if row is None:
             raise HTTPException(404, "SAML not configured")
-        redis = getattr(request.app.state, "redis", None)
-        base_url = str(request.base_url).rstrip("/")
+        # app.state.redis is never set (the runtime client is app.state._redis):
+        # reading it silently disabled replay protection.
+        redis = getattr(request.app.state, "_redis", None)
         provider = SAMLProvider(
-            tenant_id=ctx.tenant_id,
+            tenant_id=tenant_id,
             idp_entity_id=row[0],
             idp_sso_url=row[1],
             idp_cert=row[2],
             sp_entity_id=row[3],
-            acs_url=f"{base_url}/api/enterprise/saml/acs",
+            acs_url=_saml_acs_url(request, tenant_id),
             attribute_mapping=row[4] or {},
             redis=redis,
         )
         identity = await provider.process_acs(str(saml_response))
-        return {
-            "email": identity.email,
-            "name_id": identity.name_id,
-            "first_name": identity.first_name,
-            "last_name": identity.last_name,
-            "department": identity.department,
-            "authenticated": True,
-        }
     except HTTPException:
         raise
     except SAMLNotInstalledError as exc:
         # Was a 500 ("SAML ACS error: python3-saml is not installed").
         raise HTTPException(501, str(exc)) from exc
+    except SAMLReplayCheckUnavailableError as exc:
+        raise HTTPException(503, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(401, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"SAML ACS error: {exc}") from exc
+    return JSONResponse(
+        status_code=501,
+        content={
+            "error": "NOT_IMPLEMENTED",
+            "detail": (
+                "The SAML assertion is valid, but issuing an AgentVerse session "
+                "for SAML users is not implemented."
+            ),
+            "email": identity.email,
+            "name_id": identity.name_id,
+            "authenticated": False,
+        },
+    )
 
 
 @router.post("/saml/test")
@@ -2122,10 +2146,13 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
 
 @scim_router.get("/Users")
 async def scim_list_users(
-    request: Request, startIndex: int = 1, count: int = 100  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
+    request: Request,
+    startIndex: int = 1,  # noqa: N803  # SCIM RFC 7644 mandates this exact query param name
+    count: int = 100,
+    filter_: str = Query("", alias="filter", max_length=1000),
 ) -> dict[str, Any]:
     handler = await _get_scim_handler(request)
-    return await handler.list_users(start_index=startIndex, count=count)
+    return await handler.list_users(start_index=startIndex, count=count, filter_str=filter_)
 
 
 @scim_router.get("/Users/{scim_id}")

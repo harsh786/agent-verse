@@ -71,26 +71,20 @@ async def signup(
     request: Request,
 ) -> JSONResponse:
     """Create a new tenant account and return the initial API key."""
-    # IP-based rate limit: 10 signups per IP per hour.
-    # Fail open if Redis is unavailable — blocking legitimate users is worse here.
-    _client_ip = request.client.host if request.client else "unknown"
-    redis = getattr(request.app.state, "_redis", None)
-    if redis is not None:
-        try:
-            rl_key = f"signup_rl:{_client_ip}"
-            count = await redis.incr(rl_key)
-            if count == 1:
-                # Set TTL on first request in window
-                await redis.expire(rl_key, 3600)  # 1-hour window
-            if count > 10:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Too many signup attempts from this IP. Try again later.",
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # fail open on Redis errors
+    # 10 signups per client IP per hour (trusted-proxy aware IP; Redis across
+    # replicas, in-process window without Redis / on a Redis error). It keyed
+    # on request.client.host — the load balancer behind a proxy — and failed
+    # open on Redis errors.
+    from app.tenancy.ip_rate_limit import enforce_ip_rate_limit
+
+    await enforce_ip_rate_limit(
+        request,
+        bucket="signup_rl",
+        limit=10,
+        window_s=3600,
+        redis=getattr(request.app.state, "_redis", None),
+        detail="Too many signup attempts from this IP. Try again later.",
+    )
 
     svc = _get_tenant_service(request)
     try:
@@ -150,6 +144,9 @@ async def create_key(
     """Create a new API key. The raw key is returned ONLY in this response."""
     svc = _get_tenant_service(request)
     scopes = _scopes_for_new_key(ctx, body.scopes)
+    limited = await _api_key_limit_denial(svc, ctx)
+    if limited is not None:
+        return limited
     try:
         result = await svc.create_api_key(
             tenant_id=ctx.tenant_id,
@@ -162,6 +159,31 @@ async def create_key(
     except PlatformError as exc:
         return JSONResponse(exc.to_dict(), status_code=exc.http_status)
     return JSONResponse(result, status_code=201)
+
+
+async def _api_key_limit_denial(
+    svc: Any, ctx: TenantContext, *, replacing: str | None = None
+) -> JSONResponse | None:
+    """429 when the plan's ``max_api_keys`` active keys already exist.
+
+    ``check_api_key_limit`` existed but nothing called it: any plan could mint
+    unlimited keys. *replacing* is a key that the same request revokes (rotation),
+    so it does not count.
+    """
+    from app.tenancy.limits import PlanLimitExceededError, check_api_key_limit
+
+    try:
+        keys = await svc.list_api_keys(ctx.tenant_id)
+    except PlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+    if isinstance(keys, dict):  # tolerate a {"keys": [...]} envelope
+        keys = keys.get("keys", [])
+    active = [k for k in keys if k.get("is_active", True) and k.get("key_id") != replacing]
+    try:
+        check_api_key_limit(ctx, len(active))
+    except PlanLimitExceededError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+    return None
 
 
 def _scopes_for_new_key(ctx: TenantContext, requested: list[str]) -> list[str]:
@@ -225,6 +247,9 @@ async def rotate_key(
     The newly created key's raw secret is returned **once** in this response.
     """
     svc = _get_tenant_service(request)
+    limited = await _api_key_limit_denial(svc, ctx, replacing=key_id if body.revoke_old else None)
+    if limited is not None:
+        return limited
 
     # Create the replacement key first so callers can take it before the old one
     # is revoked — minimising the window without a valid key.
@@ -580,12 +605,8 @@ async def create_role(
     db = getattr(request.app.state, "db_session_factory", None)
     role_id = uuid.uuid4().hex
     if db is None:
-        return {
-            "id": role_id,
-            "user_id": body.user_id,
-            "role": body.role,
-            "tenant_id": ctx.tenant_id,
-        }
+        # Was a 201 with a fabricated id for an assignment stored nowhere.
+        raise HTTPException(status_code=503, detail="Role store unavailable (no database)")
     try:
         from app.db.models.rbac import UserRole
         from app.db.rls import sqlalchemy_rls_context
@@ -617,7 +638,7 @@ async def delete_role(
     """Remove a role assignment."""
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
-        return
+        raise HTTPException(status_code=503, detail="Role store unavailable (no database)")
     try:
         from sqlalchemy import select
 
@@ -742,7 +763,8 @@ async def create_ip_allowlist_entry(
     db = getattr(request.app.state, "db_session_factory", None)
     entry_id = uuid.uuid4().hex
     if db is None:
-        return {"id": entry_id, "cidr": body.cidr, "description": body.description}
+        # Was a 201 for a CIDR stored (and therefore enforced) nowhere.
+        raise HTTPException(status_code=503, detail="IP allowlist store unavailable (no database)")
     try:
         from app.db.models.auth import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
@@ -969,7 +991,7 @@ async def delete_ip_allowlist_entry(
     """Remove a CIDR entry from this tenant's IP allowlist."""
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
-        return
+        raise HTTPException(status_code=503, detail="IP allowlist store unavailable (no database)")
     try:
         from sqlalchemy import select
 
@@ -997,6 +1019,11 @@ async def delete_ip_allowlist_entry(
 # ── Notification preferences ──────────────────────────────────────────────────
 
 
+_NOTIFICATION_KEYS = frozenset(
+    {"goalComplete", "goalFailed", "budgetAlert", "hitlPending", "weeklyReport"}
+)
+
+
 @router.get("/me/notifications")
 async def get_notifications(request: Request) -> dict:
     """Get tenant notification preferences."""
@@ -1010,14 +1037,17 @@ async def get_notifications(request: Request) -> dict:
     }
     redis = getattr(request.app.state, "_redis", None)
     if redis is not None:
-        try:
-            import json
+        import json
 
+        try:
             stored = await redis.get(f"notif_prefs:{tenant.tenant_id}")
-            if stored:
-                prefs = json.loads(stored)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Not the defaults: that would show "saved" preferences as reset.
+            raise HTTPException(
+                status_code=503, detail="Notification preferences unavailable"
+            ) from exc
+        if stored:
+            prefs.update(json.loads(stored))
     return prefs
 
 
@@ -1027,18 +1057,29 @@ async def update_notifications(request: Request) -> dict:
     tenant = _require_tenant(request)
     try:
         body = await request.json()
-    except Exception:
-        body = {}
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Body must be a JSON object") from exc
+    if not isinstance(body, dict) or not all(
+        k in _NOTIFICATION_KEYS and isinstance(v, bool) for k, v in body.items()
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Body must map {sorted(_NOTIFICATION_KEYS)} to booleans",
+        )
 
+    # "updated" used to be returned with no Redis wired and on a Redis error,
+    # and saved preferences silently expired after 30 days.
     redis = getattr(request.app.state, "_redis", None)
-    if redis is not None:
-        try:
-            import json
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Notification preferences store unavailable")
+    import json
 
-            await redis.setex(f"notif_prefs:{tenant.tenant_id}", 86400 * 30, json.dumps(body))
-        except Exception:
-            pass
-
+    try:
+        await redis.set(f"notif_prefs:{tenant.tenant_id}", json.dumps(body))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Notification preferences could not be saved"
+        ) from exc
     return {"status": "updated", "preferences": body}
 
 
@@ -1108,6 +1149,22 @@ async def export_tenant_data(request: Request) -> dict:
 
 @router.delete("/me")
 async def delete_tenant(request: Request) -> dict:
-    """Delete the current tenant account (soft delete / schedule for deletion)."""
+    """Schedule the current tenant's deletion (durable GDPR erasure job).
+
+    This returned ``scheduled_for_deletion`` and did nothing. It now records the
+    same erasure job as ``POST /enterprise/compliance/delete`` (executed by the
+    ``process_tenant_erasures`` beat task after the grace period) and answers
+    503 when the job could not be recorded.
+    """
     tenant = _require_tenant(request)
-    return {"status": "scheduled_for_deletion", "tenant_id": tenant.tenant_id}
+    from app.api._deps import get_compliance_controller
+
+    try:
+        job: dict = await get_compliance_controller(request).request_data_deletion(
+            tenant_ctx=tenant
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Deletion request could not be recorded; retry."
+        ) from exc
+    return {**job, "status": "scheduled_for_deletion", "tenant_id": tenant.tenant_id}

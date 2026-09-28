@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.governance.grants import Grant
 from app.observability.logging import get_logger
@@ -64,13 +64,45 @@ async def _audit(request: Request, tenant_id: str, event: dict[str, Any]) -> boo
     return True
 
 
+# Per-grant spend cap ceiling. ``max_cost_usd`` was unbounded (and could be
+# negative / NaN-like huge values), so a cap could silently be "no cap".
+MAX_GRANT_COST_USD = 10_000.0
+
+
 class IssueGrantRequest(BaseModel):
-    grantee_agent_id: str
+    grantee_agent_id: str = Field(min_length=1, max_length=200)
     scopes: list[str] = Field(min_length=1)
     ttl_seconds: int = Field(gt=0, le=60 * 60 * 24 * 365)
     grantor: str = "api"
-    max_cost_usd: float | None = None
-    not_before_seconds: int = 0
+    max_cost_usd: float | None = Field(default=None, ge=0, le=MAX_GRANT_COST_USD)
+    not_before_seconds: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def _window_is_not_empty(self) -> IssueGrantRequest:
+        if self.not_before_seconds >= self.ttl_seconds:
+            raise ValueError("not_before_seconds must be less than ttl_seconds")
+        return self
+
+
+async def _require_grantee(request: Request, agent_id: str) -> None:
+    """404 unless *agent_id* is an agent of the caller's tenant.
+
+    The grantee was never checked: a grant could be minted for an agent id that
+    does not exist (and would silently attach to any agent later created with
+    that id) or that belongs to another tenant.
+    """
+    store = getattr(request.app.state, "agent_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="agent store unavailable")
+    ctx = request.state.tenant
+    getter = getattr(store, "get_async", None)
+    agent = (
+        await getter(agent_id, tenant_ctx=ctx)
+        if getter is not None
+        else store.get(agent_id, tenant_ctx=ctx)
+    )
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"grantee agent {agent_id!r} not found")
 
 
 def _to_dict(g: Grant) -> dict[str, Any]:
@@ -83,6 +115,7 @@ def _to_dict(g: Grant) -> dict[str, Any]:
         "not_before": g.not_before.isoformat(),
         "expires_at": g.expires_at.isoformat(),
         "max_cost_usd": g.max_cost_usd,
+        "spent_usd": g.spent_usd,
         "revoked": g.revoked,
         "parent_grant_id": g.parent_grant_id,
     }
@@ -105,6 +138,7 @@ async def issue_grant(
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
+    await _require_grantee(request, body.grantee_agent_id)
     now = datetime.now(UTC)
     grant = Grant(
         grant_id=uuid.uuid4().hex,
@@ -138,6 +172,16 @@ async def list_grants(request: Request, agent_id: str) -> dict[str, Any]:
     tenant_id = _tenant_id(request)
     grants = await _store(request).list_for_agent(tenant_id, agent_id)
     return {"grants": [_to_dict(g) for g in grants]}
+
+
+@router.get("/{grant_id}")
+async def get_grant(grant_id: str, request: Request) -> dict[str, Any]:
+    """One grant of the caller's tenant (including ``spent_usd``), or 404."""
+    tenant_id = _tenant_id(request)
+    grant = await _store(request).get(tenant_id, grant_id)
+    if grant is None:
+        raise HTTPException(status_code=404, detail="grant not found")
+    return _to_dict(grant)
 
 
 @router.post("/{grant_id}/revoke")

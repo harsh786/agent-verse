@@ -171,11 +171,11 @@ class TestMFASessionTokens:
         assert "old-token" not in _mfa_verified_sessions
         assert "fresh-token" in _mfa_verified_sessions
 
-    def test_recovery_code_does_not_issue_session_token(self) -> None:
-        """Recovery code path returns verified status WITHOUT a session token.
+    def test_recovery_code_issues_a_session_token(self) -> None:
+        """A recovery code is a full second factor and yields an X-MFA-Token.
 
-        Only TOTP verify issues session tokens; recovery codes use a different
-        flow (one-time code consumed, no persistent session created).
+        It used to return no token, so with enforcement on a user who lost their
+        authenticator stayed locked out (every request answered MFA_REQUIRED).
         """
         import pyotp
 
@@ -192,8 +192,9 @@ class TestMFASessionTokens:
         data = resp.json()
         assert data["status"] == "verified"
         assert data["method"] == "recovery_code"
-        # Recovery codes do NOT emit a session token — this is intentional
-        assert "session_token" not in data
+        token = data["session_token"]
+        assert token in _mfa_verified_sessions
+        assert _mfa_verified_sessions[token]["method"] == "recovery_code"
         assert "remaining_recovery_codes" in data
 
     def test_recovery_code_is_consumed_after_use(self) -> None:

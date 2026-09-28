@@ -22,6 +22,8 @@ class Tenant(Base):
         String(20), nullable=False, server_default=text("'free'")
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
+    # Keycloak subject of a JIT-provisioned tenant (migration a9d3e5f7b1c2).
+    sso_sub: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

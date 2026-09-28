@@ -175,7 +175,7 @@ async def test_get_cidrs_cache_miss_no_db_returns_empty():
     assert cidrs == []
 
 
-async def test_get_cidrs_db_error_returns_empty():
+async def test_get_cidrs_db_error_raises_unavailable():
     redis_mock = AsyncMock()
     redis_mock.get = AsyncMock(return_value=None)
 
@@ -186,9 +186,13 @@ async def test_get_cidrs_db_error_returns_empty():
     db_factory = MagicMock(return_value=session_mock)
 
     cache = IPAllowlistCache(redis=redis_mock)
-    # Fail-open: return empty list on DB error
-    cidrs = await cache.get_cidrs("t1", db_factory=db_factory)
-    assert cidrs == []
+    # Fail closed: a DB error must never read as "no allowlist".
+    import pytest
+
+    from app.auth.ip_allowlist import IPAllowlistUnavailableError
+
+    with pytest.raises(IPAllowlistUnavailableError):
+        await cache.get_cidrs("t1", db_factory=db_factory)
 
 
 # ---------------------------------------------------------------------------

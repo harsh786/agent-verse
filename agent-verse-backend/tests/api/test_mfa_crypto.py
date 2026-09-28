@@ -45,7 +45,8 @@ def test_encrypt_uses_fernet_when_cryptography_available() -> None:
     assert not token.endswith(".b64")
 
 
-def test_encrypt_falls_back_to_base64_without_cryptography(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_encrypt_never_falls_back_to_plaintext_base64(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The '.b64' fallback stored TOTP secrets in plaintext; it is gone."""
     import builtins
 
     real_import = builtins.__import__
@@ -56,9 +57,22 @@ def test_encrypt_falls_back_to_base64_without_cryptography(monkeypatch: pytest.M
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _fake_import)
-    token = encrypt_secret("plain-secret")
-    assert token.endswith(".b64")
-    assert base64.b64decode(token[:-4]).decode() == "plain-secret"
+    with pytest.raises(ImportError):
+        encrypt_secret("plain-secret")
+
+
+def test_production_refuses_the_built_in_dev_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.delenv("SECRET_KEY", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="SECRET_KEY"):
+            encrypt_secret("plain-secret")
+    finally:
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+        get_settings.cache_clear()
 
 
 def test_decrypt_handles_base64_fallback_path() -> None:

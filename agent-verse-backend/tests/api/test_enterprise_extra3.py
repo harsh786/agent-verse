@@ -1113,10 +1113,10 @@ def test_saml_acs_no_db() -> None:
     """Lines 1207: no DB → 503."""
     with patch("app.api.enterprise._get_db", return_value=None):
         client = TestClient(_make_app(), raise_server_exceptions=False)
+        # Tenant-scoped ACS path, no API key: an IdP POST never carries one.
         resp = client.post(
-            "/enterprise/saml/acs",
+            "/enterprise/saml/acs/t1",
             data={"SAMLResponse": "some-base64-data"},
-            headers=_headers(),
         )
         assert resp.status_code == 503
 
@@ -1131,12 +1131,8 @@ def test_saml_acs_missing_saml_response() -> None:
     db_factory = MagicMock(return_value=session)
     with patch("app.api.enterprise._get_db", return_value=db_factory):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.post(
-            "/enterprise/saml/acs",
-            data={},
-            headers=_headers(),
-        )
-        assert resp.status_code in (400, 503)
+        resp = client.post("/enterprise/saml/acs/t1", data={})
+        assert resp.status_code == 400
 
 
 # ---------------------------------------------------------------------------

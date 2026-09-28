@@ -168,122 +168,65 @@ class TestGoogleCallback:
         assert resp.status_code == 400
         assert "email" in resp.json()["detail"].lower()
 
-    def test_success_without_db_returns_note_jwt_not_configured(self):
-        google_oauth._pkce_store["st4"] = {"verifier": "v4", "created_at": time.time()}
-        client = TestClient(_make_app())
-        with respx.mock:
-            respx.post(google_oauth._GOOGLE_TOKEN_URL).mock(
-                return_value=_httpx.Response(200, json={"access_token": "tok"})
-            )
-            respx.get(google_oauth._GOOGLE_USERINFO_URL).mock(
-                return_value=_httpx.Response(
-                    200,
-                    json={
-                        "email": "user@example.com",
-                        "sub": "google-sub-1",
-                        "name": "Test User",
-                        "picture": "http://pic",
-                    },
-                )
-            )
-            resp = client.get(
-                "/auth/google/callback", params={"code": "abc", "state": "st4"}
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["email"] == "user@example.com"
-        assert data["user_id"] == "google-sub-1"
-        assert data["note"] == "JWT service not configured"
-        # PKCE state was consumed
-        assert "st4" not in google_oauth._pkce_store
+    # The callback used to import a non-existent app.auth.jwt_service, swallow
+    # the ImportError and answer 200 with a "note" — and, when the upsert failed,
+    # derive a tenant_id from the email's local part. It now never fakes a login.
 
-    def test_success_with_db_upsert_populates_user_and_tenant(self, monkeypatch):
-        google_oauth._pkce_store["st5"] = {"verifier": "v5", "created_at": time.time()}
-
-        class _FakeAppState:
-            db_session_factory = object()
-
-        async def _fake_upsert(*, db_factory, email, google_sub, name, picture_url):
-            return ("user-42", "tenant-42")
-
-        monkeypatch.setattr(
-            "app.auth.user_service.upsert_google_user", _fake_upsert
-        )
-
-        app = _make_app()
-        app.state.db_session_factory = object()
-
+    def _callback(self, app, state: str, userinfo: dict):
+        google_oauth._pkce_store[state] = {"verifier": "v", "created_at": time.time()}
         client = TestClient(app)
         with respx.mock:
             respx.post(google_oauth._GOOGLE_TOKEN_URL).mock(
                 return_value=_httpx.Response(200, json={"access_token": "tok"})
             )
             respx.get(google_oauth._GOOGLE_USERINFO_URL).mock(
-                return_value=_httpx.Response(
-                    200,
-                    json={"email": "u2@example.com", "sub": "sub-2", "name": "N", "picture": "P"},
-                )
+                return_value=_httpx.Response(200, json=userinfo)
             )
-            resp = client.get(
-                "/auth/google/callback", params={"code": "abc", "state": "st5"}
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["user_id"] == "user-42"
-        assert data["tenant_id"] == "tenant-42"
+            return client.get("/auth/google/callback", params={"code": "abc", "state": state})
 
-    def test_upsert_failure_is_logged_and_continues(self, monkeypatch):
-        google_oauth._pkce_store["st6"] = {"verifier": "v6", "created_at": time.time()}
+    def test_unverified_email_is_rejected(self):
+        resp = self._callback(
+            _make_app(), "st4", {"email": "u@example.com", "sub": "s", "email_verified": False}
+        )
+        assert resp.status_code == 400
+        assert "not verified" in resp.json()["detail"]
+        assert "st4" not in google_oauth._pkce_store  # PKCE state consumed
 
+    def test_without_db_is_503_not_a_fake_success(self):
+        resp = self._callback(
+            _make_app(), "st5", {"email": "u@example.com", "sub": "s", "email_verified": True}
+        )
+        assert resp.status_code == 503
+
+    def test_upsert_failure_is_503_and_never_derives_a_tenant_from_email(self, monkeypatch):
         async def _raise_upsert(*, db_factory, email, google_sub, name, picture_url):
             raise RuntimeError("db down")
 
         monkeypatch.setattr("app.auth.user_service.upsert_google_user", _raise_upsert)
-
         app = _make_app()
         app.state.db_session_factory = object()
-        client = TestClient(app)
-        with respx.mock:
-            respx.post(google_oauth._GOOGLE_TOKEN_URL).mock(
-                return_value=_httpx.Response(200, json={"access_token": "tok"})
-            )
-            respx.get(google_oauth._GOOGLE_USERINFO_URL).mock(
-                return_value=_httpx.Response(
-                    200,
-                    json={"email": "u3@example.com", "sub": "sub-3", "name": "", "picture": ""},
-                )
-            )
-            resp = client.get(
-                "/auth/google/callback", params={"code": "abc", "state": "st6"}
-            )
-        assert resp.status_code == 200
-        data = resp.json()
-        # falls back to google_sub as user_id since upsert failed
-        assert data["user_id"] == "sub-3"
-        assert data["tenant_id"] is None
+        resp = self._callback(
+            app, "st6", {"email": "u3@example.com", "sub": "sub-3", "email_verified": True}
+        )
+        assert resp.status_code == 503
+        assert "u3" not in resp.text
 
-    def test_success_mints_jwt_when_jwt_service_available(self, monkeypatch):
-        google_oauth._pkce_store["st7"] = {"verifier": "v7", "created_at": time.time()}
+    def test_verified_user_gets_honest_not_implemented(self, monkeypatch):
+        async def _fake_upsert(*, db_factory, email, google_sub, name, picture_url):
+            return ("user-42", "tenant-42")
 
+        monkeypatch.setattr("app.auth.user_service.upsert_google_user", _fake_upsert)
         fake_module = types.ModuleType("app.auth.jwt_service")
-        fake_module.mint_jwt = lambda *, user_id, email, tenant_id: f"jwt-for-{user_id}"
+        fake_module.mint_jwt = lambda **_: "forged"
         monkeypatch.setitem(sys.modules, "app.auth.jwt_service", fake_module)
-
-        client = TestClient(_make_app())
-        with respx.mock:
-            respx.post(google_oauth._GOOGLE_TOKEN_URL).mock(
-                return_value=_httpx.Response(200, json={"access_token": "tok"})
-            )
-            respx.get(google_oauth._GOOGLE_USERINFO_URL).mock(
-                return_value=_httpx.Response(
-                    200,
-                    json={"email": "u4@example.com", "sub": "sub-4", "name": "", "picture": ""},
-                )
-            )
-            resp = client.get(
-                "/auth/google/callback", params={"code": "abc", "state": "st7"}
-            )
-        assert resp.status_code == 200
+        app = _make_app()
+        app.state.db_session_factory = object()
+        resp = self._callback(
+            app, "st7", {"email": "u2@example.com", "sub": "sub-2", "email_verified": True}
+        )
+        assert resp.status_code == 501
         data = resp.json()
-        assert data["access_token"] == "jwt-for-sub-4"
-        assert data["token_type"] == "bearer"
+        assert data["error"] == "NOT_IMPLEMENTED"
+        assert data["user_id"] == "user-42"
+        assert data["tenant_id"] == "tenant-42"
+        assert "access_token" not in data

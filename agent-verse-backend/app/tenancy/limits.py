@@ -25,6 +25,18 @@ class PlanLimitExceededError(PlatformError):
         )
 
 
+class ConcurrencyLimitUnavailableError(PlatformError):
+    """The concurrent-goal counter (Redis) is unreachable — refuse, don't allow."""
+
+    http_status = 503
+
+    def __init__(self) -> None:
+        super().__init__(
+            message="Concurrent-goal limit could not be checked; retry shortly.",
+            code="CONCURRENCY_LIMIT_UNAVAILABLE",
+        )
+
+
 def check_daily_goal_limit(
     tenant_ctx: TenantContext,
     current_daily_count: int,
@@ -110,17 +122,31 @@ if current > limit then
 end
 return current
 """
+    if redis is None:
+        return  # no shared counter wired (single-process dev / unit tests)
+    over = PlanLimitExceededError(
+        f"Concurrent goal limit ({limit}) reached for plan '{plan_str}'. "
+        f"Wait for a running goal to complete before submitting another."
+    )
     try:
         result = await redis.eval(_lua_script, 1, key, limit, 3600)
-        if result == 0:
-            raise PlanLimitExceededError(
-                f"Concurrent goal limit ({limit}) reached for plan '{plan_str}'. "
-                f"Wait for a running goal to complete before submitting another."
-            )
-    except PlanLimitExceededError:
-        raise
-    except Exception:
-        pass  # Redis unavailable — allow the goal
+    except Exception as lua_exc:
+        # No Lua (some Redis-compatible stores): same logic, non-atomic but
+        # still enforced. Only if Redis itself is unreachable do we refuse —
+        # this used to ``pass`` and allow the goal (fail-open).
+        try:
+            current = int(await redis.incr(key))
+            await redis.expire(key, 3600)
+            if current > limit:
+                await redis.decr(key)
+                raise over from None
+            return
+        except PlanLimitExceededError:
+            raise
+        except Exception as exc:
+            raise ConcurrencyLimitUnavailableError() from (exc or lua_exc)
+    if result == 0:
+        raise over
 
 
 async def decrement_concurrent_goals(tenant_id: str, redis: Any) -> None:

@@ -23,6 +23,7 @@ import base64
 import contextlib
 import hashlib
 import io
+import json
 import secrets
 import string
 import time
@@ -174,6 +175,15 @@ _DEFAULT_STATE: dict[str, Any] = {
 }
 
 
+class MFAStateUnavailableError(Exception):
+    """MFA state (or an MFA session) could not be read or written.
+
+    Raised instead of falling back to the in-memory cache: an empty cache entry
+    reads as ``enabled: False``, which the enforcement middleware treats as "no
+    MFA required" — a DB blip used to switch MFA off for the tenant.
+    """
+
+
 class MFAStore:
     """DB-backed MFA configuration store.
 
@@ -245,13 +255,10 @@ class MFAStore:
             if not found:
                 return self._cache_entry(tenant_id)
 
-            # Decrypt TOTP secret
+            # Decrypt TOTP secret (a failure raises: see the except below)
             secret: str | None = None
             if encrypted_secret:
-                try:
-                    secret = decrypt_secret(encrypted_secret)
-                except Exception:
-                    secret = None
+                secret = decrypt_secret(encrypted_secret)
 
             # Parse hashed recovery codes
             codes_hashed: list[str] = []
@@ -270,21 +277,22 @@ class MFAStore:
             self._cache[tenant_id] = state
             return state
 
-        except Exception:
-            # DB unavailable — fall through to cache
-            return self._cache_entry(tenant_id)
+        except Exception as exc:
+            # Never fall back to the cache: a missing cache entry reads as
+            # "MFA disabled", i.e. enforcement off (fail-open).
+            raise MFAStateUnavailableError(f"MFA state unavailable: {exc}") from exc
 
     async def save(self, tenant_id: str, state: dict[str, Any]) -> None:
         """Persist MFA state to DB and update the in-memory cache.
 
         ``pending_secret`` is stored in the cache only; it is deliberately
-        excluded from the DB row.  DB write failures are non-fatal — the
-        cache remains the authoritative state for the current process.
+        excluded from the DB row. The cache is updated only AFTER the DB write
+        commits: a failed write raises :class:`MFAStateUnavailableError` (it
+        used to be swallowed, so e.g. "MFA enabled" was reported while the DB
+        — and every other replica — still said disabled).
         """
-        # Always update cache immediately (pending_secret included)
-        self._cache[tenant_id] = state
-
         if self._db is None:
+            self._cache[tenant_id] = state
             return
 
         try:
@@ -329,8 +337,9 @@ class MFAStore:
                     if state["enabled"] and not row.enrolled_at:
                         row.enrolled_at = now
 
-        except Exception:
-            pass  # Cache is still updated; DB write failure is non-fatal.
+        except Exception as exc:
+            raise MFAStateUnavailableError(f"MFA state could not be saved: {exc}") from exc
+        self._cache[tenant_id] = state
 
 
 # Module-level singleton
@@ -349,6 +358,76 @@ _mfa_store: dict[str, dict[str, Any]] = _mfa_db_store._cache
 # ---------------------------------------------------------------------------
 # Maps session_token → {"tenant_id": str, "created_at": float, "method": str}
 _mfa_verified_sessions: dict[str, dict] = {}
+
+
+_MFA_SESSION_TTL = 3600  # seconds
+_MFA_SESSION_PREFIX = "mfa_session:"
+
+
+def _mfa_session_key(token: str) -> str:
+    # Only a digest of the token is stored: a Redis dump never yields a usable token.
+    return _MFA_SESSION_PREFIX + hashlib.sha256(token.encode()).hexdigest()
+
+
+def _mfa_session_redis(app: Any) -> Any:
+    return getattr(getattr(app, "state", None), "_redis", None)
+
+
+async def issue_mfa_session(app: Any, tenant_id: str, method: str) -> str:
+    """Mint an X-MFA-Token valid for one hour.
+
+    Stored in Redis when it is wired, so a token issued by one replica is
+    honoured by every replica (it used to live only in this process's dict, so
+    the next request load-balanced elsewhere got MFA_REQUIRED). The in-process
+    dict is used only when no Redis is configured (single process).
+    """
+    token = secrets.token_urlsafe(32)
+    redis = _mfa_session_redis(app)
+    if redis is not None:
+        try:
+            await redis.set(
+                _mfa_session_key(token),
+                json.dumps({"tenant_id": tenant_id, "method": method}),
+                ex=_MFA_SESSION_TTL,
+            )
+        except Exception as exc:
+            raise MFAStateUnavailableError(f"MFA session could not be stored: {exc}") from exc
+        return token
+    _cleanup_mfa_sessions()
+    _mfa_verified_sessions[token] = {
+        "tenant_id": tenant_id,
+        "created_at": time.monotonic(),
+        "method": method,
+    }
+    return token
+
+
+async def check_mfa_session(app: Any, token: str, tenant_id: str) -> str:
+    """Return ``"valid"``, ``"invalid"`` or ``"expired"`` for an X-MFA-Token.
+
+    Raises:
+        MFAStateUnavailableError: Redis is wired but could not be read.
+    """
+    redis = _mfa_session_redis(app)
+    if redis is not None:
+        try:
+            raw = await redis.get(_mfa_session_key(token))
+        except Exception as exc:
+            raise MFAStateUnavailableError(f"MFA session lookup failed: {exc}") from exc
+        if raw is None:
+            return "invalid"  # unknown or expired (Redis TTL)
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            return "invalid"
+        return "valid" if data.get("tenant_id") == tenant_id else "invalid"
+    entry = _mfa_verified_sessions.get(token)
+    if not entry or entry.get("tenant_id") != tenant_id:
+        return "invalid"
+    if time.monotonic() - entry.get("created_at", 0) > _MFA_SESSION_TTL:
+        _mfa_verified_sessions.pop(token, None)
+        return "expired"
+    return "valid"
 
 
 def _cleanup_mfa_sessions() -> None:
@@ -371,6 +450,28 @@ def _get_mfa_state(tenant_id: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _unavailable(exc: MFAStateUnavailableError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="MFA state is temporarily unavailable; retry shortly.",
+        headers={"Retry-After": "5"},
+    )
+
+
+async def _get_state(tenant_id: str) -> dict[str, Any]:
+    try:
+        return await _mfa_db_store.get(tenant_id)
+    except MFAStateUnavailableError as exc:
+        raise _unavailable(exc) from exc
+
+
+async def _save_state(tenant_id: str, state: dict[str, Any]) -> None:
+    try:
+        await _mfa_db_store.save(tenant_id, state)
+    except MFAStateUnavailableError as exc:
+        raise _unavailable(exc) from exc
 
 
 def _require_tenant(request: Request) -> TenantContext:
@@ -423,7 +524,7 @@ class DisableRequest(BaseModel):
 async def get_mfa_status(request: Request) -> dict[str, Any]:
     """Return whether MFA is enabled for this tenant."""
     tenant = _require_tenant(request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
     return {
         "enabled": state["enabled"],
         "has_pending_enrollment": state["pending_secret"] is not None,
@@ -436,7 +537,7 @@ async def begin_enrollment(request: Request) -> dict[str, Any]:
     """Start MFA enrollment — returns provisioning URI, raw secret, and optional QR SVG."""
     tenant = _require_tenant(request)
     await _check_rate_limit_global(tenant.tenant_id, "/auth/mfa/enroll", request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
 
     if state["enabled"]:
         raise HTTPException(
@@ -496,7 +597,7 @@ async def complete_enrollment(request: Request, body: VerifyRequest) -> dict[str
     """Complete MFA enrollment by verifying the first TOTP code."""
     tenant = _require_tenant(request)
     await _check_rate_limit_global(tenant.tenant_id, "/auth/mfa/verify-enrollment", request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
 
     if state["enabled"]:
         raise HTTPException(
@@ -527,7 +628,7 @@ async def complete_enrollment(request: Request, body: VerifyRequest) -> dict[str
     state["enabled"] = True
     state["recovery_codes_hashed"] = [_hash_recovery_code(c) for c in recovery_codes]
 
-    await _mfa_db_store.save(tenant.tenant_id, state)
+    await _save_state(tenant.tenant_id, state)
 
     return {
         "status": "enabled",
@@ -541,7 +642,7 @@ async def verify_mfa(request: Request, body: VerifyRequest) -> dict[str, Any]:
     """Verify a TOTP code (during login) or a one-time recovery code."""
     tenant = _require_tenant(request)
     await _check_rate_limit_global(tenant.tenant_id, "/auth/mfa/verify", request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
 
     if not state["enabled"]:
         raise HTTPException(
@@ -556,11 +657,22 @@ async def verify_mfa(request: Request, body: VerifyRequest) -> dict[str, Any]:
         hashed = _hash_recovery_code(code)
         if hashed in state["recovery_codes_hashed"]:
             state["recovery_codes_hashed"].remove(hashed)
-            await _mfa_db_store.save(tenant.tenant_id, state)
+            await _save_state(tenant.tenant_id, state)
+            # A recovery code is a full second factor: without a session token
+            # the enforcement middleware kept answering MFA_REQUIRED, so a user
+            # who lost their authenticator could never get back in.
+            try:
+                recovery_token = await issue_mfa_session(
+                    request.app, tenant.tenant_id, "recovery_code"
+                )
+            except MFAStateUnavailableError as exc:
+                raise _unavailable(exc) from exc
             return {
                 "status": "verified",
                 "method": "recovery_code",
                 "remaining_recovery_codes": len(state["recovery_codes_hashed"]),
+                "session_token": recovery_token,
+                "expires_in": _MFA_SESSION_TTL,
             }
         raise HTTPException(
             status_code=422,
@@ -579,18 +691,15 @@ async def verify_mfa(request: Request, body: VerifyRequest) -> dict[str, Any]:
         raise HTTPException(422, "TOTP code already used. Wait for next code.")
 
     # Issue a short-lived session token (1-hour TTL); frontend stores as X-MFA-Token
-    session_token = secrets.token_urlsafe(32)
-    _cleanup_mfa_sessions()
-    _mfa_verified_sessions[session_token] = {
-        "tenant_id": tenant.tenant_id,
-        "created_at": time.monotonic(),
-        "method": "totp",
-    }
+    try:
+        session_token = await issue_mfa_session(request.app, tenant.tenant_id, "totp")
+    except MFAStateUnavailableError as exc:
+        raise _unavailable(exc) from exc
     return {
         "status": "verified",
         "method": "totp",
         "session_token": session_token,
-        "expires_in": 3600,
+        "expires_in": _MFA_SESSION_TTL,
     }
 
 
@@ -599,7 +708,7 @@ async def disable_mfa(request: Request, body: DisableRequest) -> dict[str, Any]:
     """Disable MFA after verifying the current TOTP code."""
     tenant = _require_tenant(request)
     await _check_rate_limit_global(tenant.tenant_id, "/auth/mfa/disable", request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
 
     if not state["enabled"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled.")
@@ -619,7 +728,7 @@ async def disable_mfa(request: Request, body: DisableRequest) -> dict[str, Any]:
     state["recovery_codes_hashed"] = []
     state["pending_secret"] = None
 
-    await _mfa_db_store.save(tenant.tenant_id, state)
+    await _save_state(tenant.tenant_id, state)
 
     return {"status": "disabled", "message": "MFA has been disabled."}
 
@@ -628,7 +737,7 @@ async def disable_mfa(request: Request, body: DisableRequest) -> dict[str, Any]:
 async def get_recovery_codes_count(request: Request) -> dict[str, Any]:
     """Return count of remaining recovery codes (the codes themselves are never returned)."""
     tenant = _require_tenant(request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
     if not state["enabled"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled.")
     return {
@@ -642,7 +751,7 @@ async def regenerate_recovery_codes(request: Request, body: VerifyRequest) -> di
     """Regenerate recovery codes after verifying the current TOTP code."""
     tenant = _require_tenant(request)
     await _check_rate_limit_global(tenant.tenant_id, "/auth/mfa/regenerate", request)
-    state = await _mfa_db_store.get(tenant.tenant_id)
+    state = await _get_state(tenant.tenant_id)
 
     if not state["enabled"]:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MFA is not enabled.")
@@ -660,7 +769,7 @@ async def regenerate_recovery_codes(request: Request, body: VerifyRequest) -> di
     new_codes = _generate_recovery_codes()
     state["recovery_codes_hashed"] = [_hash_recovery_code(c) for c in new_codes]
 
-    await _mfa_db_store.save(tenant.tenant_id, state)
+    await _save_state(tenant.tenant_id, state)
 
     return {
         "recovery_codes": new_codes,

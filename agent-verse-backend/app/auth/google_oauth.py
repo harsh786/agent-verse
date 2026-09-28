@@ -86,7 +86,7 @@ async def google_login(request: Request) -> RedirectResponse:
     state = secrets.token_urlsafe(32)
     verifier, challenge = _generate_pkce()
     _redis = getattr(getattr(request, "app", None), "state", None)
-    _redis = getattr(_redis, "redis", None) if _redis else None
+    _redis = (getattr(_redis, "redis", None) or getattr(_redis, "_redis", None)) if _redis else None
     await _pkce_store_set(state, {"verifier": verifier, "created_at": time.time()}, redis=_redis)
 
     params = {
@@ -109,7 +109,7 @@ async def google_callback(
 ) -> JSONResponse:
     """Exchange auth code for tokens, upsert user, mint AgentVerse JWT."""
     _redis = getattr(getattr(request, "app", None), "state", None)
-    _redis = getattr(_redis, "redis", None) if _redis else None
+    _redis = (getattr(_redis, "redis", None) or getattr(_redis, "_redis", None)) if _redis else None
     pkce = await _pkce_store_pop(state, redis=_redis)
     if not pkce:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
@@ -153,46 +153,44 @@ async def google_callback(
 
     if not email:
         raise HTTPException(status_code=400, detail="Email not provided by Google")
+    # upsert_google_user links by email: an unverified address would let a
+    # Google account claim an existing AgentVerse user with that email.
+    if user_info.get("email_verified") is not True:
+        raise HTTPException(status_code=400, detail="Google account email is not verified")
 
-    # Upsert user in DB (if DB available)
-    user_id = None
-    tenant_id = None
     app_state = getattr(request.app, "state", None) if request else None
-
-    if app_state is not None:
-        db_factory = getattr(app_state, "db_session_factory", None)
-        if db_factory is not None:
-            try:
-                from app.auth.user_service import upsert_google_user
-
-                user_id, tenant_id = await upsert_google_user(
-                    db_factory=db_factory,
-                    email=email,
-                    google_sub=google_sub,
-                    name=name,
-                    picture_url=picture,
-                )
-            except Exception as exc:
-                logger.warning("google_user_upsert_failed", error=str(exc)[:100])
-
-    # Mint AgentVerse JWT
+    db_factory = getattr(app_state, "db_session_factory", None) if app_state else None
+    if db_factory is None:
+        raise HTTPException(status_code=503, detail="Google sign-in requires the database")
     try:
-        from app.auth.jwt_service import mint_jwt
+        from app.auth.user_service import upsert_google_user
 
-        jwt_token = mint_jwt(
-            user_id=user_id or google_sub,
+        user_id, tenant_id = await upsert_google_user(
+            db_factory=db_factory,
             email=email,
-            tenant_id=tenant_id or email.split("@")[0].replace(".", "_"),
+            google_sub=google_sub,
+            name=name,
+            picture_url=picture,
         )
-        return JSONResponse({"access_token": jwt_token, "token_type": "bearer"})
     except Exception as exc:
-        logger.warning("jwt_mint_failed", error=str(exc)[:80])
-        # Return basic info without JWT if JWT service not configured
-        return JSONResponse(
-            {
-                "user_id": user_id or google_sub,
-                "email": email,
-                "tenant_id": tenant_id,
-                "note": "JWT service not configured",
-            }
-        )
+        logger.warning("google_user_upsert_failed", error=str(exc)[:100])
+        raise HTTPException(status_code=503, detail="Could not record the Google user") from exc
+
+    # NOT IMPLEMENTED: AgentVerse has no session credential for a Google-
+    # authenticated user that TenantMiddleware accepts. The callback used to
+    # import a non-existent ``app.auth.jwt_service``, swallow the ImportError and
+    # answer 200 with a "note" (and a tenant_id derived from the email's local
+    # part when the upsert failed). Say so honestly instead of faking a login.
+    logger.info("google_login_verified_no_session", user_id=user_id, tenant_id=tenant_id)
+    return JSONResponse(
+        status_code=501,
+        content={
+            "error": "NOT_IMPLEMENTED",
+            "detail": (
+                "Google sign-in verified this account, but issuing an AgentVerse "
+                "session for it is not implemented. Use an API key or Keycloak SSO."
+            ),
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+        },
+    )

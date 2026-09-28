@@ -247,7 +247,8 @@ class AuditLog:
             where_clause = " AND ".join(conditions)
             sql = f"""
                 SELECT id, goal_id, tool_name, action_level, outcome,
-                       step_id, approver, note, created_at
+                       step_id, approver, note, created_at,
+                       ip_address, user_agent, api_key_id, request_id, connector_id
                 FROM audit_log
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -265,6 +266,8 @@ class AuditLog:
                 except ValueError:
                     level = ActionLevel.ALLOW_LOG
 
+                # The SOC2 attribution columns were written but never read back.
+                extra = list(row[9:14]) + [None] * (5 - len(row[9:14]))
                 events.append(
                     AuditEvent(
                         event_id=row[0],
@@ -275,6 +278,11 @@ class AuditLog:
                         step_id=row[5] or "",
                         approver=row[6],
                         note=row[7] or "",
+                        ip_address=extra[0],
+                        user_agent=extra[1],
+                        api_key_id=extra[2],
+                        request_id=extra[3],
+                        connector_id=extra[4],
                     )
                 )
 

@@ -57,8 +57,11 @@ def test_exempt_paths_includes_docs():
     assert "/docs" in EXEMPT_PATH_PREFIXES
 
 
-def test_exempt_paths_includes_auth():
-    assert "/auth/" in EXEMPT_PATH_PREFIXES
+def test_exempt_paths_include_only_public_auth_routes():
+    # "/auth/" as a whole skipped the IP allowlist for MFA/session routes.
+    assert "/auth/" not in EXEMPT_PATH_PREFIXES
+    assert "/auth/login" in EXEMPT_PATH_PREFIXES
+    assert not any("/auth/mfa".startswith(p) for p in EXEMPT_PATH_PREFIXES)
 
 
 def test_exempt_paths_includes_metrics():

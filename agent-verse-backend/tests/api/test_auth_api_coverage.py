@@ -24,6 +24,14 @@ def app():
     return create_app()
 
 
+@pytest.fixture(autouse=True)
+def _keycloak_client_secret(monkeypatch):
+    # There is no built-in dev client secret any more; configure one.
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "keycloak_client_secret", "kc-test-secret")
+
+
 # ── _default_redirect_uri ─────────────────────────────────────────────────────
 
 def test_default_redirect_uri_from_env():
@@ -194,8 +202,8 @@ async def test_exchange_token_failure(app):
 
 
 @pytest.mark.asyncio
-async def test_exchange_token_dev_fallback_secret(app):
-    """Dev mode uses fallback secret when keycloak_client_secret is empty."""
+async def test_exchange_token_dev_without_secret_is_503(app):
+    """No public dev fallback secret: an unconfigured secret is 503 in every env."""
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as mock:
         mock.post(_TOKEN_URL).mock(
             return_value=httpx.Response(
@@ -214,7 +222,7 @@ async def test_exchange_token_dev_fallback_secret(app):
                 mock_gs.return_value = s
                 r = await c.post("/auth/token?code=c&redirect_uri=http://cb")
 
-    assert r.status_code == 200
+    assert r.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -327,7 +335,9 @@ async def test_refresh_token_prod_no_secret():
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_dev_secret_fallback():
+async def test_refresh_token_dev_without_secret_is_503():
+    from fastapi import HTTPException
+
     from app.api.auth import refresh_token
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as mock:
@@ -349,9 +359,10 @@ async def test_refresh_token_dev_secret_fallback():
             s.keycloak_client_secret = ""
             s.environment = "development"
             mock_gs.return_value = s
-            result = await refresh_token(mock_request, refresh_token_value="tok")
+            with pytest.raises(HTTPException) as exc_info:
+                await refresh_token(mock_request, refresh_token_value="tok")
 
-    assert result["access_token"] == "at"
+    assert exc_info.value.status_code == 503
 
 
 # ── GET /auth/userinfo — tested directly (route not in middleware bypass list) ─
@@ -469,16 +480,26 @@ async def test_userinfo_email_verified_defaults_false():
 # ── _check_auth_rate_limit ────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_rate_limit_no_redis_no_op():
-    """No Redis wired → allows all requests (no-op)."""
+async def test_rate_limit_no_redis_uses_local_window():
+    """No Redis wired → in-process window (it used to allow everything)."""
     from app.api.auth import _check_auth_rate_limit
 
     req = MagicMock()
     req.app.state._rate_limiter_redis = None
-    req.client.host = "127.0.0.1"
+    req.client.host = "198.51.100.77"
+    req.headers = {}
 
-    # Should not raise
-    await _check_auth_rate_limit(req)
+    from fastapi import HTTPException
+
+    from app.tenancy import ip_rate_limit
+
+    ip_rate_limit._local_windows.clear()
+    for _ in range(10):
+        await _check_auth_rate_limit(req)
+    with pytest.raises(HTTPException) as exc:
+        await _check_auth_rate_limit(req)
+    assert exc.value.status_code == 429
+    ip_rate_limit._local_windows.clear()
 
 
 @pytest.mark.asyncio
@@ -501,9 +522,8 @@ async def test_rate_limit_pipeline_under_limit():
 
 @pytest.mark.asyncio
 async def test_rate_limit_pipeline_over_limit():
-    """Pipeline count over 10: HTTPException is raised but caught by the outer
-    except clause (Redis error fallback), so the function returns None instead
-    of propagating the 429. This is the current code behavior."""
+    """Pipeline count over 10 → 429. (The limiter's own ``except Exception``
+    used to swallow the 429, so it never limited anything.)"""
     from app.api.auth import _check_auth_rate_limit
 
     mock_pipe = AsyncMock()
@@ -516,9 +536,11 @@ async def test_rate_limit_pipeline_over_limit():
     req.app.state._rate_limiter_redis = mock_redis
     req.client.host = "10.0.0.2"
 
-    # The HTTPException(429) is raised but caught by the outer except clause.
-    # The function should return without raising to the caller.
-    await _check_auth_rate_limit(req)  # no exception propagated
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        await _check_auth_rate_limit(req)
+    assert exc.value.status_code == 429
 
 
 @pytest.mark.asyncio

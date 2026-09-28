@@ -134,21 +134,35 @@ def extract_roles(payload: dict[str, Any]) -> list[str]:
 
 
 def map_roles_to_plan(roles: list[str]) -> str:
-    """Map Keycloak roles to AgentVerse plan tiers."""
-    if "admin" in roles:
-        return "enterprise"
-    if "operator" in roles:
-        return "professional"
-    if "viewer" in roles:
-        return "starter"
+    """Deprecated: the plan tier is NOT derived from IdP roles any more.
+
+    Mapping ``admin`` → enterprise let anyone holding a Keycloak realm role
+    self-grant a paid tier. The plan comes from the tenant record (billing).
+    Always returns ``"free"``, the tier a JIT-provisioned tenant starts on.
+    """
+    del roles
     return "free"
+
+
+def map_realm_roles(roles: list[str]) -> tuple[str, ...]:
+    """Map Keycloak realm roles to AgentVerse RBAC roles (least privilege).
+
+    Only the known RBAC roles pass through; a user with none of them is a
+    ``viewer``. The SSO TenantContext used to carry NO roles, so every write
+    was 403 (unless the legacy allow-all flag was on, which allowed everything).
+    """
+    from app.tenancy.rbac import VALID_ROLES
+
+    mapped = tuple(sorted({r for r in roles if r in VALID_ROLES}))
+    return mapped or ("viewer",)
 
 
 async def resolve_tenant_from_jwt(token: str, tenant_service: Any) -> Any | None:
     """Validate JWT and resolve/create a TenantContext from the claims.
 
-    Maps Keycloak users to AgentVerse tenants by email.
-    Creates a new tenant record on first login (JIT provisioning).
+    Maps Keycloak users to AgentVerse tenants by SSO subject (JIT-provisioning
+    on first login). Returns ``None`` for an invalid token; a tenant-store error
+    propagates (the middleware treats it as unauthenticated).
     """
     from app.tenancy.context import PlanTier, TenantContext
 
@@ -161,28 +175,25 @@ async def resolve_tenant_from_jwt(token: str, tenant_service: Any) -> Any | None
     sub: str = payload.get("sub", "")
     email: str = payload.get("email", "") or payload.get("preferred_username", sub)
     name: str = payload.get("name", "") or email.split("@")[0]
-    roles = extract_roles(payload)
-    plan_str = map_roles_to_plan(roles)
+    roles = map_realm_roles(extract_roles(payload))
 
     if not sub:
         return None
 
-    # Look up or provision tenant from email/sub
-    tenant_id = await _get_or_provision_tenant(
-        sub=sub, email=email, name=name, plan=plan_str, tenant_service=tenant_service
+    tenant = await _get_or_provision_tenant(
+        sub=sub, email=email, name=name, tenant_service=tenant_service
     )
-
-    if not tenant_id:
+    if tenant is None:
         return None
 
     try:
-        plan = PlanTier(plan_str)
+        plan = PlanTier(str(tenant.get("plan") or "free"))
     except ValueError:
         plan = PlanTier.FREE
 
     # Look up the real DB key record so api_key_id is a genuine persisted key,
     # not the ephemeral ghost "sso:{sub[:16]}" string.
-    real_key_id = f"sso:{sub[:16]}"  # safe fallback
+    real_key_id = str(tenant.get("api_key_id") or f"sso:{sub[:16]}")
     try:
         key_record = await tenant_service.get_key_by_sso_sub(sso_sub=sub)
         if key_record and key_record.get("key_id"):
@@ -191,29 +202,33 @@ async def resolve_tenant_from_jwt(token: str, tenant_service: Any) -> Any | None
         logger.debug("sso_key_lookup_failed", error=str(exc))
 
     return TenantContext(
-        tenant_id=tenant_id,
+        tenant_id=str(tenant["tenant_id"]),
         plan=plan,
         api_key_id=real_key_id,
+        roles=roles,
     )
 
 
 async def _get_or_provision_tenant(
-    sub: str, email: str, name: str, plan: str, tenant_service: Any
-) -> str | None:
-    """Get existing tenant by SSO subject, or create one (JIT provisioning)."""
-    try:
-        # Try to find existing tenant by sso_sub
-        existing = await tenant_service.get_tenant_by_sso_sub(sso_sub=sub)
-        if existing:
-            return str(existing["tenant_id"])
+    sub: str, email: str, name: str, tenant_service: Any
+) -> dict[str, Any] | None:
+    """Get the tenant owned by this SSO subject, or JIT-provision one.
 
-        # JIT provision: create tenant for this SSO user on first login
+    A lookup error propagates: treating it as "not found" provisioned a second
+    tenant for an existing user on any DB blip. An e-mail that already belongs
+    to a (non-SSO) tenant is refused — never linked by e-mail.
+    """
+    from app.core.errors import ConflictError
+
+    existing = await tenant_service.get_tenant_by_sso_sub(sso_sub=sub)
+    if existing:
+        return dict(existing)
+    try:
         new_tenant = await tenant_service.create_tenant_from_sso(
-            sso_sub=sub, email=email, name=name or email, plan=plan
+            sso_sub=sub, email=email, name=name or email
         )
-        if new_tenant:
-            logger.info("sso_tenant_provisioned", email=email, plan=plan)
-            return str(new_tenant["tenant_id"])
-    except Exception as exc:
-        logger.warning("sso_tenant_lookup_failed", error=str(exc), sub=sub[:16])
-    return None
+    except ConflictError:
+        logger.warning("sso_tenant_email_conflict", sub=sub[:16])
+        return None
+    logger.info("sso_tenant_provisioned", tenant_id=new_tenant.get("tenant_id"))
+    return dict(new_tenant)

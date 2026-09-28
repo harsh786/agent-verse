@@ -502,13 +502,13 @@ async def _ws_auth(ws: WebSocket) -> str | None:
     """Authenticate the WebSocket from headers / the av.v1 subprotocol only.
 
     Delegates to :func:`app.tenancy.ws_auth.resolve_ws_tenant` with
-    ``allow_query_key=False``. This used to (a) read the key from the URL query
+    headers / subprotocol credentials only. This used to (a) read the key from the URL query
     string and (b) when no ``_tenant_key_resolver`` was wired, return the raw key
     AS the tenant id — any string authenticated as "a tenant".
     """
     from app.tenancy.ws_auth import resolve_ws_tenant
 
-    tenant_ctx = await resolve_ws_tenant(ws, allow_query_key=False)
+    tenant_ctx = await resolve_ws_tenant(ws, write=True)
     if tenant_ctx is None:
         return None
     tenant_id = getattr(tenant_ctx, "tenant_id", None) or getattr(tenant_ctx, "id", None)

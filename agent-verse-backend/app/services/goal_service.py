@@ -391,9 +391,15 @@ async def compliance_autonomy_ceiling(app_state: Any, *, tenant_id: str) -> str:
     ``supervised`` while every agent kept running at whatever its own config
     said.
 
-    Never raises: if the store is missing or errors, this reports no ceiling, so
-    compliance lookup can never break goal submission.
+    Never raises, and fails CLOSED: a lookup error, or an app that has no
+    compliance store wired, reports ``supervised`` (the strictest bundle
+    ceiling). A missing store used to report ``fully-autonomous``, silently
+    dropping e.g. HIPAA's supervised limit. Only a bare service with no app at
+    all (``app_state is None``: unit tests / scripts, where no tenant can have
+    enabled a bundle) reports no ceiling.
     """
+    if app_state is None:
+        return "fully-autonomous"
     # ``app_state`` is the FastAPI *app* on GoalService (see self._app_state) but
     # ``app.state`` at most other call sites; normalise like the cost-controller
     # lookup above rather than silently reading an attribute the app object does
@@ -409,7 +415,8 @@ async def compliance_autonomy_ceiling(app_state: Any, *, tenant_id: str) -> str:
 
     store = getattr(resolved, "compliance_bundle_store", None)
     if store is None:
-        return "fully-autonomous"
+        _svc_logger.warning("compliance_bundle_store_missing_fail_closed", tenant_id=tenant_id)
+        return "supervised"
     try:
         from app.governance.compliance_bundles import effective_max_autonomy_for
 

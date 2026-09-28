@@ -3104,7 +3104,8 @@ async def org_mcp_websocket(
     # only from a verified API key, and the org must belong to that tenant.
     from app.tenancy.ws_auth import resolve_ws_tenant
 
-    tenant_ctx = await resolve_ws_tenant(websocket, allow_query_key=True)
+    # write=True: this socket can start missions (needs a role that may write).
+    tenant_ctx = await resolve_ws_tenant(websocket, write=True)
     if tenant_ctx is None:
         await websocket.close(code=4401, reason="Unauthorized")
         return

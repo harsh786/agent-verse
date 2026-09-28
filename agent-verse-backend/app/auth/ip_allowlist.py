@@ -15,17 +15,27 @@ import json
 from typing import Any
 
 
-class IPAllowlistCache:
-    """Redis-backed CIDR allowlist cache with 60-second TTL.
+class IPAllowlistUnavailableError(Exception):
+    """The tenant's allowlist could not be read (DB error).
 
-    Falls back to a DB query on cache miss.  If neither Redis nor DB is
-    available the method returns an empty list (fail-open).
+    Raised instead of returning ``[]``: an empty list means "no allowlist", so
+    swallowing a DB error used to turn every configured allowlist off for the
+    duration of the outage (fail-open). Callers decide how to fail closed.
+    """
+
+
+class IPAllowlistCache:
+    """CIDR allowlist lookup: Redis cache (60-second TTL) over the DB.
+
+    ``redis`` may be ``None`` (no Redis wired): every lookup then goes to the
+    DB. A Redis error is treated as a cache miss. A DB error raises
+    :class:`IPAllowlistUnavailableError` — it never reads as "no allowlist".
     """
 
     TTL = 60  # seconds
     PREFIX = "ip_wl:"
 
-    def __init__(self, redis: Any) -> None:
+    def __init__(self, redis: Any | None) -> None:
         self._r = redis
 
     def _key(self, tenant_id: str) -> str:
@@ -39,13 +49,25 @@ class IPAllowlistCache:
         """Return active CIDR list for the tenant.
 
         Priority:
-          1. Redis cache (TTL=60 s)
+          1. Redis cache (TTL=60 s) when Redis is available
           2. DB query → populate Redis cache
-          3. Return [] if neither is available (fail-open)
+          3. ``[]`` only when there is no DB at all (in-memory mode: no
+             allowlist can have been stored)
+
+        Raises:
+            IPAllowlistUnavailableError: the DB lookup failed.
         """
-        cached = await self._r.get(self._key(tenant_id))
-        if cached is not None:
-            return json.loads(cached)
+        import logging
+
+        log = logging.getLogger(__name__)
+        if self._r is not None:
+            try:
+                cached = await self._r.get(self._key(tenant_id))
+            except Exception as exc:
+                log.warning("ip_allowlist_cache_read_failed tenant=%s: %s", tenant_id, exc)
+                cached = None
+            if cached is not None:
+                return list(json.loads(cached))
 
         if db_factory is None:
             return []
@@ -71,23 +93,21 @@ class IPAllowlistCache:
                     )
                 )
                 cidrs = [row[0] for row in result.fetchall()]
-
-            await self._r.setex(self._key(tenant_id), self.TTL, json.dumps(cidrs))
-            return cidrs
         except Exception as exc:
-            # Fail-open on an outage (documented trade-off: failing closed would
-            # lock out every tenant, including those without an allowlist, on
-            # any DB blip). Never silent.
-            import logging
+            log.warning("ip_allowlist_lookup_failed tenant=%s: %s", tenant_id, exc)
+            raise IPAllowlistUnavailableError(str(exc)) from exc
 
-            logging.getLogger(__name__).warning(
-                "ip_allowlist_lookup_failed_fail_open tenant=%s: %s", tenant_id, exc
-            )
-            return []
+        if self._r is not None:
+            try:
+                await self._r.setex(self._key(tenant_id), self.TTL, json.dumps(cidrs))
+            except Exception as exc:
+                log.warning("ip_allowlist_cache_write_failed tenant=%s: %s", tenant_id, exc)
+        return cidrs
 
     async def invalidate(self, tenant_id: str) -> None:
         """Remove the cached allowlist for a tenant."""
-        await self._r.delete(self._key(tenant_id))
+        if self._r is not None:
+            await self._r.delete(self._key(tenant_id))
 
 
 def is_ip_allowed(client_ip: str, cidrs: list[str]) -> bool:

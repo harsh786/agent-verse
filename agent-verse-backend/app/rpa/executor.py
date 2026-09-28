@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import contextlib
 import time
@@ -810,7 +809,7 @@ class RPAExecutor:
             if not url:
                 return RPAResult(success=False, error="url argument required")
             try:
-                text, title = await self._http_fetch_text(url)
+                text, title = await self._http_fetch_text(url, self._allowed_domains)
             except Exception as exc:
                 return RPAResult(success=False, error=str(exc))
             self._http_pages[session_id] = text
@@ -820,7 +819,7 @@ class RPAExecutor:
             url = arguments.get("url", "")
             if url:
                 try:
-                    text, _ = await self._http_fetch_text(url)
+                    text, _ = await self._http_fetch_text(url, self._allowed_domains)
                 except Exception as exc:
                     return RPAResult(success=False, error=str(exc))
                 self._http_pages[session_id] = text
@@ -837,7 +836,10 @@ class RPAExecutor:
             "(httpx fallback cannot capture screenshots)",
         )
 
-    async def _http_fetch_text(self, url: str) -> tuple[str, str]:
+    @staticmethod
+    async def _http_fetch_text(
+        url: str, allowed_domains: list[str] | None = None
+    ) -> tuple[str, str]:
         """Fetch ``url`` and return ``(cleaned_text, title)`` — no ``raise_for_status``.
 
         Error responses still carry a body; we surface whatever text is present so
@@ -849,27 +851,21 @@ class RPAExecutor:
         """
         import re
 
-        import httpx
+        from app.net.ssrf_guard import public_async_client, request_public
 
-        from app.net.ssrf_guard import SSRFError, assert_public_url
-
-        max_redirects = 5
-        current = url
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
-            for _hop in range(max_redirects + 1):
-                await asyncio.to_thread(
-                    assert_public_url,
-                    current,
-                    allowed_domains=self._allowed_domains,
-                    context="rpa_http_fallback",
-                )
-                resp = await client.get(current, headers={"User-Agent": "AgentVerse-RPA/1.0"})
-                location = resp.headers.get("location", "") if resp.is_redirect else ""
-                if not location:
-                    break
-                current = str(resp.url.join(location))
-            else:
-                raise SSRFError(f"rpa_http_fallback: too many redirects (>{max_redirects})")
+        # Was follow_redirects=True after a single up-front check: a public URL
+        # could 302 to 169.254.169.254 / localhost and the redirect was fetched.
+        # Every hop is now re-validated and each connection pinned to the
+        # validated IP (no DNS-rebinding window).
+        async with public_async_client(timeout=30.0, allowed_domains=allowed_domains) as client:
+            resp = await request_public(
+                client,
+                "GET",
+                url,
+                context="rpa_http_fetch",
+                allowed_domains=allowed_domains,
+                headers={"User-Agent": "AgentVerse-RPA/1.0"},
+            )
         raw = resp.text
         title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
         title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else ""

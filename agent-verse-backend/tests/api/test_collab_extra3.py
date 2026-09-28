@@ -969,12 +969,12 @@ async def test_resolve_ws_tenant_no_resolver_no_svc() -> None:
     ws.app = MagicMock()
     ws.app.state = EmptyState()  # No _tenant_key_resolver, no tenant_service
 
-    result = await _resolve_ws_tenant(ws)
+    result = await _resolve_ws_tenant(ws, required_scope="collab:read", write=False)
     assert result is None  # Should return None when both are absent
     """Lines 242-245: _resolve_ws_tenant uses tenant_service when no key_resolver."""
     from app.api.collab import _resolve_ws_tenant
 
-    svc = MagicMock()
+    svc = MagicMock(spec=["resolve_api_key"])  # no _db: no allowlist store to consult
     svc.resolve_api_key = AsyncMock(return_value=_T_A)
 
     app_state = MagicMock(spec=[])  # Spec=[] means no attrs by default
@@ -983,11 +983,14 @@ async def test_resolve_ws_tenant_no_resolver_no_svc() -> None:
 
     ws2 = MagicMock()
     ws2.headers = MagicMock()
-    ws2.headers.get = MagicMock(side_effect=lambda k, d="": "test-key" if k == "X-API-Key" else "")
+    # Starlette headers are case-insensitive; the shared authenticator reads lower-case.
+    ws2.headers.get = MagicMock(
+        side_effect=lambda k, d="": "test-key" if k.lower() == "x-api-key" else ""
+    )
     ws2.app = MagicMock()
     ws2.app.state = app_state
 
-    result = await _resolve_ws_tenant(ws2)
+    result = await _resolve_ws_tenant(ws2, required_scope="collab:read", write=False)
     # Should call tenant_service.resolve_api_key("test-key")
     svc.resolve_api_key.assert_awaited_once_with("test-key")
     assert result == _T_A
@@ -1003,7 +1006,7 @@ async def test_resolve_ws_tenant_no_key() -> None:
     ws.headers.get = MagicMock(return_value="")  # No key
     ws.app = MagicMock()
 
-    result = await _resolve_ws_tenant(ws)
+    result = await _resolve_ws_tenant(ws, required_scope="collab:read", write=False)
     assert result is None
 
 
@@ -1028,7 +1031,7 @@ async def test_resolve_ws_tenant_invalid_base64() -> None:
     }.get(k, d))
     ws.app = MagicMock()
 
-    result = await _resolve_ws_tenant(ws)
+    result = await _resolve_ws_tenant(ws, required_scope="collab:read", write=False)
     assert result is None  # UnicodeDecodeError caught → return None
 
 

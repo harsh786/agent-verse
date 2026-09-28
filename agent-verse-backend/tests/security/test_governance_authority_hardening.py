@@ -38,7 +38,13 @@ def test_only_admins_can_mint_or_revoke_grants_and_grantor_is_the_caller() -> No
     assert viewer.post("/grants", json=body, headers={"X-API-Key": "key"}).status_code == 403
     assert viewer.post("/grants/g1/revoke", headers={"X-API-Key": "key"}).status_code == 403
 
-    admin = _client(router, _ctx(("admin",), key="admin-key"), grant_store=store)
+    from app.api.agents import AgentStore
+
+    agents = AgentStore()
+    agents._data[(_ctx(("admin",)).tenant_id, "a1")] = {"agent_id": "a1"}
+    admin = _client(
+        router, _ctx(("admin",), key="admin-key"), grant_store=store, agent_store=agents
+    )
     r = admin.post("/grants", json=body, headers={"X-API-Key": "key"})
     assert r.status_code == 201, r.text
     assert r.json()["grantor"] == "key:admin-key"

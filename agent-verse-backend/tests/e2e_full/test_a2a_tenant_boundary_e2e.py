@@ -128,10 +128,18 @@ async def test_signature_is_verified_when_a_secret_is_configured(
     )
     assert bad.status_code == 401
 
-    sig = hmac.new(b"s3cret-for-tests", body, hashlib.sha256).hexdigest()
+    import time
+
+    # Timestamped signature over f"{ts}." + body (body-only HMAC was replayable).
+    ts = str(int(time.time()))
+    sig = hmac.new(b"s3cret-for-tests", f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
     good = await tenant_client.post(
         "/a2a/tasks",
         content=body,
-        headers={"content-type": "application/json", "X-A2A-Signature": f"sha256={sig}"},
+        headers={
+            "content-type": "application/json",
+            "X-A2A-Signature": f"sha256={sig}",
+            "X-A2A-Timestamp": ts,
+        },
     )
     assert good.status_code == 202, good.text

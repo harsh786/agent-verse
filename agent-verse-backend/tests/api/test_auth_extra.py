@@ -61,9 +61,7 @@ class TestCheckAuthRateLimit:
 
     @pytest.mark.asyncio
     async def test_with_redis_over_limit_returns_429(self):
-        """The rate limit HTTPException is caught by the outer except block and
-        logged as an error, allowing the request through. This is the actual
-        behavior of the auth rate limiter."""
+        """Over the limit → 429 (it used to be swallowed by the Redis except)."""
         mock_pipe = AsyncMock()
         mock_pipe.execute = AsyncMock(return_value=[None, None, 15, None])  # count=15 > 10
 
@@ -74,15 +72,15 @@ class TestCheckAuthRateLimit:
         request.client.host = "127.0.0.1"
         request.app.state._rate_limiter_redis = mock_redis
 
-        # HTTPException(429) is raised inside the try block but caught by the
-        # outer except → it gets swallowed and the function returns None
-        # (the request is allowed through as a side effect of swallowing)
-        result = await _check_auth_rate_limit(request)
-        assert result is None  # function always returns None
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            await _check_auth_rate_limit(request)
+        assert exc.value.status_code == 429
 
     @pytest.mark.asyncio
-    async def test_redis_error_is_swallowed(self):
-        """Redis error → allow request (availability over blocking)."""
+    async def test_redis_error_falls_back_to_local_window(self):
+        """Redis error → in-process window (not an unlimited pass)."""
         mock_pipe = AsyncMock()
         mock_pipe.execute = AsyncMock(side_effect=ConnectionError("redis down"))
         mock_redis = MagicMock()
@@ -222,8 +220,8 @@ class TestExchangeTokenEndpoint:
             resp = client.post("/auth/token", params={"code": "bad_code"})
         assert resp.status_code in (401, 500)
 
-    def test_token_exchange_dev_fallback_no_secret(self):
-        """In dev mode without keycloak_client_secret, uses fallback secret."""
+    def test_token_exchange_dev_without_secret_is_503(self):
+        """No public dev fallback secret: an unconfigured secret is a 503."""
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
 
@@ -247,7 +245,8 @@ class TestExchangeTokenEndpoint:
             mock_http.return_value = mock_http_client
 
             resp = client.post("/auth/token", params={"code": "c"})
-        assert resp.status_code in (200, 500)
+        assert resp.status_code == 503
+        mock_http_client.post.assert_not_called()
 
 
 class TestRefreshTokenEndpoint:

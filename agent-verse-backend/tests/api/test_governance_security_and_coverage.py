@@ -1100,7 +1100,7 @@ def test_list_approval_history_no_db_returns_empty() -> None:
     assert resp.json() == []
 
 
-def test_list_approval_history_db_exception_falls_back_to_gate_history_only() -> None:
+def test_list_approval_history_db_exception_is_503_not_a_partial_list() -> None:
     now = _dt.datetime(2026, 1, 1, tzinfo=_dt.UTC)
     gate_row = {
         "id": "gate-only", "org_id": "org-1", "mission_id": None,
@@ -1122,10 +1122,9 @@ def test_list_approval_history_db_exception_falls_back_to_gate_history_only() ->
             _make_app(db_session_factory=lambda: session), raise_server_exceptions=False
         )
         resp = client.get("/governance/approvals/history", headers=_h())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body) == 1
-    assert body[0]["request_id"] == "gate-only"
+    # A partial list (gate history only, approval_requests silently dropped) looked
+    # like "nothing was ever resolved"; an unreadable history is a 503.
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

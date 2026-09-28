@@ -79,9 +79,14 @@ _BYPASS_PREFIXES = (
     "/auth/callback",  # SSO OAuth2 callback
     "/auth/config",  # frontend SSO config discovery
     "/auth/token",  # authorization code exchange
+    "/auth/refresh",  # refresh-token exchange: the (expired) access token cannot auth it
+    "/auth/userinfo",  # validates the Keycloak JWT itself (401 on an invalid one)
     "/integrations/",  # integration webhooks use their own auth (Slack sig, Zapier secret)
     "/billing/webhook",  # Razorpay webhook — authenticated by HMAC signature, not API key
     "/wf-hooks/",  # workflow webhook triggers — authenticated by the signed token in the path
+    "/enterprise/saml/acs/",  # SAML ACS: the IdP's signed assertion is the auth
+    # (validated per tenant in app.api.enterprise.saml_acs); an IdP POST never
+    # carries a tenant API key, so this was unreachable.
     "/scim/v2",  # SCIM 2.0 provisioning — IdPs send their own hashed bearer token
     # (require_scim_auth checks it against scim_tokens), never a tenant API key.
     # Without this bypass every SCIM request from an IdP (Okta, Azure AD, ...)
@@ -118,27 +123,41 @@ def _key_scope_denial(request: Request, ctx: TenantContext) -> JSONResponse | No
 
     A key created with explicit scopes may use only those scopes. Its roles are
     still enforced by ScopeEnforcementMiddleware (which runs after this one), so
-    the effective permission is the intersection of the two. Previously the key's
-    scopes never reached ``TenantContext`` and a key minted with
-    ``scopes=["goals:read"]`` had its role's full rights. Keys without explicit
-    scopes (``ctx.scopes == ()``) are unaffected; endpoints with no registered
-    scope and the scope-exempt paths follow ScopeEnforcementMiddleware's rules.
+    the effective permission is the intersection of the two. Keys without
+    explicit scopes (``ctx.scopes == ()``) are unaffected.
+
+    An endpoint with NO registered scope is denied to a scoped key (fail
+    closed): it used to be allowed, so a key minted with ``scopes=["goals:read"]``
+    could call every unregistered route (/grants, /trust, /billing, /skills, ...)
+    with its role's full rights. Only the scope-neutral session endpoints
+    (``SCOPE_NEUTRAL_ENDPOINTS``) stay open to every key.
     """
     if not ctx.scopes:
         return None
-    from app.auth.scope_enforcement import EXEMPT_PATH_PREFIXES, ScopeEnforcementMiddleware
+    from app.auth.scope_enforcement import (
+        EXEMPT_PATH_PREFIXES,
+        SCOPE_NEUTRAL_ENDPOINTS,
+        ScopeEnforcementMiddleware,
+    )
 
     path = request.url.path
     if any(path.startswith(p) for p in EXEMPT_PATH_PREFIXES):
         return None
-    required = ScopeEnforcementMiddleware._required_scope(request.method, path)
-    if required is None or required in ctx.scopes:
+    if (request.method, path.rstrip("/") or "/") in SCOPE_NEUTRAL_ENDPOINTS:
         return None
+    required = ScopeEnforcementMiddleware._required_scope(request.method, path)
+    if required is not None and required in ctx.scopes:
+        return None
+    detail = (
+        f"Insufficient scope: requires {required} (not granted to this API key)"
+        if required is not None
+        else "This endpoint has no scope that an API key with explicit scopes can hold."
+    )
     return JSONResponse(
         status_code=403,
         content={
             "error": "INSUFFICIENT_SCOPE",
-            "detail": f"Insufficient scope: requires {required} (not granted to this API key)",
+            "detail": detail,
             "required_scope": required,
             "granted_scopes": sorted(ctx.scopes),
         },
@@ -245,8 +264,59 @@ async def _try_resolve_sso(request: Request) -> TenantContext | None:
 
     try:
         return await resolve_tenant_from_jwt(token, tenant_service)
-    except Exception:
-        return None  # Fall through to API key auth
+    except Exception as exc:
+        # Unauthenticated (fail closed: the JWT then fails API-key resolution
+        # → 401), but never silently — a tenant-store outage looked like a bad token.
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning("sso_resolution_failed", error=str(exc)[:200])
+        return None
+
+
+# Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token
+# (the second factor itself). Without this, enforcement 401'd /auth/mfa/verify
+# too, so no tenant with MFA enabled could ever obtain a token.
+_MFA_EXEMPT_ENDPOINTS = frozenset({("POST", "/auth/mfa/verify"), ("GET", "/auth/mfa/status")})
+
+
+def _mfa_exempt(request: Request) -> bool:
+    return (request.method, request.url.path.rstrip("/")) in _MFA_EXEMPT_ENDPOINTS
+
+
+def _mfa_error(code: str, message: str, status_code: int = 401) -> JSONResponse:
+    return JSONResponse(
+        content={"error": {"code": code, "message": message, "retryable": status_code == 503}},
+        status_code=status_code,
+    )
+
+
+async def _mfa_denial(request: Request, tenant_id: str) -> JSONResponse | None:
+    """Enforce the X-MFA-Token for a tenant with MFA enabled; fail closed.
+
+    MFA state or session storage that cannot be read is a 503 — never "MFA not
+    enabled" (the store used to fall back to an empty cache entry on a DB
+    error, silently switching enforcement off).
+    """
+    from app.api.mfa import MFAStateUnavailableError, _mfa_db_store, check_mfa_session
+
+    required = "MFA verification required. Include X-MFA-Token header."
+    try:
+        mfa_state = await _mfa_db_store.get(tenant_id)
+        if not mfa_state.get("enabled"):
+            return None
+        mfa_token = request.headers.get("X-MFA-Token", "")
+        if not mfa_token:
+            return _mfa_error("MFA_REQUIRED", required)
+        verdict = await check_mfa_session(request.app, mfa_token, tenant_id)
+    except MFAStateUnavailableError:
+        return _mfa_error(
+            "MFA_UNAVAILABLE", "MFA state is temporarily unavailable; retry shortly.", 503
+        )
+    if verdict == "expired":
+        return _mfa_error("MFA_SESSION_EXPIRED", "MFA session expired. Please re-authenticate.")
+    if verdict != "valid":
+        return _mfa_error("MFA_REQUIRED", required)
+    return None
 
 
 def _auth_error_response() -> JSONResponse:
@@ -344,56 +414,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
         from app.core.config import get_settings as _get_settings
 
         _settings = _get_settings()
-        if _settings.mfa_enforcement_enabled:
-            import time as _mfa_time
-
-            try:
-                from app.api.mfa import _mfa_db_store, _mfa_verified_sessions
-
-                mfa_state = await _mfa_db_store.get(tenant_ctx.tenant_id)
-                if mfa_state.get("enabled"):
-                    mfa_token = request.headers.get("X-MFA-Token", "")
-                    if not mfa_token:
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_REQUIRED",
-                                    "message": (
-                                        "MFA verification required. Include X-MFA-Token header."
-                                    ),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-                    session_valid = _mfa_verified_sessions.get(mfa_token)
-                    if not session_valid or session_valid.get("tenant_id") != tenant_ctx.tenant_id:
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_REQUIRED",
-                                    "message": (
-                                        "MFA verification required. Include X-MFA-Token header."
-                                    ),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-                    if _mfa_time.monotonic() - session_valid.get("created_at", 0) > 3600:
-                        del _mfa_verified_sessions[mfa_token]
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_SESSION_EXPIRED",
-                                    "message": ("MFA session expired. Please re-authenticate."),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-            except ImportError:
-                pass  # MFA module not available, skip enforcement
+        if _settings.mfa_enforcement_enabled and not _mfa_exempt(request):
+            mfa_denied = await _mfa_denial(request, tenant_ctx.tenant_id)
+            if mfa_denied is not None:
+                return mfa_denied
 
         # ── Rate limiting (check BEFORE processing; headers added AFTER) ──────
         rl_limit: int | None = None
@@ -418,14 +442,28 @@ class TenantMiddleware(BaseHTTPMiddleware):
             # One bucket per TENANT. This was keyed by the request path, so every
             # distinct URL (/goals/1, /goals/2, ...) got its own fresh plan-sized
             # bucket and a tenant could multiply its quota without bound.
-            allowed, remaining, reset_at = await limiter.check_and_record(
-                _TENANT_RATE_BUCKET, limit=rl_limit
-            )
-            rl_remaining = remaining
-            rl_reset = reset_at
+            try:
+                allowed, remaining, reset_at = await limiter.check_and_record(
+                    _TENANT_RATE_BUCKET, limit=rl_limit
+                )
+            except Exception as exc:
+                # Redis outage: the limiter's own fallback uses the same Redis,
+                # so this used to surface as a 500 on every request. Enforce the
+                # conservative in-process window instead (never fail open).
+                import time as _rl_time
 
-            if not allowed:
-                return _rate_limit_response(reset_at)
+                from app.observability.logging import get_logger as _rl_log
+
+                _rl_log(__name__).warning("rate_limit_redis_unavailable", error=str(exc)[:200])
+                if not await _check_rate_limit_with_fallback(
+                    tenant_ctx.tenant_id, None, rpm_limit=rl_limit
+                ):
+                    return _rate_limit_response(_rl_time.time() + 60)
+            else:
+                rl_remaining = remaining
+                rl_reset = reset_at
+                if not allowed:
+                    return _rate_limit_response(reset_at)
         else:
             # H4: No Redis — use in-process fallback instead of failing open
             import time as _time
@@ -477,7 +515,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self'; "
-            "connect-src 'self' ws: wss:; "
+            # 'self' covers same-origin ws:/wss: (CSP Level 3). The bare
+            # "ws: wss:" schemes allowed a page to open a socket to ANY host.
+            "connect-src 'self'; "
             "frame-ancestors 'none'"
         )
         return response

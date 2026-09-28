@@ -1044,7 +1044,10 @@ async def civilization_ws(websocket: WebSocket, civ_id: str) -> None:
     """
     from app.tenancy.ws_auth import resolve_ws_tenant
 
-    tenant_ctx = await resolve_ws_tenant(websocket, allow_query_key=True)
+    # Read-only graph feed: a short-lived ?token= stream token is enough.
+    tenant_ctx = await resolve_ws_tenant(
+        websocket, required_scope="agents:read", allow_stream_token=True
+    )
     if tenant_ctx is None:
         await websocket.close(code=4401, reason="Unauthorized")
         return

@@ -33,19 +33,20 @@ def test_extract_roles_empty_when_missing():
     assert extract_roles({"realm_access": {}}) == []
 
 
-def test_map_roles_admin_to_enterprise():
+def test_map_roles_never_grants_a_paid_plan():
+    """Realm roles used to map to plans (admin -> enterprise): a self-granted tier."""
     from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["admin"]) == "enterprise"
+
+    for roles in (["admin"], ["operator"], ["viewer"], ["admin", "viewer"]):
+        assert map_roles_to_plan(roles) == "free"
 
 
-def test_map_roles_operator_to_professional():
-    from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["operator"]) == "professional"
+def test_map_realm_roles_keeps_only_rbac_roles_and_defaults_to_viewer():
+    from app.auth.keycloak import map_realm_roles
 
-
-def test_map_roles_viewer_to_starter():
-    from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["viewer"]) == "starter"
+    assert map_realm_roles(["admin", "offline_access"]) == ("admin",)
+    assert map_realm_roles(["uma_authorization"]) == ("viewer",)
+    assert map_realm_roles([]) == ("viewer",)
 
 
 def test_map_roles_unknown_to_free():

@@ -67,6 +67,33 @@ class GovernancePolicy:
     tenant_id: str = ""
 
 
+def _time_windows_by_name(
+    version_rows: Any,
+) -> dict[str, tuple[tuple[int, int] | None, list[int] | None]]:
+    """``{policy name: (allowed_hours_utc, allowed_weekdays)}`` from version rules."""
+    import json
+
+    out: dict[str, tuple[tuple[int, int] | None, list[int] | None]] = {}
+    for row in version_rows or ():
+        try:
+            name, rules = row[0], row[1]
+            if isinstance(rules, str):
+                rules = json.loads(rules)
+            rule = rules[0] if isinstance(rules, list) and rules else {}
+            hours_raw = rule.get("allowed_hours_utc") if isinstance(rule, dict) else None
+            days_raw = rule.get("allowed_weekdays") if isinstance(rule, dict) else None
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+        hours = (
+            (int(hours_raw[0]), int(hours_raw[1]))
+            if isinstance(hours_raw, list | tuple) and len(hours_raw) == 2
+            else None
+        )
+        days = [int(d) for d in days_raw] if isinstance(days_raw, list) else None
+        out[str(name)] = (hours, days)
+    return out
+
+
 class PolicyEngine:
     """Evaluates tool calls against a set of policies.
 
@@ -216,10 +243,27 @@ class PolicyEngine:
                             {"tid": tenant_id},
                         )
                     ).scalar_one_or_none()
+                    # Time windows live in the policy's latest version snapshot
+                    # (governance_policies has no columns for them): without
+                    # this a reload — i.e. every other replica, and this one
+                    # after a restart — dropped allowed_hours_utc /
+                    # allowed_weekdays and enforced the policy around the clock.
+                    version_rows = (
+                        await session.execute(
+                            text(
+                                "SELECT DISTINCT ON (name) name, rules FROM policy_versions "
+                                "WHERE tenant_id=:tid AND deleted_at IS NULL "
+                                "ORDER BY name, version_number DESC"
+                            ),
+                            {"tid": tenant_id},
+                        )
+                    ).fetchall()
+                windows = _time_windows_by_name(version_rows)
                 self._policies = [
                     policy for policy in self._policies if policy.tenant_id != tenant_id
                 ]
                 for name, action, tools_pattern, policy_tenant_id in rows:
+                    hours, weekdays = windows.get(name, (None, None))
                     self._policies.append(
                         Policy(
                             name=name,
@@ -230,6 +274,8 @@ class PolicyEngine:
                             tenant_id=policy_tenant_id or tenant_id,
                             action=action,
                             tool_pattern=tools_pattern or "*",
+                            allowed_hours_utc=hours,
+                            allowed_weekdays=weekdays,
                         )
                     )
                 if isinstance(settings_row, list):
@@ -272,9 +318,12 @@ class PolicyEngine:
 
                     for row in rows:
                         name, action, tools_pattern, pol_tenant_id = row
-                        denied_tools = [tools_pattern or ".*"] if action == "deny" else []
+                        # "*" not ".*": patterns are fnmatch globs, and ".*" only
+                        # matches names starting with "." — a pattern-less deny
+                        # policy reloaded as deny-NOTHING (fail-open).
+                        denied_tools = [tools_pattern or "*"] if action == "deny" else []
                         approval_tools = (
-                            [tools_pattern or ".*"] if action == "require_approval" else []
+                            [tools_pattern or "*"] if action == "require_approval" else []
                         )
                         p = Policy(
                             name=name,
@@ -283,7 +332,7 @@ class PolicyEngine:
                             approval_tools=approval_tools,
                             tenant_id=pol_tenant_id or "",
                             action=action,
-                            tool_pattern=tools_pattern or ".*",
+                            tool_pattern=tools_pattern or "*",
                         )
                         self._policies.append(p)
                 return len(rows)

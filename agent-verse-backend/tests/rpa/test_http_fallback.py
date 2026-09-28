@@ -34,7 +34,9 @@ def _mock_httpx(text: str) -> Any:
     ctx = AsyncMock()
     ctx.__aenter__ = AsyncMock(return_value=ctx)
     ctx.__aexit__ = AsyncMock(return_value=False)
+    resp.is_redirect = False  # request_public follows redirects hop by hop
     ctx.get = AsyncMock(return_value=resp)
+    ctx.request = ctx.get
     client = MagicMock(return_value=ctx)
     return client
 
@@ -97,6 +99,7 @@ async def test_open_url_fetch_error_is_reported() -> None:
         ctx.__aenter__ = AsyncMock(return_value=ctx)
         ctx.__aexit__ = AsyncMock(return_value=False)
         ctx.get = AsyncMock(side_effect=RuntimeError("connect failed"))
+        ctx.request = ctx.get
         return ctx
 
     with patch("httpx.AsyncClient", _boom):

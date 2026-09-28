@@ -249,24 +249,39 @@ def test_audit_export_refuses_to_emit_an_empty_package_with_no_audit_source():
 
 
 def test_audit_export_returns_a_package_when_the_audit_log_is_wired():
-    class _AuditLog:
-        async def query(self, *, tenant_id, limit):
-            return {"events": [{"id": "e1", "action": "tool.call", "tenant_id": tenant_id}]}
+    """Uses the REAL AuditLog: the endpoint awaited a sync ``query(tenant_id=)``
+    the class does not have (it takes tenant_ctx), so it was always a 503."""
+    from app.governance.audit import AuditEvent, AuditLog
+    from app.governance.permissions import ActionLevel
 
+    audit = AuditLog()
+    audit.record(
+        AuditEvent(
+            goal_id="g1",
+            tool_name="jira_create",
+            action_level=ActionLevel.ALLOW_LOG,
+            outcome="success",
+            event_id="e1",
+            ip_address="203.0.113.5",
+        ),
+        tenant_ctx=_CTX,
+    )
     app = _make_app()
-    app.state.audit_log = _AuditLog()
+    app.state.audit_log = audit
     resp = TestClient(app).get("/trust/audit/export", headers=_HEADERS)
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["tenant_id"] == _CTX.tenant_id
     assert data["event_count"] == 1
     assert data["integrity_hash"]
-    assert data["events"][0]["id"] == "e1"
+    assert data["events"][0]["event_id"] == "e1"
+    assert data["events"][0]["action_level"] == "allow_log"
+    assert data["events"][0]["ip_address"] == "203.0.113.5"
 
 
 def test_audit_export_surfaces_a_failing_audit_query():
     class _BrokenAuditLog:
-        async def query(self, *, tenant_id, limit):
+        async def query_db(self, *, tenant_ctx, limit):
             raise RuntimeError("audit store down")
 
     app = _make_app()

@@ -165,6 +165,16 @@ _STATUS_BY_DB_VALUE = {
 }
 
 
+class HITLResolutionUnavailableError(Exception):
+    """The approval decision could not be written to the database.
+
+    Raised instead of reporting success: the resolution used to return ``True``
+    on a DB error (fail-open), so the caller answered 200 "approved" while the
+    ``approval_requests`` row stayed ``pending`` — the decision was lost on the
+    next restart / never seen by other replicas.
+    """
+
+
 class HITLGateway:
     """Async-capable HITL gateway with blocking wait and timeout escalation."""
 
@@ -276,8 +286,11 @@ class HITLGateway:
         cross-replica race instead of assuming its own decision took effect.
         When no DB is configured there is no cross-replica concern, so this
         returns ``True`` (matches the pre-existing in-memory-only behavior).
-        On a DB error it also returns ``True`` (fail-open) so a transient DB
-        hiccup doesn't newly block an approval that used to succeed.
+
+        Raises:
+            HITLResolutionUnavailableError: the DB write failed. (It used to
+                return ``True`` — fail-open — so a decision that was never
+                recorded was reported as taking effect.)
         """
         if self._db_session_factory is None:
             return True
@@ -310,7 +323,7 @@ class HITLGateway:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("hitl_db_resolve_failed", error=str(exc))
-            return True
+            raise HITLResolutionUnavailableError(str(exc)) from exc
 
     async def _db_read_status(self, request_id: str, tenant_id: str) -> str | None:
         """Read the DB-authoritative status for a request, or ``None`` if unavailable."""
@@ -356,9 +369,16 @@ class HITLGateway:
         (asyncio.Event or a fresh ``wait_for_approval`` call on this replica)
         observe the true, DB-arbitrated decision instead of a phantom one.
         """
-        won = await self._db_update_resolution(request_id, tenant_id, status, approver, note)
+        try:
+            won = await self._db_update_resolution(request_id, tenant_id, status, approver, note)
+        except HITLResolutionUnavailableError:
+            return  # logged by _db_update_resolution; the beat/restore path re-reads
         if won:
             return
+        await self._heal_from_db(request_id, tenant_id, status)
+
+    async def _heal_from_db(self, request_id: str, tenant_id: str, status: str) -> None:
+        """Apply the DB's real status locally after losing the resolution CAS."""
         real_status = await self._db_read_status(request_id, tenant_id)
         mapped = {
             "approved": ApprovalStatus.APPROVED,
@@ -423,8 +443,10 @@ class HITLGateway:
                 await session.execute(
                     text(
                         """INSERT INTO approval_requests
-                            (id, tenant_id, goal_id, action, risk_level, status, created_at)
-                            VALUES (:id, :tid, :gid, :action, :risk, 'pending', NOW())
+                            (id, tenant_id, goal_id, action, risk_level, status,
+                             created_at, expires_at)
+                            VALUES (:id, :tid, :gid, :action, :risk, 'pending',
+                                    NOW(), :expires_at)
                             ON CONFLICT (id) DO NOTHING"""
                     ),
                     {
@@ -433,6 +455,9 @@ class HITLGateway:
                         "gid": req.goal_id,
                         "action": req.action,
                         "risk": req.risk_level,
+                        # The beat expiry (expire_hitl_approvals) matches
+                        # ``expires_at < NOW()``; without it no row ever expired.
+                        "expires_at": req._expires_at_dt,
                     },
                 )
         except Exception as exc:
@@ -579,17 +604,21 @@ class HITLGateway:
                 sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
             ):
                 rows = (
-                    await session.execute(
-                        text(
-                            "SELECT id, tenant_id, goal_id, action, risk_level, status "
-                            "FROM approval_requests "
-                            "WHERE tenant_id = :tid AND status = 'pending'"
-                            f"{clause} "
-                            "ORDER BY created_at DESC LIMIT :lim"
-                        ),
-                        params,
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT id, tenant_id, goal_id, action, risk_level, status "
+                                "FROM approval_requests "
+                                "WHERE tenant_id = :tid AND status = 'pending'"
+                                f"{clause} "
+                                "ORDER BY created_at DESC LIMIT :lim"
+                            ),
+                            params,
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
         except Exception as exc:
             from app.observability.logging import get_logger
 
@@ -629,13 +658,29 @@ class HITLGateway:
         awaits the resolution write, so when it returns the decision is committed
         and visible fleet-wide.
         """
-        await self.aget_request(request_id, tenant_ctx=tenant_ctx)
-        ok = bool(self.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx))
-        if ok and self._db_session_factory is not None:
-            await self._reconcile_after_db_resolution(
-                request_id, tenant_ctx.tenant_id, "approved", approver, note
+        req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
+        if req is None or req.status != ApprovalStatus.PENDING:
+            return False
+        votes = req.approvals_received + (0 if approver in req.approvers_list else 1)
+        if self._db_session_factory is None or votes < req.required_approvers:
+            return bool(
+                self.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
             )
-        return ok
+        # This vote resolves the gate: win the DB compare-and-swap FIRST, then
+        # unblock the waiting agent. Approving locally first let the agent run
+        # the gated action even when the decision was never recorded (DB error
+        # → raises) or another replica had already rejected it (lost CAS).
+        won = await self._db_update_resolution(
+            request_id, tenant_ctx.tenant_id, "approved", approver, note
+        )
+        if not won:
+            await self._heal_from_db(request_id, tenant_ctx.tenant_id, "approved")
+            return False
+        return bool(
+            self._apply_approval(
+                req, approver=approver, note=note, tenant_ctx=tenant_ctx, persist=False
+            )
+        )
 
     async def request_approval_async(
         self,
@@ -679,14 +724,18 @@ class HITLGateway:
                 sqlalchemy_rls_context(session, tenant_id),
             ):
                 return (
-                    await session.execute(
-                        text(
-                            "SELECT id, tenant_id, goal_id, action, risk_level, status "
-                            "FROM approval_requests WHERE id = :id AND tenant_id = :tid"
-                        ),
-                        {"id": request_id, "tid": tenant_id},
+                    (
+                        await session.execute(
+                            text(
+                                "SELECT id, tenant_id, goal_id, action, risk_level, status "
+                                "FROM approval_requests WHERE id = :id AND tenant_id = :tid"
+                            ),
+                            {"id": request_id, "tid": tenant_id},
+                        )
                     )
-                ).mappings().first()
+                    .mappings()
+                    .first()
+                )
         except Exception as exc:
             from app.observability.logging import get_logger
 
@@ -736,7 +785,23 @@ class HITLGateway:
         the request in Postgres first (there is no startup warm-up of the cache).
         """
         req = self.get_request(request_id, tenant_ctx=tenant_ctx)
-        if req is None or req.status != ApprovalStatus.PENDING:
+        if req is None:
+            return _AwaitableBool(False)
+        return self._apply_approval(
+            req, approver=approver, note=note, tenant_ctx=tenant_ctx, persist=True
+        )
+
+    def _apply_approval(
+        self,
+        req: ApprovalRequest,
+        *,
+        approver: str,
+        note: str,
+        tenant_ctx: TenantContext,
+        persist: bool,
+    ) -> _AwaitableBool:
+        """Record one approver's vote locally (and, when *persist*, schedule the write)."""
+        if req.status != ApprovalStatus.PENDING:
             return _AwaitableBool(False)
         # Track approvers (prevent duplicate votes)
         if approver not in req.approvers_list:
@@ -751,9 +816,10 @@ class HITLGateway:
             # Durably record the resolution so it survives a restart (otherwise
             # startup_restore re-loads the still-'pending' DB row and the approved
             # gate reappears in the inbox).
-            self._schedule_db_resolution(
-                req.request_id, tenant_ctx.tenant_id, "approved", approver, note
-            )
+            if persist:
+                self._schedule_db_resolution(
+                    req.request_id, tenant_ctx.tenant_id, "approved", approver, note
+                )
             # C6.1: Publish cross-replica notification via Redis BLPOP
             if self._redis is not None:
                 try:

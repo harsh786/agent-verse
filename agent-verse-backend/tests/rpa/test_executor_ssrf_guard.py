@@ -57,7 +57,9 @@ def _ok_httpx(html: str = "<html><body>public</body></html>") -> Any:
         resp = AsyncMock(is_redirect=False)
         resp.text = html
         resp.raise_for_status = lambda: None
+        resp.is_redirect = False  # request_public follows redirects hop by hop
         ctx.get = AsyncMock(return_value=resp)
+        ctx.request = ctx.get
         return ctx
 
     return _factory
@@ -153,7 +155,11 @@ def _redirecting_httpx(location: str, calls: list[str]) -> Any:
                 )
             return httpx.Response(200, text="<html>internal</html>", request=httpx.Request("GET", url))
 
+        async def _request(method: str, url: str, **kw: Any) -> Any:
+            return await _get(url, **kw)
+
         ctx.get = _get
+        ctx.request = _request  # request_public drives the client via .request()
         return ctx
 
     return _factory

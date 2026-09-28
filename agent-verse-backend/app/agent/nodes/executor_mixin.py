@@ -173,6 +173,44 @@ class ExecutorMixin:
         except Exception:
             pass
 
+    async def _charge_grant_spend(
+        self, state: AgentState, tenant_ctx: TenantContext, cost_usd: float
+    ) -> None:
+        """Record *cost_usd* against the grant that authorised this goal's calls.
+
+        It used to go to the FIRST active capped grant, inside
+        ``suppress(Exception)``: spend under one grant exhausted an unrelated one
+        while the authorising grant's cap never bound, and a failed write was
+        silent. The tool gate records ``_authorizing_grant_id``; with a single
+        capped grant that one is charged; otherwise the spend is logged as
+        unattributed rather than charged to a guess.
+        """
+        try:
+            from datetime import UTC as _UTC
+            from datetime import datetime as _dt
+
+            grants = await self._grant_store.list_for_agent(
+                tenant_ctx.tenant_id, self._agent_id or ""
+            )
+            now = _dt.now(_UTC)
+            capped = [g for g in grants if g.is_active(now) and g.max_cost_usd is not None]
+            authorising = state.context.get("_authorizing_grant_id")
+            target = next(
+                (g for g in capped if g.grant_id == authorising),
+                capped[0] if len(capped) == 1 else None,
+            )
+            if target is not None:
+                await self._grant_store.record_spend(
+                    tenant_ctx.tenant_id, target.grant_id, cost_usd
+                )
+            elif capped:
+                self._logger.warning(
+                    "grant_spend_unattributed", capped_grants=len(capped), cost_usd=cost_usd
+                )
+        except Exception as exc:
+            # Never silent: an unrecorded spend means the cap cannot bind.
+            self._logger.warning("grant_spend_record_failed", error=str(exc)[:200])
+
     async def _agent_permission_gate(
         self,
         *,
@@ -211,15 +249,21 @@ class ExecutorMixin:
         if not rules:
             return None
         counts: dict[str, int] = state.context.setdefault("_agent_perm_calls", {})
-        level, _rule, reason = resolve_level(
+        level, rule, reason = resolve_level(
             rules,
             tool_name,
             scope_value=_extract_scope_value(step),
             goal_call_count=int(counts.get(tool_name, 0)),
         )
-        if level is None or level in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
-            if level is not None:
-                counts[tool_name] = int(counts.get(tool_name, 0)) + 1
+        if level is None:
+            return None
+        if level in (ActionLevel.ALLOW, ActionLevel.ALLOW_LOG):
+            daily_denial = await self._reserve_daily_permission_call(
+                tenant_ctx, agent_id, tool_name, rule
+            )
+            if daily_denial is not None:
+                return daily_denial
+            counts[tool_name] = int(counts.get(tool_name, 0)) + 1
             return None
         if level is ActionLevel.DENY:
             return f"denied by agent permission ({reason})"
@@ -240,9 +284,34 @@ class ExecutorMixin:
         )
         if final_status != ApprovalStatus.APPROVED:
             return f"agent permission approval {str(final_status).lower()}"
+        daily_denial = await self._reserve_daily_permission_call(
+            tenant_ctx, agent_id, tool_name, rule
+        )
+        if daily_denial is not None:
+            return daily_denial
         counts[tool_name] = int(counts.get(tool_name, 0)) + 1
         await self._emit({"type": "approval_granted", "request_id": req_id})
         return None
+
+    async def _reserve_daily_permission_call(
+        self, tenant_ctx: TenantContext, agent_id: str, tool_name: str, rule: Any
+    ) -> str | None:
+        """Enforce the matched rule's ``daily_limit``; a denial reason or None."""
+        limit = getattr(rule, "daily_limit", None)
+        if not limit:
+            return None
+        from app.governance.agent_permissions import (
+            DailyLimitUnavailableError,
+            reserve_daily_call,
+        )
+
+        aps: Any = getattr(self, "_app_state", None)
+        redis = getattr(getattr(aps, "state", aps), "_redis", None) if aps is not None else None
+        try:
+            ok = await reserve_daily_call(redis, tenant_ctx.tenant_id, agent_id, tool_name, limit)
+        except DailyLimitUnavailableError:
+            return "agent permission daily limit could not be checked; failing closed"
+        return None if ok else f"denied by agent permission (daily_limit {limit} reached)"
 
     async def _node_execute(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
@@ -1576,20 +1645,7 @@ class ExecutorMixin:
             elif "_actual_cost" in locals():
                 _step_cost = float(_actual_cost)
             if _step_cost > 0.0:
-                with contextlib.suppress(Exception):
-                    from datetime import UTC as _UTC
-                    from datetime import datetime as _dt
-
-                    _covering = await self._grant_store.list_for_agent(
-                        tenant_ctx.tenant_id, self._agent_id or ""
-                    )
-                    _now_utc = _dt.now(_UTC)
-                    for _g in _covering:
-                        if _g.is_active(_now_utc) and _g.max_cost_usd is not None:
-                            await self._grant_store.record_spend(
-                                tenant_ctx.tenant_id, _g.grant_id, _step_cost
-                            )
-                            break
+                await self._charge_grant_spend(state, tenant_ctx, _step_cost)
 
         # 2.3: Per-goal executor cost tracking
         try:
@@ -1778,6 +1834,8 @@ class ExecutorMixin:
                     )
                     if not _grant_decision.allowed:
                         _grant_denial = _grant_decision
+                    elif _grant_decision.grant_id:
+                        state.context["_authorizing_grant_id"] = _grant_decision.grant_id
                 if _perm_denial is not None:
                     await self._emit(
                         {
