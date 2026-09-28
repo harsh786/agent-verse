@@ -32,6 +32,24 @@ _approvals: dict[str, dict] = {}  # tenant → {approval_id: approval}
 _approval_delegations: dict[str, list] = {}  # approval_id → list of approvers
 
 
+def _acting_principal(tenant: Any, body: dict[str, Any]) -> str:
+    """The approver/rejector identity: the authenticated key, never the body.
+
+    ``approver_id`` used to be read from the JSON body (default "anonymous"), so
+    one API key could vote as "alice", then "bob", ... — satisfying an
+    N-approver requirement alone and writing people who never approved into the
+    trail. A body value is still tolerated for backward compatibility, but only
+    when it names the caller; anything else is an impersonation attempt.
+    """
+    principal = str(getattr(tenant, "api_key_id", "") or "")
+    if not principal:
+        raise HTTPException(403, "Cannot attribute this decision to an authenticated principal")
+    claimed = body.get("approver_id")
+    if claimed is not None and claimed != principal:
+        raise HTTPException(403, "approver_id must match the authenticated principal")
+    return principal
+
+
 def _approval_store(request: Request) -> Any:
     """Durable approval store (DB-backed in prod). None → in-memory fallback."""
     return getattr(request.app.state, "trust_approval_store", None)
@@ -206,7 +224,7 @@ async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
     """Approve a pending request. Supports multi-approver."""
     tenant = _require_tenant(request)
     body = await request.json()
-    approver_id = body.get("approver_id", "anonymous")
+    approver_id = _acting_principal(tenant, body)
     note = body.get("note", "")
 
     store = _approval_store(request)
@@ -279,6 +297,7 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
     """Reject a pending request."""
     tenant = _require_tenant(request)
     body = await request.json()
+    rejected_by = _acting_principal(tenant, body)
 
     store = _approval_store(request)
     if store is not None:
@@ -289,7 +308,7 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
                 tenant_id=tenant.tenant_id,
                 approval_id=approval_id,
                 reason=body.get("reason", ""),
-                rejected_by=body.get("approver_id", "anonymous"),
+                rejected_by=rejected_by,
             )
         except ApprovalNotFoundError:
             raise HTTPException(404, "Approval not found") from None
@@ -301,7 +320,7 @@ async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
 
     approval["status"] = "rejected"
     approval["rejection_reason"] = body.get("reason", "")
-    approval["rejected_by"] = body.get("approver_id", "anonymous")
+    approval["rejected_by"] = rejected_by
     approval["resolved_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
     return {"approval_id": approval_id, "status": "rejected"}
