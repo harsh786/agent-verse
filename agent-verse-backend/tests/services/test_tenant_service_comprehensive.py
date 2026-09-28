@@ -318,13 +318,14 @@ class TestSSOProvisioning:
         key = await svc.get_key_by_sso_sub(sso_sub="ghost-sub")
         assert key is None
 
-    async def test_create_tenant_from_sso_plans(self) -> None:
+    async def test_create_tenant_from_sso_always_starts_free(self) -> None:
+        """The IdP cannot pick the plan (realm role 'admin' -> enterprise)."""
         svc = TenantService()
         for plan, expected in [
             ("free", PlanTier.FREE),
-            ("starter", PlanTier.STARTER),
-            ("professional", PlanTier.PROFESSIONAL),
-            ("enterprise", PlanTier.ENTERPRISE),
+            ("starter", PlanTier.FREE),
+            ("professional", PlanTier.FREE),
+            ("enterprise", PlanTier.FREE),
         ]:
             result = await svc.create_tenant_from_sso(
                 sso_sub=f"sub-{plan}",

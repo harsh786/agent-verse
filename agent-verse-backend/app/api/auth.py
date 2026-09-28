@@ -68,6 +68,23 @@ async def _check_auth_rate_limit(request: Request) -> None:
         # On Redis error, allow the request (prefer availability over blocking)
 
 
+def _client_secret_or_503(settings: Any) -> str:
+    """KEYCLOAK_CLIENT_SECRET, or 503 when it is not configured.
+
+    There is no built-in fallback any more: the former dev value
+    ("agentverse-dev-secret") is public, so a Keycloak client left on it could
+    be driven by anyone — and nothing stopped a non-"production" deployment
+    from using it.
+    """
+    client_secret = str(settings.keycloak_client_secret or "")
+    if not client_secret or client_secret == "agentverse-dev-secret":
+        raise HTTPException(
+            status_code=503,
+            detail="SSO not configured: KEYCLOAK_CLIENT_SECRET is required",
+        )
+    return client_secret
+
+
 def _default_redirect_uri() -> str:
     """Build the default OAuth redirect URI from the FRONTEND_URL env var."""
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:5173")
@@ -134,15 +151,7 @@ async def exchange_token(
     from app.auth.keycloak import _client_id, token_endpoint
     from app.core.config import get_settings
 
-    _settings = get_settings()
-    client_secret = _settings.keycloak_client_secret
-    if not client_secret:
-        if _settings.environment == "production":
-            raise HTTPException(
-                status_code=503,
-                detail="SSO not configured: KEYCLOAK_CLIENT_SECRET is required in production",
-            )
-        client_secret = "agentverse-dev-secret"  # dev-only fallback
+    client_secret = _client_secret_or_503(get_settings())
 
     import httpx
 
@@ -177,15 +186,7 @@ async def refresh_token(request: Request, refresh_token_value: str) -> dict[str,
     from app.auth.keycloak import _client_id, token_endpoint
     from app.core.config import get_settings
 
-    _settings = get_settings()
-    client_secret = _settings.keycloak_client_secret
-    if not client_secret:
-        if _settings.environment == "production":
-            raise HTTPException(
-                status_code=503,
-                detail="SSO not configured: KEYCLOAK_CLIENT_SECRET is required in production",
-            )
-        client_secret = "agentverse-dev-secret"  # dev-only fallback
+    client_secret = _client_secret_or_503(get_settings())
 
     import httpx
 

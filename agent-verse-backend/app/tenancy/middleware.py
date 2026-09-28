@@ -261,8 +261,13 @@ async def _try_resolve_sso(request: Request) -> TenantContext | None:
 
     try:
         return await resolve_tenant_from_jwt(token, tenant_service)
-    except Exception:
-        return None  # Fall through to API key auth
+    except Exception as exc:
+        # Unauthenticated (fail closed: the JWT then fails API-key resolution
+        # → 401), but never silently — a tenant-store outage looked like a bad token.
+        from app.observability.logging import get_logger
+
+        get_logger(__name__).warning("sso_resolution_failed", error=str(exc)[:200])
+        return None
 
 
 # Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token

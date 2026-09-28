@@ -307,8 +307,10 @@ async def test_get_tenant_by_sso_sub_db_exception():
         yield mock_session
 
     svc = TenantService(db_session_factory=_db)
-    result = await svc.get_tenant_by_sso_sub(sso_sub="sub:dberror")
-    assert result is None
+    # A lookup error must propagate: "not found" made the caller JIT-provision a
+    # duplicate tenant for an existing SSO user.
+    with pytest.raises(RuntimeError, match="DB error"):
+        await svc.get_tenant_by_sso_sub(sso_sub="sub:dberror")
 
 
 # ---------------------------------------------------------------------------
@@ -389,13 +391,14 @@ async def test_create_tenant_from_sso_no_db():
     )
     assert result["email"] == "jit@example.com"
     assert result["sso_sub"] == "sub:jit123"
-    assert result["plan"] == "starter"
+    # The plan is a billing fact, never taken from the IdP.
+    assert result["plan"] == "free"
     # Should be in in-memory store
     assert result["tenant_id"] in svc._tenants
 
 
 @pytest.mark.asyncio
-async def test_create_tenant_from_sso_enterprise_plan():
+async def test_create_tenant_from_sso_requested_plan_is_ignored():
     svc = TenantService()
     result = await svc.create_tenant_from_sso(
         sso_sub="sub:ent",
@@ -403,19 +406,19 @@ async def test_create_tenant_from_sso_enterprise_plan():
         name="Enterprise JIT",
         plan="enterprise",
     )
-    assert result["plan"] == "enterprise"
+    assert result["plan"] == "free"
 
 
 @pytest.mark.asyncio
-async def test_create_tenant_from_sso_unknown_plan_defaults_starter():
+async def test_create_tenant_from_sso_refuses_an_existing_email():
+    from app.core.errors import ConflictError
+
     svc = TenantService()
-    result = await svc.create_tenant_from_sso(
-        sso_sub="sub:unk",
-        email="unk@example.com",
-        name="Unknown Plan",
-        plan="unknown_plan",
-    )
-    assert result["plan"] == "starter"
+    await svc.create_tenant(name="Owner", email="owner@example.com")
+    with pytest.raises(ConflictError):
+        await svc.create_tenant_from_sso(
+            sso_sub="sub:takeover", email="owner@example.com", name="Attacker"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -632,6 +635,8 @@ async def test_create_tenant_from_sso_with_db():
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock()
+    mock_session.add = MagicMock()
+    mock_session.flush = AsyncMock()
     mock_session.begin = MagicMock()
     mock_session.begin.return_value.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
@@ -648,14 +653,19 @@ async def test_create_tenant_from_sso_with_db():
         plan="professional",
     )
     assert result["email"] == "withdb@example.com"
-    assert result["plan"] == "professional"
-    # DB execute should have been called
-    assert mock_session.execute.call_count >= 1
+    assert result["plan"] == "free"
+    # ORM rows (not the old INSERT into the non-existent tenants.plan column)
+    added = [c.args[0] for c in mock_session.add.call_args_list]
+    tenant_row = next(r for r in added if type(r).__name__ == "Tenant")
+    assert tenant_row.plan_tier == "free"
+    assert tenant_row.sso_sub == "sub:withdb"
+    key_row = next(r for r in added if type(r).__name__ == "ApiKey")
+    assert key_row.roles == ["admin"]
 
 
 @pytest.mark.asyncio
 async def test_create_tenant_from_sso_db_exception():
-    """DB exception during SSO creation is handled gracefully."""
+    """A DB failure propagates instead of leaving an in-memory ghost tenant."""
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
@@ -664,10 +674,10 @@ async def test_create_tenant_from_sso_db_exception():
         yield  # pragma: no cover
 
     svc = TenantService(db_session_factory=_db)
-    result = await svc.create_tenant_from_sso(
-        sso_sub="sub:dberr",
-        email="dberr@example.com",
-        name="DB Error User",
-    )
-    # Should still succeed with in-memory data
-    assert result["email"] == "dberr@example.com"
+    with pytest.raises(RuntimeError, match="DB unavailable"):
+        await svc.create_tenant_from_sso(
+            sso_sub="sub:dberr",
+            email="dberr@example.com",
+            name="DB Error User",
+        )
+    assert svc._tenants == {}

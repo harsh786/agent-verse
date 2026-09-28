@@ -737,38 +737,40 @@ class TenantService:
     # ── SSO JIT provisioning ──────────────────────────────────────────────────
 
     async def get_tenant_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
-        """Find a tenant by their SSO subject identifier (Keycloak sub claim)."""
-        # Check in-memory first
+        """Find a tenant by their SSO subject identifier (Keycloak sub claim).
+
+        Raises on a DB error: answering ``None`` made the caller JIT-provision a
+        second tenant for an existing SSO user on any DB blip.
+        """
         for tenant in self._tenants.values():
             if tenant.get("sso_sub") == sso_sub:
                 return tenant
 
-        # Check DB
-        if self._db is not None:
-            try:
-                from sqlalchemy import text
+        if self._db is None:
+            return None
+        from sqlalchemy import text
 
-                async with self._db() as session:
-                    row = (
-                        await session.execute(
-                            text(
-                                "SELECT id, name, email, plan, sso_sub "
-                                "FROM tenants WHERE sso_sub = :sub LIMIT 1"
-                            ),
-                            {"sub": sso_sub},
-                        )
-                    ).fetchone()
-                    if row:
-                        return {
-                            "tenant_id": str(row[0]),
-                            "name": row[1],
-                            "email": row[2],
-                            "plan": row[3],
-                            "sso_sub": row[4],
-                        }
-            except Exception as exc:
-                logging.getLogger(__name__).warning("sso_lookup_failed: %s", exc)
-        return None
+        # tenants has no RLS; the column is plan_tier (this read ``plan``, so the
+        # lookup always raised and was swallowed).
+        async with self._db() as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT id, name, email, plan_tier, sso_sub "
+                        "FROM tenants WHERE sso_sub = :sub AND is_active LIMIT 1"
+                    ),
+                    {"sub": sso_sub},
+                )
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "tenant_id": str(row[0]),
+            "name": row[1],
+            "email": row[2],
+            "plan": row[3],
+            "sso_sub": row[4],
+        }
 
     async def get_key_by_sso_sub(self, *, sso_sub: str) -> dict[str, Any] | None:
         """Return the primary API key record associated with an SSO subject.
@@ -799,65 +801,66 @@ class TenantService:
         sso_sub: str,
         email: str,
         name: str,
-        plan: str = "starter",
+        plan: str = "free",
     ) -> dict[str, Any]:
-        """JIT-provision a new tenant from an SSO login."""
-        plan_map = {
-            "free": PlanTier.FREE,
-            "starter": PlanTier.STARTER,
-            "professional": PlanTier.PROFESSIONAL,
-            "enterprise": PlanTier.ENTERPRISE,
-        }
-        plan_tier = plan_map.get(plan.lower(), PlanTier.STARTER)
+        """JIT-provision a new tenant from an SSO login.
 
+        The tenant starts on the FREE plan whatever *plan* says: the plan is a
+        billing fact, and deriving it from IdP realm roles let anyone who could
+        get an ``admin`` realm role self-grant the enterprise tier. (*plan* is
+        kept for call compatibility and ignored.)
+
+        Persisted DB-first through the ORM (it used to INSERT a non-existent
+        ``tenants.plan`` column and swallow the failure, leaving an in-memory
+        ghost tenant). A DB failure propagates; an e-mail already registered
+        raises :class:`ConflictError` — an SSO login never silently claims an
+        existing tenant by e-mail.
+        """
+        del plan
+        normalised = email.lower()
+        if normalised in self._email_index:
+            raise ConflictError(f"Email already registered: {email}")
+        plan_tier = PlanTier.FREE
         tenant_id = uuid.uuid4().hex
-        api_key = f"av_{uuid.uuid4().hex}"
-        api_key_id = "sso-jit"  # default; overwritten if DB persist succeeds
+        api_key = _generate_raw_key(plan_tier.value)
+        api_key_id = uuid.uuid4().hex
+        key_hash = _hash_key(api_key)
 
-        # Persist to DB
         if self._db is not None:
+            from sqlalchemy.exc import IntegrityError
+
+            from app.db.models.tenant import ApiKey, Tenant
+            from app.db.rls import sqlalchemy_rls_context
+
             try:
-                from sqlalchemy import text
-
-                async with self._db() as session, session.begin():
-                    await session.execute(
-                        text(
-                            "INSERT INTO tenants (id, name, email, plan, created_at, is_active) "
-                            "VALUES (:id, :name, :email, :plan, NOW(), TRUE) "
-                            "ON CONFLICT (id) DO NOTHING"
-                        ),
-                        {
-                            "id": tenant_id,
-                            "name": name,
-                            "email": email,
-                            "plan": plan_tier.value,
-                        },
-                    )
-                    # Store sso_sub if the column exists
-                    with suppress(Exception):  # sso_sub column may not exist yet
-                        await session.execute(
-                            text("UPDATE tenants SET sso_sub = :sub WHERE id = :id"),
-                            {"sub": sso_sub, "id": tenant_id},
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    session.add(
+                        Tenant(
+                            id=tenant_id,
+                            name=name,
+                            email=email,
+                            plan_tier=plan_tier.value,
+                            sso_sub=sso_sub,
                         )
-
-                    # Create initial API key
-                    key_hash = _hash_key(api_key)
-                    api_key_id = uuid.uuid4().hex
-                    await session.execute(
-                        text(
-                            "INSERT INTO api_keys (id, tenant_id, key_hash, name, created_at) "
-                            "VALUES (:id, :tid, :hash, :kname, NOW())"
-                        ),
-                        {
-                            "id": api_key_id,
-                            "tid": tenant_id,
-                            "hash": key_hash,
-                            "kname": "SSO auto-provisioned",
-                        },
                     )
-            except Exception as exc:
-                logging.getLogger(__name__).warning("sso_tenant_create_failed: %s", exc)
+                    session.add(
+                        ApiKey(
+                            id=api_key_id,
+                            tenant_id=tenant_id,
+                            name="SSO auto-provisioned",
+                            key_hash=key_hash,
+                            scopes=[],
+                            roles=["admin"],
+                        )
+                    )
+            except IntegrityError as exc:
+                raise ConflictError(f"Email or SSO subject already registered: {email}") from exc
 
+        created_at = datetime.now(UTC).isoformat()
         tenant: dict[str, Any] = {
             "tenant_id": tenant_id,
             "name": name,
@@ -866,10 +869,23 @@ class TenantService:
             "api_key": api_key,
             "api_key_id": api_key_id,
             "sso_sub": sso_sub,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at,
         }
         self._tenants[tenant_id] = tenant
-        self._email_index[email.lower()] = tenant_id
+        self._email_index[normalised] = tenant_id
+        self._keys[api_key_id] = {
+            "key_id": api_key_id,
+            "tenant_id": tenant_id,
+            "name": "SSO auto-provisioned",
+            "scopes": [],
+            "expires_at": None,
+            "key_hash": key_hash,
+            "is_active": True,
+            "created_at": created_at,
+            "roles": ["admin"],
+        }
+        self._hash_to_key_id[key_hash] = api_key_id
+        self._tenant_keys.setdefault(tenant_id, []).append(api_key_id)
         return tenant
 
     async def sync_from_db(self) -> int:

@@ -193,30 +193,18 @@ def test_extract_roles_missing_roles_key():
 # ---------------------------------------------------------------------------
 
 
-def test_map_roles_to_plan_admin():
+def test_map_roles_to_plan_is_never_derived_from_realm_roles():
     from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["admin"]) == "enterprise"
 
-
-def test_map_roles_to_plan_operator():
-    from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["operator"]) == "professional"
-
-
-def test_map_roles_to_plan_viewer():
-    from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["viewer"]) == "starter"
+    assert map_roles_to_plan(["admin"]) == "free"
+    assert map_roles_to_plan(["operator"]) == "free"
+    assert map_roles_to_plan(["viewer"]) == "free"
 
 
 def test_map_roles_to_plan_unknown_defaults_to_free():
     from app.auth.keycloak import map_roles_to_plan
     assert map_roles_to_plan([]) == "free"
     assert map_roles_to_plan(["some_other_role"]) == "free"
-
-
-def test_map_roles_to_plan_admin_takes_precedence():
-    from app.auth.keycloak import map_roles_to_plan
-    assert map_roles_to_plan(["admin", "viewer"]) == "enterprise"
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +275,10 @@ async def test_get_or_provision_tenant_finds_existing():
         sub="sub-123",
         email="user@corp.com",
         name="User",
-        plan="enterprise",
         tenant_service=tenant_svc,
     )
 
-    assert result == "existing-tenant-id"
+    assert result == {"tenant_id": "existing-tenant-id"}
     tenant_svc.create_tenant_from_sso.assert_not_called()
 
 
@@ -308,29 +295,44 @@ async def test_get_or_provision_tenant_creates_new_on_first_login():
         sub="new-sub",
         email="new@corp.com",
         name="New User",
-        plan="free",
         tenant_service=tenant_svc,
     )
 
-    assert result == "new-tenant-id"
+    assert result == {"tenant_id": "new-tenant-id"}
     tenant_svc.create_tenant_from_sso.assert_called_once()
 
 
-async def test_get_or_provision_tenant_returns_none_on_error():
+async def test_get_or_provision_tenant_propagates_lookup_errors():
+    """A lookup error must not read as "not found" (that JIT-provisioned a
+    duplicate tenant for an existing SSO user on any DB blip)."""
     from app.auth.keycloak import _get_or_provision_tenant
 
     tenant_svc = AsyncMock()
     tenant_svc.get_tenant_by_sso_sub = AsyncMock(side_effect=Exception("DB down"))
 
-    result = await _get_or_provision_tenant(
-        sub="sub-err",
-        email="err@corp.com",
-        name="Err",
-        plan="free",
-        tenant_service=tenant_svc,
-    )
+    with pytest.raises(Exception, match="DB down"):
+        await _get_or_provision_tenant(
+            sub="sub-err",
+            email="err@corp.com",
+            name="Err",
+            tenant_service=tenant_svc,
+        )
+    tenant_svc.create_tenant_from_sso.assert_not_called()
 
-    assert result is None
+
+async def test_get_or_provision_tenant_refuses_email_of_an_existing_tenant():
+    from app.auth.keycloak import _get_or_provision_tenant
+    from app.core.errors import ConflictError
+
+    tenant_svc = AsyncMock()
+    tenant_svc.get_tenant_by_sso_sub = AsyncMock(return_value=None)
+    tenant_svc.create_tenant_from_sso = AsyncMock(side_effect=ConflictError("taken"))
+    assert (
+        await _get_or_provision_tenant(
+            sub="s", email="owner@corp.com", name="x", tenant_service=tenant_svc
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------

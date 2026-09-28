@@ -24,6 +24,14 @@ def app():
     return create_app()
 
 
+@pytest.fixture(autouse=True)
+def _keycloak_client_secret(monkeypatch):
+    # There is no built-in dev client secret any more; configure one.
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "keycloak_client_secret", "kc-test-secret")
+
+
 # ── _default_redirect_uri ─────────────────────────────────────────────────────
 
 def test_default_redirect_uri_from_env():
@@ -194,8 +202,8 @@ async def test_exchange_token_failure(app):
 
 
 @pytest.mark.asyncio
-async def test_exchange_token_dev_fallback_secret(app):
-    """Dev mode uses fallback secret when keycloak_client_secret is empty."""
+async def test_exchange_token_dev_without_secret_is_503(app):
+    """No public dev fallback secret: an unconfigured secret is 503 in every env."""
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as mock:
         mock.post(_TOKEN_URL).mock(
             return_value=httpx.Response(
@@ -214,7 +222,7 @@ async def test_exchange_token_dev_fallback_secret(app):
                 mock_gs.return_value = s
                 r = await c.post("/auth/token?code=c&redirect_uri=http://cb")
 
-    assert r.status_code == 200
+    assert r.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -327,7 +335,9 @@ async def test_refresh_token_prod_no_secret():
 
 
 @pytest.mark.asyncio
-async def test_refresh_token_dev_secret_fallback():
+async def test_refresh_token_dev_without_secret_is_503():
+    from fastapi import HTTPException
+
     from app.api.auth import refresh_token
 
     with respx.mock(assert_all_called=False, assert_all_mocked=False) as mock:
@@ -349,9 +359,10 @@ async def test_refresh_token_dev_secret_fallback():
             s.keycloak_client_secret = ""
             s.environment = "development"
             mock_gs.return_value = s
-            result = await refresh_token(mock_request, refresh_token_value="tok")
+            with pytest.raises(HTTPException) as exc_info:
+                await refresh_token(mock_request, refresh_token_value="tok")
 
-    assert result["access_token"] == "at"
+    assert exc_info.value.status_code == 503
 
 
 # ── GET /auth/userinfo — tested directly (route not in middleware bypass list) ─
