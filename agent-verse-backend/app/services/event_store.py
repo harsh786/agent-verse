@@ -27,17 +27,16 @@ class EventStore:
     async def append_event(
         self, goal_id: str, event: dict[str, Any], *, tenant_ctx: TenantContext
     ) -> None:
-        """Append a goal event with race-free database-side sequence numbering.
+        """Append a goal event with a per-goal, gap-free sequence number.
 
-        Uses a single INSERT ... SELECT so that the sequence number is computed
-        inside the same database transaction, eliminating the TOCTOU race that
-        existed in the previous SELECT MAX + INSERT approach.
-
-        The unique constraint ``uq_goal_events_sequence`` (tenant_id, goal_id,
-        sequence) acts as a safety net: if two concurrent transactions somehow
-        produce the same sequence number, the second INSERT will fail with an
-        IntegrityError.  Retry logic with exponential backoff handles transient
-        conflicts before propagating the final failure as a warning (non-fatal).
+        The number comes from ``goals.event_seq`` (``UPDATE ... RETURNING`` in
+        the same statement as the INSERT): the row lock serialises allocation
+        per goal, so two concurrent appends can never draw the same number.
+        It used to be ``MAX(sequence) + 1``, which races under READ COMMITTED
+        (both writers read the same MAX) and leaned on the unique constraint to
+        reject the loser. goal_events is now partitioned by month, so that
+        constraint can no longer span partitions, and a MAX would probe every
+        partition on each append.
         """
         import json as _json
         import uuid as _uuid
@@ -52,35 +51,36 @@ class EventStore:
                     session.begin(),
                     sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
                 ):
-                    await session.execute(
+                    result = await session.execute(
                         text(
                             """
+                            WITH seq AS (
+                                UPDATE goals SET event_seq = event_seq + 1
+                                WHERE id = :gid AND tenant_id = :tid
+                                RETURNING event_seq
+                            )
                             INSERT INTO goal_events
                                 (id, tenant_id, goal_id, sequence, event_type, payload)
-                            VALUES (
-                                :id,
-                                :tid,
-                                :gid,
-                                COALESCE(
-                                    (SELECT MAX(sequence)
-                                     FROM goal_events
-                                     WHERE tenant_id = :tid2 AND goal_id = :gid2),
-                                    0
-                                ) + 1,
-                                :etype,
-                                CAST(:payload AS jsonb)
-                            )
+                            SELECT :id, :tid, :gid, seq.event_seq, :etype,
+                                   CAST(:payload AS jsonb)
+                            FROM seq
                             """
                         ),
                         {
                             "id": _uuid.uuid4().hex,
                             "tid": tenant_ctx.tenant_id,
                             "gid": goal_id,
-                            "tid2": tenant_ctx.tenant_id,
-                            "gid2": goal_id,
                             "etype": str(event.get("type", "unknown")),
                             "payload": _json.dumps(dict(event)),
                         },
+                    )
+                if getattr(result, "rowcount", 1) == 0:
+                    # No goal row (or not this tenant's): the old INSERT failed
+                    # the goals FK here; report it the same way, don't retry.
+                    from app.observability.logging import get_logger
+
+                    get_logger(__name__).warning(
+                        "event_append_goal_missing", goal_id=goal_id
                     )
                 return  # success — exit retry loop
             except Exception as exc:

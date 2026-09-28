@@ -4227,7 +4227,18 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
 
         # Fleet-wide retention → maintenance (BYPASSRLS) role.
         db = get_system_session_factory()
+        # goal_events is range-partitioned by month (migration c5d6e7f8a9b0):
+        # whole expired months are detached and dropped — O(partitions), no
+        # WAL/bloat — before the row DELETE below trims the partial month and
+        # the DEFAULT partition. It used to be one DELETE over the whole table.
         async with db() as session, session.begin(), system_session(session):
+            try:
+                async with session.begin_nested():
+                    dropped = await _drop_expired_partitions(session, "goal_events", cutoff)
+                if dropped:
+                    counts["goal_events_partitions_dropped"] = dropped
+            except Exception as exc:
+                counts["goal_events_partitions_dropped"] = f"error: {exc}"
             for table in ["goal_events", "decision_traces"]:
                 # Each table's DELETE runs in its own SAVEPOINT. Postgres aborts
                 # the *entire* enclosing transaction on any error (permission
@@ -4270,6 +4281,46 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+async def _drop_expired_partitions(session: Any, table: str, cutoff: Any) -> list[str]:
+    """Detach and drop the range partitions of *table* that end at or before *cutoff*.
+
+    Only bounded monthly partitions are considered (never DEFAULT); a partition
+    is dropped only when its whole range is older than the cutoff.
+    """
+    from datetime import datetime
+
+    from sqlalchemy import text
+
+    rows = (
+        await session.execute(
+            text(
+                "SELECT c.relname, pg_get_expr(c.relpartbound, c.oid) "
+                "FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                "WHERE i.inhparent = CAST(:t AS regclass)"
+            ),
+            {"t": table},
+        )
+    ).fetchall()
+    dropped: list[str] = []
+    for name, bound in rows:
+        if not isinstance(name, str) or not isinstance(bound, str):
+            continue
+        match = re.search(r"TO \('([^']+)'\)", bound or "")
+        if not match:
+            continue  # DEFAULT or MAXVALUE-bounded partition
+        upper = datetime.fromisoformat(match.group(1).replace(" ", "T"))
+        if upper.tzinfo is None:
+            upper = upper.replace(tzinfo=cutoff.tzinfo)
+        if upper > cutoff:
+            continue
+        if not re.fullmatch(r"[a-z0-9_]+", name):
+            continue
+        await session.execute(text(f"ALTER TABLE {table} DETACH PARTITION {name}"))
+        await session.execute(text(f"DROP TABLE {name}"))
+        dropped.append(name)
+    return dropped
+
+
 # Tables created as ``PARTITION BY RANGE (created_at)`` with only a fixed set of
 # monthly partitions pre-created by their migration (0055_guardrails,
 # 0056_governance_v2, 0057_audit_rails_v2, 0058_cost_optimization). Each also has
@@ -4278,6 +4329,7 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
 # toward an unindexed-by-time scan as they accumulate there. This task keeps
 # ahead of the calendar so DEFAULT stays empty in the steady state.
 _RANGE_PARTITIONED_TABLES: tuple[str, ...] = (
+    "goal_events",
     "cost_ledger",
     "audit_events",
     "policy_evaluations",

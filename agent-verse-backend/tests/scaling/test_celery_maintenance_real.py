@@ -96,6 +96,7 @@ def test_ensure_future_partitions_covers_all_range_partitioned_tables() -> None:
     from app.scaling.tasks import _RANGE_PARTITIONED_TABLES
 
     assert set(_RANGE_PARTITIONED_TABLES) == {
+        "goal_events",
         "cost_ledger",
         "audit_events",
         "policy_evaluations",

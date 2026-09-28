@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -60,6 +61,10 @@ class Goal(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Last allocated goal_events.sequence (see EventStore.append_event).
+    event_seq: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     runtime_profile_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     patterns_used: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
@@ -116,9 +121,18 @@ class GoalStep(Base):
 
 
 class GoalEvent(Base):
+    """Append-only goal event log, range-partitioned by month on ``created_at``
+    (migration c5d6e7f8a9b0). Unique keys must contain the partition key; the
+    per-goal ``sequence`` is allocated from ``goals.event_seq``, which is what
+    keeps it unique (see ``EventStore.append_event``)."""
+
     __tablename__ = "goal_events"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "goal_id", "sequence", name="uq_goal_events_sequence"),
+        UniqueConstraint(
+            "tenant_id", "goal_id", "sequence", "created_at", name="uq_goal_events_sequence"
+        ),
+        Index("ix_goal_events_goal_seq", "goal_id", "sequence"),
+        {"postgresql_partition_by": "RANGE (created_at)"},
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=lambda: uuid.uuid4().hex)
@@ -132,7 +146,7 @@ class GoalEvent(Base):
     event_type: Mapped[str] = mapped_column(String(80), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True), primary_key=True, nullable=False, server_default=func.now()
     )
 
 
