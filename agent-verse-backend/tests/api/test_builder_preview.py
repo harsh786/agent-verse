@@ -1,101 +1,46 @@
-"""Test builder preview hosting endpoints."""
+"""Builder project status / preview / assets are NOT IMPLEMENTED — honest 501.
+
+Regression: the preview listed artifacts by a workspace-id substring across all
+tenants, called the keyword-only ``read_bytes`` positionally (TypeError swallowed),
+and so showed a "Building..." page forever; project status was a stub that said
+``building`` for any id; the asset route leaked ``str(exc)`` in a 500.
+"""
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
+from app.api.builder import router
 
-def test_builder_preview_returns_html():
-    """GET /builder/preview/{id} must return HTML, not JSON."""
-    from fastapi import FastAPI
 
-    from app.api.builder import router
+def _client(*, authed: bool = True) -> TestClient:
     app = FastAPI()
+
+    @app.middleware("http")
+    async def _t(request: Request, call_next):  # type: ignore[no-untyped-def]
+        if authed:
+            request.state.tenant = SimpleNamespace(tenant_id="t1")
+        return await call_next(request)
+
     app.include_router(router)
-    # Mock artifact store returning no artifacts
-    app.state.artifact_store = MagicMock()
-    app.state.artifact_store.list_artifacts = AsyncMock(return_value=[])
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/builder/preview/test-workspace-123")
-    assert resp.status_code in (200, 202)
-    assert "text/html" in resp.headers.get("content-type", "")
-    assert "test-workspace-123" in resp.text
+    store = MagicMock()
+    store.list_artifacts = AsyncMock(return_value=[{"id": "a", "name": "index.html"}])
+    store.read_bytes = AsyncMock(return_value=b"<html>other tenant's site</html>")
+    app.state.artifact_store = store
+    return TestClient(app, raise_server_exceptions=False)
 
 
-def test_builder_preview_building_message_when_no_artifacts():
-    """Must show 'Building' status when no index.html artifact found."""
-    from fastapi import FastAPI
-
-    from app.api.builder import router
-    app = FastAPI()
-    app.include_router(router)
-    app.state.artifact_store = MagicMock()
-    app.state.artifact_store.list_artifacts = AsyncMock(return_value=[])
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/builder/preview/ws-123")
-    assert resp.status_code in (200, 202)
-    content = resp.text.lower()
-    assert "building" in content or "workspace" in content
+@pytest.mark.parametrize(
+    "path", ["/builder/projects/p1", "/builder/preview/ws-1", "/builder/assets/ws-1/app.js"]
+)
+def test_unimplemented_builder_reads_are_501_and_serve_nothing(path: str) -> None:
+    resp = _client().get(path)
+    assert resp.status_code == 501
+    assert "other tenant" not in resp.text
 
 
-def test_builder_preview_serves_index_html_when_available():
-    """Must serve actual index.html content when artifact exists."""
-    from fastapi import FastAPI
-
-    from app.api.builder import router
-    app = FastAPI()
-    app.include_router(router)
-    mock_store = MagicMock()
-    mock_store.list_artifacts = AsyncMock(return_value=[
-        {"id": "art-001", "name": "index.html"}
-    ])
-    mock_store.read_bytes = AsyncMock(return_value=b"<html><head></head><body>My Site</body></html>")
-    app.state.artifact_store = mock_store
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/builder/preview/ws-456")
-    assert resp.status_code == 200
-    assert "My Site" in resp.text
-    assert "text/html" in resp.headers.get("content-type", "")
-
-
-def test_builder_project_preview_url_format():
-    """Created project must have a /builder/preview/ URL."""
-    from fastapi import FastAPI
-
-    from app.api.builder import router
-    app = FastAPI()
-    app.include_router(router)
-    app.state.goal_service = None
-    # Mock auth middleware
-    from starlette.middleware.base import BaseHTTPMiddleware
-    class FakeTenant(BaseHTTPMiddleware):
-        async def dispatch(self, request, call_next):
-            request.state.tenant = MagicMock(tenant_id="t1")
-            return await call_next(request)
-    app.add_middleware(FakeTenant)
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post("/builder/projects", json={
-        "description": "A landing page",
-        "project_type": "landing",
-        "framework": "react",
-    })
-    if resp.status_code in (200, 201):
-        data = resp.json()
-        assert "preview_url" in data
-        assert "/builder/preview/" in data["preview_url"]
-
-
-def test_builder_preview_handles_missing_list_artifacts():
-    """Preview must not crash if artifact_store.list_artifacts raises AttributeError."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from app.api.builder import router
-    app = FastAPI()
-    app.include_router(router)
-    # Store without list_artifacts method
-    app.state.artifact_store = object()  # plain object, no list_artifacts
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/builder/preview/test-ws")
-    # Must return HTML status page, not 500
-    assert resp.status_code in (200, 202)
-    assert "text/html" in resp.headers.get("content-type", "")
+@pytest.mark.parametrize("path", ["/builder/projects/p1", "/builder/preview/ws-1"])
+def test_builder_reads_require_auth(path: str) -> None:
+    assert _client(authed=False).get(path).status_code == 401

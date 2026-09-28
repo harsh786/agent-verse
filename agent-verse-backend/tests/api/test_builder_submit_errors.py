@@ -92,5 +92,7 @@ async def test_success_returns_project_with_goal_id() -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["goal_id"] == "goal-123"
-    assert body["preview_url"] == f"/builder/preview/{body['workspace_id']}"
+    # No live preview exists, so none is advertised; the build is a queued goal.
+    assert body["preview_url"] is None
+    assert body["status"] == "submitted"
     assert svc.calls[0]["execution_context"]["builder_project_id"] == body["project_id"]

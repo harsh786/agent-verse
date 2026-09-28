@@ -131,7 +131,7 @@ describe('BuilderPage — build flow', () => {
       ),
     );
     await fillAndBuild();
-    expect(await screen.findByText('Project generated!')).toBeInTheDocument();
+    expect(await screen.findByText('Build started')).toBeInTheDocument();
     expect(screen.getByText('My Landing')).toBeInTheDocument();
     expect(screen.getByText('src/App.tsx')).toBeInTheDocument();
     expect(screen.getByText('index.html')).toBeInTheDocument();
@@ -147,7 +147,7 @@ describe('BuilderPage — build flow', () => {
       }),
     );
     await fillAndBuild();
-    await screen.findByText('Project generated!');
+    await screen.findByText('Build started');
     fireEvent.click(screen.getByRole('button', { name: /View Execution/i }));
     expect(navigateSpy).toHaveBeenCalledWith('/goals/g-42');
   });
@@ -159,7 +159,7 @@ describe('BuilderPage — build flow', () => {
       }),
     );
     await fillAndBuild();
-    await screen.findByText('Project generated!');
+    await screen.findByText('Build started');
     fireEvent.click(screen.getByRole('button', { name: /Build Another/i }));
     expect(screen.getByText('What are you building?')).toBeInTheDocument();
   });
@@ -197,7 +197,7 @@ describe('BuilderPage — build flow', () => {
     await fillAndBuild();
     // Reaching the "done" screen with the streamed result proves the SSE reader
     // branch parsed both the progress `step` and the final `result` payload.
-    expect(await screen.findByText('Project generated!')).toBeInTheDocument();
+    expect(await screen.findByText('Build started')).toBeInTheDocument();
     expect(screen.getByText('Streamed')).toBeInTheDocument();
   });
 });

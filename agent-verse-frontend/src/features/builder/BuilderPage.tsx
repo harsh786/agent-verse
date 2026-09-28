@@ -85,7 +85,8 @@ export default function BuilderPage() {
     onSuccess: (data) => {
       setResult(data);
       setStep('done');
-      setBuildProgress(prev => [...prev, '✅ Build complete!']);
+      // The API only queues the build goal; completion is tracked on the goal page.
+      setBuildProgress(prev => [...prev, 'Build goal queued — track it on the goal page']);
     },
     onError: (e) => {
       toast({ kind: 'error', message: `Build failed: ${String(e)}` });
@@ -274,7 +275,7 @@ export default function BuilderPage() {
         <div className="space-y-5">
           <div className="flex items-center gap-3">
             <CheckCircle className="h-7 w-7 text-green-500" />
-            <h2 className="text-base font-semibold">Project generated!</h2>
+            <h2 className="text-base font-semibold">Build started</h2>
           </div>
 
           {/* Result card */}
