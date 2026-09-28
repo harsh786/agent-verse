@@ -508,7 +508,14 @@ class PlannerMixin:
         # the model name always matches the active provider (OpenAI → gpt-4-turbo,
         # Anthropic → claude-opus-4-8, Fake → "fake", etc.).
         # Never hard-code a vendor-specific model name here.
-        planning_model = getattr(self._planner, "_default_model", None) or "gpt-5.2"
+        # Fallback: the deployment's configured model, else "" — every provider
+        # treats an empty model as "use my own default". The hard-coded OpenAI
+        # slug sent "gpt-5.2" to Anthropic/Gemini/on-prem providers.
+        from app.providers.model_defaults import configured_default_model
+
+        planning_model = getattr(self._planner, "_default_model", None) or configured_default_model(
+            ""
+        )
         # Update ModelOrchestratorAdapter with current runtime profile for budget-aware selection
         try:
             _runtime_profile_for_router = agent_state.context.get("_runtime_profile")

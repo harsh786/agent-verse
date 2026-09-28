@@ -2149,7 +2149,7 @@ class ExecutorMixin:
                     # else: falls through to write_high HITL gate below (default-secure)
                     if tool_risk == "destructive":
                         error = self._sanitize_tool_raw_output(
-                            f"Jira tool '{tool_ref.name}' denied as destructive."
+                            f"Tool '{tool_ref.name}' denied as destructive."
                         )
                         await self._emit(
                             {
@@ -2170,7 +2170,7 @@ class ExecutorMixin:
                     elif tool_risk == "write_high":
                         if self._hitl_gateway is None:
                             error = self._sanitize_tool_raw_output(
-                                f"Jira tool '{tool_ref.name}' requires approval."
+                                f"Tool '{tool_ref.name}' requires approval."
                             )
                             await self._emit(
                                 {
