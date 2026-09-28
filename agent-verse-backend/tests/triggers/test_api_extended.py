@@ -140,43 +140,20 @@ def test_validate_condition_with_payload(client):
 
 # ── Typed webhook ─────────────────────────────────────────────────────────────
 
-def test_typed_webhook_accepted(client):
-    resp = client.post(
-        "/triggers/webhooks/github/test-token",
-        json={"ref": "refs/heads/main", "repository": {"full_name": "org/repo"}},
-        headers={"x-github-event": "push", "x-hub-signature-256": "sha256=invalid"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["status"] == "accepted"
-    assert data["webhook_type"] == "github"
-
-
-def test_typed_webhook_stripe(client):
-    resp = client.post(
-        "/triggers/webhooks/stripe/test-token",
-        json={"type": "payment_intent.succeeded", "id": "evt_001"},
-        headers={"stripe-signature": "t=123,v1=invalid"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["webhook_type"] == "stripe"
-
-
-def test_typed_webhook_pagerduty(client):
-    resp = client.post(
-        "/triggers/webhooks/pagerduty/test-token",
-        json={"event": {"event_type": "incident.trigger", "data": {"id": "Q1"}}},
-    )
-    assert resp.status_code == 200
-
-
-def test_typed_webhook_generic_fallback(client):
-    resp = client.post(
-        "/triggers/webhooks/custom/test-token",
-        json={"event": "custom_event"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "accepted"
+@pytest.mark.parametrize(
+    "path,headers",
+    [
+        ("/triggers/webhooks/github/test-token", {"x-hub-signature-256": "sha256=invalid"}),
+        ("/triggers/webhooks/stripe/test-token", {"stripe-signature": "t=123,v1=invalid"}),
+        ("/triggers/webhooks/pagerduty/test-token", {}),
+        ("/triggers/webhooks/custom/test-token", {}),
+    ],
+)
+def test_typed_webhook_without_trigger_runtime_is_503(client, path, headers):
+    """Regression: with no trigger store/dispatcher wired the route answered
+    'accepted' while doing nothing, so the sender never retried."""
+    resp = client.post(path, json={"event": "x"}, headers=headers)
+    assert resp.status_code == 503
 
 
 # ── Extended list ─────────────────────────────────────────────────────────────

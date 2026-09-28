@@ -215,7 +215,30 @@ def test_stripe_signature_helper():
     sig_hash = hmac.new(secret.encode(), signed_payload, hashlib.sha256).hexdigest()
     header = f"t={timestamp},v1={sig_hash}"
     v = WebhookSignatureVerifier()
-    assert v.verify_stripe(payload, header, secret) is True
+    assert v.verify_stripe(payload, header, secret, now=float(timestamp) + 10) is True
+    # Replay protection: outside the 5-minute tolerance the same header fails.
+    assert v.verify_stripe(payload, header, secret, now=float(timestamp) + 301) is False
+    # During a secret roll Stripe sends several v1 values; any valid one passes.
+    rolled = f"t={timestamp},v1={'0' * 64},v1={sig_hash}"
+    assert v.verify_stripe(payload, rolled, secret, now=float(timestamp)) is True
+
+
+@pytest.mark.asyncio
+async def test_typed_verify_uses_the_stripe_scheme():
+    """Regression: the typed webhook route called the generic verify(), which
+    HMACs the bare body and compares the text after the last '=' — a genuine
+    Stripe t=,v1= signature could never verify."""
+    import time as _time
+
+    secret = "whsec_test"
+    payload = b'{"type": "invoice.paid"}'
+    ts = str(int(_time.time()))
+    sig = hmac.new(secret.encode(), f"{ts}.".encode() + payload, hashlib.sha256).hexdigest()
+    header = f"t={ts},v1={sig}"
+    v = WebhookSignatureVerifier()
+    assert await v.verify(payload, header, secret) is False  # the old code path
+    assert await v.verify_for_type("stripe", payload, header, secret) is True
+    assert await v.verify_for_type("stripe", payload, header, "wrong") is False
 
 
 # ── Geofence ──────────────────────────────────────────────────────────────────

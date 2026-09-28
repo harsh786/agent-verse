@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Body, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -13,6 +14,7 @@ from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.simulation import get_sample_payload
 
 router = APIRouter(prefix="/triggers", tags=["triggers"])
+logger = structlog.get_logger(__name__)
 
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
@@ -811,7 +813,9 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
     store = _get_store(request)
     dispatcher = _get_dispatcher(request)
     if store is None or dispatcher is None:
-        return {"status": "accepted", "webhook_type": webhook_type}
+        # Used to answer "accepted" while doing nothing — the sender then never
+        # retried a delivery that was dropped.
+        raise HTTPException(status_code=503, detail="Webhook triggers are unavailable")
 
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
@@ -866,6 +870,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
 
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     matched = 0
+    failed = 0
     for trigger in triggers:
         # Bind the record-level goal_template / agent refs onto the spec (as the
         # manual fire and simulate paths do) so an inbound webhook renders the
@@ -896,15 +901,34 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
             verified = False
             if sig_header:
                 for candidate in candidates:
-                    if await verifier.verify(body_bytes, sig_header, candidate):
+                    if await verifier.verify_for_type(
+                        webhook_type, body_bytes, sig_header, candidate
+                    ):
                         verified = True
                         break
             if not verified:
                 raise HTTPException(status_code=401, detail="Invalid webhook signature")
         matched += 1
-        with contextlib.suppress(Exception):
+        try:
             await dispatcher.dispatch(spec, enriched, caller)
+        except Exception as exc:
+            # Was suppressed and still answered "accepted", so the platform never
+            # redelivered an event that fired nothing.
+            failed += 1
+            logger.error(
+                "typed_webhook_dispatch_failed",
+                webhook_type=webhook_type,
+                tenant_id=tenant_id,
+                error=str(exc)[:200],
+            )
 
     if not matched:
         raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
-    return {"status": "accepted", "webhook_type": webhook_type}
+    if failed == matched:
+        raise HTTPException(status_code=503, detail="Webhook could not be dispatched; retry")
+    return {
+        "status": "accepted",
+        "webhook_type": webhook_type,
+        "dispatched": matched - failed,
+        "failed": failed,
+    }
