@@ -544,10 +544,19 @@ async def explain_goal(request: Request, goal_id: str) -> dict[str, Any]:
         goal = await _goal_service(request).get_goal(goal_id=goal_id, tenant_ctx=tenant)
     except NotFoundError as exc:
         raise _not_found_response(request, exc) from exc
-    context = goal.get("execution_context", {})
-    profile = context.get("runtime_profile", {}) if isinstance(context, dict) else {}
+    context = goal.get("execution_context") or {}
+    if not isinstance(context, dict):
+        context = {}
+    profile = context.get("runtime_profile") or {}
+    if not isinstance(profile, dict):
+        profile = {}
+    # One handler for GET /goals/{id}/explain. A second, later registration of
+    # the same path (the decision-trace view GoalExplainPanel reads) was
+    # unreachable — FastAPI serves the first match — so the panel never got
+    # decision_traces / model_selections / rag_citations / plan.
     return {
         "goal_id": goal_id,
+        "status": goal.get("status"),
         "profile_version": profile.get("profile_version"),
         "selected_strategy": profile.get("primary_strategy"),
         "auxiliary_strategies": profile.get("auxiliary_strategies", []),
@@ -556,6 +565,11 @@ async def explain_goal(request: Request, goal_id: str) -> dict[str, Any]:
         "limits": profile.get("effective_limits", {}),
         "safe_trace": context.get("safe_trace", {}),
         "cost_usd": context.get("cost_usd", 0.0),
+        "decision_traces": context.get("decision_traces", []),
+        "model_selections": context.get("model_selections", {}),
+        "rag_citations": context.get("rag_citations", []),
+        "tool_reasoning": context.get("tool_reasoning", []),
+        "plan": goal.get("plan", []),
     }
 
 
@@ -841,7 +855,7 @@ async def ghost_run(request: Request, body: GhostRunRequest) -> dict[str, Any]:
             return {
                 "name": strategy.name,
                 "goal_id": None,
-                "error": str(exc),
+                "error": _public_error(exc),
                 "status": "failed",
             }
 
@@ -852,12 +866,27 @@ async def ghost_run(request: Request, body: GhostRunRequest) -> dict[str, Any]:
     goal_ids: dict[str, str] = {
         r["name"]: r["goal_id"] for r in strategy_results if r.get("goal_id")
     }
+    if not goal_ids:
+        # Every strategy failed: nothing is running, so do not answer 202.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"message": "No ghost-run strategy could be submitted",
+                    "strategies": strategy_results},
+        )
 
     return {
         "ghost_run_id": ghost_run_id,
         "goal_ids": goal_ids,
         "strategies": strategy_results,
     }
+
+
+def _public_error(exc: Exception) -> str:
+    """Client-safe error text: an HTTPException's detail, else the error type
+    (``str(exc)`` leaked internals such as DSNs and SQL)."""
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    return type(exc).__name__
 
 
 class BatchGoalRequest(BaseModel):
@@ -898,7 +927,7 @@ async def submit_batch_goals(request: Request, body: BatchGoalRequest) -> dict[s
                     "goal_id": None,
                     "goal": goal_text[:100],
                     "status": "error",
-                    "error": str(exc),
+                    "error": _public_error(exc),
                 }
             )
 
@@ -925,10 +954,14 @@ async def get_batch_status(request: Request, batch_id: str) -> dict[str, Any]:
         try:
             goal = await svc.get_goal(goal_id=gid, tenant_ctx=tenant_ctx)
             statuses.append({"goal_id": gid, "status": goal.get("status"), "error": None})
+        except NotFoundError:
+            statuses.append({"goal_id": gid, "status": "not_found", "error": "not found"})
         except Exception as exc:
-            statuses.append({"goal_id": gid, "status": "not_found", "error": str(exc)})
+            # A lookup failure is NOT "not found": it used to be, and counted
+            # toward all_complete=true while the goal might still be running.
+            statuses.append({"goal_id": gid, "status": "unknown", "error": _public_error(exc)})
 
-    all_done = all(
+    all_done = bool(statuses) and all(
         s["status"] in ("complete", "failed", "cancelled", "not_found") for s in statuses
     )
     return {
@@ -1178,6 +1211,12 @@ async def submit_goal_feedback(
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
         raise HTTPException(status_code=401, detail="Auth required")
+    # Feedback on a goal that does not exist (or belongs to another tenant) used
+    # to be accepted and stored.
+    try:
+        await _goal_service(request).get_goal(goal_id=goal_id, tenant_ctx=tenant_ctx)
+    except NotFoundError as exc:
+        raise _not_found_response(request, exc) from exc
 
     # Store feedback in golden dataset if high confidence
     if body.is_correct is not None:
@@ -1206,31 +1245,37 @@ async def submit_goal_feedback(
         from app.db.session import get_session_factory
 
         _db = get_session_factory()
-        if _db is not None:
-            async with (
-                _db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
-            ):
-                await session.execute(
-                    text("""
-                        INSERT INTO goal_feedback
-                            (id, goal_id, tenant_id, rating, correction, created_at)
-                        VALUES
-                            (:id, :goal_id, :tenant_id, :rating, :correction, NOW())
-                    """),
-                    {
-                        "id": str(_uuid.uuid4()),
-                        "goal_id": goal_id,
-                        "tenant_id": tenant_ctx.tenant_id,
-                        "rating": body.rating,
-                        "correction": body.comment or None,
-                    },
-                )
+        if _db is None:
+            raise RuntimeError("no database configured")
+        async with (
+            _db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                    INSERT INTO goal_feedback
+                        (id, goal_id, tenant_id, rating, correction, created_at)
+                    VALUES
+                        (:id, :goal_id, :tenant_id, :rating, :correction, NOW())
+                """),
+                {
+                    "id": str(_uuid.uuid4()),
+                    "goal_id": goal_id,
+                    "tenant_id": tenant_ctx.tenant_id,
+                    "rating": body.rating,
+                    "correction": body.comment or None,
+                },
+            )
     except Exception as _exc:
         import logging
 
-        logging.getLogger(__name__).warning("goal_feedback_persist_failed: %s", _exc)
+        # Was a warning followed by "feedback_recorded" for feedback never stored.
+        logging.getLogger(__name__).error("goal_feedback_persist_failed: %s", _exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Feedback could not be recorded; retry",
+        ) from _exc
 
     return {
         "goal_id": goal_id,
@@ -1259,23 +1304,3 @@ async def inject_persistence_guidance(
         "guidance_length": len(body.guidance),
     }
 
-
-@router.get("/{goal_id}/explain")
-async def get_goal_explanation(request: Request, goal_id: str) -> dict[str, Any]:
-    """Return explainability traces — why each decision was made."""
-    tenant = _require_tenant(request)
-    svc = _goal_service(request)
-    try:
-        goal = await svc.get_goal(goal_id=goal_id, tenant_ctx=tenant)
-    except Exception as _b904_exc:
-        raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found") from _b904_exc
-    ctx = goal.get("execution_context") or {}
-    return {
-        "goal_id": goal_id,
-        "decision_traces": ctx.get("decision_traces", []),
-        "model_selections": ctx.get("model_selections", {}),
-        "rag_citations": ctx.get("rag_citations", []),
-        "tool_reasoning": ctx.get("tool_reasoning", []),
-        "plan": goal.get("plan", []),
-        "status": goal.get("status"),
-    }

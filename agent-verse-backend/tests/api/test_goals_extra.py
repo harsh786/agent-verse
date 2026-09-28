@@ -74,8 +74,8 @@ def test_goal_feedback_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_goal_feedback_db_exception_does_not_crash() -> None:
-    """FIX 1: DB failure logs a warning and still returns success (graceful degradation)."""
+def test_goal_feedback_db_failure_is_503_not_recorded() -> None:
+    """A failed write must not answer "feedback_recorded" (it used to)."""
     svc = AsyncMock()
 
     # Simulate a DB factory that raises on use
@@ -91,8 +91,8 @@ def test_goal_feedback_db_exception_does_not_crash() -> None:
             headers={"X-API-Key": _KEY},
         )
 
-    # Graceful degradation: still 200, not 500
-    assert resp.status_code in (200, 422)  # 422 only if Pydantic rejects payload
+    assert resp.status_code == 503
+    assert "db offline" not in resp.text
 
 
 # ---------------------------------------------------------------------------
