@@ -323,6 +323,10 @@ class ExecutorMixin:
                 return graph
 
             try:
+                _tree_model = ""
+                if self._model_router is not None:
+                    with contextlib.suppress(Exception):
+                        _tree_model = self._model_router.model_for("planning") or ""
                 sub_goals: list[SubGoal] = await execute_goal_tree(
                     agent_state.goal,
                     planner=self._planner,
@@ -330,6 +334,7 @@ class ExecutorMixin:
                     parent_goal_id=agent_state.goal_id,
                     graph_factory=_sub_graph_factory,
                     event_callback=self._event_callback,
+                    model=_tree_model,
                 )
                 agent_state.sub_goals = sub_goals
                 if sub_goals:

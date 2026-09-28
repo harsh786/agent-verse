@@ -207,3 +207,52 @@ async def test_graph_goal_tree_enabled_small_plan_skips_decompose() -> None:
     state = await graph.run(goal="small goal", tenant_ctx=TENANT)
     assert state.status == GoalStatus.COMPLETE
     assert state.sub_goals == []
+
+
+async def test_dependent_of_failed_sub_goal_is_skipped_not_run() -> None:
+    """A sub-goal whose dependency failed must not run (was: ran on missing inputs)."""
+    planner = FakeProvider(
+        responses=[
+            '{"decompose": true, "sub_goals": ['
+            '{"id": "sg1", "description": "fetch data", "depends_on": []},'
+            '{"id": "sg2", "description": "report on data", "depends_on": ["sg1"]},'
+            '{"id": "sg3", "description": "archive report", "depends_on": ["sg2"]}'
+            "]}"
+        ]
+    )
+    graphs_built: list[str] = []
+
+    def make_graph() -> AgentGraph:
+        graphs_built.append("g")
+        p = FakeProvider(
+            responses=[
+                '{"steps": ["work"]}',
+                "",  # empty output
+                '{"success": false, "reason": "no data"}',
+            ]
+            * 20
+        )
+        return AgentGraph(planner=p, executor=p, verifier=p, max_iterations=1)
+
+    sub_goals = await execute_goal_tree(
+        "fetch and report",
+        planner=planner,
+        tenant_ctx=TENANT,
+        parent_goal_id="parent-dep-fail",
+        graph_factory=make_graph,
+    )
+    by_id = {sg.sub_goal_id: sg for sg in sub_goals}
+    assert by_id["sg1"].status == GoalStatus.FAILED
+    assert by_id["sg2"].status == GoalStatus.FAILED
+    assert "dependency sg1" in by_id["sg2"].error
+    assert "dependency sg2" in by_id["sg3"].error
+    # Only sg1 was executed.
+    assert len(graphs_built) == 1
+    assert by_id["synthesis"].status == GoalStatus.FAILED
+
+
+async def test_decompose_uses_the_graph_planning_model() -> None:
+    """The planner's routed model is used (was: always the platform default)."""
+    p = FakeProvider(responses=['{"decompose": false, "sub_goals": []}'])
+    await decompose_goal("anything", p, TENANT, "parent-m", model="tenant-planner")
+    assert p.call_history[0].model == "tenant-planner"
