@@ -1769,7 +1769,10 @@ class TestMcpWebSocket:
 
     def test_resources_and_prompts_list_fallback(self) -> None:
         client = TestClient(_ws_app())
-        with client.websocket_connect(f"/v1/org/{ORG_ID}/mcp?api_key=abc") as ws:
+        # ?api_key= is no longer accepted (key in URL); use the header.
+        with client.websocket_connect(
+            f"/v1/org/{ORG_ID}/mcp", headers={"X-API-Key": "abc"}
+        ) as ws:
             ws.send_json({"id": 6, "method": "resources/list"})
             resp = ws.receive_json()
             assert "resources" in resp["result"]

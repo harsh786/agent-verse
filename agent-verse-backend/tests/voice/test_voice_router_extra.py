@@ -542,6 +542,10 @@ def _ws_with_key(key: str | None) -> MagicMock:
     ws = MagicMock()
     ws.headers = {"x-api-key": key} if key else {}
     ws.query_params = {"api_key": "query-key-must-be-ignored"}
+    # No DB / Redis: nothing to enforce an IP allowlist from (a MagicMock
+    # tenant_service would look like a failing DB and the check fails closed).
+    ws.app.state.tenant_service = None
+    ws.app.state._rate_limiter_redis = None
     return ws
 
 

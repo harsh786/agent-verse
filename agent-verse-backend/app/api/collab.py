@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import json
 import logging as _logging
 import secrets
 import time
 import uuid
-from binascii import Error as BinasciiError
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect, status
@@ -242,27 +240,20 @@ def _store(request: Request) -> CollaborationStore:
     return store
 
 
-async def _resolve_ws_tenant(websocket: WebSocket) -> TenantContext | None:
-    api_key = websocket.headers.get("X-API-Key")
-    protocol_header = websocket.headers.get("sec-websocket-protocol", "")
-    for protocol in [p.strip() for p in protocol_header.split(",") if p.strip()]:
-        if protocol.startswith("av.v1."):
-            encoded = protocol.removeprefix("av.v1.")
-            padding = "=" * (-len(encoded) % 4)
-            try:
-                api_key = base64.urlsafe_b64decode(f"{encoded}{padding}").decode()
-            except (BinasciiError, UnicodeDecodeError):
-                return None
-            break
-    if not api_key:
-        return None
-    resolver = getattr(websocket.app.state, "_tenant_key_resolver", None)
-    if resolver is None:
-        svc = getattr(websocket.app.state, "tenant_service", None)
-        if svc is None:
-            return None
-        return cast(TenantContext | None, await svc.resolve_api_key(api_key))
-    return cast(TenantContext | None, await resolver(api_key))
+async def _resolve_ws_tenant(
+    websocket: WebSocket, *, required_scope: str, write: bool
+) -> TenantContext | None:
+    """Delegate to the shared WebSocket authenticator.
+
+    Collab kept its own copy, which skipped the tenant IP allowlist, the key's
+    explicit scopes / roles and MFA that app.tenancy.ws_auth enforces.
+    """
+    from app.tenancy.ws_auth import resolve_ws_tenant
+
+    return cast(
+        TenantContext | None,
+        await resolve_ws_tenant(websocket, required_scope=required_scope, write=write),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +275,7 @@ async def _presence_send(ws: WebSocket, payload: dict[str, Any]) -> None:
 @router.websocket("/presence/{org_id}/ws")
 async def org_presence_websocket(websocket: WebSocket, org_id: str) -> None:
     """Track viewers of an org and broadcast join/leave to the others."""
-    tenant_ctx = await _resolve_ws_tenant(websocket)
+    tenant_ctx = await _resolve_ws_tenant(websocket, required_scope="collab:read", write=False)
     if tenant_ctx is None:
         await websocket.close(code=4401)
         return
@@ -478,7 +469,7 @@ async def get_consensus(request: Request, session_id: str) -> dict[str, Any]:
 
 @router.websocket("/sessions/{session_id}/ws")
 async def collab_websocket(websocket: WebSocket, session_id: str) -> None:
-    tenant_ctx = await _resolve_ws_tenant(websocket)
+    tenant_ctx = await _resolve_ws_tenant(websocket, required_scope="collab:write", write=True)
     if tenant_ctx is None:
         await websocket.close(code=4401)
         return
@@ -864,13 +855,14 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
 
     Authentication accepts either:
     - ``?token=<crdt_token>``  — short-lived token from POST /collab/crdt-token (preferred)
-    - ``?api_key=<key>``       — long-lived API key (fallback for older clients)
+    - an API key in ``X-API-Key`` / ``Authorization`` / the ``av.v1.`` subprotocol
+      (shared WebSocket authenticator: IP allowlist, scopes, MFA enforced).
+      ``?api_key=`` is no longer accepted — it put the permanent key in the URL.
 
     Supports multi-process deployments when Redis is configured.
     Falls back to in-process routing when Redis is unavailable.
     """
     crdt_token = websocket.query_params.get("token", "")
-    api_key = websocket.query_params.get("api_key", "")
 
     tenant_id: str | None = None
 
@@ -883,27 +875,12 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
         else:
             await websocket.close(code=4401, reason="Invalid or expired CRDT token")
             return
-
-    # 2. Fall back to API key validation
-    elif api_key:
-        try:
-            app_state = websocket.app.state if hasattr(websocket, "app") else None
-            tenant_service = getattr(app_state, "tenant_service", None) if app_state else None
-            if tenant_service is None:
-                await websocket.close(code=4401, reason="Unauthorized")
-                return
-            tenant = await tenant_service.resolve_api_key(api_key)
-            if tenant is None:
-                await websocket.close(code=4401, reason="Invalid API key")
-                return
-            tenant_id = tenant.tenant_id
-        except Exception:
-            await websocket.close(code=4401, reason="Auth error")
-            return
-
     else:
-        await websocket.close(code=4401, reason="Unauthorized")
-        return
+        tenant = await _resolve_ws_tenant(websocket, required_scope="collab:write", write=True)
+        if tenant is None:
+            await websocket.close(code=4401, reason="Unauthorized")
+            return
+        tenant_id = tenant.tenant_id
 
     # 3. Verify the room belongs to this tenant
     # Room format: collab-{tenantId}-{sessionId}

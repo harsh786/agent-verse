@@ -7,6 +7,7 @@ Supplements tests/api/test_collab.py, test_collab_extra3.py and
 test_collab_api_comprehensive.py — see those for the base session/operation
 CRUD and the primary collab websocket coverage.
 """
+
 from __future__ import annotations
 
 import json
@@ -150,9 +151,7 @@ def test_presence_websocket_join_and_section_update_broadcast() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     protocol_a = f"av.v1.{_encode(KEY_A)}"
 
-    with client.websocket_connect(
-        "/collab/presence/org-1/ws", subprotocols=[protocol_a]
-    ) as ws1:
+    with client.websocket_connect("/collab/presence/org-1/ws", subprotocols=[protocol_a]) as ws1:
         with client.websocket_connect(
             "/collab/presence/org-1/ws", subprotocols=[protocol_a]
         ) as ws2:
@@ -181,9 +180,7 @@ def test_presence_websocket_tenant_isolation() -> None:
     protocol_a = f"av.v1.{_encode(KEY_A)}"
     protocol_b = f"av.v1.{_encode(KEY_B)}"
 
-    with client.websocket_connect(
-        "/collab/presence/org-1/ws", subprotocols=[protocol_a]
-    ) as ws_a:
+    with client.websocket_connect("/collab/presence/org-1/ws", subprotocols=[protocol_a]) as ws_a:
         with client.websocket_connect(
             "/collab/presence/org-1/ws", subprotocols=[protocol_b]
         ) as ws_b:
@@ -200,9 +197,7 @@ def test_presence_websocket_tenant_isolation() -> None:
 def test_presence_websocket_ignores_non_json_and_non_presence_messages() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     protocol_a = f"av.v1.{_encode(KEY_A)}"
-    with client.websocket_connect(
-        "/collab/presence/org-1/ws", subprotocols=[protocol_a]
-    ) as ws:
+    with client.websocket_connect("/collab/presence/org-1/ws", subprotocols=[protocol_a]) as ws:
         ws.send_text("not-json")
         ws.send_text(json.dumps({"type": "something.else"}))
         # Connection stays open — send a real update to confirm liveness.
@@ -658,16 +653,29 @@ def test_crdt_ws_valid_token_joins_room_and_broadcasts_binary() -> None:
             assert received == b"\x00\x01update"
 
 
-def test_crdt_ws_api_key_fallback_success() -> None:
+def test_crdt_ws_api_key_via_subprotocol_success() -> None:
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    with client.websocket_connect(
+        f"/collab/crdt/collab-{TENANT_A.tenant_id}-s1",
+        subprotocols=[f"av.v1.{_encode(KEY_A)}"],
+    ):
+        pass  # Reaching accept() without raising is the assertion.
+
+
+def test_crdt_ws_refuses_a_key_in_the_query_string() -> None:
     app = _make_app()
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(spec=["resolve_api_key"])
     mock_svc.resolve_api_key = AsyncMock(return_value=TENANT_A)
     app.state.tenant_service = mock_svc
     client = TestClient(app, raise_server_exceptions=False)
-
-    with client.websocket_connect(f"/collab/crdt/collab-{TENANT_A.tenant_id}-s1?api_key={KEY_A}"):
-        pass  # Reaching accept() without raising is the assertion.
-    mock_svc.resolve_api_key.assert_awaited_once_with(KEY_A)
+    try:
+        with client.websocket_connect(
+            f"/collab/crdt/collab-{TENANT_A.tenant_id}-s1?api_key={KEY_A}"
+        ):
+            raise AssertionError("?api_key= unexpectedly accepted")
+    except Exception as exc:
+        assert getattr(exc, "code", None) == 4401
+    mock_svc.resolve_api_key.assert_not_awaited()
 
 
 def test_crdt_ws_api_key_fallback_invalid_key_closes() -> None:
@@ -711,9 +719,7 @@ def test_collab_ws_broadcast_drops_dead_local_peer() -> None:
             raise RuntimeError("peer socket is gone")
 
     protocol_a = f"av.v1.{_encode(KEY_A)}"
-    with client.websocket_connect(
-        f"/collab/sessions/{sid}/ws", subprotocols=[protocol_a]
-    ) as ws:
+    with client.websocket_connect(f"/collab/sessions/{sid}/ws", subprotocols=[protocol_a]) as ws:
         broken = _BrokenPeer()
         collab_mod._ws_connections[sid].append(broken)  # type: ignore[arg-type]
         assert broken in collab_mod._ws_connections[sid]

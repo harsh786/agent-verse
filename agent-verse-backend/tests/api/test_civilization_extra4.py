@@ -797,13 +797,26 @@ def test_civilization_ws_rejects_unauthenticated(query: str) -> None:
     assert exc.value.code == 4401
 
 
-def test_civilization_ws_with_api_key_tenant_resolution() -> None:
-    """Lines 856-866: WebSocket resolves tenant from api_key query param."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+def test_civilization_ws_refuses_a_valid_key_in_the_query_string() -> None:
+    """``?api_key=`` put the permanent key in URLs/access logs; it is refused."""
+    from starlette.websockets import WebSocketDisconnect
 
-    with client.websocket_connect(f"/civilizations/civ-1/ws?api_key={_VALID_KEY}") as ws:
-        data = ws.receive_text()
-        msg = json.loads(data)
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    with (
+        pytest.raises(WebSocketDisconnect) as exc,
+        client.websocket_connect(f"/civilizations/civ-1/ws?api_key={_VALID_KEY}"),
+    ):
+        pass
+    assert exc.value.code == 4401
+
+
+def test_civilization_ws_accepts_a_read_only_stream_token() -> None:
+    from app.auth.stream_tokens import mint_stream_token
+
+    token = mint_stream_token(tenant_id=_CTX.tenant_id, key_id=_CTX.api_key_id)
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    with client.websocket_connect(f"/civilizations/civ-1/ws?token={token}") as ws:
+        msg = json.loads(ws.receive_text())
         assert "type" in msg
 
 
