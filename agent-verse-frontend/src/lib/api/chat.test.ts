@@ -188,11 +188,48 @@ describe('chatApi artifacts, folders, uploads and url helpers', () => {
     expect(result.attachment_id).toBe('att1');
   });
 
-  test('streamUrl and artifactDownloadUrl embed the url-encoded api key without hitting fetch', () => {
-    const stream = chatApi.streamUrl('s1', 'm1');
-    expect(stream).toBe(`${BASE}/chat/sessions/s1/stream?message_id=m1&api_key=k-123`);
-    const download = chatApi.artifactDownloadUrl('a1');
-    expect(download).toBe(`${BASE}/chat/artifacts/a1/download?api_key=k-123`);
+  test('streamUrl carries the url-encoded stream token and never the api key, without hitting fetch', () => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    const stream = chatApi.streamUrl('s1', 'm1', 'tok/+=1');
+    expect(stream).toBe(`${BASE}/chat/sessions/s1/stream?message_id=m1&token=tok%2F%2B%3D1`);
+    expect(stream).not.toContain('api_key=');
+    expect(stream).not.toContain('k-123');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test('streamToken GETs /tenants/stream-token with the API key header and returns the token', async () => {
+    const spy = mockFetch({ token: 'stream-tok' });
+    const token = await chatApi.streamToken();
+    const c = lastCall(spy);
+    expect(c.url).toBe(`${BASE}/tenants/stream-token`);
+    expect(c.method).toBe('GET');
+    expect(c.headers['X-API-Key']).toBe('k-123');
+    expect(c.url).not.toContain('api_key=');
+    expect(token).toBe('stream-tok');
+  });
+
+  test('streamToken surfaces a failed mint as an HTTP error', async () => {
+    mockFetch({ detail: 'nope' }, 401);
+    await expect(chatApi.streamToken()).rejects.toThrow(/HTTP 401/);
+  });
+
+  test('downloadArtifact fetches the artifact with the API key header (not in the URL) and returns a Blob', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('file-bytes', { status: 200, headers: { 'Content-Type': 'application/pdf' } }),
+    );
+    const blob = await chatApi.downloadArtifact('a1');
+    const c = lastCall(spy);
+    expect(c.url).toBe(`${BASE}/chat/artifacts/a1/download`);
+    expect(c.url).not.toContain('api_key=');
+    expect(c.method).toBe('GET');
+    expect(c.headers['X-API-Key']).toBe('k-123');
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.size).toBe('file-bytes'.length);
+  });
+
+  test('downloadArtifact rejects on a non-ok response', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('gone', { status: 404 }));
+    await expect(chatApi.downloadArtifact('a1')).rejects.toThrow(/HTTP 404/);
   });
 
   test('listModels GETs /chat/models and returns the parsed list', async () => {

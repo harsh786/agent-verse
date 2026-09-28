@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
       artifacts: [{ id: 'art1', session_id: 's1', title: 'Report', language: 'markdown', content: '# hi', created_at: new Date().toISOString() }],
     }),
   ),
-  artifactDownloadUrl: vi.fn(() => 'http://test/artifact/art1'),
+  downloadArtifact: vi.fn(() => Promise.resolve(new Blob(['# hi']))),
   createSession: vi.fn(() => Promise.resolve({ ...baseSession, id: 'new-session-1', title: 'New Chat' })),
   approve: vi.fn(() => Promise.resolve({ status: 'approved' })),
   reject: vi.fn(() => Promise.resolve({ status: 'rejected' })),
@@ -57,14 +57,16 @@ vi.mock('@/lib/api/chat', () => ({
     listMessages: () => Promise.resolve({ messages: [] }),
     listModels: () => Promise.resolve({ models: ['gpt-4o'] }),
     listArtifacts: mocks.listArtifacts,
-    artifactDownloadUrl: mocks.artifactDownloadUrl,
+    downloadArtifact: mocks.downloadArtifact,
     sendMessage: mocks.sendMessage,
     editMessage: mocks.editMessage,
     uploadAttachment: mocks.uploadAttachment,
     deleteSession: mocks.deleteSession,
     pinSession: mocks.pinSession,
     createSession: mocks.createSession,
-    streamUrl: () => 'http://test/stream',
+    // The hook mints a short-lived stream token before opening the EventSource.
+    streamToken: () => Promise.resolve('stream-tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://test/stream?token=${token}`,
   },
 }));
 
@@ -192,6 +194,15 @@ describe('ChatPage — SSE error banner', () => {
     await waitFor(() => expect(mocks.sendMessage).toHaveBeenCalled());
     const [, content] = mocks.sendMessage.mock.calls[0] as unknown as [string, string];
     expect(content).toBe('please deploy');
+  });
+});
+
+describe('ChatPage — stream auth', () => {
+  it('opens the chat stream with a minted stream token, never the api key', async () => {
+    renderPage();
+    const es = await sendMsg();
+    expect(es.url).toBe('http://test/stream?token=stream-tok');
+    expect(es.url).not.toContain('api_key=');
   });
 });
 

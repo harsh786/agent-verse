@@ -44,7 +44,9 @@ vi.mock('@/lib/api/chat', () => ({
     updateSession: mocks.updateSession,
     getUsage: mocks.getUsage,
     summarizeSession: mocks.summarizeSession,
-    streamUrl: () => 'http://test/stream',
+    // The hook mints a short-lived stream token before opening the EventSource.
+    streamToken: () => Promise.resolve('stream-tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://test/stream?token=${token}`,
   },
 }));
 

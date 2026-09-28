@@ -1,9 +1,14 @@
 /** Phase 7 — the stream hook accumulates the structural event sequence. */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { useChatStream } from './useChatStream';
 
-vi.mock('@/lib/api/chat', () => ({ chatApi: { streamUrl: () => 'http://x/stream' } }));
+vi.mock('@/lib/api/chat', () => ({
+  chatApi: {
+    streamToken: () => Promise.resolve('tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://x/stream?token=${token}`,
+  },
+}));
 
 class MockES {
   static instances: MockES[] = [];
@@ -21,9 +26,10 @@ beforeEach(() => {
 });
 
 describe('useChatStream accumulation', () => {
-  it('accumulates structural events in order and skips token/reasoning', () => {
+  it('accumulates structural events in order and skips token/reasoning', async () => {
     const { result } = renderHook(() => useChatStream('s1'));
     act(() => result.current.startStream('m1'));
+    await waitFor(() => expect(MockES.instances).toHaveLength(1));
     const es = MockES.instances[0];
     act(() => {
       es.emit({ type: 'plan_ready', steps: ['a'] });
@@ -41,9 +47,10 @@ describe('useChatStream accumulation', () => {
     expect(result.current.isStreaming).toBe(false);
   });
 
-  it('resets the accumulator on a new stream', () => {
+  it('resets the accumulator on a new stream', async () => {
     const { result } = renderHook(() => useChatStream('s1'));
     act(() => result.current.startStream('m1'));
+    await waitFor(() => expect(MockES.instances).toHaveLength(1));
     act(() => MockES.instances[0].emit({ type: 'plan_ready' }));
     expect(result.current.events).toHaveLength(1);
     act(() => result.current.startStream('m2'));

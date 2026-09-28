@@ -148,15 +148,27 @@ export const chatApi = {
       if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
     }),
 
-  // SSE stream URL helper
-  streamUrl: (sessionId: string, messageId: string): string =>
-    `${API_BASE}/chat/sessions/${sessionId}/stream?message_id=${messageId}&api_key=${encodeURIComponent(getApiKey())}`,
+  // Short-lived, read-only stream token for EventSource (which cannot send
+  // headers). The permanent API key used to go in the stream URL itself, so it
+  // landed in access logs, proxy logs and browser history.
+  streamToken: (): Promise<string> =>
+    fetch(`${API_BASE}/tenants/stream-token`, { headers: headers() })
+      .then((r) => _json<{ token: string }>(r))
+      .then((body) => body.token),
 
-  // Download URL for a chat-generated artifact/document. The api_key is passed
-  // as a query param (the tenant middleware accepts it) because a plain browser
-  // navigation cannot set the X-API-Key header.
-  artifactDownloadUrl: (artifactId: string): string =>
-    `${API_BASE}/chat/artifacts/${artifactId}/download?api_key=${encodeURIComponent(getApiKey())}`,
+  // SSE stream URL helper (auth: a stream token from streamToken()).
+  streamUrl: (sessionId: string, messageId: string, token: string): string =>
+    `${API_BASE}/chat/sessions/${sessionId}/stream?message_id=${encodeURIComponent(messageId)}&token=${encodeURIComponent(token)}`,
+
+  // Download a chat-generated artifact with an authenticated fetch. It used to
+  // be a plain link carrying ?api_key= in the URL.
+  downloadArtifact: (artifactId: string): Promise<Blob> =>
+    fetch(`${API_BASE}/chat/artifacts/${artifactId}/download`, { headers: headers() }).then(
+      (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.blob();
+      },
+    ),
 
   // Search
   search: (

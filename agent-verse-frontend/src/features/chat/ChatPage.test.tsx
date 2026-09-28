@@ -33,7 +33,9 @@ vi.mock('@/lib/api/chat', () => ({
       }),
     sendMessage: () =>
       Promise.resolve({ intent: 'QA', message_id: 'm1', session_id: 's1', clarify_request: null, schedule_confirmation: null }),
-    streamUrl: () => 'http://test/stream',
+    // The hook mints a short-lived stream token before opening the EventSource.
+    streamToken: () => Promise.resolve('stream-tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://test/stream?token=${token}`,
   },
 }));
 

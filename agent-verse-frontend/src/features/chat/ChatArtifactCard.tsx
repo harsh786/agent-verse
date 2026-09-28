@@ -8,6 +8,7 @@
 import { type JSX } from 'react';
 import { FileText, Download, Maximize2 } from 'lucide-react';
 import { chatApi } from '@/lib/api/chat';
+import { toast } from '@/stores/toast';
 
 export interface ArtifactCardData {
   artifactId: string;
@@ -43,16 +44,34 @@ export function ChatArtifactCard({ artifact, onOpen }: Props): JSX.Element {
             <Maximize2 className="h-4 w-4" />
           </button>
         )}
-        <a
-          href={chatApi.artifactDownloadUrl(artifactId)}
-          download={title}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={() => {
+            // Authenticated fetch + blob: a plain link had to carry the API key
+            // in its URL (?api_key=), leaking it into logs and history.
+            chatApi
+              .downloadArtifact(artifactId)
+              .then((blob) => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = title;
+                // Attached for the click (some browsers ignore detached anchors);
+                // revoke on the next tick so the download has started first.
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 0);
+              })
+              .catch(() => {
+                toast({ kind: 'error', message: `Could not download ${title}` });
+              });
+          }}
           aria-label={`Download ${title}`}
           className="rounded-lg p-1.5 text-indigo-600 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-900"
         >
           <Download className="h-4 w-4" />
-        </a>
+        </button>
       </div>
     </div>
   );

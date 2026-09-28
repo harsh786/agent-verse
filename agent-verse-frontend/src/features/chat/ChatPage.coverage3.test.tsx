@@ -32,7 +32,7 @@ const baseSession = {
 const mocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   listArtifacts: vi.fn(),
-  artifactDownloadUrl: vi.fn(() => 'http://test/artifact/art1'),
+  downloadArtifact: vi.fn(() => Promise.resolve(new Blob(['# hi']))),
   getUsage: vi.fn(),
   summarizeSession: vi.fn(),
   listModels: vi.fn(() => Promise.resolve({ models: ['gpt-4o'] })),
@@ -45,11 +45,13 @@ vi.mock('@/lib/api/chat', () => ({
     listMessages: () => Promise.resolve({ messages: [] }),
     listModels: mocks.listModels,
     listArtifacts: mocks.listArtifacts,
-    artifactDownloadUrl: mocks.artifactDownloadUrl,
+    downloadArtifact: mocks.downloadArtifact,
     sendMessage: mocks.sendMessage,
     getUsage: mocks.getUsage,
     summarizeSession: mocks.summarizeSession,
-    streamUrl: () => 'http://test/stream',
+    // The hook mints a short-lived stream token before opening the EventSource.
+    streamToken: () => Promise.resolve('stream-tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://test/stream?token=${token}`,
   },
 }));
 
