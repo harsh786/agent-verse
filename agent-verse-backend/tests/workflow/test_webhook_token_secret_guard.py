@@ -26,3 +26,18 @@ def test_configured_secret_round_trips(monkeypatch: pytest.MonkeyPatch) -> None:
     assert wt.verify_webhook_token(token) == ("t1", "wf-9")
     monkeypatch.setenv("WORKFLOW_WEBHOOK_SECRET", "rotated")
     assert wt.verify_webhook_token(token) is None
+
+
+@pytest.mark.parametrize("env", [None, "staging", ""])
+def test_dev_key_is_refused_unless_environment_is_explicitly_local(
+    monkeypatch: pytest.MonkeyPatch, env: str | None
+) -> None:
+    """Regression: ENVIRONMENT defaulted to "development", so a deployment that
+    never set it (or ran as "staging") signed tokens with the public dev key."""
+    monkeypatch.delenv("WORKFLOW_WEBHOOK_SECRET", raising=False)
+    if env is None:
+        monkeypatch.delenv("ENVIRONMENT", raising=False)
+    else:
+        monkeypatch.setenv("ENVIRONMENT", env)
+    with pytest.raises(wt.WebhookSecretNotConfiguredError):
+        wt.make_webhook_token("t", "w")
