@@ -28,6 +28,27 @@ warnings.warn(
 )
 
 
+# Grace period between an erasure request and its execution (GDPR art. 17 SLA
+# is one month); the beat task only executes jobs whose scheduled_for has passed.
+ERASURE_GRACE_DAYS = 30
+
+# Postgres SQLSTATEs meaning "this table/column does not exist in this schema"
+# (the ordered table list is a superset across deployments) — not a failure.
+_NOT_APPLICABLE_SQLSTATES = frozenset({"42P01", "42703"})
+
+
+def _classify_delete_error(exc: BaseException) -> str:
+    """Return 'not_applicable', 'retained' (immutable by law, e.g. audit_log) or 'failed'."""
+    orig = getattr(exc, "orig", None)
+    sqlstate = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    msg = str(exc).lower()
+    if sqlstate in _NOT_APPLICABLE_SQLSTATES or "does not exist" in msg:
+        return "not_applicable"
+    if "immutable" in msg:
+        return "retained"
+    return "failed"
+
+
 @dataclass
 class DataExportRequest:
     request_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -50,6 +71,7 @@ class ComplianceController:
         # In-memory fallbacks (dev / test mode without DB)
         self._export_requests: dict[str, DataExportRequest] = {}
         self._deleted_tenants: set[str] = set()
+        self._deletion_jobs: dict[str, dict[str, Any]] = {}
         # Optional DB session factory injected via configure_services()
         self._db: Any = None
         # Optional service references
@@ -167,38 +189,73 @@ class ComplianceController:
             return None
 
     async def _db_save_deletion(self, tenant_id: str) -> None:
-        """Record the tenant's own pending-erasure request.
+        """Record the tenant's own erasure request as a durable job row.
 
         ``deleted_tenants`` is a tenant-scoped table (one row per tenant, keyed by
         ``tenant_id``): this runs on the tenant's own request path, so it is
         written under that tenant's RLS context — never the maintenance role.
-        Under the API's NOBYPASSRLS role an unscoped INSERT is rejected by the
-        table's tenant policy and the erasure request would silently never be
-        recorded.
+        The row is the job the ``process_tenant_erasures`` beat task executes once
+        ``scheduled_for`` (request time + the 30-day grace period) has passed.
+
+        A failure RAISES: this used to log a warning and let the endpoint answer
+        ``deletion_scheduled: true`` for a request that was never recorded.
         """
         if self._db is None:
             return
-        try:
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            from app.db.rls import sqlalchemy_rls_context
+        from app.db.rls import sqlalchemy_rls_context
 
-            async with (
-                self._db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_id),
-            ):
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO deleted_tenants (tenant_id, requested_at, status, scheduled_for) "
+                    "VALUES (:tid, NOW(), 'pending', NOW() + make_interval(days => :grace)) "
+                    "ON CONFLICT (tenant_id) DO NOTHING"
+                ),
+                {"tid": tenant_id, "grace": ERASURE_GRACE_DAYS},
+            )
+
+    async def _db_load_deletion(self, tenant_id: str) -> dict[str, Any] | None:
+        """Read the tenant's erasure job row (tenant RLS). Raises on DB failure."""
+        if self._db is None:
+            return None
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
                 await session.execute(
                     text(
-                        "INSERT INTO deleted_tenants (tenant_id, requested_at) "
-                        "VALUES (:tid, NOW()) ON CONFLICT (tenant_id) DO NOTHING"
+                        "SELECT status, requested_at, scheduled_for, attempts, last_error, "
+                        "completed_at, result FROM deleted_tenants WHERE tenant_id = :tid"
                     ),
                     {"tid": tenant_id},
                 )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("deletion_save_failed: %s", exc)
+            ).fetchone()
+        if row is None:
+            return None
+        status, requested_at, scheduled_for, attempts, last_error, completed_at, result = row
+        return {
+            "tenant_id": tenant_id,
+            "status": status,
+            "requested_at": requested_at.isoformat() if requested_at else None,
+            "scheduled_at": scheduled_for.isoformat() if scheduled_for else None,
+            "attempts": int(attempts or 0),
+            "last_error": last_error,
+            "completed_at": completed_at.isoformat() if completed_at else None,
+            "legal_hold": status == "on_hold",
+            "result": result if isinstance(result, dict) else None,
+        }
 
     # ── public API ─────────────────────────────────────────────────────────────
 
@@ -347,15 +404,52 @@ class ComplianceController:
         return req
 
     async def request_data_deletion(self, *, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """GDPR right-to-erasure. Records intent and schedules DB deletion in 30 days."""
-        await self._db_save_deletion(tenant_ctx.tenant_id)
-        self._deleted_tenants.add(tenant_ctx.tenant_id)
+        """GDPR right-to-erasure: record a durable erasure job due in 30 days.
+
+        With a database the job row is what ``process_tenant_erasures`` (Celery
+        beat) executes — previously nothing ever executed it. The response
+        reflects the stored job (an existing request is not reset). Without a
+        database (dev/tests) the request is only tracked in-process.
+        """
+        tid = tenant_ctx.tenant_id
+        if self._db is not None:
+            await self._db_save_deletion(tid)
+            job = await self._db_load_deletion(tid)
+            if job is None:  # pragma: no cover - insert committed but row not visible
+                raise RuntimeError("erasure request was not recorded")
+        else:
+            self._deleted_tenants.add(tid)
+            now = datetime.now(UTC)
+            job = self._deletion_jobs.setdefault(
+                tid,
+                {
+                    "tenant_id": tid,
+                    "status": "pending",
+                    "requested_at": now.isoformat(),
+                    "scheduled_at": (now + timedelta(days=ERASURE_GRACE_DAYS)).isoformat(),
+                    "attempts": 0,
+                    "last_error": None,
+                    "completed_at": None,
+                    "legal_hold": False,
+                    "result": None,
+                },
+            )
         return {
-            "tenant_id": tenant_ctx.tenant_id,
-            "deletion_scheduled": True,
-            "scheduled_at": (datetime.now(UTC) + timedelta(days=30)).isoformat(),
-            "note": "Data will be permanently deleted in 30 days per GDPR article 17.",
+            **job,
+            "deletion_scheduled": job["status"] != "completed",
+            "note": (
+                f"Data will be permanently deleted {ERASURE_GRACE_DAYS} days after the "
+                "request per GDPR article 17, unless a legal hold applies. Track progress "
+                "at GET /enterprise/compliance/delete."
+            ),
         }
+
+    async def get_deletion_status(self, *, tenant_ctx: TenantContext) -> dict[str, Any] | None:
+        """Return the tenant's erasure job as stored (DB authoritative)."""
+        if self._db is not None:
+            return await self._db_load_deletion(tenant_ctx.tenant_id)
+        job = self._deletion_jobs.get(tenant_ctx.tenant_id)
+        return dict(job) if job is not None else None
 
     def retention_sweep(self, *, retention_days: int = 90) -> dict[str, Any]:
         """Sweep and mark records older than retention_days for deletion."""
@@ -397,15 +491,37 @@ class ComplianceController:
     async def execute_data_deletion_async(
         self, *, tenant_ctx: TenantContext, db: Any
     ) -> dict[str, Any]:
-        """Execute GDPR erasure — actual DB deletion. Called 30 days after request."""
+        """Execute GDPR erasure — actual DB deletion. Called 30 days after request.
+
+        Run by the ``process_tenant_erasures`` beat task. An active legal hold on
+        the tenant BLOCKS the erasure entirely (nothing is deleted; the result
+        carries ``blocked="legal_hold"``) — the hold check fails closed. The
+        result's ``complete`` flag is False when any table failed for a reason
+        other than "not present in this schema" / "retained by law", so the job
+        is retried instead of being reported done.
+        """
         if db is None:
-            return {"error": "No database configured", "deleted_rows": 0}
+            return {"error": "No database configured", "deleted_rows": 0, "complete": False}
 
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
+        from app.governance.legal_holds import LegalHoldManager
+
+        if await LegalHoldManager(redis=None, db_factory=db).has_active_hold(
+            tenant_ctx.tenant_id
+        ):
+            return {
+                "tenant_id": tenant_ctx.tenant_id,
+                "blocked": "legal_hold",
+                "complete": False,
+                "total_rows_deleted": 0,
+                "tables": {},
+            }
 
         deleted_counts: dict[str, Any] = {}
+        failed_tables: list[str] = []
+        retained_tables: list[str] = []
         tables_ordered = [
             # Child tables first (FK constraints)
             "goal_events",
@@ -473,25 +589,22 @@ class ComplianceController:
                         deleted_counts[table] = result.rowcount
                 except Exception as exc:
                     deleted_counts[table] = f"skipped: {exc}"
+                    kind = _classify_delete_error(exc)
+                    if kind == "failed":
+                        failed_tables.append(table)
+                    elif kind == "retained":
+                        retained_tables.append(table)
 
-        # Also remove from deleted_tenants tracking table
-        try:
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
-            ):
-                await session.execute(
-                    text("DELETE FROM deleted_tenants WHERE tenant_id = :tid"),
-                    {"tid": tenant_ctx.tenant_id},
-                )
-        except Exception as exc:
-            logging.getLogger(__name__).warning("compliance_deletion_tracking_failed: %s", exc)
-
+        # The deleted_tenants row is NOT removed any more: it is the durable job
+        # record (status/result) and the proof that the erasure ran. It holds no
+        # personal data — only the opaque tenant id.
         total = sum(v for v in deleted_counts.values() if isinstance(v, int))
         return {
             "tenant_id": tenant_ctx.tenant_id,
             "deleted_at": datetime.now(UTC).isoformat(),
             "total_rows_deleted": total,
             "tables": deleted_counts,
+            "failed_tables": failed_tables,
+            "retained_tables": retained_tables,
+            "complete": not failed_tables,
         }

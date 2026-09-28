@@ -15,7 +15,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
-from app.core.errors import ConflictError, NotFoundError
+from app.core.errors import ConflictError, NotFoundError, PlatformError
 from app.tenancy.context import PlanTier, TenantContext
 
 # ── utilities ─────────────────────────────────────────────────────────────────
@@ -29,6 +29,18 @@ def _hash_key(raw_key: str) -> str:
 def _generate_raw_key(plan: str = "free") -> str:
     """Generate a cryptographically random API key with a recognisable plan prefix."""
     return f"av_{plan}_{secrets.token_urlsafe(32)}"
+
+
+class KeyStoreUnavailableError(PlatformError):
+    """The API-key store (DB or shared cache) could not complete a write.
+
+    Raised instead of reporting success: a revoke that did not reach the DB left
+    the key active on every pod while the API answered 204.
+    """
+
+    code = "KEY_STORE_UNAVAILABLE"
+    http_status = 503
+    retryable = True
 
 
 # ── service ───────────────────────────────────────────────────────────────────
@@ -130,16 +142,100 @@ class TenantService:
         }
 
     async def get_tenant(self, tenant_id: str) -> dict[str, Any]:
-        """Return tenant profile.  Raises :class:`~app.core.errors.NotFoundError` if missing."""
+        """Return tenant profile.  Raises :class:`~app.core.errors.NotFoundError` if missing.
+
+        Multi-pod: when a DB is wired it is authoritative — a tenant created on
+        another pod is not in this pod's memory until restart, so reading only
+        ``self._tenants`` answered 404 for GET /tenants/me there. The in-memory
+        dict is used only when no DB is configured (tests / dev).
+        """
+        if self._db is not None:
+            profile = await self._db_get_tenant(tenant_id)
+            if profile is None:
+                raise NotFoundError(f"Tenant not found: {tenant_id}")
+            return profile
         tenant = self._tenants.get(tenant_id)
         if tenant is None:
             raise NotFoundError(f"Tenant not found: {tenant_id}")
         return dict(tenant)
 
+    async def update_plan(self, tenant_id: str, plan: str) -> None:
+        """Durably change *tenant_id*'s plan tier and drop every cached copy of it.
+
+        Billing used to call this method although it did not exist; the
+        AttributeError was swallowed and the API answered "Successfully upgraded"
+        while ``tenants.plan_tier`` never changed. It now:
+
+        1. writes ``tenants.plan_tier`` (DB is the source of truth) inside the
+           tenant's RLS context, which is also what lets it read the tenant's
+           ``api_keys`` rows (FORCE RLS) to find their cache entries;
+        2. mirrors the change into this pod's in-memory record;
+        3. deletes the SHARED Redis caches that carry the plan — ``tenant:{id}``
+           and every ``api_key:{hash}`` of the tenant — so every replica resolves
+           the new plan on its next request instead of after the 300 s TTL.
+
+        Raises ``ValueError`` for an unknown plan, :class:`NotFoundError` when the
+        tenant does not exist, and propagates any DB error — callers must never
+        report an upgrade that was not recorded.
+        """
+        new_plan = PlanTier(plan)
+        key_hashes: set[str] = set()
+        if self._db is not None:
+            from sqlalchemy import func, select, update
+
+            from app.db.models.tenant import ApiKey, Tenant
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    update(Tenant)
+                    .where(Tenant.id == tenant_id)
+                    .values(plan_tier=new_plan.value, updated_at=func.now())
+                )
+                if not result.rowcount:
+                    raise NotFoundError(f"Tenant not found: {tenant_id}")
+                key_hashes.update(
+                    (
+                        await session.execute(
+                            select(ApiKey.key_hash).where(ApiKey.tenant_id == tenant_id)
+                        )
+                    ).scalars()
+                )
+        elif tenant_id not in self._tenants:
+            raise NotFoundError(f"Tenant not found: {tenant_id}")
+
+        record = self._tenants.get(tenant_id)
+        if record is not None:
+            record["plan"] = new_plan.value
+        for kid in self._tenant_keys.get(tenant_id, []):
+            key = self._keys.get(kid)
+            if key and key.get("key_hash"):
+                key_hashes.add(str(key["key_hash"]))
+
+        if self._redis is not None:
+            try:
+                await self._redis.delete(
+                    f"tenant:{tenant_id}", *(f"api_key:{h}" for h in sorted(key_hashes))
+                )
+            except Exception as exc:
+                # The plan IS durably changed; a failed invalidation only delays it
+                # by at most the cache TTL (300 s). Log loudly rather than fail a
+                # paid upgrade that already committed.
+                logging.getLogger(__name__).error(
+                    "tenant_plan_cache_invalidation_failed tenant=%s: %s", tenant_id, exc
+                )
+
     # ── API key management ────────────────────────────────────────────────────
 
     async def list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
         """Return all keys for *tenant_id* — raw keys and hashes are **never** included."""
+        if self._db is not None:
+            # DB-authoritative (see get_tenant): keys created on other pods must list.
+            return await self._db_list_api_keys(tenant_id)
         key_ids = self._tenant_keys.get(tenant_id, [])
         return [
             {
@@ -161,16 +257,32 @@ class TenantService:
         scopes: list[str],
         expires_at: datetime | None = None,
     ) -> dict[str, Any]:
-        """Create a new API key.  The raw key is returned once and never stored."""
-        tenant = self._tenants.get(tenant_id)
-        if tenant is None:
-            raise NotFoundError(f"Tenant not found: {tenant_id}")
+        """Create a new API key.  The raw key is returned once and never stored.
+
+        Multi-pod: the tenant is looked up in the DB (authoritative) and the key
+        row must be durable before the raw key is handed out — auth resolves
+        keys against the DB only, so a key that failed to persist would be
+        unusable on every pod. The in-memory path is for the no-DB build.
+        """
+        try:
+            tenant = await self.get_tenant(tenant_id)
+        except NotFoundError:
+            raise
+        except Exception as exc:
+            # The DB-authoritative tenant read failed: a retryable 503, not a 500.
+            raise KeyStoreUnavailableError(
+                "Tenant store unavailable; no key was created.", cause=exc
+            ) from exc
 
         plan: str = tenant["plan"]
         raw_key = _generate_raw_key(plan)
         key_id = uuid.uuid4().hex
         key_hash = _hash_key(raw_key)
         created_at = datetime.now(UTC).isoformat()
+
+        # DB first: auth is DB-authoritative, so a key (and its scopes) that did
+        # not persist would be handed out and then rejected on every request.
+        await self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
 
         self._keys[key_id] = {
             "key_id": key_id,
@@ -184,9 +296,6 @@ class TenantService:
         }
         self._hash_to_key_id[key_hash] = key_id
         self._tenant_keys.setdefault(tenant_id, []).append(key_id)
-
-        # DB persistence (transactional — await to ensure key is durable before returning)
-        await self._db_create_api_key(key_id, tenant_id, name, key_hash, scopes, expires_at)
         # Invalidate tenant cache since the key roster changed
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
@@ -208,22 +317,36 @@ class TenantService:
         revocation is honoured on every pod on the next request, not just this one.
         """
         key = self._keys.get(key_id)
-        # Best-effort in-memory flip on this pod; the DB is authoritative for others.
+        if key is not None and key["tenant_id"] != tenant_id:
+            raise NotFoundError(f"API key not found: {key_id}")
         key_hash = key.get("key_hash") if key else None
-        if key is not None:
-            if key["tenant_id"] != tenant_id:
-                raise NotFoundError(f"API key not found: {key_id}")
-            key["is_active"] = False
-        # DB persistence (transactional — await to ensure revocation is durable).
-        # Returns the key_hash even when the key isn't in this pod's memory.
+        # DB first (raises KeyStoreUnavailableError on failure — it used to be
+        # swallowed, so the API answered 204 while the key stayed active in the
+        # DB and therefore on every pod). Returns the key_hash even when the key
+        # isn't in this pod's memory.
         db_hash = await self._db_revoke_api_key(key_id, tenant_id)
         key_hash = key_hash or db_hash
         if key is None and db_hash is None:
             raise NotFoundError(f"API key not found: {key_id}")
-        # Delete the SHARED per-key resolution cache so no pod serves the revoked key.
+        if key is not None:
+            key["is_active"] = False
+        # Delete the SHARED per-key resolution cache so no pod serves the revoked
+        # key from it (resolve is DB-authoritative behind this cache). A failed
+        # delete would leave the key usable cluster-wide for up to the 300 s TTL,
+        # so it is reported (503, retryable — the DB revoke is idempotent)
+        # rather than suppressed.
         if key_hash and self._redis is not None:
-            with suppress(Exception):
+            try:
                 await self._redis.delete(f"api_key:{key_hash}")
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "api_key_revoke_cache_invalidation_failed key_id=%s: %s", key_id, exc
+                )
+                raise KeyStoreUnavailableError(
+                    "API key revoked in the database but the shared auth cache could not "
+                    "be invalidated; retry the revoke.",
+                    cause=exc,
+                ) from exc
         # Also invalidate the tenant-level cache.
         await self.invalidate_tenant_cache(tenant_id, redis=self._redis)
 
@@ -248,12 +371,17 @@ class TenantService:
                 cached = await self._redis.get(cache_key)
                 if cached is not None:
                     data = _json.loads(cached)
-                    return TenantContext(
-                        tenant_id=data["tenant_id"],
-                        plan=PlanTier(data["plan"]),
-                        api_key_id=data["api_key_id"],
-                        roles=tuple(data.get("roles", ("operator",))),
-                    )
+                    # Entries written before key scopes were cached carry no
+                    # "scopes" field; trusting one would treat a narrowly scoped
+                    # key as unrestricted until the TTL ran out. Re-resolve.
+                    if "scopes" in data:
+                        return TenantContext(
+                            tenant_id=data["tenant_id"],
+                            plan=PlanTier(data["plan"]),
+                            api_key_id=data["api_key_id"],
+                            roles=tuple(data.get("roles", ("operator",))),
+                            scopes=tuple(data["scopes"]),
+                        )
             except Exception:
                 pass  # fall through on Redis errors
 
@@ -272,21 +400,9 @@ class TenantService:
                 plan=PlanTier(rec["plan"]),
                 api_key_id=rec["api_key_id"],
                 roles=tuple(rec["roles"]),
+                scopes=tuple(rec.get("scopes") or ()),
             )
-            if self._redis is not None:
-                with suppress(Exception):
-                    await self._redis.setex(
-                        cache_key,
-                        300,
-                        _json.dumps(
-                            {
-                                "tenant_id": ctx.tenant_id,
-                                "plan": ctx.plan.value,
-                                "api_key_id": ctx.api_key_id,
-                                "roles": list(ctx.roles),
-                            }
-                        ),
-                    )
+            await self._cache_resolved_key(cache_key, ctx)
             return ctx
 
         # ── In-memory lookup (no DB configured: tests / dev only) ──────────
@@ -317,25 +433,34 @@ class TenantService:
             plan=PlanTier(tenant["plan"]),
             api_key_id=key_id,
             roles=key_roles,
+            # The key's own scopes used to be dropped here, so a key created with
+            # scopes=["goals:read"] resolved to a full operator.
+            scopes=tuple(key.get("scopes") or ()),
         )
 
-        # ── Populate Redis cache ───────────────────────────────────────────
-        if self._redis is not None:
-            with suppress(Exception):  # caching is best-effort
-                await self._redis.setex(
-                    cache_key,
-                    300,
-                    _json.dumps(
-                        {
-                            "tenant_id": ctx.tenant_id,
-                            "plan": ctx.plan.value,
-                            "api_key_id": ctx.api_key_id,
-                            "roles": list(ctx.roles),
-                        }
-                    ),
-                )
-
+        await self._cache_resolved_key(cache_key, ctx)
         return ctx
+
+    async def _cache_resolved_key(self, cache_key: str, ctx: TenantContext) -> None:
+        """Best-effort write of a resolved key context to the shared Redis cache."""
+        if self._redis is None:
+            return
+        import json as _json
+
+        with suppress(Exception):  # caching is best-effort
+            await self._redis.setex(
+                cache_key,
+                300,
+                _json.dumps(
+                    {
+                        "tenant_id": ctx.tenant_id,
+                        "plan": ctx.plan.value,
+                        "api_key_id": ctx.api_key_id,
+                        "roles": list(ctx.roles),
+                        "scopes": list(ctx.scopes),
+                    }
+                ),
+            )
 
     # ── DB persistence helpers ────────────────────────────────────────────────
 
@@ -392,7 +517,19 @@ class TenantService:
                     )
                 )
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB persist tenant/default api_key failed: %s", exc)
+            # This was a warning and signup carried on: the tenant and its first
+            # key then existed only in this pod's memory — the key authenticated
+            # nowhere else (auth is DB-authoritative) and vanished on restart.
+            from sqlalchemy.exc import IntegrityError
+
+            logging.getLogger(__name__).error("DB persist tenant/default api_key failed: %s", exc)
+            if isinstance(exc, IntegrityError):
+                # The e-mail check above only sees this pod's memory; the DB
+                # unique constraint is what catches a signup made on another pod.
+                raise ConflictError(f"Email already registered: {email}") from exc
+            raise KeyStoreUnavailableError(
+                "Tenant could not be persisted; signup did not complete.", cause=exc
+            ) from exc
 
     async def _db_create_api_key(
         self,
@@ -425,7 +562,81 @@ class TenantService:
                 )
                 session.add(k)
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB persist api_key failed: %s", exc)
+            logging.getLogger(__name__).error("DB persist api_key failed: %s", exc)
+            raise KeyStoreUnavailableError(
+                "API key could not be persisted; no key was created.", cause=exc
+            ) from exc
+
+    async def _db_get_tenant(self, tenant_id: str) -> dict[str, Any] | None:
+        """Authoritative tenant profile read (``tenants`` has no RLS; the tenant GUC
+        is still set so the read is shaped like every other tenant-scoped access)."""
+        from sqlalchemy import select
+
+        from app.db.models.tenant import Tenant
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            t = (
+                await session.execute(
+                    select(Tenant).where(
+                        Tenant.id == tenant_id,
+                        Tenant.is_active == True,  # noqa: E712
+                    )
+                )
+            ).scalar_one_or_none()
+        if t is None:
+            return None
+        profile: dict[str, Any] = {
+            "tenant_id": t.id,
+            "name": t.name,
+            "email": t.email,
+            "plan": t.plan_tier,
+            "created_at": t.created_at.isoformat() if t.created_at else "",
+        }
+        # Warm this pod's cache for the helpers that still read memory (SSO lookups).
+        self._tenants.setdefault(t.id, dict(profile))
+        self._email_index.setdefault(t.email.lower(), t.id)
+        return profile
+
+    async def _db_list_api_keys(self, tenant_id: str) -> list[dict[str, Any]]:
+        """Authoritative key listing under the tenant's RLS context
+        (``api_keys_tenant_isolation`` filters on ``app.tenant_id``)."""
+        from sqlalchemy import select
+
+        from app.db.models.tenant import ApiKey
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            rows = (
+                (
+                    await session.execute(
+                        select(ApiKey)
+                        .where(ApiKey.tenant_id == tenant_id)
+                        .order_by(ApiKey.created_at)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return [
+            {
+                "key_id": k.id,
+                "name": k.name,
+                "scopes": list(k.scopes or []),
+                "expires_at": k.expires_at.isoformat() if k.expires_at else None,
+                "is_active": bool(k.is_active),
+                "created_at": k.created_at.isoformat() if k.created_at else "",
+            }
+            for k in rows
+        ]
 
     async def _db_revoke_api_key(self, key_id: str, tenant_id: str) -> str | None:
         """Mark API key as inactive in PostgreSQL; return its key_hash (for cache
@@ -460,8 +671,11 @@ class TenantService:
                 )
             return key_hash
         except Exception as exc:
-            logging.getLogger(__name__).warning("DB revoke api_key failed: %s", exc)
-            return None
+            logging.getLogger(__name__).error("DB revoke api_key failed: %s", exc)
+            raise KeyStoreUnavailableError(
+                "API key could not be revoked (key store unavailable); it is still active.",
+                cause=exc,
+            ) from exc
 
     async def _db_resolve_by_hash(self, key_hash: str) -> dict[str, Any] | None:
         """Authoritative single-key lookup by hash. Returns the active, non-expired
@@ -514,6 +728,7 @@ class TenantService:
                 "plan": tenant.plan_tier,
                 "api_key_id": key.id,
                 "roles": list(key.roles or ["operator"]) or ["operator"],
+                "scopes": list(key.scopes or []),
             }
         except Exception as exc:
             logging.getLogger(__name__).warning("DB resolve api_key failed: %s", exc)

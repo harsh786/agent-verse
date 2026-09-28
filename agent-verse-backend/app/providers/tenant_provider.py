@@ -68,6 +68,35 @@ def tenant_circuit_scope(tenant_id: str) -> str:
     return f"tenant:{tenant_id}"
 
 
+def _assert_tenant_base_url_allowed(base_url: str) -> None:
+    """A tenant-supplied base_url must be a public host.
+
+    Otherwise every LLM call is an SSRF from the platform into its own network
+    (cloud metadata, internal services). Self-hosted deployments whose tenants
+    legitimately run models on private hosts list those hosts in
+    TENANT_LLM_ALLOWED_PRIVATE_HOSTS (comma-separated hostnames).
+    """
+    import os
+    from urllib.parse import urlparse
+
+    from app.net.ssrf_guard import assert_public_url
+
+    host = (urlparse(base_url).hostname or "").lower()
+    allowed = {
+        h.strip().lower()
+        for h in os.getenv("TENANT_LLM_ALLOWED_PRIVATE_HOSTS", "").split(",")
+        if h.strip()
+    }
+    if host and host in allowed:
+        return
+    try:
+        assert_public_url(base_url, context="tenant_llm_base_url")
+    except ValueError as exc:  # SSRFError subclasses ValueError
+        raise TenantProviderError(
+            f"Tenant LLM base_url is not an allowed public endpoint: {exc}"
+        ) from exc
+
+
 def _normalise(name: str) -> str:
     key = (name or "").strip().lower()
     return _ALIASES.get(key, key)
@@ -117,6 +146,8 @@ def build_tenant_provider(
     base_url = str(cfg.get("base_url") or "").strip() or None
     if pname in REQUIRES_BASE_URL and base_url is None:
         raise TenantProviderError(f"Tenant LLM provider {pname!r} requires an explicit base_url")
+    if base_url is not None:
+        _assert_tenant_base_url_allowed(base_url)
     if pname in OFFICIAL_BASE_URLS or pname in REQUIRES_BASE_URL:
         model = model or _DEFAULT_MODELS.get(pname, "")
         if not model:

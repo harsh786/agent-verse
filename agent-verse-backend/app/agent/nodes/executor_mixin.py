@@ -1632,6 +1632,9 @@ class ExecutorMixin:
             tool_call = extract_tool_call(raw_output)
         if tool_call is not None:
             tool_call = await repair_tool_call_arguments(tool_call, step, goal=state.goal)
+        # Set once an MCP tool call actually SUCCEEDED; carries the tool's output
+        # (ids of created objects) for the rollback registration in step 10.
+        _rb_executed: dict[str, Any] | None = None
         # Validate tool name before dispatching
         if tool_call is not None and tool_call.tool:
             from app.agent.tool_calls import validate_tool_name as _validate_tn
@@ -2210,6 +2213,12 @@ class ExecutorMixin:
                                     "success" if _approved_result.success else "failed",
                                     time.monotonic() - tool_call_started,
                                 )
+                                if _approved_result.success:
+                                    _rb_executed = {
+                                        "tool": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "output": _approved_result.output,
+                                    }
                             else:
                                 # Non-supervised: log the request but do not block
                                 raw_output = self._sanitize_tool_raw_output(
@@ -2493,6 +2502,12 @@ class ExecutorMixin:
                                     "success" if result.success else "failed",
                                     time.monotonic() - tool_call_started,
                                 )
+                                if result.success:
+                                    _rb_executed = {
+                                        "tool": tool_ref.name,
+                                        "server_id": tool_ref.server_id,
+                                        "output": result.output,
+                                    }
                                 raw_output = (
                                     raw_result_output if result.success else raw_result_error
                                 )
@@ -2607,18 +2622,26 @@ class ExecutorMixin:
                     "guardrail_engine_v2_output_check_failed", error=str(_ge_out_exc)
                 )
 
-        # 10. Record rollback point
-        if self._rollback_engine is not None:
-            from app.reliability.tool_inverses import get_inverse_fn as _get_inverse_fn
-
-            _rb_tool = tool_name
-            _rb_args: dict[str, Any] = {}
-            if tool_call is not None and tool_call.arguments:
-                _rb_tool = tool_call.tool or tool_name
-                _rb_args = dict(tool_call.arguments)
-            self._rollback_engine.register(
+        # 10. Record rollback point — only for a tool call that actually ran and
+        # succeeded (nothing external to undo otherwise). The undo record carries
+        # the tool's OUTPUT, because inverses need the ids it returned (issue id,
+        # message ts, ...); registering the input args alone made every built-in
+        # inverse skip while rollback still reported success. It also carries the
+        # goal's real tenant context instead of a fabricated "rollback" tenant.
+        if self._rollback_engine is not None and _rb_executed is not None:
+            _rb_names = [
+                (tool_call.tool if tool_call is not None else "") or "",
+                str(_rb_executed["tool"]),
+                tool_name,
+            ]
+            self._rollback_engine.register_tool_call(
                 action=step,
-                inverse=_get_inverse_fn(_rb_tool, _rb_args),
+                tool_names=list(dict.fromkeys(n for n in _rb_names if n)),
+                arguments=dict(tool_call.arguments or {}) if tool_call is not None else {},
+                output=_rb_executed["output"],
+                server_id=str(_rb_executed["server_id"] or ""),
+                tenant_ctx=tenant_ctx,
+                mcp_client=self._mcp_client,
             )
 
         # 11. Decision trace for explainability — real LLM output (Task 6)
@@ -2879,6 +2902,16 @@ class ExecutorMixin:
                 "success" if result.success else "failed",
                 time.monotonic() - _t0,
             )
+            if result.success and self._rollback_engine is not None:
+                self._rollback_engine.register_tool_call(
+                    action=f"{step} [{tool_ref.name}]",
+                    tool_names=list(dict.fromkeys([name, tool_ref.name])),
+                    arguments=dict(args),
+                    output=result.output,
+                    server_id=tool_ref.server_id,
+                    tenant_ctx=tenant_ctx,
+                    mcp_client=self._mcp_client,
+                )
             if state.steps:
                 state.steps[-1].tool_calls.append(
                     {

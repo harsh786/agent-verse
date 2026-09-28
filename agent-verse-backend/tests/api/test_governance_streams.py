@@ -111,7 +111,8 @@ def test_delete_missing_notification_channel_404() -> None:
 # GET /governance/legal-holds
 # ---------------------------------------------------------------------------
 
-def test_list_legal_holds_empty_without_db() -> None:
+def test_list_legal_holds_empty_without_db(monkeypatch) -> None:
+    monkeypatch.setattr("app.api.governance._get_db", lambda _r: None)
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/governance/legal-holds", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200

@@ -32,10 +32,28 @@ def _make_app(goal_service: Any = None) -> FastAPI:
     return app
 
 
+def _realize(svc: Any) -> Any:
+    """Map these legacy mock goals onto the real GoalService shape: the factory is
+    ``_db`` (None = no DB) and scores live in ``_eval_scores[goal_id]`` — there is
+    no ``GoalRecord.eval_score`` (reading it is the bug this export had)."""
+    from types import SimpleNamespace
+
+    svc._db = None
+    scores: dict[str, Any] = {}
+    for gid, g in dict(getattr(svc, "_goals", {}) or {}).items():
+        g.goal_id = gid
+        g.goal_text = g.goal
+        score = g.__dict__.get("eval_score")
+        if isinstance(score, int | float):
+            scores[gid] = SimpleNamespace(average_score=lambda s=score: s)
+    svc._eval_scores = scores
+    return svc
+
+
 def _make_goal_service_with_examples() -> Any:
     """Mock goal service with some completed goals in memory."""
     svc = MagicMock()
-    svc._db_session_factory = None
+    svc._db = None
 
     g1 = MagicMock()
     g1.status = "complete"
@@ -59,7 +77,7 @@ def _make_goal_service_with_examples() -> Any:
     ]
 
     svc._goals = {"gid-1": g1, "gid-2": g2}
-    return svc
+    return _realize(svc)
 
 
 # ---------------------------------------------------------------------------
@@ -151,12 +169,13 @@ def test_export_training_data_limit_too_large() -> None:
 
 def test_export_excludes_failed_goals() -> None:
     svc = MagicMock()
-    svc._db_session_factory = None
+    svc._db = None
     failed_goal = MagicMock()
     failed_goal.status = "failed"
     failed_goal.eval_score = 0.9  # High score but failed status
     failed_goal.goal = "Deploy the app"
     svc._goals = {"g-failed": failed_goal}
+    _realize(svc)
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.post("/intelligence/export-training-data", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
@@ -165,7 +184,7 @@ def test_export_excludes_failed_goals() -> None:
 
 def test_export_excludes_low_score_goals() -> None:
     svc = MagicMock()
-    svc._db_session_factory = None
+    svc._db = None
     low_score_goal = MagicMock()
     low_score_goal.status = "complete"
     low_score_goal.eval_score = 0.3  # Below default threshold of 0.8
@@ -174,6 +193,7 @@ def test_export_excludes_low_score_goals() -> None:
         {"type": "step_complete", "tool_name": "test", "output": "done"}
     ]
     svc._goals = {"g-low": low_score_goal}
+    _realize(svc)
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
     resp = client.post("/intelligence/export-training-data", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200

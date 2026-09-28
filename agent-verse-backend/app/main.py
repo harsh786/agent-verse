@@ -1591,6 +1591,12 @@ def create_app(
                     celery_app=_celery_app,
                     tenant_service=getattr(app.state, "tenant_service", None),
                 )
+                # sub_workflow needs the runner and emit_event / wait-on-event
+                # need Redis; neither was ever given to the compiler, so those
+                # steps reported success without acting.
+                _wf_compiler_db.bind_services(
+                    workflow_runner=_wf_runner_db, redis=redis_for_runtime
+                )
                 app.state.workflow_run_store = _wf_run_store
                 app.state.workflow_compiler = _wf_compiler_db
                 app.state.workflow_runner = _wf_runner_db
@@ -2751,6 +2757,9 @@ def create_app(
             context_resolver=_wf_ctx, hitl_workflow_gateway=_hitl_wf_gateway
         )
         _wf_runner = WorkflowRunner(compiler=_wf_compiler)
+        # In-memory (no-DB) engine: sub_workflow runs its child inline via this
+        # runner. The lifespan rebinds the DB-backed runner + Redis.
+        _wf_compiler.bind_services(workflow_runner=_wf_runner)
         # WS-3: wire the resume callback so an approve/reject decision on a
         # suspended HITL step actually re-invokes the paused workflow run.
         # Without this, decide() only updated the WorkflowHITLRequest itself —

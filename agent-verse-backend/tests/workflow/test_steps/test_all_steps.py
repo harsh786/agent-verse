@@ -151,7 +151,10 @@ async def test_emit_event_step_no_redis():
     ctx = ContextResolver()
     node = EmitEventStepNode(step, ctx)
     state = make_state()
-    result = await node.execute(state)
+    # A real run with nothing to publish to used to report success; it must fail.
+    with pytest.raises(RuntimeError, match="cannot publish"):
+        await node.execute(state)
+    result = await node.execute({**state, "is_test_run": True})
     out = result["step_outputs"]["e1"]
     assert out["channel"] == "test.channel"
     assert out["payload"]["key"] == "val"

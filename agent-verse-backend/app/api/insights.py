@@ -810,47 +810,60 @@ async def get_benchmarks(request: Request) -> dict[str, Any]:
                 from sqlalchemy import text as _t
 
                 async with db() as session:
-                    # Cross-tenant aggregate (anonymized)
+                    # Cross-tenant aggregate (anonymized). Real schema: goals has no
+                    # cost_usd / duration_s — the old SQL referenced both, always
+                    # raised, and the endpoint could never show real data. Cost is
+                    # summed per goal from cost_ledger; duration is completed_at -
+                    # created_at. Reported only when >= 5 tenants contributed.
                     row = (
                         await session.execute(
                             _t("""
+                            WITH g AS (
+                                SELECT goals.tenant_id,
+                                       CASE WHEN goals.status IN ('complete','completed')
+                                            THEN 1.0 ELSE 0.0 END AS ok,
+                                       COALESCE(c.goal_cost, 0) AS cost,
+                                       EXTRACT(EPOCH FROM (goals.completed_at
+                                                           - goals.created_at)) AS dur,
+                                       goals.iterations AS iters
+                                FROM goals
+                                JOIN (
+                                    SELECT goal_id, SUM(cost_usd) AS goal_cost
+                                    FROM cost_ledger
+                                    WHERE goal_id IS NOT NULL AND goal_id <> ''
+                                    GROUP BY goal_id
+                                ) c ON c.goal_id = goals.id
+                                WHERE goals.status IN ('complete','completed','failed')
+                                  AND goals.created_at > NOW() - (:days * INTERVAL '1 day')
+                            )
                             SELECT
                                 COUNT(*) as total,
-                                AVG(CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END)
-                                    as success_rate,
-                                AVG(COALESCE(cost_usd, 0)) as avg_cost,
-                                AVG(COALESCE(duration_s, 0)) as avg_duration,
-                                AVG(COALESCE(iterations, 0)) as avg_iterations,
-                                PERCENTILE_CONT(0.25)
-                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p25_cost,
-                                PERCENTILE_CONT(0.50)
-                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p50_cost,
-                                PERCENTILE_CONT(0.75)
-                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p75_cost,
-                                PERCENTILE_CONT(0.90)
-                                    WITHIN GROUP (ORDER BY COALESCE(cost_usd, 0)) as p90_cost,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (
-                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
-                                ) as p25_sr,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (
-                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
-                                ) as p50_sr,
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (
-                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
-                                ) as p75_sr,
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (
-                                    ORDER BY CASE WHEN status = 'complete' THEN 1.0 ELSE 0.0 END
-                                ) as p90_sr
-                            FROM goals
-                            WHERE status IN ('complete', 'failed')
-                              AND cost_usd IS NOT NULL
-                              AND created_at > NOW() - (:days * INTERVAL '1 day')
+                                AVG(ok) as success_rate,
+                                AVG(cost) as avg_cost,
+                                AVG(COALESCE(dur, 0)) as avg_duration,
+                                AVG(COALESCE(iters, 0)) as avg_iterations,
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY cost) as p25_cost,
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY cost) as p50_cost,
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY cost) as p75_cost,
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY cost) as p90_cost,
+                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY ok) as p25_sr,
+                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ok) as p50_sr,
+                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ok) as p75_sr,
+                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ok) as p90_sr,
+                                COUNT(DISTINCT tenant_id) as n_tenants
+                            FROM g
                         """),
                             {"days": _BENCHMARK_WINDOW_DAYS},
                         )
                     ).fetchone()
 
-                    if row and row[0] and int(row[0]) >= 10:
+                    if (
+                        row
+                        and row[0]
+                        and int(row[0]) >= 10
+                        and len(row) > 13
+                        and int(row[13] or 0) >= 5
+                    ):
                         real_data = True
                         benchmarks = {
                             "platform_avg_success_rate": round(float(row[1] or 0), 3),

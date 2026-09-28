@@ -271,8 +271,23 @@ class TestBillingMockPaymentSecurity:
                 assert "not configured" in resp.json()["detail"].lower()
 
     def test_verify_payment_allowed_when_mock_explicitly_enabled(self) -> None:
-        """When allow_mock_payments=True, mock payment is accepted (dev only)."""
-        client = TestClient(_make_billing_app())
+        """When allow_mock_payments=True, mock payment is accepted (dev only) — for
+        a mock order this tenant created (the plan comes from that order)."""
+        from app.api.billing import _Order
+
+        app = _make_billing_app()
+        app.state.billing_orders_mem = {
+            "order_mock": _Order(
+                order_id="order_mock",
+                tenant_id=_CTX.tenant_id,
+                plan="professional",
+                cycle="monthly",
+                amount=9900,
+                currency="INR",
+                is_mock=True,
+            )
+        }
+        client = TestClient(app)
         with patch("app.api.billing._get_razorpay", return_value=None):
             with patch("app.core.config.get_settings") as mock_get:
                 s = MagicMock()

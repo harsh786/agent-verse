@@ -542,6 +542,27 @@ class AgentGraph(
 
     # ── Lifecycle helpers (run, checkpoint, emit, etc.) ──────────────────
 
+    async def _emergency_stop_reason(self, tenant_id: str, org_id: str | None) -> str | None:
+        """Tenant/org emergency-stop check against the API's runtime Redis.
+
+        A Redis error is logged and treated as "not stopped" (same as the
+        worker's tenant check); with no app/Redis wired there is nothing to read.
+        """
+        aps: Any = self._app_state
+        if aps is None:
+            return None
+        state = getattr(aps, "state", aps)  # FastAPI app -> app.state
+        redis = getattr(state, "_redis", None)
+        if redis is None:
+            return None
+        try:
+            from app.governance.emergency_stop import emergency_stop_reason
+
+            return await emergency_stop_reason(redis, tenant_id, org_id)
+        except Exception as exc:
+            self._logger.warning("emergency_stop_check_failed", error=str(exc))
+            return None
+
     async def run(
         self,
         *,
@@ -762,6 +783,19 @@ class AgentGraph(
                     _as_ref.context["_goal_start_ms"] = _goal_start_ms
                 except Exception:
                     pass
+
+                # Emergency stop (tenant- or org-level). In-process API execution
+                # used to check no flag at all; the worker checks the same keys.
+                _stop_reason = await self._emergency_stop_reason(tenant_ctx.tenant_id, org_id)
+                if _stop_reason:
+                    stop_state = input_state.get("agent_state") or AgentState(
+                        goal=goal, tenant_ctx=tenant_ctx
+                    )
+                    stop_state.status = GoalStatus.FAILED
+                    stop_state.error_message = _stop_reason
+                    if event_callback:
+                        await self._emit({"type": "goal_failed", "reason": _stop_reason})
+                    return stop_state
 
                 try:
                     result: dict[str, Any] = await self._graph.ainvoke(input_state, config=config)

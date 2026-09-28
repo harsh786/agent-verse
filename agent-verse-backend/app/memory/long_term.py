@@ -59,6 +59,10 @@ def _fit_ltm_vector(vec: list[float]) -> list[float] | None:
     return None
 
 
+class LongTermMemoryUnavailableError(RuntimeError):
+    """The durable long-term memory store could not be read or written."""
+
+
 @dataclass
 class LongTermMemory:
     """A single cross-session learning entry."""
@@ -139,8 +143,12 @@ class LongTermMemoryStore:
         return list(items)
 
     # ── DB-backed CRUD (durable; used by the chat /memories API) ──────────────
-    # Mirrors store_async's persistence pattern; falls back to the in-memory
-    # cache when no DB factory is wired (tests / no-DB dev).
+    # Falls back to the in-memory cache only when no DB factory is wired (tests /
+    # no-DB dev). long_term_memory is FORCE RLS and the API role is NOBYPASSRLS,
+    # so every statement MUST run inside sqlalchemy_rls_context — without the
+    # tenant GUC, lists came back empty and GDPR delete-all matched 0 rows.
+    # DB failures raise LongTermMemoryUnavailableError (-> 503) rather than
+    # returning a fake empty list / False / 0 that looks like success.
 
     async def list_all_async(
         self,
@@ -161,7 +169,13 @@ class LongTermMemoryStore:
         try:
             from sqlalchemy import text
 
-            async with db() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text(
@@ -171,57 +185,69 @@ class LongTermMemoryStore:
                         ),
                         {"tid": tenant_ctx.tenant_id, "limit": limit, "offset": offset},
                     )
-                ).mappings().all()
+                ).fetchall()
             return [
                 LongTermMemory(
-                    content=r["content"],
-                    source_goal_id=r["source_goal_id"] or "",
-                    memory_type=r["memory_type"] or "domain_fact",
-                    confidence=float(r["confidence"] or 1.0),
-                    memory_id=str(r["id"]),
-                    tags=list(r["tags"] or []),
+                    content=r[1],
+                    source_goal_id=r[4] or "",
+                    memory_type=r[2] or "domain_fact",
+                    confidence=float(r[3] or 1.0),
+                    memory_id=str(r[0]),
+                    tags=list(r[5] or []),
                 )
                 for r in rows
             ]
         except Exception as exc:
             get_logger(__name__).warning("ltm_list_db_failed", error=str(exc))
-            return self.list_all(tenant_ctx=tenant_ctx, limit=limit, offset=offset)
+            raise LongTermMemoryUnavailableError("long-term memory list failed") from exc
 
     async def delete_async(self, *, memory_id: str, tenant_ctx: TenantContext) -> bool:
-        self.delete(memory_id=memory_id, tenant_ctx=tenant_ctx)  # keep cache in sync
         db = self._db_factory
         if db is None:
-            return True
+            return self.delete(memory_id=memory_id, tenant_ctx=tenant_ctx)
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 res = await session.execute(
                     text("DELETE FROM long_term_memory WHERE id = :id AND tenant_id = :tid"),
                     {"id": memory_id, "tid": tenant_ctx.tenant_id},
                 )
-            return (res.rowcount or 0) > 0
         except Exception as exc:
             get_logger(__name__).warning("ltm_delete_db_failed", error=str(exc))
-            return False
+            raise LongTermMemoryUnavailableError("long-term memory delete failed") from exc
+        self.delete(memory_id=memory_id, tenant_ctx=tenant_ctx)  # keep cache in sync
+        return (res.rowcount or 0) > 0
 
     async def update_content_async(
         self, *, memory_id: str, content: str, tenant_ctx: TenantContext
     ) -> LongTermMemory | None:
-        # cache
+        db = self._db_factory
         found: LongTermMemory | None = None
         for m in self._memories.get(tenant_ctx.tenant_id, []):
             if m.memory_id == memory_id:
-                m.content = content
                 found = m
                 break
-        db = self._db_factory
         if db is None:
+            if found is not None:
+                found.content = content
             return found
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 res = await session.execute(
                     text(
                         "UPDATE long_term_memory SET content = :c "
@@ -229,15 +255,18 @@ class LongTermMemoryStore:
                     ),
                     {"c": content, "id": memory_id, "tid": tenant_ctx.tenant_id},
                 )
-            if (res.rowcount or 0) == 0:
-                return None
-            return found or LongTermMemory(
-                content=content, source_goal_id="chat", memory_type="domain_fact",
-                memory_id=memory_id,
-            )
         except Exception as exc:
             get_logger(__name__).warning("ltm_update_db_failed", error=str(exc))
+            raise LongTermMemoryUnavailableError("long-term memory update failed") from exc
+        if (res.rowcount or 0) == 0:
+            return None
+        if found is not None:
+            found.content = content
             return found
+        return LongTermMemory(
+            content=content, source_goal_id="chat", memory_type="domain_fact",
+            memory_id=memory_id,
+        )
 
     async def create_user_memory_async(
         self, *, content: str, tenant_ctx: TenantContext, embedder: Any = None
@@ -250,22 +279,29 @@ class LongTermMemoryStore:
         return mem
 
     async def delete_all_async(self, *, tenant_ctx: TenantContext) -> int:
-        self._memories.pop(tenant_ctx.tenant_id, None)  # clear cache
         db = self._db_factory
         if db is None:
-            return 0
+            cached = self._memories.pop(tenant_ctx.tenant_id, None) or []
+            return len(cached)
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 res = await session.execute(
                     text("DELETE FROM long_term_memory WHERE tenant_id = :tid"),
                     {"tid": tenant_ctx.tenant_id},
                 )
-            return res.rowcount or 0
         except Exception as exc:
             get_logger(__name__).warning("ltm_delete_all_db_failed", error=str(exc))
-            return 0
+            raise LongTermMemoryUnavailableError("long-term memory erasure failed") from exc
+        self._memories.pop(tenant_ctx.tenant_id, None)  # clear cache
+        return int(res.rowcount or 0)
 
     def extract_from_goal(
         self,

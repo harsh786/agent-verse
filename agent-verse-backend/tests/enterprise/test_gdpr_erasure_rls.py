@@ -69,7 +69,8 @@ APP_ROLE = "test_app"
 # touches: compliance_requests and agent_snapshots both have FORCE RLS
 # (migrations 0026/767fe9d87bfe and 0025/0034), so this exercises the exact
 # bug class without needing to seed every FK-dependent table in the list.
-GRANT_TABLES = ("compliance_requests", "agent_snapshots")
+# legal_holds: erasure is gated on an (fail-closed) active-hold check.
+GRANT_TABLES = ("compliance_requests", "agent_snapshots", "legal_holds")
 
 
 @pytest.fixture(scope="function")

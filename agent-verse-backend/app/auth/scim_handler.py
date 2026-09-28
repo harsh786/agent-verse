@@ -159,6 +159,38 @@ class SCIMHandler:
             yield session
 
     # ── User operations ──────────────────────────────────────────────────
+    #
+    # Schema: ``users`` is the GLOBAL identity table (id, email, name, ... — no
+    # tenant_id, no RLS; migration 0072) and ``tenant_memberships`` scopes a user
+    # to a tenant (tenant_id, role, status; FORCE RLS). This handler used raw SQL
+    # against ``users.tenant_id / display_name / is_active / scim_id / role`` —
+    # columns that never existed — so every SCIM call failed, and list_users
+    # turned the failure into an empty 200 ("this tenant has no users"). It now
+    # uses the ORM models, so the SQL cannot drift from the schema again, and a
+    # SCIM user is "a user WITH a membership in the token's tenant".
+    #
+    # ``users`` rows are shared across tenants, so one tenant's IdP never
+    # rewrites an existing identity's profile (``name`` is only filled when
+    # empty); activation state lives on the tenant's own membership row.
+
+    async def _find_member(self, db: Any, scim_id: str) -> tuple[Any, Any] | None:
+        """(User, TenantMembership) for *scim_id* (users.id or email) in this tenant."""
+        from sqlalchemy import func, or_, select
+
+        from app.db.models.user import TenantMembership, User
+
+        row = (
+            await db.execute(
+                select(User, TenantMembership)
+                .join(TenantMembership, TenantMembership.user_id == User.id)
+                .where(
+                    TenantMembership.tenant_id == self._tenant_id,
+                    or_(User.id == scim_id, func.lower(User.email) == scim_id.lower()),
+                )
+                .limit(1)
+            )
+        ).first()
+        return (row[0], row[1]) if row is not None else None
 
     async def list_users(
         self,
@@ -167,81 +199,75 @@ class SCIMHandler:
         filter_str: str = "",
     ) -> dict[str, Any]:
         """List tenant users in SCIM ListResponse format."""
-        from sqlalchemy import text as _t
+        from sqlalchemy import func, select
 
+        from app.db.models.user import TenantMembership, User
+
+        start_index = max(start_index, 1)
+        count = max(count, 0)
         try:
             async with self._tenant_tx() as db:
                 rows = (
                     await db.execute(
-                        _t("""
-                            SELECT id, email, display_name, is_active,
-                                   scim_id, created_at, updated_at
-                            FROM users
-                            WHERE tenant_id = :tid
-                            ORDER BY created_at DESC
-                            OFFSET :off LIMIT :lim
-                        """),
-                        {
-                            "tid": self._tenant_id,
-                            "off": start_index - 1,
-                            "lim": count,
-                        },
+                        select(User, TenantMembership)
+                        .join(TenantMembership, TenantMembership.user_id == User.id)
+                        .where(TenantMembership.tenant_id == self._tenant_id)
+                        .order_by(TenantMembership.created_at.desc(), User.id)
+                        .offset(start_index - 1)
+                        .limit(count)
                     )
-                ).fetchall()
-
+                ).all()
                 total = (
                     await db.execute(
-                        _t("SELECT COUNT(*) FROM users WHERE tenant_id = :tid"),
-                        {"tid": self._tenant_id},
+                        select(func.count())
+                        .select_from(TenantMembership)
+                        .where(TenantMembership.tenant_id == self._tenant_id)
                     )
-                ).scalar() or 0
+                ).scalar_one()
+                resources = [_to_scim_user(u, m) for u, m in rows]
         except Exception as exc:
-            logger.warning("scim_list_users_failed", error=str(exc))
-            rows, total = [], 0
+            # Never an empty 200: an IdP reconciling against "no users" would
+            # re-provision (or de-provision) everyone.
+            logger.error("scim_list_users_failed", error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=_scim_error("User listing failed", "serverError"),
+            ) from exc
 
         return {
             "schemas": [SCIM_LIST_RESPONSE],
-            "totalResults": total,
+            "totalResults": int(total or 0),
             "startIndex": start_index,
-            "itemsPerPage": len(rows),
-            "Resources": [_db_row_to_scim_user(r) for r in rows],
+            "itemsPerPage": len(resources),
+            "Resources": resources,
         }
 
     async def get_user(self, scim_id: str) -> dict[str, Any]:
-        """Get a single user by SCIM external ID or internal DB id."""
-        from sqlalchemy import text as _t
-
+        """Get a single tenant user by SCIM id (users.id) or userName (email)."""
         try:
             async with self._tenant_tx() as db:
-                row = (
-                    await db.execute(
-                        _t("""
-                            SELECT id, email, display_name, is_active,
-                                   scim_id, created_at, updated_at
-                            FROM users
-                            WHERE tenant_id = :tid
-                              AND (scim_id = :sid OR id::text = :sid)
-                            LIMIT 1
-                        """),
-                        {"tid": self._tenant_id, "sid": scim_id},
-                    )
-                ).fetchone()
+                found = await self._find_member(db, scim_id)
+                resource = _to_scim_user(*found) if found is not None else None
         except Exception as exc:
-            logger.warning("scim_get_user_failed", error=str(exc))
-            row = None
+            logger.error("scim_get_user_failed", error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=_scim_error("User lookup failed", "serverError"),
+            ) from exc
 
-        if row is None:
+        if resource is None:
             raise HTTPException(
                 status_code=404,
                 detail=_scim_error(f"User {scim_id} not found", "notFound"),
             )
-        return _db_row_to_scim_user(row)
+        return resource
 
     async def create_user(self, scim_data: dict[str, Any]) -> dict[str, Any]:
         """
-        Create a user from SCIM payload.
+        Create (or re-activate) a tenant user from a SCIM payload.
 
-        Maps group memberships to roles via group_role_map.
+        Idempotent on userName/email. Maps group memberships to roles via
+        group_role_map.
         """
         if not self._config.get("allow_user_create", True):
             raise HTTPException(
@@ -253,78 +279,65 @@ class SCIMHandler:
             )
 
         email = scim_data.get("userName") or (scim_data.get("emails") or [{}])[0].get("value", "")
+        email = str(email).strip()
         if not email:
             raise HTTPException(
                 status_code=400,
                 detail=_scim_error("userName or emails[0].value required", "invalidValue"),
             )
 
-        name = scim_data.get("name", {})
-        display_name = f"{name.get('givenName', '')} {name.get('familyName', '')}".strip() or email
-        groups = scim_data.get("groups", [])
-        role = self._map_groups_to_role(groups)
-        external_id = scim_data.get("externalId") or scim_data.get("id") or email
-        is_active = scim_data.get("active", True)
+        name = scim_data.get("name", {}) or {}
+        display_name = f"{name.get('givenName', '')} {name.get('familyName', '')}".strip()
+        display_name = display_name or scim_data.get("displayName") or None
+        role = self._map_groups_to_role(scim_data.get("groups", []))
+        status = _ACTIVE if scim_data.get("active", True) else _INACTIVE
 
-        from sqlalchemy import text as _t
+        from sqlalchemy import func, select
+
+        from app.db.models.user import TenantMembership, User
 
         try:
             async with self._tenant_tx() as db:
-                # Upsert — idempotent on externalId
-                await db.execute(
-                    _t("""
-                        INSERT INTO users
-                            (tenant_id, email, display_name, role, scim_id,
-                             is_active, created_at, updated_at)
-                        VALUES
-                            (:tid, :email, :display_name, :role, :scim_id,
-                             :active, NOW(), NOW())
-                        ON CONFLICT (tenant_id, email) DO UPDATE
-                          SET display_name = EXCLUDED.display_name,
-                              role = EXCLUDED.role,
-                              scim_id = EXCLUDED.scim_id,
-                              is_active = EXCLUDED.is_active,
-                              updated_at = NOW()
-                        RETURNING id, email, display_name, is_active,
-                                  scim_id, created_at, updated_at
-                    """),
-                    {
-                        "tid": self._tenant_id,
-                        "email": email,
-                        "display_name": display_name,
-                        "role": role,
-                        "scim_id": external_id,
-                        "active": is_active,
-                    },
-                )
+                user = (
+                    await db.execute(select(User).where(func.lower(User.email) == email.lower()))
+                ).scalar_one_or_none()
+                if user is None:
+                    user = User(email=email, name=display_name)
+                    db.add(user)
+                    await db.flush()
+                elif user.name is None and display_name:
+                    user.name = display_name
 
-                # Fetch the created/updated row. Same transaction, so it sees the
-                # upsert; both commit together when the block exits cleanly.
-                row = (
+                membership = (
                     await db.execute(
-                        _t("""
-                            SELECT id, email, display_name, is_active,
-                                   scim_id, created_at, updated_at
-                            FROM users
-                            WHERE tenant_id = :tid AND email = :email
-                            LIMIT 1
-                        """),
-                        {"tid": self._tenant_id, "email": email},
+                        select(TenantMembership).where(
+                            TenantMembership.user_id == user.id,
+                            TenantMembership.tenant_id == self._tenant_id,
+                        )
                     )
-                ).fetchone()
+                ).scalar_one_or_none()
+                if membership is None:
+                    membership = TenantMembership(
+                        user_id=user.id,
+                        tenant_id=self._tenant_id,
+                        role=role,
+                        status=status,
+                    )
+                    db.add(membership)
+                else:
+                    membership.role = role
+                    membership.status = status
+                await db.flush()
+                await db.refresh(user)
+                await db.refresh(membership)
+                resource = _to_scim_user(user, membership)
         except Exception as exc:
             logger.error("scim_create_user_failed", error=str(exc))
             raise HTTPException(
                 status_code=500,
-                detail=_scim_error(f"User creation failed: {exc}", "serverError"),
+                detail=_scim_error("User creation failed", "serverError"),
             ) from exc
-
-        if row is None:
-            raise HTTPException(
-                status_code=500,
-                detail=_scim_error("User created but could not be retrieved", "serverError"),
-            )
-        return _db_row_to_scim_user(row)
+        return resource
 
     async def update_user(
         self,
@@ -342,129 +355,81 @@ class SCIMHandler:
                 detail=_scim_error("SCIM user update is disabled", "mutability"),
             )
 
-        from sqlalchemy import text as _t
+        active: bool | None = None
+        display_name = ""
+        if partial:
+            for op in scim_data.get("Operations", []):
+                if op.get("op", "").lower() == "replace" and op.get("path", "") == "active":
+                    value = op.get("value")
+                    active = (
+                        value
+                        if isinstance(value, bool)
+                        else (value.get("active", True) if isinstance(value, dict) else True)
+                    )
+        else:
+            active = bool(scim_data.get("active", True))
+            name = scim_data.get("name", {}) or {}
+            display_name = f"{name.get('givenName', '')} {name.get('familyName', '')}".strip()
+        if active is False and not self._config.get("allow_user_delete", False):
+            raise HTTPException(
+                status_code=403,
+                detail=_scim_error(
+                    "User deactivation (delete) disabled for this tenant", "mutability"
+                ),
+            )
 
         try:
             async with self._tenant_tx() as db:
-                if partial:
-                    # PATCH: process Operations array
-                    for op in scim_data.get("Operations", []):
-                        op_type = op.get("op", "").lower()
-                        path = op.get("path", "")
-                        value = op.get("value")
-                        if op_type == "replace" and path == "active":
-                            active_val = (
-                                value
-                                if isinstance(value, bool)
-                                else (
-                                    value.get("active", True) if isinstance(value, dict) else True
-                                )
-                            )
-                            if not active_val and not self._config.get("allow_user_delete", False):
-                                raise HTTPException(
-                                    status_code=403,
-                                    detail=_scim_error(
-                                        "User deactivation (delete) disabled for this tenant",
-                                        "mutability",
-                                    ),
-                                )
-                            await db.execute(
-                                _t("""
-                                    UPDATE users SET is_active = :active, updated_at = NOW()
-                                    WHERE tenant_id = :tid
-                                      AND (scim_id = :sid OR id::text = :sid)
-                                """),
-                                {
-                                    "active": active_val,
-                                    "tid": self._tenant_id,
-                                    "sid": scim_id,
-                                },
-                            )
-                else:
-                    # PUT: full replacement
-                    active = scim_data.get("active", True)
-                    if not active and not self._config.get("allow_user_delete", False):
-                        raise HTTPException(
-                            status_code=403,
-                            detail=_scim_error(
-                                "User deactivation disabled for this tenant", "mutability"
-                            ),
-                        )
-                    name = scim_data.get("name", {})
-                    display_name = (
-                        f"{name.get('givenName', '')} {name.get('familyName', '')}".strip()
-                    )
-                    await db.execute(
-                        _t("""
-                            UPDATE users
-                            SET display_name = :display_name,
-                                is_active = :active,
-                                updated_at = NOW()
-                            WHERE tenant_id = :tid
-                              AND (scim_id = :sid OR id::text = :sid)
-                        """),
-                        {
-                            "display_name": display_name,
-                            "active": active,
-                            "tid": self._tenant_id,
-                            "sid": scim_id,
-                        },
-                    )
-
-                row = (
-                    await db.execute(
-                        _t("""
-                            SELECT id, email, display_name, is_active,
-                                   scim_id, created_at, updated_at
-                            FROM users
-                            WHERE tenant_id = :tid
-                              AND (scim_id = :sid OR id::text = :sid)
-                            LIMIT 1
-                        """),
-                        {"tid": self._tenant_id, "sid": scim_id},
-                    )
-                ).fetchone()
-        except HTTPException:
-            raise
+                found = await self._find_member(db, scim_id)
+                resource = None
+                if found is not None:
+                    user, membership = found
+                    if active is not None:
+                        membership.status = _ACTIVE if active else _INACTIVE
+                    if display_name and user.name is None:
+                        user.name = display_name
+                    await db.flush()
+                    await db.refresh(user)
+                    await db.refresh(membership)
+                    resource = _to_scim_user(user, membership)
         except Exception as exc:
             logger.error("scim_update_user_failed", error=str(exc))
             raise HTTPException(
                 status_code=500,
-                detail=_scim_error(str(exc), "serverError"),
+                detail=_scim_error("User update failed", "serverError"),
             ) from exc
 
-        if row is None:
+        if resource is None:
             raise HTTPException(
                 status_code=404,
                 detail=_scim_error(f"User {scim_id} not found", "notFound"),
             )
-        return _db_row_to_scim_user(row)
+        return resource
 
     async def delete_user(self, scim_id: str) -> None:
-        """Deprovision (soft-delete) a user."""
+        """Deprovision a user from this tenant (the global identity is kept)."""
         if not self._config.get("allow_user_delete", False):
             raise HTTPException(
                 status_code=403,
                 detail=_scim_error("User deletion disabled for this tenant", "mutability"),
             )
-        from sqlalchemy import text as _t
-
+        found: tuple[Any, Any] | None = None
         try:
             async with self._tenant_tx() as db:
-                await db.execute(
-                    _t("""
-                        UPDATE users SET is_active = FALSE, updated_at = NOW()
-                        WHERE tenant_id = :tid
-                          AND (scim_id = :sid OR id::text = :sid)
-                    """),
-                    {"tid": self._tenant_id, "sid": scim_id},
-                )
+                found = await self._find_member(db, scim_id)
+                if found is not None:
+                    found[1].status = _INACTIVE
         except Exception as exc:
             logger.error("scim_delete_user_failed", error=str(exc))
             raise HTTPException(
                 status_code=500,
-                detail=_scim_error(str(exc), "serverError"),
+                detail=_scim_error("User deprovisioning failed", "serverError"),
             ) from exc
+        if found is None:
+            raise HTTPException(
+                status_code=404,
+                detail=_scim_error(f"User {scim_id} not found", "notFound"),
+            )
 
     def _map_groups_to_role(self, groups: list[dict[str, Any]]) -> str:
         group_role_map = self._config.get("group_role_map", {})
@@ -480,39 +445,27 @@ class SCIMHandler:
 # ---------------------------------------------------------------------------
 
 
-def _db_row_to_scim_user(row: Any) -> dict[str, Any]:
-    """Convert a DB row (tuple or Row) to SCIM User resource."""
-    if hasattr(row, "_mapping"):
-        m = dict(row._mapping)
-        uid = str(m.get("id", ""))
-        email = m.get("email", "")
-        display_name = m.get("display_name", email)
-        is_active = m.get("is_active", True)
-        scim_id = m.get("scim_id") or uid
-        created_at = m.get("created_at")
-        updated_at = m.get("updated_at")
-    else:
-        # Positional tuple: id, email, display_name, is_active, scim_id, created_at, updated_at
-        uid = str(row[0]) if row[0] else ""
-        email = row[1] or ""
-        display_name = row[2] or email
-        is_active = row[3] if row[3] is not None else True
-        scim_id = str(row[4]) if row[4] else uid
-        created_at = row[5] if len(row) > 5 else None
-        updated_at = row[6] if len(row) > 6 else None
+# Membership status values SCIM toggles (tenant_memberships.status).
+_ACTIVE = "active"
+_INACTIVE = "deactivated"
 
+
+def _to_scim_user(user: Any, membership: Any) -> dict[str, Any]:
+    """SCIM User resource from a ``User`` + its ``TenantMembership`` in this tenant."""
+    uid = str(user.id)
+    email = user.email or ""
     return {
         "schemas": [SCIM_USER_SCHEMA],
         "id": uid,
-        "externalId": scim_id,
         "userName": email,
-        "displayName": display_name,
-        "active": is_active,
+        "displayName": user.name or email,
+        "active": membership.status == _ACTIVE,
         "emails": [{"value": email, "primary": True}],
+        "roles": [{"value": membership.role}] if membership.role else [],
         "meta": {
             "resourceType": "User",
-            "created": str(created_at) if created_at else None,
-            "lastModified": str(updated_at) if updated_at else None,
+            "created": str(membership.created_at) if membership.created_at else None,
+            "lastModified": str(membership.updated_at) if membership.updated_at else None,
             "location": f"/scim/v2/Users/{uid}",
         },
     }

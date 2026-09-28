@@ -29,6 +29,17 @@ logger = get_logger(__name__)
 _CACHE_KEY = "legal_hold:{tenant_id}"
 _CACHE_TTL = 3600  # 1 hour
 
+# resource_type of a hold that covers ALL of the tenant's data (what
+# POST /governance/legal-hold places by default).
+TENANT_WIDE = "tenant"
+
+# SQL predicate for "this hold is in force": active and not past its expiry.
+IN_FORCE_SQL = "status = 'active' AND (expires_at IS NULL OR expires_at > now())"
+
+
+class LegalHoldCheckError(RuntimeError):
+    """The hold state could not be determined; callers must NOT delete."""
+
 
 class LegalHoldManager:
     """Full lifecycle for legal holds with Redis-cached membership checks."""
@@ -211,7 +222,8 @@ class LegalHoldManager:
                 logger.warning("legal_hold_cache_check_error", error=str(exc))
                 # Fall through to DB
 
-        # DB fallback
+        # DB fallback. A tenant-wide hold covers every resource of the tenant
+        # (the API's default hold has no resource_ids, so it never matched here).
         if self._db is not None:
             try:
                 from sqlalchemy import text
@@ -222,21 +234,58 @@ class LegalHoldManager:
                 ):
                     result = await session.execute(
                         text(
-                            """
-                            SELECT 1 FROM legal_holds
-                            WHERE tenant_id = :tid
-                              AND status = 'active'
-                              AND resource_ids @> CAST(:rid AS jsonb)
-                            LIMIT 1
-                            """
+                            "SELECT 1 FROM legal_holds "
+                            f"WHERE tenant_id = :tid AND {IN_FORCE_SQL} "
+                            "AND (resource_type = :tenant_wide "
+                            "     OR resource_ids @> CAST(:rid AS jsonb)) "
+                            "LIMIT 1"
                         ),
-                        {"tid": tenant_id, "rid": json.dumps([resource_id])},
+                        {
+                            "tid": tenant_id,
+                            "rid": json.dumps([resource_id]),
+                            "tenant_wide": TENANT_WIDE,
+                        },
                     )
                     return result.fetchone() is not None
             except Exception as exc:
-                logger.warning("legal_hold_db_check_error", error=str(exc))
+                # Fail closed: "could not check" used to be reported as "not held",
+                # so a DB blip let deletion of held data proceed.
+                logger.error("legal_hold_db_check_error", error=str(exc))
+                raise LegalHoldCheckError(f"legal hold state unavailable: {exc}") from exc
 
         return False
+
+    async def has_active_hold(self, tenant_id: str) -> bool:
+        """True if ANY active hold exists for *tenant_id* (gate for whole-tenant erasure).
+
+        Unlike :meth:`is_under_hold` this is FAIL-CLOSED: it reads the DB (the
+        source of truth — the Redis set only tracks resource ids, not user- or
+        date-scoped holds) and lets any error propagate, so a caller about to
+        destroy the tenant's data can never mistake "could not check" for "no
+        hold". With no DB configured there is nothing to hold and nothing durable
+        to erase, so it answers False.
+        """
+        if self._db is None:
+            return False
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        # Like DeletionOrchestrator._active_hold: a hold blocks until
+                        # it is explicitly released (expires_at is informational).
+                        "SELECT 1 FROM legal_holds WHERE tenant_id = :tid "
+                        "AND status = 'active' LIMIT 1"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchone()
+        return row is not None
 
     async def list_holds(self, tenant_id: str, status: str = "active") -> list[dict[str, Any]]:
         """Return all holds of the given status for a tenant."""
@@ -264,28 +313,29 @@ class LegalHoldManager:
                     {"tid": tenant_id, "status": status},
                 )
                 rows = result.fetchall()
-            return [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "resource_type": r[3],
-                    "resource_ids": r[4] or [],
-                    "user_ids": r[5] or [],
-                    "date_range_start": r[6].isoformat() if r[6] else None,
-                    "date_range_end": r[7].isoformat() if r[7] else None,
-                    "status": r[8],
-                    "legal_matter_id": r[9],
-                    "created_by": r[10],
-                    "created_at": r[11].isoformat() if r[11] else None,
-                    "released_at": r[12].isoformat() if r[12] else None,
-                    "expires_at": r[13].isoformat() if r[13] else None,
-                }
-                for r in rows
-            ]
         except Exception as exc:
-            logger.warning("legal_hold_list_error", error=str(exc))
-            return []
+            # Raise, don't return []: an empty list reads as "no holds in place".
+            logger.error("legal_hold_list_error", error=str(exc))
+            raise
+        return [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "resource_type": r[3],
+                "resource_ids": _as_list(r[4]),
+                "user_ids": _as_list(r[5]),
+                "date_range_start": r[6].isoformat() if r[6] else None,
+                "date_range_end": r[7].isoformat() if r[7] else None,
+                "status": r[8],
+                "legal_matter_id": r[9],
+                "created_by": r[10],
+                "created_at": r[11].isoformat() if r[11] else None,
+                "released_at": r[12].isoformat() if r[12] else None,
+                "expires_at": r[13].isoformat() if r[13] else None,
+            }
+            for r in rows
+        ]
 
     # ------------------------------------------------------------------
     # Cache maintenance
@@ -307,6 +357,7 @@ class LegalHoldManager:
                         """
                         SELECT resource_ids FROM legal_holds
                         WHERE tenant_id = :tid AND status = 'active'
+                          AND (expires_at IS NULL OR expires_at > now())
                         """
                     ),
                     {"tid": tenant_id},
@@ -327,3 +378,13 @@ class LegalHoldManager:
                 await self._redis.expire(cache_key, _CACHE_TTL)
         except Exception as exc:
             logger.warning("legal_hold_cache_sync_error", error=str(exc))
+
+
+def _as_list(value: Any) -> list[Any]:
+    """JSONB arrays come back as lists from asyncpg, but as text from some drivers."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        loaded = json.loads(value)
+        return loaded if isinstance(loaded, list) else []
+    return list(value)

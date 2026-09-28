@@ -8,9 +8,22 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+ROLLED_BACK = "rolled_back"
+SKIPPED = "skipped"
+FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class InverseResult:
+    """Outcome of one compensating action: ``rolled_back`` / ``skipped`` / ``failed``."""
+
+    outcome: str
+    detail: str = ""
 
 # Registry: tool_name -> async callable(args, mcp_client) -> None
 _INVERSE_REGISTRY: dict[str, Callable] = {}
@@ -80,7 +93,9 @@ def get_inverse_fn(
                     tool_name,
                     str(exc)[:100],
                 )
-                return None
+                # Report the failure instead of returning None, which the
+                # rollback engine counted as a successful undo.
+                return InverseResult(FAILED, str(exc)[:200])
 
         return inverse_fn
 
@@ -121,143 +136,236 @@ def get_inverse_fn(
 
 
 # ── Built-in inverses — make real MCP API calls ─────────────────────────────
+#
+# Each built-in returns an :class:`InverseResult` so the rollback engine can
+# report honestly: ``rolled_back`` only when the compensating call succeeded,
+# ``skipped`` when there was nothing identifiable to undo (e.g. the forward
+# tool's output carried no id), ``failed`` when the undo call raised. They used
+# to swallow every error and return None, which the engine counted as success.
+#
+# ``args`` is the forward call's input arguments merged with ``result`` (the
+# forward call's OUTPUT, normalised to a dict) and ``server_id``. IDs of created
+# objects live in the output, never in the input.
 
 
-async def _inverse_jira_create_issue(args: dict, mcp_client: Any) -> None:
+def _normalize_output(output: Any) -> dict[str, Any]:
+    """Best-effort: turn an MCP tool output into a flat dict of fields.
+
+    Handles plain dicts, JSON strings, ``{"result": {...}}`` wrappers and the MCP
+    ``{"content": [{"type": "text", "text": "<json>"}]}`` envelope.
+    """
+    import json
+
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except (ValueError, TypeError):
+            return {}
+    if not isinstance(output, dict):
+        return {}
+    merged: dict[str, Any] = dict(output)
+    inner = output.get("result")
+    if isinstance(inner, (dict, str)):
+        for k, v in _normalize_output(inner).items():
+            merged.setdefault(k, v)
+    content = output.get("content")
+    if isinstance(content, (dict, str)):
+        for k, v in _normalize_output(content).items():
+            merged.setdefault(k, v)
+    elif isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+                for k, v in _normalize_output(text if text is not None else part).items():
+                    merged.setdefault(k, v)
+    return merged
+
+
+def _pick(args: dict[str, Any], *keys: str) -> Any:
+    """First non-empty value for *keys* in the input args, then in the output."""
+    for key in keys:
+        val = args.get(key)
+        if val:
+            return val
+    result = _normalize_output(args.get("result"))
+    for key in keys:
+        val = result.get(key)
+        if val:
+            return val
+    return None
+
+
+def _resolve_tenant_ctx(args: dict[str, Any], tenant_ctx: Any) -> Any:
+    """The goal's real TenantContext. Legacy callers that only pass a tenant_id
+    in ``args`` still get a context for that tenant; nothing falls back to a
+    fabricated ``"rollback"`` tenant any more — no tenant means skip."""
+    if tenant_ctx is not None:
+        return tenant_ctx
+    tenant_id = args.get("tenant_id")
+    if not tenant_id:
+        return None
+    from app.tenancy.context import PlanTier, TenantContext
+
+    return TenantContext(tenant_id=str(tenant_id), plan=PlanTier.FREE, api_key_id="rollback")
+
+
+async def _call_undo(
+    *,
+    mcp_client: Any,
+    server_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    tenant_ctx: Any,
+    label: str,
+) -> InverseResult:
+    try:
+        res = await mcp_client.call_tool(
+            server_id=server_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        logger.warning("%s_rollback_failed error=%s", label, str(exc))
+        return InverseResult(FAILED, f"{tool_name}: {exc}")
+    if getattr(res, "success", True) is False:
+        err = str(getattr(res, "error", "") or "unsuccessful")
+        logger.warning("%s_rollback_failed error=%s", label, err)
+        return InverseResult(FAILED, f"{tool_name}: {err}")
+    logger.info("%s_rolled_back arguments=%s", label, arguments)
+    return InverseResult(ROLLED_BACK, f"{tool_name} {arguments}")
+
+
+async def _inverse_jira_create_issue(
+    args: dict, mcp_client: Any, *, tenant_ctx: Any = None
+) -> InverseResult:
     """Delete a Jira issue that was created by the forward tool call."""
-    issue_id = (
-        args.get("issue_id")
-        or args.get("id")
-        or (args.get("result", {}).get("id") if isinstance(args.get("result"), dict) else None)
-    )
+    issue_id = _pick(args, "issue_id", "id", "key", "issue_key")
     server_id = args.get("server_id", "")
-    if not issue_id or not mcp_client or not server_id:
-        logger.info("jira_rollback_skipped reason=no_issue_id_or_mcp_client args=%s", args)
-        return
-    try:
-        from app.tenancy.context import PlanTier, TenantContext
-
-        ctx = TenantContext(
-            tenant_id=args.get("tenant_id", "rollback"),
-            plan=PlanTier.FREE,
-            api_key_id="rollback",
-        )
-        await mcp_client.call_tool(
-            server_id=server_id,
-            tool_name="jira_delete_issue",
-            arguments={"issue_id": issue_id},
-            tenant_ctx=ctx,
-        )
-        logger.info("jira_issue_rolled_back issue_id=%s", issue_id)
-    except Exception as exc:
-        logger.warning("jira_rollback_failed issue_id=%s error=%s", issue_id, str(exc))
+    ctx = _resolve_tenant_ctx(args, tenant_ctx)
+    if not issue_id or not mcp_client or not server_id or ctx is None:
+        logger.info("jira_rollback_skipped reason=no_issue_id_or_mcp_client_or_tenant")
+        return InverseResult(SKIPPED, "no issue id / mcp client / server / tenant")
+    return await _call_undo(
+        mcp_client=mcp_client,
+        server_id=server_id,
+        tool_name="jira_delete_issue",
+        arguments={"issue_id": issue_id},
+        tenant_ctx=ctx,
+        label="jira",
+    )
 
 
-async def _inverse_confluence_create_page(args: dict, mcp_client: Any) -> None:
+async def _inverse_confluence_create_page(
+    args: dict, mcp_client: Any, *, tenant_ctx: Any = None
+) -> InverseResult:
     """Delete a Confluence page that was created by the forward tool call."""
-    page_id = args.get("page_id") or args.get("id")
+    page_id = _pick(args, "page_id", "id")
     server_id = args.get("server_id", "")
-    if not page_id or not mcp_client or not server_id:
+    ctx = _resolve_tenant_ctx(args, tenant_ctx)
+    if not page_id or not mcp_client or not server_id or ctx is None:
         logger.info("confluence_rollback_skipped reason=no_page_id")
-        return
-    try:
-        from app.tenancy.context import PlanTier, TenantContext
-
-        ctx = TenantContext(
-            tenant_id=args.get("tenant_id", "rollback"),
-            plan=PlanTier.FREE,
-            api_key_id="rollback",
-        )
-        await mcp_client.call_tool(
-            server_id=server_id,
-            tool_name="confluence_delete_page",
-            arguments={"page_id": page_id},
-            tenant_ctx=ctx,
-        )
-        logger.info("confluence_page_rolled_back page_id=%s", page_id)
-    except Exception as exc:
-        logger.warning("confluence_rollback_failed page_id=%s error=%s", page_id, str(exc))
-
-
-async def _inverse_slack_send_message(args: dict, mcp_client: Any) -> None:
-    """Delete a Slack message that was sent by the forward tool call."""
-    message_ts = args.get("ts") or args.get("message_ts")
-    channel = args.get("channel", "")
-    server_id = args.get("server_id", "")
-    if not message_ts or not mcp_client or not server_id:
-        logger.info("slack_rollback_skipped reason=no_message_ts")
-        return
-    try:
-        from app.tenancy.context import PlanTier, TenantContext
-
-        ctx = TenantContext(
-            tenant_id=args.get("tenant_id", "rollback"),
-            plan=PlanTier.FREE,
-            api_key_id="rollback",
-        )
-        await mcp_client.call_tool(
-            server_id=server_id,
-            tool_name="slack_delete_message",
-            arguments={"ts": message_ts, "channel": channel},
-            tenant_ctx=ctx,
-        )
-        logger.info("slack_message_rolled_back message_ts=%s", message_ts)
-    except Exception as exc:
-        logger.warning("slack_rollback_failed message_ts=%s error=%s", message_ts, str(exc))
-
-
-async def _inverse_github_create_issue(args: dict, mcp_client: Any) -> None:
-    """Close/delete a GitHub issue that was created by the forward tool call."""
-    issue_number = (
-        args.get("issue_number")
-        or args.get("number")
-        or (
-            args.get("result", {}).get("issue_number")
-            if isinstance(args.get("result"), dict)
-            else None
-        )
-        or (args.get("result", {}).get("number") if isinstance(args.get("result"), dict) else None)
+        return InverseResult(SKIPPED, "no page id / mcp client / server / tenant")
+    return await _call_undo(
+        mcp_client=mcp_client,
+        server_id=server_id,
+        tool_name="confluence_delete_page",
+        arguments={"page_id": page_id},
+        tenant_ctx=ctx,
+        label="confluence",
     )
+
+
+async def _inverse_slack_send_message(
+    args: dict, mcp_client: Any, *, tenant_ctx: Any = None
+) -> InverseResult:
+    """Delete a Slack message that was sent by the forward tool call."""
+    message_ts = _pick(args, "ts", "message_ts")
+    channel = args.get("channel") or _normalize_output(args.get("result")).get("channel", "")
+    server_id = args.get("server_id", "")
+    ctx = _resolve_tenant_ctx(args, tenant_ctx)
+    if not message_ts or not mcp_client or not server_id or ctx is None:
+        logger.info("slack_rollback_skipped reason=no_message_ts")
+        return InverseResult(SKIPPED, "no message ts / mcp client / server / tenant")
+    return await _call_undo(
+        mcp_client=mcp_client,
+        server_id=server_id,
+        tool_name="slack_delete_message",
+        arguments={"ts": message_ts, "channel": channel},
+        tenant_ctx=ctx,
+        label="slack",
+    )
+
+
+async def _inverse_github_create_issue(
+    args: dict, mcp_client: Any, *, tenant_ctx: Any = None
+) -> InverseResult:
+    """Close a GitHub issue that was created by the forward tool call."""
+    issue_number = _pick(args, "issue_number", "number")
     owner = args.get("owner", "")
     repo = args.get("repo", "")
-    server_id = args.get("server_id", "builtin-github")
+    server_id = args.get("server_id") or "builtin-github"
+    ctx = _resolve_tenant_ctx(args, tenant_ctx)
+    if not all([owner, repo, issue_number]) or not mcp_client or ctx is None:
+        logger.info("github_rollback_skipped reason=no_issue_number_or_owner_repo")
+        return InverseResult(SKIPPED, "no issue number / owner / repo / mcp client / tenant")
+    return await _call_undo(
+        mcp_client=mcp_client,
+        server_id=server_id,
+        tool_name="github_close_issue",
+        arguments={
+            "owner": owner,
+            "repo": repo,
+            "issue_number": issue_number,
+            "state": "closed",
+        },
+        tenant_ctx=ctx,
+        label="github",
+    )
 
-    if not all([owner, repo, issue_number]) or not mcp_client:
-        logger.info("github_rollback_skipped reason=no_issue_number_or_owner_repo args=%s", args)
-        return
+
+async def run_inverse(
+    tool_names: list[str],
+    *,
+    arguments: dict[str, Any],
+    output: Any,
+    server_id: str,
+    tenant_ctx: Any,
+    mcp_client: Any = None,
+) -> InverseResult:
+    """Undo one executed tool call with its real OUTPUT and the goal's tenant.
+
+    *tool_names* are candidate registry keys (e.g. the model's tool name and the
+    connector's canonical name); the first registered one is used.
+    """
+    import inspect
+
+    fn = next((_INVERSE_REGISTRY[n] for n in tool_names if n in _INVERSE_REGISTRY), None)
+    if fn is None:
+        return InverseResult(SKIPPED, f"no inverse registered for {tool_names[:1]}")
+    payload: dict[str, Any] = dict(arguments)
+    payload["result"] = output
+    payload["server_id"] = server_id or payload.get("server_id", "")
+    tenant_id = getattr(tenant_ctx, "tenant_id", None)
+    if tenant_id:
+        payload["tenant_id"] = tenant_id
+    client = mcp_client if mcp_client is not None else _mcp_client
     try:
-        from app.tenancy.context import PlanTier, TenantContext
-
-        ctx = TenantContext(
-            tenant_id=args.get("tenant_id", "rollback"),
-            plan=PlanTier.FREE,
-            api_key_id="rollback",
-        )
-        await mcp_client.call_tool(
-            server_id=server_id,
-            tool_name="github_close_issue",
-            arguments={
-                "owner": owner,
-                "repo": repo,
-                "issue_number": issue_number,
-                "state": "closed",
-            },
-            tenant_ctx=ctx,
-        )
-        logger.info(
-            "github_issue_rolled_back owner=%s repo=%s issue_number=%s",
-            owner,
-            repo,
-            issue_number,
-        )
+        params = inspect.signature(fn).parameters
+        if "tenant_ctx" in params:
+            res = fn(payload, client, tenant_ctx=tenant_ctx)
+        elif len(params) >= 2:
+            res = fn(payload, client)
+        else:
+            res = fn(payload)
+        if inspect.isawaitable(res):
+            res = await res
     except Exception as exc:
-        logger.warning(
-            "github_rollback_failed owner=%s repo=%s issue_number=%s error=%s",
-            owner,
-            repo,
-            issue_number,
-            str(exc),
-        )
+        return InverseResult(FAILED, str(exc)[:200])
+    if isinstance(res, InverseResult):
+        return res
+    # Custom inverses that return nothing are trusted to have completed.
+    return InverseResult(ROLLED_BACK, "")
 
 
 # Register all built-in inverses

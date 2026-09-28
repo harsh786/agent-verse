@@ -140,8 +140,29 @@ async def get_export_status(request: Request, request_id: str) -> dict[str, Any]
 
 @router.post("/compliance/delete", status_code=202)
 async def request_data_deletion(request: Request) -> dict[str, Any]:
+    """Record a durable GDPR erasure job (executed by the process_tenant_erasures
+    beat task after the grace period). 503 if the request could not be recorded —
+    never ``deletion_scheduled: true`` for a request that does not exist."""
     ctx = _require_tenant(request)
-    return await _compliance(request).request_data_deletion(tenant_ctx=ctx)
+    try:
+        result: dict[str, Any] = await _compliance(request).request_data_deletion(tenant_ctx=ctx)
+    except Exception as exc:
+        raise HTTPException(503, "Erasure request could not be recorded; retry") from exc
+    return result
+
+
+@router.get("/compliance/delete")
+async def get_data_deletion_status(request: Request) -> dict[str, Any]:
+    """The tenant's erasure job as stored: pending | processing | on_hold | failed |
+    completed, with attempts / last_error / result."""
+    ctx = _require_tenant(request)
+    try:
+        job = await _compliance(request).get_deletion_status(tenant_ctx=ctx)
+    except Exception as exc:
+        raise HTTPException(503, "Erasure status unavailable") from exc
+    if job is None:
+        raise HTTPException(404, "No erasure request for this tenant")
+    return dict(job)
 
 
 @router.get("/compliance/residency")
@@ -951,6 +972,12 @@ async def reject_suggestion(request: Request, suggestion_id: str) -> dict[str, A
     return {"suggestion_id": suggestion_id, "rejected": True}
 
 
+# A platform benchmark is only reported when this many tenants / goals
+# contributed (k-anonymity guard for the cross-tenant aggregate).
+_BENCHMARK_MIN_TENANTS = 5
+_BENCHMARK_MIN_GOALS = 10
+
+
 @intelligence_router.get("/benchmarks")
 async def get_benchmarks(
     request: Request,
@@ -969,211 +996,147 @@ async def get_benchmarks(
 
     db = _get_db(request)
 
-    # --- Your metrics ---
-    your_success_rate = 0.0
-    your_cost_usd = 0.0
-    your_eval_score = 0.0
-    your_dims: dict[str, float] = {}
+    # Real schema (the previous SQL referenced columns that do not exist —
+    # goals.cost_usd, evaluations.score_* / run_at — so every query raised,
+    # the error was swallowed, and hard-coded "platform averages" (0.72 /
+    # $0.05 / 0.74 ...) were presented as real):
+    #   goals(tenant_id, status, created_at)
+    #   cost_ledger(tenant_id, goal_id, cost_usd, created_at)   -- per-call cost
+    #   evaluations(tenant_id, scores JSON {dimension: score}, average_score,
+    #               created_at)
+    # No data -> None + data_source "insufficient_data"; never invented numbers.
+    dim_names = ("task_completion", "efficiency", "accuracy", "safety", "coherence")
+    dim_sql = ", ".join(f"AVG(CAST(scores->>'{d}' AS FLOAT))" for d in dim_names)
+    success_sql = """
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END)
+                 AS completed,
+               COUNT(DISTINCT tenant_id) AS n_tenants
+        FROM goals
+        WHERE {scope} created_at > NOW() - (:days * INTERVAL '1 day')
+          AND status IN ('complete','completed','failed')
+    """
+    cost_sql = """
+        SELECT AVG(goal_cost), COUNT(*) FROM (
+            SELECT goal_id, SUM(cost_usd) AS goal_cost FROM cost_ledger
+            WHERE {scope} goal_id IS NOT NULL AND goal_id <> ''
+              AND created_at > NOW() - (:days * INTERVAL '1 day')
+            GROUP BY goal_id
+        ) per_goal
+    """
+    eval_sql = f"""
+        SELECT COUNT(*), AVG(average_score), {dim_sql}
+        FROM evaluations
+        WHERE {{scope}} created_at > NOW() - (:days * INTERVAL '1 day')
+    """
 
+    async def _metrics(session: Any, scope: str, params: dict[str, Any]) -> dict[str, Any]:
+        from sqlalchemy import text as _t
+
+        out: dict[str, Any] = {
+            "success_rate": None, "cost_usd": None, "eval_score": None, "dims": {},
+            "n_goals": 0, "n_tenants": 0,
+        }
+        g = (await session.execute(_t(success_sql.format(scope=scope)), params)).fetchone()
+        if g and g[0]:
+            out["n_goals"] = int(g[0])
+            out["n_tenants"] = int(g[2] or 0) if len(g) > 2 else 0
+            out["success_rate"] = round(float(g[1] or 0) / float(g[0]), 4)
+        c = (await session.execute(_t(cost_sql.format(scope=scope)), params)).fetchone()
+        if c and c[0] is not None:
+            out["cost_usd"] = round(float(c[0]), 6)
+        e = (await session.execute(_t(eval_sql.format(scope=scope)), params)).fetchone()
+        if e and e[0] and e[1] is not None:
+            out["eval_score"] = round(float(e[1]), 4)
+            out["dims"] = {
+                d: round(float(v), 4)
+                for d, v in zip(dim_names, e[2:], strict=False)
+                if v is not None
+            }
+        return out
+
+    import logging
+
+    _log = logging.getLogger(__name__)
+    yours: dict[str, Any] = {
+        "success_rate": None, "cost_usd": None, "eval_score": None, "dims": {}, "n_goals": 0,
+    }
+    platform: dict[str, Any] = {
+        "success_rate": None, "cost_usd": None, "eval_score": None, "dims": {},
+        "n_goals": 0, "n_tenants": 0,
+    }
     if db is not None:
         try:
-            from sqlalchemy import text as _t
-
-            # `goals` is FORCE ROW LEVEL SECURITY; without the tenant GUC this
-            # matched zero rows and the endpoint silently reported the hardcoded
-            # placeholder numbers below instead of the tenant's real figures.
+            # goals / cost_ledger / evaluations are FORCE RLS: tenant GUC required.
             async with (
                 db() as session,
                 sqlalchemy_rls_context(session, tenant_id),
             ):
-                # Success rate
-                goal_row = (
-                    await session.execute(
-                        _t("""
-                    SELECT
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END)
-                          AS completed
-                    FROM goals
-                    WHERE tenant_id = :tid
-                      AND created_at > NOW() - (:days * INTERVAL '1 day')
-                """),
-                        {"tid": tenant_id, "days": days},
-                    )
-                ).fetchone()
-                if goal_row and goal_row[0]:
-                    your_success_rate = round(float(goal_row[1] or 0) / float(goal_row[0]), 4)
-
-                # Avg cost
-                cost_row = (
-                    await session.execute(
-                        _t("""
-                    SELECT AVG(cost_usd) FROM goals
-                    WHERE tenant_id = :tid
-                      AND cost_usd IS NOT NULL
-                      AND created_at > NOW() - (:days * INTERVAL '1 day')
-                """),
-                        {"tid": tenant_id, "days": days},
-                    )
-                ).fetchone()
-                if cost_row and cost_row[0]:
-                    your_cost_usd = round(float(cost_row[0]), 6)
-
-                # Eval scores
-                eval_row = (
-                    await session.execute(
-                        _t("""
-                    SELECT
-                        AVG(score_task_completion),
-                        AVG(score_efficiency),
-                        AVG(score_accuracy),
-                        AVG(score_safety),
-                        AVG(score_coherence),
-                        AVG((COALESCE(score_task_completion,0)
-                             + COALESCE(score_efficiency,0)
-                             + COALESCE(score_accuracy,0)
-                             + COALESCE(score_safety,0)
-                             + COALESCE(score_coherence,0)) / 5.0)
-                    FROM evaluations
-                    WHERE tenant_id = :tid
-                      AND run_at > NOW() - (:days * INTERVAL '1 day')
-                """),
-                        {"tid": tenant_id, "days": days},
-                    )
-                ).fetchone()
-                if eval_row and eval_row[5]:
-                    your_eval_score = round(float(eval_row[5]), 4)
-                    your_dims = {
-                        "task_completion": round(float(eval_row[0] or 0), 4),
-                        "efficiency": round(float(eval_row[1] or 0), 4),
-                        "accuracy": round(float(eval_row[2] or 0), 4),
-                        "safety": round(float(eval_row[3] or 0), 4),
-                        "coherence": round(float(eval_row[4] or 0), 4),
-                    }
+                yours = await _metrics(
+                    session, "tenant_id = :tid AND", {"tid": tenant_id, "days": days}
+                )
         except Exception as exc:
-            import logging
+            _log.warning("benchmarks_your_metrics_failed: %s", exc)
 
-            logging.getLogger(__name__).warning("benchmarks_your_metrics_failed: %s", exc)
-
-    # --- Platform averages (anonymized aggregates across all tenants) ---
-    platform_avg_success_rate = 0.72  # fallback defaults
-    platform_avg_cost_usd = 0.05
-    platform_avg_eval_score = 0.74
-    platform_dims: dict[str, float] = {
-        "task_completion": 0.75,
-        "efficiency": 0.72,
-        "accuracy": 0.76,
-        "safety": 0.88,
-        "coherence": 0.71,
-    }
-
-    if db is not None:
         try:
-            from sqlalchemy import text as _t
-
-            # DELIBERATELY NOT SCOPED, AND CURRENTLY INERT. This aggregates
-            # `goals` across every tenant to produce a "platform average" the
-            # caller is benchmarked against. `goals` is FORCE ROW LEVEL SECURITY,
-            # so with no GUC set it matches zero rows and the hardcoded platform
-            # defaults above are what actually get returned.
-            #
-            # Making it work needs `system_session` (a cross-tenant read), which
-            # would newly expose aggregate statistics over other tenants' data to
-            # any caller — de-anonymising at small tenant counts. That is a
-            # privacy decision, not a bug fix, so it is left inert and flagged
-            # rather than silently switched on.
+            # DELIBERATELY NOT tenant-scoped (a cross-tenant aggregate). With no GUC
+            # under FORCE RLS this matches nothing, so it reports insufficient_data
+            # unless the deployment's role can read across tenants. Even then it is
+            # only reported when >= _BENCHMARK_MIN_TENANTS tenants contributed, so
+            # a small platform cannot de-anonymise another tenant's figures.
             async with db() as session:
-                # Platform success rate across all tenants (anonymized)
-                plat_row = (
-                    await session.execute(
-                        _t("""
-                    SELECT
-                        COUNT(*) AS total,
-                        SUM(CASE WHEN status IN ('complete','completed') THEN 1 ELSE 0 END) AS ok,
-                        AVG(cost_usd) AS avg_cost
-                    FROM goals
-                    WHERE created_at > NOW() - (:days * INTERVAL '1 day')
-                """),
-                        {"days": days},
-                    )
-                ).fetchone()
-                if plat_row and plat_row[0]:
-                    platform_avg_success_rate = round(
-                        float(plat_row[1] or 0) / float(plat_row[0]), 4
-                    )
-                    platform_avg_cost_usd = round(float(plat_row[2] or 0), 6)
-
-                plat_eval = (
-                    await session.execute(
-                        _t("""
-                    SELECT
-                        AVG(score_task_completion),
-                        AVG(score_efficiency),
-                        AVG(score_accuracy),
-                        AVG(score_safety),
-                        AVG(score_coherence)
-                    FROM evaluations
-                    WHERE run_at > NOW() - (:days * INTERVAL '1 day')
-                """),
-                        {"days": days},
-                    )
-                ).fetchone()
-                if plat_eval and plat_eval[0]:
-                    dims = [float(v or 0) for v in plat_eval]
-                    platform_avg_eval_score = round(sum(dims) / 5.0, 4)
-                    platform_dims = {
-                        "task_completion": round(dims[0], 4),
-                        "efficiency": round(dims[1], 4),
-                        "accuracy": round(dims[2], 4),
-                        "safety": round(dims[3], 4),
-                        "coherence": round(dims[4], 4),
-                    }
+                platform = await _metrics(session, "", {"days": days})
         except Exception as exc:
-            import logging
+            _log.warning("benchmarks_platform_metrics_failed: %s", exc)
 
-            logging.getLogger(__name__).warning("benchmarks_platform_metrics_failed: %s", exc)
+    platform_ok = (
+        platform.get("n_tenants", 0) >= _BENCHMARK_MIN_TENANTS
+        and platform.get("n_goals", 0) >= _BENCHMARK_MIN_GOALS
+    )
+    if not platform_ok:
+        platform = {"success_rate": None, "cost_usd": None, "eval_score": None, "dims": {}}
 
-    # --- Percentile computation ---
-    # Success rate percentile
-    if your_success_rate >= platform_avg_success_rate * 1.15:
-        percentile_success = 10
-        comparison_label = "Top 10%"
-    elif your_success_rate >= platform_avg_success_rate * 1.05:
-        percentile_success = 25
-        comparison_label = "Top 25%"
-    elif your_success_rate >= platform_avg_success_rate * 0.95:
-        percentile_success = 50
-        comparison_label = "Average"
-    else:
-        percentile_success = 75
-        comparison_label = "Below Average"
+    # --- Percentile computation (only when both sides are real) ---
+    percentile_success: int | None = None
+    comparison_label = "insufficient_data"
+    ys, ps = yours["success_rate"], platform["success_rate"]
+    if ys is not None and ps:
+        if ys >= ps * 1.15:
+            percentile_success, comparison_label = 10, "Top 10%"
+        elif ys >= ps * 1.05:
+            percentile_success, comparison_label = 25, "Top 25%"
+        elif ys >= ps * 0.95:
+            percentile_success, comparison_label = 50, "Average"
+        else:
+            percentile_success, comparison_label = 75, "Below Average"
 
-    # Cost percentile (lower cost = better rank)
-    if platform_avg_cost_usd > 0:
-        if your_cost_usd <= platform_avg_cost_usd * 0.7:
+    percentile_cost: int | None = None
+    yc, pc = yours["cost_usd"], platform["cost_usd"]
+    if yc is not None and pc:
+        if yc <= pc * 0.7:
             percentile_cost = 10
-        elif your_cost_usd <= platform_avg_cost_usd * 0.9:
+        elif yc <= pc * 0.9:
             percentile_cost = 25
-        elif your_cost_usd <= platform_avg_cost_usd * 1.1:
+        elif yc <= pc * 1.1:
             percentile_cost = 50
         else:
             percentile_cost = 75
-    else:
-        percentile_cost = 50
 
     return {
-        "platform_avg_success_rate": platform_avg_success_rate,
-        "platform_avg_cost_usd": platform_avg_cost_usd,
-        "platform_avg_eval_score": platform_avg_eval_score,
-        "your_success_rate": your_success_rate,
-        "your_cost_usd": your_cost_usd,
-        "your_eval_score": your_eval_score,
+        "platform_avg_success_rate": platform["success_rate"],
+        "platform_avg_cost_usd": platform["cost_usd"],
+        "platform_avg_eval_score": platform["eval_score"],
+        "your_success_rate": ys,
+        "your_cost_usd": yc,
+        "your_eval_score": yours["eval_score"],
         "percentile_success": percentile_success,
         "percentile_cost": percentile_cost,
         "comparison_label": comparison_label,
+        "your_sample_count": yours.get("n_goals", 0),
+        "data_source": "live_platform_data" if platform_ok else "insufficient_data",
         "dimensions": {
-            "your": your_dims or platform_dims,
-            "platform": platform_dims,
+            "your": yours["dims"],
+            "platform": platform["dims"],
         },
     }
 

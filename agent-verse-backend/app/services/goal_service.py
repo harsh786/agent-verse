@@ -616,25 +616,27 @@ class GoalService:
                                     for q in dead:
                                         with suppress(Exception):
                                             record.subscribers.remove(q)
-                                    # Send end-of-stream sentinel on terminal events
+                                    # Send end-of-stream sentinel on terminal events.
+                                    # worker_complete is terminal only for the status it
+                                    # carries (waiting_human is a suspension, not an end).
                                     _terminal_bridge = {
-                                        "goal_complete",
-                                        "worker_complete",
-                                        "goal_failed",
-                                        "worker_failed",
-                                        "goal_cancelled",
+                                        "goal_complete": GoalStatus.COMPLETE,
+                                        "goal_failed": GoalStatus.FAILED,
+                                        "worker_failed": GoalStatus.FAILED,
+                                        "goal_cancelled": GoalStatus.CANCELLED,
                                     }
-                                    if event_type in _terminal_bridge:
+                                    _final: GoalStatus | None = (
+                                        self._worker_complete_status(
+                                            payload if isinstance(payload, dict) else {}
+                                        )
+                                        if event_type == "worker_complete"
+                                        else _terminal_bridge.get(event_type)
+                                    )
+                                    if _final is not None:
                                         for q in list(record.subscribers):
                                             with suppress(Exception):
                                                 q.put_nowait(_SENTINEL)
-                                        # Update record status
-                                        if event_type in {"goal_complete", "worker_complete"}:
-                                            record.status = GoalStatus.COMPLETE
-                                        elif event_type in {"goal_failed", "worker_failed"}:
-                                            record.status = GoalStatus.FAILED
-                                        elif event_type == "goal_cancelled":
-                                            record.status = GoalStatus.CANCELLED
+                                        record.status = _final
                         except Exception as exc:
                             self._logger.warning("celery_event_bridge_parse_failed", error=str(exc))
             except Exception as exc:
@@ -1757,10 +1759,29 @@ class GoalService:
         return self._merge_events_without_duplicates(persisted_events, list(record.events))
 
     @staticmethod
-    def _status_from_events(events: list[dict[str, Any]]) -> GoalStatus | None:
+    def _worker_complete_status(event: dict[str, Any]) -> GoalStatus | None:
+        """Terminal status carried by a Celery ``worker_complete`` event.
+
+        The worker emits ``worker_complete`` for EVERY finished run with the real
+        final ``status`` (complete / failed / waiting_human ...). It used to be
+        read as COMPLETE unconditionally, so failed runs looked successful and an
+        approval-suspended goal had its SSE stream closed. ``None`` = not terminal.
+        A legacy event without ``status`` keeps its historic COMPLETE meaning.
+        """
+        raw = str(event.get("status") or "complete").lower()
+        return {
+            "complete": GoalStatus.COMPLETE,
+            "failed": GoalStatus.FAILED,
+            "cancelled": GoalStatus.CANCELLED,
+        }.get(raw)
+
+    @classmethod
+    def _status_from_events(cls, events: list[dict[str, Any]]) -> GoalStatus | None:
         for event in reversed(events):
             etype = event.get("type")
-            if etype in {"goal_complete", "worker_complete"}:
+            if etype == "worker_complete":
+                return cls._worker_complete_status(event)
+            if etype == "goal_complete":
                 return GoalStatus.COMPLETE
             if etype in {"goal_failed", "worker_failed"}:
                 return GoalStatus.FAILED
@@ -1926,7 +1947,7 @@ class GoalService:
                     scorecard = await eval_runner.score_and_persist(
                         agent_state,
                         tenant_ctx_for_record,
-                        provider=getattr(self._app_state, "_app_provider", None),
+                        provider=getattr(_eval_aps, "_app_provider", None),  # on app.state
                         db=self._db,
                     )
                     self._eval_scores[goal_id] = scorecard
@@ -2603,15 +2624,38 @@ class GoalService:
 
         try:
             result = await scheduler.schedule(envelope, event_callback=callback)
-            # Update goal record status to mirror the execution result
-            if record is not None:
-                from app.agent.state import GoalStatus
-
-                if result.success:
+            # Mirror the execution result. The runner forwards the graph's own
+            # goal_complete / goal_failed when the loop ran, but several paths
+            # (policy rejection, pre-run failures) return a failed result with no
+            # terminal event — the goal was marked FAILED in memory only and SSE
+            # streams never ended. WAITING_HUMAN is a suspension, not an end.
+            _terminal_types = {"goal_complete", "goal_failed", "goal_cancelled"}
+            _already_terminal = record is not None and any(
+                e.get("type") in _terminal_types for e in record.events
+            )
+            if str(result.status) == GoalStatus.WAITING_HUMAN.value:
+                await self._suspend_for_approval(goal_id, tenant_ctx)
+            elif result.success:
+                if record is not None:
                     record.status = GoalStatus.COMPLETE
-                else:
+                if not _already_terminal:
+                    await self._dispatch_event(
+                        goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx
+                    )
+            else:
+                if record is not None:
                     record.status = GoalStatus.FAILED
                     record.error_message = result.error_message
+                if not _already_terminal:
+                    await self._dispatch_event(
+                        goal_id,
+                        {
+                            "type": "goal_failed",
+                            "reason": result.error_message
+                            or f"isolated execution ended with status {result.status}",
+                        },
+                        tenant_ctx=tenant_ctx,
+                    )
         except RunnerUnavailableError as exc:
             _svc_logger.error(
                 "isolated_runner_unavailable goal_id=%s reason=%s",
@@ -2619,8 +2663,6 @@ class GoalService:
                 str(exc)[:200],
             )
             if record is not None:
-                from app.agent.state import GoalStatus
-
                 record.status = GoalStatus.FAILED
                 record.error_message = str(exc)
             await self._dispatch_event(
@@ -2640,8 +2682,6 @@ class GoalService:
                 str(exc)[:200],
             )
             if record is not None:
-                from app.agent.state import GoalStatus
-
                 record.status = GoalStatus.FAILED
                 record.error_message = str(exc)
             await self._dispatch_event(
@@ -2689,19 +2729,26 @@ class GoalService:
                 event_callback=callback,
                 goal=goal_text,
             )
-            # goal_complete only when every step produced a real result — this used
-            # to fire unconditionally, even for failed / not-executed workflows.
-            if isinstance(wf_result, dict) and wf_result.get("status") != "complete":
+            # Map the executor's real outcome to the terminal event. It returns
+            # {"status": "failed", "reason": ...} when a step fails (it does not
+            # raise), and goal_complete used to be emitted regardless.
+            wf_status = str((wf_result or {}).get("status", "complete"))
+            if wf_status == "complete":
                 await self._dispatch_event(
-                    goal_id,
-                    {
-                        "type": "goal_failed",
-                        "reason": str(wf_result.get("reason") or "workflow did not complete"),
-                    },
-                    tenant_ctx=tenant_ctx,
+                    goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx
                 )
-                return
-            await self._dispatch_event(goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx)
+            else:
+                reason = str(
+                    (wf_result or {}).get("reason")
+                    or (wf_result or {}).get("error")
+                    or f"workflow ended with status {wf_status}"
+                )
+                if record is not None:
+                    record.status = GoalStatus.FAILED
+                    record.error_message = reason
+                await self._dispatch_event(
+                    goal_id, {"type": "goal_failed", "reason": reason}, tenant_ctx=tenant_ctx
+                )
         except asyncio.CancelledError:
             if record is not None and record.status != GoalStatus.CANCELLED:
                 record.status = GoalStatus.CANCELLED
@@ -3702,10 +3749,12 @@ class GoalService:
         if store is None:
             return None
         try:
+            cfg = await store.get_config(tenant_ctx.tenant_id, strict=True)
+        except TypeError:
+            # A store without strict reads (tests/fakes).
             cfg = await store.get_config(tenant_ctx.tenant_id)
-        except Exception as exc:
-            _svc_logger.warning("tenant_llm_config_read_failed", error=str(exc))
-            return None
+        # LLMConfigReadError propagates: the goal fails instead of silently
+        # running on the platform provider when the tenant's BYOK is unknown.
         return dict(cfg) if cfg else None
 
     async def _suspend_for_approval(self, goal_id: str, tenant_ctx: TenantContext) -> None:
@@ -4301,6 +4350,16 @@ class GoalService:
                 workflow_mode=row.workflow_mode,
                 execution_context=row.execution_context or {},
             )
+            # A refresh must not orphan live SSE subscribers: subscribe_events
+            # registers its queue on the cached record, and the Celery bridge /
+            # _dispatch_event fan out via self._goals[goal_id].subscribers. Share
+            # the same list object (and keep a running local task) so the queue
+            # stays reachable after the DB copy replaces the cached record.
+            previous = self._goals.get(row.id)
+            if previous is not None and previous.tenant_id == record.tenant_id:
+                record.subscribers = previous.subscribers
+                if record.task is None:
+                    record.task = previous.task
             self._goals[row.id] = record
             return record
         except Exception as exc:

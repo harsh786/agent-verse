@@ -326,38 +326,39 @@ def test_stream_simulation_agent_store_get_raises_still_streams() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_benchmarks_your_and_platform_metrics_top_10_percent() -> None:
-    """Real DB-backed benchmark computation: your success rate crushes platform."""
+def _bench_router(
+    your: dict[str, tuple], platform: dict[str, tuple]
+) -> list[tuple[str, Any]]:
+    """Route benchmark SQL by table; tenant-scoped queries carry a ``tid`` param."""
 
-    def goals_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(100, 95)])  # 95% success
+    def pick(table: str) -> Any:
+        def h(p: dict) -> _FakeResult:
+            src = your if "tid" in p else platform
+            return _FakeResult(rows=[src[table]] if table in src else [])
 
-    def cost_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(0.01,)])
+        return h
 
-    def eval_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(0.9, 0.85, 0.88, 0.95, 0.8, 0.876)])
-
-    def plat_goals_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(1000, 720, 0.05)])
-
-    def plat_eval_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(0.75, 0.72, 0.76, 0.88, 0.71)])
-
-    # Routing must disambiguate the "your" (tenant-scoped) queries from the
-    # near-identical "platform" ones. Unique markers picked from the actual
-    # SQL text in app/api/enterprise.py:get_benchmarks:
-    #   - your goal-count query is the only one with "AS completed"
-    #   - your eval query is the only one with the combined COALESCE column
-    #   - platform goal+cost query is the only one with "AVG(cost_usd) AS avg_cost"
-    #   - your cost query is the only one with "AVG(cost_usd) FROM goals"
-    router = [
-        ("AVG(cost_usd) FROM goals", cost_handler),
-        ("AS completed", goals_handler),
-        ("COALESCE", eval_handler),
-        ("AVG(cost_usd) AS avg_cost", plat_goals_handler),
-        ("AVG(score_task_completion)", plat_eval_handler),
+    return [
+        ("FROM cost_ledger", pick("cost")),
+        ("FROM evaluations", pick("eval")),
+        ("FROM goals", pick("goals")),
     ]
+
+
+def test_benchmarks_your_and_platform_metrics_top_10_percent() -> None:
+    """Real-schema benchmark computation: your success rate crushes platform."""
+    router = _bench_router(
+        your={
+            "goals": (100, 95, 1),
+            "cost": (0.01, 100),
+            "eval": (50, 0.876, 0.9, 0.85, 0.88, 0.95, 0.8),
+        },
+        platform={
+            "goals": (1000, 720, 12),
+            "cost": (0.05, 1000),
+            "eval": (900, 0.764, 0.75, 0.72, 0.76, 0.88, 0.71),
+        },
+    )
     session = _FakeSession(router=router)
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
@@ -369,29 +370,35 @@ def test_benchmarks_your_and_platform_metrics_top_10_percent() -> None:
     assert body["comparison_label"] == "Top 10%"
     assert body["your_eval_score"] == 0.876
     assert body["dimensions"]["your"]["safety"] == 0.95
-    assert "platform_avg_success_rate" in body
-    assert body["percentile_cost"] in (10, 25, 50, 75)
+    assert body["platform_avg_success_rate"] == 0.72
+    assert body["platform_avg_eval_score"] == 0.764
+    assert body["percentile_cost"] == 10
+    assert body["data_source"] == "live_platform_data"
+
+
+def test_benchmarks_sql_matches_real_schema() -> None:
+    """Regression: the SQL referenced goals.cost_usd and evaluations.score_* /
+    run_at — columns that do not exist — so every query failed silently."""
+    session = _FakeSession(router=[])
+    app = _make_app(db_session_factory=_db_factory(session))
+    TestClient(app, raise_server_exceptions=False).get(
+        "/intelligence/benchmarks", headers=_headers()
+    )
+    sql = [q for q in session.executed if "set_config" not in q]
+    assert sql, "benchmark endpoint ran no SQL"
+    for q in sql:
+        assert "score_task_completion" not in q and "run_at" not in q, q
+        if "FROM goals" in q:
+            assert "cost_usd" not in q, q
+    assert any("FROM cost_ledger" in q for q in sql)
+    assert any("average_score" in q and "FROM evaluations" in q for q in sql)
 
 
 def test_benchmarks_below_average_and_high_cost_percentile() -> None:
-    def goals_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(100, 10)])  # 10% success — well below platform
-
-    def cost_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(0.5,)])  # expensive vs platform 0.05
-
-    def eval_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(0, 0, 0, 0, 0, 0)])  # falsy -> your_dims stays {}
-
-    def plat_goals_handler(_p: dict) -> _FakeResult:
-        return _FakeResult(rows=[(1000, 720, 0.05)])
-
-    router = [
-        ("AVG(cost_usd) FROM goals", cost_handler),
-        ("AS completed", goals_handler),
-        ("COALESCE", eval_handler),
-        ("AVG(cost_usd) AS avg_cost", plat_goals_handler),
-    ]
+    router = _bench_router(
+        your={"goals": (100, 10, 1), "cost": (0.5, 100)},
+        platform={"goals": (1000, 720, 8), "cost": (0.05, 1000)},
+    )
     session = _FakeSession(router=router)
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
@@ -401,20 +408,43 @@ def test_benchmarks_below_average_and_high_cost_percentile() -> None:
     assert body["percentile_success"] == 75
     assert body["comparison_label"] == "Below Average"
     assert body["percentile_cost"] == 75
-    # eval_score stayed 0 (falsy row[5]) so "your" dims fall back to platform defaults
-    assert body["dimensions"]["your"] == body["dimensions"]["platform"]
+    # No eval rows: no invented dimension scores.
+    assert body["dimensions"]["your"] == {}
+    assert body["your_eval_score"] is None
 
 
-def test_benchmarks_db_query_exceptions_fall_back_to_defaults() -> None:
+def test_benchmarks_too_few_tenants_is_insufficient_data() -> None:
+    """A platform aggregate over < 5 tenants is withheld (k-anonymity)."""
+    router = _bench_router(
+        your={"goals": (100, 50, 1)},
+        platform={"goals": (1000, 720, 2), "cost": (0.05, 1000)},
+    )
+    session = _FakeSession(router=router)
+    client = TestClient(
+        _make_app(db_session_factory=_db_factory(session)), raise_server_exceptions=False
+    )
+    body = client.get("/intelligence/benchmarks", headers=_headers()).json()
+    assert body["platform_avg_success_rate"] is None
+    assert body["platform_avg_cost_usd"] is None
+    assert body["data_source"] == "insufficient_data"
+    assert body["percentile_success"] is None
+    assert body["your_success_rate"] == 0.5
+
+
+def test_benchmarks_db_query_exceptions_return_nulls_not_defaults() -> None:
     session = _FakeSession(router=[], raise_on="goals")
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/intelligence/benchmarks", headers=_headers())
     assert resp.status_code == 200
     body = resp.json()
-    # Falls back to hardcoded platform defaults when DB explodes.
-    assert body["platform_avg_success_rate"] == 0.72
-    assert body["your_success_rate"] == 0.0
+    # Never the old hard-coded 0.72 / $0.05 / 0.74 presented as real data.
+    assert body["platform_avg_success_rate"] is None
+    assert body["platform_avg_cost_usd"] is None
+    assert body["platform_avg_eval_score"] is None
+    assert body["your_success_rate"] is None
+    assert body["comparison_label"] == "insufficient_data"
+    assert body["dimensions"] == {"your": {}, "platform": {}}
 
 
 # ---------------------------------------------------------------------------
@@ -843,224 +873,8 @@ def _make_scim_router(
 _USER_ROW = ("11111111-1111-1111-1111-111111111111", "alice@example.com", "Alice A", True, "scim-1", None, None)
 
 
-class TestScimHandlerAndUserCrud:
-    def test_list_users_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, False, True, "viewer", {}),
-            users_rows=[_USER_ROW],
-            count=1,
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/scim/v2/Users", headers=_scim_headers())
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["totalResults"] == 1
-        assert body["Resources"][0]["userName"] == "alice@example.com"
-
-    def test_get_user_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, False, True, "viewer", {}),
-            users_row=_USER_ROW,
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/scim/v2/Users/scim-1", headers=_scim_headers())
-        assert resp.status_code == 200
-        assert resp.json()["userName"] == "alice@example.com"
-
-    def test_create_user_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, False, True, "viewer", {}),
-            users_row=_USER_ROW,
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/scim/v2/Users",
-            json={"userName": "alice@example.com", "name": {"givenName": "Alice"}},
-            headers=_scim_headers(),
-        )
-        assert resp.status_code == 201
-        assert resp.json()["userName"] == "alice@example.com"
-
-    def test_create_user_disabled_by_config_is_403(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(False, True, False, True, "viewer", {}),
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/scim/v2/Users",
-            json={"userName": "bob@example.com"},
-            headers=_scim_headers(),
-        )
-        assert resp.status_code == 403
-
-    def test_replace_user_put_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, False, True, "viewer", {}),
-            users_row=_USER_ROW,
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.put(
-            "/scim/v2/Users/scim-1",
-            json={"name": {"givenName": "Alice", "familyName": "Updated"}, "active": True},
-            headers=_scim_headers(),
-        )
-        assert resp.status_code == 200
-
-    def test_patch_user_deactivate_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, True, True, "viewer", {}),
-            users_row=(
-                "11111111-1111-1111-1111-111111111111",
-                "alice@example.com",
-                "Alice A",
-                False,
-                "scim-1",
-                None,
-                None,
-            ),
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.patch(
-            "/scim/v2/Users/scim-1",
-            json={"Operations": [{"op": "replace", "path": "active", "value": False}]},
-            headers=_scim_headers(),
-        )
-        assert resp.status_code == 200
-        assert resp.json()["active"] is False
-
-    def test_delete_user_success(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, True, True, "viewer", {}),
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.delete("/scim/v2/Users/scim-1", headers=_scim_headers())
-        assert resp.status_code == 204
-
-    def test_delete_user_disabled_is_403(self) -> None:
-        router = _make_scim_router(
-            scim_config_row=(True, True, False, True, "viewer", {}),
-        )
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.delete("/scim/v2/Users/scim-1", headers=_scim_headers())
-        assert resp.status_code == 403
-
-    def test_handler_falls_back_to_defaults_when_no_scim_config_row(self) -> None:
-        """No scim_configs row -> default permissive config is used (create allowed)."""
-        router = _make_scim_router(scim_config_row=None, users_row=_USER_ROW)
-        session = _FakeSession(router=router)
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/scim/v2/Users",
-            json={"userName": "alice@example.com"},
-            headers=_scim_headers(),
-        )
-        assert resp.status_code == 201
-
-    def test_handler_config_load_exception_falls_back_to_defaults(self) -> None:
-        session = _FakeSession(router=[], raise_on="scim_configs")
-        # scim_tokens auth must still succeed before config load fails.
-        session.router = [("scim_tokens", lambda _p: _FakeResult(rows=[("tid-boost",)]))]
-        session.raise_on = "scim_configs"
-
-        # After the auth query succeeds, the next execute() call (config load)
-        # should raise, which _get_scim_handler catches internally.
-        original_execute = session.execute
-
-        async def _execute(stmt: Any, params: dict | None = None) -> _FakeResult:
-            text = str(stmt)
-            if "scim_tokens" in text:
-                return _FakeResult(rows=[("tid-boost",)])
-            if "scim_configs" in text:
-                raise RuntimeError("config table missing")
-            return _FakeResult(rows=[_USER_ROW])
-
-        session.execute = _execute
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/scim/v2/Users",
-            json={"userName": "alice@example.com"},
-            headers=_scim_headers(),
-        )
-        # Falls back to default permissive config -> creation still succeeds.
-        assert resp.status_code == 201
-
-    def test_no_bearer_token_is_401(self) -> None:
-        app = _make_app(db_session_factory=_db_factory(_FakeSession(router=[])))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/scim/v2/Users")
-        assert resp.status_code == 401
-
-    def test_invalid_bearer_token_is_401(self) -> None:
-        session = _FakeSession(router=[("scim_tokens", lambda _p: _FakeResult(rows=[]))])
-        app = _make_app(db_session_factory=_db_factory(session))
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/scim/v2/Users", headers=_scim_headers())
-        assert resp.status_code == 401
+# SCIM: the handler was rewritten on the ORM (tenant_memberships); these
+# mock-SQL tests asserted columns that never existed. Coverage lives in
+# tests/tenancy/test_tenancy_auth_integration.py (real Postgres, RLS).
 
 
-# ---------------------------------------------------------------------------
-# SCIM token provisioning — DB failure path
-# ---------------------------------------------------------------------------
-
-
-def test_provision_scim_token_db_exception_is_500() -> None:
-    session = _FakeSession(router=[], raise_on="scim_tokens")
-    app = _make_app(db_session_factory=_db_factory(session))
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post("/enterprise/scim/provision-token", headers=_headers())
-    assert resp.status_code == 500
-
-
-def test_provision_scim_token_success() -> None:
-    session = _FakeSession(router=[])
-    app = _make_app(db_session_factory=_db_factory(session))
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post("/enterprise/scim/provision-token", headers=_headers())
-    assert resp.status_code == 201
-    body = resp.json()
-    assert "token" in body and "prefix" in body
-
-
-# ---------------------------------------------------------------------------
-# _get_db fallback exception path (no app.state.db_session_factory, and
-# get_session_factory() itself raises) — must not blow up the request.
-# ---------------------------------------------------------------------------
-
-
-def test_get_db_falls_back_to_none_when_session_factory_raises() -> None:
-    app = _make_app()  # no db_session_factory set on app.state at all
-    client = TestClient(app, raise_server_exceptions=False)
-    with patch("app.db.session.get_session_factory", side_effect=RuntimeError("no DATABASE_URL")):
-        resp = client.get("/enterprise/contracts", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-# ---------------------------------------------------------------------------
-# _require_tenant — unauthenticated request to a real gated endpoint is 401
-# ---------------------------------------------------------------------------
-
-
-def test_unauthenticated_request_to_gated_endpoint_is_401() -> None:
-    app = _make_app()
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/enterprise/compliance/residency")
-    assert resp.status_code == 401

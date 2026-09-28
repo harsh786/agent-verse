@@ -119,6 +119,8 @@ GRANT_TABLES = (
     "compliance_requests",
     "goals",
     "audit_log",
+    # Erasure is gated on legal_holds (fail-closed); the role must be able to read it.
+    "legal_holds",
 )
 
 
@@ -601,7 +603,8 @@ async def test_erasure_request_and_execution_manage_deleted_tenants_row(
     assert (await _as_app(app, other, sel, {"tid": victim}))[0][0] == 0
 
     await cc.execute_data_deletion_async(tenant_ctx=ctx, db=app)
-    assert await _pending(victim) == 0, "erasure did not clear its tracking row"
+    # The job row is kept as the durable record of the erasure (status/result).
+    assert await _pending(victim) == 1, "erasure job record was lost"
 
 
 @pytest.mark.asyncio

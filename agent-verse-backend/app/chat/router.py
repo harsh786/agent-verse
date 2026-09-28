@@ -696,6 +696,23 @@ def _ltm(request: Request) -> Any:
     return getattr(request.app.state, "long_term_memory", None)
 
 
+async def _ltm_call(awaitable: Any) -> Any:
+    """Await a LongTermMemoryStore DB call, mapping store failure to 503.
+
+    The store used to swallow DB errors into ``[]`` / ``False`` / ``0`` so a
+    failed GDPR erasure answered ``{"deleted": 0}`` with a 200.
+    """
+    from app.memory.long_term import LongTermMemoryUnavailableError
+
+    try:
+        return await awaitable
+    except LongTermMemoryUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Memory store unavailable; nothing was changed. Retry later.",
+        ) from exc
+
+
 def _ltm_to_dict(m: Any) -> dict[str, Any]:
     return {
         "id": m.memory_id,
@@ -711,7 +728,7 @@ async def list_memories(request: Request) -> dict[str, Any]:
     tenant = _tenant(request)
     ltm = _ltm(request)
     if ltm is not None:
-        mems = await ltm.list_all_async(tenant_ctx=tenant)
+        mems = await _ltm_call(ltm.list_all_async(tenant_ctx=tenant))
         return {"memories": [_ltm_to_dict(m) for m in mems]}
     return {"memories": [_memory_to_dict(m) for m in _memory_api.list_memories(tenant.tenant_id)]}
 
@@ -736,8 +753,8 @@ async def update_memory(
     tenant = _tenant(request)
     ltm = _ltm(request)
     if ltm is not None:
-        m = await ltm.update_content_async(
-            memory_id=memory_id, content=body.content, tenant_ctx=tenant
+        m = await _ltm_call(
+            ltm.update_content_async(memory_id=memory_id, content=body.content, tenant_ctx=tenant)
         )
         if not m:
             raise HTTPException(status_code=404, detail="Memory not found")
@@ -753,7 +770,7 @@ async def delete_memory(memory_id: str, request: Request) -> None:
     tenant = _tenant(request)
     ltm = _ltm(request)
     ok = (
-        await ltm.delete_async(memory_id=memory_id, tenant_ctx=tenant)
+        await _ltm_call(ltm.delete_async(memory_id=memory_id, tenant_ctx=tenant))
         if ltm is not None
         else _memory_api.delete_memory(memory_id, tenant.tenant_id)
     )
@@ -775,7 +792,7 @@ async def delete_all_memories(
     tenant = _tenant(request)
     ltm = _ltm(request)
     count = (
-        await ltm.delete_all_async(tenant_ctx=tenant)
+        await _ltm_call(ltm.delete_all_async(tenant_ctx=tenant))
         if ltm is not None
         else _memory_api.delete_all_memories(tenant.tenant_id)
     )

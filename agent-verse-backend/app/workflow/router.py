@@ -225,6 +225,75 @@ async def list_workflows(
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
 
+# NOTE: static paths (/templates, /marketplace) MUST be declared before
+# GET /{workflow_id}; declared after it they were matched as a workflow id
+# and their handlers were unreachable (404 'Workflow not found').
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+
+@router.get("/templates", tags=["workflow-templates"])
+async def list_templates(
+    request: Request,
+    category: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> dict[str, Any]:
+    svc = _svc(request)
+    items, total = await svc.list_templates(category=category, page=page, per_page=per_page)
+    return {"items": items, "total": total, "page": page, "per_page": per_page}
+
+
+@router.get("/templates/{slug}", tags=["workflow-templates"])
+async def get_template(slug: str, request: Request) -> Any:
+    svc = _svc(request)
+    item = await svc.get_template(slug=slug)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return item
+
+
+@router.post(
+    "/templates/{slug}/instantiate",
+    status_code=status.HTTP_201_CREATED,
+    response_model=WorkflowResponse,
+)
+async def instantiate_template(
+    slug: str,
+    body: dict[str, Any] = Body(default_factory=dict),
+    request: Request = None,  # type: ignore[assignment]
+) -> Any:
+    """Create a new workflow from a system template."""
+    svc = _svc(request)
+    tenant = _get_tenant(request)
+    try:
+        result = await svc.instantiate_template(
+            tenant_id=tenant.tenant_id, slug=slug, overrides=body
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Marketplace
+# ---------------------------------------------------------------------------
+
+
+@router.get("/marketplace", tags=["workflow-marketplace"])
+async def marketplace(
+    request: Request,
+    category: str | None = Query(None),
+    q: str | None = Query(None, description="Search query"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> Any:
+    svc = _svc(request)
+    items, total = await svc.marketplace_list(category=category, q=q, page=page, per_page=per_page)
+    return {"items": items, "total": total, "page": page, "per_page": per_page}
+
+
 @router.get("/{workflow_id}", response_model=WorkflowDetailResponse)
 async def get_workflow(workflow_id: str, request: Request) -> Any:
     svc = _svc(request)
@@ -472,54 +541,6 @@ async def remove_permission(workflow_id: str, permission_id: str, request: Reque
 
 
 # ---------------------------------------------------------------------------
-# Templates
-# ---------------------------------------------------------------------------
-
-
-@router.get("/templates", tags=["workflow-templates"])
-async def list_templates(
-    request: Request,
-    category: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-) -> dict[str, Any]:
-    svc = _svc(request)
-    items, total = await svc.list_templates(category=category, page=page, per_page=per_page)
-    return {"items": items, "total": total, "page": page, "per_page": per_page}
-
-
-@router.get("/templates/{slug}", tags=["workflow-templates"])
-async def get_template(slug: str, request: Request) -> Any:
-    svc = _svc(request)
-    item = await svc.get_template(slug=slug)
-    if item is None:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return item
-
-
-@router.post(
-    "/templates/{slug}/instantiate",
-    status_code=status.HTTP_201_CREATED,
-    response_model=WorkflowResponse,
-)
-async def instantiate_template(
-    slug: str,
-    body: dict[str, Any] = Body(default_factory=dict),
-    request: Request = None,  # type: ignore[assignment]
-) -> Any:
-    """Create a new workflow from a system template."""
-    svc = _svc(request)
-    tenant = _get_tenant(request)
-    try:
-        result = await svc.instantiate_template(
-            tenant_id=tenant.tenant_id, slug=slug, overrides=body
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Analytics
 # ---------------------------------------------------------------------------
 
@@ -608,21 +629,3 @@ async def get_webhook_trigger(workflow_id: str, request: Request) -> dict[str, A
         }
     )
     return out
-
-
-# ---------------------------------------------------------------------------
-# Marketplace
-# ---------------------------------------------------------------------------
-
-
-@router.get("/marketplace", tags=["workflow-marketplace"])
-async def marketplace(
-    request: Request,
-    category: str | None = Query(None),
-    q: str | None = Query(None, description="Search query"),
-    page: int = Query(1, ge=1),
-    per_page: int = Query(20, ge=1, le=100),
-) -> Any:
-    svc = _svc(request)
-    items, total = await svc.marketplace_list(category=category, q=q, page=page, per_page=per_page)
-    return {"items": items, "total": total, "page": page, "per_page": per_page}

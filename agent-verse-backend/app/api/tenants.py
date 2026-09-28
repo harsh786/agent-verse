@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import re
 import secrets
@@ -150,13 +149,39 @@ async def create_key(
 ) -> JSONResponse:
     """Create a new API key. The raw key is returned ONLY in this response."""
     svc = _get_tenant_service(request)
-    result = await svc.create_api_key(
-        tenant_id=ctx.tenant_id,
-        name=body.name,
-        scopes=body.scopes,
-        expires_at=body.expires_at,
-    )
+    scopes = _scopes_for_new_key(ctx, body.scopes)
+    try:
+        result = await svc.create_api_key(
+            tenant_id=ctx.tenant_id,
+            name=body.name,
+            scopes=scopes,
+            expires_at=body.expires_at,
+        )
+    except NotFoundError as exc:
+        return JSONResponse(exc.to_dict(), status_code=404)
+    except PlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
     return JSONResponse(result, status_code=201)
+
+
+def _scopes_for_new_key(ctx: TenantContext, requested: list[str]) -> list[str]:
+    """A scope-restricted key may only mint keys within its own scopes.
+
+    Otherwise a key narrowed to e.g. ``tenancy:write`` could create an unscoped
+    key and escape its restriction. An unrestricted caller keeps the old
+    behaviour; a restricted caller that requests no scopes gets its own.
+    """
+    if not ctx.scopes:
+        return requested
+    if not requested:
+        return list(ctx.scopes)
+    extra = sorted(set(requested) - set(ctx.scopes))
+    if extra:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot grant scopes this API key does not hold: {extra}",
+        )
+    return requested
 
 
 @router.delete("/me/keys/{key_id}", status_code=204)
@@ -171,6 +196,9 @@ async def revoke_key(
         await svc.revoke_api_key(tenant_id=ctx.tenant_id, key_id=key_id)
     except NotFoundError as exc:
         return JSONResponse(exc.to_dict(), status_code=404)
+    except PlatformError as exc:
+        # Key store unavailable: the key may still be active — never report 204.
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
     return Response(status_code=204)
 
 
@@ -200,22 +228,36 @@ async def rotate_key(
 
     # Create the replacement key first so callers can take it before the old one
     # is revoked — minimising the window without a valid key.
-    new_key = await svc.create_api_key(
-        tenant_id=ctx.tenant_id,
-        name=body.name,
-        scopes=body.scopes,
-        expires_at=None,
-    )
+    try:
+        new_key = await svc.create_api_key(
+            tenant_id=ctx.tenant_id,
+            name=body.name,
+            scopes=_scopes_for_new_key(ctx, body.scopes),
+            expires_at=None,
+        )
+    except PlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
 
+    old_revoked = False
+    revoke_error: str | None = None
     if body.revoke_old:
-        # Best-effort: don't fail the rotation if revocation errors
-        with contextlib.suppress(Exception):
+        # Don't fail the rotation (the new key's secret is only shown once), but
+        # report honestly whether the old key was actually revoked — this used to
+        # claim old_revoked=true even when the revoke failed.
+        try:
             await svc.revoke_api_key(tenant_id=ctx.tenant_id, key_id=key_id)
+            old_revoked = True
+        except Exception as exc:
+            revoke_error = str(exc) or type(exc).__name__
 
-    return JSONResponse(
-        {"new_key": new_key, "old_key_id": key_id, "old_revoked": body.revoke_old},
-        status_code=201,
-    )
+    payload: dict[str, Any] = {
+        "new_key": new_key,
+        "old_key_id": key_id,
+        "old_revoked": old_revoked,
+    }
+    if revoke_error is not None:
+        payload["revoke_error"] = revoke_error
+    return JSONResponse(payload, status_code=201)
 
 
 # ── LLM provider configuration ────────────────────────────────────────────────
@@ -338,6 +380,16 @@ async def set_llm_config(
     be kept in this replica's memory (which the goal path read) plus Redis, so
     the provider applied only on the replica that handled this request.
     """
+    if body.base_url:
+        from app.providers.tenant_provider import (
+            TenantProviderError,
+            _assert_tenant_base_url_allowed,
+        )
+
+        try:
+            _assert_tenant_base_url_allowed(body.base_url)
+        except TenantProviderError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     vault = get_vault()
     encrypted_key = vault.encrypt(body.api_key)
     masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
@@ -608,6 +660,38 @@ class CreateIPAllowlistRequest(BaseModel):
         return v
 
 
+async def _invalidate_ip_allowlist_cache(request: Request, tenant_id: str) -> None:
+    """Drop the cached allowlist that ScopeEnforcementMiddleware enforces from.
+
+    The Redis entry (``ip_wl:{tenant}``, 60 s TTL) is shared by every replica, so
+    deleting it makes the change effective cluster-wide on the next request. The
+    in-process fallback copy (used only while Redis is unreachable) is dropped on
+    this replica; other replicas' copies expire within their TTL.
+    """
+    from app.auth import scope_enforcement
+    from app.auth.ip_allowlist import IPAllowlistCache
+
+    scope_enforcement._local_ip_allowlist_cache.pop(tenant_id, None)
+    redis = getattr(request.app.state, "_rate_limiter_redis", None)
+    if redis is None:
+        return
+    try:
+        await IPAllowlistCache(redis).invalidate(tenant_id)
+    except Exception as exc:
+        # The DB change is committed; the stale entry expires within its 60 s TTL.
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "ip_allowlist_cache_invalidation_failed tenant=%s: %s", tenant_id, exc
+        )
+
+
+# The API used to read/write the legacy ``ip_allowlist`` table while enforcement
+# (IPAllowlistCache) reads ``ip_allowlist_entries``: every CIDR a tenant added was
+# listed back to it but never enforced. All three routes now use the enforced
+# table (``app.db.models.auth.IPAllowlistEntry``) under the tenant's RLS context.
+
+
 @router.get("/me/ip-allowlist")
 async def list_ip_allowlist(
     request: Request,
@@ -620,19 +704,24 @@ async def list_ip_allowlist(
     try:
         from sqlalchemy import select
 
-        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.models.auth import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
 
-        async with db() as session, sqlalchemy_rls_context(session, ctx.tenant_id):
+        async with db() as session, session.begin(), sqlalchemy_rls_context(
+            session, ctx.tenant_id
+        ):
             result = await session.execute(
-                select(IPAllowlistEntry).where(IPAllowlistEntry.tenant_id == ctx.tenant_id)
+                select(IPAllowlistEntry).where(
+                    IPAllowlistEntry.tenant_id == ctx.tenant_id,
+                    IPAllowlistEntry.is_active.is_(True),
+                )
             )
             rows = result.scalars().all()
         return [
             {
                 "id": r.id,
                 "cidr": r.cidr,
-                "description": r.description,
+                "description": r.label or "",
                 "created_at": r.created_at.isoformat() if r.created_at else "",
             }
             for r in rows
@@ -647,7 +736,7 @@ async def create_ip_allowlist_entry(
     body: CreateIPAllowlistRequest,
     ctx: TenantContext = Depends(_require_tenant),
 ) -> dict:
-    """Add a CIDR range to this tenant's IP allowlist."""
+    """Add a CIDR range to this tenant's IP allowlist (enforced on every request)."""
     import uuid
 
     db = getattr(request.app.state, "db_session_factory", None)
@@ -655,20 +744,23 @@ async def create_ip_allowlist_entry(
     if db is None:
         return {"id": entry_id, "cidr": body.cidr, "description": body.description}
     try:
-        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.models.auth import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
 
         row = IPAllowlistEntry(
             id=entry_id,
             tenant_id=ctx.tenant_id,
             cidr=body.cidr,
-            description=body.description,
+            label=body.description or None,
+            is_active=True,
+            created_by=ctx.api_key_id or None,
         )
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
             session.add(row)
-        return {"id": entry_id, "cidr": body.cidr, "description": body.description}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    await _invalidate_ip_allowlist_cache(request, ctx.tenant_id)
+    return {"id": entry_id, "cidr": body.cidr, "description": body.description}
 
 
 # ── Tenant membership ─────────────────────────────────────────────────────────
@@ -881,7 +973,7 @@ async def delete_ip_allowlist_entry(
     try:
         from sqlalchemy import select
 
-        from app.db.models.rbac import IPAllowlistEntry
+        from app.db.models.auth import IPAllowlistEntry
         from app.db.rls import sqlalchemy_rls_context
 
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, ctx.tenant_id):
@@ -899,6 +991,7 @@ async def delete_ip_allowlist_entry(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    await _invalidate_ip_allowlist_cache(request, ctx.tenant_id)
 
 
 # ── Notification preferences ──────────────────────────────────────────────────
@@ -953,10 +1046,25 @@ async def update_notifications(request: Request) -> dict:
 
 
 @router.get("/me/sessions")
-async def list_sessions(request: Request) -> list:
-    """List active sessions for the tenant (returns empty list — future: session tracking)."""
+async def list_sessions(request: Request) -> None:
+    """List login sessions — not implemented (501).
+
+    This always returned ``[]`` although nothing records sessions, so the UI
+    showed "no other sessions" as if that were verified. See app/api/sessions.py.
+    """
+    from app.api.sessions import raise_sessions_not_implemented
+
     _require_tenant(request)
-    return []
+    raise_sessions_not_implemented(request)
+
+
+@router.delete("/me/sessions/{session_id}")
+async def revoke_tenant_session(session_id: str, request: Request) -> None:
+    """Revoke a login session — not implemented (501); the UI calls this path."""
+    from app.api.sessions import raise_sessions_not_implemented
+
+    _require_tenant(request)
+    raise_sessions_not_implemented(request)
 
 
 # ── Data export ───────────────────────────────────────────────────────────────

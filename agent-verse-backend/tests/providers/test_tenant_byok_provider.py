@@ -78,7 +78,10 @@ def test_api_path_refuses_custom_endpoint_without_base_url(pname: str) -> None:
         _make_loop(cfg)
 
 
-def test_api_path_openai_compatible_with_base_url_uses_tenant_provider() -> None:
+def test_api_path_openai_compatible_with_base_url_uses_tenant_provider(monkeypatch) -> None:
+    # Placeholder host: resolve it to a public address (the base_url guard fails
+    # closed on DNS errors).
+    monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda _h: ["93.184.216.34"])
     cfg = {
         "provider": "openai_compatible",
         "encrypted_key": "enc",
@@ -235,3 +238,34 @@ def test_worker_run_goal_fails_on_decrypt_error(
     assert result["status"] == "failed"
     assert result["reason"] == "tenant_llm_provider_unavailable"
     assert ran == []  # never ran on the platform provider
+
+
+def test_tenant_base_url_pointing_at_a_private_host_is_refused(monkeypatch) -> None:
+    """Regression: a tenant base_url like http://169.254.169.254/ turned every LLM
+    call into an SSRF from the platform into its own network."""
+    import pytest
+
+    from app.providers.tenant_provider import TenantProviderError, _assert_tenant_base_url_allowed
+
+    monkeypatch.delenv("TENANT_LLM_ALLOWED_PRIVATE_HOSTS", raising=False)
+    for url in ("http://169.254.169.254/v1", "http://127.0.0.1:8000/v1", "http://10.0.0.5/v1"):
+        with pytest.raises(TenantProviderError):
+            _assert_tenant_base_url_allowed(url)
+    monkeypatch.setenv("TENANT_LLM_ALLOWED_PRIVATE_HOSTS", "10.0.0.5")
+    _assert_tenant_base_url_allowed("http://10.0.0.5/v1")
+
+
+async def test_byok_read_failure_is_not_treated_as_no_byok() -> None:
+    """Regression: a DB error reading the tenant's config was indistinguishable
+    from "not configured", so the goal silently ran on the platform provider."""
+    import pytest
+
+    from app.services.llm_config_store import LLMConfigReadError, LLMConfigStore
+
+    def _broken() -> None:
+        raise RuntimeError("db down")
+
+    store = LLMConfigStore(db_factory=_broken)
+    assert await store.get_config("t1") is None
+    with pytest.raises(LLMConfigReadError):
+        await store.get_config("t1", strict=True)

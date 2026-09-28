@@ -138,6 +138,20 @@ def _build_worker_runner() -> Any:
         celery_app=celery_app,
         hitl_workflow_gateway=hitl_workflow_gateway,
     )
+    # sub_workflow needs the runner; emit_event / wait-on-event need Redis. The
+    # worker never passed either, so those steps reported success without acting.
+    _step_redis: Any = None
+    try:
+        import os as _os_steps
+
+        import redis.asyncio as _aioredis_steps
+
+        _step_redis = _aioredis_steps.from_url(
+            _os_steps.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True
+        )
+    except Exception as _redis_exc:
+        _log.warning("worker_runner_step_redis_unavailable", error=str(_redis_exc)[:120])
+    compiler.bind_services(workflow_runner=_WORKER_RUNNER, redis=_step_redis)
     return _WORKER_RUNNER
 
 

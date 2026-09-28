@@ -29,6 +29,10 @@ class LLMConfigPersistError(RuntimeError):
     """The durable write failed; the configuration was NOT saved."""
 
 
+class LLMConfigReadError(RuntimeError):
+    """The durable read failed: whether the tenant configured BYOK is unknown."""
+
+
 class LLMConfigStore:
     """Reads and writes per-tenant LLM provider config.
 
@@ -73,8 +77,14 @@ class LLMConfigStore:
                 raise LLMConfigPersistError(str(exc)) from exc
         await self._cache_set(tenant_id, config)
 
-    async def get_config(self, tenant_id: str) -> dict[str, Any] | None:
-        """Return the config for *tenant_id*, or None if not configured."""
+    async def get_config(self, tenant_id: str, *, strict: bool = False) -> dict[str, Any] | None:
+        """Return the config for *tenant_id*, or None if not configured.
+
+        ``strict=True`` raises LLMConfigReadError when the durable read fails, so a
+        caller (the goal path) can tell "no BYOK" from "unknown" — treating a DB
+        error as "not configured" silently ran the tenant's goal on the platform
+        provider, at platform cost.
+        """
         cached = await self._cache_get(tenant_id)
         if cached is not None:
             return cached
@@ -84,6 +94,8 @@ class LLMConfigStore:
             config = await self._db_get(tenant_id)
         except Exception as exc:
             logger.warning("llm_config_db_read_failed tenant=%s: %s", tenant_id, exc)
+            if strict:
+                raise LLMConfigReadError(str(exc)) from exc
             return None
         if config is not None:
             await self._cache_set(tenant_id, config)

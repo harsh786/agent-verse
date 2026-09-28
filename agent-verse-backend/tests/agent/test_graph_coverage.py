@@ -1167,9 +1167,11 @@ async def test_graph_rollback_registers_points() -> None:
     rollback = RollbackEngine()
     g = AgentGraph(planner=p, executor=p, verifier=p, rollback_engine=rollback)
     await g.run(goal="rollback test", tenant_ctx=T)
-    # 2 steps registered rollback points; rollback_all was NOT called (success path)
-    assert len(rollback) == 2
-    assert len(rollback.preview()) == 2
+    # LLM-only steps executed no tool, so there is nothing external to undo and
+    # no rollback point is registered (they used to register no-op inverses that
+    # a later rollback then reported as "rolled back").
+    assert len(rollback) == 0
+    assert rollback.preview() == []
 
 
 async def test_graph_long_term_memory_auto_extract() -> None:

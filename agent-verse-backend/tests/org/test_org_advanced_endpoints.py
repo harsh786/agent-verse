@@ -555,12 +555,17 @@ async def test_twin_capacity_plan(client: AsyncClient) -> None:
 # ── QA10: Emergency Stop ─────────────────────────────────────────────────────
 
 @pytest.mark.anyio
-async def test_emergency_stop(client: AsyncClient) -> None:
-    """POST /v1/org/{id}/emergency-stop sets stopped status."""
-    resp = await client.post(f"/v1/org/{ORG_ID}/emergency-stop")
+async def test_emergency_stop(mock_svc: MagicMock) -> None:
+    """POST /v1/org/{id}/emergency-stop persists the flag and reports stopped."""
+    app = _make_app(mock_svc)
+    app.state._redis = MagicMock(set=AsyncMock())
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        resp = await c.post(f"/v1/org/{ORG_ID}/emergency-stop")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "stopped"
+    app.state._redis.set.assert_awaited_once()
+    assert app.state._redis.set.await_args.args[0] == f"emergency_stop:{TENANT_ID}:{ORG_ID}"
 
 
 @pytest.mark.anyio
