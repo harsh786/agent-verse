@@ -569,6 +569,7 @@ class _WorkerMCPAgentRunner:
         initial_context: dict[str, Any] | None = None,
         event_callback: Any = None,
         goal_id: str | None = None,
+        attempt: int | None = None,
     ) -> Any:
         redis_client = None
         context = dict(initial_context or {})
@@ -592,10 +593,141 @@ class _WorkerMCPAgentRunner:
                 initial_context=context or None,
                 event_callback=event_callback,
                 goal_id=goal_id,
+                **({"attempt": attempt} if attempt is not None else {}),
             )
         finally:
             if redis_client is not None:
                 await redis_client.aclose()
+
+
+async def _goal_persistence_settings(
+    goal_id: str, tenant_id: str
+) -> tuple[bool, dict[str, Any]]:
+    """``(persistence_mode, persistence_config)`` from goals.execution_context.
+
+    The API path runs such goals through GoalPersistenceEngine; queued goals —
+    every production goal — used to get exactly one attempt in the worker.
+    Mirrors GoalService: the admitted runtime profile's
+    ``agent_patterns.persistence_mode`` wins over the raw request flag.
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        raw = (
+            await session.execute(
+                text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                {"g": goal_id, "t": tenant_id},
+            )
+        ).scalar()
+    ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    if not isinstance(ctx, dict):
+        return False, {}
+    mode = bool(ctx.get("persistence_mode", False))
+    profile = ctx.get("runtime_profile")
+    if isinstance(profile, dict):
+        patterns = profile.get("agent_patterns")
+        if isinstance(patterns, dict) and "persistence_mode" in patterns:
+            mode = bool(patterns.get("persistence_mode"))
+    cfg = ctx.get("persistence_config")
+    return mode, dict(cfg) if isinstance(cfg, dict) else {}
+
+
+def _worker_persistence_config(cfg: dict[str, Any], goal_timeout_s: float) -> Any:
+    """PersistenceConfig for a worker goal, bounded by the goal's hard timeout."""
+    from app.agent.persistence import PersistenceConfig
+
+    requested_total = float(cfg.get("total_timeout_seconds", 0.0) or 0.0)
+    # The whole run is wrapped in wait_for(goal_timeout_s); keep the engine's own
+    # budget inside it so it ends with its real outcome, not a bare timeout.
+    ceiling = max(1.0, goal_timeout_s * 0.9)
+    total = min(requested_total, ceiling) if requested_total > 0 else ceiling
+    return PersistenceConfig(
+        max_attempts=int(cfg.get("max_attempts", 10)),
+        iterations_per_attempt=int(cfg.get("iterations_per_attempt", 15)),
+        base_backoff_seconds=float(cfg.get("base_backoff_seconds", 30.0)),
+        max_backoff_seconds=float(cfg.get("max_backoff_seconds", 600.0)),
+        strategy_switch_after=int(cfg.get("strategy_switch_after", 2)),
+        escalate_after_failures=int(cfg.get("escalate_after_failures", 6)),
+        total_timeout_seconds=total,
+        decompose_on_failure=bool(cfg.get("decompose_on_failure", True)),
+    )
+
+
+class _PersistentWorkerRunner:
+    """Runs a worker goal through GoalPersistenceEngine (retry until success).
+
+    Same contract as the wrapped runner's ``run`` — it returns the final
+    attempt's AgentState, or a FAILED state when no attempt succeeded — so the
+    worker's terminal bookkeeping is unchanged.
+    """
+
+    def __init__(self, inner: Any, *, config: Any, db: Any = None, redis: Any = None) -> None:
+        self._inner = inner
+        self._config = config
+        self._db = db
+        self._redis = redis
+
+    async def run(
+        self,
+        *,
+        goal: str,
+        tenant_ctx: Any,
+        initial_context: dict[str, Any] | None = None,
+        event_callback: Any = None,
+        goal_id: str | None = None,
+    ) -> Any:
+        from app.agent.persistence import GoalPersistenceEngine
+        from app.agent.state import AgentState, GoalStatus
+
+        inner = self._inner
+        last: dict[str, Any] = {}
+
+        class _Attempt:
+            async def run(
+                self_inner: _Attempt,  # noqa: N805
+                *,
+                goal: str,
+                tenant_ctx: Any,
+                event_callback: Any = None,
+                goal_id: str | None = None,
+                attempt: int | None = None,
+            ) -> Any:
+                state = await inner.run(
+                    goal=goal,
+                    tenant_ctx=tenant_ctx,
+                    initial_context=initial_context,
+                    event_callback=event_callback,
+                    goal_id=goal_id,
+                    attempt=attempt,
+                )
+                last["state"] = state
+                return state
+
+        engine = GoalPersistenceEngine(config=self._config, db=self._db, redis=self._redis)
+        success, attempts = await engine.run(
+            goal=goal,
+            agent_factory=_Attempt(),
+            tenant_ctx=tenant_ctx,
+            event_callback=event_callback,
+            goal_id=goal_id or "",
+        )
+        final = last.get("state")
+        if success and final is not None:
+            return final
+        failed = final if final is not None else AgentState(goal=goal, tenant_ctx=tenant_ctx)
+        failed.status = GoalStatus.FAILED
+        last_reason = attempts[-1].failure_reason if attempts else ""
+        failed.error_message = (
+            f"Goal could not be achieved after {len(attempts)} persistence attempt(s)"
+            + (f": {last_reason}" if last_reason else "")
+        )[:1000]
+        return failed
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -2451,6 +2583,30 @@ def run_goal(
                         "_isolation_error": True,
                     }
             # ── End isolation routing ────────────────────────────────────────────
+
+            # Persistence mode (retry until success) — parity with the API path,
+            # which runs it through GoalPersistenceEngine. (Like the sub-goal and
+            # model-override lookups, an unreadable goal row degrades to a single
+            # attempt — loudly: the goal's own DB writes fail in that case anyway.)
+            try:
+                _persist_mode, _persist_cfg = _run_async(
+                    _goal_persistence_settings(goal_id, tenant_id)
+                )
+            except Exception as _pm_exc:
+                logger.warning(
+                    "persistence_settings_lookup_failed goal=%s (single attempt): %s",
+                    goal_id,
+                    _pm_exc,
+                )
+                _persist_mode, _persist_cfg = False, {}
+            if _persist_mode and _use_agent_graph:
+                logger.info("Goal %s runs in persistence mode on the worker", goal_id)
+                _agent_runner = _PersistentWorkerRunner(
+                    _agent_runner,
+                    config=_worker_persistence_config(_persist_cfg, float(goal_timeout_s)),
+                    db=db_factory,
+                    redis=_worker_async_redis(),
+                )
 
             state = _run_async(
                 _asyncio.wait_for(
