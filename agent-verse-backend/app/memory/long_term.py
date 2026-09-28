@@ -89,6 +89,36 @@ class LongTermMemoryStore:
         # Wired at startup by lifespan so async methods can use it without
         # callers having to pass db explicitly.
         self._db_factory: Any = None
+        # Redis used to publish ``memory.created`` for MemoryTriggerConsumer
+        # (bound by the lifespan; None → nothing published).
+        self._event_redis: Any = None
+
+    def set_event_redis(self, redis: Any) -> None:
+        self._event_redis = redis
+
+    async def _publish_created(self, memory: LongTermMemory, tenant_ctx: Any) -> None:
+        """Publish ``memory.created``. MemoryTriggerConsumer subscribed to it but
+        no code published it, so MEMORY_CREATED triggers could never fire."""
+        if self._event_redis is None or tenant_ctx is None:
+            return
+        import json as _json
+
+        plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"
+        try:
+            await self._event_redis.publish(
+                "memory.created",
+                _json.dumps(
+                    {
+                        "tenant_id": tenant_ctx.tenant_id,
+                        "tenant_plan": plan,
+                        "memory_id": memory.memory_id,
+                        "memory_type": memory.memory_type,
+                        "source_goal_id": memory.source_goal_id,
+                    }
+                ),
+            )
+        except Exception as exc:
+            get_logger(__name__).warning("memory_created_publish_failed", error=str(exc))
 
     def store(self, *, memory: LongTermMemory, tenant_ctx: TenantContext) -> str:
         self._memories.setdefault(tenant_ctx.tenant_id, []).append(memory)
@@ -406,6 +436,7 @@ class LongTermMemoryStore:
                 ) from _g2_mem_exc
 
         mid = self.store(memory=memory, tenant_ctx=tenant_ctx)
+        await self._publish_created(memory, tenant_ctx)
         if db is not None:
             try:
                 import json as _json

@@ -2099,6 +2099,10 @@ def create_app(
                 _guardrail_engine_v2._redis = redis_for_runtime
                 logger.info("guardrail_engine_v2_redis_wired")
 
+                # memory.created publisher for MEMORY_CREATED triggers.
+                if hasattr(_long_term_memory, "set_event_redis"):
+                    _long_term_memory.set_event_redis(redis_for_runtime)
+
                 # ── G-19: OrgEventPublisher — publish org.approval.* SSE events ────
                 # Without this, OrgRealtimeManager's APPROVAL_REQUESTED/GRANTED/REJECTED/TIMEOUT
                 # case handlers never fire (the backend never publishes to Redis pub/sub).
