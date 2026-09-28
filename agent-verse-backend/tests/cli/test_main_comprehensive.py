@@ -646,6 +646,23 @@ def test_logs_shows_events():
 
     assert result.exit_code == 0
     assert "goal_started" in result.output
+    # Regression: it called /goals/{id}/events, which no router defines (404).
+    assert mock_client.get.call_args.args[0].endswith("/goals/g-log-1/timeline")
+
+
+def test_login_writes_the_api_key_owner_only(tmp_path):
+    """Regression: the plaintext key was written with the umask (often 0644)."""
+    import stat
+
+    config_dir = tmp_path / ".agentverse"
+    config_dir.mkdir()
+    existing = config_dir / "config.json"
+    existing.write_text("{}")
+    existing.chmod(0o644)
+    with patch("pathlib.Path.home", return_value=tmp_path):
+        result = runner.invoke(cli_app, ["login", "--key", "k-1", "--url", "http://x"])
+    assert result.exit_code == 0
+    assert stat.S_IMODE(existing.stat().st_mode) == 0o600
 
 
 # ---------------------------------------------------------------------------

@@ -82,10 +82,11 @@ def login(
     ),
 ) -> None:
     """Save API key to ~/.agentverse/config.json for CLI use."""
+    import os
     from pathlib import Path
 
     config_dir = Path.home() / ".agentverse"
-    config_dir.mkdir(exist_ok=True)
+    config_dir.mkdir(mode=0o700, exist_ok=True)
     config_path = config_dir / "config.json"
     config = {}
     if config_path.exists():
@@ -93,7 +94,12 @@ def login(
             config = json.loads(config_path.read_text())
     config["api_key"] = api_key
     config["base_url"] = base_url
-    config_path.write_text(json.dumps(config, indent=2))
+    # The plaintext API key used to be written with the process umask (often
+    # world-readable 0644). Create/replace it owner-only (0600) atomically.
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(config, indent=2))
+    os.chmod(config_path, 0o600)  # an existing file keeps its old mode otherwise
     typer.echo(f"✓ Credentials saved to {config_path}")
 
 
@@ -254,7 +260,9 @@ def approve(
     result = _post(
         f"{_base_url()}/governance/approvals/{request_id}/approve",
         _api_key(),
-        {"approver": "cli-user", "note": note},
+        # The server records the approver from the API key's identity; this field
+        # is required by the request schema but not trusted.
+        {"approver": "cli", "note": note},
     )
     typer.echo(f"Approved request {request_id}: {result}")
 
@@ -268,7 +276,7 @@ def reject(
     result = _post(
         f"{_base_url()}/governance/approvals/{request_id}/reject",
         _api_key(),
-        {"approver": "cli-user", "note": note},
+        {"approver": "cli", "note": note},
     )
     typer.echo(f"Rejected request {request_id}: {result}")
 
@@ -310,13 +318,20 @@ def logs(
     goal_id: str = typer.Argument(..., help="Goal ID"),
     tail: int = typer.Option(50, "--tail", "-n", help="Number of events to show"),
 ) -> None:
-    """Show recent execution events for a goal."""
-    data = _get(f"{_base_url()}/goals/{goal_id}/events", _api_key())
+    """Show recent execution events for a goal.
+
+    Reads GET /goals/{id}/timeline — the CLI used to call /goals/{id}/events,
+    which no router defines, so ``agentverse logs`` always failed with a 404.
+    """
+    data = _get(f"{_base_url()}/goals/{goal_id}/timeline", _api_key())
     events = data if isinstance(data, list) else []
     for evt in events[-tail:]:
         ts = str(evt.get("ts", ""))[:19]
         etype = str(evt.get("type", "event")).ljust(26)
-        detail = str(evt.get("step") or evt.get("output") or evt.get("tool_name") or "")[:60]
+        payload = evt.get("data") if isinstance(evt.get("data"), dict) else evt
+        detail = str(
+            payload.get("step") or payload.get("output") or payload.get("tool_name") or ""
+        )[:60]
         typer.echo(f"[{ts}]  {etype}  {detail}")
 
 
