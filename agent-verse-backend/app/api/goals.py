@@ -437,10 +437,23 @@ async def get_cost_metrics(request: Request) -> dict[str, Any]:
     svc = _goal_service(request)
     metrics = await svc.get_metrics(tenant_ctx=tenant)
     # Get budget config
-    budget_configs = getattr(request.app.state, "_budget_config", {})
     from app.governance.cost import BudgetConfig
 
-    budget_cfg: BudgetConfig = budget_configs.get(tenant.tenant_id, BudgetConfig())
+    # The budget the cost controllers enforce (budget_configs), not a per-replica dict.
+    budget_cfg: BudgetConfig = getattr(request.app.state, "_budget_config", {}).get(
+        tenant.tenant_id, BudgetConfig()
+    )
+    for _cc_name in ("redis_cost_controller", "cost_controller"):
+        _cc = getattr(request.app.state, _cc_name, None)
+        if _cc is not None and hasattr(_cc, "resolve_config"):
+            try:
+                budget_cfg = await _cc.resolve_config(tenant.tenant_id)
+            except Exception as _bexc:
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Budget store unavailable",
+                ) from _bexc
+            break
     return {
         **metrics,
         "daily_budget_usd": budget_cfg.per_tenant_daily_usd,

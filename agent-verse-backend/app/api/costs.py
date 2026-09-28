@@ -7,11 +7,12 @@ import hashlib
 import io
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
-from app.db.rls import sqlalchemy_rls_context
+from app.governance.cost import BudgetConfig, persist_tenant_budget
 from app.observability.logging import get_logger
+from app.tenancy.rbac import require_role
 
 logger = get_logger(__name__)
 
@@ -261,55 +262,46 @@ async def get_budgets(request: Request) -> dict[str, Any]:
 async def update_budgets(
     request: Request,
     body: UpdateBudgetRequest,
+    _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Update budget limits for the authenticated tenant."""
+    """Update budget limits for the authenticated tenant (admin only).
+
+    budget_configs is the single source of truth: every replica and Celery worker
+    enforces it (via the cost controllers' TenantBudgetSource). With no DB the
+    budget cannot be made durable or shared, so this is a 503 — it used to answer
+    success without persisting anything.
+    """
     ctx = _require_tenant(request)
     tracker = _cost_tracker(request)
-
-    if tracker._db is not None:
-        try:
-            import json as _json
-
-            from sqlalchemy import text as _t
-
-            # budget_configs is FORCE ROW LEVEL SECURITY: the upsert must run in a
-            # transaction carrying the tenant GUC, or the NOBYPASSRLS production
-            # role rejects it (WITH CHECK) and every budget update answers 500.
-            async with (
-                tracker._db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, ctx.tenant_id),
-            ):
-                await session.execute(
-                    _t(
-                        "INSERT INTO budget_configs "
-                        "(tenant_id, per_goal_usd, per_tenant_daily_usd, "
-                        " per_agent_daily_usd, alert_pct_thresholds) "
-                        "VALUES (:tid, :pg, :ptd, CAST(:pad AS jsonb), :apt) "
-                        "ON CONFLICT (tenant_id) DO UPDATE SET "
-                        "  per_goal_usd = EXCLUDED.per_goal_usd, "
-                        "  per_tenant_daily_usd = EXCLUDED.per_tenant_daily_usd, "
-                        "  per_agent_daily_usd  = EXCLUDED.per_agent_daily_usd, "
-                        "  alert_pct_thresholds = EXCLUDED.alert_pct_thresholds, "
-                        "  updated_at = NOW()"
-                    ),
-                    {
-                        "tid": ctx.tenant_id,
-                        "pg": body.per_goal_usd,
-                        "ptd": body.per_tenant_daily_usd,
-                        "pad": _json.dumps(body.per_agent_daily_usd),
-                        "apt": body.alert_pct_thresholds,
-                    },
-                )
-        except Exception as exc:
-            # Log the driver error server-side; do not echo SQL/driver text to
-            # the client.
-            logger.warning("budget_persist_failed", tenant_id=ctx.tenant_id, error=str(exc))
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to persist budget",
-            ) from exc
-
+    db = getattr(tracker, "_db", None)
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Budget store unavailable",
+        )
+    try:
+        await persist_tenant_budget(
+            db,
+            ctx.tenant_id,
+            per_goal_usd=body.per_goal_usd,
+            per_tenant_daily_usd=body.per_tenant_daily_usd,
+            per_agent_daily_usd=body.per_agent_daily_usd,
+            alert_pct_thresholds=body.alert_pct_thresholds,
+        )
+    except Exception as exc:
+        # Log the driver error server-side; do not echo SQL/driver text.
+        logger.warning("budget_persist_failed", tenant_id=ctx.tenant_id, error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to persist budget",
+        ) from exc
+    _apply_budget_locally(
+        request,
+        ctx.tenant_id,
+        BudgetConfig(
+            per_goal_usd=body.per_goal_usd, per_tenant_daily_usd=body.per_tenant_daily_usd
+        ),
+    )
     return {
         "tenant_id": ctx.tenant_id,
         "per_goal_usd": body.per_goal_usd,
@@ -317,6 +309,21 @@ async def update_budgets(
         "per_agent_daily_usd": body.per_agent_daily_usd,
         "alert_pct_thresholds": body.alert_pct_thresholds,
     }
+
+
+def _apply_budget_locally(request: Request, tenant_id: str, cfg: BudgetConfig) -> None:
+    """Make a just-committed budget bind on THIS replica immediately.
+
+    Other replicas/workers re-read budget_configs within BUDGET_CACHE_TTL_S.
+    """
+    for name in ("redis_cost_controller", "cost_controller"):
+        cc = getattr(request.app.state, name, None)
+        if cc is None:
+            continue
+        if hasattr(cc, "invalidate_tenant_budget"):
+            cc.invalidate_tenant_budget(tenant_id)
+        if hasattr(cc, "configure_tenant_budget"):
+            cc.configure_tenant_budget(tenant_id, cfg)
 
 
 @router.get("/pricing")

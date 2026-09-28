@@ -356,7 +356,13 @@ class PolicyEngine:
                                 tenant_id=tenant_id,
                                 action=data.get("action"),
                             )
-                            await engine.reload_from_db(db, tenant_id=tenant_id)
+                            # strict = tenant RLS context. The non-strict path
+                            # reads governance_policies (FORCE RLS) without the
+                            # tenant GUC, sees zero rows, and WIPES the tenant's
+                            # policies on every replica that got the message.
+                            await engine.reload_from_db(
+                                db, tenant_id=tenant_id, strict=bool(tenant_id)
+                            )
                         except Exception as exc:
                             logger.warning("policy_change_process_failed", error=str(exc))
             except asyncio.CancelledError:

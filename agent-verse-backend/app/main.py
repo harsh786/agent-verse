@@ -1505,6 +1505,12 @@ def create_app(
             # Wire DB into CostTracker for ledger persistence + historical queries
             _cost_tracker._db = db_factory
             app.state.cost_tracker = _cost_tracker
+            # Enforce each tenant's configured budget_configs row (PUT /costs/budgets)
+            # instead of the hard-coded BudgetConfig() defaults.
+            for _cc_name in ("redis_cost_controller", "cost_controller"):
+                _cc = getattr(app.state, _cc_name, None)
+                if _cc is not None and hasattr(_cc, "set_budget_db"):
+                    _cc.set_budget_db(db_factory)
 
             # Wire AgentIdentityService with DB session factory
             _agent_identity_svc.set_db(db_factory)

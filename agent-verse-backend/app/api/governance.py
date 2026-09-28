@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio  # noqa: F401  (used in SSE generators)
-import contextlib
 import json as _json
 import uuid
 from collections.abc import AsyncGenerator
@@ -144,15 +143,106 @@ async def _db_list_policies(request: Request, tenant_id: str) -> list[dict[str, 
         return []
 
 
-async def _db_create_policy(request: Request, tenant_id: str, record: dict[str, Any]) -> None:
+class PolicyPersistError(RuntimeError):
+    """The DB-authoritative policy write failed (nothing was committed)."""
+
+
+def _policy_rules(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """The version snapshot of a policy's enforceable content."""
+    return [
+        {
+            "tools_pattern": record.get("tools_pattern", ""),
+            "action": record.get("action", "deny"),
+            "priority": record.get("priority", 0),
+            "allowed_hours_utc": record.get("allowed_hours_utc"),
+            "allowed_weekdays": record.get("allowed_weekdays"),
+        }
+    ]
+
+
+async def _insert_policy_version(
+    session: Any,
+    *,
+    tenant_id: str,
+    policy_id: str,
+    name: str,
+    description: str,
+    rules: list[dict[str, Any]],
+    change_summary: str,
+    changed_by: str | None,
+    deleted: bool = False,
+) -> int:
+    """Append the next immutable snapshot for (tenant, policy); returns its number.
+
+    Deactivates the previous active snapshot in the same transaction. Every
+    policy_versions statement is tenant-scoped (the table is FORCE RLS, and the
+    old queries filtered by policy_id alone).
+    """
+    from sqlalchemy import text
+
+    await session.execute(
+        text(
+            "UPDATE policy_versions SET is_active = FALSE "
+            "WHERE tenant_id = :tid AND policy_id = :pid AND is_active = TRUE"
+        ),
+        {"tid": tenant_id, "pid": policy_id},
+    )
+    max_ver = (
+        await session.execute(
+            text(
+                "SELECT COALESCE(MAX(version_number), 0) FROM policy_versions "
+                "WHERE tenant_id = :tid AND policy_id = :pid"
+            ),
+            {"tid": tenant_id, "pid": policy_id},
+        )
+    ).scalar() or 0
+    new_ver = int(max_ver) + 1
+    await session.execute(
+        text(
+            """
+            INSERT INTO policy_versions
+                (id, tenant_id, policy_id, version_number, name, description,
+                 rules, is_active, change_summary, changed_by, changed_at, deleted_at)
+            VALUES
+                (:id, :tid, :pid, :ver, :name, :desc,
+                 CAST(:rules AS jsonb), :active, :summary, :by, now(),
+                 CASE WHEN :deleted THEN now() ELSE NULL END)
+            """
+        ),
+        {
+            "id": uuid.uuid4().hex,
+            "tid": tenant_id,
+            "pid": policy_id,
+            "ver": new_ver,
+            "name": name,
+            "desc": description,
+            "rules": _json.dumps(rules),
+            "active": not deleted,
+            "summary": change_summary,
+            "by": changed_by,
+            "deleted": deleted,
+        },
+    )
+    return new_ver
+
+
+async def _db_create_policy(
+    request: Request, tenant_id: str, record: dict[str, Any], *, changed_by: str | None = None
+) -> None:
+    """Insert the policy AND its v1 snapshot atomically; raise on failure.
+
+    policy_versions used to be written by nothing, so history was always empty
+    and rollback had nothing to restore. A DB failure used to be swallowed and
+    the API answered 201 for a policy other replicas would never load.
+    """
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
     try:
-        from sqlalchemy import text
-
-        from app.db.rls import sqlalchemy_rls_context
-
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             await session.execute(
                 text(
@@ -171,26 +261,55 @@ async def _db_create_policy(request: Request, tenant_id: str, record: dict[str, 
                     "desc": record.get("description", ""),
                 },
             )
-    except Exception:
-        pass
+            await _insert_policy_version(
+                session,
+                tenant_id=tenant_id,
+                policy_id=record["policy_id"],
+                name=record["name"],
+                description=record.get("description", ""),
+                rules=_policy_rules(record),
+                change_summary="Created",
+                changed_by=changed_by,
+            )
+    except Exception as exc:
+        raise PolicyPersistError("policy create not persisted") from exc
 
 
-async def _db_delete_policy(request: Request, tenant_id: str, policy_id: str) -> None:
+async def _db_delete_policy(
+    request: Request,
+    tenant_id: str,
+    policy_id: str,
+    record: dict[str, Any],
+    *,
+    changed_by: str | None = None,
+) -> None:
+    """Delete the policy and append a deletion snapshot atomically; raise on failure."""
     db = getattr(request.app.state, "db_session_factory", None)
     if db is None:
         return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
     try:
-        from sqlalchemy import text
-
-        from app.db.rls import sqlalchemy_rls_context
-
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
             await session.execute(
                 text("DELETE FROM governance_policies WHERE id = :id AND tenant_id = :tid"),
                 {"id": policy_id, "tid": tenant_id},
             )
-    except Exception:
-        pass
+            await _insert_policy_version(
+                session,
+                tenant_id=tenant_id,
+                policy_id=policy_id,
+                name=record.get("name", ""),
+                description=record.get("description", "") or "",
+                rules=_policy_rules(record),
+                change_summary="Deleted",
+                changed_by=changed_by,
+                deleted=True,
+            )
+    except Exception as exc:
+        raise PolicyPersistError("policy delete not persisted") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -252,10 +371,20 @@ async def create_policy(request: Request, body: CreatePolicyRequest) -> dict[str
     # tenant (e.g. this same create's own pub/sub echo, or another operator's
     # change) — otherwise the reload's stale-snapshot replace can silently
     # wipe this policy back out of `_policies` right after we added it.
+    #
+    # DB first: only a committed policy (+ its v1 version snapshot) is applied to
+    # this replica's engine and announced to the others.
     async with engine.lock:
+        try:
+            await _db_create_policy(
+                request, tenant_ctx.tenant_id, record, changed_by=tenant_ctx.api_key_id
+            )
+        except PolicyPersistError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Policy could not be persisted"
+            ) from exc
         engine.add_policy(policy)
         registry.setdefault(tenant_ctx.tenant_id, {})[policy_id] = record
-        await _db_create_policy(request, tenant_ctx.tenant_id, record)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="created")
     return record
@@ -292,6 +421,21 @@ async def delete_policy(request: Request, policy_id: str) -> None:
     # Held under the engine's reload lock (see create_policy) so this can't
     # interleave with a concurrent reload_from_db() for the same tenant.
     async with engine.lock:
+        # DB first (delete + deletion snapshot): a failed delete must not leave
+        # this replica believing the policy is gone while every other replica
+        # still enforces it.
+        try:
+            await _db_delete_policy(
+                request,
+                tenant_ctx.tenant_id,
+                policy_id,
+                record,
+                changed_by=tenant_ctx.api_key_id,
+            )
+        except PolicyPersistError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Policy delete could not be persisted"
+            ) from exc
         engine._policies = [  # type: ignore[attr-defined]
             p
             for p in engine._policies  # type: ignore[attr-defined]
@@ -300,7 +444,6 @@ async def delete_policy(request: Request, policy_id: str) -> None:
             )
         ]
         tenant_policies.pop(policy_id, None)
-        await _db_delete_policy(request, tenant_ctx.tenant_id, policy_id)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
     await PolicyEngine.publish_change(redis, tenant_id=tenant_ctx.tenant_id, action="deleted")
 
@@ -881,17 +1024,25 @@ async def query_audit(
 
     # Use direct DB query for accuracy + pagination support. outcome/q are filtered
     # in SQL so search/filter covers the whole dataset, not just a loaded page.
-    events = await log.query_db(
-        tenant_ctx=tenant_ctx,
-        goal_id=goal_id,
-        tool_name=tool_name,
-        limit=limit,
-        offset=offset,
-        start_time=start_time,
-        end_time=end_time,
-        outcome=outcome,
-        q=q,
-    )
+    from app.governance.audit import AuditQueryUnavailableError
+
+    try:
+        events = await log.query_db(
+            tenant_ctx=tenant_ctx,
+            goal_id=goal_id,
+            tool_name=tool_name,
+            limit=limit,
+            offset=offset,
+            start_time=start_time,
+            end_time=end_time,
+            outcome=outcome,
+            q=q,
+        )
+    except AuditQueryUnavailableError as exc:
+        # 503, not a partial per-replica answer presented as the full trail.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Audit store unavailable"
+        ) from exc
 
     return [
         {
@@ -915,11 +1066,24 @@ async def query_audit(
 # ---------------------------------------------------------------------------
 
 
+async def _effective_budget(request: Request, tenant_id: str) -> BudgetConfig:
+    """The budget the cost controllers actually enforce for this tenant."""
+    for name in ("redis_cost_controller", "cost_controller"):
+        cc = getattr(request.app.state, name, None)
+        if cc is not None and hasattr(cc, "resolve_config"):
+            try:
+                return await cc.resolve_config(tenant_id)  # type: ignore[no-any-return]
+            except Exception as exc:
+                raise HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE, "Budget store unavailable"
+                ) from exc
+    return _budget_config(request).get(tenant_id, BudgetConfig())
+
+
 @router.get("/budget")
 async def get_budget(request: Request) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
-    configs = _budget_config(request)
-    cfg = configs.get(tenant_ctx.tenant_id, BudgetConfig())
+    cfg = await _effective_budget(request, tenant_ctx.tenant_id)
     return {
         "tenant_id": tenant_ctx.tenant_id,
         "per_goal_usd": cfg.per_goal_usd,
@@ -933,13 +1097,40 @@ async def set_budget(
     body: SetBudgetRequest,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    """Set the tenant budget — persisted to budget_configs (same store as /costs/budgets).
+
+    This used to write only a per-replica dict that nothing enforced; now the
+    row is DB-authoritative and applied to the cost controllers.
+    """
     tenant_ctx: TenantContext = _require_tenant(request)
-    configs = _budget_config(request)
     cfg = BudgetConfig(
         per_goal_usd=body.per_goal_usd,
         per_tenant_daily_usd=body.per_tenant_daily_usd,
     )
-    configs[tenant_ctx.tenant_id] = cfg
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is not None:
+        from app.governance.cost import persist_tenant_budget
+
+        try:
+            await persist_tenant_budget(
+                db,
+                tenant_ctx.tenant_id,
+                per_goal_usd=cfg.per_goal_usd,
+                per_tenant_daily_usd=cfg.per_tenant_daily_usd,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "Budget could not be persisted"
+            ) from exc
+    _budget_config(request)[tenant_ctx.tenant_id] = cfg
+    for name in ("redis_cost_controller", "cost_controller"):
+        cc = getattr(request.app.state, name, None)
+        if cc is None:
+            continue
+        if hasattr(cc, "invalidate_tenant_budget"):
+            cc.invalidate_tenant_budget(tenant_ctx.tenant_id)
+        if hasattr(cc, "configure_tenant_budget"):
+            cc.configure_tenant_budget(tenant_ctx.tenant_id, cfg)
     return {
         "tenant_id": tenant_ctx.tenant_id,
         "per_goal_usd": cfg.per_goal_usd,
@@ -1060,20 +1251,32 @@ def _get_db(request: Request) -> Any:
 
 
 @router.post("/emergency-stop")
-async def emergency_stop(request: Request) -> dict:
+async def emergency_stop(
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Immediately cancel all running and queued goals for this tenant.
 
     Use for: security incidents, runaway agents, cost overruns.
     This is irreversible — cancelled goals must be resubmitted.
+
+    Admin-only (RBAC docs: "admin — emergency stop"). Every per-goal cancel and
+    per-approval reject failure is reported in the response (``failed_*`` lists,
+    ``partial``) instead of being swallowed, so an operator can see that the stop
+    did not fully take effect.
     """
+    import logging
+
+    _log = logging.getLogger(__name__)
     ctx = _require_tenant(request)
+    errors: list[str] = []
 
     # 1. Cancel all running in-memory goals via GoalService
     goal_service = getattr(request.app.state, "goal_service", None)
-    cancelled_goals = []
+    cancelled_goals: list[str] = []
+    failed_goals: list[dict[str, str]] = []
     if goal_service is not None:
         try:
-            # Get all running goals for this tenant
             running = [
                 gid
                 for gid, record in goal_service._goals.items()
@@ -1081,27 +1284,28 @@ async def emergency_stop(request: Request) -> dict:
                 and str(getattr(record, "status", "")).lower()
                 not in ("complete", "completed", "failed", "cancelled")
             ]
-            for goal_id in running:
-                try:
-                    await goal_service.cancel_goal(goal_id=goal_id, tenant_ctx=ctx)
-                    cancelled_goals.append(goal_id)
-                except Exception:
-                    pass
         except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("emergency_stop_cancel_failed: %s", exc)
+            _log.warning("emergency_stop_enumerate_failed: %s", exc)
+            running = []
+            errors.append(f"goal_enumeration_failed: {type(exc).__name__}")
+        for goal_id in running:
+            try:
+                await goal_service.cancel_goal(goal_id=goal_id, tenant_ctx=ctx)
+                cancelled_goals.append(goal_id)
+            except Exception as exc:
+                _log.warning("emergency_stop_cancel_failed goal_id=%s: %s", goal_id, exc)
+                failed_goals.append({"goal_id": goal_id, "error": type(exc).__name__})
 
     # 2. Publish emergency stop signal to Redis so Celery workers abort
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    celery_signal_sent = False
     if redis is not None:
         try:
-            import json
-            from datetime import UTC, datetime
+            from datetime import datetime
 
             await redis.publish(
                 "emergency_stop",
-                json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()}),
+                _json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()}),
             )
             # Also set a flag that Celery workers can poll
             await redis.set(
@@ -1109,32 +1313,50 @@ async def emergency_stop(request: Request) -> dict:
                 "1",
                 ex=300,  # 5 minute window
             )
+            celery_signal_sent = True
         except Exception as exc:
-            import logging
+            _log.warning("emergency_stop_redis_failed: %s", exc)
+            errors.append(f"celery_signal_failed: {type(exc).__name__}")
 
-            logging.getLogger(__name__).warning("emergency_stop_redis_failed: %s", exc)
-
-    # 3. Reject all pending HITL approvals
+    # 3. Reject all pending HITL approvals (DB-backed listing: approvals raised on
+    #    other replicas must be rejected too, not just this replica's cache).
     hitl = getattr(request.app.state, "hitl_gateway", None)
-    rejected_approvals = []
+    rejected_approvals: list[str] = []
+    failed_approvals: list[dict[str, str]] = []
     if hitl is not None:
         try:
-            pending = hitl.list_pending(tenant_ctx=ctx)
-            for approval in pending:
-                try:
-                    await hitl.reject(
-                        approval.request_id,
-                        tenant_ctx=ctx,
-                        note="Emergency stop activated by operator",
+            if hasattr(hitl, "alist_pending"):
+                pending = await hitl.alist_pending(tenant_ctx=ctx)
+            else:
+                pending = hitl.list_pending(tenant_ctx=ctx)
+        except Exception as exc:
+            _log.warning("emergency_stop_list_approvals_failed: %s", exc)
+            pending = []
+            errors.append(f"approval_listing_failed: {type(exc).__name__}")
+        for approval in pending:
+            try:
+                ok = await hitl.reject(
+                    approval.request_id,
+                    tenant_ctx=ctx,
+                    note="Emergency stop activated by operator",
+                )
+                if ok is False:
+                    failed_approvals.append(
+                        {"request_id": approval.request_id, "error": "not_rejected"}
                     )
+                else:
                     rejected_approvals.append(approval.request_id)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+            except Exception as exc:
+                _log.warning(
+                    "emergency_stop_reject_failed request_id=%s: %s", approval.request_id, exc
+                )
+                failed_approvals.append(
+                    {"request_id": approval.request_id, "error": type(exc).__name__}
+                )
 
     # 4. Log to audit trail
     audit_log = getattr(request.app.state, "audit_log", None)
+    audit_recorded = False
     if audit_log is not None:
         try:
             from app.governance.audit import AuditEvent
@@ -1155,33 +1377,57 @@ async def emergency_stop(request: Request) -> dict:
                     api_key_id=getattr(ctx, "api_key_id", ""),
                     note=(
                         f"cancelled_goals={len(cancelled_goals)},"
-                        f"rejected_approvals={len(rejected_approvals)}"
+                        f"rejected_approvals={len(rejected_approvals)},"
+                        f"failed_goals={len(failed_goals)},"
+                        f"failed_approvals={len(failed_approvals)}"
                     ),
                 ),
                 tenant_ctx=_audit_ctx,
             )
-        except Exception:
-            pass
+            audit_recorded = True
+        except Exception as exc:
+            _log.warning("emergency_stop_audit_failed: %s", exc)
+            errors.append(f"audit_failed: {type(exc).__name__}")
 
+    partial = bool(failed_goals or failed_approvals or errors)
     return {
-        "status": "emergency_stop_activated",
+        "status": "emergency_stop_partial" if partial else "emergency_stop_activated",
+        "partial": partial,
         "tenant_id": ctx.tenant_id,
         "cancelled_goals": len(cancelled_goals),
         "cancelled_goal_ids": cancelled_goals[:20],
+        "failed_goals": failed_goals,
         "rejected_approvals": len(rejected_approvals),
-        "celery_signal_sent": redis is not None,
-        "message": ("All running goals cancelled. Celery workers will abort in-progress tasks."),
+        "failed_approvals": failed_approvals,
+        "celery_signal_sent": celery_signal_sent,
+        "audit_recorded": audit_recorded,
+        "errors": errors,
+        "message": (
+            "Emergency stop only partially applied — see failed_goals / failed_approvals / "
+            "errors."
+            if partial
+            else "All running goals cancelled. Celery workers will abort in-progress tasks."
+        ),
     }
 
 
 @router.delete("/emergency-stop")
-async def clear_emergency_stop(request: Request) -> dict:
-    """Clear the emergency stop signal to allow new goals to be submitted."""
+async def clear_emergency_stop(
+    request: Request,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Clear the emergency stop signal to allow new goals to be submitted (admin only)."""
     ctx = _require_tenant(request)
     redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    if redis is not None:
-        with contextlib.suppress(Exception):
-            await redis.delete(f"emergency_stop:{ctx.tenant_id}")
+    if redis is None:
+        return {"status": "cleared", "tenant_id": ctx.tenant_id}
+    try:
+        await redis.delete(f"emergency_stop:{ctx.tenant_id}")
+    except Exception as exc:
+        # The stop flag is still set — do not report "cleared".
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Failed to clear emergency stop flag"
+        ) from exc
     return {"status": "cleared", "tenant_id": ctx.tenant_id}
 
 
@@ -1463,45 +1709,54 @@ async def batch_approve(
 
 @router.get("/policies/{policy_id}/versions")
 async def get_policy_versions(request: Request, policy_id: str) -> list[dict[str, Any]]:
-    """Return the full version history for a policy."""
-    _require_tenant(request)
+    """Return the full version history for a policy (this tenant only)."""
+    tenant_ctx: TenantContext = _require_tenant(request)
     db = _get_db(request)
     if db is None:
         return []
-    try:
-        from sqlalchemy import text
+    from sqlalchemy import text
 
-        async with db() as session:
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
             result = await session.execute(
                 text(
                     """
                     SELECT id, version_number, name, description, is_active,
                            change_summary, changed_by, changed_at, deleted_at
                     FROM policy_versions
-                    WHERE policy_id = :pid
+                    WHERE tenant_id = :tid AND policy_id = :pid
                     ORDER BY version_number ASC
                     """
                 ),
-                {"pid": policy_id},
+                {"tid": tenant_ctx.tenant_id, "pid": policy_id},
             )
             rows = result.fetchall()
-        return [
-            {
-                "id": r[0],
-                "policy_id": policy_id,
-                "version_number": r[1],
-                "name": r[2],
-                "description": r[3],
-                "is_active": r[4],
-                "change_summary": r[5],
-                "changed_by": r[6],
-                "changed_at": r[7].isoformat() if r[7] else None,
-                "deleted_at": r[8].isoformat() if r[8] else None,
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
+    except Exception as exc:
+        # An unreadable history is not an empty history.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Policy history unavailable"
+        ) from exc
+    return [
+        {
+            "id": r[0],
+            "policy_id": policy_id,
+            "version_number": r[1],
+            "name": r[2],
+            "description": r[3],
+            "is_active": r[4],
+            "change_summary": r[5],
+            "changed_by": r[6],
+            "changed_at": r[7].isoformat() if r[7] else None,
+            "deleted_at": r[8].isoformat() if r[8] else None,
+        }
+        for r in rows
+    ]
 
 
 class RollbackRequest(BaseModel):
@@ -1516,84 +1771,135 @@ async def rollback_policy(
     body: RollbackRequest,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Roll back a policy to a previous version snapshot."""
+    """Roll back a policy to a previous version snapshot — and actually apply it.
+
+    Previously this only appended a policy_versions row: governance_policies (what
+    every engine loads) and the in-process PolicyEngine were never touched, so the
+    "rolled back" policy kept being enforced exactly as before. Now, in one
+    tenant-scoped transaction, the target snapshot is re-written into
+    governance_policies (or the policy is removed, if the target is a deletion
+    snapshot) and a new version row records the rollback; then this replica's
+    engine reloads from the DB and the change is published so every other
+    replica reloads too.
+    """
     tenant_ctx: TenantContext = _require_tenant(request)
+    tid = tenant_ctx.tenant_id
     db = _get_db(request)
     if db is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Database not available")
 
-    try:
-        from sqlalchemy import text
+    from sqlalchemy import text
 
-        async with db() as session, session.begin():
-            # Deactivate current active version
-            await session.execute(
-                text(
-                    "UPDATE policy_versions SET is_active = FALSE "
-                    "WHERE policy_id = :pid AND is_active = TRUE"
-                ),
-                {"pid": policy_id},
-            )
-            # Fetch target snapshot
-            r = await session.execute(
-                text(
-                    "SELECT id, name, description, rules, version_number "
-                    "FROM policy_versions "
-                    "WHERE policy_id = :pid AND version_number = :ver"
-                ),
-                {"pid": policy_id, "ver": body.target_version},
-            )
-            target = r.fetchone()
+    from app.db.rls import sqlalchemy_rls_context
+
+    engine = _policy_engine(request)
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tid):
+            target = (
+                await session.execute(
+                    text(
+                        "SELECT id, name, description, rules, version_number, deleted_at "
+                        "FROM policy_versions "
+                        "WHERE tenant_id = :tid AND policy_id = :pid AND version_number = :ver"
+                    ),
+                    {"tid": tid, "pid": policy_id, "ver": body.target_version},
+                )
+            ).fetchone()
             if not target:
                 raise HTTPException(
                     status.HTTP_404_NOT_FOUND,
                     f"Version {body.target_version} not found for policy {policy_id}",
                 )
-            # Find max version
-            max_r = await session.execute(
-                text(
-                    "SELECT COALESCE(MAX(version_number), 0) FROM policy_versions "
-                    "WHERE policy_id = :pid"
-                ),
-                {"pid": policy_id},
+            rules = target[3]
+            if isinstance(rules, str):
+                rules = _json.loads(rules)
+            rule: dict[str, Any] = (rules[0] if isinstance(rules, list) and rules else {}) or {}
+            restored_deleted = target[5] is not None
+            if restored_deleted:
+                await session.execute(
+                    text("DELETE FROM governance_policies WHERE id = :id AND tenant_id = :tid"),
+                    {"id": policy_id, "tid": tid},
+                )
+            else:
+                await session.execute(
+                    text(
+                        """INSERT INTO governance_policies
+                            (id, tenant_id, name, tools_pattern, action, priority, description)
+                        VALUES (:id, :tid, :name, :pattern, :action, :priority, :desc)
+                        ON CONFLICT (id) DO UPDATE SET
+                            name = EXCLUDED.name,
+                            tools_pattern = EXCLUDED.tools_pattern,
+                            action = EXCLUDED.action,
+                            priority = EXCLUDED.priority,
+                            description = EXCLUDED.description"""
+                    ),
+                    {
+                        "id": policy_id,
+                        "tid": tid,
+                        "name": target[1],
+                        "pattern": rule.get("tools_pattern") or "*",
+                        "action": rule.get("action") or "deny",
+                        "priority": int(rule.get("priority") or 0),
+                        "desc": target[2] or "",
+                    },
+                )
+            new_ver = await _insert_policy_version(
+                session,
+                tenant_id=tid,
+                policy_id=policy_id,
+                name=target[1],
+                description=target[2] or "",
+                rules=rules if isinstance(rules, list) else [],
+                change_summary=f"Rollback to v{body.target_version}: {body.reason}",
+                changed_by=tenant_ctx.api_key_id,
+                deleted=restored_deleted,
             )
-            max_ver = max_r.scalar() or 0
-            new_ver = max_ver + 1
-            import uuid as _uuid
-
-            new_id = _uuid.uuid4().hex
-            await session.execute(
-                text(
-                    """
-                    INSERT INTO policy_versions
-                        (id, tenant_id, policy_id, version_number, name, description,
-                         rules, is_active, change_summary, changed_at)
-                    VALUES
-                        (:id, :tid, :pid, :ver, :name, :desc,
-                         CAST(:rules AS jsonb), TRUE, :summary, now())
-                    """
-                ),
-                {
-                    "id": new_id,
-                    "tid": tenant_ctx.tenant_id,
-                    "pid": policy_id,
-                    "ver": new_ver,
-                    "name": target[1],
-                    "desc": target[2],
-                    "rules": _json.dumps(target[3]) if not isinstance(target[3], str) else target[3],  # noqa: E501
-                    "summary": f"Rollback to v{body.target_version}: {body.reason}",
-                },
-            )
-        return {
-            "policy_id": policy_id,
-            "new_version": new_ver,
-            "rolled_back_to": body.target_version,
-            "reason": body.reason,
-        }
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Policy rollback failed"
+        ) from exc
+
+    # Apply to this replica's engine from the now-committed DB state.
+    engine_reloaded = True
+    try:
+        await engine.reload_from_db(db, tenant_id=tid, strict=True)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).error("policy_rollback_engine_reload_failed: %s", exc)
+        engine_reloaded = False
+    registry = _policy_registry(request).setdefault(tid, {})
+    if restored_deleted:
+        registry.pop(policy_id, None)
+    else:
+        registry[policy_id] = {
+            "policy_id": policy_id,
+            "name": target[1],
+            "description": target[2] or "",
+            "tools_pattern": rule.get("tools_pattern") or "*",
+            "action": rule.get("action") or "deny",
+            "priority": int(rule.get("priority") or 0),
+            "allowed_hours_utc": rule.get("allowed_hours_utc"),
+            "allowed_weekdays": rule.get("allowed_weekdays"),
+        }
+    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
+    await PolicyEngine.publish_change(redis, tenant_id=tid, action="rolled_back")
+    if not engine_reloaded:
+        # The DB rollback committed (and other replicas reload on the pub/sub
+        # message), but THIS replica's engine is stale — say so, don't claim success.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Rollback persisted but this replica's policy engine failed to reload",
+        )
+    return {
+        "policy_id": policy_id,
+        "new_version": new_ver,
+        "rolled_back_to": body.target_version,
+        "reason": body.reason,
+        "policy_deleted": restored_deleted,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1621,14 +1927,21 @@ async def verify_audit_chain(
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
-    try:
-        from app.governance.audit_v3 import HashChainVerifier
+    from app.governance.audit_v3 import AuditChainVerificationError, HashChainVerifier
 
-        async with db() as session:
+    try:
+        async with db() as session, session.begin():
             verifier = HashChainVerifier()
             return await verifier.verify(session, tenant_ctx.tenant_id, fd, td)
+    except AuditChainVerificationError as exc:
+        # Integrity is UNKNOWN — never answer verified=True for an unreadable chain.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Audit chain could not be verified"
+        ) from exc
     except Exception as exc:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from exc
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "Audit chain verification failed"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1691,50 +2004,28 @@ async def list_approval_history(
 
 @router.get("/approvals/sla-stats")
 async def get_sla_stats(request: Request) -> dict[str, Any]:
-    """Return SLA compliance stats for HITL approvals."""
+    """SLA compliance stats for HITL approvals, from ``approval_requests``.
+
+    Previously read ``hitl_approval_requests``, which no code path ever writes,
+    so every tenant saw all-zero stats. A missing/failed DB is a 503, never a
+    zeroed (fake) answer.
+    """
     tenant_ctx: TenantContext = _require_tenant(request)
     db = _get_db(request)
     if db is None:
-        return {"error": "Database not available"}
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Database not available")
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.governance.hitl_sla import compute_sla_stats
 
     try:
-        from sqlalchemy import text
-
-        async with db() as session:
-            result = await session.execute(
-                text(
-                    """
-                    SELECT
-                        COUNT(*) FILTER (WHERE status = 'pending') AS pending,
-                        COUNT(*) FILTER (WHERE status = 'approved') AS approved,
-                        COUNT(*) FILTER (WHERE status = 'denied') AS denied,
-                        COUNT(*) FILTER (WHERE status = 'timed_out') AS timed_out,
-                        COUNT(*) FILTER (WHERE status = 'escalated') AS escalated,
-                        COUNT(*) FILTER (
-                            WHERE sla_deadline IS NOT NULL
-                              AND resolved_at IS NOT NULL
-                              AND resolved_at <= sla_deadline
-                        ) AS within_sla,
-                        AVG(
-                            EXTRACT(EPOCH FROM (resolved_at - created_at))
-                        ) FILTER (WHERE resolved_at IS NOT NULL) AS avg_resolution_seconds
-                    FROM hitl_approval_requests
-                    WHERE tenant_id = :tid
-                    """
-                ),
-                {"tid": tenant_ctx.tenant_id},
-            )
-            row = result.fetchone()
-            if not row:
-                return {}
-            return {
-                "pending": row[0] or 0,
-                "approved": row[1] or 0,
-                "denied": row[2] or 0,
-                "timed_out": row[3] or 0,
-                "escalated": row[4] or 0,
-                "within_sla": row[5] or 0,
-                "avg_resolution_seconds": float(row[6]) if row[6] else None,
-            }
-    except Exception:
-        return {}
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            return await compute_sla_stats(session, tenant_ctx.tenant_id)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Approval SLA stats unavailable"
+        ) from exc

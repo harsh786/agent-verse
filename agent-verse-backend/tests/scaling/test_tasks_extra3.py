@@ -880,43 +880,14 @@ class TestFlushAuditWalDbFactory:
 # ── regression: enforce_hitl_sla SQL column names ─────────────────────────────
 
 class TestEnforceHitlSlaSqlColumns:
-    """Regression tests for enforce_hitl_sla SQL column name fix."""
+    """enforce_hitl_sla must act on approval_requests, not the never-written
+    hitl_approval_requests table."""
 
-    def test_sql_uses_sla_deadline_not_sla_deadline_at(self):
-        """enforce_hitl_sla SQL must use 'sla_deadline', not 'sla_deadline_at'.
+    def test_sla_sql_targets_approval_requests(self):
+        from app.governance import hitl_sla
 
-        Regression: SQL used non-existent column sla_deadline_at which raised
-        UndefinedColumnError. Actual column in hitl_approval_requests is sla_deadline.
-        """
-        import inspect
+        for sql in (hitl_sla._AUTO_DENY_SQL, hitl_sla._ESCALATE_SQL, hitl_sla.SLA_STATS_SQL):
+            assert "hitl_approval_requests" not in sql
+            assert "approval_requests ar" in sql
+            assert "approval_sla_configs" in sql
 
-        from app.scaling.tasks import enforce_hitl_sla
-
-        # Get the source of the task to inspect the SQL string
-        source = inspect.getsource(enforce_hitl_sla)
-
-        assert "sla_deadline_at" not in source, (
-            "enforce_hitl_sla still references non-existent column sla_deadline_at"
-        )
-        assert "sla_deadline" in source, (
-            "enforce_hitl_sla must reference column sla_deadline"
-        )
-
-    def test_sql_does_not_select_request_id(self):
-        """enforce_hitl_sla SQL must not select 'request_id' (column doesn't exist).
-
-        Regression: SQL selected request_id which doesn't exist in the table.
-        The primary key column is just 'id'.
-        """
-        import inspect
-
-        from app.scaling.tasks import enforce_hitl_sla
-
-        source = inspect.getsource(enforce_hitl_sla)
-
-        # Should NOT have "request_id" as a selected column
-        # (it appears in the method name/context, so check it's not in SELECT)
-        assert "SELECT id, tenant_id, sla_deadline" in source or \
-               ("request_id" not in source), (
-            "enforce_hitl_sla must not select non-existent column request_id"
-        )

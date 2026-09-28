@@ -24,6 +24,15 @@ from app.tenancy.context import TenantContext
 _log = get_logger(__name__)
 
 
+class AuditQueryUnavailableError(RuntimeError):
+    """The authoritative (DB) audit store could not be read.
+
+    Raised instead of silently serving this replica's in-memory cache: that cache
+    only holds what THIS process wrote/warmed, so returning it as the answer to an
+    audit query presents partial data as the complete, authoritative trail.
+    """
+
+
 @dataclass
 class AuditEvent:
     goal_id: str
@@ -187,8 +196,9 @@ class AuditLog:
         """Read audit events directly from PostgreSQL with full filter + pagination.
 
         This is the production path — always reads from DB, never from the
-        in-memory cache. Falls back to the in-memory cache only when DB is
-        unavailable.
+        in-memory cache. The in-memory cache is used only when no DB is
+        configured at all (tests / single-process dev); a configured DB that
+        errors raises :class:`AuditQueryUnavailableError`.
         """
         if self._db is None:
             return self.query(
@@ -271,14 +281,10 @@ class AuditLog:
             return events
 
         except Exception as exc:
+            # No per-replica fallback: the in-memory cache is partial (only this
+            # process's writes) and would be served as the authoritative trail.
             _log.warning("audit_query_db_failed", error=str(exc))
-            # Fall back to in-memory on DB failure
-            return self.query(
-                tenant_ctx=tenant_ctx,
-                goal_id=goal_id,
-                tool_name=tool_name,
-                limit=limit,
-            )
+            raise AuditQueryUnavailableError("audit store unavailable") from exc
 
     async def sync_from_db(self, *, tenant_id: str | None = None) -> int:
         """Warm a BOUNDED set of recent audit entries into memory.

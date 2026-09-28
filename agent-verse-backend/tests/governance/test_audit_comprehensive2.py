@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.governance.audit import AuditEvent, AuditLog
 from app.governance.permissions import ActionLevel
 from app.tenancy.context import PlanTier, TenantContext
@@ -177,8 +179,14 @@ class TestAuditLogQueryDb:
         results = await log.query_db(tenant_ctx=ctx)
         assert len(results) == 1
 
-    async def test_query_db_falls_back_on_exception(self) -> None:
-        """When DB raises, falls back to in-memory."""
+    async def test_query_db_raises_on_db_exception_instead_of_partial_memory(self) -> None:
+        """A configured-but-failing DB must NOT be answered from per-replica memory.
+
+        The in-memory cache only holds this process's writes; serving it as the
+        audit trail presents partial data as authoritative.
+        """
+        from app.governance.audit import AuditQueryUnavailableError
+
         async def bad_factory():
             raise RuntimeError("DB down")
 
@@ -186,21 +194,43 @@ class TestAuditLogQueryDb:
         ctx = _ctx()
         log.record(_event("g1"), tenant_ctx=ctx)
 
-        # query_db uses the factory, which raises — should fall back
-        results = await log.query_db(tenant_ctx=ctx)
-        assert len(results) == 1
+        with pytest.raises(AuditQueryUnavailableError):
+            await log.query_db(tenant_ctx=ctx)
 
-    async def test_query_db_with_real_db_calls_factory(self) -> None:
-        """When DB is available, query_db tries to execute SQL (may fail gracefully)."""
+    async def test_query_db_with_unusable_db_factory_raises(self) -> None:
+        from app.governance.audit import AuditQueryUnavailableError
+
         log = AuditLog(db_session_factory=object())  # non-None triggers DB path
         ctx = _ctx("t1")
         log.record(_event("g1"), tenant_ctx=ctx)  # populate memory
 
-        # Without a real DB, query_db will raise and fall back to memory
-        results = await log.query_db(tenant_ctx=ctx)
-        # Should return the in-memory event via fallback
-        assert isinstance(results, list)
-        assert len(results) >= 1
+        with pytest.raises(AuditQueryUnavailableError):
+            await log.query_db(tenant_ctx=ctx)
+
+    async def test_governance_audit_endpoint_returns_503_when_db_fails(self) -> None:
+        from fastapi import FastAPI, Request
+        from httpx import ASGITransport, AsyncClient
+
+        from app.api.governance import router
+
+        async def bad_factory():
+            raise RuntimeError("DB down")
+
+        app = FastAPI()
+        app.include_router(router)
+        log = AuditLog(db_session_factory=bad_factory)
+        app.state.audit_log = log
+        ctx = _ctx()
+        log.record(_event("g1"), tenant_ctx=ctx)
+
+        @app.middleware("http")
+        async def _auth(request: Request, call_next):  # type: ignore[no-untyped-def]
+            request.state.tenant = ctx
+            return await call_next(request)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/governance/audit")
+        assert r.status_code == 503
 
 
 # ── AuditLog.sync_from_db ─────────────────────────────────────────────────────

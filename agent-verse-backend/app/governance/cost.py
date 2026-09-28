@@ -31,6 +31,138 @@ class BudgetConfig:
     per_tenant_daily_usd: float = 500.0
 
 
+class BudgetUnavailableError(RuntimeError):
+    """The tenant's configured budget could not be loaded (and none is cached)."""
+
+
+# Budgets live in ``budget_configs`` (DB-authoritative, shared by every replica
+# and Celery worker). Each process caches a tenant's row briefly so the per-LLM-
+# call check is not a DB round-trip; a PUT invalidates this process's cache and
+# every other process picks the change up within the TTL.
+BUDGET_CACHE_TTL_S = 15.0
+
+
+class TenantBudgetSource:
+    """Loads per-tenant BudgetConfig from ``budget_configs`` with a short TTL cache.
+
+    ``get`` returns ``None`` when the tenant has no row (caller falls back to its
+    own default). On a DB error it serves the last cached value if there is one;
+    with nothing cached it raises :class:`BudgetUnavailableError` so enforcement
+    can fail closed rather than silently apply a looser default budget.
+    """
+
+    def __init__(self, db_factory: Any = None, ttl_s: float = BUDGET_CACHE_TTL_S) -> None:
+        self._db = db_factory
+        self._ttl = ttl_s
+        self._cache: dict[str, tuple[float, BudgetConfig | None]] = {}
+
+    @property
+    def configured(self) -> bool:
+        return self._db is not None
+
+    def invalidate(self, tenant_id: str | None = None) -> None:
+        if tenant_id is None:
+            self._cache.clear()
+        else:
+            self._cache.pop(tenant_id, None)
+
+    def put(self, tenant_id: str, cfg: BudgetConfig) -> None:
+        self._cache[tenant_id] = (time.monotonic(), cfg)
+
+    async def get(self, tenant_id: str) -> BudgetConfig | None:
+        if self._db is None:
+            return None
+        hit = self._cache.get(tenant_id)
+        now = time.monotonic()
+        if hit is not None and now - hit[0] < self._ttl:
+            return hit[1]
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT per_goal_usd, per_tenant_daily_usd "
+                            "FROM budget_configs WHERE tenant_id = :tid"
+                        ),
+                        {"tid": tenant_id},
+                    )
+                ).fetchone()
+        except Exception as exc:
+            get_logger(__name__).warning(
+                "tenant_budget_load_failed", tenant_id=tenant_id, error=str(exc)[:200]
+            )
+            if hit is not None:
+                return hit[1]  # stale but real — better than an unknown budget
+            raise BudgetUnavailableError(f"budget for tenant {tenant_id} unavailable") from exc
+        cfg = (
+            BudgetConfig(per_goal_usd=float(row[0]), per_tenant_daily_usd=float(row[1]))
+            if row
+            else None
+        )
+        self._cache[tenant_id] = (now, cfg)
+        return cfg
+
+
+async def persist_tenant_budget(
+    db_factory: Any,
+    tenant_id: str,
+    *,
+    per_goal_usd: float,
+    per_tenant_daily_usd: float,
+    per_agent_daily_usd: dict[str, float] | None = None,
+    alert_pct_thresholds: list[int] | None = None,
+) -> None:
+    """Upsert the tenant's budget_configs row under its RLS context (raises on error).
+
+    Columns not supplied keep their stored value (or the table default on insert).
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    sets = [
+        "per_goal_usd = EXCLUDED.per_goal_usd",
+        "per_tenant_daily_usd = EXCLUDED.per_tenant_daily_usd",
+    ]
+    cols = ["tenant_id", "per_goal_usd", "per_tenant_daily_usd"]
+    vals = [":tid", ":pg", ":ptd"]
+    params: dict[str, Any] = {
+        "tid": tenant_id,
+        "pg": per_goal_usd,
+        "ptd": per_tenant_daily_usd,
+    }
+    if per_agent_daily_usd is not None:
+        cols.append("per_agent_daily_usd")
+        vals.append("CAST(:pad AS jsonb)")
+        sets.append("per_agent_daily_usd = EXCLUDED.per_agent_daily_usd")
+        params["pad"] = _json.dumps(per_agent_daily_usd)
+    if alert_pct_thresholds is not None:
+        cols.append("alert_pct_thresholds")
+        vals.append(":apt")
+        sets.append("alert_pct_thresholds = EXCLUDED.alert_pct_thresholds")
+        params["apt"] = alert_pct_thresholds
+    sets.append("updated_at = NOW()")
+    sql = (
+        f"INSERT INTO budget_configs ({', '.join(cols)}) VALUES ({', '.join(vals)}) "
+        f"ON CONFLICT (tenant_id) DO UPDATE SET {', '.join(sets)}"
+    )
+    # budget_configs is FORCE ROW LEVEL SECURITY: the write must carry the GUC.
+    async with db_factory() as session, session.begin(), sqlalchemy_rls_context(
+        session, tenant_id
+    ):
+        await session.execute(text(sql), params)
+
+
 def _parse_float(val: Any) -> float:
     """Decode a Redis GET value (bytes, str, int, or None) to float."""
     if val is None:
@@ -68,6 +200,33 @@ class CostController:
         self._redis: Any = None
         # Per-goal+tenant locks to prevent TOCTOU races
         self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # Per-tenant overrides (no-DB mode) and the DB-authoritative source.
+        self._tenant_configs: dict[str, BudgetConfig] = {}
+        self._budget_source = TenantBudgetSource()
+
+    def set_budget_db(self, db_factory: Any) -> None:
+        """Enforce each tenant's budget_configs row (wired in lifespan / worker)."""
+        self._budget_source = TenantBudgetSource(db_factory)
+
+    def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
+        self._tenant_configs[tenant_id] = budget
+        if self._budget_source.configured:
+            self._budget_source.put(tenant_id, budget)
+
+    def invalidate_tenant_budget(self, tenant_id: str) -> None:
+        self._budget_source.invalidate(tenant_id)
+
+    async def resolve_config(self, tenant_id: str) -> BudgetConfig:
+        """DB row (authoritative) > per-tenant override > controller default."""
+        cfg = await self._budget_source.get(tenant_id)
+        if cfg is not None:
+            return cfg
+        return self._tenant_configs.get(tenant_id, self._cfg)
+
+    async def ahas_remaining_budget(self, *, tenant_ctx: TenantContext) -> bool:
+        cfg = await self.resolve_config(tenant_ctx.tenant_id)
+        self._reset_if_new_day(tenant_ctx.tenant_id)
+        return self._daily_totals.get(tenant_ctx.tenant_id, 0.0) < cfg.per_tenant_daily_usd
 
     def _reset_if_new_day(self, tenant_id: str) -> None:
         """Reset daily totals if we've crossed midnight UTC (sync, no lock)."""
@@ -99,6 +258,11 @@ class CostController:
     ) -> bool:
         """Atomically check budget and record cost. Returns True if within budget."""
         del attempt_id
+        try:
+            cfg = await self.resolve_config(tenant_ctx.tenant_id)
+        except BudgetUnavailableError:
+            # Unknown budget → fail closed (a looser default could overspend).
+            return False
         lock_key = f"{tenant_ctx.tenant_id}:{goal_id}"
         async with self._locks[lock_key]:
             await self._reset_if_new_day_atomic(tenant_ctx.tenant_id)
@@ -107,22 +271,22 @@ class CostController:
             new_goal_total = self._goal_totals[goal_key] + cost_usd
             new_daily_total = self._daily_totals[tenant_ctx.tenant_id] + cost_usd
 
-            if new_goal_total > self._cfg.per_goal_usd:
+            if new_goal_total > cfg.per_goal_usd:
                 return False
-            if new_daily_total > self._cfg.per_tenant_daily_usd:
+            if new_daily_total > cfg.per_tenant_daily_usd:
                 return False
 
             self._goal_totals[goal_key] = new_goal_total
             self._daily_totals[tenant_ctx.tenant_id] = new_daily_total
             # 2.4: 80% budget alert
-            if self._cfg.per_tenant_daily_usd > 0:
-                _pct = new_daily_total / self._cfg.per_tenant_daily_usd
+            if cfg.per_tenant_daily_usd > 0:
+                _pct = new_daily_total / cfg.per_tenant_daily_usd
                 if 0.79 < _pct <= 0.81:
                     get_logger(__name__).warning(
                         "budget_80pct_alert",
                         tenant_id=tenant_ctx.tenant_id,
                         daily_used=new_daily_total,
-                        daily_limit=self._cfg.per_tenant_daily_usd,
+                        daily_limit=cfg.per_tenant_daily_usd,
                         pct=round(_pct * 100, 1),
                     )
             record_cost_usd(scope="tool", amount=cost_usd)
@@ -191,10 +355,30 @@ class RedisCostController:
     """
 
     def __init__(
-        self, redis: Any, per_tenant_config: dict[str, BudgetConfig] | None = None
+        self,
+        redis: Any,
+        per_tenant_config: dict[str, BudgetConfig] | None = None,
+        *,
+        budget_db: Any = None,
     ) -> None:
         self._redis = redis
         self._tenant_configs: dict[str, BudgetConfig] = per_tenant_config or {}
+        # budget_configs was written by PUT /costs/budgets but never read here, so
+        # every tenant was enforced at the hard-coded BudgetConfig() defaults.
+        self._budget_source = TenantBudgetSource(budget_db)
+
+    def set_budget_db(self, db_factory: Any) -> None:
+        self._budget_source = TenantBudgetSource(db_factory)
+
+    def invalidate_tenant_budget(self, tenant_id: str) -> None:
+        self._budget_source.invalidate(tenant_id)
+
+    async def resolve_config(self, tenant_id: str) -> BudgetConfig:
+        """DB row (authoritative) > per-tenant override > default BudgetConfig."""
+        cfg = await self._budget_source.get(tenant_id)
+        if cfg is not None:
+            return cfg
+        return self._tenant_configs.get(tenant_id, BudgetConfig())
 
     def _daily_key(self, tenant_id: str) -> str:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -229,7 +413,11 @@ class RedisCostController:
         ``attempt_id`` enables idempotency: the same (goal_id, attempt_id) pair
         is only charged once, making it safe to retry on Celery redeliveries.
         """
-        cfg = self._tenant_configs.get(tenant_ctx.tenant_id, BudgetConfig())
+        try:
+            cfg = await self.resolve_config(tenant_ctx.tenant_id)
+        except BudgetUnavailableError:
+            # Unknown budget → fail closed (a looser default could overspend).
+            return False
 
         # Idempotency guard — skip re-charging the same attempt
         idem_key = f"cost_idem:{tenant_ctx.tenant_id}:{goal_id}:{attempt_id}" if attempt_id else ""
@@ -370,7 +558,7 @@ class RedisCostController:
             daily_spent = 0.0
             goal_spent = 0.0
 
-        cfg = self._tenant_configs.get(resolved_id, BudgetConfig())
+        cfg = await self.resolve_config(resolved_id)
         remaining = max(0.0, cfg.per_tenant_daily_usd - daily_spent)
         daily_pct_remaining = remaining / max(cfg.per_tenant_daily_usd, 0.01)
 
@@ -437,6 +625,8 @@ class RedisCostController:
 
     def configure_tenant_budget(self, tenant_id: str, budget: BudgetConfig) -> None:
         self._tenant_configs[tenant_id] = budget
+        if self._budget_source.configured:
+            self._budget_source.put(tenant_id, budget)
 
     async def try_record_and_check(
         self,
