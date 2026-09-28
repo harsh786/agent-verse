@@ -144,6 +144,9 @@ async def create_key(
     """Create a new API key. The raw key is returned ONLY in this response."""
     svc = _get_tenant_service(request)
     scopes = _scopes_for_new_key(ctx, body.scopes)
+    limited = await _api_key_limit_denial(svc, ctx)
+    if limited is not None:
+        return limited
     try:
         result = await svc.create_api_key(
             tenant_id=ctx.tenant_id,
@@ -156,6 +159,31 @@ async def create_key(
     except PlatformError as exc:
         return JSONResponse(exc.to_dict(), status_code=exc.http_status)
     return JSONResponse(result, status_code=201)
+
+
+async def _api_key_limit_denial(
+    svc: Any, ctx: TenantContext, *, replacing: str | None = None
+) -> JSONResponse | None:
+    """429 when the plan's ``max_api_keys`` active keys already exist.
+
+    ``check_api_key_limit`` existed but nothing called it: any plan could mint
+    unlimited keys. *replacing* is a key that the same request revokes (rotation),
+    so it does not count.
+    """
+    from app.tenancy.limits import PlanLimitExceededError, check_api_key_limit
+
+    try:
+        keys = await svc.list_api_keys(ctx.tenant_id)
+    except PlatformError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+    if isinstance(keys, dict):  # tolerate a {"keys": [...]} envelope
+        keys = keys.get("keys", [])
+    active = [k for k in keys if k.get("is_active", True) and k.get("key_id") != replacing]
+    try:
+        check_api_key_limit(ctx, len(active))
+    except PlanLimitExceededError as exc:
+        return JSONResponse(exc.to_dict(), status_code=exc.http_status)
+    return None
 
 
 def _scopes_for_new_key(ctx: TenantContext, requested: list[str]) -> list[str]:
@@ -219,6 +247,9 @@ async def rotate_key(
     The newly created key's raw secret is returned **once** in this response.
     """
     svc = _get_tenant_service(request)
+    limited = await _api_key_limit_denial(svc, ctx, replacing=key_id if body.revoke_old else None)
+    if limited is not None:
+        return limited
 
     # Create the replacement key first so callers can take it before the old one
     # is revoked — minimising the window without a valid key.
