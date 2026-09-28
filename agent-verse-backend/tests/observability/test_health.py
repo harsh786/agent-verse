@@ -49,7 +49,7 @@ async def test_failing_check_detail_is_logged_not_returned():
     report, and the public, unauthenticated GET /health returned it verbatim —
     leaking DSNs (with credentials), internal hostnames and driver messages.
     The report now carries a generic status; the detail goes to the log."""
-    import structlog.testing
+    from unittest.mock import MagicMock, patch
 
     registry = HealthRegistry()
 
@@ -57,13 +57,17 @@ async def test_failing_check_detail_is_logged_not_returned():
         raise ConnectionError(_DSN_ERROR)
 
     registry.register(HealthCheck(name="postgres", check=bad))
-    with structlog.testing.capture_logs() as logs:
+    # Patch the module logger: structlog.testing.capture_logs misses loggers
+    # that earlier tests already bound and cached (order-dependent failure).
+    fake_logger = MagicMock()
+    with patch("app.observability.health.logger", fake_logger):
         healthy, report = await registry.run()
 
     assert healthy is False
     assert report["postgres"]["status"] == "down"
     assert "s3cr3t" not in str(report) and "db-primary" not in str(report)
-    assert any(_DSN_ERROR in str(entry.get("error", "")) for entry in logs), logs
+    logged = " ".join(str(c) for c in fake_logger.warning.call_args_list)
+    assert _DSN_ERROR in logged, logged
 
 
 def test_health_endpoint_does_not_leak_dependency_errors():

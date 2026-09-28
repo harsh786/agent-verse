@@ -31,6 +31,12 @@ _svc_logger = _get_logger(__name__)
 # Module-level pause event registry (not a class attr to avoid circular)
 _GOAL_PAUSE_EVENTS: dict[str, asyncio.Event] = {}
 _PAUSE_POLL_SECONDS = 2.0
+
+
+def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """``tenant_llm_config=`` only when one was resolved (keeps subclass
+    overrides of ``_make_agent_loop_for_tenant`` without the kwarg working)."""
+    return {"tenant_llm_config": cfg} if cfg is not None else {}
 # execution_context flag: the goal's graph ended waiting for approvals (see
 # GoalService._suspend_for_approval); resume must relaunch it.
 _SUSPENDED_KEY = "_suspended_for_approval"
@@ -2170,8 +2176,8 @@ class GoalService:
                 execution_context=(
                     _persist_record.execution_context if _persist_record is not None else None
                 ),
-                tenant_llm_config=_persist_llm_config,
                 **_persist_profile_kwargs,
+                **_tenant_llm_kwargs(_persist_llm_config),
             )
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
@@ -2322,8 +2328,8 @@ class GoalService:
                 self._app_state,
                 agent_id=record.agent_id if record is not None else None,
                 execution_context=record.execution_context if record is not None else None,
-                tenant_llm_config=await self._resolve_tenant_llm_config(tenant_ctx),
                 **_profile_kwargs,
+                **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
             )
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
