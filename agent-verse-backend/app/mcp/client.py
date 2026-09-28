@@ -412,6 +412,28 @@ class MCPClient:
                 pass
             return []  # fallback: no tools known for this builtin
 
+        # ── OpenAPI-imported connector ────────────────────────────────────────
+        # Its tools are the operations extracted from the spec and stored on the
+        # config (dispatched by _dispatch_openapi_tool). The target is a plain
+        # REST API, not an MCP server, so HTTP ``tools/list`` discovery would
+        # find nothing and the imported tools were invisible to the planner.
+        _openapi_defs = [
+            t
+            for t in (cfg.tool_definitions or [])
+            if isinstance(t, dict) and t.get("name") and t.get("http_method")
+        ]
+        if _openapi_defs:
+            return [
+                ToolDefinition(
+                    name=str(t["name"]),
+                    description=str(t.get("description", "")),
+                    input_schema=dict(t.get("parameters") or t.get("input_schema") or {}),
+                    server_id=server_id,
+                    server_name=cfg.name,
+                )
+                for t in _openapi_defs
+            ]
+
         # ── Non-builtin Jira REST connector ───────────────────────────────────
         # A user-registered Jira connector (e.g. the "PineLabs JIRA" record)
         # exposes a synthetic jira_search_issues tool via the Jira REST API.

@@ -128,6 +128,27 @@ def extract_tools_from_spec(
     return tools
 
 
+def tool_definitions_from_extracted(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map :func:`extract_tools_from_spec` rows to ``MCPServerConfig.tool_definitions``.
+
+    This is the shape the planner's tool context lists and that
+    ``MCPClient._dispatch_openapi_tool`` dispatches (``name`` + ``http_method`` +
+    ``http_path``). Without it on the registered config an imported connector
+    has no tools the agent can see or call.
+    """
+    return [
+        {
+            "name": t["tool_name"],
+            "description": t["description"],
+            "parameters": t["parameters_schema"],
+            "input_schema": t["parameters_schema"],
+            "http_method": t["http_method"],
+            "http_path": t["http_path"],
+        }
+        for t in raw_tools
+    ]
+
+
 async def persist_tools(
     tools: list[dict[str, Any]],
     db_session_factory: Any,
@@ -290,16 +311,7 @@ async def import_and_register(
         return {"error": "No tools found in OpenAPI spec", "server_id": None}
 
     # 3. Normalize to the name/description/parameters shape used by call_tool()
-    tools: list[dict[str, Any]] = [
-        {
-            "name": t["tool_name"],
-            "description": t["description"],
-            "parameters": t["parameters_schema"],
-            "http_method": t["http_method"],
-            "http_path": t["http_path"],
-        }
-        for t in raw_tools
-    ]
+    tools = tool_definitions_from_extracted(raw_tools)
 
     # 4. Build MCPServerConfig. Auth type and placement come from the spec's
     # securitySchemes (previously ignored: only an "api_key" entry was noticed,

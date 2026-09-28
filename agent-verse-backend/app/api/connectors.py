@@ -1584,7 +1584,7 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
         spec = parse_openapi_spec(body.openapi_spec)
     except ValueError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=422,
             detail=f"Cannot parse OpenAPI spec: {exc}",
         ) from exc
 
@@ -1607,37 +1607,83 @@ async def import_openapi_connector(request: Request, body: OpenAPIImportRequest)
         "mtls",
         "hmac",
     }
-    safe_auth_type: Any = body.auth_type if body.auth_type in _valid_auth_types else "bearer"
+    from app.mcp.openapi_importer import resolve_auth_from_spec, tool_definitions_from_extracted
+
+    if not tools:
+        raise HTTPException(
+            status_code=422,
+            detail="OpenAPI spec contains no importable operations",
+        )
+
+    # An explicit auth_type wins; otherwise the spec's securitySchemes decide the
+    # type and placement (header / query / cookie) for the supplied credential.
+    auth_config: dict[str, Any] = dict(body.auth_config)
+    if "auth_type" in body.model_fields_set:
+        safe_auth_type: Any = body.auth_type if body.auth_type in _valid_auth_types else "bearer"
+    else:
+        spec_auth_type, auth_config = resolve_auth_from_spec(spec, auth_config)
+        safe_auth_type = spec_auth_type
 
     connector_name = body.name or (spec.get("info", {}).get("title") or "Imported API")
     connector_desc = body.description or f"Auto-imported from OpenAPI spec ({len(tools)} endpoints)"
+    tool_defs = tool_definitions_from_extracted(tools)
 
-    cfg = MCPServerConfig(
-        name=connector_name,
-        url=body.base_url,
-        auth_type=safe_auth_type,
-        auth_config=body.auth_config,
-        description=connector_desc,
+    # Credentials go to the tenant-scoped encrypted secret store and only a
+    # ``vault://connectors/<id>/<key>`` reference is kept on the connector —
+    # this endpoint used to persist ``auth_config`` (API keys, tokens,
+    # passwords) in plaintext in the registry.
+    secret_store = _connector_secret_store(
+        request,
+        needs_secret_storage=_auth_config_requires_secret_storage(auth_config),
     )
+    pending_secrets: dict[str, str] = {}
+
+    def _config_for(server_id: str) -> MCPServerConfig:
+        return MCPServerConfig(
+            server_id=server_id,
+            name=connector_name,
+            url=body.base_url,
+            auth_type=safe_auth_type,
+            auth_config=_store_sensitive_auth_refs(server_id, auth_config, pending_secrets),
+            description=connector_desc,
+            # Without these the imported operations were invisible to the
+            # planner and undispatchable (the config carried no tools at all).
+            tool_definitions=tool_defs,
+            capabilities=sorted({str(t["name"]) for t in tool_defs}),
+        )
 
     reg = _registry(request)
-    server_id = await reg.register(cfg, tenant_ctx=tenant_ctx)
+    server_id = await reg.register(_config_for, tenant_ctx=tenant_ctx)
+    try:
+        await _persist_connector_secrets(
+            pending_secrets,
+            secret_store=secret_store,
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:
+        await reg.unregister(server_id, tenant_ctx=tenant_ctx)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="connector secret storage failed",
+        ) from exc
 
-    # Optionally persist tool definitions (best-effort, non-fatal)
+    # Index the operations for capability search. Reported honestly: this used
+    # to be wrapped in suppress(Exception) while tools_imported claimed success.
+    capabilities_indexed = 0
     db = getattr(request.app.state, "db_session_factory", None)
-    if db and tools:
+    if db:
         from app.mcp.openapi_importer import persist_tools
 
         for tool in tools:
             tool["connector_id"] = server_id
             tool["tenant_id"] = tenant_ctx.tenant_id
-        with contextlib.suppress(Exception):
-            await persist_tools(tools, db, tenant_ctx.tenant_id)
+        capabilities_indexed = await persist_tools(tools, db, tenant_ctx.tenant_id)
 
     return {
         "server_id": server_id,
         "name": connector_name,
-        "tools_imported": len(tools),
+        "tools_imported": len(tool_defs),
+        "capabilities_indexed": capabilities_indexed,
         "base_url": body.base_url,
     }
 
