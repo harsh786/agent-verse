@@ -136,10 +136,12 @@ class VerifierMixin:
                 record_verify_duration(time.monotonic() - _verify_start)
             # 2.3: Per-goal verifier cost tracking
             try:
-                from app.observability.cost_breakdown import record_role_cost as _rrc
+                # Durable (Postgres, tenant-scoped) when bound — not this process's memory.
+                from app.observability.cost_breakdown import arecord_role_cost as _rrc
 
-                _rrc(
+                await _rrc(
                     goal_id=agent_state.goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
                     role="verifier",
                     model=_verify_model,
                     input_tok=getattr(resp, "input_tokens", 0),

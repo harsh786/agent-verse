@@ -8,8 +8,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+import structlog
+
+_log = structlog.get_logger(__name__)
 
 
 @dataclass
@@ -93,8 +98,8 @@ _goal_breakdowns: dict[str, GoalCostBreakdown] = {}
 # (production reads via get_breakdown and never calls finalize_breakdown, so the data is
 # meant to survive for later retrieval). Left unset -> pure in-memory, as before.
 #
-# Wired (D-21): the FastAPI lifespan calls ``configure_persistence`` with a sync
-# Redis client, so per-goal cost breakdowns survive a restart on the running server.
+# No longer wired by the lifespan: the Postgres backend below (``configure_db``) is
+# authoritative. This Redis mirror remains only as an opt-in for DB-less setups.
 _backend: Any | None = None
 
 
@@ -167,6 +172,139 @@ def record_role_cost(
         _persist(goal_id, bd)
     else:
         get_breakdown(goal_id).record(role, model, input_tok, output_tok, cost)
+
+
+# ── Postgres backend (authoritative when bound) ───────────────────────────────
+# Old bug: the breakdown lived in ``_goal_breakdowns`` (this process's memory),
+# mirrored into Redis only by the API lifespan. A goal run by a Celery worker or
+# another API replica recorded its costs into THAT process, so cost-metrics on
+# any other process came back empty, and a restart lost it; the Redis mirror was
+# also a read-modify-write of one JSON blob, so concurrent role calls lost
+# updates. With a session factory bound (API lifespan, Celery worker) every
+# record is an atomic additive UPSERT into ``goal_cost_breakdowns`` (migration
+# f7a8b9c0d1e2) and every read comes from there, both under the owning tenant's
+# RLS context. The dict / Redis paths remain only for the no-DB test/dev path.
+_db: Any | None = None
+
+_UPSERT_SQL = (
+    "INSERT INTO goal_cost_breakdowns "
+    "(tenant_id, goal_id, role, model, input_tokens, output_tokens, cost_usd, calls) "
+    "VALUES (CAST(:tid AS uuid), :gid, :role, :model, :in_tok, :out_tok, :cost, 1) "
+    "ON CONFLICT (tenant_id, goal_id, role, model) DO UPDATE SET "
+    "input_tokens = goal_cost_breakdowns.input_tokens + EXCLUDED.input_tokens, "
+    "output_tokens = goal_cost_breakdowns.output_tokens + EXCLUDED.output_tokens, "
+    "cost_usd = goal_cost_breakdowns.cost_usd + EXCLUDED.cost_usd, "
+    "calls = goal_cost_breakdowns.calls + 1, "
+    "updated_at = now()"
+)
+_SELECT_SQL = (
+    "SELECT role, model, input_tokens, output_tokens, cost_usd, calls "
+    "FROM goal_cost_breakdowns "
+    "WHERE tenant_id = CAST(:tid AS uuid) AND goal_id = :gid "
+    "ORDER BY first_recorded_at, role, model"
+)
+
+
+def configure_db(session_factory: Any | None) -> None:
+    """Bind the Postgres backend (a callable returning an AsyncSession context)."""
+    global _db
+    _db = session_factory
+
+
+def reset_db() -> None:
+    """Unbind the Postgres backend (tests / shutdown)."""
+    global _db
+    _db = None
+
+
+def _is_tenant_uuid(tenant_id: str) -> bool:
+    try:
+        uuid.UUID(str(tenant_id))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def _db_for(tenant_id: str | None) -> Any | None:
+    """The bound DB when *tenant_id* can own a row (tenant ids are UUIDs), else None."""
+    if _db is None or not tenant_id or not _is_tenant_uuid(tenant_id):
+        return None
+    return _db
+
+
+async def arecord_role_cost(
+    goal_id: str,
+    role: str,
+    model: str,
+    input_tok: int,
+    output_tok: int,
+    cost: float,
+    *,
+    tenant_id: str | None,
+) -> None:
+    """Record one LLM call's cost for *goal_id* (durable when a DB is bound)."""
+    db = _db_for(tenant_id)
+    if db is None:
+        record_role_cost(goal_id, role, model, input_tok, output_tok, cost)
+        return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, str(tenant_id)),
+        ):
+            await session.execute(
+                text(_UPSERT_SQL),
+                {
+                    "tid": str(tenant_id),
+                    "gid": str(goal_id),
+                    "role": str(role),
+                    "model": str(model or ""),
+                    "in_tok": int(input_tok or 0),
+                    "out_tok": int(output_tok or 0),
+                    "cost": float(cost or 0.0),
+                },
+            )
+    except Exception as exc:
+        # Cost attribution must never break a goal; the failure is logged loudly.
+        _log.warning("cost_breakdown_db_record_failed", goal_id=goal_id, error=str(exc)[:200])
+
+
+async def aget_breakdown(goal_id: str, *, tenant_id: str | None) -> GoalCostBreakdown:
+    """Return *goal_id*'s breakdown for *tenant_id* (from Postgres when bound)."""
+    db = _db_for(tenant_id)
+    if db is None:
+        return get_breakdown(goal_id)
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    async with (
+        db() as session,
+        session.begin(),
+        sqlalchemy_rls_context(session, str(tenant_id)),
+    ):
+        rows = (
+            await session.execute(text(_SELECT_SQL), {"tid": str(tenant_id), "gid": goal_id})
+        ).fetchall()
+    return GoalCostBreakdown(
+        goal_id=goal_id,
+        entries=[
+            RoleCostEntry(
+                role=str(r[0]),
+                model=str(r[1]),
+                input_tokens=int(r[2] or 0),
+                output_tokens=int(r[3] or 0),
+                cost_usd=float(r[4] or 0.0),
+                calls=int(r[5] or 0),
+            )
+            for r in rows
+        ],
+    )
 
 
 def finalize_breakdown(goal_id: str) -> dict[str, Any]:

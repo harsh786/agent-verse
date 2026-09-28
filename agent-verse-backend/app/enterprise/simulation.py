@@ -7,10 +7,11 @@ registered tools with mock implementations.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from typing import Any
 
@@ -106,6 +107,15 @@ def _tenant_of(tenant_ctx: Any) -> str:
     return str(getattr(tenant_ctx, "tenant_id", "") or "")
 
 
+def _parse_created_at(value: str) -> datetime:
+    """SimulationRun.created_at is an ISO string; asyncpg binds timestamptz as datetime."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return datetime.now(UTC)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
 class SimulationRunner:
     """Runs goals in a mock-tool sandbox environment."""
 
@@ -115,6 +125,8 @@ class SimulationRunner:
         # any tenant could read any run, and list_runs returned every tenant's.
         self._run_tenant: dict[str, str] = {}
         self._provider: Any = None
+        # Postgres run store, bound by the lifespan (None = process-memory fallback).
+        self._db: Any = None
 
     async def start(
         self,
@@ -227,9 +239,6 @@ class SimulationRunner:
                     "used_real_llm": True,
                 },
             )
-            self._runs[run_id] = run
-            self._run_tenant[run_id] = _tenant_of(tenant_ctx)
-            return run
 
         except Exception as exc:
             logger.warning("simulation_full_pipeline_failed: %s", exc)
@@ -240,6 +249,10 @@ class SimulationRunner:
                 tenant_ctx=tenant_ctx,
                 provider=provider,
             )
+        # Saved outside the try: a persistence failure must surface, not silently
+        # re-run the goal through the stub planner.
+        await self._save(run, tenant_ctx)
+        return run
 
     async def _stub_simulation(
         self,
@@ -354,8 +367,7 @@ class SimulationRunner:
             "note": "Simulation complete — no real tools were called",
             "used_real_llm": provider is not None,
         }
-        self._runs[run_id] = run
-        self._run_tenant[run_id] = _tenant_of(tenant_ctx)
+        await self._save(run, tenant_ctx)
         return run
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -520,11 +532,133 @@ class SimulationRunner:
 
         return steps
 
+    # ── Run store ──────────────────────────────────────────────────────────────
+    # Old bug: runs lived only in ``self._runs`` / ``self._run_tenant`` (the
+    # tenant map fixed cross-tenant reads, but storage stayed in this process),
+    # so POST /enterprise/simulation on one replica then GET on another 404'd and
+    # every restart lost all runs. With a DB bound (lifespan ``set_db``) runs are
+    # rows in ``simulation_runs`` (migration f7a8b9c0d1e2), written and read under
+    # ``sqlalchemy_rls_context``. The dicts are only the no-DB (test/dev) path.
+
+    def set_db(self, session_factory: Any | None) -> None:
+        """Bind (or with None, unbind) the Postgres run store."""
+        self._db = session_factory
+
+    def _db_for(self, tenant_ctx: Any) -> Any | None:
+        db = getattr(self, "_db", None)
+        tid = _tenant_of(tenant_ctx)
+        if db is None or not tid:
+            return None
+        try:
+            uuid.UUID(tid)
+        except ValueError:
+            # Not a real tenant (e.g. the "simulation" placeholder) — cannot own a row.
+            return None
+        return db
+
+    async def _save(self, run: SimulationRun, tenant_ctx: Any) -> None:
+        db = self._db_for(tenant_ctx)
+        if db is None:
+            self._runs[run.run_id] = run
+            self._run_tenant[run.run_id] = _tenant_of(tenant_ctx)
+            return
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        tid = _tenant_of(tenant_ctx)
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tid),
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO simulation_runs "
+                    "(tenant_id, run_id, goal, status, payload, created_at) "
+                    "VALUES (CAST(:tid AS uuid), :rid, :goal, :status, "
+                    " CAST(:payload AS jsonb), :created_at) "
+                    "ON CONFLICT (tenant_id, run_id) DO UPDATE SET "
+                    "status = EXCLUDED.status, payload = EXCLUDED.payload"
+                ),
+                {
+                    "tid": tid,
+                    "rid": run.run_id,
+                    "goal": run.goal,
+                    "status": run.status,
+                    "payload": json.dumps(asdict(run), default=str),
+                    "created_at": _parse_created_at(run.created_at),
+                },
+            )
+
+    @staticmethod
+    def _from_payload(payload: Any) -> SimulationRun:
+        data = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+        known = {f.name for f in fields(SimulationRun)}
+        return SimulationRun(**{k: v for k, v in data.items() if k in known})
+
+    async def aget(self, *, run_id: str, tenant_ctx: TenantContext) -> SimulationRun | None:
+        """The caller's run *run_id* — from Postgres when bound, else process memory."""
+        db = self._db_for(tenant_ctx)
+        if db is None:
+            return self.get(run_id=run_id, tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        tid = _tenant_of(tenant_ctx)
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tid),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT payload FROM simulation_runs "
+                        "WHERE tenant_id = CAST(:tid AS uuid) AND run_id = :rid"
+                    ),
+                    {"tid": tid, "rid": run_id},
+                )
+            ).fetchall()
+        return self._from_payload(rows[0][0]) if rows else None
+
+    async def alist_runs(
+        self, *, tenant_ctx: TenantContext, limit: int = 200
+    ) -> list[SimulationRun]:
+        """The caller's runs, newest first — from Postgres when bound."""
+        db = self._db_for(tenant_ctx)
+        if db is None:
+            return self.list_runs(tenant_ctx=tenant_ctx)
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        tid = _tenant_of(tenant_ctx)
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tid),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT payload FROM simulation_runs "
+                        "WHERE tenant_id = CAST(:tid AS uuid) "
+                        "ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"tid": tid, "lim": int(limit)},
+                )
+            ).fetchall()
+        return [self._from_payload(r[0]) for r in rows]
+
     def get(self, *, run_id: str, tenant_ctx: TenantContext) -> SimulationRun | None:
+        """Process-memory lookup (no-DB path only; request paths use :meth:`aget`)."""
         if self._run_tenant.get(run_id) != _tenant_of(tenant_ctx):
             return None
         return self._runs.get(run_id)
 
     def list_runs(self, *, tenant_ctx: TenantContext) -> list[SimulationRun]:
+        """Process-memory listing (no-DB path only; request paths use :meth:`alist_runs`)."""
         tid = _tenant_of(tenant_ctx)
         return [r for rid, r in self._runs.items() if self._run_tenant.get(rid) == tid]

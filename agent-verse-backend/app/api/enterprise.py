@@ -4,6 +4,7 @@ SAML 2.0 SSO, SCIM 2.0 provisioning, and contract management."""
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import uuid
 from typing import Any, Literal
@@ -219,7 +220,15 @@ async def get_simulation_available_tools(request: Request) -> dict[str, Any]:
 @router.get("/simulation/{run_id}")
 async def get_simulation(request: Request, run_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    run = _simulation(request).get(run_id=run_id, tenant_ctx=ctx)
+    # Durable read (Postgres when bound): the sync .get() read only this replica's
+    # memory, so a run started on another replica (or before a restart) 404'd.
+    runner = _simulation(request)
+    aget = getattr(runner, "aget", None)
+    run = (
+        await aget(run_id=run_id, tenant_ctx=ctx)
+        if inspect.iscoroutinefunction(aget)
+        else runner.get(run_id=run_id, tenant_ctx=ctx)
+    )
     if run is None:
         raise HTTPException(status_code=404, detail="Simulation run not found")
     return {

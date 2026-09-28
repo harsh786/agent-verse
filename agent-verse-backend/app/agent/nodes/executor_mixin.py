@@ -1384,10 +1384,12 @@ class ExecutorMixin:
 
         # 2.3: Per-goal executor cost tracking
         try:
-            from app.observability.cost_breakdown import record_role_cost as _rrc
+            # Durable (Postgres, tenant-scoped) when bound — not this process's memory.
+            from app.observability.cost_breakdown import arecord_role_cost as _rrc
 
-            _rrc(
+            await _rrc(
                 goal_id=state.goal_id,
+                tenant_id=tenant_ctx.tenant_id,
                 role="executor",
                 model=_exec_model,
                 input_tok=getattr(resp, "input_tokens", 0),

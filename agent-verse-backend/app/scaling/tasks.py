@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import signal as _signal
+import threading
 import time
 from datetime import UTC
 from typing import Any, cast
@@ -348,6 +349,87 @@ def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
     from app.rag.gateway import RetrievalGateway
 
     return RetrievalGateway(dependencies)
+
+
+# ── Deployment (on-prem / NVIDIA / hybrid) provider, once per worker process ──
+# Old bug: the API builds its provider with build_onprem_provider (a
+# MultiEndpointLLMProvider fronting NVIDIA + on-prem Qwen) and GoalService pins a
+# per-goal role map, but run_goal only tried the tenant Redis config and the env
+# registry — so worker-executed goals never saw the multi-endpoint provider nor
+# the role map, and hybrid routing (plan on NVIDIA, execute/verify on Qwen) did
+# not apply to anything that went through Celery. The provider is stateless
+# config + HTTP clients, so building it once per process and reusing it is safe.
+_WORKER_PROVIDER_UNSET: Any = object()
+_WORKER_DEPLOYMENT_PROVIDER: Any = _WORKER_PROVIDER_UNSET
+_WORKER_PROVIDER_LOCK = threading.Lock()
+
+
+def _reset_worker_deployment_provider() -> None:
+    """Drop the cached deployment provider (tests / settings reload)."""
+    global _WORKER_DEPLOYMENT_PROVIDER
+    with _WORKER_PROVIDER_LOCK:
+        _WORKER_DEPLOYMENT_PROVIDER = _WORKER_PROVIDER_UNSET
+
+
+def _worker_deployment_provider() -> Any:
+    """The same deployment cluster provider the API builds, or None when unconfigured.
+
+    Built at most once per worker process (``None`` is cached too, so an
+    unconfigured deployment does not re-read settings on every goal).
+    """
+    global _WORKER_DEPLOYMENT_PROVIDER
+    if _WORKER_DEPLOYMENT_PROVIDER is not _WORKER_PROVIDER_UNSET:
+        return _WORKER_DEPLOYMENT_PROVIDER
+    with _WORKER_PROVIDER_LOCK:
+        if _WORKER_DEPLOYMENT_PROVIDER is _WORKER_PROVIDER_UNSET:
+            built: Any = None
+            try:
+                from app.core.config import get_settings
+                from app.providers import onprem as _onprem_mod
+
+                built = _onprem_mod.build_onprem_provider(get_settings())
+            except Exception as exc:
+                logger.warning("worker_onprem_provider_build_failed: %s", exc)
+                built = None
+            _WORKER_DEPLOYMENT_PROVIDER = built
+        return _WORKER_DEPLOYMENT_PROVIDER
+
+
+def _worker_role_map(provider: Any) -> dict[str, str]:
+    """Per-goal role map for *provider* — identical to GoalService's computation."""
+    try:
+        from app.ai_router.deployment_roles import deployment_role_models, servable_models
+
+        servable = servable_models(provider)
+        if servable:
+            return deployment_role_models(servable=servable)
+    except Exception as exc:
+        logger.warning("worker_model_role_map_failed: %s", exc)
+    return {}
+
+
+def _worker_db_session() -> Any:
+    """A session from the CURRENT module engine (the worker disposes it per task)."""
+    from app.db.session import get_session_factory
+
+    return get_session_factory()()
+
+
+def _bind_worker_cost_breakdown_db() -> None:
+    """Record worker-run goal costs to Postgres, not this worker's memory.
+
+    Old bug: only the API lifespan wired cost-breakdown persistence, so every
+    goal executed here recorded its per-role costs into the worker process and
+    the API's cost-metrics endpoint showed an empty breakdown. A binding made by
+    an in-process API app (eager tasks) is kept.
+    """
+    try:
+        from app.observability import cost_breakdown as _cb
+
+        if _cb._db is None:
+            _cb.configure_db(_worker_db_session)
+    except Exception as exc:
+        logger.warning("worker_cost_breakdown_db_bind_failed: %s", exc)
 
 
 def _record_goal_duration_metric(status: str, *, started_monotonic: float, priority: str) -> None:
@@ -1431,7 +1513,13 @@ def run_goal(
 
     # Try tenant-specific provider from Redis first, then fall back to
     # process-wide env-var providers, then the non-durable FakeProvider.
+    _bind_worker_cost_breakdown_db()
     real_provider = _get_llm_provider(tenant_id)
+
+    if real_provider is None:
+        # Same precedence as the API (_app_provider = onprem cluster or registry):
+        # the deployment's on-prem/NVIDIA/hybrid cluster before the env registry.
+        real_provider = _worker_deployment_provider()
 
     if real_provider is None:
         # Reuse the process-wide registry resolver so the worker honours the SAME
@@ -1637,10 +1725,29 @@ def run_goal(
                         _provider_name = "openai"
                     elif "Gemini" in _cls:
                         _provider_name = "gemini"
+                # The multi-endpoint cluster provider steers the router to its
+                # matching profile (onprem / nvidia / hybrid), like the API.
+                if _provider_name is None:
+                    _ptype = getattr(real_provider, "_agentverse_provider_type", None)
+                    _provider_name = _ptype if isinstance(_ptype, str) and _ptype else None
                 if _provider_name:
                     _model_router = ModelRouter(provider_name=_provider_name)
             except Exception:
                 pass
+
+            # Per-goal role map, restricted to what THIS goal's provider serves
+            # (empty for a tenant-configured single provider) — the same map
+            # GoalService.set_role_map applies on the API path.
+            _worker_roles = _worker_role_map(real_provider) if real_provider else {}
+            if _worker_roles:
+                try:
+                    if _model_router is None:
+                        from app.agent.model_router import ModelRouter
+
+                        _model_router = ModelRouter(provider_name="onprem")
+                    _model_router.set_role_map(_worker_roles)
+                except Exception as _rm_exc:
+                    logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
 
             # Build LLM response cache and semantic cache for the worker.
             # Use the Celery broker Redis URL as fallback for REDIS_URL so
@@ -1674,15 +1781,19 @@ def run_goal(
 
             # Build separate verifier for cross-model verification (reduces self-confirmation bias)
             _verifier_for_graph = provider  # default: same as executor
-            try:
-                from app.main import _build_verifier_provider as _bvp
+            # With a role map the verifier MUST stay on the cluster provider: a
+            # cross-model verifier (e.g. Anthropic) cannot serve the mapped
+            # verification model id. The API path also verifies on `provider`.
+            if not _worker_roles:
+                try:
+                    from app.main import _build_verifier_provider as _bvp
 
-                _vp = _bvp()
-                if _vp is not None:
-                    _verifier_for_graph = _vp
-                    logger.info("Goal %s: cross-model verifier active", goal_id)
-            except Exception as _vp_exc:
-                logger.warning("verifier_provider_build_failed: %s", _vp_exc)
+                    _vp = _bvp()
+                    if _vp is not None:
+                        _verifier_for_graph = _vp
+                        logger.info("Goal %s: cross-model verifier active", goal_id)
+                except Exception as _vp_exc:
+                    logger.warning("verifier_provider_build_failed: %s", _vp_exc)
 
             # Phase 3 services — grounding, consensus, synthesis, calibration
             _phase3_grounding = None

@@ -227,9 +227,15 @@ async def list_traces(
                     await goal_service.get_goal(goal_id, tenant_ctx)
                     owns_goal = True
 
-            from app.observability.cost_breakdown import get_breakdown
+            from app.observability.cost_breakdown import aget_breakdown
 
-            bd_dict = get_breakdown(goal_id).to_dict() if owns_goal else {}
+            bd_dict: dict[str, Any] = {}
+            if owns_goal:
+                # Durable tenant-scoped read (see cost_breakdown.aget_breakdown).
+                with contextlib.suppress(Exception):
+                    bd_dict = (
+                        await aget_breakdown(goal_id, tenant_id=str(tenant_ctx.tenant_id))
+                    ).to_dict()
             if bd_dict.get("roles"):
                 traces.append(
                     {

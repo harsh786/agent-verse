@@ -90,6 +90,23 @@ def _keep_scaling_tasks_bound():
 
 
 @pytest.fixture(autouse=True)
+def _reset_worker_deployment_provider_cache():
+    """Drop the Celery worker's once-per-process deployment provider after each test.
+
+    ``app.scaling.tasks`` caches the on-prem/NVIDIA cluster provider (built from
+    env) for the life of the worker process; a test that ran ``run_goal`` under a
+    provider env must not leak that provider into the next test.
+    """
+    yield
+    import sys
+
+    tasks_mod = sys.modules.get("app.scaling.tasks")
+    reset = getattr(tasks_mod, "_reset_worker_deployment_provider", None)
+    if callable(reset):
+        reset()
+
+
+@pytest.fixture(autouse=True)
 def _reset_process_embedding_cache():
     """Reset the process-wide RAG embedding cache between tests.
 
@@ -241,6 +258,10 @@ def _reset_no_db_store_fallbacks(request: pytest.FixtureRequest):
     # of DB mode.
     if "e2e" not in str(getattr(request.node, "path", "")):
         _default_optimizer.__dict__.pop("_db", None)
+        # Same for the process-global cost-breakdown DB binding (lifespan / worker).
+        from app.observability import cost_breakdown as _cost_breakdown
+
+        _cost_breakdown.reset_db()
 
     for store in (
         eval_suite_store._MEM_SUITES,

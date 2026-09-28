@@ -1211,6 +1211,20 @@ def create_app(
             app.state.system_db_session_factory = get_system_session_factory()
             event_store = EventStore(db_factory)
 
+            # Two-phase wiring: per-goal cost breakdowns and simulation runs were
+            # process-local (another replica / the worker never saw them; a restart
+            # lost them). Bind their Postgres stores (migration f7a8b9c0d1e2).
+            try:
+                from app.observability.cost_breakdown import configure_db as _cb_configure_db
+
+                _cb_configure_db(db_factory)
+                _sim_runner = getattr(app.state, "simulation_runner", None)
+                if _sim_runner is not None and hasattr(_sim_runner, "set_db"):
+                    _sim_runner.set_db(db_factory)
+                logger.info("cost_breakdown_and_simulation_stores_db_bound")
+            except Exception:
+                logger.exception("failed to bind cost-breakdown / simulation run stores")
+
             # P1-4: bind the guardrails engine to a durable, RLS-scoped repository
             # (two-phase wiring — in-memory in create_app, DB-backed here). There is
             # no startup warm-up: each tenant's persisted rules are loaded under that
@@ -2342,25 +2356,9 @@ def create_app(
                     # Expose the runtime redis so POST /triggers/events/{channel}
                     # publishes onto the same bus the EVENT consumer subscribes to.
                     app.state.trigger_event_redis = redis_for_runtime
-                    # D-21: enable Redis-backed persistence for per-goal cost
-                    # breakdowns so they survive a restart. The cost-breakdown store
-                    # calls get/set synchronously, so it needs a *sync* client.
-                    try:
-                        from app.net.redis_factory import make_sync_redis
-                        from app.observability.cost_breakdown import (
-                            configure_persistence as _cb_persist,
-                        )
-
-                        _cb_sync_redis = make_sync_redis(
-                            sentinel_urls=getattr(settings, "redis_sentinel_urls", "") or "",
-                            redis_url=str(settings.redis_url),
-                            decode_responses=True,
-                        )
-                        _cb_persist(_cb_sync_redis)
-                        app.state._cost_breakdown_redis = _cb_sync_redis
-                        logger.info("cost_breakdown_persistence_wired")
-                    except Exception as _cb_exc:
-                        logger.warning("cost_breakdown_persistence_failed", error=str(_cb_exc))
+                    # (D-21's Redis mirror of per-goal cost breakdowns is superseded:
+                    # the breakdown is now Postgres-backed, bound with the DB stores
+                    # above, so the Celery worker and every replica share it.)
                     await _trigger_consumers.start()
                     logger.info(
                         "trigger_consumers_wired",
