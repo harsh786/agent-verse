@@ -114,8 +114,9 @@ async def test_ip_allowlist_add_and_list():
             "/tenants/me/ip-allowlist",
             json={"cidr": "10.0.0.0/8", "description": "internal"},
         )
-        assert r3.status_code == 201
-        assert r3.json()["cidr"] == "10.0.0.0/8"
+        # No database in this app: the CIDR could be stored (and enforced)
+        # nowhere, so this is an honest 503, not the old fabricated 201.
+        assert r3.status_code == 503
 
 
 @pytest.mark.asyncio
