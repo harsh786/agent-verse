@@ -223,3 +223,66 @@ async def test_exchange_code_rejects_flow_started_by_another_tenant() -> None:
         )
     assert token is None
     assert not route.called
+
+
+class _SharedRedis:
+    def __init__(self) -> None:
+        self.d: dict[str, str] = {}
+
+    async def set(self, k: str, v: str, ex: int | None = None) -> None:
+        self.d[k] = v
+
+    async def getdel(self, k: str) -> str | None:
+        return self.d.pop(k, None)
+
+
+async def test_pkce_flow_started_on_one_replica_completes_on_another(monkeypatch) -> None:
+    """Regression: pending flows lived in one process, so a callback that landed
+    on another replica was rejected as an invalid state."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.mcp.oauth import OAuthFlowManager
+    from app.tenancy.context import PlanTier, TenantContext
+
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k")
+    shared = _SharedRedis()
+    replica_a, replica_b = OAuthFlowManager(), OAuthFlowManager()
+    replica_a.set_redis(shared)
+    replica_b.set_redis(shared)
+    params = await replica_a.astart_flow(server_id="s1", tenant_ctx=ctx, redirect_uri="https://app/cb")
+
+    monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda _h: ["93.184.216.34"])
+    resp = MagicMock()
+    resp.raise_for_status = lambda: None
+    resp.json = lambda: {"access_token": "tok", "expires_in": 3600}
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.post = AsyncMock(return_value=resp)
+    with patch("httpx.AsyncClient", return_value=client):
+        token = await replica_b.exchange_code(
+            code="c", state=params["state"], token_url="https://provider.example/token",
+            client_id="cid", redirect_uri="", tenant_ctx=ctx,
+        )
+        assert token is not None and token.access_token == "tok"
+        assert client.post.call_args.kwargs["data"]["redirect_uri"] == "https://app/cb"
+        # One-shot: a replayed state is rejected on any replica.
+        again = await replica_a.exchange_code(
+            code="c", state=params["state"], token_url="https://provider.example/token",
+            client_id="cid", redirect_uri="", tenant_ctx=ctx,
+        )
+        assert again is None
+
+
+async def test_oauth_token_url_on_an_internal_host_is_refused() -> None:
+    from app.mcp.oauth import OAuthFlowManager
+    from app.tenancy.context import PlanTier, TenantContext
+
+    ctx = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k")
+    mgr = OAuthFlowManager()
+    params = mgr.start_flow(server_id="s1", tenant_ctx=ctx, redirect_uri="https://app/cb")
+    token = await mgr.exchange_code(
+        code="c", state=params["state"], token_url="http://169.254.169.254/token",
+        client_id="cid", redirect_uri="", tenant_ctx=ctx,
+    )
+    assert token is None

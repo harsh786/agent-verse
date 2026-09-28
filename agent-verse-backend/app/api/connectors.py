@@ -1305,12 +1305,18 @@ async def oauth_start(request: Request, server_id: str) -> dict[str, Any]:
     # exchange in /oauth/callback repeats EXACTLY this value. It used to re-derive
     # a different one there (frontend_url, no ?server_id=), so every real provider
     # rejected the code exchange with invalid_grant.
+    # Default: the frontend's callback route. The provider redirects the
+    # browser there, and the frontend completes the exchange by calling
+    # GET /connectors/oauth/callback with the user's credentials. (The default
+    # used to be this backend route itself, which a browser redirect cannot
+    # authenticate against, so no flow could finish.)
     redirect_uri = str(cfg.auth_config.get("redirect_uri") or "") or (
-        str(request.base_url).rstrip("/") + f"/connectors/oauth/callback?server_id={server_id}"
+        _default_redirect_uri(request) + f"?server_id={server_id}"
     )
 
-    # Start the PKCE flow — generates state token + code challenge
-    pkce_params = oauth_manager.start_flow(
+    # Start the PKCE flow — generates state token + code challenge (shared
+    # across replicas when Redis is wired).
+    pkce_params = await oauth_manager.astart_flow(
         server_id=server_id, tenant_ctx=tenant_ctx, redirect_uri=redirect_uri
     )
 

@@ -1893,6 +1893,10 @@ def create_app(
                         logger.info("tool_result_cache_wired")
                     except Exception as _tce:
                         logger.warning("tool_result_cache_wire_failed", error=str(_tce))
+                # Pending OAuth PKCE flows must be visible to every replica.
+                _oauth_mgr = getattr(app.state, "oauth_manager", None)
+                if _oauth_mgr is not None and hasattr(_oauth_mgr, "set_redis"):
+                    _oauth_mgr.set_redis(redis_for_runtime)
 
                 # RPA session manager: Redis-backed session registry for restart survival.
                 _rpa_sm = getattr(app.state, "rpa_session_manager", None)

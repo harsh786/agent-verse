@@ -829,7 +829,7 @@ class TestConnectorsExtra:
         # Mock oauth_manager that can start a flow
         mock_pkce_params = {"state": "abc123", "code_challenge": "challenge123", "code_verifier": "verifier123"}
         mock_oauth_manager = MagicMock()
-        mock_oauth_manager.start_flow = MagicMock(return_value=mock_pkce_params)
+        mock_oauth_manager.astart_flow = AsyncMock(return_value=mock_pkce_params)
 
         app = _make_connectors_app(registry=mock_registry)
         app.state.oauth_manager = mock_oauth_manager

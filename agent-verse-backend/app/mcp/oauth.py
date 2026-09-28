@@ -72,6 +72,18 @@ class OAuthFlowManager:
         # invalid_grant instead of just reusing the token the first request
         # already obtained.
         self._refresh_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        # Shared store for pending PKCE flows (wired in the app lifespan). The
+        # flows lived only in this process: on a multi-replica deployment the
+        # provider's callback usually lands on another pod, which rejected it
+        # as an invalid/expired state.
+        self._redis: Any = None
+
+    def set_redis(self, redis: Any) -> None:
+        self._redis = redis
+
+    @staticmethod
+    def _flow_key(state: str) -> str:
+        return f"oauth_pkce:{state}"
 
     def _encrypt_token(self, value: str) -> str:
         """Encrypt *value* using the vault if available, else return as-is."""
@@ -134,6 +146,57 @@ class OAuthFlowManager:
             "server_id": server_id,
         }
 
+    async def astart_flow(
+        self, *, server_id: str, tenant_ctx: TenantContext, redirect_uri: str = ""
+    ) -> dict[str, str]:
+        """:meth:`start_flow`, with the pending flow stored in Redis when wired."""
+        params = self.start_flow(
+            server_id=server_id, tenant_ctx=tenant_ctx, redirect_uri=redirect_uri
+        )
+        if self._redis is not None:
+            import json as _json
+
+            flow = self._pending_flows.pop(params["state"])
+            await self._redis.set(
+                self._flow_key(flow.state_token),
+                _json.dumps(
+                    {
+                        "server_id": flow.server_id,
+                        "state_token": flow.state_token,
+                        "code_verifier": flow.code_verifier,
+                        "created_at": flow.created_at,
+                        "tenant_id": flow.tenant_id,
+                        "redirect_uri": flow.redirect_uri,
+                    }
+                ),
+                ex=_OAUTH_STATE_TTL,
+            )
+        return params
+
+    async def _take_shared_flow(self, state: str) -> OAuthState | None:
+        """Atomically consume a pending flow from Redis (one callback wins)."""
+        if self._redis is None:
+            return None
+        import json as _json
+
+        key = self._flow_key(state)
+        try:
+            raw = await self._redis.getdel(key)
+        except AttributeError:  # client without GETDEL
+            raw = await self._redis.get(key)
+            await self._redis.delete(key)
+        if not raw:
+            return None
+        data = _json.loads(raw)
+        return OAuthState(
+            server_id=data["server_id"],
+            state_token=data["state_token"],
+            code_verifier=data["code_verifier"],
+            created_at=float(data["created_at"]),
+            tenant_id=data.get("tenant_id", ""),
+            redirect_uri=data.get("redirect_uri", ""),
+        )
+
     async def exchange_code(
         self,
         *,
@@ -153,15 +216,31 @@ class OAuthFlowManager:
         # Validate expiry before consuming the flow
         pending = self.get_pending_flow(state)
         if pending is None:
-            return None
+            shared = await self._take_shared_flow(state)
+            if shared is None or time.time() - shared.created_at > _OAUTH_STATE_TTL:
+                return None
+            pending = shared
+            self._pending_flows[state] = shared
         # A flow is bound to the tenant that started it: another tenant holding
         # the state must not complete it into its own token store.
         if pending.tenant_id and pending.tenant_id != getattr(tenant_ctx, "tenant_id", ""):
+            self._pending_flows.pop(state, None)
             return None
         flow = self._pending_flows.pop(state, None)
         if flow is None:
             return None
         effective_redirect_uri = flow.redirect_uri or redirect_uri
+        # token_url comes from the tenant's connector config: never POST the
+        # authorization code (and client credentials) to an internal host.
+        try:
+            from app.net.ssrf_guard import assert_public_url_async
+
+            await assert_public_url_async(token_url, context="oauth_token_url")
+        except ValueError:
+            import logging
+
+            logging.getLogger(__name__).warning("OAuth token_url blocked: %s", token_url)
+            return None
 
         data: dict[str, Any]
         try:

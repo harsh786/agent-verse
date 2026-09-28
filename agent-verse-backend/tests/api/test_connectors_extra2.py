@@ -357,10 +357,10 @@ def test_oauth_start_builds_full_authorization_url() -> None:
     registry = _make_registry()
 
     mock_oauth = MagicMock()
-    mock_oauth.start_flow.return_value = {
-        "state": "random-state-xyz",
-        "code_challenge": "challenge-abc",
-    }
+    # The endpoint awaits astart_flow (pending flows are shared across replicas).
+    mock_oauth.astart_flow = AsyncMock(
+        return_value={"state": "random-state-xyz", "code_challenge": "challenge-abc"}
+    )
 
     client = TestClient(
         _make_app(registry=registry, oauth_manager=mock_oauth),
