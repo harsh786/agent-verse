@@ -442,14 +442,28 @@ class TenantMiddleware(BaseHTTPMiddleware):
             # One bucket per TENANT. This was keyed by the request path, so every
             # distinct URL (/goals/1, /goals/2, ...) got its own fresh plan-sized
             # bucket and a tenant could multiply its quota without bound.
-            allowed, remaining, reset_at = await limiter.check_and_record(
-                _TENANT_RATE_BUCKET, limit=rl_limit
-            )
-            rl_remaining = remaining
-            rl_reset = reset_at
+            try:
+                allowed, remaining, reset_at = await limiter.check_and_record(
+                    _TENANT_RATE_BUCKET, limit=rl_limit
+                )
+            except Exception as exc:
+                # Redis outage: the limiter's own fallback uses the same Redis,
+                # so this used to surface as a 500 on every request. Enforce the
+                # conservative in-process window instead (never fail open).
+                import time as _rl_time
 
-            if not allowed:
-                return _rate_limit_response(reset_at)
+                from app.observability.logging import get_logger as _rl_log
+
+                _rl_log(__name__).warning("rate_limit_redis_unavailable", error=str(exc)[:200])
+                if not await _check_rate_limit_with_fallback(
+                    tenant_ctx.tenant_id, None, rpm_limit=rl_limit
+                ):
+                    return _rate_limit_response(_rl_time.time() + 60)
+            else:
+                rl_remaining = remaining
+                rl_reset = reset_at
+                if not allowed:
+                    return _rate_limit_response(reset_at)
         else:
             # H4: No Redis — use in-process fallback instead of failing open
             import time as _time
