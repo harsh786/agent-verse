@@ -1,101 +1,85 @@
 """Tests for the public status page API (app/api/public_status.py).
 
-GET /status requires no authentication (bypassed by TenantMiddleware's
-_BYPASS_PREFIXES, but we test the router in isolation to keep this focused).
+Regression: the router was never mounted (/status 404), and it read
+``app.state.health_registry`` / ``run_all()`` — neither exists — so it always
+said "operational". It now reads the real ``app.state.health`` HealthRegistry.
 """
 from __future__ import annotations
-
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.public_status import router as status_router
+from app.observability.health import HealthCheck, HealthRegistry
 
 
-def _make_app(health_registry: object | None) -> FastAPI:
+async def _ok() -> None:
+    return None
+
+
+async def _down() -> None:
+    raise RuntimeError("postgres://user:secret@db/internal refused")
+
+
+def _make_app(registry: HealthRegistry | None) -> FastAPI:
     app = FastAPI()
     app.include_router(status_router)
-    app.state.health_registry = health_registry
+    app.state.health = registry
     return app
 
 
-def test_status_no_registry_defaults_operational() -> None:
-    client = TestClient(_make_app(health_registry=None), raise_server_exceptions=False)
-    resp = client.get("/status")
+def _get(app: FastAPI) -> dict:
+    resp = TestClient(app, raise_server_exceptions=False).get("/status")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "operational"
+    return resp.json()
+
+
+def test_no_checks_is_unknown_not_operational() -> None:
+    body = _get(_make_app(HealthRegistry()))
+    assert body["status"] == "unknown"
     assert body["components"] == {"api": {"status": "operational"}}
     assert body["page_title"] == "AgentVerse System Status"
-    assert "timestamp" in body
 
 
-def test_status_all_healthy() -> None:
-    registry = MagicMock()
-    registry.run_all = AsyncMock(
-        return_value={
-            "database": SimpleNamespace(healthy=True, latency_ms=12.345),
-            "redis": SimpleNamespace(healthy=True, latency_ms=1.0),
-        }
-    )
-    client = TestClient(_make_app(health_registry=registry), raise_server_exceptions=False)
-    resp = client.get("/status")
-    assert resp.status_code == 200
-    body = resp.json()
+def test_no_registry_is_unknown() -> None:
+    assert _get(_make_app(None))["status"] == "unknown"
+
+
+def test_all_healthy_is_operational() -> None:
+    reg = HealthRegistry()
+    reg.register(HealthCheck("postgres", _ok))
+    reg.register(HealthCheck("redis", _ok))
+    body = _get(_make_app(reg))
     assert body["status"] == "operational"
-    assert body["components"]["database"] == {"status": "operational", "latency_ms": 12.35}
-    assert body["components"]["redis"]["status"] == "operational"
+    assert body["components"]["postgres"] == {"status": "operational"}
 
 
-def test_status_one_unhealthy_marks_degraded() -> None:
-    registry = MagicMock()
-    registry.run_all = AsyncMock(
-        return_value={
-            "database": SimpleNamespace(healthy=True, latency_ms=5.0),
-            "queue": SimpleNamespace(healthy=False, latency_ms=999.0),
-        }
-    )
-    client = TestClient(_make_app(health_registry=registry), raise_server_exceptions=False)
-    resp = client.get("/status")
-    assert resp.status_code == 200
+def test_one_down_is_degraded_and_leaks_nothing() -> None:
+    reg = HealthRegistry()
+    reg.register(HealthCheck("postgres", _down))
+    reg.register(HealthCheck("redis", _ok))
+    app = _make_app(reg)
+    resp = TestClient(app).get("/status")
     body = resp.json()
     assert body["status"] == "degraded"
-    assert body["components"]["queue"]["status"] == "degraded"
-    assert body["components"]["database"]["status"] == "operational"
+    assert body["components"]["postgres"] == {"status": "degraded"}
+    assert "secret" not in resp.text
 
 
-def test_status_registry_raises_returns_unknown() -> None:
-    registry = MagicMock()
-    registry.run_all = AsyncMock(side_effect=RuntimeError("registry exploded"))
-    client = TestClient(_make_app(health_registry=registry), raise_server_exceptions=False)
-    resp = client.get("/status")
+def test_failed_router_marks_api_degraded() -> None:
+    reg = HealthRegistry()
+    reg.register(HealthCheck("postgres", _ok))
+    app = _make_app(reg)
+    app.state.failed_routers = ["ocr_router"]
+    body = _get(app)
+    assert body["status"] == "degraded"
+    assert body["components"]["api"] == {"status": "degraded"}
+
+
+def test_status_is_mounted_and_public_on_the_real_app() -> None:
+    from app.main import create_app
+
+    app = create_app()
+    resp = TestClient(app).get("/status")  # no API key
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "unknown"
-    assert body["components"] == {"api": {"status": "unknown"}}
-
-
-def test_status_missing_latency_defaults_to_zero() -> None:
-    """A result missing/None latency_ms should round to 0.0, not raise."""
-    registry = MagicMock()
-    registry.run_all = AsyncMock(
-        return_value={"cache": SimpleNamespace(healthy=True, latency_ms=None)}
-    )
-    client = TestClient(_make_app(health_registry=registry), raise_server_exceptions=False)
-    resp = client.get("/status")
-    assert resp.status_code == 200
-    assert resp.json()["components"]["cache"]["latency_ms"] == 0.0
-
-
-def test_status_result_missing_healthy_attr_defaults_true() -> None:
-    """getattr(result, "healthy", True) — a bare object with no attrs is treated healthy."""
-    registry = MagicMock()
-    registry.run_all = AsyncMock(return_value={"weird": object()})
-    client = TestClient(_make_app(health_registry=registry), raise_server_exceptions=False)
-    resp = client.get("/status")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "operational"
-    assert body["components"]["weird"]["status"] == "operational"
+    assert resp.json()["status"] in {"operational", "degraded", "unknown"}

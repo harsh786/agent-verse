@@ -20,7 +20,13 @@ const STATUS_CONFIG = {
 export function StatusPage() {
   const { data, isLoading, error, refetch, dataUpdatedAt } = useQuery<StatusData>({
     queryKey: ['public-status'],
-    queryFn: () => fetch(`${API_BASE}/status`).then(r => r.json()),
+    // A non-2xx (e.g. /status unmounted → 404) must surface as an error, not be
+    // parsed as a status payload.
+    queryFn: async () => {
+      const r = await fetch(`${API_BASE}/status`);
+      if (!r.ok) throw new Error(`status endpoint returned ${r.status}`);
+      return (await r.json()) as StatusData;
+    },
     refetchInterval: 30_000,
     retry: 2,
   });

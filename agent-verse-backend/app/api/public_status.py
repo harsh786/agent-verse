@@ -1,41 +1,54 @@
-"""Public status page API — no authentication required."""
+"""Public status page API — no authentication required.
+
+Reads the app's real :class:`~app.observability.health.HealthRegistry`
+(``app.state.health``). It used to read ``app.state.health_registry`` — which
+nothing sets — and call a ``run_all()`` the registry does not have, so it always
+reported "operational" (and the router was never mounted, so /status was a 404).
+"""
 
 from __future__ import annotations
 
 import time
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/status", tags=["status"])
+_log = structlog.get_logger(__name__)
 
 
 @router.get("")
 async def get_public_status(request: Request) -> dict[str, Any]:
-    """Public system health — used by the status page, no auth required."""
-    health_registry = getattr(request.app.state, "health_registry", None)
-    checks: dict[str, Any] = {}
-    overall = "operational"
+    """Public system health: ``operational`` | ``degraded`` | ``unknown``.
 
-    if health_registry is not None:
+    ``unknown`` when no dependency checks are registered or they could not be
+    run — the API answering this request is not evidence its dependencies work.
+    Component details carry only up/down, never error text.
+    """
+    registry = getattr(request.app.state, "health", None)
+    components: dict[str, Any] = {"api": {"status": "operational"}}
+    overall = "unknown"
+    checks = list(getattr(registry, "checks", []) or []) if registry is not None else []
+    if checks:
         try:
-            results = await health_registry.run_all()
-            for name, result in results.items():
-                healthy = getattr(result, "healthy", True)
-                latency = getattr(result, "latency_ms", 0.0)
-                status = "operational" if healthy else "degraded"
-                checks[name] = {"status": status, "latency_ms": round(float(latency or 0), 2)}
-                if not healthy:
-                    overall = "degraded"
-        except Exception:
+            healthy, report = await registry.run()  # type: ignore[union-attr]
+            for name, item in report.items():
+                up = isinstance(item, dict) and item.get("status") == "up"
+                components[name] = {"status": "operational" if up else "degraded"}
+            overall = "operational" if healthy else "degraded"
+        except Exception as exc:
+            _log.warning("public_status_check_failed", error=str(exc)[:200])
             overall = "unknown"
-            checks["api"] = {"status": "unknown"}
-    else:
-        checks["api"] = {"status": "operational"}
+    failed_routers = list(getattr(request.app.state, "failed_routers", []) or [])
+    if failed_routers:
+        components["api"] = {"status": "degraded"}
+        if overall == "operational":
+            overall = "degraded"
 
     return {
         "status": overall,
-        "components": checks,
+        "components": components,
         "timestamp": time.time(),
         "page_title": "AgentVerse System Status",
     }

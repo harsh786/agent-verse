@@ -81,6 +81,19 @@ describe('StatusPage', () => {
     expect(screen.queryByLabelText('Loading status')).not.toBeInTheDocument();
   });
 
+  it('treats a non-2xx response as an error, not as a status payload', async () => {
+    // Regression: /status was unmounted (404) and the 404 body was parsed as data.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ detail: 'Not Found' }),
+    }));
+    renderStatusPage();
+
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 5000 });
+    expect(screen.getByText(/Unable to load status/i)).toBeInTheDocument();
+  });
+
   it('shows the degraded banner copy when a component is degraded', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,

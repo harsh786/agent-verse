@@ -89,6 +89,69 @@ from app.observability.cost_breakdown_api import router as cost_breakdown_api_ro
 from app.org.router import router as org_router  # AI Organization OS
 from app.proactive.router import router as _proactive_router
 
+# (log name, module, attribute, include prefix) for routers registered through
+# _include_guarded — see register_routers for the failure contract.
+_GUARDED_ROUTERS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("marketplace_monetization_router", "app.api.marketplace_monetization", "router", None),
+    ("dpdp_router", "app.api.dpdp", "router", None),
+    ("gst_billing_router", "app.api.gst_billing", "router", None),
+    ("sla_router", "app.api.sla", "router", None),
+    ("sessions_router", "app.api.sessions", "router", None),
+    ("sandbox_router", "app.api.sandbox", "router", None),
+    ("policy_rules_router", "app.api.policy_rules", "router", None),
+    ("v1_router", "app.api.v1.router", "v1_router", None),
+    ("model_registry_router", "app.api.model_registry", "router", None),
+    ("embeddings_router", "app.api.embeddings", "router", None),
+    ("multimodal_router", "app.api.multimodal", "router", None),
+    ("knowledge_graph_router", "app.api.knowledge_graph", "router", None),
+    ("rag_platform_router", "app.api.rag_platform", "router", None),
+    ("agent_runtime_router", "app.api.agent_runtime", "router", None),
+    ("guardrails_v2_router", "app.api.guardrails_v2", "router", None),
+    ("trust_governance_router", "app.api.trust_governance", "router", None),
+    ("skills_runtime_router", "app.api.skills_runtime", "router", None),
+    ("ai_ops_router", "app.api.ai_ops", "router", None),
+    ("memory_v2_router", "app.api.memory_v2", "router", None),
+    ("ocr_router", "app.api.ocr", "router", None),
+)
+
+
+def _guard(app: FastAPI, settings: Any, logger: Any, name: str, include: Any) -> None:
+    """Run ``include()``; on failure log at ERROR, record it, and in production
+    abort startup rather than serve without an advertised API."""
+    try:
+        include()
+        logger.info(f"{name}_registered")
+    except Exception as exc:
+        failed = getattr(app.state, "failed_routers", None)
+        if failed is None:
+            failed = []
+            app.state.failed_routers = failed
+        failed.append(name)
+        logger.error("router_registration_failed", router=name, error=str(exc))
+        if bool(getattr(settings, "is_production", False)):
+            raise RuntimeError(f"router {name!r} failed to register: {exc}") from exc
+
+
+def _include_guarded(
+    app: FastAPI,
+    settings: Any,
+    logger: Any,
+    name: str,
+    module: str,
+    attr: str,
+    prefix: str | None,
+) -> None:
+    def _include() -> None:
+        import importlib
+
+        router = getattr(importlib.import_module(module), attr)
+        if prefix:
+            app.include_router(router, prefix=prefix)
+        else:
+            app.include_router(router)
+
+    _guard(app, settings, logger, name, _include)
+
 
 def _wire_proactive_engine(app: FastAPI) -> None:
     """Construct the ProactiveEngine on app.state with chat-backed delivery + audit."""
@@ -228,13 +291,7 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     # Multi-channel gateway (telegram/whatsapp/slack/teams webhooks → goals +
     # document ingestion). Router carries its own /v1/gateway prefix and uses
     # per-channel signature auth (bypassed from tenant API-key middleware).
-    try:
-        from app.gateway.router import router as gateway_router
-
-        app.include_router(gateway_router)
-        logger.info("gateway_router_registered")
-    except Exception as _gw_exc:  # pragma: no cover - defensive
-        logger.warning("gateway_router_failed", error=str(_gw_exc))
+    _include_guarded(app, settings, logger, "gateway_router", "app.gateway.router", "router", None)
     # Memory + Artifacts
     app.include_router(memory_router)
     app.include_router(artifacts_router)
@@ -314,163 +371,21 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
     app.include_router(mfa_router)
     logger.info("mfa_router_registered")
 
-    # Phase 13/14 — new capability routers
-    try:
-        from app.api.marketplace_monetization import router as _mktplace_mon
+    # Public status page (unauthenticated; /status is in _BYPASS_PREFIXES).
+    # Its router existed but was never included, so /status was a 404.
+    from app.api.public_status import router as public_status_router
 
-        app.include_router(_mktplace_mon)
-    except Exception as _e:
-        logger.warning("marketplace_monetization_router_failed", error=str(_e))
-    try:
-        from app.api.dpdp import router as _dpdp_router
+    app.include_router(public_status_router)
+    logger.info("public_status_router_registered")
 
-        app.include_router(_dpdp_router)
-    except Exception as _e:
-        logger.warning("dpdp_router_failed", error=str(_e))
-    try:
-        from app.api.gst_billing import router as _gst_router
+    # Capability routers that used to be wrapped in ``try/except: warning`` — an
+    # import error silently dropped the whole API while the app booted "fine".
+    # Now a failure is logged at ERROR, recorded on app.state.failed_routers, and
+    # fails startup in production (every one of these is an advertised API).
+    for _name, _modpath, _attr, _prefix in _GUARDED_ROUTERS:
+        _include_guarded(app, settings, logger, _name, _modpath, _attr, _prefix)
 
-        app.include_router(_gst_router)
-    except Exception as _e:
-        logger.warning("gst_billing_router_failed", error=str(_e))
-    try:
-        from app.api.sla import router as _sla_router
-
-        app.include_router(_sla_router)
-    except Exception as _e:
-        logger.warning("sla_router_failed", error=str(_e))
-    try:
-        from app.api.sessions import router as _sessions_router
-
-        app.include_router(_sessions_router)
-    except Exception as _e:
-        logger.warning("sessions_router_failed", error=str(_e))
-    try:
-        from app.api.sandbox import router as _sandbox_router
-
-        app.include_router(_sandbox_router)
-    except Exception as _e:
-        logger.warning("sandbox_router_failed", error=str(_e))
-    try:
-        from app.api.policy_rules import router as _policy_rules_router
-
-        app.include_router(_policy_rules_router)
-    except Exception as _e:
-        logger.warning("policy_rules_router_failed", error=str(_e))
-    try:
-        from app.api.v1.router import v1_router
-
-        app.include_router(v1_router)
-    except Exception as _e:
-        logger.warning("v1_router_failed", error=str(_e))
-    try:
-        from app.api.model_registry import router as model_registry_router
-
-        app.include_router(model_registry_router)
-    except Exception as _e:
-        logger.warning("model_registry_router_failed", error=str(_e))
-
-    # Phase 3: Embedding Platform
-    try:
-        from app.api.embeddings import router as embeddings_router
-
-        app.include_router(embeddings_router)
-        logger.info("embeddings_router_registered")
-    except Exception as _e:
-        logger.warning("embeddings_router_failed", error=str(_e))
-
-    # Phase 4: Multimodal Intelligence
-    try:
-        from app.api.multimodal import router as multimodal_router
-
-        app.include_router(multimodal_router)
-        logger.info("multimodal_router_registered")
-    except Exception as _e:
-        logger.warning("multimodal_router_failed", error=str(_e))
-
-    # Phase 5: Tenant Knowledge Graph
-    try:
-        from app.api.knowledge_graph import router as knowledge_graph_router
-
-        app.include_router(knowledge_graph_router)
-        logger.info("knowledge_graph_router_registered")
-    except Exception as _e:
-        logger.warning("knowledge_graph_router_failed", error=str(_e))
-
-    # Phase 6: GraphRAG / RAG Platform
-    try:
-        from app.api.rag_platform import router as rag_platform_router
-
-        app.include_router(rag_platform_router)
-        logger.info("rag_platform_router_registered")
-    except Exception as _e:
-        logger.warning("rag_platform_router_failed", error=str(_e))
-
-    # Phase 7: Agent Runtime 2.0
-    try:
-        from app.api.agent_runtime import router as agent_runtime_router
-
-        app.include_router(agent_runtime_router)
-        logger.info("agent_runtime_router_registered")
-    except Exception as _e:
-        logger.warning("agent_runtime_router_failed", error=str(_e))
-
-    # Phase 8: Guardrails 2.0
-    try:
-        from app.api.guardrails_v2 import router as guardrails_v2_router
-
-        app.include_router(guardrails_v2_router)
-        logger.info("guardrails_v2_router_registered")
-    except Exception as _e:
-        logger.warning("guardrails_v2_router_failed", error=str(_e))
-
-    # Phase 9: Trust and Governance 2.0
-    try:
-        from app.api.trust_governance import router as trust_governance_router
-
-        app.include_router(trust_governance_router)
-        logger.info("trust_governance_router_registered")
-    except Exception as _e:
-        logger.warning("trust_governance_router_failed", error=str(_e))
-
-    # Phase 12: Skills Runtime (composable skill execution engine)
-    try:
-        from app.api.skills_runtime import router as skills_runtime_router
-
-        app.include_router(skills_runtime_router)
-        logger.info("skills_runtime_router_registered")
-    except Exception as _e:
-        logger.warning("skills_runtime_router_failed", error=str(_e))
-
-    # Phase 10: AI Ops (Evals, Drift, Regression)
-    try:
-        from app.api.ai_ops import router as ai_ops_router
-
-        app.include_router(ai_ops_router)
-        logger.info("ai_ops_router_registered")
-    except Exception as _e:
-        logger.warning("ai_ops_router_failed", error=str(_e))
-
-    # Phase 11: Agent Memory 2.0
-    try:
-        from app.api.memory_v2 import router as memory_v2_router
-
-        app.include_router(memory_v2_router)
-        logger.info("memory_v2_router_registered")
-    except Exception as _e:
-        logger.warning("memory_v2_router_failed", error=str(_e))
-
-    # Phase 6 OCR: document text extraction
-    try:
-        from app.api.ocr import router as ocr_router
-
-        app.include_router(ocr_router)
-        logger.info("ocr_router_registered")
-    except Exception as _e:
-        logger.warning("ocr_router_failed", error=str(_e))
-
-    # ── Workflow Automation Engine (Phase WE) ─────────────────────────────────
-    try:
+    def _include_workflow_engine() -> None:
         from app.workflow.router import router as workflow_engine_router
         from app.workflow.router_hitl import router as workflow_hitl_router
         from app.workflow.router_runs import router as workflow_runs_router
@@ -487,22 +402,10 @@ def register_routers(app: FastAPI, settings: Any, logger: Any) -> None:
         # /wf-hooks/{token}, matching the _BYPASS_PREFIXES entry. Auth is the
         # signed token in the path, not a tenant API key.
         app.include_router(workflow_webhook_router)
-        logger.info("workflow_engine_routers_registered")
-    except Exception as _we:
-        logger.warning("workflow_engine_router_failed", error=str(_we))
 
+    # ── Workflow Automation Engine (Phase WE) ─────────────────────────────────
+    _guard(app, settings, logger, "workflow_engine_routers", _include_workflow_engine)
     # ── AI Organization OS ─────────────────────────────────────────────────
-    try:
-        app.include_router(org_router)
-        logger.info("org_os_router_registered")
-    except Exception as _org_err:
-        logger.warning("org_os_router_failed", error=str(_org_err))
-
+    _guard(app, settings, logger, "org_os_router", lambda: app.include_router(org_router))
     # ── Voice (STT + goal refinement) ─────────────────────────────────────────
-    try:
-        from app.voice.router import router as voice_router
-
-        app.include_router(voice_router)
-        logger.info("voice_router_registered")
-    except Exception as _voice_err:
-        logger.warning("voice_router_failed", error=str(_voice_err))
+    _include_guarded(app, settings, logger, "voice_router", "app.voice.router", "router", None)
