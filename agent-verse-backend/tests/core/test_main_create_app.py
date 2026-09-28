@@ -610,3 +610,15 @@ def test_app_version():
 
     app = create_app()
     assert app.version is not None
+
+
+def test_llm_provider_is_bound_but_never_the_fake_provider() -> None:
+    """Regression: collab insights / schedule suggestions read app.state.llm_provider,
+    which nothing set, so they were never LLM-powered."""
+    from app.main import create_app
+    from app.providers.fake import FakeProvider
+
+    app = create_app()
+    provider = app.state._app_provider
+    expected = None if isinstance(provider, FakeProvider) else provider
+    assert app.state.llm_provider is expected

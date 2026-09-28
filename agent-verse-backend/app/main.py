@@ -2651,6 +2651,11 @@ def create_app(
     app.state.auction_bid_inbox = InMemorySealedBidInbox()
     app.state.magentic_human_review = MagenticHumanReviewService()
     app.state._app_provider = _app_provider
+    # Collaboration insights and schedule suggestions read app.state.llm_provider,
+    # which nothing set, so they always used their rule-based fallback even with
+    # a real LLM configured. Bind the real provider (never the no-key
+    # FakeProvider, whose canned output must not be reported as LLM-powered).
+    app.state.llm_provider = None if isinstance(_app_provider, FakeProvider) else _app_provider
     app.state.mcp_registry = _mcp_registry
     app.state.mcp_client = _mcp_client
     app.state.tool_cache = _tool_cache_inmem
