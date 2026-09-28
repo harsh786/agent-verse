@@ -288,6 +288,15 @@ async def test_saml_replay_protection() -> None:
 # 5. SCIM bearer auth required
 # ---------------------------------------------------------------------------
 
+
+def _tx_cm() -> MagicMock:
+    """Async context manager standing in for ``session.begin()``."""
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=cm)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
 @pytest.mark.asyncio
 async def test_scim_bearer_auth_required() -> None:
     """
@@ -317,6 +326,8 @@ async def test_scim_bearer_auth_invalid_token() -> None:
     mock_db = AsyncMock()
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock(return_value=None)
+    # The lookup runs in an explicit transaction (SET LOCAL of the hash GUC).
+    mock_db.begin = MagicMock(return_value=_tx_cm())
     mock_result = MagicMock()
     mock_result.fetchone = lambda: None  # Token not found
     mock_db.execute = AsyncMock(return_value=mock_result)
@@ -363,6 +374,8 @@ async def test_scim_group_to_role_mapping() -> None:
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock(return_value=None)
     mock_db.commit = AsyncMock()
+    # Handler ops run in one transaction under the tenant's RLS GUC.
+    mock_db.begin = MagicMock(return_value=_tx_cm())
 
     executed_params: list[dict] = []
 

@@ -20,6 +20,55 @@ from app.auth.scim_handler import (
 )
 
 # ---------------------------------------------------------------------------
+# Session fakes
+# ---------------------------------------------------------------------------
+
+
+def _begin_cm() -> MagicMock:
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=cm)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm
+
+
+def _new_session() -> AsyncMock:
+    """AsyncMock session usable as ``async with db() as s, s.begin(): ...``.
+
+    Every DB touch in scim_handler now runs inside an explicit transaction (the
+    RLS GUCs are ``SET LOCAL``), so ``begin()`` must be an async context manager
+    — an AsyncMock child method would return a bare coroutine instead.
+    """
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.begin = MagicMock(return_value=_begin_cm())
+    return session
+
+
+def _sql(session: AsyncMock) -> list[str]:
+    """The SQL text of every statement executed on *session*, in order."""
+    return [str(c.args[0]) for c in session.execute.await_args_list]
+
+
+def _params(session: AsyncMock) -> list[dict]:
+    return [
+        (c.args[1] if len(c.args) > 1 else {}) for c in session.execute.await_args_list
+    ]
+
+
+def _users_execute(row: Any) -> AsyncMock:
+    """execute() that answers ``SELECT ... FROM users`` with *row*, else a blank result."""
+
+    async def _execute(stmt: Any, params: Any = None) -> MagicMock:
+        result = MagicMock()
+        sql = str(stmt)
+        result.fetchone.return_value = row if ("FROM users" in sql and "SELECT" in sql) else None
+        return result
+
+    return AsyncMock(side_effect=_execute)
+
+
+# ---------------------------------------------------------------------------
 # _scim_error helper
 # ---------------------------------------------------------------------------
 
@@ -148,7 +197,7 @@ async def test_require_scim_auth_valid_token_returns_tenant_id():
     row_mock = MagicMock()
     row_mock.__getitem__ = lambda self, i: "tenant-abc" if i == 0 else None
 
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     result_mock = MagicMock()
     result_mock.fetchone.return_value = row_mock
     session_mock.execute = AsyncMock(return_value=result_mock)
@@ -164,8 +213,41 @@ async def test_require_scim_auth_valid_token_returns_tenant_id():
     assert tenant_id == "tenant-abc"
 
 
+async def test_require_scim_auth_presents_token_hash_guc_before_lookup():
+    """Pre-auth lookup under RLS: there is no tenant yet, so the token's hash is
+    presented as ``app.scim_token_hash`` (matched by the SELECT-only
+    ``scim_tokens_by_presented_hash`` policy) inside the SAME transaction as the
+    lookup — ``SET LOCAL`` would be gone otherwise. It must never switch row
+    security off (a NOBYPASSRLS role may not) or set a tenant GUC it cannot know.
+    """
+    raw_token = "scim-bearer-xyz"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+
+    session_mock = _new_session()
+    result_mock = MagicMock()
+    result_mock.fetchone.return_value = ("tenant-hash",)
+    session_mock.execute = AsyncMock(return_value=result_mock)
+    begin = session_mock.begin.return_value
+
+    request = _make_request(auth_header=f"Bearer {raw_token}")
+    request.app.state.db_session_factory = MagicMock(return_value=session_mock)
+
+    assert await require_scim_auth(request) == "tenant-hash"
+
+    session_mock.begin.assert_called_once()
+    begin.__aenter__.assert_awaited_once()
+    sql, params = _sql(session_mock), _params(session_mock)
+    assert "set_config('app.scim_token_hash'" in sql[0]
+    assert params[0] == {"h": token_hash}
+    assert "FROM scim_tokens" in sql[1]
+    assert params[1] == {"hash": token_hash}
+    joined = " ".join(sql).lower()
+    assert "row_security" not in joined
+    assert "app.tenant_id" not in joined
+
+
 async def test_require_scim_auth_invalid_token_raises_401():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     result_mock = MagicMock()
     result_mock.fetchone.return_value = None  # No matching token
     session_mock.execute = AsyncMock(return_value=result_mock)
@@ -182,7 +264,7 @@ async def test_require_scim_auth_invalid_token_raises_401():
 
 
 async def test_require_scim_auth_db_error_raises_503():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.execute = AsyncMock(side_effect=Exception("DB connection failed"))
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
@@ -211,7 +293,7 @@ def _make_handler(config: dict | None = None, db_factory: Any = None) -> SCIMHan
             "group_role_map": {"Admins": "admin"},
         }
     if db_factory is None:
-        session_mock = AsyncMock()
+        session_mock = _new_session()
         session_mock.__aenter__ = AsyncMock(return_value=session_mock)
         session_mock.__aexit__ = AsyncMock(return_value=False)
         db_factory = MagicMock(return_value=session_mock)
@@ -219,7 +301,7 @@ def _make_handler(config: dict | None = None, db_factory: Any = None) -> SCIMHan
 
 
 def _session_with_rows(rows: list, total: int = 0) -> tuple[AsyncMock, Any]:
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
@@ -286,7 +368,7 @@ async def test_list_users_pagination():
 
 
 async def test_list_users_db_error_returns_empty():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock(side_effect=Exception("db error"))
@@ -322,7 +404,7 @@ async def test_get_user_not_found_raises_404():
 
 
 async def test_get_user_db_error_raises_404():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock(side_effect=Exception("db error"))
@@ -355,19 +437,12 @@ async def test_create_user_missing_email_raises_400():
 
 async def test_create_user_success():
     row = _make_mapping_row()
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
-    # execute returns different results for INSERT vs SELECT
-    result_mock_insert = MagicMock()
-    result_mock_select = MagicMock()
-    result_mock_select.fetchone.return_value = row
-
-    session_mock.execute = AsyncMock(side_effect=[
-        result_mock_insert,  # INSERT
-        result_mock_select,  # SELECT
-    ])
+    # set_config / INSERT get a blank result; the SELECT FROM users gets the row
+    session_mock.execute = _users_execute(row)
     session_mock.commit = AsyncMock()
     db_factory = MagicMock(return_value=session_mock)
 
@@ -388,15 +463,11 @@ async def test_create_user_success():
 
 async def test_create_user_uses_email_from_emails_array():
     row = _make_mapping_row()
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
-    result_mock_insert = MagicMock()
-    result_mock_select = MagicMock()
-    result_mock_select.fetchone.return_value = row
-
-    session_mock.execute = AsyncMock(side_effect=[result_mock_insert, result_mock_select])
+    session_mock.execute = _users_execute(row)
     session_mock.commit = AsyncMock()
     db_factory = MagicMock(return_value=session_mock)
 
@@ -411,7 +482,7 @@ async def test_create_user_uses_email_from_emails_array():
 
 
 async def test_create_user_db_error_raises_500():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock(side_effect=Exception("constraint violation"))
@@ -441,7 +512,7 @@ async def test_update_user_disabled_raises_403():
 
 
 async def test_update_user_deactivate_without_allow_delete_raises_403():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     db_factory = MagicMock(return_value=session_mock)
@@ -457,7 +528,7 @@ async def test_update_user_deactivate_without_allow_delete_raises_403():
 
 async def test_update_user_put_success():
     row = _make_mapping_row()
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     result_mock = MagicMock()
@@ -478,7 +549,7 @@ async def test_update_user_put_success():
 
 
 async def test_update_user_not_found_raises_404():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     result_mock = MagicMock()
@@ -503,7 +574,7 @@ async def test_update_user_not_found_raises_404():
 
 async def test_update_user_patch_deactivate():
     row = _make_mapping_row(is_active=False)
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     result_mock = MagicMock()
@@ -522,7 +593,7 @@ async def test_update_user_patch_deactivate():
 
 
 async def test_update_user_patch_deactivate_blocked():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     db_factory = MagicMock(return_value=session_mock)
@@ -550,7 +621,7 @@ async def test_delete_user_disabled_raises_403():
 
 
 async def test_delete_user_success():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock()
@@ -562,11 +633,16 @@ async def test_delete_user_success():
         db_factory=db_factory,
     )
     await handler.delete_user("ext-1")  # Should not raise
-    session_mock.commit.assert_awaited_once()
+    # The write commits with the transaction (clean exit of session.begin()),
+    # not via a bare session.commit() outside any RLS-scoped transaction.
+    begin = session_mock.begin.return_value
+    begin.__aexit__.assert_awaited_once_with(None, None, None)
+    session_mock.commit.assert_not_awaited()
+    assert any("UPDATE users SET is_active = FALSE" in s for s in _sql(session_mock))
 
 
 async def test_delete_user_db_error_raises_500():
-    session_mock = AsyncMock()
+    session_mock = _new_session()
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock(side_effect=Exception("db error"))
@@ -577,3 +653,82 @@ async def test_delete_user_db_error_raises_500():
     with pytest.raises(HTTPException) as exc_info:
         await handler.delete_user("ext-1")
     assert exc_info.value.status_code == 500
+
+
+# ---------------------------------------------------------------------------
+# RLS: every SCIMHandler DB touch runs under the token tenant's GUC
+# ---------------------------------------------------------------------------
+
+
+def _assert_tenant_guc_first(session: AsyncMock, tenant_id: str) -> None:
+    sql, params = _sql(session), _params(session)
+    assert sql, "no statements executed"
+    assert "set_config('app.tenant_id'" in sql[0], sql[0]
+    assert params[0] == {"tid": tenant_id}
+    # ...and inside an explicit transaction, so SET LOCAL covers the statements.
+    session.begin.assert_called_once()
+    session.begin.return_value.__aenter__.assert_awaited_once()
+
+
+@pytest.mark.parametrize("op", ["list", "get", "create", "put", "patch", "delete"])
+async def test_handler_ops_set_tenant_guc_before_any_users_statement(op: str):
+    row = _make_mapping_row()
+    session_mock = _new_session()
+    session_mock.execute = _users_execute(row)
+    handler = SCIMHandler(
+        tenant_id="tenant-guc",
+        config={
+            "allow_user_create": True,
+            "allow_user_update": True,
+            "allow_user_delete": True,
+            "default_role": "viewer",
+            "group_role_map": {},
+        },
+        db_factory=MagicMock(return_value=session_mock),
+    )
+
+    if op == "list":
+        await handler.list_users()
+    elif op == "get":
+        await handler.get_user("ext-id-1")
+    elif op == "create":
+        await handler.create_user({"userName": "a@corp.com"})
+    elif op == "put":
+        await handler.update_user("ext-id-1", {"active": True, "name": {"givenName": "A"}})
+    elif op == "patch":
+        await handler.update_user(
+            "ext-id-1",
+            {"Operations": [{"op": "replace", "path": "active", "value": True}]},
+            partial=True,
+        )
+    else:
+        await handler.delete_user("ext-id-1")
+
+    _assert_tenant_guc_first(session_mock, "tenant-guc")
+    # Defence in depth: every users statement still carries the tenant predicate.
+    for sql, params in zip(_sql(session_mock), _params(session_mock), strict=True):
+        if "users" in sql:
+            assert params.get("tid") == "tenant-guc", sql
+
+
+async def test_handler_db_error_rolls_back_transaction_then_maps_to_500():
+    """Errors are caught OUTSIDE the transaction block, so the transaction is
+    rolled back (begin() sees the exception) instead of committing an aborted
+    Postgres transaction."""
+    session_mock = _new_session()
+
+    async def _execute(stmt: Any, params: Any = None) -> MagicMock:
+        if "UPDATE users" in str(stmt):
+            raise RuntimeError("boom")
+        return MagicMock()
+
+    session_mock.execute = AsyncMock(side_effect=_execute)
+    handler = _make_handler(
+        config={"allow_user_delete": True},
+        db_factory=MagicMock(return_value=session_mock),
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await handler.delete_user("ext-1")
+    assert exc_info.value.status_code == 500
+    exit_args = session_mock.begin.return_value.__aexit__.await_args.args
+    assert exit_args[0] is RuntimeError

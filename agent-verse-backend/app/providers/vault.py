@@ -218,6 +218,11 @@ class CredentialVault:
         5. Write ALL new values to Redis in a single pipeline (atomic batch)
         6. Update self._fernet and self._key ONLY after successful writes
         7. Record key version in DB
+
+        ``db``, when given, must be the MAINTENANCE-role session factory
+        (``app.db.session.get_system_session_factory()``): key rotation is
+        platform-wide system work and ``vault_key_versions`` is not readable or
+        writable by the tenant-scoped API role.
         """
         from app.observability.logging import get_logger
 
@@ -305,7 +310,17 @@ class CredentialVault:
             self._fernet = fernet_new
             self._key = new_master_key
 
-        # Record in DB
+        # Record in DB.
+        #
+        # ``vault_key_versions`` is PLATFORM-GLOBAL: it versions the single master
+        # key that encrypts every tenant's connector secrets (every row carries
+        # the column default ``tenant_id = 'global'``, and retiring the current
+        # version is deliberately unscoped). It therefore has no tenant policy —
+        # it is FORCE-RLS with no policy at all, i.e. invisible to the
+        # NOBYPASSRLS API role — and this write is cross-tenant system work: pass
+        # the maintenance factory (``get_system_session_factory()`` /
+        # ``app.state.system_db_session_factory``). Under the API role the
+        # statements fail loudly and the failure is logged below.
         if db is not None:
             try:
                 import hashlib as _hashlib
@@ -313,8 +328,10 @@ class CredentialVault:
 
                 from sqlalchemy import text
 
+                from app.db.rls import system_session
+
                 key_hash = _hashlib.sha256(new_master_key).hexdigest()[:16] + "..."
-                async with db() as session, session.begin():
+                async with db() as session, session.begin(), system_session(session):
                     await session.execute(
                         text(
                             "UPDATE vault_key_versions SET is_current = FALSE, retired_at = NOW() "

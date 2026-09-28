@@ -222,32 +222,46 @@ class MFAStore:
 
             from app.api.mfa_crypto import decrypt_secret
             from app.db.models.mfa import TenantMFA
+            from app.db.rls import sqlalchemy_rls_context
 
-            async with self._db() as session:
+            # tenant_mfa is FORCE-RLS: without app.tenant_id set, a least-privilege
+            # role sees no row and MFA would read as *disabled* — which the
+            # enforcement middleware treats as "no MFA required". Read under the
+            # tenant GUC, keeping the explicit tenant predicate as well.
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 row = (
                     await session.execute(select(TenantMFA).where(TenantMFA.tenant_id == tenant_id))
                 ).scalar_one_or_none()
+                # Copy out while the session is open; nothing below touches the ORM.
+                found = row is not None
+                enabled = bool(row.enabled) if row is not None else False
+                encrypted_secret = row.encrypted_secret if row is not None else None
+                recovery_raw = row.recovery_codes_hashed if row is not None else None
 
-            if row is None:
+            if not found:
                 return self._cache_entry(tenant_id)
 
             # Decrypt TOTP secret
             secret: str | None = None
-            if row.encrypted_secret:
+            if encrypted_secret:
                 try:
-                    secret = decrypt_secret(row.encrypted_secret)
+                    secret = decrypt_secret(encrypted_secret)
                 except Exception:
                     secret = None
 
             # Parse hashed recovery codes
             codes_hashed: list[str] = []
-            if row.recovery_codes_hashed:
-                codes_hashed = [c for c in row.recovery_codes_hashed.split("\n") if c.strip()]
+            if recovery_raw:
+                codes_hashed = [c for c in recovery_raw.split("\n") if c.strip()]
 
             # Merge DB state with in-memory pending_secret (never stored in DB)
             pending = self._cache_entry(tenant_id).get("pending_secret")
             state: dict[str, Any] = {
-                "enabled": row.enabled,
+                "enabled": enabled,
                 "secret": secret,
                 "pending_secret": pending,
                 "recovery_codes_hashed": codes_hashed,
@@ -280,12 +294,20 @@ class MFAStore:
 
             from app.api.mfa_crypto import encrypt_secret
             from app.db.models.mfa import TenantMFA
+            from app.db.rls import sqlalchemy_rls_context
 
             encrypted = encrypt_secret(state["secret"]) if state.get("secret") else None
             codes_joined = "\n".join(state.get("recovery_codes_hashed", []))
             now = datetime.now(UTC)
 
-            async with self._db() as session, session.begin():
+            # Under the tenant GUC: the SELECT must see this tenant's row and the
+            # INSERT/UPDATE must pass the tenant_mfa policy's WITH CHECK.
+            # sqlalchemy_rls_context flushes the ORM add before it resets the GUC.
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 row = (
                     await session.execute(select(TenantMFA).where(TenantMFA.tenant_id == tenant_id))
                 ).scalar_one_or_none()

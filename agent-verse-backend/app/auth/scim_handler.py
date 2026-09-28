@@ -9,15 +9,33 @@ Handles automated user lifecycle from identity providers:
   - DELETE /scim/v2/Users/{id} — deprovision
 
 Authentication: SHA-256 hashed bearer token checked against scim_tokens table.
+
+Row-level security
+------------------
+The token lookup runs BEFORE any tenant is known — it is what establishes one —
+so it cannot be scoped by ``app.tenant_id``. It presents the token's hash as
+``app.scim_token_hash`` instead; a SELECT-only permissive policy on
+``scim_tokens`` (``scim_tokens_by_presented_hash``) makes exactly the row with
+that hash visible and nothing else. Knowing a token's SHA-256 is equivalent to
+holding the token, so the policy reveals nothing the caller does not already
+possess, and an empty/unset GUC matches no row. This mirrors the API-key
+pattern (``TenantService._db_resolve_by_hash`` + migration b8c9d0e1f2a3).
+
+Every statement after that runs for the resolved tenant inside one transaction
+with the ``app.tenant_id`` GUC set (``sqlalchemy_rls_context``), and keeps its
+explicit ``tenant_id`` predicate as defence in depth.
 """
 
 from __future__ import annotations
 
 import hashlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import HTTPException, Request
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,7 +85,15 @@ async def require_scim_auth(request: Request) -> str:
     try:
         from sqlalchemy import text as _t
 
-        async with db() as session:
+        # Pre-auth: no tenant yet. Present the hash through the GUC matched by the
+        # SELECT-only ``scim_tokens_by_presented_hash`` policy — never switch row
+        # security off (a NOBYPASSRLS role may not) and never use the maintenance
+        # role on a request path. is_local=true scopes it to this transaction.
+        async with db() as session, session.begin():
+            await session.execute(
+                _t("SELECT set_config('app.scim_token_hash', :h, true)"),
+                {"h": token_hash},
+            )
             row = (
                 await session.execute(
                     _t("""
@@ -117,6 +143,21 @@ class SCIMHandler:
         self._config = config
         self._db = db_factory
 
+    @asynccontextmanager
+    async def _tenant_tx(self) -> AsyncIterator[Any]:
+        """One transaction with ``app.tenant_id`` set to the token's tenant.
+
+        Commits when the block exits cleanly and rolls back on any exception, so
+        callers catch errors *outside* the block (after the rollback) rather
+        than inside an aborted transaction.
+        """
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, self._tenant_id),
+        ):
+            yield session
+
     # ── User operations ──────────────────────────────────────────────────
 
     async def list_users(
@@ -128,8 +169,8 @@ class SCIMHandler:
         """List tenant users in SCIM ListResponse format."""
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
-            try:
+        try:
+            async with self._tenant_tx() as db:
                 rows = (
                     await db.execute(
                         _t("""
@@ -154,9 +195,9 @@ class SCIMHandler:
                         {"tid": self._tenant_id},
                     )
                 ).scalar() or 0
-            except Exception as exc:
-                logger.warning("scim_list_users_failed", error=str(exc))
-                rows, total = [], 0
+        except Exception as exc:
+            logger.warning("scim_list_users_failed", error=str(exc))
+            rows, total = [], 0
 
         return {
             "schemas": [SCIM_LIST_RESPONSE],
@@ -170,8 +211,8 @@ class SCIMHandler:
         """Get a single user by SCIM external ID or internal DB id."""
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
-            try:
+        try:
+            async with self._tenant_tx() as db:
                 row = (
                     await db.execute(
                         _t("""
@@ -185,9 +226,9 @@ class SCIMHandler:
                         {"tid": self._tenant_id, "sid": scim_id},
                     )
                 ).fetchone()
-            except Exception as exc:
-                logger.warning("scim_get_user_failed", error=str(exc))
-                row = None
+        except Exception as exc:
+            logger.warning("scim_get_user_failed", error=str(exc))
+            row = None
 
         if row is None:
             raise HTTPException(
@@ -227,8 +268,8 @@ class SCIMHandler:
 
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
-            try:
+        try:
+            async with self._tenant_tx() as db:
                 # Upsert — idempotent on externalId
                 await db.execute(
                     _t("""
@@ -256,9 +297,9 @@ class SCIMHandler:
                         "active": is_active,
                     },
                 )
-                await db.commit()
 
-                # Fetch the created/updated row
+                # Fetch the created/updated row. Same transaction, so it sees the
+                # upsert; both commit together when the block exits cleanly.
                 row = (
                     await db.execute(
                         _t("""
@@ -271,12 +312,12 @@ class SCIMHandler:
                         {"tid": self._tenant_id, "email": email},
                     )
                 ).fetchone()
-            except Exception as exc:
-                logger.error("scim_create_user_failed", error=str(exc))
-                raise HTTPException(
-                    status_code=500,
-                    detail=_scim_error(f"User creation failed: {exc}", "serverError"),
-                ) from exc
+        except Exception as exc:
+            logger.error("scim_create_user_failed", error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=_scim_error(f"User creation failed: {exc}", "serverError"),
+            ) from exc
 
         if row is None:
             raise HTTPException(
@@ -303,8 +344,8 @@ class SCIMHandler:
 
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
-            try:
+        try:
+            async with self._tenant_tx() as db:
                 if partial:
                     # PATCH: process Operations array
                     for op in scim_data.get("Operations", []):
@@ -369,7 +410,6 @@ class SCIMHandler:
                             "sid": scim_id,
                         },
                     )
-                await db.commit()
 
                 row = (
                     await db.execute(
@@ -384,14 +424,14 @@ class SCIMHandler:
                         {"tid": self._tenant_id, "sid": scim_id},
                     )
                 ).fetchone()
-            except HTTPException:
-                raise
-            except Exception as exc:
-                logger.error("scim_update_user_failed", error=str(exc))
-                raise HTTPException(
-                    status_code=500,
-                    detail=_scim_error(str(exc), "serverError"),
-                ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error("scim_update_user_failed", error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=_scim_error(str(exc), "serverError"),
+            ) from exc
 
         if row is None:
             raise HTTPException(
@@ -409,8 +449,8 @@ class SCIMHandler:
             )
         from sqlalchemy import text as _t
 
-        async with self._db() as db:
-            try:
+        try:
+            async with self._tenant_tx() as db:
                 await db.execute(
                     _t("""
                         UPDATE users SET is_active = FALSE, updated_at = NOW()
@@ -419,13 +459,12 @@ class SCIMHandler:
                     """),
                     {"tid": self._tenant_id, "sid": scim_id},
                 )
-                await db.commit()
-            except Exception as exc:
-                logger.error("scim_delete_user_failed", error=str(exc))
-                raise HTTPException(
-                    status_code=500,
-                    detail=_scim_error(str(exc), "serverError"),
-                ) from exc
+        except Exception as exc:
+            logger.error("scim_delete_user_failed", error=str(exc))
+            raise HTTPException(
+                status_code=500,
+                detail=_scim_error(str(exc), "serverError"),
+            ) from exc
 
     def _map_groups_to_role(self, groups: list[dict[str, Any]]) -> str:
         group_role_map = self._config.get("group_role_map", {})

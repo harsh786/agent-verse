@@ -1813,7 +1813,11 @@ async def get_saml_metadata(request: Request) -> Response:
 
         from app.auth.saml_provider import SAMLProvider
 
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             row = (
                 await session.execute(
                     text("""
@@ -1865,7 +1869,11 @@ async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str,
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             await session.execute(
                 text("""
                 INSERT INTO saml_configs
@@ -1916,7 +1924,11 @@ async def saml_login(request: Request) -> Response:
 
         from app.auth.saml_provider import SAMLProvider
 
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             row = (
                 await session.execute(
                     text("""
@@ -1964,7 +1976,11 @@ async def saml_acs(request: Request) -> dict[str, Any]:
 
         from app.auth.saml_provider import SAMLProvider
 
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             row = (
                 await session.execute(
                     text("""
@@ -2062,11 +2078,16 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
     db = _get_db(request)
     if db is None:
         raise HTTPException(503, "Database not configured")
-    # Load scim_configs for this tenant
+    # Load scim_configs for this tenant. The tenant is the one the SCIM bearer
+    # token resolved to, so from here on everything runs under its RLS GUC.
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             row = (
                 await session.execute(
                     text("""
@@ -2155,7 +2176,11 @@ async def provision_scim_token(request: Request) -> dict[str, Any]:
     try:
         from sqlalchemy import text
 
-        async with db() as session, session.begin():
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
             await session.execute(
                 text("""
                 INSERT INTO scim_tokens (id, tenant_id, token_hash, created_at)
