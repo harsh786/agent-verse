@@ -5608,7 +5608,16 @@ def civilization_tick(civilization_id: str, tenant_id: str) -> dict:
             try:
                 from sqlalchemy import text
 
-                async with db() as session:
+                from app.db.rls import sqlalchemy_rls_context
+
+                # Under the tenant's RLS context: civilizations is FORCE-RLS, so
+                # without it this read matched nothing and every tick silently
+                # ran on the default constitution.
+                async with (
+                    db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
                     row = (
                         await session.execute(
                             text(
@@ -6306,33 +6315,36 @@ def discover_and_tick_civilizations() -> dict:
     """Discover all active civilizations and enqueue tick tasks for each."""
 
     async def _run() -> dict:
-        try:
-            from sqlalchemy import text
+        from sqlalchemy import text
 
-            from app.db.session import get_session_factory as _get_fresh_db
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
 
-            db = _get_fresh_db()
-            async with db() as session:
-                rows = (
-                    await session.execute(
-                        text("SELECT id, tenant_id FROM civilizations WHERE status = 'active'")
-                    )
-                ).fetchall()
+        # Cross-tenant scan: ``civilizations`` is FORCE-RLS, so a plain app-role
+        # session with no tenant GUC saw zero rows and no civilization ever
+        # ticked. Run it as the BYPASSRLS maintenance role; each tick then works
+        # under its own tenant's RLS context.
+        system_db = get_system_session_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    text("SELECT id, tenant_id FROM civilizations WHERE status = 'active'")
+                )
+            ).fetchall()
 
-            count = 0
-            for row in rows:
-                civilization_tick.delay(row[0], row[1])
-                count += 1
-            return {"civilizations_ticked": count}
-        except Exception as exc:
-            import logging
+        count = 0
+        for row in rows:
+            civilization_tick.delay(row[0], row[1])
+            count += 1
+        return {"civilizations_ticked": count}
 
-            logging.getLogger(__name__).error(
-                "civilization_discovery_failed", extra={"error": str(exc)}
-            )
-            return {"error": str(exc)}
-
-    return _run_async(_run())
+    try:
+        return cast("dict[Any, Any]", _run_async(_run()))
+    except Exception as exc:
+        # Fail the task (it used to return {"error": ...}, which Celery records
+        # as a success, so a broken scan was invisible).
+        logger.error("civilization_discovery_failed", error=str(exc))
+        raise
 
 
 async def re_embed_collection_async(
@@ -6786,6 +6798,46 @@ async def _brain_tick_for_org(
     return result
 
 
+def _org_loop_factories() -> tuple[Any, Any]:
+    """(tenant session factory, BYPASSRLS maintenance session factory)."""
+    from app.db.session import get_session_factory, get_system_session_factory
+
+    return get_session_factory(), get_system_session_factory()
+
+
+async def _active_orgs_for_maintenance(system_db: Any, *, limit: int = 100) -> list[Any]:
+    """Cross-tenant scan of active orgs, as the maintenance role.
+
+    ``organizations`` is FORCE-RLS: a plain app-role session with no tenant GUC
+    sees zero rows, so the scan must run under :func:`system_session`.
+    """
+    from sqlalchemy import select
+
+    from app.db.rls import system_session
+    from app.org.models import Organization
+
+    async with system_db() as session, session.begin(), system_session(session):
+        result = await session.execute(
+            select(Organization.id, Organization.tenant_id, Organization.autonomy_level)
+            .where(Organization.status == "active")
+            .limit(limit)
+        )
+        return list(result.all())
+
+
+def _worker_llm_provider() -> Any:
+    """The worker's real LLM provider, or None (never the no-key FakeProvider)."""
+    try:
+        from app.providers.fake import FakeProvider
+        from app.providers.registry import resolve_provider
+
+        provider = resolve_provider()
+    except Exception as exc:
+        logger.warning("worker_llm_provider_unavailable", error=str(exc)[:160])
+        return None
+    return None if isinstance(provider, FakeProvider) else provider
+
+
 @celery_app.task(name="app.scaling.tasks.org_brain_loop", queue="maintenance")
 def org_brain_loop() -> dict[str, int]:
     """N8 — Autonomous Operating Loop: SENSE → DECIDE → GUARD → ACT → NARRATE.
@@ -6796,8 +6848,6 @@ def org_brain_loop() -> dict[str, int]:
     per-org Redis tick lock.
     """
     import asyncio as _asyncio
-
-    zero_totals = {"processed": 0, "triggered": 0, **_BRAIN_TICK_ZERO}
 
     async def _run() -> dict[str, int]:
         import structlog as _slog
@@ -6813,27 +6863,12 @@ def org_brain_loop() -> dict[str, int]:
             executed_total = 0
             blocked_total = 0
             try:
-                from app.main import app as _app
-
-                db_factory = getattr(_app.state, "db_factory", None)
-                if db_factory is None:
-                    return dict(zero_totals)
-
-                from sqlalchemy import select
-
-                from app.org.models import Organization
-
-                async with db_factory() as session, session.begin():
-                    result = await session.execute(
-                        select(
-                            Organization.id,
-                            Organization.tenant_id,
-                            Organization.autonomy_level,
-                        )
-                        .where(Organization.status == "active")
-                        .limit(100)
-                    )
-                    orgs = result.all()
+                # This read ``app.main.app.state.db_factory``, which nothing sets
+                # (and the worker has no lifespan), so every tick returned zero.
+                # The cross-tenant org scan runs as the BYPASSRLS maintenance
+                # role; each org's tick runs under that tenant's RLS context.
+                db_factory, system_db = _org_loop_factories()
+                orgs = await _active_orgs_for_maintenance(system_db)
 
                 import redis.asyncio as _aioredis
 
@@ -7018,35 +7053,17 @@ def org_collaboration_loop() -> dict[str, int]:
             orgs_with_chatter = 0
             messages_emitted = 0
             try:
-                from app.main import app as _app
-
-                db_factory = getattr(_app.state, "db_factory", None)
-                if db_factory is None:
-                    return dict(zero_totals)
-
-                llm_provider = getattr(_app.state, "llm_provider", None)
+                # Resolved in the worker (app.main.app.state.db_factory /
+                # llm_provider were read here, and nothing ever set them).
+                llm_provider = _worker_llm_provider()
                 if llm_provider is None:
-                    # No real LLM provider wired into this worker process --
-                    # fail closed rather than emit chatter with no model
-                    # behind it.
+                    # No real LLM provider configured for this worker -- fail
+                    # closed rather than emit chatter with no model behind it.
                     _log.info("org_collaboration.no_llm_provider_skipping")
                     return dict(zero_totals)
 
-                from sqlalchemy import select
-
-                from app.org.models import Organization
-
-                async with db_factory() as session, session.begin():
-                    result = await session.execute(
-                        select(
-                            Organization.id,
-                            Organization.tenant_id,
-                            Organization.autonomy_level,
-                        )
-                        .where(Organization.status == "active")
-                        .limit(100)
-                    )
-                    orgs = result.all()
+                db_factory, system_db = _org_loop_factories()
+                orgs = await _active_orgs_for_maintenance(system_db)
 
                 import redis.asyncio as _aioredis
 

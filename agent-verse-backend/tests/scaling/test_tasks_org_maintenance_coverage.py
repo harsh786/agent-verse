@@ -914,11 +914,27 @@ class TestBrainTickForOrg:
 
 
 class TestOrgBrainLoop:
-    def test_no_db_factory_returns_zero_totals(self):
+    """The loop resolves its own factories in the worker (it used to read
+    ``app.main.app.state.db_factory``, which nothing sets, so it never ran)."""
+
+    def _patch_orgs(self, orgs, db_factory=None):
+        return (
+            patch(
+                "app.scaling.tasks._org_loop_factories",
+                return_value=(db_factory or MagicMock(), MagicMock()),
+            ),
+            patch(
+                "app.scaling.tasks._active_orgs_for_maintenance",
+                new=AsyncMock(return_value=orgs),
+            ),
+        )
+
+    def test_no_orgs_returns_zero_totals(self):
         from app.scaling.tasks import org_brain_loop
 
-        with patch("app.main.app") as mock_app:
-            mock_app.state = SimpleNamespace()
+        mock_redis = AsyncMock()
+        f, o = self._patch_orgs([])
+        with f, o, patch("redis.asyncio.from_url", return_value=mock_redis):
             result = org_brain_loop.run()
 
         assert result == {
@@ -932,22 +948,17 @@ class TestOrgBrainLoop:
     def test_success_aggregates_tick_results(self):
         from app.scaling.tasks import org_brain_loop
 
-        org_row = ("org-1", "tenant-1", 4)
-        session = _make_session(execute_side_effect=[MagicMock(all=MagicMock(return_value=[org_row]))])
-        db_factory = _make_db_factory(session)
-
+        db_factory = MagicMock()
         mock_redis = AsyncMock()
         mock_redis.aclose = AsyncMock(return_value=None)
-
+        tick = AsyncMock(return_value={"proposed": 1, "executed": 2, "blocked": 0})
+        f, o = self._patch_orgs([("org-1", "tenant-1", 4)], db_factory)
         with (
-            patch("app.main.app") as mock_app,
+            f,
+            o,
             patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch(
-                "app.scaling.tasks._brain_tick_for_org",
-                new=AsyncMock(return_value={"proposed": 1, "executed": 2, "blocked": 0}),
-            ),
+            patch("app.scaling.tasks._brain_tick_for_org", new=tick),
         ):
-            mock_app.state = SimpleNamespace(db_factory=db_factory)
             result = org_brain_loop.run()
 
         assert result == {
@@ -957,25 +968,24 @@ class TestOrgBrainLoop:
             "executed": 2,
             "blocked": 0,
         }
+        # The per-org tick gets the tenant (RLS) factory, not the maintenance one.
+        assert tick.await_args.kwargs["db_factory"] is db_factory
 
     def test_per_org_error_is_caught_and_continues(self):
         from app.scaling.tasks import org_brain_loop
 
-        org_row = ("org-1", "tenant-1", 4)
-        session = _make_session(execute_side_effect=[MagicMock(all=MagicMock(return_value=[org_row]))])
-        db_factory = _make_db_factory(session)
         mock_redis = AsyncMock()
         mock_redis.aclose = AsyncMock(return_value=None)
-
+        f, o = self._patch_orgs([("org-1", "tenant-1", 4)])
         with (
-            patch("app.main.app") as mock_app,
+            f,
+            o,
             patch("redis.asyncio.from_url", return_value=mock_redis),
             patch(
                 "app.scaling.tasks._brain_tick_for_org",
                 new=AsyncMock(side_effect=RuntimeError("boom")),
             ),
         ):
-            mock_app.state = SimpleNamespace(db_factory=db_factory)
             result = org_brain_loop.run()
 
         assert result["processed"] == 1
@@ -985,13 +995,28 @@ class TestOrgBrainLoop:
         from app.scaling.tasks import org_brain_loop
 
         with (
-            patch("app.main.app") as mock_app,
+            patch("app.scaling.tasks._org_loop_factories", return_value=(MagicMock(), MagicMock())),
+            patch(
+                "app.scaling.tasks._active_orgs_for_maintenance",
+                new=AsyncMock(side_effect=RuntimeError("db down")),
+            ),
         ):
-            mock_app.state = SimpleNamespace(db_factory=MagicMock(side_effect=RuntimeError("db down")))
             result = org_brain_loop.run()
 
         assert result["processed"] == 0
         assert result["proposed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_org_scan_runs_under_system_session(self):
+        """organizations is FORCE-RLS: the scan must disable row security."""
+        from app.scaling.tasks import _active_orgs_for_maintenance
+
+        rows = MagicMock(all=MagicMock(return_value=[("o", "t", 3)]))
+        session = _make_session(execute_side_effect=[MagicMock(), rows])
+        result = await _active_orgs_for_maintenance(_make_db_factory(session))
+        assert result == [("o", "t", 3)]
+        first_sql = str(session.execute.await_args_list[0].args[0])
+        assert "row_security" in first_sql
 
 
 # ── _collaboration_tick_for_org ─────────────────────────────────────────────
@@ -1121,66 +1146,53 @@ class TestCollaborationTickForOrg:
 
 
 class TestOrgCollaborationLoop:
-    def test_no_db_factory_returns_zero(self):
-        from app.scaling.tasks import org_collaboration_loop
-
-        with patch("app.main.app") as mock_app:
-            mock_app.state = SimpleNamespace()
-            result = org_collaboration_loop.run()
-
-        assert result == {"processed": 0, "orgs_with_chatter": 0, "messages_emitted": 0}
-
     def test_no_llm_provider_returns_zero(self):
         from app.scaling.tasks import org_collaboration_loop
 
-        with patch("app.main.app") as mock_app:
-            mock_app.state = SimpleNamespace(db_factory=MagicMock(), llm_provider=None)
+        with (
+            patch("app.scaling.tasks._worker_llm_provider", return_value=None),
+            patch(
+                "app.scaling.tasks._active_orgs_for_maintenance",
+                new=AsyncMock(side_effect=AssertionError("must not scan")),
+            ),
+        ):
             result = org_collaboration_loop.run()
 
         assert result == {"processed": 0, "orgs_with_chatter": 0, "messages_emitted": 0}
 
-    def test_success_aggregates_chatter(self):
+    def test_fake_provider_is_not_a_real_llm(self):
+        from app.providers.fake import FakeProvider
+        from app.scaling.tasks import _worker_llm_provider
+
+        with patch("app.providers.registry.resolve_provider", return_value=FakeProvider()):
+            assert _worker_llm_provider() is None
+        real = MagicMock()
+        with patch("app.providers.registry.resolve_provider", return_value=real):
+            assert _worker_llm_provider() is real
+
+    def _run_with(self, tick):
         from app.scaling.tasks import org_collaboration_loop
 
-        org_row = ("org-1", "tenant-1", 4)
-        session = _make_session(execute_side_effect=[MagicMock(all=MagicMock(return_value=[org_row]))])
-        db_factory = _make_db_factory(session)
         mock_redis = AsyncMock()
         mock_redis.aclose = AsyncMock(return_value=None)
-
         with (
-            patch("app.main.app") as mock_app,
-            patch("redis.asyncio.from_url", return_value=mock_redis),
+            patch("app.scaling.tasks._worker_llm_provider", return_value=MagicMock()),
+            patch("app.scaling.tasks._org_loop_factories", return_value=(MagicMock(), MagicMock())),
             patch(
-                "app.scaling.tasks._collaboration_tick_for_org",
-                new=AsyncMock(return_value=2),
+                "app.scaling.tasks._active_orgs_for_maintenance",
+                new=AsyncMock(return_value=[("org-1", "tenant-1", 4)]),
             ),
+            patch("redis.asyncio.from_url", return_value=mock_redis),
+            patch("app.scaling.tasks._collaboration_tick_for_org", new=tick),
         ):
-            mock_app.state = SimpleNamespace(db_factory=db_factory, llm_provider=MagicMock())
-            result = org_collaboration_loop.run()
+            return org_collaboration_loop.run()
 
+    def test_success_aggregates_chatter(self):
+        result = self._run_with(AsyncMock(return_value=2))
         assert result == {"processed": 1, "orgs_with_chatter": 1, "messages_emitted": 2}
 
     def test_per_org_error_is_caught(self):
-        from app.scaling.tasks import org_collaboration_loop
-
-        org_row = ("org-1", "tenant-1", 4)
-        session = _make_session(execute_side_effect=[MagicMock(all=MagicMock(return_value=[org_row]))])
-        db_factory = _make_db_factory(session)
-        mock_redis = AsyncMock()
-        mock_redis.aclose = AsyncMock(return_value=None)
-
-        with (
-            patch("app.main.app") as mock_app,
-            patch("redis.asyncio.from_url", return_value=mock_redis),
-            patch(
-                "app.scaling.tasks._collaboration_tick_for_org",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
-            ),
-        ):
-            mock_app.state = SimpleNamespace(db_factory=db_factory, llm_provider=MagicMock())
-            result = org_collaboration_loop.run()
-
+        result = self._run_with(AsyncMock(side_effect=RuntimeError("boom")))
         assert result == {"processed": 1, "orgs_with_chatter": 0, "messages_emitted": 0}
 
 
