@@ -6,14 +6,25 @@ Modes:
   - file: DuckDB auto-scans a file or glob pattern (read_parquet, read_csv, etc.)
 
 Cursor: last row's ORDER BY column value.
+
+Security: DuckDB runs *in-process* on the API/worker host, so an unconfined
+connection would let tenant SQL (``read_csv('/etc/passwd')``, ``ATTACH``,
+``INSTALL httpfs`` ...) read host files or reach internal networks. Every
+connection is therefore opened with ``enable_external_access = false`` and
+``allowed_directories`` pinned to the tenant's own data directory
+(``<duckdb_data_root>/<tenant_id>/``), with the configuration locked so SQL
+cannot re-enable access. ``database`` and ``file`` paths are additionally
+resolved in Python and rejected when they escape that directory.
 """
 
 from __future__ import annotations
 
 import logging
+import pathlib
+import re
 import uuid
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
@@ -22,6 +33,56 @@ if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
 
 _log = logging.getLogger(__name__)
+
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+class DuckDBPathError(PermissionError):
+    """Raised when a DuckDB database/file path escapes the tenant directory."""
+
+
+def _tenant_root(tenant_id: str) -> pathlib.Path:
+    from app.core.config import get_settings
+
+    if not tenant_id or "/" in tenant_id or "\\" in tenant_id or tenant_id in {".", ".."}:
+        raise DuckDBPathError(f"invalid tenant id for DuckDB data root: {tenant_id!r}")
+    return (pathlib.Path(get_settings().duckdb_data_root) / tenant_id).resolve()
+
+
+def _confine(path: str, root: pathlib.Path, *, what: str) -> str:
+    """Resolve *path* relative to *root*; raise if it escapes (symlinks included)."""
+    if not path or "\x00" in path:
+        raise DuckDBPathError(f"DuckDB {what} path is empty or invalid")
+    if "://" in path or path.startswith(("md:", "motherduck:")):
+        raise DuckDBPathError(f"DuckDB {what} must be a local tenant path, got {path!r}")
+    resolved = (root / path).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise DuckDBPathError(
+            f"DuckDB {what} path {path!r} resolves outside the tenant data directory"
+        ) from exc
+    return str(resolved)
+
+
+def _open_confined(duckdb: Any, db_setting: str, tenant_id: str) -> tuple[Any, str]:
+    """Open a DuckDB connection whose external access is confined to the tenant root."""
+    root = _tenant_root(tenant_id)
+    if db_setting in ("", ":memory:"):
+        db_path = ":memory:"
+        read_only = False  # DuckDB refuses read-only in-memory databases
+    else:
+        db_path = _confine(db_setting, root, what="database")
+        read_only = True
+    config = {
+        "enable_external_access": False,
+        "allowed_directories": [str(root) + "/"],
+        "autoinstall_known_extensions": False,
+        "autoload_known_extensions": False,
+        "lock_configuration": True,
+    }
+    con = duckdb.connect(db_path, read_only=read_only, config=config)
+    return con, db_path
 
 
 @register("duckdb", feature_flag="ingestion_connector_duckdb_enabled")
@@ -37,8 +98,11 @@ class DuckDBConnector(BaseConnector):
         try:
             import duckdb  # type: ignore[import-not-found]
 
-            db_path = config.connection_config.get("database", ":memory:")
-            con = duckdb.connect(db_path, read_only=True)
+            con, db_path = _open_confined(
+                duckdb,
+                str(config.connection_config.get("database", ":memory:")),
+                config.tenant_id,
+            )
             con.execute("SELECT 1")
             con.close()
             latency = (time.perf_counter() - t0) * 1000
@@ -60,23 +124,33 @@ class DuckDBConnector(BaseConnector):
             return
 
         cc = config.connection_config
-        db_path = cc.get("database", ":memory:")
         mode = cc.get("mode", "query")
-        cursor_col = cc.get("cursor_column", "updated_at")
+        cursor_col = str(cc.get("cursor_column", "updated_at"))
         batch_size = int(cc.get("batch_size", 1000))
+        if not _IDENT_RE.match(cursor_col):
+            raise ValueError(f"invalid DuckDB cursor_column {cursor_col!r}")
 
-        con = duckdb.connect(db_path, read_only=True)
+        file_path = ""
+        if mode == "file":
+            file_path = _confine(
+                str(cc.get("file", "")), _tenant_root(config.tenant_id), what="file"
+            )
+
+        con, db_path = _open_confined(
+            duckdb, str(cc.get("database", ":memory:")), config.tenant_id
+        )
         try:
             if mode == "file":
-                file_path = cc.get("file", "")
-                query = f"SELECT * FROM '{file_path}'"
+                safe_file = file_path.replace("'", "''")
+                query = f"SELECT * FROM '{safe_file}'"
                 if cursor:
-                    query += f" WHERE {cursor_col} > '{cursor}'"
+                    safe_cursor = cursor.replace("'", "''")
+                    query += f" WHERE \"{cursor_col}\" > '{safe_cursor}'"
                 query += f" LIMIT {batch_size}"
             else:
                 query = cc.get("query", "SELECT 1")
                 if cursor and "{cursor}" in query:
-                    query = query.replace("{cursor}", cursor)
+                    query = query.replace("{cursor}", cursor.replace("'", "''"))
 
             result = con.execute(query)
             col_names = [d[0] for d in result.description]

@@ -308,6 +308,11 @@ class Settings(BaseSettings):
     voice_stt_model: str = "large-v3-turbo"
     voice_tts_model: str = "k2-fsa/OmniVoice"
     model_cache_dir: str = "/app/models"
+    # Root under which each tenant's DuckDB databases / data files must live
+    # (``<root>/<tenant_id>/``). The DuckDB ingestion connector refuses any
+    # path outside the tenant's directory and disables DuckDB external access
+    # beyond it, so tenant SQL can never read API/worker host files.
+    duckdb_data_root: str = "/var/lib/agentverse/duckdb"
     voice_persona_bucket: str = "agentverse-voice-personas"
     voice_greeting_cache_ttl: int = 300
     voice_max_audio_mb: int = 25

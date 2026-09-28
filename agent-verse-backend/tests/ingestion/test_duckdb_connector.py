@@ -6,13 +6,25 @@ branches.
 """
 from __future__ import annotations
 
+import pathlib
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.ingestion.connectors.duckdb_connector import DuckDBConnector
+from app.core.config import get_settings
+from app.ingestion.connectors.duckdb_connector import DuckDBConnector, DuckDBPathError
 from app.ingestion.source_config import SourceConfig, SourceFamily
+
+
+@pytest.fixture(autouse=True)
+def _duckdb_root(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
+    monkeypatch.setattr(get_settings(), "duckdb_data_root", str(tmp_path))
+    return tmp_path
+
+
+def _root_path() -> pathlib.Path:
+    return (pathlib.Path(get_settings().duckdb_data_root) / "t1").resolve()
 
 
 def _config(**cc: Any) -> SourceConfig:
@@ -94,7 +106,7 @@ async def test_get_delta_file_mode_builds_query_and_yields_docs() -> None:
         docs = [d async for d in DuckDBConnector().get_delta(cfg, "5")]
 
     con.execute.assert_called_once_with(
-        "SELECT * FROM 'data.parquet' WHERE id > '5' LIMIT 500"
+        f"SELECT * FROM '{_root_path()}/data.parquet' WHERE \"id\" > '5' LIMIT 500"
     )
     assert len(docs) == 2
     doc0, cursor0 = docs[0]
@@ -139,3 +151,71 @@ async def test_get_delta_query_mode_default_query() -> None:
 
     con.execute.assert_called_once_with("SELECT 1")
     assert docs == []
+
+
+# --- Security regressions: tenant SQL must never reach host files ----------
+
+
+@pytest.mark.asyncio
+async def test_connect_disables_external_access_and_locks_config() -> None:
+    con = MagicMock()
+    result = MagicMock()
+    result.description = [("x",)]
+    result.fetchall = MagicMock(return_value=[])
+    con.execute = MagicMock(return_value=result)
+    fake_mod = _fake_duckdb_module(con)
+
+    cfg = _config(query="SELECT * FROM read_csv('/etc/passwd')")
+    with patch.dict("sys.modules", {"duckdb": fake_mod}):
+        _ = [d async for d in DuckDBConnector().get_delta(cfg, None)]
+
+    _, kwargs = fake_mod.connect.call_args
+    conf = kwargs["config"]
+    assert conf["enable_external_access"] is False
+    assert conf["lock_configuration"] is True
+    assert conf["autoinstall_known_extensions"] is False
+    assert conf["autoload_known_extensions"] is False
+    assert conf["allowed_directories"] == [str(_root_path()) + "/"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path", ["/etc/passwd", "../../etc/passwd", "../t2/data.parquet", "s3://bucket/x.parquet"]
+)
+async def test_file_mode_rejects_paths_outside_tenant_root(path: str) -> None:
+    fake_mod = _fake_duckdb_module(MagicMock())
+    cfg = _config(mode="file", file=path)
+    with patch.dict("sys.modules", {"duckdb": fake_mod}), pytest.raises(DuckDBPathError):
+        _ = [d async for d in DuckDBConnector().get_delta(cfg, None)]
+    fake_mod.connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_database_path_outside_tenant_root_rejected() -> None:
+    fake_mod = _fake_duckdb_module(MagicMock())
+    with patch.dict("sys.modules", {"duckdb": fake_mod}):
+        health = await DuckDBConnector().validate_connection(
+            _config(database="/var/lib/postgresql/data/app.duckdb")
+        )
+    assert health.ok is False
+    assert "outside the tenant data directory" in (health.error or "")
+    fake_mod.connect.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_symlink_escape_rejected() -> None:
+    root = _root_path()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "link.csv").symlink_to("/etc/hosts")
+    fake_mod = _fake_duckdb_module(MagicMock())
+    cfg = _config(mode="file", file="link.csv")
+    with patch.dict("sys.modules", {"duckdb": fake_mod}), pytest.raises(DuckDBPathError):
+        _ = [d async for d in DuckDBConnector().get_delta(cfg, None)]
+
+
+@pytest.mark.asyncio
+async def test_cursor_column_must_be_identifier() -> None:
+    fake_mod = _fake_duckdb_module(MagicMock())
+    cfg = _config(mode="file", file="d.csv", cursor_column="id; DROP TABLE x")
+    with patch.dict("sys.modules", {"duckdb": fake_mod}), pytest.raises(ValueError):
+        _ = [d async for d in DuckDBConnector().get_delta(cfg, "1")]
