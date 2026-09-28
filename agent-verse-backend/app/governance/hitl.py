@@ -832,6 +832,9 @@ class HITLGateway:
                             note=note,
                         )
                     )
+                    _trig = loop.create_task(  # noqa: RUF006
+                        self._publish_trigger_event("hitl.approved", req, tenant_ctx)
+                    )
                 except RuntimeError:
                     pass  # No running loop (sync-only context) — skip Redis publish
         return _AwaitableBool(True)
@@ -903,6 +906,7 @@ class HITLGateway:
                     approver=approver,
                     note=note,
                 )
+            await self._publish_trigger_event("hitl.rejected", req, tenant_ctx)
 
         return True
 
@@ -966,6 +970,39 @@ class HITLGateway:
                 break
 
         return None
+
+    async def _publish_trigger_event(
+        self, channel: str, req: ApprovalRequest, tenant_ctx: TenantContext
+    ) -> None:
+        """Publish ``hitl.approved`` / ``hitl.rejected`` for HITLTriggerConsumer.
+
+        The consumer subscribed to these channels but nothing published them, so
+        HITL_APPROVED / HITL_REJECTED triggers could never fire.
+        """
+        if self._redis is None:
+            return
+        import json
+
+        plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"
+        payload = {
+            "tenant_id": tenant_ctx.tenant_id,
+            "tenant_plan": plan,
+            "request_id": str(req.request_id),
+            "goal_id": req.goal_id,
+            "action": req.action,
+            "risk_level": req.risk_level,
+            "approver": req.approver or "",
+            "note": req.note,
+            "hitl_queue_id": "",
+        }
+        try:
+            await self._redis.publish(channel, json.dumps(payload))
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(
+                "hitl_trigger_event_publish_failed", channel=channel, error=str(exc)
+            )
 
     async def publish_resolution(
         self,

@@ -200,9 +200,9 @@ class TestHITLGateway:
         ctx = _ctx()
         req = gw.request_approval(goal_id="g1", action="act", tenant_ctx=ctx)
         await gw.reject(req.request_id, approver="alice", note="denied", tenant_ctx=ctx)
-        mock_redis.publish.assert_called_once()
-        call_args = mock_redis.publish.call_args[0]
-        assert "hitl_rejected:g1" in call_args[0]
+        # The per-goal replan channel plus the hitl.rejected trigger channel.
+        channels = [c.args[0] for c in mock_redis.publish.call_args_list]
+        assert channels == ["hitl_rejected:g1", "hitl.rejected"]
 
     async def test_reject_redis_error_suppressed(self) -> None:
         mock_redis = AsyncMock()
