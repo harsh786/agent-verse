@@ -9,6 +9,7 @@
  *   ui-ux-pro-max:     useReducedMotion, 44px targets, aria-live regions
  */
 import { useState, useCallback, useId } from 'react';
+import { useOrganizations } from '@/features/org/hooks/useOrg';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Shield, Plus, Trash2, Pencil, Lock, Check, X, ChevronDown } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -55,14 +56,10 @@ const BUILT_IN_ROLES: OrgRole[] = [
 function useOrgRoles(orgId: string) {
   return useQuery<OrgRole[]>({
     queryKey: ['org-roles', orgId],
-    queryFn: async () => {
-      try {
-        const res = await apiClient.get<OrgRole[]>(`/v1/org/${orgId}/roles`);
-        return res;
-      } catch {
-        return [];  // graceful fallback — built-in roles still shown
-      }
-    },
+    // A failed load used to be swallowed into [] — custom roles silently
+    // vanished. The error now surfaces (built-in roles are still shown).
+    queryFn: () => apiClient.get<OrgRole[]>(`/v1/org/${orgId}/roles`),
+    enabled: !!orgId,
     staleTime: 60_000,
   });
 }
@@ -355,7 +352,7 @@ interface RoleEditorPageProps {
 
 export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
   const reduce        = useReducedMotion();
-  const { data: customRoles = [] } = useOrgRoles(orgId);
+  const { data: customRoles = [], isError: rolesError } = useOrgRoles(orgId);
   const deleteRole    = useDeleteRole(orgId);
   const [modal, setModal] = useState<'new' | OrgRole | null>(null);
 
@@ -370,6 +367,11 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
           <p className="text-[14px] text-[#64748B] mt-1">
             {BUILT_IN_ROLES.length} built-in · {customRoles.length} custom
           </p>
+          {rolesError && (
+            <p role="alert" className="text-[13px] text-red-400 mt-1">
+              Custom roles could not be loaded.
+            </p>
+          )}
         </div>
         <motion.button
           whileTap={reduce ? {} : { scale: 0.97 }}
@@ -444,3 +446,24 @@ export function RoleEditorPage({ orgId }: RoleEditorPageProps) {
 }
 
 export default RoleEditorPage;
+
+
+/**
+ * Route entry for /settings/roles. The route used to render
+ * ``<RoleEditorPage orgId="" />``, so every role request hit /v1/org//roles and
+ * custom roles never loaded. It now resolves the tenant's organization.
+ */
+export function RoleEditorRoutePage() {
+  const { data, isLoading, isError } = useOrganizations();
+  const org = data?.data?.[0];
+  if (isLoading) {
+    return <p className="p-8 text-sm text-[#64748B]" aria-busy="true">Loading organization…</p>;
+  }
+  if (isError) {
+    return <p role="alert" className="p-8 text-sm text-red-400">Organizations could not be loaded.</p>;
+  }
+  if (!org) {
+    return <p className="p-8 text-sm text-[#64748B]">Create an organization to manage its roles.</p>;
+  }
+  return <RoleEditorPage orgId={org.id} />;
+}

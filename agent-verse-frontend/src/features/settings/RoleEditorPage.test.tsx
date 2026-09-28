@@ -236,3 +236,28 @@ describe('RoleEditorPage', () => {
     expect(descInput).toHaveValue('Handles refunds');
   });
 });
+
+describe('RoleEditorRoutePage (regression: route rendered orgId="")', () => {
+  test('resolves the organization and loads its roles from /v1/org/<id>/roles', async () => {
+    const { RoleEditorRoutePage } = await import('./RoleEditorPage');
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/v1/org/org-9/roles'))
+        return new Response(JSON.stringify([CUSTOM_ROLE]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/v1/org'))
+        return new Response(JSON.stringify({ data: [{ id: 'org-9', name: 'Acme' }], cursor: null, hasMore: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={qc}><RoleEditorRoutePage /></QueryClientProvider>);
+    expect(await screen.findByText('Finance Approver')).toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/v1/org//'))).toBe(false);
+  });
+
+  test('a failed custom-role load is surfaced, not swallowed into an empty list', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'boom' }), { status: 500, headers: { 'Content-Type': 'application/json' } }));
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be loaded/i);
+  });
+});

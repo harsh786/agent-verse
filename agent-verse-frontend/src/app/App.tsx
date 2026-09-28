@@ -31,7 +31,7 @@ const ScopeExplorerPage = lazy(() => import("@/features/settings/ScopeExplorerPa
 const GuardrailCenterPage = lazy(() => import("@/features/settings/GuardrailCenterPage").then(m => ({ default: m.GuardrailCenterPage })));
 const BudgetManagerPage = lazy(() => import("@/features/settings/BudgetManagerPage").then(m => ({ default: m.BudgetManagerPage })));
 const BillingPage = lazy(() => import("@/features/settings/BillingPage"));
-const RoleEditorPage = lazy(() => import("@/features/settings/RoleEditorPage").then(m => ({ default: m.RoleEditorPage })));
+const RoleEditorRoutePage = lazy(() => import("@/features/settings/RoleEditorPage").then(m => ({ default: m.RoleEditorRoutePage })));
 const PrivacySettings = lazy(() => import("@/features/settings/PrivacySettings").then(m => ({ default: m.PrivacySettings })));
 const ScheduledMissions = lazy(() => import("@/features/org/ScheduledMissions").then(m => ({ default: m.ScheduledMissions })));
 const GatewaySettingsPage = lazy(() => import("@/features/gateway/GatewaySettingsPage").then(m => ({ default: m.GatewaySettingsPage })));
@@ -61,7 +61,7 @@ const ApprovalInboxPage       = lazy(() => import('@/features/workflow/ApprovalI
 const MissionPage      = lazy(() => import('@/features/org/MissionPage').then(m => ({ default: m.MissionPage })));
 const DepartmentPage   = lazy(() => import('@/features/org/DepartmentPage').then(m => ({ default: m.DepartmentPage })));
 const TeamPage         = lazy(() => import('@/features/org/TeamPage').then(m => ({ default: m.TeamPage })));
-const StrategicAdvisorPage = lazy(() => import('@/features/org/StrategicAdvisorPage').then(m => ({ default: m.StrategicAdvisorPage })));
+const StrategicAdvisorRoutePage = lazy(() => import('@/features/org/StrategicAdvisorPage').then(m => ({ default: m.StrategicAdvisorRoutePage })));
 // ── Graphify + Obsidian standalone pages ─────────────────────────────────────
 const GraphifyPage  = lazy(() => import('@/features/graphify/GraphifyPage').then(m => ({ default: m.GraphifyPage })));
 const ObsidianPage  = lazy(() => import('@/features/obsidian/ObsidianPage').then(m => ({ default: m.ObsidianPage })));
@@ -304,7 +304,7 @@ export default function App() {
         <Route path="org/:orgId/mission/:missionId" element={lazy_rb("Mission",           <MissionPage />)} />
         <Route path="org/:orgId/department/:deptId" element={lazy_rb("Department",        <DepartmentPage />)} />
         <Route path="org/:orgId/team/:teamId"       element={lazy_rb("Team",              <TeamPage />)} />
-        <Route path="org/:orgId/strategic-advisor"  element={lazy_rb("Strategic Advisor", <StrategicAdvisorPage orgId="" />)} />
+        <Route path="org/:orgId/strategic-advisor"  element={lazy_rb("Strategic Advisor", <StrategicAdvisorRoutePage />)} />
 
         {/* Workflow — the feature pages link to plural /workflows/:id/... ; keep
             singular /workflow as the list too (the sidebar links there). */}
@@ -330,7 +330,7 @@ export default function App() {
         <Route path="agents/:agentId/credentials" element={lazy_rb("Agent Credentials", <AgentCredentialsPage />)} />
         <Route path="workflow-engine"          element={lazy_rb("Workflow Engine",   <WorkflowEnginePage />)} />
 
-        <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorPage orgId="" />)} />
+        <Route path="settings/roles"  element={lazy_rb("Role Editor",     <RoleEditorRoutePage />)} />
         <Route path="settings/privacy" element={lazy_rb("Privacy",        <PrivacySettings />)} />
         <Route path="settings/gateway" element={lazy_rb("Gateway",        <GatewaySettingsPage />)} />
         <Route path="*"                     element={rb("Not Found",          <NotFoundPage />)} />

@@ -16,6 +16,7 @@ import { Sparkles, TrendingUp, AlertTriangle, Lightbulb, CheckCircle2, RefreshCw
 import { JARVISPageShell, JARVISStagger, JARVISStaggerItem } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api/client';
+import { useParams } from 'react-router-dom';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ function useStrategicBrief(orgId: string) {
   return useQuery<StrategicBrief>({
     queryKey: ['strategic-brief', orgId],
     queryFn:  () => apiRequest<StrategicBrief>('GET', `/v1/org/${orgId}/brief/strategic`),
+    enabled: !!orgId,
     staleTime: 4 * 60 * 60 * 1000,  // 4 hours
     retry: 1,
   });
@@ -227,3 +229,13 @@ export function StrategicAdvisorPage({ orgId, orgName }: StrategicAdvisorPagePro
 }
 
 export default StrategicAdvisorPage;
+
+
+/**
+ * Route entry for /org/:orgId/strategic-advisor. The route rendered
+ * ``<StrategicAdvisorPage orgId="" />``, so it fetched /v1/org//brief/strategic.
+ */
+export function StrategicAdvisorRoutePage() {
+  const { orgId = '' } = useParams();
+  return <StrategicAdvisorPage orgId={orgId} />;
+}
