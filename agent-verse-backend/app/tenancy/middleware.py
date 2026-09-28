@@ -265,6 +265,52 @@ async def _try_resolve_sso(request: Request) -> TenantContext | None:
         return None  # Fall through to API key auth
 
 
+# Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token
+# (the second factor itself). Without this, enforcement 401'd /auth/mfa/verify
+# too, so no tenant with MFA enabled could ever obtain a token.
+_MFA_EXEMPT_ENDPOINTS = frozenset({("POST", "/auth/mfa/verify"), ("GET", "/auth/mfa/status")})
+
+
+def _mfa_exempt(request: Request) -> bool:
+    return (request.method, request.url.path.rstrip("/")) in _MFA_EXEMPT_ENDPOINTS
+
+
+def _mfa_error(code: str, message: str, status_code: int = 401) -> JSONResponse:
+    return JSONResponse(
+        content={"error": {"code": code, "message": message, "retryable": status_code == 503}},
+        status_code=status_code,
+    )
+
+
+async def _mfa_denial(request: Request, tenant_id: str) -> JSONResponse | None:
+    """Enforce the X-MFA-Token for a tenant with MFA enabled; fail closed.
+
+    MFA state or session storage that cannot be read is a 503 — never "MFA not
+    enabled" (the store used to fall back to an empty cache entry on a DB
+    error, silently switching enforcement off).
+    """
+    from app.api.mfa import MFAStateUnavailableError, _mfa_db_store, check_mfa_session
+
+    required = "MFA verification required. Include X-MFA-Token header."
+    try:
+        mfa_state = await _mfa_db_store.get(tenant_id)
+        if not mfa_state.get("enabled"):
+            return None
+        mfa_token = request.headers.get("X-MFA-Token", "")
+        if not mfa_token:
+            return _mfa_error("MFA_REQUIRED", required)
+        verdict = await check_mfa_session(request.app, mfa_token, tenant_id)
+    except MFAStateUnavailableError:
+        return _mfa_error(
+            "MFA_UNAVAILABLE", "MFA state is temporarily unavailable; retry shortly.", 503
+        )
+    if verdict == "expired":
+        return _mfa_error("MFA_SESSION_EXPIRED", "MFA session expired. Please re-authenticate.")
+    if verdict != "valid":
+        return _mfa_error("MFA_REQUIRED", required)
+    return None
+
+
 def _auth_error_response() -> JSONResponse:
     return JSONResponse(
         content={
@@ -360,56 +406,10 @@ class TenantMiddleware(BaseHTTPMiddleware):
         from app.core.config import get_settings as _get_settings
 
         _settings = _get_settings()
-        if _settings.mfa_enforcement_enabled:
-            import time as _mfa_time
-
-            try:
-                from app.api.mfa import _mfa_db_store, _mfa_verified_sessions
-
-                mfa_state = await _mfa_db_store.get(tenant_ctx.tenant_id)
-                if mfa_state.get("enabled"):
-                    mfa_token = request.headers.get("X-MFA-Token", "")
-                    if not mfa_token:
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_REQUIRED",
-                                    "message": (
-                                        "MFA verification required. Include X-MFA-Token header."
-                                    ),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-                    session_valid = _mfa_verified_sessions.get(mfa_token)
-                    if not session_valid or session_valid.get("tenant_id") != tenant_ctx.tenant_id:
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_REQUIRED",
-                                    "message": (
-                                        "MFA verification required. Include X-MFA-Token header."
-                                    ),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-                    if _mfa_time.monotonic() - session_valid.get("created_at", 0) > 3600:
-                        del _mfa_verified_sessions[mfa_token]
-                        return JSONResponse(
-                            content={
-                                "error": {
-                                    "code": "MFA_SESSION_EXPIRED",
-                                    "message": ("MFA session expired. Please re-authenticate."),
-                                    "retryable": False,
-                                }
-                            },
-                            status_code=401,
-                        )
-            except ImportError:
-                pass  # MFA module not available, skip enforcement
+        if _settings.mfa_enforcement_enabled and not _mfa_exempt(request):
+            mfa_denied = await _mfa_denial(request, tenant_ctx.tenant_id)
+            if mfa_denied is not None:
+                return mfa_denied
 
         # ── Rate limiting (check BEFORE processing; headers added AFTER) ──────
         rl_limit: int | None = None
