@@ -148,6 +148,25 @@ def _reset_dept_memory_singleton():
 
 
 @pytest.fixture(autouse=True)
+def _reset_llm_config_store_singleton():
+    """Unwire the process-global LLMConfigStore after each test.
+
+    ``create_app()`` publishes its store via ``set_llm_config_store`` and the
+    lifespan ``set_db``s it; a lifespan test with a fake session factory left
+    that store behind, so later GoalService tests (whose app_state has no store
+    and falls back to the singleton) made strict BYOK reads against the fake DB
+    and failed with LLMConfigReadError — only in full-suite order.
+    """
+    yield
+    try:
+        import app.services.llm_config_store as _lcs
+
+        _lcs._llm_config_store = None
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
 def _reset_db_engine_singleton():
     """Reset the module-level DB engine/session-factory singleton after each test.
 
