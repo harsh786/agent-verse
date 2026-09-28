@@ -33,6 +33,8 @@ _MAX_JITTER_SECONDS = 30
 _BACKOFF_BASE = 60
 # Maximum backoff (10 minutes)
 _BACKOFF_MAX = 600
+# DLQ entries retried this many times are flagged permanent by the retry job.
+_DLQ_MAX_RETRIES = 5
 
 
 def _jitter(source_id: str) -> float:
@@ -77,8 +79,12 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     with no deps silently skipped embedding — Stage 10 ``no_embedder`` — so no
     scheduled document was ever indexed), and the source store must be DB-backed
     so the config actually loads cross-process.
+
+    Everything here acts for ONE tenant at a time, so it all runs on the
+    application factory under that tenant's RLS context. The tracker also gets
+    the maintenance-role factory, which only its cross-tenant DLQ scan uses.
     """
-    from app.db.session import get_session_factory
+    from app.db.session import get_session_factory, get_system_session_factory
     from app.ingestion.job_tracker import IngestionJobTracker
     from app.ingestion.pipeline import IngestionPipeline
     from app.ingestion.source_store import SourceConfigStore
@@ -89,7 +95,7 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     provider = resolve_provider()
     knowledge_store = KnowledgeStore(db_factory)
     pipeline = IngestionPipeline(knowledge_store=knowledge_store, embedder=provider)
-    tracker = IngestionJobTracker(db=db_factory)
+    tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
 
@@ -108,7 +114,11 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         return {"skipped": True, "reason": "already_running"}
 
     # ── Load SourceConfig (durable, cross-process store) ─────────────────────
-    config = await source_store.get_system(source_id, tenant_id)
+    # The task carries its tenant, so this is a tenant-scoped (RLS) read — not a
+    # system read. The previous ``get_system`` issued ``row_security = off`` on
+    # the application's NOBYPASSRLS connection, where every statement then fails
+    # ("query would be affected by row-level security"): no scheduled sync ran.
+    config = await source_store.get(source_id, tenant_id)
     if config is None:
         await tracker.release_lock(source_id, tenant_id)
         return {"error": "source_not_found"}
@@ -200,6 +210,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                         or getattr(result, "skip_reason", "")
                         or "pipeline_failure",
                         raw_doc=raw_doc,
+                        job_id=job.job_id,
                     )
 
                 new_cursor = next_cursor
@@ -224,10 +235,13 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
         await tracker.complete_job(job)
-        # Reset failure counter on success
-        await tracker.reset_failure_counter(source_id, tenant_id)
         # Advance last_synced_at + cursor on the durable source row so the beat
         # due-scan reschedules the next sync one interval out (item 6).
+        # mark_synced is the single owner of consecutive_failures (0 when no doc
+        # failed, +1 otherwise) — the same rule the manual-sync path uses. The
+        # tracker's separate reset/increment calls were dropped: their SQL named
+        # a nonexistent column and never ran, and once fixed they would have
+        # double-counted every failure against the backoff.
         await source_store.mark_synced(
             source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=docs_failed
         )
@@ -247,7 +261,6 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         job.docs_skipped = docs_skipped
         job.docs_failed = docs_failed
         await tracker.complete_job(job, error=str(exc))
-        await tracker.increment_failure_counter(source_id, tenant_id)
         await source_store.mark_synced(
             source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=1
         )
@@ -272,12 +285,16 @@ async def _dispatch_due_sources_async() -> dict:
     """Find sources whose next sync is due and enqueue sync tasks."""
     import datetime
 
-    from app.db.session import get_session_factory
+    from app.db.session import get_system_session_factory
     from app.ingestion.source_store import SourceConfigStore
 
     # DB-backed, cross-tenant scan of the durable source_configs table (the old
     # in-memory IngestionJobTracker().get_due_sources() always returned []).
-    source_store = SourceConfigStore(db=get_session_factory())
+    # Cross-tenant → the maintenance role. On the application's NOBYPASSRLS
+    # factory (which this used before) ``system_session`` makes every statement
+    # fail, so nothing was ever dispatched. Each enqueued sync then runs for its
+    # own tenant under RLS.
+    source_store = SourceConfigStore(system_db=get_system_session_factory())
     due_sources = await source_store.list_due()
 
     dispatched = 0
@@ -303,45 +320,64 @@ def retry_dlq_entries_task(self) -> dict:
 
 
 async def _retry_dlq_async() -> dict:
-    """Pull eligible DLQ entries and resubmit through the pipeline."""
-    from app.core.config import get_settings
-    from app.ingestion.job_tracker import IngestionJobTracker
-    from app.ingestion.pipeline import IngestionPipeline
-    from app.tenancy.context import PlanTier, TenantContext
+    """Pull eligible DLQ entries and resubmit through the pipeline.
 
-    settings = get_settings()
+    The scan is cross-tenant (maintenance role, inside the tracker); everything
+    done for one entry — loading its Source, re-ingesting, updating the row — is
+    that entry's tenant's work and runs under its RLS context.
 
-    tracker = IngestionJobTracker()
-    pipeline = IngestionPipeline()
+    This previously built ``IngestionJobTracker()`` with no DB (so the scan
+    always returned []), an ``IngestionPipeline()`` with no knowledge store or
+    embedder, read DB rows as attributes, and passed no SourceConfig — so even a
+    returned entry could only ever be skipped.
+    """
+    from app.ingestion.job_tracker import raw_document_from_dlq_json
+
+    tracker, pipeline, source_store = _build_worker_ingestion()
 
     entries = await tracker.get_retryable_dlq_entries(max_entries=50)
     retried = succeeded = still_failed = 0
 
     for entry in entries:
-        if entry.retry_count >= 5:
-            await tracker.mark_dlq_permanent_failure(entry.dlq_id)
+        dlq_id = str(entry.get("dlq_id") or "")
+        tenant_id = str(entry.get("tenant_id") or "")
+        source_id = str(entry.get("source_id") or "")
+        if not dlq_id or not tenant_id:
+            continue
+
+        if int(entry.get("retry_count") or 0) >= _DLQ_MAX_RETRIES:
+            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+            continue
+
+        raw_doc = raw_document_from_dlq_json(
+            entry.get("raw_doc_json"),
+            source_id=source_id,
+            tenant_id=tenant_id,
+            doc_id=str(entry.get("doc_id") or ""),
+        )
+        if raw_doc is None:
+            # Not a connector document (e.g. repo-ingest parameters) or an
+            # unreadable payload: no retry can replay it, so stop rescanning it.
+            _log.warning("retry_dlq: dlq=%s has no replayable document", dlq_id)
+            await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
             continue
 
         retried += 1
         try:
-            tenant_ctx = TenantContext(
-                tenant_id=entry.tenant_id,
-                api_key_id="dlq_retry",
-                plan=getattr(settings, "DEFAULT_PLAN", PlanTier.FREE),
-            )
-            result = await pipeline.run(
-                entry.raw_doc,
-                tenant_context=tenant_ctx,
-                source_config=getattr(entry, "source_config", None),
-            )
+            config = await source_store.get(source_id, tenant_id)
+            result = await pipeline.run(raw_doc, source_config=config)
             if result.success:
-                await tracker.resolve_dlq_entry(entry.dlq_id)
+                await tracker.resolve_dlq_entry(dlq_id, tenant_id)
                 succeeded += 1
             else:
-                await tracker.increment_dlq_retry(entry.dlq_id, error=result.error)
+                await tracker.increment_dlq_retry(
+                    dlq_id,
+                    tenant_id,
+                    error=result.error or result.skip_reason or result.status,
+                )
                 still_failed += 1
         except Exception as exc:
-            await tracker.increment_dlq_retry(entry.dlq_id, error=str(exc))
+            await tracker.increment_dlq_retry(dlq_id, tenant_id, error=str(exc))
             still_failed += 1
 
     _log.info(

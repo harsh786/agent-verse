@@ -114,12 +114,15 @@ class TestInMemoryStore:
         store = SourceConfigStore()
         await store.mark_synced("nope", "t1", docs_indexed=1, chunks=1, failed=0)  # no raise
 
-    async def test_get_system_delegates_to_get_in_memory(self):
+    async def test_no_rls_bypassing_per_source_read(self):
+        # ``get_system`` read ONE tenant's Source with row_security off. The only
+        # caller (the sync worker) knows the tenant, so it now uses the RLS-scoped
+        # ``get``; a per-source bypass must not come back.
         store = SourceConfigStore()
+        assert not hasattr(store, "get_system")
         await store.create(_make_config())
-        cfg = await store.get_system("src-1", "t1")
-        assert cfg is not None
-        assert cfg.source_id == "src-1"
+        assert (await store.get("src-1", "t1")) is not None
+        assert (await store.get("src-1", "other-tenant")) is None
 
     async def test_list_due_never_synced(self):
         store = SourceConfigStore()
@@ -404,7 +407,7 @@ class TestDbBackedStore:
         assert params["c"] == 9
         assert params["f"] == 0
 
-    async def test_get_system_bypasses_tenant_rls(self):
+    async def test_get_is_tenant_scoped_never_system(self):
         row = {
             "id": "src-1",
             "tenant_id": "t1",
@@ -414,23 +417,64 @@ class TestDbBackedStore:
         }
         session = _FakeSession(_FakeResult(rows=[row]))
         store = SourceConfigStore(db=_db_factory(session))
-        cfg = await store.get_system("src-1", "t1")
+        cfg = await store.get("src-1", "t1")
         assert cfg is not None
-        assert any("SET LOCAL row_security" in sql for sql, _ in session.executed)
+        # Tenant GUC set to the caller's tenant, explicit tenant predicate, and
+        # no RLS bypass on the application connection.
+        assert ("SELECT set_config('app.tenant_id', :tid, true)", {"tid": "t1"}) in [
+            (sql, params) for sql, params in session.executed
+        ]
+        select_sql, select_params = next(
+            (s, p) for s, p in session.executed if "FROM source_configs" in s
+        )
+        assert "tenant_id = :tid" in select_sql
+        assert select_params["tid"] == "t1"
+        assert not any("row_security" in sql for sql, _ in session.executed)
 
-    async def test_list_due_returns_pairs(self):
+    @staticmethod
+    def _due_session() -> _FakeSession:
         class _DueRow:
             def __init__(self, source_id, tenant_id):
                 self.source_id = source_id
                 self.tenant_id = tenant_id
 
-        session = _FakeSession()
-
         class _DueResult(_FakeResult):
             def __iter__(self):
                 return iter([_DueRow("s1", "t1"), _DueRow("s2", "t2")])
 
-        session._result = _DueResult()
-        store = SourceConfigStore(db=_db_factory(session))
+        return _FakeSession(_DueResult())
+
+    async def test_list_due_runs_on_the_maintenance_factory(self):
+        request_session = _FakeSession()
+        system_session_ = self._due_session()
+        store = SourceConfigStore(
+            db=_db_factory(request_session), system_db=_db_factory(system_session_)
+        )
         due = await store.list_due()
         assert due == [("s1", "t1"), ("s2", "t2")]
+        # The cross-tenant scan disables RLS on the maintenance connection only;
+        # the application (NOBYPASSRLS) factory is never touched.
+        assert any("SET LOCAL row_security = off" in sql for sql, _ in system_session_.executed)
+        assert request_session.executed == []
+
+    async def test_list_due_defaults_to_get_system_session_factory(self):
+        from unittest.mock import patch
+
+        request_session = _FakeSession()
+        system_session_ = self._due_session()
+        store = SourceConfigStore(db=_db_factory(request_session))
+        with patch(
+            "app.db.session.get_system_session_factory",
+            return_value=_db_factory(system_session_),
+        ):
+            due = await store.list_due()
+        assert due == [("s1", "t1"), ("s2", "t2")]
+        assert request_session.executed == []
+        assert any("row_security" in sql for sql, _ in system_session_.executed)
+
+    async def test_list_due_with_only_system_db_is_db_backed(self):
+        # The beat dispatcher builds the store with ONLY the maintenance factory;
+        # that must hit the DB, not the (empty) in-memory fallback.
+        system_session_ = self._due_session()
+        store = SourceConfigStore(system_db=_db_factory(system_session_))
+        assert await store.list_due() == [("s1", "t1"), ("s2", "t2")]

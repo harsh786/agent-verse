@@ -77,6 +77,50 @@ async def test_add_to_dlq_serializes_dataclass_payload() -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_to_dlq_insert_is_complete_and_tenant_scoped() -> None:
+    """The INSERT must supply every NOT NULL column of ingestion_dlq and run with
+    the row's tenant GUC set (FORCE RLS). It omitted ``id``, ``failed_stage`` and
+    ``failure_type`` — so it could never succeed — and set no tenant context."""
+    statements: list[tuple[str, dict[str, Any]]] = []
+    session = AsyncMock()
+
+    async def _execute(query: Any, params: dict[str, Any] | None = None) -> Any:
+        statements.append((" ".join(str(query).split()), params or {}))
+        return MagicMock()
+
+    session.execute = AsyncMock(side_effect=_execute)
+    session.begin = MagicMock(return_value=AsyncMock())
+    cm = AsyncMock()
+    cm.__aenter__ = AsyncMock(return_value=session)
+
+    tracker = IngestionJobTracker(db=lambda: cm)
+    await tracker.add_to_dlq(
+        source_id="s1", tenant_id="t-a", doc_id="d1", error="e", raw_doc={}, job_id="job-9"
+    )
+
+    set_idx = next(
+        i for i, (s, p) in enumerate(statements) if "set_config" in s and p == {"tid": "t-a"}
+    )
+    ins_idx = next(i for i, (s, _) in enumerate(statements) if "INSERT INTO ingestion_dlq" in s)
+    assert set_idx < ins_idx
+    sql, params = statements[ins_idx]
+    for column in ("id", "failed_stage", "failure_type", "tenant_id", "job_id"):
+        assert f" {column}," in sql or f"({column}," in sql
+    assert params["dlq_id"]
+    assert params["tenant_id"] == "t-a"
+    assert params["job_id"] == "job-9"
+    assert params["failed_stage"] == "pipeline"
+    assert params["failure_type"] == "pipeline_failure"
+
+
+@pytest.mark.asyncio
+async def test_add_to_dlq_without_db_is_a_noop() -> None:
+    await IngestionJobTracker().add_to_dlq(
+        source_id="s1", tenant_id="t1", doc_id="d1", error="e", raw_doc={}
+    )
+
+
+@pytest.mark.asyncio
 async def test_add_to_dlq_falls_back_for_unserializable() -> None:
     db, captured = _capturing_db()
     tracker = IngestionJobTracker(db=db)

@@ -103,6 +103,7 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     from app.ingestion.scheduler import _build_worker_ingestion
 
     fake_db_factory = MagicMock()
+    fake_system_factory = MagicMock()
     fake_provider = MagicMock()
     fake_knowledge_store = MagicMock()
     fake_pipeline = MagicMock()
@@ -111,6 +112,7 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
 
     with (
         patch("app.db.session.get_session_factory", return_value=fake_db_factory),
+        patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
         patch("app.providers.registry.resolve_provider", return_value=fake_provider),
         patch("app.rag.store.KnowledgeStore", return_value=fake_knowledge_store) as ks_cls,
         patch(
@@ -132,7 +134,10 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     pipeline_cls.assert_called_once_with(
         knowledge_store=fake_knowledge_store, embedder=fake_provider
     )
-    tracker_cls.assert_called_once_with(db=fake_db_factory)
+    # Per-tenant work (job rows, cursors, the Source itself) runs on the
+    # application factory under RLS; only the tracker's cross-tenant DLQ scan
+    # gets the maintenance-role factory. The Source store gets no system access.
+    tracker_cls.assert_called_once_with(db=fake_db_factory, system_db=fake_system_factory)
     store_cls.assert_called_once_with(db=fake_db_factory)
 
 
@@ -158,7 +163,7 @@ async def test_sync_source_not_found() -> None:
     tracker = AsyncMock()
     tracker.acquire_lock = AsyncMock(return_value=True)
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=None)
+    source_store.get = AsyncMock(return_value=None)
 
     with _worker_mocks(tracker=tracker, source_store=source_store):
         result = await _sync_source_async(
@@ -167,6 +172,8 @@ async def test_sync_source_not_found() -> None:
 
     assert result == {"error": "source_not_found"}
     tracker.release_lock.assert_called_once_with("src-1", "t1")
+    # The worker knows the tenant: a tenant-scoped (RLS) read, not a system read.
+    source_store.get.assert_awaited_once_with("src-1", "t1")
 
 
 @pytest.mark.asyncio
@@ -174,7 +181,7 @@ async def test_sync_source_disabled() -> None:
     tracker = AsyncMock()
     tracker.acquire_lock = AsyncMock(return_value=True)
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=_config(enabled=False))
+    source_store.get = AsyncMock(return_value=_config(enabled=False))
 
     with _worker_mocks(tracker=tracker, source_store=source_store):
         result = await _sync_source_async(
@@ -193,7 +200,7 @@ async def test_sync_source_in_backoff() -> None:
     source_store = AsyncMock()
     # consecutive_failures=1 → backoff >= 60s; last_synced_at "now" → elapsed ~0.
     now = datetime.datetime.now(datetime.UTC).isoformat()
-    source_store.get_system = AsyncMock(
+    source_store.get = AsyncMock(
         return_value=_config(consecutive_failures=1, last_synced_at=now)
     )
 
@@ -212,7 +219,7 @@ async def test_sync_no_connector_registered() -> None:
     tracker = AsyncMock()
     tracker.acquire_lock = AsyncMock(return_value=True)
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=_config(source_type="no_such_type"))
+    source_store.get = AsyncMock(return_value=_config(source_type="no_such_type"))
 
     with (
         _worker_mocks(tracker=tracker, source_store=source_store),
@@ -233,7 +240,7 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
 
     source_store = AsyncMock()
     cfg = _config(cursor_value="")
-    source_store.get_system = AsyncMock(return_value=cfg)
+    source_store.get = AsyncMock(return_value=cfg)
 
     pipeline = AsyncMock()
     pipeline.ingest = AsyncMock(
@@ -264,10 +271,15 @@ async def test_sync_success_counts_indexed_skipped_failed_and_dlq() -> None:
     dlq_kwargs = tracker.add_to_dlq.call_args.kwargs
     assert dlq_kwargs["doc_id"] == "d3"
     assert dlq_kwargs["error"] == "boom"
+    assert dlq_kwargs["job_id"] == "job-1"
     tracker.update_cursor.assert_called_once_with(tracker.create_job.return_value, "c3", cfg)
     tracker.complete_job.assert_called_once()
-    tracker.reset_failure_counter.assert_called_once_with("src-1", "t1")
-    source_store.mark_synced.assert_called_once()
+    # mark_synced alone owns consecutive_failures (the tracker counter calls
+    # would double-count against the backoff).
+    tracker.reset_failure_counter.assert_not_called()
+    source_store.mark_synced.assert_called_once_with(
+        "src-1", "t1", docs_indexed=1, chunks=0, failed=1
+    )
     source_store.update.assert_called_once_with("src-1", "t1", cursor_value="c3")
     tracker.release_lock.assert_called_once_with("src-1", "t1")
 
@@ -281,7 +293,7 @@ async def test_sync_commits_cursor_every_100_docs() -> None:
     tracker.create_job = AsyncMock(return_value=_job())
 
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=_config())
+    source_store.get = AsyncMock(return_value=_config())
 
     pipeline = AsyncMock()
     pipeline.ingest = AsyncMock(
@@ -312,7 +324,7 @@ async def test_sync_per_doc_exception_is_swallowed_and_counted_as_failed() -> No
     tracker.create_job = AsyncMock(return_value=_job())
 
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=_config())
+    source_store.get = AsyncMock(return_value=_config())
 
     pipeline = AsyncMock()
     pipeline.ingest = AsyncMock(side_effect=RuntimeError("pipeline blew up"))
@@ -341,7 +353,7 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
     tracker.create_job = AsyncMock(return_value=_job())
 
     source_store = AsyncMock()
-    source_store.get_system = AsyncMock(return_value=_config())
+    source_store.get = AsyncMock(return_value=_config())
 
     pipeline = AsyncMock()
     connector_cls = _RaisingConnector
@@ -360,8 +372,11 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
 
     tracker.complete_job.assert_called_once()
     assert tracker.complete_job.call_args.kwargs["error"]
-    tracker.increment_failure_counter.assert_called_once_with("src-1", "t1")
-    source_store.mark_synced.assert_called_once()
+    # Exactly one failure is counted — by mark_synced, not also by the tracker.
+    tracker.increment_failure_counter.assert_not_called()
+    source_store.mark_synced.assert_called_once_with(
+        "src-1", "t1", docs_indexed=0, chunks=0, failed=1
+    )
     tracker.release_lock.assert_called_once_with("src-1", "t1")
     task.retry.assert_called_once()
 
@@ -373,10 +388,13 @@ async def test_sync_outer_exception_retries_and_releases_lock() -> None:
 async def test_dispatch_due_sources_enqueues_each_source() -> None:
     source_store = AsyncMock()
     source_store.list_due = AsyncMock(return_value=[("src-1", "t1"), ("src-2", "t2")])
+    fake_system_factory = MagicMock()
 
     with (
-        patch("app.db.session.get_session_factory", return_value=MagicMock()),
-        patch("app.ingestion.source_store.SourceConfigStore", return_value=source_store),
+        patch("app.db.session.get_system_session_factory", return_value=fake_system_factory),
+        patch(
+            "app.ingestion.source_store.SourceConfigStore", return_value=source_store
+        ) as store_cls,
         patch.object(sync_source_task, "apply_async") as mock_apply_async,
     ):
         result = await _dispatch_due_sources_async()
@@ -385,6 +403,12 @@ async def test_dispatch_due_sources_enqueues_each_source() -> None:
     assert mock_apply_async.call_count == 2
     kwargs_calls = [c.kwargs["kwargs"] for c in mock_apply_async.call_args_list]
     assert {"src-1", "src-2"} == {k["source_id"] for k in kwargs_calls}
+    assert {("src-1", "t1"), ("src-2", "t2")} == {
+        (k["source_id"], k["tenant_id"]) for k in kwargs_calls
+    }
+    # The cross-tenant due-scan runs on the maintenance role ONLY — never on the
+    # application's NOBYPASSRLS factory, where system_session makes it fail.
+    store_cls.assert_called_once_with(system_db=fake_system_factory)
 
 
 @pytest.mark.asyncio
@@ -393,7 +417,7 @@ async def test_dispatch_due_sources_none_due() -> None:
     source_store.list_due = AsyncMock(return_value=[])
 
     with (
-        patch("app.db.session.get_session_factory", return_value=MagicMock()),
+        patch("app.db.session.get_system_session_factory", return_value=MagicMock()),
         patch("app.ingestion.source_store.SourceConfigStore", return_value=source_store),
         patch.object(sync_source_task, "apply_async") as mock_apply_async,
     ):
@@ -406,88 +430,169 @@ async def test_dispatch_due_sources_none_due() -> None:
 # ── _retry_dlq_async ──────────────────────────────────────────────────────────
 
 
-def _dlq_entry(dlq_id, retry_count=0, tenant_id="t1", raw_doc=None, source_config=None):
-    entry = MagicMock()
-    entry.dlq_id = dlq_id
-    entry.retry_count = retry_count
-    entry.tenant_id = tenant_id
-    entry.raw_doc = raw_doc or _raw_doc(dlq_id)
-    entry.source_config = source_config
-    return entry
+def _dlq_json(doc_id: str) -> str:
+    """A raw_doc_json exactly as IngestionJobTracker.add_to_dlq writes it."""
+    import dataclasses
+    import json
+
+    from app.ingestion.job_tracker import _json_default
+
+    return json.dumps(dataclasses.asdict(_raw_doc(doc_id)), default=_json_default)
+
+
+def _dlq_entry(dlq_id, retry_count=0, tenant_id="t1", source_id="src-1", raw_doc_json=None):
+    """A row as get_retryable_dlq_entries returns it: a plain dict."""
+    return {
+        "dlq_id": dlq_id,
+        "tenant_id": tenant_id,
+        "source_id": source_id,
+        "doc_id": dlq_id,
+        "job_id": None,
+        "error_message": "boom",
+        "raw_doc_json": _dlq_json(dlq_id) if raw_doc_json is None else raw_doc_json,
+        "retry_count": retry_count,
+    }
+
+
+def _retry_mocks(entries, pipeline=None, source_store=None):
+    tracker = AsyncMock()
+    tracker.get_retryable_dlq_entries = AsyncMock(return_value=entries)
+    pipeline = pipeline or AsyncMock()
+    if source_store is None:
+        source_store = AsyncMock()
+        source_store.get = AsyncMock(return_value=_config())
+    return tracker, pipeline, source_store
+
+
+@pytest.mark.asyncio
+async def test_retry_dlq_uses_the_db_backed_worker_services() -> None:
+    # It built IngestionJobTracker() with no DB (scan always []) and an
+    # IngestionPipeline() with no knowledge store/embedder.
+    tracker, pipeline, source_store = _retry_mocks([])
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store) as build:
+        result = await _retry_dlq_async()
+    build.assert_called_once_with()
+    tracker.get_retryable_dlq_entries.assert_awaited_once_with(max_entries=50)
+    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
 
 
 @pytest.mark.asyncio
 async def test_retry_dlq_permanent_failure_over_max_retries() -> None:
-    tracker = AsyncMock()
-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e1", retry_count=5)])
-    pipeline = AsyncMock()
+    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e1", retry_count=5)])
 
-    with (
-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
-    ):
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
         result = await _retry_dlq_async()
 
-    tracker.mark_dlq_permanent_failure.assert_called_once_with("e1")
+    tracker.mark_dlq_permanent_failure.assert_called_once_with("e1", "t1")
     assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
     pipeline.run.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_retry_dlq_success_resolves_entry() -> None:
-    tracker = AsyncMock()
-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e2", retry_count=1)])
     pipeline = AsyncMock()
     pipeline.run = AsyncMock(
         return_value=PipelineResult(doc_id="e2", source_id="s", tenant_id="t1", status="indexed")
     )
+    cfg = _config()
+    source_store = AsyncMock()
+    source_store.get = AsyncMock(return_value=cfg)
+    tracker, pipeline, source_store = _retry_mocks(
+        [_dlq_entry("e2", retry_count=1)], pipeline=pipeline, source_store=source_store
+    )
 
-    with (
-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
-    ):
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
         result = await _retry_dlq_async()
 
-    tracker.resolve_dlq_entry.assert_called_once_with("e2")
+    tracker.resolve_dlq_entry.assert_called_once_with("e2", "t1")
     assert result == {"retried": 1, "succeeded": 1, "still_failed": 0}
+    # The entry's Source is loaded for ITS tenant (RLS), and the replayed
+    # document is the one that was dead-lettered, with its bytes intact.
+    source_store.get.assert_awaited_once_with("src-1", "t1")
+    replayed = pipeline.run.await_args.args[0]
+    assert replayed == _raw_doc("e2")
+    assert pipeline.run.await_args.kwargs["source_config"] is cfg
 
 
 @pytest.mark.asyncio
 async def test_retry_dlq_still_failing_increments_retry_count() -> None:
-    tracker = AsyncMock()
-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e3", retry_count=2)])
     pipeline = AsyncMock()
     pipeline.run = AsyncMock(
         return_value=PipelineResult(
             doc_id="e3", source_id="s", tenant_id="t1", status="failed", error="still bad"
         )
     )
+    tracker, pipeline, source_store = _retry_mocks(
+        [_dlq_entry("e3", retry_count=2)], pipeline=pipeline
+    )
 
-    with (
-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
-    ):
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
         result = await _retry_dlq_async()
 
-    tracker.increment_dlq_retry.assert_called_once_with("e3", error="still bad")
+    tracker.increment_dlq_retry.assert_called_once_with("e3", "t1", error="still bad")
     assert result == {"retried": 1, "succeeded": 0, "still_failed": 1}
 
 
 @pytest.mark.asyncio
+async def test_retry_dlq_skip_reason_is_recorded_as_the_error() -> None:
+    pipeline = AsyncMock()
+    pipeline.run = AsyncMock(
+        return_value=PipelineResult(
+            doc_id="e5", source_id="s", tenant_id="t1", status="skipped", skip_reason="quality"
+        )
+    )
+    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e5")], pipeline=pipeline)
+
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+        await _retry_dlq_async()
+
+    tracker.increment_dlq_retry.assert_called_once_with("e5", "t1", error="quality")
+
+
+@pytest.mark.asyncio
 async def test_retry_dlq_exception_counts_as_still_failed() -> None:
-    tracker = AsyncMock()
-    tracker.get_retryable_dlq_entries = AsyncMock(return_value=[_dlq_entry("e4", retry_count=0)])
     pipeline = AsyncMock()
     pipeline.run = AsyncMock(side_effect=RuntimeError("kaboom"))
+    tracker, pipeline, source_store = _retry_mocks(
+        [_dlq_entry("e4", retry_count=0)], pipeline=pipeline
+    )
 
-    with (
-        patch("app.ingestion.job_tracker.IngestionJobTracker", return_value=tracker),
-        patch("app.ingestion.pipeline.IngestionPipeline", return_value=pipeline),
-    ):
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
         result = await _retry_dlq_async()
 
-    tracker.increment_dlq_retry.assert_called_once()
+    tracker.increment_dlq_retry.assert_called_once_with("e4", "t1", error="kaboom")
     assert result["still_failed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_dlq_unreplayable_payload_is_flagged_permanent() -> None:
+    # e.g. a repo-ingest DLQ entry: parameters, not a connector document.
+    import json
+
+    repo_payload = json.dumps({"kind": "repository", "repo_url": "https://x/y"})
+    pipeline = AsyncMock()
+    tracker, pipeline, source_store = _retry_mocks(
+        [_dlq_entry("e6", raw_doc_json=repo_payload)], pipeline=pipeline
+    )
+
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+        result = await _retry_dlq_async()
+
+    tracker.mark_dlq_permanent_failure.assert_called_once_with("e6", "t1")
+    pipeline.run.assert_not_called()
+    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
+
+
+@pytest.mark.asyncio
+async def test_retry_dlq_skips_rows_without_identity() -> None:
+    tracker, pipeline, source_store = _retry_mocks([_dlq_entry("e7", tenant_id="")])
+
+    with _worker_mocks(tracker=tracker, pipeline=pipeline, source_store=source_store):
+        result = await _retry_dlq_async()
+
+    pipeline.run.assert_not_called()
+    tracker.mark_dlq_permanent_failure.assert_not_called()
+    assert result == {"retried": 0, "succeeded": 0, "still_failed": 0}
 
 
 # ── Celery task wrappers ──────────────────────────────────────────────────────

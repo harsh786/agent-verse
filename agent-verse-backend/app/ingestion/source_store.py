@@ -6,9 +6,19 @@ API survives restarts and is visible to the Celery worker/scheduler process
 Falls back to an in-memory dict when no DB session factory is wired (tests / dev
 without Postgres), mirroring the other stores in this codebase.
 
-Tenant isolation is enforced with RLS on every tenant-scoped call; the
-system-scoped reads (``list_due`` / ``get_system``) used by the beat scan and
-worker deliberately cross tenants via ``system_session``.
+Two session factories, never interchangeable:
+
+* ``db`` — the application's own (least-privilege, NOBYPASSRLS) factory. Every
+  per-tenant call — the ``/sources*`` API, the manual and scheduled sync of one
+  Source — runs inside a transaction with the ``app.tenant_id`` GUC set
+  (``sqlalchemy_rls_context``) *and* an explicit ``tenant_id`` predicate. The
+  Celery worker syncing one Source knows its tenant, so it goes through here too.
+* ``system_db`` — the maintenance-role (BYPASSRLS) factory, used ONLY by
+  ``list_due``: the Celery-beat scan for due Sources, which is genuinely
+  cross-tenant. ``system_session`` is useless on the application factory — under
+  the NOBYPASSRLS role every statement after it fails with "query would be
+  affected by row-level security" — which is exactly how the due-scan (and the
+  since-removed ``get_system``) broke once the API ran least-privilege.
 """
 
 from __future__ import annotations
@@ -19,9 +29,10 @@ from typing import Any
 from app.ingestion.source_config import SourceConfig, SourceFamily
 from app.observability.logging import get_logger
 
-# Bounded batch for the due-source beat scan (see IngestionJobTracker for the
-# rationale): after an outage every source is due at once, and the scheduler
-# must not be the thing that falls over at that moment.
+# Bounded batch for the due-source beat scan, most-overdue first. An unbounded
+# scan is fine in steady state but returns EVERY source at once after an outage,
+# when they are all simultaneously due — the one moment the scheduler must not
+# also be the thing that falls over. The remainder is picked up next tick.
 _DUE_SCAN_LIMIT = 500
 
 _log = get_logger(__name__)
@@ -102,8 +113,12 @@ def _row_to_config(row: Any) -> SourceConfig:
 
 
 class SourceConfigStore:
-    def __init__(self, db: Any = None) -> None:
+    def __init__(self, db: Any = None, *, system_db: Any = None) -> None:
+        """``db`` serves every tenant-scoped call (RLS); ``system_db`` serves only
+        the cross-tenant ``list_due`` beat scan. With neither, the store is an
+        in-memory dict (tests / dev without Postgres)."""
         self._db = db
+        self._system_db = system_db
         self._mem: dict[str, SourceConfig] = {}
 
     # ── writes ────────────────────────────────────────────────────────────────
@@ -301,31 +316,17 @@ class SourceConfigStore:
             ).mappings().all()
         return [_row_to_config(r) for r in rows]
 
-    async def get_system(self, source_id: str, tenant_id: str) -> SourceConfig | None:
-        """Cross-tenant get for the worker/scheduler (bypasses RLS)."""
-        if self._db is None:
-            return await self.get(source_id, tenant_id)
-        from sqlalchemy import text
-
-        from app.db.rls import system_session
-
-        async with self._db() as session, session.begin(), system_session(session):
-            row = (
-                await session.execute(
-                    text(
-                        "SELECT * FROM source_configs "
-                        "WHERE id = :id AND tenant_id = :tid"
-                    ),
-                    {"id": source_id, "tid": tenant_id},
-                )
-            ).mappings().first()
-        return _row_to_config(row) if row else None
-
     async def list_due(self) -> list[tuple[str, str]]:
         """System-wide scan of enabled, non-streaming sources whose next sync is
         due (never synced, or last_synced_at + interval <= now). Returns
-        (source_id, tenant_id) pairs for the beat dispatcher."""
-        if self._db is None:
+        (source_id, tenant_id) pairs for the beat dispatcher.
+
+        This is the one genuinely cross-tenant read in the store, so it runs on
+        the maintenance-role factory (``system_db``, falling back to
+        ``get_system_session_factory()``), never on the request factory. It is
+        called only by Celery beat — never on a request path.
+        """
+        if self._db is None and self._system_db is None:
             now = datetime.now(UTC)
             due: list[tuple[str, str]] = []
             for c in self._mem.values():
@@ -345,7 +346,13 @@ class SourceConfigStore:
 
         from app.db.rls import system_session
 
-        async with self._db() as session, session.begin(), system_session(session):
+        system_db = self._system_db
+        if system_db is None:
+            from app.db.session import get_system_session_factory
+
+            system_db = get_system_session_factory()
+
+        async with system_db() as session, session.begin(), system_session(session):
             rows = await session.execute(
                 text(
                     "SELECT id AS source_id, tenant_id FROM source_configs "
