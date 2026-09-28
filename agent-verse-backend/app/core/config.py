@@ -313,6 +313,9 @@ class Settings(BaseSettings):
     # path outside the tenant's directory and disables DuckDB external access
     # beyond it, so tenant SQL can never read API/worker host files.
     duckdb_data_root: str = "/var/lib/agentverse/duckdb"
+    # Hard cap on a single synchronous knowledge upload (/knowledge/ingest/file,
+    # /pdf, /docx). The body used to be read whole into memory with no limit.
+    knowledge_max_upload_bytes: int = 50 * 1024 * 1024
     voice_persona_bucket: str = "agentverse-voice-personas"
     voice_greeting_cache_ttl: int = 300
     voice_max_audio_mb: int = 25

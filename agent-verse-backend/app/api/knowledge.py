@@ -187,6 +187,31 @@ class CollectionIngestRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+async def _read_upload_capped(file: UploadFile) -> bytes:
+    """Read an upload in chunks, refusing (413) anything over the configured cap.
+
+    ``await file.read()`` used to pull an arbitrarily large body into memory on
+    the API process before any validation — one request could exhaust a pod.
+    """
+    from app.core.config import get_settings
+
+    limit = int(get_settings().knowledge_max_upload_bytes)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload exceeds the {limit // (1024 * 1024)} MiB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _require_tenant(request: Request) -> Any:
     ctx = getattr(request.state, "tenant", None)
     if ctx is None:
@@ -738,7 +763,7 @@ async def ingest_file(
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
-    content_bytes = await file.read()
+    content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     source_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
@@ -1635,7 +1660,7 @@ async def ingest_pdf(
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
-    content_bytes = await file.read()
+    content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded.pdf"
 
     from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
@@ -1665,7 +1690,7 @@ async def ingest_docx(
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
-    content_bytes = await file.read()
+    content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded.docx"
 
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
