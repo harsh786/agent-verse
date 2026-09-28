@@ -206,3 +206,94 @@ def test_scope_extraction_from_step():
     assert result_jira == "PROJ"
     assert _extract_scope_value("run tests") is None
     assert _extract_scope_value("deploy the application") is None
+
+
+def _oauth_cfg(**extra_auth):
+    from app.mcp.registry import MCPServerConfig
+
+    return MCPServerConfig(
+        name="github",
+        url="http://gh-mcp",
+        auth_type="oauth_ac",
+        auth_config={
+            "authorize_url": "https://github.com/login/oauth/authorize",
+            "token_url": "https://github.com/login/oauth/access_token",
+            "client_id": "client123",
+            **extra_auth,
+        },
+    )
+
+
+def test_oauth_token_exchange_reuses_the_authorize_redirect_uri():
+    """Regression: /oauth/start sent redirect_uri={api}/connectors/oauth/callback?server_id=…
+    to the provider, but /oauth/callback exchanged the code with a DIFFERENT value
+    ({frontend_url}/connectors/oauth/callback, no query). RFC 6749 §4.1.3 requires the
+    two to be identical, so every real provider answered invalid_grant."""
+    from urllib.parse import parse_qs, urlparse
+
+    reg = AsyncMock()
+    reg.get.return_value = _oauth_cfg()
+    reg.unregister.return_value = True
+    reg.register.return_value = "srv1"
+    app = _make_app(reg)
+    app.state.settings = type("S", (), {"frontend_url": "http://frontend.example"})()
+    client = TestClient(app, raise_server_exceptions=False)
+
+    start = client.get(
+        "/connectors/oauth/start",
+        params={"server_id": "srv1"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert start.status_code == 200
+    authorize_qs = parse_qs(urlparse(start.json()["auth_url"]).query)
+    authorize_redirect = authorize_qs["redirect_uri"][0]
+    assert start.json()["redirect_uri"] == authorize_redirect
+
+    with respx.mock:
+        route = respx.post("https://github.com/login/oauth/access_token").mock(
+            return_value=_httpx.Response(200, json={"access_token": "gha_tok"})
+        )
+        cb = client.get(
+            "/connectors/oauth/callback",
+            params={"code": "c0de", "state": authorize_qs["state"][0], "server_id": "srv1"},
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    assert cb.status_code == 200
+    assert cb.json()["status"] == "connected"
+    sent = parse_qs(route.calls.last.request.content.decode())
+    assert sent["redirect_uri"] == [authorize_redirect]
+
+
+def test_oauth_callback_ignores_caller_supplied_redirect_uri():
+    """A redirect_uri registered in auth_config is what the provider sees, and the
+    stored value wins over a ?redirect_uri= supplied on the callback request."""
+    from urllib.parse import parse_qs, urlparse
+
+    reg = AsyncMock()
+    reg.get.return_value = _oauth_cfg(redirect_uri="https://app.example/oauth/cb")
+    reg.register.return_value = "srv1"
+    client = TestClient(_make_app(reg), raise_server_exceptions=False)
+    start = client.get(
+        "/connectors/oauth/start",
+        params={"server_id": "srv1"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    qs = parse_qs(urlparse(start.json()["auth_url"]).query)
+    assert qs["redirect_uri"] == ["https://app.example/oauth/cb"]
+
+    with respx.mock:
+        route = respx.post("https://github.com/login/oauth/access_token").mock(
+            return_value=_httpx.Response(200, json={"access_token": "t"})
+        )
+        client.get(
+            "/connectors/oauth/callback",
+            params={
+                "code": "c",
+                "state": qs["state"][0],
+                "server_id": "srv1",
+                "redirect_uri": "https://evil.example/steal",
+            },
+            headers={"X-API-Key": _VALID_KEY},
+        )
+    sent = parse_qs(route.calls.last.request.content.decode())
+    assert sent["redirect_uri"] == ["https://app.example/oauth/cb"]

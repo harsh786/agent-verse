@@ -62,39 +62,45 @@ class TestRegisterBuiltinServers:
         assert count >= 0
 
     @pytest.mark.asyncio
-    async def test_registers_server_when_env_present(self):
-        """When required env vars are set, the server gets registered."""
+    async def test_platform_env_never_registers_a_credentialed_server(self):
+        """Setting a platform env var (e.g. GITHUB_TOKEN) must NOT create a tenant
+        connector for that server: it would run on the platform's credentials
+        (confused deputy). Only credential-free built-ins are inserted."""
         from app.mcp.servers.registry_wiring import (
             get_builtin_server_configs,
             register_builtin_servers,
         )
 
-        # Find a config that has requires_env
         configs = get_builtin_server_configs()
-        target = next(
-            (c for c in configs if c.get("requires_env")),
-            None,
-        )
+        target = next((c for c in configs if c.get("requires_env")), None)
         if target is None:
             pytest.skip("No configs have requires_env — skip")
 
+        registered: list[str] = []
         mock_registry = MagicMock()
-        mock_registry.register = AsyncMock()
 
-        # Patch MCPRegistry.register_builtin_handler
+        async def _register(cfg, **_):
+            registered.append(cfg.server_id)
+
+        mock_registry.register = _register
+        mock_registry.get = AsyncMock(return_value=None)
+
         with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
             env_patch = dict.fromkeys(target["requires_env"], "dummy_value")
             with patch.dict(os.environ, env_patch):
                 count = await register_builtin_servers(mock_registry, MagicMock())
 
-        assert count >= 1
+        assert target["server_id"] not in registered
+        free = {c["server_id"] for c in configs if not c.get("requires_env")}
+        assert set(registered) == free
+        assert count == len(free)
 
     @pytest.mark.asyncio
-    async def test_openai_server_needs_a_real_sk_key(self):
-        """A repurposed OPENAI_API_KEY (e.g. an NVIDIA key) must NOT activate the
-        built-in OpenAI server — its openai_chat_completion tool hardcodes
-        api.openai.com and only confuses the agent (it calls the LLM recursively).
-        Presence alone isn't enough; the value must be a real 'sk-' key."""
+    async def test_openai_server_is_never_activated_from_platform_key(self):
+        """Neither a repurposed OPENAI_API_KEY nor a genuine 'sk-' platform key may
+        activate builtin-openai for a tenant, and a stale credential-less entry the
+        old env-driven wiring left behind is cleaned up."""
+        from app.mcp.registry import MCPServerConfig
         from app.mcp.servers.registry_wiring import register_builtin_servers
 
         registered: list[str] = []
@@ -109,25 +115,21 @@ class TestRegisterBuiltinServers:
             unregistered.append(server_id)
             return True
 
+        stale = MCPServerConfig(server_id="builtin-openai", name="OpenAI", base_url="builtin://")
+
+        async def _get(server_id, **_):
+            return stale if server_id == "builtin-openai" else None
+
         mock_registry.register = _register
         mock_registry.unregister = _unregister
-        # No pre-existing user-registered connector → the stale builtin-openai must be
-        # unregistered (the else-branch preserves only connectors with their own creds).
-        mock_registry.get = AsyncMock(return_value=None)
+        mock_registry.get = _get
 
         with patch("app.mcp.registry.MCPRegistry.register_builtin_handler"):
-            # Repurposed (non-OpenAI) key → server is NOT registered, and any stale
-            # registration is cleaned up.
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "nvapi-deadbeef"}):
-                await register_builtin_servers(mock_registry, MagicMock())
-            assert "builtin-openai" not in registered
-            assert "builtin-openai" in unregistered
-
-            # A genuine sk- key → server IS registered.
-            registered.clear()
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-realopenaikey123"}):
-                await register_builtin_servers(mock_registry, MagicMock())
-            assert "builtin-openai" in registered
+            for key in ("nvapi-deadbeef", "sk-realopenaikey123"):
+                with patch.dict(os.environ, {"OPENAI_API_KEY": key}):
+                    await register_builtin_servers(mock_registry, MagicMock())
+                assert "builtin-openai" not in registered
+                assert "builtin-openai" in unregistered
 
     @pytest.mark.asyncio
     async def test_handles_registration_exception_gracefully(self):

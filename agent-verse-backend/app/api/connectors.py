@@ -1290,14 +1290,21 @@ async def oauth_start(request: Request, server_id: str) -> dict[str, Any]:
             detail="OAuth manager not configured",
         )
 
-    # Start the PKCE flow — generates state token + code challenge
-    pkce_params = oauth_manager.start_flow(server_id=server_id, tenant_ctx=tenant_ctx)
-
     # Build the full authorization URL
     authorize_url = cfg.auth_config.get("authorize_url", "")
     client_id = cfg.auth_config.get("client_id", "")
-    redirect_uri = (
+    # A redirect_uri registered with the provider (auth_config) wins; otherwise
+    # derive one. Either way it is stored with the PKCE state below so the token
+    # exchange in /oauth/callback repeats EXACTLY this value. It used to re-derive
+    # a different one there (frontend_url, no ?server_id=), so every real provider
+    # rejected the code exchange with invalid_grant.
+    redirect_uri = str(cfg.auth_config.get("redirect_uri") or "") or (
         str(request.base_url).rstrip("/") + f"/connectors/oauth/callback?server_id={server_id}"
+    )
+
+    # Start the PKCE flow — generates state token + code challenge
+    pkce_params = oauth_manager.start_flow(
+        server_id=server_id, tenant_ctx=tenant_ctx, redirect_uri=redirect_uri
     )
 
     if authorize_url and client_id:
@@ -1332,10 +1339,14 @@ async def oauth_callback(
     code: str = "",
     state: str = "",
     server_id: str = "",
-    redirect_uri: str = "",  # No hardcoded default — derived from settings or base URL
+    redirect_uri: str = "",  # Legacy fallback only — see below
 ) -> dict[str, Any]:
-    """OAuth callback — exchange authorization code for access tokens via PKCE."""
-    # Derive redirect_uri if not provided by the caller
+    """OAuth callback — exchange authorization code for access tokens via PKCE.
+
+    The token request reuses the redirect_uri stored with the PKCE state by
+    /oauth/start; ``redirect_uri`` here is only used for a flow started without
+    one (OAuthFlowManager.exchange_code prefers the stored value).
+    """
     if not redirect_uri:
         redirect_uri = _default_redirect_uri(request)
     tenant_ctx = _require_tenant(request)
