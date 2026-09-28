@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,9 @@ class _StaticWorkflowStep:
 @dataclass(frozen=True)
 class _StaticWorkflowPlan:
     steps: list[_StaticWorkflowStep]
+
+
+_RPA_KEYWORDS_RE = re.compile(r"\b(?:browser|rpa|website|ui)\b")
 
 
 def build_static_workflow(goal: str) -> StructuredPlan:
@@ -56,7 +60,9 @@ def build_static_workflow(goal: str) -> StructuredPlan:
     if "mail" in goal_lower or "email" in goal_lower:
         add_step("email", "send_summary_email", [step.id for step in steps])
 
-    if any(keyword in goal_lower for keyword in ("browser", "rpa", "website", "ui")):
+    # Whole-word match: a bare substring test made "ui" match "build"/"guide"
+    # and silently added an RPA step to unrelated goals.
+    if _RPA_KEYWORDS_RE.search(goal_lower):
         add_step("rpa", "browser_automation", [])
 
     return StructuredPlan(steps=steps).validate()

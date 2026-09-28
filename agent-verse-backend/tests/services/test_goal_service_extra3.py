@@ -1194,6 +1194,19 @@ class TestRunWorkflow:
             await svc._run_workflow("g1", "Do x", ctx)
         assert svc._goals["g1"].status == GoalStatus.FAILED
 
+    async def test_empty_static_plan_fails_not_completes(self):
+        """A goal with no derivable connector steps ran nothing: goal_failed."""
+        svc = _svc()
+        ctx = _ctx()
+        _inject_goal(svc, "g1", status="executing")
+        await svc._run_workflow("g1", "Do something unrelated", ctx)
+        record = svc._goals["g1"]
+        assert record.status == GoalStatus.FAILED
+        types = [e.get("type") for e in record.events]
+        assert "goal_complete" not in types
+        failed = [e for e in record.events if e.get("type") == "goal_failed"]
+        assert failed and "empty_plan" in failed[-1]["reason"]
+
 
 # ── start_celery_event_bridge ─────────────────────────────────────────────────
 
