@@ -3529,12 +3529,69 @@ def record_queue_depths(self: Any) -> dict[str, Any]:
         raise self.retry(exc=exc, countdown=2**self.request.retries) from exc
 
 
+_MCP_HEALTH_SCAN_LIMIT = 5000
+
+
+def _classify_health(status_code: int) -> str:
+    """HTTP status → connector health. Any response used to count as 'ok' (even 5xx)."""
+    if status_code < 400:
+        return "healthy"
+    if status_code < 500:
+        return "degraded"
+    return "unhealthy"
+
+
+async def _persist_health_snapshots(snapshots: list[dict[str, Any]]) -> int:
+    """Write one ``connector_health_snapshots`` row per check, per tenant under RLS.
+
+    Nothing wrote this table before, so ``GET /connectors/{id}/health`` history
+    was always empty. Returns the number of rows written (0 when no DB).
+    """
+    if not snapshots:
+        return 0
+    try:
+        from app.db.models.mcp import ConnectorHealthSnapshot
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        factory = get_session_factory()
+    except Exception as exc:
+        logger.warning("mcp_health_snapshot_db_unavailable: %s", exc)
+        return 0
+    by_tenant: dict[str, list[dict[str, Any]]] = {}
+    for snap in snapshots:
+        by_tenant.setdefault(str(snap["tenant_id"]), []).append(snap)
+    written = 0
+    for tenant_id, rows in by_tenant.items():
+        try:
+            async with (
+                factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                for row in rows:
+                    session.add(
+                        ConnectorHealthSnapshot(
+                            server_id=str(row["server_id"])[:64],
+                            tenant_id=tenant_id,
+                            status=str(row["status"])[:20],
+                            latency_ms=row.get("latency_ms"),
+                            error=row.get("error"),
+                        )
+                    )
+            written += len(rows)
+        except Exception as exc:
+            logger.warning("mcp_health_snapshot_write_failed tenant=%s: %s", tenant_id, exc)
+    return written
+
+
 @celery_app.task(name="app.scaling.tasks.check_mcp_health")  # type: ignore[untyped-decorator]
 def check_mcp_health() -> dict[str, Any]:
     """Periodic MCP server health check — pings /health on all active servers."""
 
     async def _run() -> dict[str, Any]:
         results: list[dict[str, Any]] = []
+        snapshots: list[dict[str, Any]] = []
         checked = 0
 
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -3548,10 +3605,16 @@ def check_mcp_health() -> dict[str, Any]:
         try:
             # Scan for all MCP server keys written by MCPRegistry:
             # key pattern: mcp:servers:{tenant_id}:{server_id}
-            async for key in r.scan_iter(match="mcp:servers:*:*", count=100):
-                if checked >= 50:
+            # The scan used to stop after 50 keys across ALL tenants, so on any
+            # real deployment most connectors were never checked.
+            async for key in r.scan_iter(match="mcp:servers:*:*", count=500):
+                if checked >= _MCP_HEALTH_SCAN_LIMIT:
+                    logger.warning("mcp_health_scan_limit_reached limit=%d", checked)
                     break
                 checked += 1
+                _key_parts = str(key).split(":")
+                _tenant_id = _key_parts[2] if len(_key_parts) >= 4 else ""
+                _server_id = ":".join(_key_parts[3:]) if len(_key_parts) >= 4 else ""
                 try:
                     raw = await r.get(key)
                     if not raw:
@@ -3577,34 +3640,54 @@ def check_mcp_health() -> dict[str, Any]:
                     # URL with no SSRF guard: a connector pointed at (or 302-ing
                     # to) an internal host made the worker probe it. Every hop is
                     # now re-validated.
+                    import time as _t
+
+                    _t0 = _t.monotonic()
                     async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
                         try:
                             resp = await request_public(
                                 client, "GET", f"{_base}/health", context="mcp health check"
                             )
+                            _health = _classify_health(resp.status_code)
+                            _latency = round((_t.monotonic() - _t0) * 1000)
                             results.append(
                                 {
                                     "server": cfg.name,
-                                    "status": "ok",
+                                    "status": _health,
                                     "code": resp.status_code,
+                                    "latency_ms": _latency,
                                 }
                             )
+                            _err = None if _health == "healthy" else f"HTTP {resp.status_code}"
                         except Exception as http_exc:
+                            _health, _latency, _err = "unreachable", None, str(http_exc)[:200]
                             results.append(
                                 {
                                     "server": cfg.name,
-                                    "status": "error",
-                                    "error": str(http_exc)[:200],
+                                    "status": "unreachable",
+                                    "error": _err,
                                 }
                             )
+                    if _tenant_id and _server_id:
+                        snapshots.append(
+                            {
+                                "tenant_id": _tenant_id,
+                                "server_id": _server_id,
+                                "status": _health,
+                                "latency_ms": _latency,
+                                "error": _err,
+                            }
+                        )
                 except Exception as exc:
                     results.append({"key": key, "status": "error", "error": str(exc)[:200]})
         finally:
             await r.aclose()
 
+        persisted = await _persist_health_snapshots(snapshots)
         return {
             "servers_checked": checked,
             "results": results[:20],
+            "snapshots_persisted": persisted,
         }
 
     async def _fallback() -> dict[str, Any]:

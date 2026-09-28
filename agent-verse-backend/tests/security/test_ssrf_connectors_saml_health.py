@@ -171,4 +171,4 @@ def test_mcp_health_check_never_requests_internal_connector(
     )
     out = tasks.check_mcp_health.run()
     assert sent == []
-    assert out["results"][0]["status"] == "error"
+    assert out["results"][0]["status"] == "unreachable"
