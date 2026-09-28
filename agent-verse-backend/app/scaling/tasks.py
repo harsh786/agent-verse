@@ -1228,6 +1228,34 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
     return {SUBGOAL_MARKER: value} if value else None
 
 
+async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
+    """The goal-level ``model_override`` persisted in goals.execution_context ("" if none).
+
+    The API path applies it (GoalService); worker-run goals used to ignore it.
+    """
+    try:
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.db.session import get_session_factory
+
+        db = get_session_factory()
+        async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+            value = (
+                await session.execute(
+                    text(
+                        "SELECT execution_context::jsonb ->> 'model_override' FROM goals "
+                        "WHERE id = :g AND tenant_id = :t"
+                    ),
+                    {"g": goal_id, "t": tenant_id},
+                )
+            ).scalar()
+    except Exception as exc:
+        logger.warning("goal_model_override_lookup_failed goal=%s: %s", goal_id, exc)
+        return ""
+    return str(value or "")
+
+
 async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
     """Mark a goal an emergency stop prevented from running as cancelled."""
     from sqlalchemy import update
@@ -1806,14 +1834,20 @@ def run_goal(
                     _model_router.set_role_map(_worker_roles)
                 except Exception as _rm_exc:
                     logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
-            if _agent_model_override:
+            # A goal-level model_override (POST /goals body) wins over the agent's.
+            _goal_level_override = _run_async(_goal_model_override(goal_id, tenant_id))
+            _effective_override = _goal_level_override or _agent_model_override
+            if _effective_override:
                 try:
                     if _model_router is None:
                         from app.agent.model_router import ModelRouter
 
                         _model_router = ModelRouter()
-                    _model_router = _model_router.with_override(_agent_model_override)
+                    _model_router = _model_router.with_override(_effective_override)
                 except Exception as _mo_exc:
+                    if _goal_level_override:
+                        # Explicitly requested: never silently run on another model.
+                        raise
                     logger.warning("worker_model_override_apply_failed: %s", _mo_exc)
 
             # Build LLM response cache and semantic cache for the worker.

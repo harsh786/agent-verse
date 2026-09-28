@@ -1042,7 +1042,7 @@ class GoalService:
         except Exception:
             # Fallback to simple ModelRouter if orchestrator fails
             try:
-                from app.agent.model_router import ModelRouter, get_router_for_tenant  # noqa: F401
+                from app.agent.model_router import ModelRouter, get_router_for_tenant
 
                 _model_router = get_router_for_tenant(_agent_config)
             except Exception:
@@ -1050,7 +1050,12 @@ class GoalService:
 
         # Extract per-agent execution settings (FIX 4)
         _max_iterations = int(_agent_config.get("max_iterations", 6))
-        _model_override = str(_agent_config.get("model_override", "") or "")
+        # A goal-level model_override (POST /goals body) wins over the agent's
+        # pinned model. It used to be written to execution_context and never read.
+        _goal_model_override = str((execution_context or {}).get("model_override") or "")
+        _model_override = _goal_model_override or str(
+            _agent_config.get("model_override", "") or ""
+        )
 
         # Per-goal role map: which configured model serves planning/execution/
         # verification, restricted to models THIS goal's provider can route (a
@@ -1067,9 +1072,21 @@ class GoalService:
                 _svc_logger.warning("model_role_map_failed", error=str(_rm_exc))
 
         # Apply model override to the model router before building the graph
-        if _model_override and _model_router is not None:
-            with suppress(Exception):  # Model router may not support override — use default
+        if _model_override:
+            if _model_router is None:
+                from app.agent.model_router import ModelRouter
+
+                _model_router = ModelRouter()
+            try:
                 _model_router = _model_router.with_override(_model_override)  # copy-on-write
+            except Exception as _mo_exc:
+                if _goal_model_override:
+                    # The caller explicitly asked for this model: never silently
+                    # run the goal on a different one.
+                    raise ValueError(
+                        f"model_override '{_goal_model_override}' could not be applied: {_mo_exc}"
+                    ) from _mo_exc
+                _svc_logger.warning("agent_model_override_apply_failed", error=str(_mo_exc))
 
         # ── Phase 22: Wire per-connector circuit breakers ─────────────────────────
         from app.reliability.circuit_breaker import CircuitBreaker
