@@ -42,6 +42,17 @@ class ReasoningMixin:
             tenant_ctx=agent_state.tenant_ctx,
         )
 
+    @staticmethod
+    def _is_tool_grounded(step: Any) -> bool:
+        """True when the step's output came from real tool calls.
+
+        Such output is the evidence the verifier/grounding gate checks; an LLM
+        rewrite of it (self-refine / self-consistency) must never replace it,
+        or the verifier ends up grading ungrounded text as if it were the tool
+        result.
+        """
+        return bool(getattr(step, "tool_calls", None))
+
     async def _node_refine(self, state: GraphState) -> dict:
         """Self-Refine node — improves last step output before verification (doc-1 §3.4).
 
@@ -70,6 +81,25 @@ class ReasoningMixin:
             max_refine = agent_state.context.get("max_refine_iterations", 2)
             if refine_iterations >= max_refine:
                 return {"agent_state": agent_state}
+            if self._is_tool_grounded(last_step):
+                agent_state.context.setdefault("reasoning_evidence", []).append(
+                    {
+                        "strategy_id": "self_refine",
+                        "adapter_version": "1.0.0",
+                        "status": "skipped",
+                        "call_count": 0,
+                        "limit_reason": "grounded_tool_output",
+                    }
+                )
+                return {"agent_state": agent_state}
+            _refine_model = ""
+            if self._model_router is not None:
+                with contextlib.suppress(Exception):
+                    _refine_model = (
+                        self._model_router.model_for("refine")
+                        or self._model_router.model_for("execute")
+                        or ""
+                    )
 
             refine_prompt = (
                 f"Task: {last_step.description}\n\n"
@@ -83,7 +113,7 @@ class ReasoningMixin:
                         Message(role="system", content=SELF_REFINE_SYSTEM),
                         Message(role="user", content=refine_prompt),
                     ],
-                    model="",
+                    model=_refine_model,
                     max_tokens=2000,
                     temperature=0.0,
                 )
@@ -93,7 +123,7 @@ class ReasoningMixin:
                 self,
                 resp=resp,
                 role="refine",
-                model="",
+                model=_refine_model,
                 agent_state=agent_state,
                 tenant_ctx=agent_state.tenant_ctx,
             )
@@ -114,6 +144,17 @@ class ReasoningMixin:
             )
 
         except Exception as exc:
+            # The step output is left untouched; record the failure as evidence
+            # so the run does not claim self-refine was applied.
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                {
+                    "strategy_id": "self_refine",
+                    "adapter_version": "1.0.0",
+                    "status": "failed",
+                    "call_count": 0,
+                    "error_class": type(exc).__name__,
+                }
+            )
             try:
                 from app.observability.logging import get_logger
 
@@ -147,8 +188,16 @@ class ReasoningMixin:
             agent_state=agent_state,
             tenant_ctx=state.get("tenant_ctx") or agent_state.tenant_ctx,
         )
-        # The provider's private reasoning is intentionally discarded. Only
-        # aggregate execution evidence is checkpointed or exposed.
+        # The reasoning is handed to the planner through a transient, per-goal
+        # in-memory slot (consumed by _node_plan), so it is never checkpointed or
+        # exposed — but it is no longer thrown away unused. Only aggregate
+        # execution evidence is checkpointed.
+        if resp.content and resp.content.strip():
+            transient = getattr(self, "_transient_reasoning", None)
+            if not isinstance(transient, dict):
+                transient = {}
+                self._transient_reasoning = transient
+            transient[str(agent_state.goal_id or id(agent_state))] = resp.content.strip()[:4000]
         agent_state.context.setdefault("reasoning_evidence", []).append(
             {
                 "strategy_id": "chain_of_thought",
@@ -249,6 +298,17 @@ class ReasoningMixin:
 
             last_step = agent_state.steps[-1]
             if not last_step.output:
+                return {"agent_state": agent_state}
+            if self._is_tool_grounded(last_step):
+                agent_state.context.setdefault("reasoning_evidence", []).append(
+                    {
+                        "strategy_id": "self_consistency",
+                        "adapter_version": "1.0.0",
+                        "status": "skipped",
+                        "call_count": 0,
+                        "limit_reason": "grounded_tool_output",
+                    }
+                )
                 return {"agent_state": agent_state}
             pattern = SelfConsistencyPattern(n_samples=3)
             execution = await pattern.execute_with_evidence(

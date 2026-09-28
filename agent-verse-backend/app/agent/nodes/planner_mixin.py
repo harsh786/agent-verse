@@ -82,6 +82,38 @@ class PlannerMixin:
         agent_state.context[GRANTED_TOOLS_KEY] = sorted(names)
         return names
 
+    def _pattern_result_parts(self, agent_state: AgentState) -> list[str]:
+        """Planner context blocks built from reasoning / multi-agent pattern outputs.
+
+        * ``supervisor_result`` — sub-goals already executed by delegated agents;
+          the planner is told to build on them, not redo the work.
+        * ``debate_result`` (in-graph) / ``debate_consensus`` (API debate mode).
+        * ``tot_answer`` — tree-of-thoughts deliberation.
+        * chain-of-thought reasoning from ``_node_think``, held in a transient
+          per-goal slot (never checkpointed) and consumed here.
+        """
+        ctx = agent_state.context
+        parts: list[str] = []
+        supervisor = str(ctx.get("supervisor_result") or "").strip()
+        if supervisor:
+            parts.append(
+                "[Delegated sub-agent results — this work was ALREADY EXECUTED by "
+                "sub-goals. Build the plan on these results; do not repeat the "
+                "sub-tasks.]\n" + supervisor[:4000]
+            )
+        debate = str(ctx.get("debate_result") or ctx.get("debate_consensus") or "").strip()
+        if debate:
+            parts.append("[Multi-agent debate consensus]\n" + debate[:3000])
+        tot = str(ctx.get("tot_answer") or "").strip()
+        if tot:
+            parts.append("[Tree-of-thoughts deliberation]\n" + tot[:3000])
+        transient = getattr(self, "_transient_reasoning", None)
+        if isinstance(transient, dict):
+            cot = transient.pop(str(agent_state.goal_id or id(agent_state)), None)
+            if cot:
+                parts.append("[Prior reasoning about this goal]\n" + str(cot)[:4000])
+        return parts
+
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -408,6 +440,13 @@ class PlannerMixin:
                     )
         except Exception:
             pass
+
+        # Reasoning / multi-agent pattern outputs. These nodes (CoT think, tree of
+        # thoughts, debate, supervisor) and the API debate workflow mode wrote
+        # their results into state, but nothing ever read them, so the patterns
+        # cost LLM calls (and, for the supervisor, whole sub-goals) and then the
+        # planner re-did the work from scratch.
+        extra_parts.extend(self._pattern_result_parts(agent_state))
 
         user_content = f"Goal: {agent_state.goal}"
         if extra_parts:
