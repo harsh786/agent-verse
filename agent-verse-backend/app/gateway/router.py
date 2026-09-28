@@ -81,6 +81,30 @@ async def _authenticate_channel(
         )
 
 
+def _verify_binding_secret(
+    channel: str, secret: str, headers: dict[str, str], raw_body: bytes
+) -> bool:
+    """Authenticate an inbound chat message against a binding's own secret.
+
+    Same wire formats as the platform adapters: Telegram's static
+    ``X-Telegram-Bot-Api-Secret-Token``; WhatsApp's ``X-Hub-Signature-256`` and
+    the generic ``X-Webhook-Signature`` HMAC-SHA256 over the raw body.
+    """
+    import hashlib
+    import hmac
+
+    if not secret:
+        return False
+    if channel == "telegram":
+        presented = headers.get("x-telegram-bot-api-secret-token", "")
+        return bool(presented) and hmac.compare_digest(secret.encode(), presented.encode())
+    header = {"whatsapp": "x-hub-signature-256", "webhook": "x-webhook-signature"}.get(channel)
+    if header is None:
+        return False
+    expected = "sha256=" + hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, headers.get(header, ""))
+
+
 # ── Schemas ───────────────────────────────────────────────────────────────────
 
 
@@ -732,12 +756,31 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
     # and-reserialized `raw` dict is never guaranteed byte-identical to what the
     # caller actually signed); telegram only checks a static secret header and
     # ignores raw_body entirely, so passing it here is a no-op for that adapter.
-    await _authenticate_channel(adapter, channel, headers, raw, raw_body=raw_body)
-
-    # Resolve tenant from the addressee (bot id / number) or the trusted relay header.
+    #
+    # SECURITY: the addressee (bot id / number) comes from the unauthenticated
+    # body, so it may only SELECT a binding. The request is then authenticated
+    # with that binding's per-tenant secret — never with the platform-wide
+    # channel secret, which every tenant configuring a bot would share and could
+    # therefore use to address any other tenant's bot.
     addressee = str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
     binding = registry.resolve(channel, addressee) if registry is not None else None
-    tenant_id = binding.tenant_id if binding else trusted_gateway_tenant(headers)
+    if binding is not None:
+        if not binding.secret:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"{channel} binding has no per-tenant secret configured",
+            )
+        if not _verify_binding_secret(channel, binding.secret, headers, raw_body):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid {channel} webhook credentials",
+            )
+        tenant_id = binding.tenant_id
+    else:
+        # No binding: only the operator's own relay (platform channel secret +
+        # GATEWAY_INGRESS_SECRET, tenant in a header) may name a tenant.
+        await _authenticate_channel(adapter, channel, headers, raw, raw_body=raw_body)
+        tenant_id = trusted_gateway_tenant(headers)
     if not tenant_id:
         # No tenant mapping — acknowledge without doing tenant-scoped work.
         return {"status": "ignored", "reason": "no tenant mapping for addressee"}

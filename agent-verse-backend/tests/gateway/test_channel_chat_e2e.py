@@ -17,7 +17,7 @@ from app.gateway.channel_registry import ChannelRegistry
 from app.gateway.router import router as gateway_router
 from app.identity import IdentityService
 from app.providers.fake import FakeProvider
-from tests.gateway.conftest import SignedClient
+from tests.gateway.conftest import TG_SECRET, WA_SECRET, SignedClient
 
 pytestmark = pytest.mark.usefixtures("signed_channels")
 
@@ -33,8 +33,8 @@ def _app() -> tuple[FastAPI, ChatService, IdentityService]:
     chat = ChatService(answer_generator=FakeProvider(responses=["Here's a quick answer for you."]))
     chat.attach_engine(identity_service=identity)
     reg = ChannelRegistry()
-    reg.register("telegram", TG_BOT, TENANT)
-    reg.register("whatsapp", WA_NUM, TENANT)
+    reg.register("telegram", TG_BOT, TENANT, secret=TG_SECRET)
+    reg.register("whatsapp", WA_NUM, TENANT, secret=WA_SECRET)
     app.state.chat_service = chat
     app.state.channel_registry = reg
     return app, chat, identity

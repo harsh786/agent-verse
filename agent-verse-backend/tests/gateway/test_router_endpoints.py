@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient
 from app.gateway import router as gw
 from app.gateway.channel_registry import ChannelRegistry
 from app.gateway.command import CommandFile, OrgCommand
-from tests.gateway.conftest import SignedClient
+from tests.gateway.conftest import TG_SECRET, SignedClient
 
 pytestmark = pytest.mark.usefixtures("signed_channels")
 
@@ -405,7 +405,7 @@ class TestChannelChatBranches:
 
     def test_no_text_in_message_is_acknowledged(self) -> None:
         reg = ChannelRegistry()
-        reg.register("telegram", "bot-1", "tenant-a")
+        reg.register("telegram", "bot-1", "tenant-a", secret=TG_SECRET)
         app = self._app_with_state(chat_service=object(), channel_registry=reg)
         client = SignedClient(app)
         # Message present but with neither "text" nor "caption" → normalize gives
@@ -425,7 +425,9 @@ class TestChannelChatBranches:
         from app.providers.fake import FakeProvider
 
         reg = ChannelRegistry()
-        reg.register("telegram", "bot-1", "tenant-out", outbound_token="tok-123")
+        reg.register(
+            "telegram", "bot-1", "tenant-out", outbound_token="tok-123", secret=TG_SECRET
+        )
         chat = ChatService(answer_generator=FakeProvider(responses=["hi there"]))
         chat.attach_engine(identity_service=IdentityService())
         app = self._app_with_state(chat_service=chat, channel_registry=reg)
@@ -453,7 +455,7 @@ class TestChannelChatBranches:
         from app.providers.fake import FakeProvider
 
         reg = ChannelRegistry()
-        reg.register("telegram", "bot-1", "tenant-out")  # no outbound_token
+        reg.register("telegram", "bot-1", "tenant-out", secret=TG_SECRET)  # no outbound_token
         chat = ChatService(answer_generator=FakeProvider(responses=["hi there"]))
         chat.attach_engine(identity_service=IdentityService())
         app = self._app_with_state(chat_service=chat, channel_registry=reg)
