@@ -4858,15 +4858,29 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
 @celery_app.task(name="app.scaling.tasks.detect_stuck_goals", bind=True, max_retries=0)
 def detect_stuck_goals(self: Any) -> dict[str, Any]:
-    """Find goals stuck in executing/planning > 60 minutes and mark as failed."""
+    """Fail goals idle in executing/planning past their PLAN's goal timeout."""
     return _run_async(_find_and_fail_stuck_goals())
 
 
-async def _find_and_fail_stuck_goals() -> dict[str, Any]:
-    from datetime import UTC, datetime, timedelta
+def _plan_timeout_case_sql() -> str:
+    """``CASE t.plan_tier ...`` → the plan's goal_timeout_seconds (unknown → free).
 
-    timeout_minutes = 60
-    cutoff = datetime.now(UTC) - timedelta(minutes=timeout_minutes)
+    Built from PLAN_LIMITS (trusted constants, not user input). This scan used a
+    flat 60 minutes, so a professional/enterprise goal legitimately running for
+    hours (8h / 24h plan timeouts) was killed as "stuck" after one idle hour.
+    """
+    from app.tenancy.context import PLAN_LIMITS, PlanTier
+
+    whens = " ".join(
+        f"WHEN '{tier.value}' THEN {int(limits.goal_timeout_seconds)}"
+        for tier, limits in PLAN_LIMITS.items()
+    )
+    default = int(PLAN_LIMITS[PlanTier.FREE].goal_timeout_seconds)
+    return f"(CASE t.plan_tier {whens} ELSE {default} END)"
+
+
+async def _find_and_fail_stuck_goals() -> dict[str, Any]:
+    timeout_sql = _plan_timeout_case_sql()
     try:
         from sqlalchemy import text
 
@@ -4877,12 +4891,15 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
         db = get_system_session_factory()
         async with db() as session, session.begin(), system_session(session):
             result = await session.execute(
-                text("""UPDATE goals
+                text(f"""UPDATE goals
                         SET status='failed',
-                            error_message='Stuck goal: exceeded 60-minute timeout',
+                            error_message='Stuck goal: exceeded the plan goal timeout',
                             updated_at=NOW()
-                        WHERE status IN ('executing','planning')
-                          AND updated_at < :cutoff
+                        FROM tenants t
+                        WHERE t.id = goals.tenant_id
+                          AND goals.status IN ('executing','planning')
+                          AND goals.updated_at
+                              < NOW() - make_interval(secs => {timeout_sql})
                           AND NOT EXISTS (
                               SELECT 1
                               FROM goal_events ge
@@ -4896,8 +4913,7 @@ async def _find_and_fail_stuck_goals() -> dict[str, Any]:
                                     'goal_cancelled'
                                 )
                           )
-                        RETURNING id"""),
-                {"cutoff": cutoff},
+                        RETURNING goals.id"""),
             )
             stuck_ids = [r[0] for r in result.fetchall()]
         return {"stuck_goals_failed": len(stuck_ids), "goal_ids": stuck_ids[:20]}

@@ -113,6 +113,23 @@ async def test_stuck_goal_scan_runs_on_maintenance_role() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stuck_goal_timeout_is_the_tenants_plan_timeout() -> None:
+    """Regression: a flat 60-minute cutoff killed long enterprise/professional
+    goals (8h / 24h plan timeouts) as 'stuck' after one idle hour."""
+    from app.scaling.tasks import _find_and_fail_stuck_goals
+
+    session = _session([MagicMock(fetchall=MagicMock(return_value=[]))])
+    p = _system_patches(_factory(session), _Recorder())
+    with p[0], p[1], p[2]:
+        await _find_and_fail_stuck_goals()
+    sql = _sql(session)[0]
+    assert "FROM tenants t" in sql
+    assert "WHEN 'enterprise' THEN 86400" in sql
+    assert "WHEN 'professional' THEN 28800" in sql
+    assert "60-minute" not in sql
+
+
+@pytest.mark.asyncio
 async def test_retention_runs_on_maintenance_role() -> None:
     from app.scaling.tasks import _delete_expired_records
 
