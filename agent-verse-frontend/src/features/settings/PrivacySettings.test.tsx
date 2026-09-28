@@ -15,7 +15,7 @@ function mockFetch(consent = { analytics: false, marketing: true }) {
       return new Response(JSON.stringify({ status: 'queued' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/account/data-export'))
       return new Response(JSON.stringify({ status: 'idle' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.includes('/account/delete-request'))
+    if (url.includes('/tenants/me') && method === 'DELETE')
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
   });
@@ -50,10 +50,11 @@ describe('PrivacySettings', () => {
   test('consent toggles reflect the fetched preferences', async () => {
     mockFetch({ analytics: false, marketing: true });
     renderPage();
+    // Unloaded consent now renders as NOT granted, so wait for the fetched value.
     await waitFor(() =>
-      expect(screen.getByRole('switch', { name: /Analytics cookies/i })).toHaveAttribute('aria-checked', 'false'),
+      expect(screen.getByRole('switch', { name: /Marketing emails/i })).toHaveAttribute('aria-checked', 'true'),
     );
-    expect(screen.getByRole('switch', { name: /Marketing emails/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('switch', { name: /Analytics cookies/i })).toHaveAttribute('aria-checked', 'false');
   });
 
   test('toggling a consent switch PUTs the updated preferences', async () => {
@@ -87,7 +88,7 @@ describe('PrivacySettings', () => {
     );
   });
 
-  test('the three-step delete flow POSTs a deletion request and shows confirmation', async () => {
+  test('the three-step delete flow schedules the real erasure (DELETE /tenants/me)', async () => {
     const spy = mockFetch();
     renderPage();
     await userEvent.click(screen.getByRole('button', { name: /request account deletion/i }));
@@ -101,10 +102,19 @@ describe('PrivacySettings', () => {
       expect(
         spy.mock.calls.some(
           ([u, i]) =>
-            String(u).includes('/account/delete-request') && (i as RequestInit)?.method === 'POST',
+            String(u).includes('/tenants/me') && (i as RequestInit)?.method === 'DELETE',
         ),
       ).toBe(true),
     );
     expect(await screen.findByText(/Deletion Requested/i)).toBeInTheDocument();
+  });
+
+  test('a failed consent load is not rendered as granted consent', async () => {
+    // Regression: the query's catch fabricated {analytics: true}.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be loaded/i);
+    expect(screen.getByRole('switch', { name: /Analytics cookies/i })).toHaveAttribute('aria-checked', 'false');
   });
 });

@@ -39,7 +39,9 @@ export function AIOpsDashboard() {
 
   const { data: regressionData } = useQuery({
     queryKey: ['dashboard-regression'],
-    queryFn: () => apiFetch<any>('/ai-ops/regression-status').catch(() => ({ status: 'ok' })),
+    // An unreachable endpoint is "unknown" — it used to be reported as 'ok'
+    // ("All systems normal").
+    queryFn: () => apiFetch<any>('/ai-ops/regression-status').catch(() => ({ status: 'unknown' })),
     refetchInterval: 60_000,
   });
 
@@ -50,7 +52,7 @@ export function AIOpsDashboard() {
   const providers = modelsData?.providers ?? [];
   const healthyProviders = providers.filter((p: any) => p.is_healthy).length;
   const alerts = alertsData?.alerts ?? [];
-  const regressionStatus = regressionData?.status ?? 'ok';
+  const regressionStatus = regressionData?.status ?? 'unknown';
 
   const REGRESSION_COLORS: Record<string, string> = {
     ok: 'text-green-600 dark:text-green-400',
@@ -216,6 +218,8 @@ export function AIOpsDashboard() {
             <div className="flex items-center gap-2">
               {regressionStatus === 'ok' ? (
                 <CheckCircle className="h-5 w-5 text-green-500" />
+              ) : regressionStatus === 'unknown' ? (
+                <AlertTriangle className="h-5 w-5 text-muted-foreground" />
               ) : regressionStatus === 'warning' ? (
                 <AlertTriangle className="h-5 w-5 text-amber-500" />
               ) : (
@@ -227,7 +231,11 @@ export function AIOpsDashboard() {
                     REGRESSION_COLORS[regressionStatus] ?? 'text-muted-foreground'
                   }`}
                 >
-                  {regressionStatus === 'ok' ? 'All systems normal' : `${regressionStatus} detected`}
+                  {regressionStatus === 'ok'
+                    ? 'All systems normal'
+                    : regressionStatus === 'unknown'
+                      ? 'Status unavailable'
+                      : `${regressionStatus} detected`}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {regressionData?.critical_alerts ?? 0} critical · {regressionData?.warning_alerts ?? 0} warnings

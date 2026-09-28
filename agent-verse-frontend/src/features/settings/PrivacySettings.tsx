@@ -46,7 +46,10 @@ interface DataExportStatus {
 function useConsentSettings() {
   return useQuery<ConsentSettings>({
     queryKey: ['consent-settings'],
-    queryFn: () => apiClient.get<ConsentSettings>('/v1/account/consent').catch(() => ({ analytics: true, marketing: false })),
+    // No fabricated defaults: this used to show analytics consent as GRANTED
+    // whenever the request failed (the /v1/account/* routes do not exist).
+    queryFn: () => apiClient.get<ConsentSettings>('/v1/account/consent'),
+    retry: false,
     staleTime: 300_000,
   });
 }
@@ -54,7 +57,8 @@ function useConsentSettings() {
 function useExportStatus() {
   return useQuery<DataExportStatus>({
     queryKey: ['data-export-status'],
-    queryFn: () => apiClient.get<DataExportStatus>('/v1/account/data-export').catch(() => ({ status: 'idle' })),
+    queryFn: () => apiClient.get<DataExportStatus>('/v1/account/data-export'),
+    retry: false,
     refetchInterval: (q) => q.state.data?.status === 'processing' ? 5_000 : false,
   });
 }
@@ -73,7 +77,9 @@ function useUpdateConsent() {
 
 function useRequestDeletion() {
   return useMutation({
-    mutationFn: () => apiClient.post('/v1/account/delete-request', {}),
+    // /v1/account/delete-request does not exist. DELETE /tenants/me records the
+    // real GDPR erasure job (executed after the 30-day grace period).
+    mutationFn: () => apiClient.delete('/tenants/me'),
   });
 }
 
@@ -210,7 +216,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export function PrivacySettings() {
   const reduce         = useReducedMotion();
-  const { data: consent, refetch: refetchConsent } = useConsentSettings();
+  const { data: consent, refetch: refetchConsent, isError: consentError } = useConsentSettings();
   const { data: exportStatus } = useExportStatus();
   const requestExport  = useRequestExport();
   const updateConsent  = useUpdateConsent();
@@ -235,8 +241,8 @@ export function PrivacySettings() {
         <CheckCircle2 className="h-12 w-12 text-emerald-400 mx-auto mb-4" aria-hidden />
         <h1 className="text-[20px] font-bold text-[#F1F5F9] mb-2">Deletion Requested</h1>
         <p className="text-[14px] text-[#94A3B8] [text-wrap:balance]">
-          A confirmation email has been sent. Your account will be permanently deleted in 30 days.
-          You can cancel by logging in before that date.
+          An erasure job has been scheduled. Your account data will be permanently deleted
+          after the 30-day grace period unless a legal hold applies.
         </p>
       </div>
     );
@@ -301,11 +307,16 @@ export function PrivacySettings() {
 
       {/* Consent */}
       <Section title="Consent &amp; Cookies">
+        {consentError && (
+          <p role="alert" className="text-[13px] text-red-400 mb-2">
+            Your consent settings could not be loaded; they are not shown as granted.
+          </p>
+        )}
         <ConsentToggle
           id="consent-analytics"
           label="Analytics cookies"
           desc="Help us understand how AgentVerse is used to improve the product."
-          checked={consent?.analytics ?? true}
+          checked={consent?.analytics ?? false}
           onChange={val => handleConsentChange('analytics', val)}
         />
         <ConsentToggle

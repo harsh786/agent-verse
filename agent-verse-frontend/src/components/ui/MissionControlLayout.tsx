@@ -51,7 +51,8 @@ function OperationalStatusBar() {
   const { data: regression } = useQuery({
     queryKey: ['mission-regression'],
     queryFn: () =>
-      apiFetch<{ status?: string }>('/ai-ops/regression-status').catch(() => ({ status: 'ok' })),
+      // Unreachable → 'unknown', not a fabricated 'ok'.
+      apiFetch<{ status?: string }>('/ai-ops/regression-status').catch(() => ({ status: 'unknown' })),
     refetchInterval: 60_000,
   });
 
@@ -63,7 +64,7 @@ function OperationalStatusBar() {
   ).length;
   const systemStatus =
     health?.status === 'healthy' || health?.status === 'ok' ? 'operational' : 'degraded';
-  const regressionStatus = regression?.status ?? 'ok';
+  const regressionStatus = regression?.status ?? 'unknown';
 
   return (
     <div className="h-10 bg-command-black border-b border-neural-violet/20 flex items-center px-4 gap-6 shrink-0 z-50">
@@ -116,7 +117,9 @@ function OperationalStatusBar() {
           <div className="w-px h-4 bg-white/10" />
           <div className="flex items-center gap-1.5 text-xs text-risk-amber">
             <AlertTriangle className="h-3 w-3" />
-            <span>Regression {regressionStatus}</span>
+            <span>
+              {regressionStatus === 'unknown' ? 'Regression status unavailable' : `Regression ${regressionStatus}`}
+            </span>
           </div>
         </>
       )}
