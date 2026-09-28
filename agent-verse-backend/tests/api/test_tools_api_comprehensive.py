@@ -61,7 +61,7 @@ def test_execute_code_success(monkeypatch) -> None:
     }
 
     class MockInterpreter:
-        async def execute(self, code, language, timeout):
+        async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
     monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)
@@ -91,7 +91,7 @@ def test_execute_code_javascript(monkeypatch) -> None:
     }
 
     class MockInterpreter:
-        async def execute(self, code, language, timeout):
+        async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
     monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)
@@ -118,7 +118,7 @@ def test_execute_code_timed_out(monkeypatch) -> None:
     }
 
     class MockInterpreter:
-        async def execute(self, code, language, timeout):
+        async def execute(self, code, language, timeout, tenant_id=None):
             return result
 
     monkeypatch.setattr("app.tools.code_interpreter.CodeInterpreter", MockInterpreter)

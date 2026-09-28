@@ -67,6 +67,19 @@ _FILE_EXTENSIONS: dict[str, str] = {
     "bash": "sh",
 }
 
+_PIDS_LIMIT = 64
+# Per-stream output cap returned to the caller (the API used to return whatever
+# the program printed — a ``print('x' * 10**9)`` was buffered whole into memory).
+_MAX_OUTPUT_CHARS = 1_000_000
+
+
+def _cap_output(text: str) -> str:
+    if len(text) <= _MAX_OUTPUT_CHARS:
+        return text
+    dropped = len(text) - _MAX_OUTPUT_CHARS
+    return text[:_MAX_OUTPUT_CHARS] + f"\n[output truncated: {dropped} more characters]"
+
+
 # Docker is optional -- detected at runtime
 _DOCKER_AVAILABLE = False
 try:
@@ -194,6 +207,11 @@ class CodeInterpreter:
                 tmpfs={"/tmp": "size=64m,exec,nosuid,nodev"},
                 user="1000:1000",
                 environment={"PYTHONDONTWRITEBYTECODE": "1"},
+                # A fork bomb used to be bounded only by memory; no process cap,
+                # full default capability set, privilege escalation allowed.
+                pids_limit=_PIDS_LIMIT,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges"],
             )
             timed_out = False
             exit_code = 1
@@ -217,8 +235,12 @@ class CodeInterpreter:
                     timed_out = True
                     with contextlib.suppress(Exception):
                         container.kill()
-                out = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-                err = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+                out = _cap_output(
+                    container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
+                )
+                err = _cap_output(
+                    container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+                )
             finally:
                 with contextlib.suppress(Exception):
                     container.remove(force=True)
@@ -312,8 +334,8 @@ class CodeInterpreter:
                     proc.communicate(), timeout=float(effective_timeout)
                 )
                 return CodeResult(
-                    stdout=stdout_bytes.decode("utf-8", errors="replace"),
-                    stderr=stderr_bytes.decode("utf-8", errors="replace"),
+                    stdout=_cap_output(stdout_bytes.decode("utf-8", errors="replace")),
+                    stderr=_cap_output(stderr_bytes.decode("utf-8", errors="replace")),
                     exit_code=proc.returncode or 0,
                     timed_out=False,
                     execution_time_ms=(time.monotonic() - t0) * 1000,

@@ -54,8 +54,45 @@ async def execute_code(request: Request, body: ExecuteCodeRequest) -> ExecuteCod
         code=body.code,
         language=body.language,
         timeout=body.timeout,
+        tenant_id=str(tenant_ctx.tenant_id),
     )
+    _audit_code_execution(request, tenant_ctx, body, result)
     return ExecuteCodeResponse(**result.to_dict())
+
+
+def _audit_code_execution(request: Request, tenant_ctx: Any, body: Any, result: Any) -> None:
+    """Record every sandbox execution in the tenant's audit trail.
+
+    Arbitrary code execution used to leave no audit record at all. The code
+    itself is not stored — only its hash, size, language and outcome.
+    """
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        return
+    import hashlib
+    import logging
+
+    try:
+        from app.governance.audit import AuditEvent
+        from app.governance.permissions import ActionLevel
+
+        digest = hashlib.sha256(body.code.encode("utf-8", errors="replace")).hexdigest()[:16]
+        audit_log.record(
+            AuditEvent(
+                goal_id="tools.execute_code",
+                tool_name=f"code_interpreter.{body.language}",
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome="success" if result.success else "failed",
+                api_key_id=getattr(tenant_ctx, "api_key_id", None),
+                note=(
+                    f"sha256={digest} bytes={len(body.code)} exit_code={result.exit_code} "
+                    f"timed_out={result.timed_out}"
+                ),
+            ),
+            tenant_ctx=tenant_ctx,
+        )
+    except Exception as exc:  # auditing must never break the call path
+        logging.getLogger(__name__).warning("code_execution_audit_failed: %s", exc)
 
 
 # ── File Operations ───────────────────────────────────────────────────────────
