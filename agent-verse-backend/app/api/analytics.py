@@ -26,14 +26,13 @@ async def goal_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
-    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    tenant = _require_tenant(request)
+    tenant_id = tenant.tenant_id
     try:
         m = await agg.goal_metrics(tenant_id=tenant_id, days=days, agent_id=agent_id)
-    except Exception:
-        from app.analytics.aggregator import GoalMetrics
-
-        m = GoalMetrics()
+    except Exception as exc:
+        # Was swallowed into all-zero metrics, indistinguishable from "no goals".
+        raise HTTPException(status_code=503, detail="Goal analytics unavailable") from exc
     return {
         "period_days": days,
         "total": m.total,
@@ -59,8 +58,8 @@ async def tool_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
-    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    tenant = _require_tenant(request)
+    tenant_id = tenant.tenant_id
     # Use DB-backed method when tenant_id available (falls back to in-memory)
     tools = await agg.tool_metrics_db(tenant_id=tenant_id, days=days)
     return {
@@ -90,8 +89,8 @@ async def cost_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
-    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    tenant = _require_tenant(request)
+    tenant_id = tenant.tenant_id
 
     # Use DB-backed methods when tenant_id available (fall back to in-memory)
     trends = await agg.cost_trends_db(tenant_id=tenant_id, days=days, bucket=bucket)
@@ -101,10 +100,9 @@ async def cost_analytics(
     tenant_ctx = tenant
     try:
         m = await agg.goal_metrics(tenant_id=tenant_id, days=days)
-    except Exception:
-        from app.analytics.aggregator import GoalMetrics
-
-        m = GoalMetrics()
+    except Exception as exc:
+        # Was swallowed into all-zero metrics, indistinguishable from "no goals".
+        raise HTTPException(status_code=503, detail="Goal analytics unavailable") from exc
 
     # Use GoalService's accurate cost_today_usd rather than summing the 30-day total
     goal_service = getattr(request.app.state, "goal_service", None) if request else None
@@ -142,8 +140,8 @@ async def agent_analytics(
     request: Request = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     agg = _get_aggregator(request)
-    tenant = getattr(getattr(request, "state", None), "tenant", None) if request else None
-    tenant_id = getattr(tenant, "tenant_id", "") if tenant else ""
+    tenant = _require_tenant(request)
+    tenant_id = tenant.tenant_id
     # Use the DB-backed GROUP BY path when a tenant is available (falls back to
     # the in-memory aggregation otherwise).
     agents = await agg.agent_metrics_db(tenant_id=tenant_id, days=days)
@@ -292,7 +290,11 @@ async def eval_analytics(
         try:
             from sqlalchemy import text as _t
 
-            async with db_factory() as session:
+            from app.db.rls import sqlalchemy_rls_context
+
+            # evaluations is RLS-scoped: without the tenant GUC this matched no
+            # rows under the app role and always reported zero evaluations.
+            async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
                 result = await session.execute(
                     _t(
                         "SELECT"
@@ -357,8 +359,9 @@ async def eval_analytics(
                         },
                         "evals_by_day": evals_by_day,
                     }
-        except Exception:
-            pass  # fall through to empty response
+        except Exception as exc:
+            # Was `pass` → an all-zero response indistinguishable from "no evals".
+            raise HTTPException(status_code=503, detail="Eval analytics unavailable") from exc
 
     return {
         "period_days": days,
