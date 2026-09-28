@@ -2373,6 +2373,15 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        if state.status.value == "waiting_human" and goal_bridge is not None:
+            # Supervised mode: the graph ENDED waiting for approvals. Mark the
+            # goal suspended so resume_goal relaunches it (from its step
+            # checkpoints) — nothing is left running to continue it otherwise.
+            try:
+                _, _, _bridge = _make_worker_goal_bridge()
+                _run_async(_bridge._db_set_suspended(goal_id, tenant_id, True))
+            except Exception as _susp_exc:
+                logger.warning("mark_suspended_failed goal=%s: %s", goal_id, _susp_exc)
         if state.status.value in {"complete", "failed"}:
             _record_goal_duration_metric(
                 state.status.value,

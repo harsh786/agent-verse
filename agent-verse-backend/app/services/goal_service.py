@@ -31,6 +31,9 @@ _svc_logger = _get_logger(__name__)
 # Module-level pause event registry (not a class attr to avoid circular)
 _GOAL_PAUSE_EVENTS: dict[str, asyncio.Event] = {}
 _PAUSE_POLL_SECONDS = 2.0
+# execution_context flag: the goal's graph ended waiting for approvals (see
+# GoalService._suspend_for_approval); resume must relaunch it.
+_SUSPENDED_KEY = "_suspended_for_approval"
 from app.agent.sanitization import sanitize_event
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
@@ -2375,7 +2378,7 @@ class GoalService:
             )
 
             try:
-                await asyncio.wait_for(
+                final_state = await asyncio.wait_for(
                     loop.run(
                         goal=goal_text,
                         tenant_ctx=tenant_ctx,
@@ -2385,6 +2388,8 @@ class GoalService:
                     ),
                     timeout=float(_goal_timeout_s),
                 )
+                if getattr(final_state, "status", None) == GoalStatus.WAITING_HUMAN:
+                    await self._suspend_for_approval(goal_id, tenant_ctx)
             except TimeoutError:
                 if record is not None:
                     record.status = GoalStatus.FAILED
@@ -3606,6 +3611,100 @@ class GoalService:
 
         return {"goal_id": goal_id, "status": "paused"}
 
+    async def _suspend_for_approval(self, goal_id: str, tenant_ctx: TenantContext) -> None:
+        """Record that the agent graph ENDED waiting for approvals (supervised mode).
+
+        The run returned with status WAITING_HUMAN but emits no event for it, and
+        its result used to be ignored: the goal stayed "executing" forever,
+        holding its concurrency slot, and resume_goal (which requires
+        WAITING_HUMAN) could never continue it. The goal is now marked waiting
+        and suspended — no task holds it, so the slot is released — and
+        ``resume_goal`` relaunches it from its step checkpoints.
+        """
+        record = self._goals.get(goal_id)
+        if record is None or record.status in _TERMINAL_STATUSES:
+            return
+        record.status = GoalStatus.WAITING_HUMAN
+        record.execution_context[_SUSPENDED_KEY] = True
+        await self._db_update_goal_status(
+            goal_id, tenant_ctx.tenant_id, GoalStatus.WAITING_HUMAN.value
+        )
+        await self._db_set_suspended(goal_id, tenant_ctx.tenant_id, True)
+        from app.tenancy.limits import decrement_concurrent_goals
+
+        await decrement_concurrent_goals(tenant_id=tenant_ctx.tenant_id, redis=self._redis)
+        await self._dispatch_event(
+            goal_id,
+            {"type": "goal_waiting_human", "reason": "pending approvals (supervised mode)"},
+            tenant_ctx=tenant_ctx,
+        )
+
+    async def _relaunch_suspended_goal(
+        self, record: GoalRecord, tenant_ctx: TenantContext
+    ) -> None:
+        """Run a suspended goal again under its own id; its checkpoints resume it."""
+        from app.tenancy.limits import check_and_increment_concurrent_goals
+
+        # The slot was released on suspension; a tenant at its limit gets a 429
+        # and the goal stays waiting (the approval can be retried).
+        await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
+        record.execution_context.pop(_SUSPENDED_KEY, None)
+        await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, False)
+        if self._task_queue is not None:
+            self._task_queue.enqueue_goal(
+                goal_id=record.goal_id,
+                tenant_id=tenant_ctx.tenant_id,
+                goal_text=record.goal_text,
+                priority=record.priority,
+                dry_run=False,
+                agent_id=record.agent_id,
+                connector_ids=[],
+                workflow_mode=record.workflow_mode,
+                goal_template="",
+                plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
+            )
+            return
+        tool_context = await self._build_tool_context(
+            agent_id=record.agent_id, tenant_ctx=tenant_ctx, goal=record.goal_text
+        )
+        record.task = asyncio.create_task(
+            self._run_agent_loop(
+                record.goal_id, record.goal_text, tenant_ctx, tool_context=tool_context
+            ),
+            name=f"goal-{record.goal_id}",
+        )
+
+    async def _db_set_suspended(self, goal_id: str, tenant_id: str, suspended: bool) -> None:
+        """Set/clear the suspended flag in goals.execution_context (atomic JSON merge,
+        so the API and a worker never overwrite each other's context)."""
+        if self._db is None:
+            return
+        try:
+            from sqlalchemy import text as _sql
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            expr = (
+                "COALESCE(execution_context::jsonb, '{}'::jsonb) "
+                "|| jsonb_build_object(CAST(:k AS text), true)"
+                if suspended
+                else "COALESCE(execution_context::jsonb, '{}'::jsonb) - CAST(:k AS text)"
+            )
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    _sql(
+                        f"UPDATE goals SET execution_context = ({expr})::json "
+                        "WHERE id = :g AND tenant_id = :t"
+                    ),
+                    {"k": _SUSPENDED_KEY, "g": goal_id, "t": tenant_id},
+                )
+        except Exception as exc:
+            _svc_logger.warning("db_set_suspended_failed", error=str(exc))
+
     def _make_pause_gate(
         self, goal_id: str, tenant_ctx: TenantContext
     ) -> Callable[[], Awaitable[None]]:
@@ -3709,6 +3808,11 @@ class GoalService:
         # never matched the one run() uses and without the goal in the input, so
         # it always errored into this path — and had the ids matched it would
         # have started a second concurrent execution of the same goal.
+        # A supervised goal whose graph ended waiting for approvals has no task
+        # blocked in a pause gate to release: run it again (checkpoints skip the
+        # steps it already finished).
+        if record.execution_context.get(_SUSPENDED_KEY):
+            await self._relaunch_suspended_goal(record, tenant_ctx)
         record.status = GoalStatus.EXECUTING
         await self._db_update_goal_status(
             goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
