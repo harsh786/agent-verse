@@ -18,11 +18,13 @@ class TestGitHubIngestorInit:
         ing = GitHubIngestor(token="ghp_abc123")
         assert ing._token == "ghp_abc123"
 
-    def test_token_from_env(self, monkeypatch):
+    def test_platform_token_is_never_used(self, monkeypatch):
+        """Regression: falling back to the platform's GITHUB_TOKEN let any tenant
+        ingest private repos only the platform can read."""
         monkeypatch.setenv("GITHUB_TOKEN", "env-token")
         from app.knowledge.ingestors.github_ingestor import GitHubIngestor
-        ing = GitHubIngestor()
-        assert ing._token == "env-token"
+        assert GitHubIngestor()._token == ""
+        assert GitHubIngestor(token="tenant-token")._token == "tenant-token"
 
     def test_no_token(self, monkeypatch):
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)

@@ -160,13 +160,17 @@ async def test_http_tool_success_get():
     mock_resp.headers = {"content-type": "application/json"}
     mock_resp.content = b'{"hello": "world"}'
     mock_resp.raise_for_status = lambda: None
+    mock_resp.is_redirect = False
 
     mock_client = MagicMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.request = AsyncMock(return_value=mock_resp)
 
-    with patch("httpx.AsyncClient", return_value=mock_client):
+    with (
+        patch("httpx.AsyncClient", return_value=mock_client),
+        patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]),
+    ):
         result = await tool.execute(url="https://api.example.com/data")
 
     assert result["status_code"] == 200

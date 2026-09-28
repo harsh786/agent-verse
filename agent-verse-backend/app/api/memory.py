@@ -49,7 +49,8 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
     """Manually create a long-term memory entry."""
     tenant_ctx = _require_tenant(request)
     db = _get_db(request)
-    memory_id = str(uuid.uuid4())
+    # long_term_memory.id is VARCHAR(32): a dashed uuid4 (36 chars) failed every insert.
+    memory_id = uuid.uuid4().hex
 
     if db is not None:
         try:

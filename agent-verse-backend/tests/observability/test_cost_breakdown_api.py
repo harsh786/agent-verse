@@ -13,10 +13,22 @@ from app.observability.cost_breakdown import get_breakdown
 from app.observability.cost_breakdown_api import get_goal_cost_metrics
 
 
-def _request(*, tenant=None, llm_cache=None):
+_OWNER = SimpleNamespace(tenant_id="t1")
+
+
+class _Goals:
+    """Tenant-scoped goal lookup: only t1 owns goals here."""
+
+    async def get_goal(self, *, goal_id: str, tenant_ctx):
+        if tenant_ctx.tenant_id != "t1":
+            raise LookupError(goal_id)
+        return {"goal_id": goal_id}
+
+
+def _request(*, tenant=_OWNER, llm_cache=None):
     request = MagicMock()
     request.state = SimpleNamespace(tenant=tenant)
-    request.app.state = SimpleNamespace(llm_response_cache=llm_cache)
+    request.app.state = SimpleNamespace(llm_response_cache=llm_cache, goal_service=_Goals())
     return request
 
 
@@ -47,13 +59,26 @@ async def test_returns_recorded_role_entries():
 
 
 @pytest.mark.asyncio
-async def test_no_tenant_skips_cache_stats():
-    """Without a tenant on request.state, llm_cache is never consulted even if present."""
+async def test_no_tenant_is_rejected_before_any_lookup():
+    """Regression: it served any goal's cost breakdown; now 401 without a tenant."""
+    from fastapi import HTTPException
+
     llm_cache = MagicMock()
-    request = _request(tenant=None, llm_cache=llm_cache)
-    result = await get_goal_cost_metrics("goal-x", request)
-    assert "llm_cache" not in result
+    with pytest.raises(HTTPException) as exc:
+        await get_goal_cost_metrics("goal-x", _request(tenant=None, llm_cache=llm_cache))
+    assert exc.value.status_code == 401
     llm_cache.stats.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_another_tenants_goal_is_404():
+    """Regression: the breakdown is keyed by goal id alone, so any tenant could read it."""
+    from fastapi import HTTPException
+
+    get_breakdown("goal-secret").record("planner", "m", 1, 1, 0.5)
+    with pytest.raises(HTTPException) as exc:
+        await get_goal_cost_metrics("goal-secret", _request(tenant=SimpleNamespace(tenant_id="t2")))
+    assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio

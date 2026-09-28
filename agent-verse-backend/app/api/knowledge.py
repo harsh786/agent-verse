@@ -115,6 +115,9 @@ class GitHubIngestRequest(BaseModel):
     repo: str
     branch: str = "HEAD"
     max_files: int = 300
+    # The tenant's own token for private repos; public repos need none. Never
+    # the platform's GITHUB_TOKEN (see GitHubIngestor).
+    token: SecretStr | None = None
 
 
 class ConfluenceIngestRequest(BaseModel):
@@ -1285,11 +1288,11 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
             )
             import httpx
 
+            # Anonymous fetch only. It used to attach the PLATFORM's GITHUB_TOKEN to
+            # a tenant-chosen URL, letting any tenant read every private repo that
+            # token can see (confused deputy). Private repos go through a
+            # tenant-configured GitHub source instead.
             headers: dict[str, str] = {}
-            import os as _os
-
-            if token := _os.getenv("GITHUB_TOKEN"):
-                headers["Authorization"] = f"Bearer {token}"
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(raw_url, headers=headers)
                 resp.raise_for_status()
@@ -1499,7 +1502,7 @@ async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str
 
     from app.knowledge.ingestors.github_ingestor import GitHubIngestor
 
-    ingestor = GitHubIngestor()
+    ingestor = GitHubIngestor(token=body.token.get_secret_value() if body.token else None)
     chunks = await ingestor.ingest_repo(
         body.owner,
         body.repo,

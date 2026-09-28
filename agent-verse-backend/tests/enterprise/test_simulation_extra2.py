@@ -254,10 +254,16 @@ class TestGetAndListRuns:
     @pytest.mark.asyncio
     async def test_get_existing_run(self):
         runner = SimulationRunner()
-        run = await runner.start(goal="test goal", provider=None)
+        run = await runner.start(goal="test goal", provider=None, tenant_ctx=_CTX)
         result = runner.get(run_id=run.run_id, tenant_ctx=_CTX)
         assert result is not None
         assert result.run_id == run.run_id
+        # Regression: another tenant must not read this run, or see it listed.
+        from types import SimpleNamespace
+
+        other = SimpleNamespace(tenant_id="someone-else")
+        assert runner.get(run_id=run.run_id, tenant_ctx=other) is None
+        assert runner.list_runs(tenant_ctx=other) == []
 
     @pytest.mark.asyncio
     async def test_get_missing_run_returns_none(self):
@@ -268,8 +274,8 @@ class TestGetAndListRuns:
     @pytest.mark.asyncio
     async def test_list_runs_returns_all(self):
         runner = SimulationRunner()
-        run1 = await runner.start(goal="goal 1", provider=None)
-        run2 = await runner.start(goal="goal 2", provider=None)
+        run1 = await runner.start(goal="goal 1", provider=None, tenant_ctx=_CTX)
+        run2 = await runner.start(goal="goal 2", provider=None, tenant_ctx=_CTX)
         runs = runner.list_runs(tenant_ctx=_CTX)
         run_ids = [r.run_id for r in runs]
         assert run1.run_id in run_ids

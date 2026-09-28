@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any, cast
 
 import httpx
@@ -105,7 +104,10 @@ _CHUNK_OVERLAP = 100
 
 class GitHubIngestor:
     def __init__(self, token: str | None = None) -> None:
-        self._token = token or os.getenv("GITHUB_TOKEN", "")
+        # Only an explicitly supplied (tenant) token. Falling back to the
+        # platform's GITHUB_TOKEN let a tenant ingest any private repo that token
+        # can read into its own knowledge base.
+        self._token = token or ""
 
     def _headers(self) -> dict[str, str]:
         h = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}

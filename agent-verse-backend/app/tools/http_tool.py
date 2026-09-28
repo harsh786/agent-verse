@@ -31,8 +31,29 @@ _BLOCKED_HOSTS = frozenset(
 _MAX_RESPONSE_BYTES = 512 * 1024  # 512 KB
 
 
+_MAX_REDIRECTS = 5
+
+
 def _is_blocked(url: str) -> bool:
-    """Block requests to internal/private/metadata endpoints (SSRF protection)."""
+    """Block requests to internal/private/metadata endpoints (SSRF protection).
+
+    Literal checks first, then the DNS-resolving guard (app.net.ssrf_guard): a
+    hostname that RESOLVES to 169.254.169.254 / 10.x / 127.x used to pass,
+    because only the literal host string was inspected. The agent-facing
+    ``http_request`` tool is reachable by prompt injection, so this matters.
+    """
+    if _is_blocked_literal(url):
+        return True
+    try:
+        from app.net.ssrf_guard import assert_public_url
+
+        assert_public_url(url, context="http_request tool")
+    except Exception:
+        return True
+    return False
+
+
+def _is_blocked_literal(url: str) -> bool:
     try:
         host = urlparse(url).hostname or ""
         if not host:
@@ -90,7 +111,9 @@ class HttpRequestTool:
         _headers.setdefault("User-Agent", "AgentVerse/1.0")
 
         try:
-            async with httpx.AsyncClient(timeout=_timeout, follow_redirects=True) as client:
+            # Redirects are followed manually so EVERY hop is re-validated: with
+            # follow_redirects=True a public URL could 302 to an internal address.
+            async with httpx.AsyncClient(timeout=_timeout, follow_redirects=False) as client:
                 send_kwargs: dict[str, Any] = {"headers": _headers}
                 if body is not None:
                     if isinstance(body, dict):
@@ -98,7 +121,20 @@ class HttpRequestTool:
                     else:
                         send_kwargs["content"] = str(body).encode()
 
-                resp = await client.request(method, url, **send_kwargs)
+                current_url, current_method = url, method
+                for _hop in range(_MAX_REDIRECTS + 1):
+                    resp = await client.request(current_method, current_url, **send_kwargs)
+                    if not resp.is_redirect:
+                        break
+                    location = resp.headers.get("location", "")
+                    next_url = str(resp.url.join(location)) if location else ""
+                    if not next_url or _is_blocked(next_url):
+                        return {"error": "Blocked: redirect to an internal address."}
+                    if resp.status_code in (301, 302, 303) and current_method != "GET":
+                        current_method, send_kwargs = "GET", {"headers": _headers}
+                    current_url = next_url
+                else:
+                    return {"error": f"Too many redirects (>{_MAX_REDIRECTS})"}
 
                 content = resp.content[:_MAX_RESPONSE_BYTES]
                 try:

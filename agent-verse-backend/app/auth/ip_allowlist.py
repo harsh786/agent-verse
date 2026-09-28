@@ -54,8 +54,16 @@ class IPAllowlistCache:
             from sqlalchemy import select
 
             from app.db.models.auth import IPAllowlistEntry
+            from app.db.rls import sqlalchemy_rls_context
 
-            async with db_factory() as db:
+            # ip_allowlist_entries is FORCE-RLS: without the tenant GUC the
+            # NOBYPASSRLS application role reads zero rows, so every allowlist
+            # silently allowed all IPs.
+            async with (
+                db_factory() as db,
+                db.begin(),
+                sqlalchemy_rls_context(db, tenant_id),
+            ):
                 result = await db.execute(
                     select(IPAllowlistEntry.cidr).where(
                         IPAllowlistEntry.tenant_id == tenant_id,
@@ -66,8 +74,15 @@ class IPAllowlistCache:
 
             await self._r.setex(self._key(tenant_id), self.TTL, json.dumps(cidrs))
             return cidrs
-        except Exception:
-            # Fail-open: allow all IPs when DB is unreachable
+        except Exception as exc:
+            # Fail-open on an outage (documented trade-off: failing closed would
+            # lock out every tenant, including those without an allowlist, on
+            # any DB blip). Never silent.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "ip_allowlist_lookup_failed_fail_open tenant=%s: %s", tenant_id, exc
+            )
             return []
 
     async def invalidate(self, tenant_id: str) -> None:

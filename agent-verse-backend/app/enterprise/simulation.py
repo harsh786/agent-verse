@@ -102,11 +102,18 @@ class SimulationRun:
     risk_level: str = ""
 
 
+def _tenant_of(tenant_ctx: Any) -> str:
+    return str(getattr(tenant_ctx, "tenant_id", "") or "")
+
+
 class SimulationRunner:
     """Runs goals in a mock-tool sandbox environment."""
 
     def __init__(self) -> None:
         self._runs: dict[str, SimulationRun] = {}
+        # run_id -> owning tenant. get/list used to ignore the tenant entirely:
+        # any tenant could read any run, and list_runs returned every tenant's.
+        self._run_tenant: dict[str, str] = {}
         self._provider: Any = None
 
     async def start(
@@ -221,6 +228,7 @@ class SimulationRunner:
                 },
             )
             self._runs[run_id] = run
+            self._run_tenant[run_id] = _tenant_of(tenant_ctx)
             return run
 
         except Exception as exc:
@@ -347,6 +355,7 @@ class SimulationRunner:
             "used_real_llm": provider is not None,
         }
         self._runs[run_id] = run
+        self._run_tenant[run_id] = _tenant_of(tenant_ctx)
         return run
 
     # ── Private helpers ────────────────────────────────────────────────────────
@@ -512,7 +521,10 @@ class SimulationRunner:
         return steps
 
     def get(self, *, run_id: str, tenant_ctx: TenantContext) -> SimulationRun | None:
+        if self._run_tenant.get(run_id) != _tenant_of(tenant_ctx):
+            return None
         return self._runs.get(run_id)
 
     def list_runs(self, *, tenant_ctx: TenantContext) -> list[SimulationRun]:
-        return list(self._runs.values())
+        tid = _tenant_of(tenant_ctx)
+        return [r for rid, r in self._runs.items() if self._run_tenant.get(rid) == tid]

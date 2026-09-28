@@ -147,12 +147,6 @@ async def _req(client: Any, method: str, url: str, body: Any = None) -> Any:
         return None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Open findings: KG document delete/sync, agent credentials write, "
-    "marketplace template read, and 8 server errors on valid input. Remove this "
-    "marker when the sweep is clean.",
-)
 async def test_no_path_param_operation_leaks_across_tenants(
     app: Any, client: Any, _reset_signup_rate_limit: None
 ) -> None:
@@ -178,6 +172,7 @@ async def test_no_path_param_operation_leaks_across_tenants(
 
     ca, cb = _client(key_a), _client(key_b)
     server_errors: list[str] = []
+    notes: list[str] = []
 
     paths = spec["paths"]
     # 1. Tenant A creates one resource per create-style collection.
@@ -197,7 +192,12 @@ async def test_no_path_param_operation_leaks_across_tenants(
         body = synth.value(schema) if schema else {}
         resp = await _req(ca, "POST", path, body)
         if resp is not None and resp.status_code >= 500:
-            server_errors.append(f"{resp.status_code} POST {path} (tenant A create)")
+            if resp.status_code == 503 and "not enabled" in resp.text.lower():
+                # A feature switched off by configuration, reported as such —
+                # not a server error (e.g. CIVILIZATION_ENABLED unset).
+                notes.append(f"feature disabled: POST {path}")
+            else:
+                server_errors.append(f"{resp.status_code} POST {path} (tenant A create)")
         if resp is None or resp.status_code >= 300:
             continue
         try:
@@ -244,7 +244,6 @@ async def test_no_path_param_operation_leaks_across_tenants(
         return snap
 
     findings: list[str] = []
-    notes: list[str] = []
     probed = 0
     for path, item in paths.items():
         if "{" not in path:

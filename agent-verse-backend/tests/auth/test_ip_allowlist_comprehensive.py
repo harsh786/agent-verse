@@ -136,6 +136,12 @@ async def test_get_cidrs_cache_miss_queries_db():
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
     session_mock.execute = AsyncMock(return_value=result_mock)
+    # A real AsyncSession.begin() returns an async context manager (the lookup
+    # now runs in a tenant-RLS transaction).
+    begin_cm = MagicMock()
+    begin_cm.__aenter__ = AsyncMock(return_value=None)
+    begin_cm.__aexit__ = AsyncMock(return_value=False)
+    session_mock.begin = MagicMock(return_value=begin_cm)
     db_factory = MagicMock(return_value=session_mock)
 
     cache = IPAllowlistCache(redis=redis_mock)
