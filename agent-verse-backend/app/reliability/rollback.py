@@ -10,8 +10,48 @@ from __future__ import annotations
 import enum
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RollbackReport:
+    """Honest outcome of a rollback: what was undone, skipped, or failed.
+
+    ``rollback_all_async`` used to return every registered action as "rolled
+    back" even when the inverse skipped (no id to act on) or errored.
+    """
+
+    rolled_back: list[str] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    failed: list[dict[str, str]] = field(default_factory=list)
+
+    def record(self, action: str, result: Any) -> None:
+        """Classify one inverse's return value (``InverseResult`` or legacy None)."""
+        from app.reliability.tool_inverses import FAILED, SKIPPED, InverseResult
+
+        if isinstance(result, InverseResult):
+            if result.outcome == SKIPPED:
+                self.skipped.append({"action": action, "detail": result.detail})
+                return
+            if result.outcome == FAILED:
+                self.failed.append({"action": action, "detail": result.detail})
+                return
+        self.rolled_back.append(action)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "counts": {
+                "rolled_back": len(self.rolled_back),
+                "skipped": len(self.skipped),
+                "failed": len(self.failed),
+            },
+            "rolled_back": list(self.rolled_back),
+            "skipped": list(self.skipped),
+            "failed": list(self.failed),
+        }
 
 
 class RollbackAction(enum.StrEnum):
@@ -34,14 +74,50 @@ class RollbackEngine:
     """Collects reversible action registrations and executes them in LIFO order."""
 
     def __init__(self) -> None:
-        self._stack: list[tuple[str, Callable[[], None]]] = []
+        self._stack: list[tuple[str, Callable[[], Any]]] = []
+        # Outcome of the most recent rollback_all_async() call.
+        self.last_report: RollbackReport | None = None
 
-    def register(self, *, action: str, inverse: Callable[[], None]) -> None:
+    def register(self, *, action: str, inverse: Callable[[], Any]) -> None:
         """Register an action with its inverse function."""
         self._stack.append((action, inverse))
         logger.debug(
             "Registered rollback point for: %s (stack depth: %d)", action, len(self._stack)
         )
+
+    def register_tool_call(
+        self,
+        *,
+        action: str,
+        tool_names: list[str],
+        arguments: dict[str, Any],
+        output: Any,
+        server_id: str,
+        tenant_ctx: Any,
+        mcp_client: Any = None,
+    ) -> None:
+        """Register an executed tool call for undo.
+
+        Captures the tool's OUTPUT (which carries the ids of created objects —
+        the input args never do) and the goal's real tenant context, so the
+        inverse can actually find and delete what the forward call created.
+        """
+        from app.reliability.tool_inverses import run_inverse
+
+        _names = [n for n in tool_names if n]
+        _args = dict(arguments)
+
+        async def _undo() -> Any:
+            return await run_inverse(
+                _names,
+                arguments=_args,
+                output=output,
+                server_id=server_id,
+                tenant_ctx=tenant_ctx,
+                mcp_client=mcp_client,
+            )
+
+        self._stack.append((action, _undo))
 
     def register_typed(
         self,
@@ -124,12 +200,15 @@ class RollbackEngine:
             :meth:`register` / :meth:`register_typed`.  Coroutine inverses are
             awaited; sync inverses are called directly.
 
-        Returns list of successfully rolled-back action names.  Errors are
-        logged but do not abort the remaining rollback sequence.
+        Returns the names of actions that were ACTUALLY undone. Inverses that
+        skipped (nothing identifiable to undo) or failed are excluded; the full
+        breakdown is left on :attr:`last_report`. Errors are logged but do not
+        abort the remaining rollback sequence.
         """
         import asyncio
 
-        rolled_back: list[str] = []
+        report = RollbackReport()
+        self.last_report = report
 
         # ── Tool-call mode: use tool_inverses registry, fully awaited ───────
         if executed_tool_calls is not None:
@@ -140,18 +219,20 @@ class RollbackEngine:
                 inverse = get_inverse_fn(tool_name)
                 if inverse is None:
                     logger.info("rollback_no_inverse tool=%s", tool_name)
+                    report.skipped.append({"action": tool_name, "detail": "no inverse"})
                     continue
                 try:
-                    await inverse(tool_call=tool_call, mcp_client=_mcp_client)
-                    rolled_back.append(tool_name)
+                    result = await inverse(tool_call=tool_call, mcp_client=_mcp_client)
+                    report.record(tool_name, result)
                     logger.info("Rolled back async: %s", tool_name)
                 except Exception as exc:
+                    report.failed.append({"action": tool_name, "detail": str(exc)[:200]})
                     logger.warning(
                         "rollback_inverse_error tool=%s error=%s",
                         tool_name,
                         str(exc)[:80],
                     )
-            return rolled_back
+            return list(report.rolled_back)
 
         # ── Stack mode: legacy _stack path ──────────────────────────────────
         while self._stack:
@@ -159,12 +240,13 @@ class RollbackEngine:
             try:
                 result = inverse()
                 if asyncio.iscoroutine(result):
-                    await result
-                rolled_back.append(action)
+                    result = await result
+                report.record(action, result)
                 logger.info("Rolled back async: %s", action)
             except Exception as exc:
+                report.failed.append({"action": action, "detail": str(exc)[:200]})
                 logger.error("Async rollback failed for '%s': %s", action, exc)
-        return rolled_back
+        return list(report.rolled_back)
 
     def preview(self) -> list[str]:
         """Return list of registered actions without executing rollback (LIFO order)."""

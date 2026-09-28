@@ -502,11 +502,10 @@ def test_update_notifications_malformed_body_defaults_to_empty() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_list_sessions_returns_empty_list() -> None:
+def test_list_sessions_is_honestly_not_implemented() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/tenants/me/sessions", headers=H)
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 501
 
 
 def test_list_sessions_requires_auth() -> None:
