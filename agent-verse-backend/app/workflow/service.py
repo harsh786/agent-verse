@@ -419,22 +419,44 @@ class WorkflowService:
             run_id, WorkflowRunStatus.RUNNING, tenant_id=tenant_id
         )
 
-    async def retry_run(self, tenant_id: str, run_id: str) -> str | None:
-        """Create a fresh run from a failed run's inputs. Returns the new run_id."""
+    async def retry_run(self, tenant_id: str, run_id: str, runner: Any = None) -> str | None:
+        """Retry a failed run as a NEW run and dispatch it. Returns the new run_id.
+
+        The new run reuses the failed run's inputs (and its callback_url), is
+        seeded with the failed run's COMPLETE step results, and goes through the
+        same ``WorkflowRunner.run`` path as any new run (row + Celery dispatch,
+        or inline without a broker). Because the engine skips steps already
+        persisted COMPLETE, the retry resumes after the last completed step
+        instead of redoing them. It runs against the workflow's CURRENT
+        definition; steps whose ids no longer exist are simply not reused.
+
+        Old bug: this inserted a ``pending`` row and never dispatched it, so the
+        retry sat pending forever (while claiming checkpoint resume).
+
+        Returns None when the run is unknown or not ``failed``. Raises
+        ``WorkflowEngineUnavailableError`` when no durable runner is wired —
+        rather than creating an orphan row nothing will ever execute.
+        """
+        from app.workflow.runner import WorkflowEngineUnavailableError
+
         if self._run_store is None:
             return None
         run = await self._run_store.get(tenant_id, run_id)
         if run is None or run.get("status") != "failed":
             return None
-        import uuid as _uuid
-
-        new_run_id = str(_uuid.uuid4())
-        await self._run_store.create(
-            run_id=new_run_id,
+        if runner is None or getattr(runner, "_run_store", None) is None:
+            raise WorkflowEngineUnavailableError("workflow runner not available for retry")
+        prior_meta = run.get("run_metadata") or {}
+        metadata: dict[str, Any] = {"retry_of": run_id}
+        if prior_meta.get("callback_url"):
+            metadata["callback_url"] = prior_meta["callback_url"]
+        new_run_id: str = await runner.run(
             workflow_id=run.get("workflow_id", ""),
             tenant_id=tenant_id,
+            inputs=run.get("inputs") or {},
             trigger_type="retry",
-            inputs=run.get("inputs", {}),
+            run_metadata=metadata,
+            seed_from_run_id=run_id,
         )
         return new_run_id
 

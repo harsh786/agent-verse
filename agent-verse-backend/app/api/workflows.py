@@ -7,7 +7,7 @@ POST   /workflows              create a new workflow definition
 GET    /workflows/{id}         retrieve a single workflow
 PUT    /workflows/{id}         update name / description / definition (version bumped)
 DELETE /workflows/{id}         delete a workflow
-POST   /workflows/{id}/run     execute a workflow by submitting it as an AgentVerse goal
+POST   /workflows/{id}/run     start a durable workflow-engine run (same path as /trigger)
 
 Design notes
 ------------
@@ -16,10 +16,10 @@ Design notes
   ``store.set_db(db_session_factory)`` during the FastAPI lifespan startup.
 - All DB queries set the ``app.tenant_id`` Postgres GUC so Row-Level Security
   policies on the ``workflows`` table enforce tenant isolation at the DB layer.
-- The ``run`` endpoint converts the saved workflow graph into a natural-language
-  goal and submits it through ``GoalService``.  When ``dry_run=true`` is passed
-  (or no GoalService is wired) the endpoint returns immediately with
-  ``status="dry_run"`` — safe for integration tests and canvas previews.
+- The ``run`` endpoint creates a persisted run and dispatches it through the
+  workflow engine (``WorkflowRunner.run``), returning the real run id. With
+  ``dry_run=true`` it only validates and returns ``status="dry_run"``. There is
+  no goal-submission fallback: engine errors surface as HTTP errors.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.rag.contracts import UnavailableRAGStrategyError, UnknownRAGStrategyError
 from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -614,6 +613,13 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
 
 
+class WorkflowRunRequest(BaseModel):
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    # Honoured like the ?dry_run query flag: a caller asking for a dry run must
+    # never get a real execution.
+    dry_run: bool = False
+
+
 @router.post(
     "/{workflow_id}/run",
     status_code=status.HTTP_202_ACCEPTED,
@@ -625,12 +631,19 @@ async def run_workflow(
         default=False,
         description="When true, validates the workflow but does not execute.",
     ),
+    body: WorkflowRunRequest | None = None,
 ) -> dict[str, Any]:
-    """Execute a saved workflow using WorkflowExecutor for parallel DAG execution.
+    """Start a durable run of a saved workflow (same path as ``/trigger``).
 
-    When the definition contains ``steps``, ``WorkflowExecutor.execute()`` runs
-    the parallel DAG directly.  Falls back to ``GoalService`` submission for
-    definitions without step metadata.
+    Creates a persisted ``workflow_runs`` row and dispatches it through the
+    workflow engine (Celery per-plan queue, or inline when no broker is wired).
+    Returns the REAL run id; poll ``GET /api/v1/runs/{run_id}`` for progress.
+
+    Old bug: this ran ``WorkflowExecutor`` synchronously inside the request with
+    no persistence (a random, unqueryable run id) and, on any error, silently
+    fell back to submitting a generic goal "Execute workflow <name>", reporting
+    success for something that was never the workflow. Errors are now HTTP
+    errors (422 invalid inputs/definition, 503 engine unavailable).
 
     Pass ``dry_run=true`` to validate and return plan metadata without executing.
     """
@@ -643,9 +656,8 @@ async def run_workflow(
     definition = wf.get("definition") or {}
     desc = (wf.get("description") or "").strip()
     goal_text = f"Execute workflow '{wf['name']}'" + (f": {desc}" if desc else "")
-    run_id = uuid.uuid4().hex
 
-    if dry_run:
+    if dry_run or (body is not None and body.dry_run):
         return {
             "run_id": f"wf-dry-{workflow_id[:8]}",
             "status": "dry_run",
@@ -654,108 +666,52 @@ async def run_workflow(
             "definition": definition,
         }
 
-    # ── WorkflowExecutor path: parallel DAG execution ─────────────────────────
-    steps_data: list[Any] = definition.get("steps", [])
-    if steps_data:
-        try:
-            from app.agent.workflow_executor import WorkflowExecutor
-            from app.agent.workflow_planner import WorkflowPlan
+    from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
 
-            plan = WorkflowPlan.from_dict(definition, goal=goal_text)
-            executor = WorkflowExecutor(
-                provider=getattr(request.app.state, "_app_provider", None),
-                mcp_client=getattr(request.app.state, "mcp_client", None),
-                retrieval_gateway=getattr(request.app.state, "retrieval_gateway", None),
-            )
-            result = await executor.execute(plan, tenant_ctx=tenant)
-            if result.get("status") == "failed":
-                failed_ids = {
-                    str(result.get("failed_step", "")),
-                    *[str(value) for value in result.get("failed_steps", [])],
-                    # Also derive failed step IDs from the per-step results dict
-                    # (WorkflowExecutor returns these when StepExecutionError fires)
-                    *[
-                        step_id
-                        for step_id, step_result in (result.get("results") or {}).items()
-                        if isinstance(step_result, dict) and step_result.get("status") == "failed"
-                    ],
-                }
-                failed_rag_steps = [
-                    step for step in plan.steps if step.id in failed_ids and step.tool == "rag"
-                ]
-                if failed_rag_steps:
-                    failed_step = failed_rag_steps[0]
-                    requested_strategy = str(failed_step.config.get("requested_strategy_id", ""))
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail={
-                            "code": "workflow_retrieval_failed",
-                            "reason": "Retrieval service is unavailable",
-                            "requested_strategy_id": requested_strategy,
-                            "strategy_trace": [
-                                {
-                                    "strategy": failed_step.config.get(
-                                        "strategy",
-                                        requested_strategy,
-                                    ),
-                                    "action": "workflow_retrieval",
-                                    "status": "failed",
-                                }
-                            ],
-                        },
-                    )
-            return {
-                "run_id": run_id,
-                "status": result.get("status", "complete"),
-                "workflow_id": workflow_id,
-                "goal": goal_text,
-                "steps_executed": result.get("steps_executed", 0),
-                "waves": result.get("waves", 0),
-                "summary": result.get("summary", ""),
-            }
-        except UnknownRAGStrategyError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=str(exc),
-            ) from exc
-        except UnavailableRAGStrategyError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={
-                    "code": "workflow_retrieval_failed",
-                    "reason": "Retrieval service is unavailable",
-                    "strategy_trace": [
-                        {"strategy": str(exc), "action": "workflow_retrieval", "status": "failed"}
-                    ],
-                },
-            ) from exc
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # Operational error — fall through to GoalService
+    runner = getattr(request.app.state, "workflow_runner", None)
+    if runner is None or getattr(runner, "_run_store", None) is None:
+        # The in-memory runner has no run store: it would "execute" a stub
+        # definition and nothing could ever be queried. Refuse honestly.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Durable workflow engine is not available",
+        )
+    try:
+        run_id = await runner.run(
+            workflow_id=workflow_id,
+            tenant_id=tenant.tenant_id,
+            inputs=(body.inputs if body else {}),
+            trigger_type="api",
+        )
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
+    except WorkflowEngineUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        ) from exc
+    except KeyError as exc:  # definition not bridged into workflow_definitions
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Workflow definition is not runnable: {exc}",
+        ) from exc
+    except (ValueError, TypeError) as exc:  # DSL failed to parse/compile
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Invalid workflow definition: {exc}",
+        ) from exc
 
-    # ── GoalService fallback ──────────────────────────────────────────────────
-    goal_service = getattr(request.app.state, "goal_service", None)
-    if goal_service is None:
-        return {
-            "run_id": run_id,
-            "status": "dry_run",
-            "workflow_id": workflow_id,
-            "goal": goal_text,
-        }
-
-    result = await goal_service.submit_goal(
-        goal=goal_text,
-        tenant_ctx=tenant,
-        execution_context={
-            "workflow_id": workflow_id,
-            "workflow_definition": definition,
-        },
-    )
-    goal_run_id: str = result.get("id") or result.get("goal_id") or f"wf-{workflow_id[:8]}"
+    run_status = "pending"
+    try:
+        rec = await runner._run_store.get(tenant.tenant_id, run_id)
+        if isinstance(rec, dict) and rec.get("status"):
+            run_status = str(rec["status"])
+    except Exception:  # pragma: no cover - status read is informational
+        pass
     return {
-        "run_id": goal_run_id,
-        "status": result.get("status", "planning"),
+        "run_id": run_id,
+        "status": run_status,
         "workflow_id": workflow_id,
-        "goal": goal_text,
+        "run_url": f"/api/v1/runs/{run_id}",
     }

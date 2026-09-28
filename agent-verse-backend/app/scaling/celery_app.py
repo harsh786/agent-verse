@@ -117,6 +117,8 @@ celery_app.conf.update(
         "workflow.retry_dead_letter_webhooks": {"queue": "workflows.maintenance"},
         "workflow.cleanup_expired_runs": {"queue": "workflows.maintenance"},
         "workflow.fire_due_workflow_schedules": {"queue": "workflows.maintenance"},
+        "workflow.wake_due_timer_waits": {"queue": "workflows.maintenance"},
+        "workflow.deliver_workflow_callback": {"queue": "workflows.maintenance"},
         # Legacy dotted-path keys (kept for backwards-compat; do not match the
         # registered task names above, but harmless).
         "app.workflow.celery_tasks.execute_workflow_run": {"queue": "workflows.free"},
@@ -278,6 +280,13 @@ celery_app.conf.update(
         "workflow-fire-due-schedules": {
             "task": "workflow.fire_due_workflow_schedules",
             "schedule": 60.0,  # every 60 seconds
+            "options": {"queue": "workflows.maintenance"},
+        },
+        # Durable timer waits: re-dispatch runs whose ``wait`` step wake time has
+        # passed (the wait no longer sleeps inside a worker slot).
+        "workflow-wake-due-timer-waits": {
+            "task": "workflow.wake_due_timer_waits",
+            "schedule": 30.0,  # every 30 seconds
             "options": {"queue": "workflows.maintenance"},
         },
     },

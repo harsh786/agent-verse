@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -127,6 +128,9 @@ def _build_worker_runner() -> Any:
         ocr_engine=OcrEngine(),
         knowledge_store=_wf_knowledge,
         mcp_client=_wf_mcp_client,
+        # Long timer waits suspend the run (waiting_timer) and are re-dispatched
+        # by the ``workflow.wake_due_timer_waits`` beat instead of sleeping here.
+        durable_timer_waits=True,
     )
     _WORKER_RUNNER = WorkflowRunner(
         compiler=compiler,
@@ -243,6 +247,89 @@ def execute_workflow_run(
     except Exception as exc:
         _log.error("execute_workflow_run_failed", run_id=run_id, error=str(exc))
         raise
+
+
+@celery_app.task(
+    name="workflow.deliver_workflow_callback",
+    bind=True,
+    acks_late=True,
+    max_retries=5,
+)
+def deliver_workflow_callback(
+    self: Any,
+    url: str,
+    payload: dict,
+    tenant_id: str,
+    workflow_id: str,
+) -> bool:
+    """Deliver one run-completion callback; transient failures are retried by
+    Celery with exponential backoff (bounded by ``max_retries``), so a delivery
+    survives a worker crash instead of living in one process's memory."""
+    from app.workflow.callbacks import (
+        CallbackPermanentError,
+        CallbackTransientError,
+        backoff_seconds,
+        deliver_callback,
+    )
+
+    try:
+        _run_async(
+            deliver_callback(url, payload, tenant_id=tenant_id, workflow_id=workflow_id)
+        )
+    except CallbackPermanentError as exc:
+        _log.warning("workflow_callback_rejected", run_id=payload.get("run_id"), error=str(exc))
+        return False
+    except CallbackTransientError as exc:
+        attempt = int(getattr(self.request, "retries", 0) or 0) + 1
+        if attempt > self.max_retries:
+            _log.error("workflow_callback_exhausted", run_id=payload.get("run_id"))
+            return False
+        raise self.retry(exc=exc, countdown=backoff_seconds(attempt)) from exc
+    _log.info("workflow_callback_delivered", run_id=payload.get("run_id"))
+    return True
+
+
+async def wake_due_timer_waits_async(limit: int = 200) -> dict[str, int]:
+    """Re-dispatch runs whose durable timer wait has come due.
+
+    The claim is an atomic ``waiting_timer`` -> ``pending`` flip in the database
+    (``claim_due_timer_waits``), so concurrent beat replicas never double-fire a
+    run. If handing a claimed run to the broker fails, the claim is released so
+    the next scan retries it rather than leaving it stranded ``pending``.
+    """
+    runner = _get_runner()
+    run_store = getattr(runner, "_run_store", None) if runner else None
+    if run_store is None or not hasattr(run_store, "claim_due_timer_waits"):
+        _log.error("workflow_timer_wake_unavailable")
+        return {"claimed": 0, "dispatched": 0}
+    claimed = await run_store.claim_due_timer_waits(limit=limit)
+    dispatched = 0
+    for item in claimed:
+        try:
+            tier = await runner._get_plan_tier(item["tenant_id"])
+            execute_workflow_run.apply_async(
+                args=[item["run_id"], item["workflow_id"], item["tenant_id"]],
+                kwargs={"is_test_run": bool(item.get("is_test_run"))},
+                queue=f"workflows.{tier}",
+            )
+            dispatched += 1
+        except Exception as exc:
+            _log.error("workflow_timer_wake_dispatch_failed", run_id=item["run_id"], error=str(exc))
+            with contextlib.suppress(Exception):
+                await run_store.release_timer_claim(item["tenant_id"], item["run_id"])
+    if claimed:
+        _log.info("workflow_timer_waits_woken", claimed=len(claimed), dispatched=dispatched)
+    return {"claimed": len(claimed), "dispatched": dispatched}
+
+
+@celery_app.task(name="workflow.wake_due_timer_waits")
+def wake_due_timer_waits() -> dict[str, int]:
+    """Beat task (every 30s) — see :func:`wake_due_timer_waits_async`."""
+    try:
+        return _run_async(wake_due_timer_waits_async())
+    except Exception as exc:
+        _log.error("wake_due_timer_waits_failed", error=str(exc))
+        return {"claimed": 0, "dispatched": 0}
 
 
 @celery_app.task(name="workflow.check_hitl_escalations")

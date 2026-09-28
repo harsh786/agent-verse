@@ -381,3 +381,82 @@ async def test_list_webhook_events(seeded: dict, factories: tuple) -> None:
         seeded["tenant_b"], seeded["workflow_id"], limit=20, offset=0
     )
     assert b_total == 0 and b_events == []
+
+
+# ── Idempotency, retry seeding, durable timer waits (real SQL) ────────────────
+
+
+async def test_idempotency_key_unique_per_tenant_workflow(seeded: dict) -> None:
+    """The partial UNIQUE index arbitrates duplicate triggers: the second insert
+    with the same key returns the FIRST run's id and creates no row."""
+    store: PostgresWorkflowRunStore = seeded["store"]
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    common = {"workflow_id": seeded["workflow_id"], "tenant_id": seeded["tenant_a"]}
+    assert await store.create(run_id=first, idempotency_key="order-42", **common) == first
+    assert await store.create(run_id=second, idempotency_key="order-42", **common) == first
+    assert await store.get(seeded["tenant_a"], second) is None
+    # A different key still creates a new run.
+    third = str(uuid.uuid4())
+    assert await store.create(run_id=third, idempotency_key="order-43", **common) == third
+
+
+async def test_run_metadata_round_trips(seeded: dict) -> None:
+    store: PostgresWorkflowRunStore = seeded["store"]
+    run_id = str(uuid.uuid4())
+    await store.create(
+        run_id=run_id,
+        workflow_id=seeded["workflow_id"],
+        tenant_id=seeded["tenant_a"],
+        run_metadata={"callback_url": "https://93.184.216.34/cb"},
+    )
+    run = await store.get(seeded["tenant_a"], run_id)
+    assert run is not None
+    assert run["run_metadata"] == {"callback_url": "https://93.184.216.34/cb"}
+
+
+async def test_copy_completed_step_results_for_retry(seeded: dict) -> None:
+    store: PostgresWorkflowRunStore = seeded["store"]
+    tid = seeded["tenant_a"]
+    old, new = str(uuid.uuid4()), str(uuid.uuid4())
+    for rid in (old, new):
+        await store.create(run_id=rid, workflow_id=seeded["workflow_id"], tenant_id=tid)
+    for step_id, status in (("a", StepStatus.COMPLETE), ("b", StepStatus.FAILED)):
+        await store.record_step_start(run_id=old, tenant_id=tid, step_id=step_id, step_type="t")
+        await store.record_step_finish(
+            run_id=old, tenant_id=tid, step_id=step_id, status=status, output={"s": step_id}
+        )
+    assert await store.copy_completed_step_results(tid, old, new) == 1
+    copied = await store.get_step_result(tid, new, "a")
+    assert copied is not None and copied["status"] == "complete"
+    assert copied["output"] == {"s": "a"}
+    assert await store.get_step_result(tid, new, "b") is None
+
+
+async def test_timer_wait_set_get_and_single_claim(seeded: dict, factories: tuple) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    admin_factory, app_factory = factories
+    store = PostgresWorkflowRunStore(app_factory, system_db_factory=admin_factory)
+    tid = seeded["tenant_a"]
+    due, later = str(uuid.uuid4()), str(uuid.uuid4())
+    for rid in (due, later):
+        await store.create(run_id=rid, workflow_id=seeded["workflow_id"], tenant_id=tid)
+        await store.update_status(rid, WorkflowRunStatus.WAITING_TIMER, tenant_id=tid)
+    past = datetime.now(UTC) - timedelta(seconds=5)
+    future = datetime.now(UTC) + timedelta(hours=1)
+    await store.set_timer_wait(tid, due, "w1", past)
+    await store.set_timer_wait(tid, later, "w1", future)
+    assert await store.get_timer_wait(tid, due, "w1") == past.isoformat()
+
+    claimed_ids = {c["run_id"] for c in await store.claim_due_timer_waits()}
+    assert due in claimed_ids and later not in claimed_ids
+    # Claimed exactly once: an overlapping scan gets nothing for this run.
+    assert due not in {c["run_id"] for c in await store.claim_due_timer_waits()}
+    rec = await store.get(tid, due)
+    assert rec is not None and rec["status"] == "pending" and rec["wake_at"] is None
+    # The step's own wake time survives the claim (the re-run reads it).
+    assert await store.get_timer_wait(tid, due, "w1") == past.isoformat()
+
+    # A failed re-dispatch releases the claim so the next scan retries it.
+    await store.release_timer_claim(tid, due)
+    assert due in {c["run_id"] for c in await store.claim_due_timer_waits()}

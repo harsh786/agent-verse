@@ -206,20 +206,31 @@ async def magic_link_decide(
     """Process a single-use magic link from email or Slack."""
     svc = _svc(request)
     payload = await svc.consume_magic_link(token)
-    if payload is None:
+    # A valid token always names the approval it was minted for; anything else
+    # (including the old no-Redis {"valid": True} fallback shape) is rejected.
+    if not payload or not payload.get("request_id"):
         raise HTTPException(status_code=410, detail="Magic link expired or already used")
 
-    request_id = payload.get("request_id", "")
+    # The decision is the one the token was minted for — the ?action= query is
+    # only a confirmation. Old bug: the query value was used verbatim, so an
+    # "approve" link could be edited into any other decision.
+    bound_action = str(payload.get("action") or "")
+    if action != bound_action:
+        raise HTTPException(status_code=400, detail="Magic link action mismatch")
+
+    request_id = str(payload["request_id"])
     user_id = "magic_link"
     try:
         req = await svc.decide(
             request_id=request_id,
-            action=action,
+            action=bound_action,
             actor_id=user_id,
+            # Resolve from the durable, RLS-scoped store of the owning tenant.
+            tenant_id=payload.get("tenant_id") or None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"request_id": req.request_id, "action": action, "status": req.status}
+    return {"request_id": req.request_id, "action": bound_action, "status": req.status}
 
 
 @router.post("/delegate-all", status_code=status.HTTP_200_OK)

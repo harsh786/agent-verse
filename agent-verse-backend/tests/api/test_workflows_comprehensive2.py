@@ -183,40 +183,28 @@ def test_run_workflow_dry_run_via_query() -> None:
     assert resp.json()["status"] == "dry_run"
 
 
-def test_run_workflow_no_goal_service_returns_dry_run() -> None:
+def test_run_workflow_without_engine_is_503_not_fake_dry_run() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    created = _create_workflow(client, "No Service Workflow")
-    wf_id = created["id"]
-
-    resp = client.post(
-        f"/workflows/{wf_id}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 202
-    # Without goal service, returns dry_run status
-    assert resp.json()["status"] == "dry_run"
+    wf_id = _create_workflow(client, "No Service Workflow")["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
 
 
-def test_run_workflow_with_goal_service_submit() -> None:
+def test_run_workflow_does_not_submit_goal() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     goal_svc = AsyncMock()
-    goal_svc.submit_goal.return_value = {
-        "goal_id": "goal-1",
-        "id": "goal-1",
-        "status": "planning",
-        "goal": "Execute workflow",
-    }
     client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
-    created = _create_workflow(client, "Submittable Workflow")
-    wf_id = created["id"]
-
-    resp = client.post(
-        f"/workflows/{wf_id}/run",
-        headers={"X-API-Key": _VALID_KEY},
-    )
-    assert resp.status_code == 202
-    body = resp.json()
-    # With goal service, should submit and return planning status
-    assert body["status"] in ("submitted", "planning", "dry_run")
+    wf_id = _create_workflow(client, "Submittable Workflow")["id"]
+    resp = client.post(f"/workflows/{wf_id}/run", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+    goal_svc.submit_goal.assert_not_awaited()
 
 
 def test_run_workflow_not_found() -> None:

@@ -14,7 +14,7 @@ Covers:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -82,53 +82,28 @@ def test_generate_requires_goal() -> None:
 
 # ── Test: run invokes WorkflowExecutor ────────────────────────────────────────
 
-def test_run_uses_workflow_executor() -> None:
-    """When the workflow definition has steps, WorkflowExecutor.execute() must be called."""
-    app = _make_app()
-    client = TestClient(app)
-
-    # Create a workflow with step definitions
-    wf_resp = client.post(
-        "/workflows",
-        json={
-            "name": "DAG Workflow",
-            "definition": {
-                "steps": [
-                    {"id": "s1", "description": "Fetch data", "tool": "", "depends_on": []},
-                    {"id": "s2", "description": "Process", "tool": "", "depends_on": ["s1"]},
-                ]
-            },
-        },
-        headers=_HEADERS,
-    )
-    assert wf_resp.status_code == 201
-    wf_id = wf_resp.json()["id"]
-
-    # Patch WorkflowExecutor at the module level so the local import picks it up
-    mock_exec_instance = MagicMock()
-    mock_exec_instance.execute = AsyncMock(
-        return_value={
-            "status": "complete",
-            "steps_executed": 2,
-            "waves": 2,
-            "results": {},
-            "summary": "Done",
-        }
-    )
-    mock_exec_class = MagicMock(return_value=mock_exec_instance)
-
+def test_run_does_not_execute_in_request_via_workflow_executor() -> None:
+    # Legacy /run now uses the durable engine path (see
+    # tests/api/test_workflow_legacy_run_durable.py). This harness wires no
+    # durable runner, so the honest answer is 503 and there is NO goal-submission
+    # fallback (the old silent-success bug).
     import app.agent.workflow_executor as _wex
 
+    client = TestClient(_make_app())
+    wf_id = client.post(
+        "/workflows",
+        json={"name": "DAG", "definition": {"steps": [{"id": "s1", "tool": "noop"}]}},
+        headers=_HEADERS,
+    ).json()["id"]
+    mock_exec_class = MagicMock()
     original = _wex.WorkflowExecutor
-    _wex.WorkflowExecutor = mock_exec_class  # type: ignore[attr-defined]
+    _wex.WorkflowExecutor = mock_exec_class  # type: ignore[attr-defined,misc]
     try:
         resp = client.post(f"/workflows/{wf_id}/run", headers=_HEADERS)
     finally:
-        _wex.WorkflowExecutor = original  # type: ignore[attr-defined]
-
-    assert resp.status_code == 202
-    mock_exec_instance.execute.assert_called_once()
-    assert resp.json()["status"] == "complete"
+        _wex.WorkflowExecutor = original  # type: ignore[attr-defined,misc]
+    assert resp.status_code == 503
+    mock_exec_class.assert_not_called()
 
 
 # ── Test: dry_run returns plan only ──────────────────────────────────────────

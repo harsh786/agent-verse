@@ -162,22 +162,21 @@ async def test_bulk_decide(gateway: HITLWorkflowGateway) -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_magic_link(gateway: HITLWorkflowGateway) -> None:
+async def test_generate_magic_link_requires_redis(gateway: HITLWorkflowGateway) -> None:
+    """Without a single-use token store a link could never be validated safely,
+    so generation refuses (see test_hitl_magic_link_security.py)."""
     req = await gateway.create_request(_req())
-    link = await gateway.generate_magic_link(req.request_id, "approve")
-    assert "magic" in link
-    assert "approve" in link
+    with pytest.raises(RuntimeError):
+        await gateway.generate_magic_link(req.request_id, "approve")
 
 
 @pytest.mark.asyncio
-async def test_consume_magic_link_in_memory(gateway: HITLWorkflowGateway) -> None:
-    """Without Redis, consume returns truthy payload."""
-    req = await gateway.create_request(_req())
-    link = await gateway.generate_magic_link(req.request_id, "approve")
-    token = req.magic_link_token
-    assert token is not None
-    payload = await gateway.consume_magic_link(token)
-    assert payload is not None
+async def test_consume_magic_link_without_redis_fails_closed(
+    gateway: HITLWorkflowGateway,
+) -> None:
+    """Old behaviour returned {"valid": True} for ANY token without Redis."""
+    await gateway.create_request(_req())
+    assert await gateway.consume_magic_link("any-token") is None
 
 
 # ── Discussion thread ─────────────────────────────────────────────────────────

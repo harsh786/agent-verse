@@ -9,6 +9,7 @@ from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
 from app.workflow.dsl import StepDefinition
 from app.workflow.state import WorkflowState
+from app.workflow.steps import StepServiceUnavailableError
 
 _log = get_logger(__name__)
 
@@ -63,8 +64,19 @@ class LLMStepNode:
         cost_usd = 0.0
 
         if self.llm_provider is None:
-            # Fake provider for tests / dry-runs
-            output = {"result": f"[FakeProvider: {self.step.id}]", "confidence": 1.0}
+            # Old bug: a REAL run with no provider wired returned the placeholder
+            # "[FakeProvider: <id>]" as if the model had answered, so downstream
+            # steps consumed fabricated output. Only test/simulation runs may
+            # simulate; a real run fails the step (on_failure policy applies).
+            if not state.get("is_test_run"):
+                raise StepServiceUnavailableError(
+                    f"llm step {self.step.id!r}: no LLM provider is configured"
+                )
+            output = {
+                "result": f"[simulated LLM output: {self.step.id}]",
+                "confidence": 1.0,
+                "_simulated": True,
+            }
         else:
             from app.providers.base import CompletionRequest, Message
             from app.providers.model_defaults import configured_default_model

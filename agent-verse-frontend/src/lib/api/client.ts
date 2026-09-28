@@ -2995,6 +2995,17 @@ export const workflowEngineApi = {
   validate: (id: string) =>
     request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
 
+  /** The real inbound webhook (POST /wf-hooks/{token}); only issued once published. */
+  getWebhook: (id: string) =>
+    request<{
+      workflow_id: string;
+      published: boolean;
+      webhook_path?: string;
+      webhook_url?: string;
+      callback_signature_header?: string;
+      callback_signing_secret?: string;
+    }>(`${V1}/workflows/${id}/webhook`),
+
   exportYaml: (id: string) => request<string>(`${V1}/workflows/${id}/yaml`),
 
   clone: (id: string) =>

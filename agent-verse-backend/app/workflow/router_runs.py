@@ -206,13 +206,34 @@ async def resume_run(run_id: str, request: Request) -> dict[str, str]:
 
 @router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
 async def retry_run(run_id: str, request: Request) -> dict[str, str]:
-    """Retry a failed run from the last completed checkpoint."""
+    """Retry a failed run as a new, dispatched run that reuses the failed run's
+    completed step results (only the failed/unfinished steps execute again)."""
+    from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
+
     svc = _svc(request)
     tenant_id = _tenant_id(request)
-    new_run_id = await svc.retry_run(tenant_id=tenant_id, run_id=run_id)
+    try:
+        new_run_id = await svc.retry_run(
+            tenant_id=tenant_id,
+            run_id=run_id,
+            runner=getattr(request.app.state, "workflow_runner", None),
+        )
+    except WorkflowEngineUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except WorkflowValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if new_run_id is None:
         raise HTTPException(status_code=409, detail="Run is not in a failed state")
-    return {"run_id": new_run_id, "status": WorkflowRunStatus.PENDING.value}
+    # Report the new run's real status (it may already be running/complete when
+    # executed inline without a broker) rather than assuming "pending".
+    status_now = WorkflowRunStatus.PENDING.value
+    try:
+        rec = await svc.get_run(tenant_id=tenant_id, run_id=new_run_id)
+        if isinstance(rec, dict) and rec.get("status"):
+            status_now = str(rec["status"])
+    except Exception:  # pragma: no cover - status read is informational
+        pass
+    return {"run_id": new_run_id, "status": status_now}
 
 
 # ---------------------------------------------------------------------------

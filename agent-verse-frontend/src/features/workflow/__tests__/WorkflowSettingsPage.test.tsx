@@ -12,6 +12,7 @@ vi.mock('../../../lib/api/client', () => ({
     get: vi.fn(),
     list: vi.fn(),
     update: vi.fn(),
+    getWebhook: vi.fn(),
   },
 }));
 
@@ -114,6 +115,33 @@ describe('WorkflowSettingsPage', () => {
     fireEvent.click(webhookBtn);
     await waitFor(() => {
       expect(screen.getByText(/webhook trigger/i)).toBeInTheDocument();
+    });
+  });
+
+  it('webhook panel shows the real /wf-hooks URL from the backend (published)', async () => {
+    vi.mocked(workflowEngineApi.getWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', published: true,
+      webhook_url: '/wf-hooks/abc.def', webhook_path: '/wf-hooks/abc.def',
+    });
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+    await waitFor(() => {
+      expect(screen.getByText(`${window.location.origin}/wf-hooks/abc.def`)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/api\/v1\/webhooks\/workflows/)).not.toBeInTheDocument();
+    expect(workflowEngineApi.getWebhook).toHaveBeenCalledWith('wf-1');
+  });
+
+  it('webhook panel tells the user to publish when no token is issued', async () => {
+    vi.mocked(workflowEngineApi.getWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', published: false,
+    });
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/publish this workflow to get its webhook url/i)).toBeInTheDocument();
     });
   });
 
