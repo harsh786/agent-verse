@@ -79,14 +79,15 @@ describe('useVoiceAlerts', () => {
     expect(FakeEventSource.latest().url).toBe(`${API_BASE}/v1/voice/alerts/stream?token=tok-123`);
   });
 
-  test('falls back to ?api_key= when the stream-token mint fails', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+  test('opens no stream (no ?api_key= fallback) when the stream-token mint fails', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       new Response('nope', { status: 500, headers: { 'Content-Type': 'text/plain' } }),
     );
     renderHook(() => useVoiceAlerts({ enabled: true }));
 
-    await waitFor(() => expect(FakeEventSource.instances.length).toBe(1));
-    expect(FakeEventSource.latest().url).toBe(`${API_BASE}/v1/voice/alerts/stream?api_key=k`);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   test('parses an incoming event, forwards it to onAlert, and plays its PCM chunks', async () => {
@@ -198,18 +199,43 @@ describe('useVoiceAlerts', () => {
 
   test('re-opens the stream with a fresh token on the periodic refresh interval', async () => {
     vi.useFakeTimers();
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    let n = 0;
+    // A fresh Response per call: a Response body can only be read once.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ token: `t${++n}` }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
     );
     renderHook(() => useVoiceAlerts({ enabled: true }));
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(FakeEventSource.instances.length).toBe(1);
+    expect(FakeEventSource.instances[0].url).toBe(`${API_BASE}/v1/voice/alerts/stream?token=t1`);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
     });
     expect(FakeEventSource.instances.length).toBe(2);
     expect(FakeEventSource.instances[0].closed).toBe(true);
+    expect(FakeEventSource.instances[1].url).toBe(`${API_BASE}/v1/voice/alerts/stream?token=t2`);
+    for (const es of FakeEventSource.instances) expect(es.url).not.toContain('api_key=');
+  });
+
+  test('a failed token mint on refresh keeps the existing stream open and opens no api_key stream', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      ++calls === 1
+        ? new Response(JSON.stringify({ token: 't1' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        : new Response('nope', { status: 500, headers: { 'Content-Type': 'text/plain' } }),
+    );
+    renderHook(() => useVoiceAlerts({ enabled: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(FakeEventSource.instances.length).toBe(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+    });
+    expect(calls).toBe(2);
+    expect(FakeEventSource.instances.length).toBe(1);
+    expect(FakeEventSource.instances[0].closed).toBe(false);
   });
 
   test('dismiss() closes the active stream', async () => {

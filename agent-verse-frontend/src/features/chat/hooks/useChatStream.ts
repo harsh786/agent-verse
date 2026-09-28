@@ -61,10 +61,32 @@ export function useChatStream(
 
   // Opens (or re-opens) the EventSource for the current message. Extracted so
   // the reconnect path can call it again with the same URL/message id.
-  const open = useCallback(() => {
+  const open = useCallback(async () => {
     if (!sessionId || !messageIdRef.current) return;
+    const messageId = messageIdRef.current;
 
-    const url = chatApi.streamUrl(sessionId, messageIdRef.current);
+    // Fetched on every (re)connect: stream tokens are short-lived.
+    // The message may have changed, or the stream been stopped / unmounted,
+    // while the token mint was in flight.
+    const stale = () => messageIdRef.current !== messageId || terminatedRef.current;
+    let token: string;
+    try {
+      token = await chatApi.streamToken();
+    } catch {
+      if (stale()) return;
+      // No ?api_key= fallback: fail the stream instead of leaking the key.
+      terminatedRef.current = true;
+      setState((prev) => ({
+        ...prev,
+        isStreaming: false,
+        reconnecting: false,
+        error: 'Could not authorize the stream',
+      }));
+      return;
+    }
+    if (stale()) return;
+
+    const url = chatApi.streamUrl(sessionId, messageId, token);
     const es = new EventSource(url);
     esRef.current = es;
 
@@ -144,7 +166,7 @@ export function useChatStream(
       setState((prev) => ({ ...prev, isStreaming: true, reconnecting: true, error: null }));
       clearReconnect();
       reconnectTimerRef.current = setTimeout(() => {
-        open();
+        void open();
       }, backoff);
     };
   }, [sessionId, onDone, clearReconnect]);
@@ -173,7 +195,7 @@ export function useChatStream(
         reconnecting: false,
       });
 
-      open();
+      void open();
     },
     [sessionId, open, clearReconnect],
   );
@@ -189,6 +211,7 @@ export function useChatStream(
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      terminatedRef.current = true;
       clearReconnect();
       esRef.current?.close();
     };

@@ -75,3 +75,22 @@ def test_public_route_reaches_its_handler(method: str, path: str) -> None:
 def test_tenant_routes_sharing_a_prefix_still_require_auth(method: str, path: str) -> None:
     resp = _client().request(method, path)
     assert resp.status_code == 401, f"{path} must still require an API key"
+
+
+def test_api_key_in_the_query_string_is_not_accepted() -> None:
+    """Regression: ?api_key= authenticated requests, putting the permanent key
+    into access logs, proxy logs and browser history."""
+    from starlette.requests import Request
+
+    from app.tenancy.middleware import _extract_key
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/goals",
+        "headers": [],
+        "query_string": b"api_key=ak_live_secret",
+    }
+    assert _extract_key(Request(scope)) is None
+    scope["headers"] = [(b"x-api-key", b"ak_header")]
+    assert _extract_key(Request(scope)) == "ak_header"

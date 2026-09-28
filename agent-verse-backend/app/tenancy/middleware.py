@@ -117,10 +117,9 @@ def _extract_key(request: Request) -> str | None:
     header_key = request.headers.get("X-API-Key")
     if header_key:
         return header_key
-    # api_key query param — needed for EventSource (SSE) which cannot set headers
-    query_key = request.query_params.get("api_key")
-    if query_key:
-        return query_key
+    # No ?api_key= query parameter: a key in a URL lands in access logs, proxy
+    # logs and browser history. EventSource/WebSocket clients use a short-lived
+    # read-only ?token= stream token instead (see _stream_token_allowed).
     return None
 
 

@@ -135,21 +135,15 @@ describe('useYjsCollab', () => {
     expect((provider.opts as { params: Record<string, string> }).params).toEqual({ token: 'crdt-tok' });
   });
 
-  test('falls back to the API key when the CRDT token request fails', async () => {
+  test('never puts the API key in the socket URL when the CRDT token request fails', async () => {
+    // Regression: it fell back to { api_key } in the WebSocket URL params,
+    // leaking the permanent key into proxy/access logs.
     getCrdtToken.mockRejectedValue(new Error('not implemented'));
-    renderHook(() => useYjsCollab({ roomId: 'room-2' }));
-    await waitFor(() => expect(FakeWebsocketProvider.instances.length).toBe(1));
-    const provider = latestProvider();
-    expect((provider.opts as { params: Record<string, string> }).params).toEqual({ api_key: 'api-key-1' });
-  });
-
-  test('uses empty params when the token request fails and there is no API key', async () => {
-    useAuthStore.setState({ apiKey: '' });
-    getCrdtToken.mockRejectedValue(new Error('not implemented'));
-    renderHook(() => useYjsCollab({ roomId: 'room-3' }));
-    await waitFor(() => expect(FakeWebsocketProvider.instances.length).toBe(1));
-    const provider = latestProvider();
-    expect((provider.opts as { params: Record<string, string> }).params).toEqual({});
+    const { result } = renderHook(() => useYjsCollab({ roomId: 'room-2' }));
+    await waitFor(() => expect(getCrdtToken).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(FakeWebsocketProvider.instances.length).toBe(0);
+    expect(result.current.connected).toBe(false);
   });
 
   test('reflects connected/synced state from provider status/sync events', async () => {

@@ -85,29 +85,94 @@ afterEach(() => {
 
 describe('OrgRealtimeManager', () => {
   test('mints a stream token then opens the org events stream with the token (never the api key)', async () => {
-    stubTokenFetch(true);
-    const mgr = new OrgRealtimeManager('org-1', 'secret-api-key');
+    useAuthStore.setState({ apiKey: 'secret-api-key' });
+    const fetchSpy = stubTokenFetch(true);
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({});
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     const es = FakeEventSource.latest();
     expect(es.url).toBe(`${API_BASE}/v1/org/org-1/events/stream?token=stream-tok`);
     expect(es.url).not.toContain('secret-api-key');
+    expect(es.url).not.toContain('api_key=');
+    // The key travels only as a header on the token mint.
+    const [mintUrl] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(String(mintUrl)).toContain('/tenants/stream-token');
+    expect(String(mintUrl)).not.toContain('secret-api-key');
     mgr.disconnect();
   });
 
-  test('falls back to the api key in the URL when the token mint fails', async () => {
-    stubTokenFetch(false);
-    const mgr = new OrgRealtimeManager('org-1', 'secret-api-key');
+  test('a failed token mint opens no stream (no ?api_key= fallback) and schedules a retry on backoff', async () => {
+    vi.useFakeTimers();
+    useAuthStore.setState({ apiKey: 'secret-api-key' });
+    const fetchSpy = stubTokenFetch(false);
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({});
-    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
-    expect(FakeEventSource.latest().url).toBe(`${API_BASE}/v1/org/org-1/events/stream?api_key=secret-api-key`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(FakeEventSource.instances).toHaveLength(0);
+
+    // Backoff (2s * 1.5 = 3s): not retried before, retried after.
+    await vi.advanceTimersByTimeAsync(2900);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The mint recovers → the retry opens the stream with a token, not the key.
+    fetchSpy.mockRestore();
+    stubTokenFetch(true);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.latest().url).toBe(`${API_BASE}/v1/org/org-1/events/stream?token=stream-tok`);
+    expect(FakeEventSource.latest().url).not.toContain('api_key=');
     mgr.disconnect();
+  });
+
+  test('keeps retrying with growing backoff while the mint keeps failing, never opening a stream', async () => {
+    vi.useFakeTimers();
+    const fetchSpy = stubTokenFetch(false);
+    const mgr = new OrgRealtimeManager('org-1');
+    mgr.connect({});
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(3000); // 2000 * 1.5
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(4400); // < 3000 * 1.5
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(FakeEventSource.instances).toHaveLength(0);
+    mgr.disconnect();
+  });
+
+  test('disconnect while a mint is in flight opens no stream and schedules no retry', async () => {
+    vi.useFakeTimers();
+    let resolveFetch!: (r: Response) => void;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    const mgr = new OrgRealtimeManager('org-1');
+    mgr.connect({});
+    mgr.disconnect();
+    resolveFetch(new Response(JSON.stringify({ detail: 'no' }), { status: 500, headers: { 'Content-Type': 'application/json' } }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(FakeEventSource.instances).toHaveLength(0);
+  });
+
+  test('disconnect before a successful mint resolves opens no stream', async () => {
+    let resolveFetch!: (r: Response) => void;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      () => new Promise((resolve) => { resolveFetch = resolve; }),
+    );
+    const mgr = new OrgRealtimeManager('org-1');
+    mgr.connect({});
+    mgr.disconnect();
+    resolveFetch(new Response(JSON.stringify({ token: 'late' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   test('invokes onConnected when the stream opens', async () => {
     stubTokenFetch(true);
     const onConnected = vi.fn();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ onConnected });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     FakeEventSource.latest().emitOpen();
@@ -119,7 +184,7 @@ describe('OrgRealtimeManager', () => {
     stubTokenFetch(true);
     const onEvent = vi.fn();
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc, onEvent });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -142,7 +207,7 @@ describe('OrgRealtimeManager', () => {
   test('ignores a malformed (non-JSON) message without throwing or calling onEvent', async () => {
     stubTokenFetch(true);
     const onEvent = vi.fn();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ onEvent });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     expect(() => FakeEventSource.latest().emitMessage('not-json{')).not.toThrow();
@@ -154,7 +219,7 @@ describe('OrgRealtimeManager', () => {
     vi.useFakeTimers();
     stubTokenFetch(true);
     const onDisconnected = vi.fn();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ onDisconnected });
     await vi.advanceTimersByTimeAsync(0);
     expect(FakeEventSource.instances).toHaveLength(1);
@@ -174,7 +239,7 @@ describe('OrgRealtimeManager', () => {
   test('disconnect closes the active stream and cancels any pending reconnect', async () => {
     vi.useFakeTimers();
     stubTokenFetch(true);
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({});
     await vi.advanceTimersByTimeAsync(0);
     const es = FakeEventSource.latest();
@@ -198,7 +263,7 @@ describe('OrgRealtimeManager', () => {
   test('does nothing when no queryClient was supplied to connect()', async () => {
     stubTokenFetch(true);
     const onEvent = vi.fn();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ onEvent }); // no queryClient
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -210,7 +275,7 @@ describe('OrgRealtimeManager', () => {
   test('mission completed/failed events also refresh the health score an extra time', async () => {
     stubTokenFetch(true);
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -228,7 +293,7 @@ describe('OrgRealtimeManager', () => {
   test('mission events without a mission_id skip the per-mission invalidation', async () => {
     stubTokenFetch(true);
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -262,7 +327,7 @@ describe('OrgRealtimeManager', () => {
   ] as const)('%s invalidates %j', async (eventType, expectedKey) => {
     stubTokenFetch(true);
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -275,7 +340,7 @@ describe('OrgRealtimeManager', () => {
   test('falls into the default branch for an unrecognized event type and still refreshes the event feed', async () => {
     stubTokenFetch(true);
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 
@@ -299,7 +364,7 @@ describe('OrgRealtimeManager', () => {
   ] as const)('%s toasts with the right message for payload %j', async (eventType, payload, _message) => {
     stubTokenFetch(true);
     const qc = fakeQueryClient();
-    const mgr = new OrgRealtimeManager('org-1', 'k');
+    const mgr = new OrgRealtimeManager('org-1');
     mgr.connect({ queryClient: qc });
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
 

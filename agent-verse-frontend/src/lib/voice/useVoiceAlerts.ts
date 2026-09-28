@@ -58,15 +58,21 @@ export function useVoiceAlerts({ enabled = true, onAlert }: UseVoiceAlertsOpts =
 
     // SSE requires URL-based auth (EventSource can't send headers). Exchange the
     // permanent API key for a short-lived, read-only stream token so the key never
-    // lands in a stream URL / access log; fall back to api_key if minting fails.
+    // lands in a stream URL / access log. There is no ?api_key= fallback.
     const open = async () => {
-      esRef.current?.close();
-      let auth = `?api_key=${encodeURIComponent(apiKey)}`;
+      let auth: string;
       try {
         const { token } = await apiFetch<{ token: string }>('/tenants/stream-token');
         auth = `?token=${encodeURIComponent(token)}`;
-      } catch { /* keep api_key fallback */ }
+      } catch {
+        // No fallback to ?api_key=: that put the permanent key in the URL. Keep
+        // any already-open stream (a failed refresh must not drop a healthy
+        // connection); the next refresh tick retries the mint.
+        return;
+      }
       if (cancelled) return;
+
+      esRef.current?.close();
 
       const es = new EventSource(`${API_BASE}/v1/voice/alerts/stream${auth}`);
       esRef.current = es;

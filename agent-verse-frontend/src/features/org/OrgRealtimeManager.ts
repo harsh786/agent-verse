@@ -73,7 +73,6 @@ export interface OrgEvent {
 
 export class OrgRealtimeManager {
   private orgId: string;
-  private apiKey: string;
   private eventSource: EventSource | null = null;
   private queryClient: ReturnType<typeof useQueryClient> | null = null;
   private onEvent?: (event: OrgEvent) => void;
@@ -81,10 +80,12 @@ export class OrgRealtimeManager {
   private onDisconnected?: () => void;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 2000;
+  // Set by disconnect(): an in-flight token mint must not open a stream (or
+  // schedule a retry) after the caller has torn the manager down.
+  private stopped = false;
 
-  constructor(orgId: string, apiKey = '') {
+  constructor(orgId: string) {
     this.orgId = orgId;
-    this.apiKey = apiKey;
   }
 
   connect(options: {
@@ -97,11 +98,13 @@ export class OrgRealtimeManager {
     this.onEvent = options.onEvent;
     this.onConnected = options.onConnected;
     this.onDisconnected = options.onDisconnected;
+    this.stopped = false;
 
     void this._openEventSource();
   }
 
   disconnect(): void {
+    this.stopped = true;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -117,15 +120,20 @@ export class OrgRealtimeManager {
     // EventSource can't send headers and the app talks to the backend cross-origin,
     // so auth goes in the URL. Exchange the permanent API key for a short-lived,
     // read-only stream token (re-fetched on every (re)connect) so the key itself
-    // never lands in a stream URL / access log. Fall back to api_key only if the
-    // token mint fails, so the stream still works.
+    // never lands in a stream URL / access log.
     let auth = '';
     try {
       const { token } = await apiFetch<{ token: string }>('/tenants/stream-token');
       auth = `?token=${encodeURIComponent(token)}`;
     } catch {
-      if (this.apiKey) auth = `?api_key=${encodeURIComponent(this.apiKey)}`;
+      if (this.stopped) return;
+      // No ?api_key= fallback (it put the permanent key in the URL); retry the
+      // token mint on the normal reconnect backoff instead.
+      this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 30_000);
+      this.reconnectTimer = setTimeout(() => void this._openEventSource(), this.reconnectDelay);
+      return;
     }
+    if (this.stopped) return;
     const url = `${API_BASE}/v1/org/${this.orgId}/events/stream${auth}`;
     this.eventSource = new EventSource(url);
 
@@ -327,7 +335,7 @@ export function useOrgRealtimeManager(
   useEffect(() => {
     if (!orgId || !apiKey) return;
 
-    const manager = new OrgRealtimeManager(orgId, apiKey);
+    const manager = new OrgRealtimeManager(orgId);
     managerRef.current = manager;
 
     manager.connect({

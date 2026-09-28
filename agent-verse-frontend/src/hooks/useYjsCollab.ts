@@ -119,14 +119,16 @@ export function useYjsCollab({
       const wsUrl = `${wsBase}/collab/crdt`;
       const roomName = `collab-${tenantId || 'default'}-${roomId}`;
 
-      // Prefer a short-lived CRDT token — falls back to the long-lived API key
-      let wsParams: Record<string, string> = {};
+      // Authenticate with a short-lived CRDT token only. It used to fall back to
+      // the permanent API key in the socket URL (?api_key=), leaking it into
+      // proxy/access logs; without a token we do not connect.
+      let wsParams: Record<string, string>;
       try {
         const { token } = await collabApi.getCrdtToken();
         wsParams = { token };
       } catch {
-        // Token fetch failed (e.g. backend not yet upgraded) — fall back to API key
-        if (apiKey) wsParams = { api_key: apiKey };
+        setConnected(false);
+        return;
       }
 
       if (cancelled) return;

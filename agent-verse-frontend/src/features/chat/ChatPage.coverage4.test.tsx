@@ -41,7 +41,9 @@ vi.mock('@/lib/api/chat', () => ({
     listModels: () => Promise.resolve({ models: ['gpt-4o', 'claude-3-5-sonnet'] }),
     sendMessage: mocks.sendMessage,
     updateSession: mocks.updateSession,
-    streamUrl: () => 'http://test/stream',
+    // The hook mints a short-lived stream token before opening the EventSource.
+    streamToken: () => Promise.resolve('stream-tok'),
+    streamUrl: (_s: string, _m: string, token: string) => `http://test/stream?token=${token}`,
   },
 }));
 
