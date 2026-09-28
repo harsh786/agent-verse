@@ -112,7 +112,10 @@ async def slack_events(
         verify_slack_signature,
     )
 
-    if get_slack_signing_secret() and not verify_slack_signature(
+    # Always verify: the old ``if secret and not verify(...)`` skipped the check
+    # entirely when no secret was set — in production too. verify_slack_signature
+    # fails closed in production and only allows unsigned requests in development.
+    if not verify_slack_signature(
         body,
         x_slack_request_timestamp,
         x_slack_signature,

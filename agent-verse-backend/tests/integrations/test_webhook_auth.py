@@ -126,3 +126,23 @@ def test_tenant_can_fetch_only_its_own_collection_webhook_secret(
     ok = client.get("/knowledge/collections/c1/reingest-webhook")
     assert ok.status_code == 200 and ok.json()["secret"] == reingest_signing_secret("t1", "c1")
     assert client.get("/knowledge/collections/c2/reingest-webhook").status_code == 404
+
+
+def test_slack_events_route_fails_closed_in_production_without_a_secret(
+    monkeypatch,
+) -> None:
+    """Regression: /slack/events skipped verification entirely when no secret
+    was configured, even in production."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.api.integrations import router
+
+    monkeypatch.delenv("SLACK_SIGNING_SECRET", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    app = FastAPI()
+    app.include_router(router)
+    r = TestClient(app).post(
+        "/integrations/slack/events", content=b'{"type":"event_callback"}'
+    )
+    assert r.status_code == 403
