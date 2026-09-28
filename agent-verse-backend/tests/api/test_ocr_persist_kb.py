@@ -130,3 +130,29 @@ def test_persist_requires_collection_id(client: TestClient):
     )
     assert resp.status_code == 422
     assert "collection_id" in resp.json()["detail"]
+
+
+async def test_persist_passes_the_request_so_tenant_guardrails_screen_ocr_text() -> None:
+    """Regression: persist_to_kb omitted request=, so only the default PII
+    screener ran and the tenant's RAG_INGEST guardrails were skipped."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.api.ocr import _persist_ocr_to_kb
+    from app.tenancy.context import PlanTier, TenantContext
+
+    store = MagicMock()
+    store.exists_by_hash = AsyncMock(return_value=False)
+    request = MagicMock()
+    request.state = SimpleNamespace(
+        tenant=TenantContext(tenant_id="t-ocr", plan=PlanTier.FREE, api_key_id="k")
+    )
+    request.app.state = SimpleNamespace(knowledge_store=store, embedder=None)
+    ingest = AsyncMock(return_value=1)
+    with patch("app.api.knowledge._ingest_chunks_from_source", ingest):
+        out = await _persist_ocr_to_kb(
+            request, raw_text="Invoice 42 total 10 USD", collection_id="c1",
+            filename="inv.png", engine_used="tesseract",
+        )
+    assert out["kb_chunks_ingested"] == 1
+    assert ingest.await_args.kwargs["request"] is request

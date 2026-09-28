@@ -128,8 +128,11 @@ async def _persist_ocr_to_kb(
         }
         for i, chunk_text in enumerate(raw_chunks)
     ]
+    # request= carries the tenant's guardrail engine into the Stage 6/6b
+    # screening; without it only the default PII screener ran and the tenant's
+    # own RAG_INGEST guardrails were skipped for OCR'd documents.
     ingested = await _ingest_chunks_from_source(
-        store, chunk_dicts, collection_id, tenant_ctx, embedder
+        store, chunk_dicts, collection_id, tenant_ctx, embedder, request=request
     )
     return {
         "kb_persisted": True,
