@@ -355,47 +355,8 @@ class TestGenericWebhook:
 
 
 # ── Config & admin endpoints ──────────────────────────────────────────────────
-
-
-class TestGatewayConfigAndStatus:
-    def test_get_config_returns_defaults(self) -> None:
-        client = _client()
-        r = client.get("/v1/gateway/org1/config")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["telegram_enabled"] is False
-        assert body["webhook_enabled"] is True
-        assert body["max_commands_per_hour"] == 100
-
-    def test_update_config_echoes_payload(self) -> None:
-        client = _client()
-        payload = {
-            "telegram_enabled": True,
-            "slack_enabled": False,
-            "whatsapp_enabled": False,
-            "teams_enabled": False,
-            "discord_enabled": False,
-            "email_enabled": False,
-            "mcp_enabled": True,
-            "webhook_enabled": True,
-            "max_commands_per_hour": 250,
-        }
-        r = client.put("/v1/gateway/org1/config", json=payload)
-        assert r.status_code == 200
-        assert r.json() == payload
-
-    def test_channel_status_lists_all_channels(self) -> None:
-        client = _client()
-        r = client.get("/v1/gateway/acme/channels/status")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["org_id"] == "acme"
-        names = {c["name"] for c in body["channels"]}
-        assert {"rest", "telegram", "slack", "teams", "discord", "whatsapp", "email",
-                "mcp", "webhook"}.issubset(names)
-        rest = next(c for c in body["channels"] if c["name"] == "rest")
-        assert rest["enabled"] is True
-        assert rest["endpoint"] == "/v1/org/acme/command"
+# These asserted the old stub behaviour (canned defaults / echo-without-save /
+# canned statuses). They now return 501; see test_gateway_config_not_faked.py.
 
 
 # ── channel_chat: branches the e2e happy-path tests don't reach ──────────────
@@ -526,7 +487,11 @@ class TestVoiceIncomingExceptionFallback:
         reg.register("+15550001111", "tenant-voice")
         app.state.chat_service = chat
         app.state.voice_phone_registry = reg
-        app.state.voice_phone_adapter = VoicePhoneChannelAdapter()
+        adapter = VoicePhoneChannelAdapter(auth_token="fallback-test-token")
+        # Signature verification is covered in test_twilio_fail_closed.py; this
+        # test targets the handler's exception fallback, so accept the request.
+        adapter.verify_auth = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        app.state.voice_phone_adapter = adapter
         return app
 
     def test_handler_exception_speaks_safe_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:

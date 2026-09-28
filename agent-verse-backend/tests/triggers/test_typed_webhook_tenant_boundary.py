@@ -1,9 +1,13 @@
-"""The typed webhook fires only the caller's trigger, matched by token, signed when required.
+"""The typed webhook fires only the token owner's trigger, signed when required.
 
-Regression: it took the tenant from an ``X-Tenant-ID`` header and ignored the
+Regression 1: it took the tenant from an ``X-Tenant-ID`` header and ignored the
 path token ("for now just broadcast"), so any API-key holder could fire every
 webhook trigger of any other tenant. A missing signature header also skipped
 verification even when the trigger had a signing secret.
+
+Regression 2 (see test_typed_webhook_token_lookup.py): the tenant then came from
+the caller's API key, which a third-party sender never has. The tenant is now
+resolved from the path token alone; header and API-key tenant are ignored.
 """
 
 from __future__ import annotations
@@ -19,11 +23,22 @@ from fastapi.testclient import TestClient
 
 from app.api.triggers import router as triggers_router
 
+VICTIM_TOKEN = "victim-" + "v" * 40
+TOK_A = "tok-a-" + "a" * 40
+TOK_B = "tok-b-" + "b" * 40
+TOK = "tok-" + "t" * 40
+
 
 class _Store:
     def __init__(self, triggers: dict[str, list[Any]]) -> None:
         self._triggers = triggers
         self.queried: list[str] = []
+
+    async def find_tenant_by_webhook_token(self, token: str, *, system_db: Any = None) -> Any:
+        owners = {
+            tid for tid, specs in self._triggers.items() for s in specs if s.webhook_token == token
+        }
+        return owners.pop() if len(owners) == 1 else None
 
     async def find_by_type_async(self, trigger_type: str, *, tenant_id: str) -> list[Any]:
         self.queried.append(tenant_id)
@@ -58,41 +73,43 @@ def _spec(token: str, secret: str = "") -> Any:
 
 
 def test_header_cannot_redirect_to_another_tenant() -> None:
-    store = _Store({"victim": [_spec("victim-token")], "attacker": []})
+    store = _Store({"victim": [_spec(VICTIM_TOKEN)], "attacker": [_spec(TOK)]})
     disp = _Dispatcher()
     client = _app(store, disp, caller="attacker")
-    r = client.post("/triggers/webhooks/custom/victim-token", json={"x": 1},
-                    headers={"X-Tenant-ID": "victim"})
-    assert r.status_code == 404
-    assert disp.fired == [] and store.queried == ["attacker"]
+    r = client.post(
+        f"/triggers/webhooks/custom/{TOK}", json={"x": 1}, headers={"X-Tenant-ID": "victim"}
+    )
+    assert r.status_code == 200
+    # The header named the victim, but only the token's owner was queried/fired.
+    assert disp.fired == [("attacker", TOK)] and store.queried == ["attacker"]
 
 
 def test_only_the_matching_token_fires() -> None:
-    store = _Store({"t1": [_spec("tok-a"), _spec("tok-b")]})
+    store = _Store({"t1": [_spec(TOK_A), _spec(TOK_B)]})
     disp = _Dispatcher()
-    client = _app(store, disp, caller="t1")
-    assert client.post("/triggers/webhooks/custom/tok-b", json={}).status_code == 200
-    assert disp.fired == [("t1", "tok-b")]
-    assert client.post("/triggers/webhooks/custom/nope", json={}).status_code == 404
+    client = _app(store, disp, caller=None)
+    assert client.post(f"/triggers/webhooks/custom/{TOK_B}", json={}).status_code == 200
+    assert disp.fired == [("t1", TOK_B)]
+    assert client.post("/triggers/webhooks/custom/" + "n" * 40, json={}).status_code == 404
 
 
 def test_signature_required_when_secret_is_set() -> None:
     secret = "s3cret"
-    store = _Store({"t1": [_spec("tok", secret)]})
+    store = _Store({"t1": [_spec(TOK, secret)]})
     disp = _Dispatcher()
-    client = _app(store, disp, caller="t1")
+    client = _app(store, disp, caller=None)
     body = json.dumps({"ref": "main"}).encode()
+    url = f"/triggers/webhooks/github/{TOK}"
     # No signature header at all: rejected (used to skip verification).
-    assert client.post("/triggers/webhooks/github/tok", content=body).status_code == 401
+    assert client.post(url, content=body).status_code == 401
     bad = {"x-hub-signature-256": "sha256=" + "0" * 64}
-    assert client.post("/triggers/webhooks/github/tok", content=body, headers=bad).status_code == 401
+    assert client.post(url, content=body, headers=bad).status_code == 401
     good_sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-    ok = client.post("/triggers/webhooks/github/tok", content=body,
-                     headers={"x-hub-signature-256": good_sig})
+    ok = client.post(url, content=body, headers={"x-hub-signature-256": good_sig})
     assert ok.status_code == 200, ok.text
-    assert disp.fired == [("t1", "tok")]
+    assert disp.fired == [("t1", TOK)]
 
 
-def test_unauthenticated_is_401() -> None:
+def test_unknown_token_without_api_key_is_404() -> None:
     client = _app(_Store({}), _Dispatcher(), caller=None)
-    assert client.post("/triggers/webhooks/custom/x", json={}).status_code == 401
+    assert client.post("/triggers/webhooks/custom/" + "x" * 40, json={}).status_code == 404

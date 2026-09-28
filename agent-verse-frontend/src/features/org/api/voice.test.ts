@@ -148,11 +148,28 @@ describe('voiceApi', () => {
     expect(result).toBeUndefined();
   });
 
-  test('streamUrl() builds a ws:// URL carrying the (encoded) api key', () => {
+  test('streamUrl() builds a ws:// URL that never carries the api key', () => {
     useAuthStore.setState({ apiKey: 'key/with+chars' });
     const url = voiceApi.streamUrl('org-4');
     const wsBase = API_BASE.replace(/^http/, 'ws');
-    expect(url).toBe(`${wsBase}/v1/voice/stream/org-4?api_key=${encodeURIComponent('key/with+chars')}`);
+    expect(url).toBe(`${wsBase}/v1/voice/stream/org-4`);
+    expect(url).not.toContain('api_key');
+    expect(url).not.toContain('key/with');
     expect(url.startsWith('ws')).toBe(true);
+  });
+
+  test('streamProtocols() carries the key as an av.v1 base64url subprotocol', () => {
+    useAuthStore.setState({ apiKey: 'key/with+chars' });
+    const [proto] = voiceApi.streamProtocols();
+    expect(proto.startsWith('av.v1.')).toBe(true);
+    const encoded = proto.slice('av.v1.'.length);
+    expect(encoded).not.toMatch(/[+/=]/);
+    const b64 = encoded.replace(/-/g, '+').replace(/_/g, '/');
+    expect(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4))).toBe('key/with+chars');
+  });
+
+  test('streamProtocols() is empty without an api key', () => {
+    useAuthStore.setState({ apiKey: '' });
+    expect(voiceApi.streamProtocols()).toEqual([]);
   });
 });

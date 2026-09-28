@@ -693,7 +693,7 @@ def test_saml_metadata_generic_exception_is_500() -> None:
     assert resp.status_code == 500
 
 
-def test_saml_login_redirects_to_idp_on_success() -> None:
+def test_saml_login_without_library_is_501() -> None:
     def saml_handler(_p: dict) -> _FakeResult:
         return _FakeResult(rows=[("idp", "https://idp.example.com/sso", "CERT", "sp")])
 
@@ -701,9 +701,10 @@ def test_saml_login_redirects_to_idp_on_success() -> None:
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False, follow_redirects=False)
     resp = client.get("/enterprise/saml/login", headers=_headers())
-    assert resp.status_code in (302, 303, 307)
-    # python3-saml is not installed in test env -> falls back to the raw IdP URL.
-    assert resp.headers["location"] == "https://idp.example.com/sso"
+    # python3-saml (optional extra) is not installed in the test env → a clean
+    # 501; it used to redirect to the raw IdP URL with no AuthnRequest.
+    assert resp.status_code == 501
+    assert "SAML not installed" in resp.json()["detail"]
 
 
 def test_saml_login_generic_exception_is_500() -> None:

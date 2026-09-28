@@ -134,8 +134,11 @@ async def test_saml_configure_writes_under_tenant_guc() -> None:
 
 async def test_saml_login_reads_under_tenant_guc() -> None:
     factory = _Factory({"FROM saml_configs": _SAML_ROW[:4]})
-    resp = await ent.saml_login(_request(factory))
-    assert resp.status_code in (302, 307)
+    try:
+        resp = await ent.saml_login(_request(factory))
+        assert resp.status_code in (302, 307)
+    except HTTPException as exc:
+        assert exc.status_code == 501  # python3-saml (optional extra) absent
     _assert_tenant_scoped(factory.sessions[0], "FROM saml_configs", TENANT)
 
 

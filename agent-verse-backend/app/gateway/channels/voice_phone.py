@@ -19,9 +19,6 @@ verification; ``VOICE_PHONE_FROM`` as the default caller id for outbound calls.
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac
 import os
 import uuid
 from typing import Any
@@ -32,6 +29,11 @@ from opentelemetry import trace
 
 from app.gateway.channels.base import ChannelAdapter
 from app.gateway.command import OrgCommand, OrgResponse
+from app.gateway.telephony_consent import (
+    TelephonyConsentLedger,
+    get_telephony_consent_ledger,
+)
+from app.gateway.twilio_auth import compute_twilio_signature, twilio_signature_valid
 
 _log = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -48,31 +50,35 @@ class VoicePhoneChannelAdapter(ChannelAdapter):
         self._auth_token = auth_token or os.getenv("VOICE_PHONE_AUTH_TOKEN", "")
         self._default_from = default_from or os.getenv("VOICE_PHONE_FROM", "")
 
+    @property
+    def is_configured(self) -> bool:
+        """Whether a provider auth token is set (signature checks are possible)."""
+        return bool(self._auth_token)
+
     async def verify_auth(
         self, request_headers: dict[str, str], raw_payload: dict[str, Any]
     ) -> bool:
         """Verify the provider's request signature (Twilio ``X-Twilio-Signature``).
 
         Twilio signs ``base64(HMAC-SHA1(auth_token, url + concat(sorted k+v)))`` over
-        the request URL and POSTed params. When no auth token is configured the gate
-        is open (dev mode), matching the other channel adapters.
+        the request URL and POSTed params.
+
+        Fails CLOSED. This used to return True when no auth token was configured
+        ("open in dev"), so a deployment that forgot ``VOICE_PHONE_AUTH_TOKEN``
+        accepted forged call webhooks for every registered number. With no token
+        nothing verifies; the router turns that into a 503.
         """
         if not self._auth_token:
-            return True
+            return False
         signature = request_headers.get("X-Twilio-Signature") or request_headers.get(
             "x-twilio-signature", ""
         )
         url = str(raw_payload.get("_request_url", ""))
         params = {k: v for k, v in raw_payload.items() if not k.startswith("_")}
-        expected = self._twilio_signature(url, params)
-        return hmac.compare_digest(signature, expected)
+        return twilio_signature_valid(self._auth_token, url, params, signature)
 
     def _twilio_signature(self, url: str, params: dict[str, Any]) -> str:
-        payload = url + "".join(f"{k}{params[k]}" for k in sorted(params))
-        digest = hmac.new(
-            self._auth_token.encode(), payload.encode("utf-8"), hashlib.sha1
-        ).digest()
-        return base64.b64encode(digest).decode("ascii")
+        return compute_twilio_signature(self._auth_token or "", url, params)
 
     async def normalize(
         self, raw_payload: dict[str, Any], tenant_id: str, org_id: str
@@ -159,6 +165,8 @@ class VoicePhoneChannelAdapter(ChannelAdapter):
         client: Any = None,
         url: str | None = None,
         twiml: str | None = None,
+        tenant_id: str = "",
+        consent_ledger: TelephonyConsentLedger | None = None,
         **kwargs: Any,
     ) -> dict[str, Any] | None:
         """Initiate an OUTBOUND call — the agent phoning ``to`` to do a task.
@@ -169,12 +177,17 @@ class VoicePhoneChannelAdapter(ChannelAdapter):
         be passed. The outbound call maps to the same chat conversation as inbound
         calls with ``to`` as the caller id. Returns the created call's ``sid``/status,
         or ``None`` on failure.
+
+        Raises :class:`~app.gateway.telephony_consent.TelephonyConsentError` when
+        ``to`` has no recorded opt-in for ``tenant_id`` (default deny). Previously
+        any number could be dialled with no consent check at all.
         """
         from_number = from_ or self._default_from
         if client is None:
             raise RuntimeError("place_call requires an injected telephony client")
         if not from_number:
             raise ValueError("place_call requires a 'from_' number (or VOICE_PHONE_FROM)")
+        (consent_ledger or get_telephony_consent_ledger()).require_outbound(tenant_id, to)
         create_kwargs: dict[str, Any] = {"to": to, "from_": from_number, **kwargs}
         if url is not None:
             create_kwargs["url"] = url

@@ -246,6 +246,8 @@ async def test_build_jwks_returns_rsa_keys():
     result_mock = MagicMock()
     result_mock.fetchall.return_value = [row]
     session_mock.execute = AsyncMock(return_value=result_mock)
+    # AsyncSession.begin() is a sync call returning an async context manager.
+    session_mock.begin = MagicMock(return_value=session_mock)
     # Use MagicMock so db_factory() returns session_mock directly (not a coroutine)
     db_factory = MagicMock(return_value=session_mock)
 

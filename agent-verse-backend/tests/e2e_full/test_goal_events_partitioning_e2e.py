@@ -305,3 +305,41 @@ async def test_batched_retention_covers_trigger_events_and_only_finished_workflo
     assert triggers == {trig_new}
     assert runs == {run_waiting_old, run_done_new}
     assert steps == 0
+
+
+async def test_suspended_flag_merges_into_execution_context_under_rls(
+    roles: SimpleNamespace,
+) -> None:
+    """The supervised-suspension marker is a JSON merge (API and worker must not
+    overwrite each other's execution_context), tenant-scoped by RLS."""
+    from sqlalchemy import text
+
+    from app.services.goal_service import _SUSPENDED_KEY, GoalService
+
+    tenant_id, other = uuid.uuid4().hex, uuid.uuid4().hex
+    goal_id = await _seed_goal(roles.owner, tenant_id)
+    await _seed_goal(roles.owner, other)
+    async with roles.owner() as s, s.begin():
+        await s.execute(
+            text("UPDATE goals SET execution_context = '{\"schedule_id\": \"s1\"}' WHERE id = :g"),
+            {"g": goal_id},
+        )
+    svc = GoalService()
+    svc._db = roles.app
+
+    async def _ctx() -> dict[str, Any]:
+        async with roles.owner() as s:
+            return dict(
+                (
+                    await s.execute(
+                        text("SELECT execution_context FROM goals WHERE id = :g"), {"g": goal_id}
+                    )
+                ).scalar()
+            )
+
+    await svc._db_set_suspended(goal_id, other, True)  # wrong tenant: no effect
+    assert await _ctx() == {"schedule_id": "s1"}
+    await svc._db_set_suspended(goal_id, tenant_id, True)
+    assert await _ctx() == {"schedule_id": "s1", _SUSPENDED_KEY: True}
+    await svc._db_set_suspended(goal_id, tenant_id, False)
+    assert await _ctx() == {"schedule_id": "s1"}

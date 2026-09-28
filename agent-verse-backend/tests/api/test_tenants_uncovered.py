@@ -188,93 +188,97 @@ def test_get_stream_token_requires_auth() -> None:
 
 
 # ---------------------------------------------------------------------------
-# GET/PUT /tenants/me/llm-config (lightweight store)
+# GET/PUT /tenants/me/llm-config (non-secret fields of the durable config)
 # ---------------------------------------------------------------------------
 
 
-def test_get_llm_config_lightweight_no_tenant_service_attr() -> None:
-    """Lines 321-329: app.state has no tenant_service attribute → {}."""
-    app = FastAPI()
+class _DictRedis:
+    def __init__(self) -> None:
+        self.d: dict[str, str] = {}
 
-    async def _resolve(key: str) -> TenantContext | None:
-        return _CTX if key == _VALID_KEY else None
+    async def get(self, key: str) -> str | None:
+        return self.d.get(key)
 
-    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.include_router(tenants_router)
-    # deliberately no app.state.tenant_service
-    client = TestClient(app, raise_server_exceptions=False)
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.d[key] = value
+
+    async def delete(self, *keys: str) -> int:
+        return sum(1 for k in keys if self.d.pop(k, None) is not None)
+
+
+def _app_with_store(store: Any) -> FastAPI:
+    app = _make_app()
+    app.state.llm_config_store = store
+    return app
+
+
+def test_llm_config_lightweight_reports_unconfigured() -> None:
+    from app.services.llm_config_store import LLMConfigStore
+
+    client = TestClient(_app_with_store(LLMConfigStore(redis_client=_DictRedis())))
     resp = client.get("/tenants/me/llm-config", headers=H)
     assert resp.status_code == 200
-    assert resp.json() == {}
+    assert resp.json()["configured"] is False
 
 
-def test_get_llm_config_lightweight_returns_stored_config() -> None:
-    svc = AsyncMock()
-    svc.get_llm_config.return_value = {"provider": "anthropic", "model": "claude-opus"}
-    client = TestClient(_make_app(svc), raise_server_exceptions=False)
-    resp = client.get("/tenants/me/llm-config", headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["provider"] == "anthropic"
+def test_llm_config_lightweight_needs_a_key_first() -> None:
+    """Regression: this used to answer {"status": "saved_in_memory"} and save nothing."""
+    from app.services.llm_config_store import LLMConfigStore
+
+    client = TestClient(_app_with_store(LLMConfigStore(redis_client=_DictRedis())))
+    resp = client.put("/tenants/me/llm-config", json={"provider": "openai"}, headers=H)
+    assert resp.status_code == 409
 
 
-def test_get_llm_config_lightweight_swallows_service_exception() -> None:
-    """Lines 324-328: an exception from the service falls back to {}."""
-    svc = AsyncMock()
-    svc.get_llm_config.side_effect = RuntimeError("boom")
-    client = TestClient(_make_app(svc), raise_server_exceptions=False)
-    resp = client.get("/tenants/me/llm-config", headers=H)
-    assert resp.status_code == 200
-    assert resp.json() == {}
+def test_llm_config_is_shared_across_replicas_and_never_returns_the_key() -> None:
+    """Regression: PUT /me/llm stored the config in the handling replica's memory,
+    which the goal path read — other replicas never saw the tenant's provider."""
+    from app.services.llm_config_store import LLMConfigStore
 
-
-def test_save_llm_config_lightweight_success() -> None:
-    svc = AsyncMock()
-    svc.save_llm_config.return_value = None
-    client = TestClient(_make_app(svc), raise_server_exceptions=False)
-    resp = client.put(
-        "/tenants/me/llm-config", json={"provider": "openai", "model": "gpt-4o"}, headers=H
+    shared = LLMConfigStore(redis_client=_DictRedis())
+    replica_a = TestClient(_app_with_store(shared))
+    replica_b = TestClient(_app_with_store(shared))
+    put = replica_a.put(
+        "/tenants/me/llm",
+        json={"provider": "openai", "api_key": "sk-test-000000000000", "default_model": "m1"},
+        headers=H,
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "saved"
-    assert body["provider"] == "openai"
+    assert put.status_code == 200, put.text
+    upd = replica_b.put("/tenants/me/llm-config", json={"default_model": "m2"}, headers=H)
+    assert upd.status_code == 200, upd.text
+    got = replica_b.get("/tenants/me/llm", headers=H).json()
+    assert got["configured"] is True and got["provider"] == "openai"
+    assert got["default_model"] == "m2"
+    assert "encrypted_key" not in got and "api_key" not in got
+    assert "sk-test-000000000000" not in replica_a.get("/tenants/me/llm-config", headers=H).text
 
 
-def test_save_llm_config_lightweight_no_tenant_service() -> None:
-    """Lines 340-347: no tenant_service configured → saved_in_memory fallback."""
-    app = FastAPI()
+def test_llm_config_save_failure_is_503_not_success() -> None:
+    from app.services.llm_config_store import LLMConfigStore
 
-    async def _resolve(key: str) -> TenantContext | None:
-        return _CTX if key == _VALID_KEY else None
+    def _broken_db() -> Any:
+        raise RuntimeError("db down")
 
-    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
-    app.add_middleware(SecurityHeadersMiddleware)
-    app.include_router(tenants_router)
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.put("/tenants/me/llm-config", json={"provider": "gemini"}, headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "saved_in_memory"
-
-
-def test_save_llm_config_lightweight_swallows_service_exception() -> None:
-    svc = AsyncMock()
-    svc.save_llm_config.side_effect = RuntimeError("boom")
-    client = TestClient(_make_app(svc), raise_server_exceptions=False)
-    resp = client.put("/tenants/me/llm-config", json={"provider": "groq"}, headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "saved_in_memory"
+    client = TestClient(
+        _app_with_store(LLMConfigStore(redis_client=_DictRedis(), db_factory=_broken_db)),
+        raise_server_exceptions=False,
+    )
+    resp = client.put(
+        "/tenants/me/llm",
+        json={"provider": "openai", "api_key": "sk-test-000000000000"},
+        headers=H,
+    )
+    assert resp.status_code == 503
 
 
-def test_save_llm_config_lightweight_malformed_body_defaults_to_empty() -> None:
-    """Lines 336-339: an unparsable JSON body degrades to an empty dict, not a 500."""
+def test_llm_config_lightweight_rejects_a_malformed_body() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.put(
         "/tenants/me/llm-config",
         content=b"not json",
         headers={**H, "Content-Type": "application/json"},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------

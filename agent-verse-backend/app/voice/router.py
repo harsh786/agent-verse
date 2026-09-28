@@ -296,20 +296,32 @@ async def voice_persona_delete(org_id: str, request: Request) -> None:
 async def voice_stream(
     ws: WebSocket,
     org_id: str,
-    api_key: str = Query(default=""),
     consent: bool = Query(default=False),
 ) -> None:
     """D-1/D-3/D-4: Real-time voice session — speak goals, approve missions.
+
+    Auth: the API key travels in the ``X-API-Key`` / ``Authorization`` header or,
+    from a browser (which cannot set WebSocket headers), as an
+    ``av.v1.<base64url(key)>`` entry in ``Sec-WebSocket-Protocol``.
 
     D-24: audio processing requires recorded consent. The client either passes
     ``?consent=true`` at connect time or sends a ``{"type":"consent"}`` control
     message; without it the session fails closed and refuses to transcribe.
     """
-    await ws.accept()
-    tenant_id = await _ws_auth(ws, api_key)
+    # The key used to be read from ``?api_key=`` — so every voice session wrote a
+    # long-lived tenant credential into proxy / load-balancer access logs and
+    # browser history. The query key is no longer honoured at all (keeping it
+    # "for compatibility" would keep the leak). Authenticate BEFORE accept() so
+    # the offered av.v1 subprotocol can be echoed (browsers abort otherwise).
+    tenant_id = await _ws_auth(ws)
     if not tenant_id:
+        await ws.accept()
         await ws.close(code=4001, reason="Unauthorized")
         return
+    offered = [
+        p.strip() for p in ws.headers.get("sec-websocket-protocol", "").split(",") if p.strip()
+    ]
+    await ws.accept(subprotocol=next((p for p in offered if p.startswith("av.v1.")), None))
 
     # D-5: Auto-detect language
     language = "en"
@@ -486,22 +498,21 @@ async def _store_persona_audio(tid: str, org_id: str, audio: bytes) -> str:
         return f"local://{tid}/{org_id}/ref.wav"
 
 
-async def _ws_auth(ws: WebSocket, api_key: str) -> str | None:
-    """Authenticate WebSocket using the same key resolver as TenantMiddleware."""
-    if not api_key:
+async def _ws_auth(ws: WebSocket) -> str | None:
+    """Authenticate the WebSocket from headers / the av.v1 subprotocol only.
+
+    Delegates to :func:`app.tenancy.ws_auth.resolve_ws_tenant` with
+    ``allow_query_key=False``. This used to (a) read the key from the URL query
+    string and (b) when no ``_tenant_key_resolver`` was wired, return the raw key
+    AS the tenant id — any string authenticated as "a tenant".
+    """
+    from app.tenancy.ws_auth import resolve_ws_tenant
+
+    tenant_ctx = await resolve_ws_tenant(ws, allow_query_key=False)
+    if tenant_ctx is None:
         return None
-    try:
-        # Use the same _tenant_key_resolver that TenantMiddleware uses
-        resolver = getattr(getattr(ws.app, "state", None), "_tenant_key_resolver", None)  # type: ignore[attr-defined]
-        if resolver is None:
-            # Dev mode fallback — no resolver wired
-            return api_key
-        tenant_ctx = await resolver(api_key)
-        if tenant_ctx is None:
-            return None
-        return str(getattr(tenant_ctx, "tenant_id", None) or getattr(tenant_ctx, "id", None))
-    except Exception:
-        return None
+    tenant_id = getattr(tenant_ctx, "tenant_id", None) or getattr(tenant_ctx, "id", None)
+    return str(tenant_id) if tenant_id else None
 
 
 def _wav_response(wav: bytes, rid: str) -> StreamingResponse:

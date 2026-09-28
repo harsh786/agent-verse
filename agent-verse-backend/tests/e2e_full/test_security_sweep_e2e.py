@@ -49,6 +49,20 @@ _PUBLIC_PREFIXES = (
     "/wf-hooks/",
     "/scim/v2",
     "/v1/gateway/",
+    # Third-party webhooks that authenticate themselves, fail closed (503 when
+    # the provider secret is unset, 401/403 on a bad signature, 404 for an
+    # unknown webhook token): API-key auth cannot apply, the sender has no key.
+    "/triggers/webhooks/",
+    "/channels/slack/",
+    "/channels/teams/",
+    "/channels/discord/",
+    "/channels/email/",
+    "/channels/sms/",
+    "/channels/voice/",
+    "/channels/forms/",
+    "/channels/meeting/",
+    # Google OAuth login: PKCE state + Google's code exchange are the auth.
+    "/auth/google/",
 )
 
 _WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
