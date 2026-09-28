@@ -203,6 +203,14 @@ class IngestionOrchestrator:
         in_memory_only: bool = False,
         source_identity: str = "",
     ) -> IngestionResult:
+        # 0. PII + RAG_INGEST guardrail gate (pipeline Stages 6/6b). This path
+        # parses/chunks/embeds on its own and used to skip both, so PII and
+        # guardrail-blocked content reached the embedder and the store. Raises
+        # IngestionPolicyRejectedError (→ 422) for a refused document.
+        from app.ingestion.pipeline import screen_ingest_text
+
+        content = await screen_ingest_text(content, tenant_id=tenant_ctx.tenant_id)
+
         # 1. Detect content type
         if content_type in ("auto", "unknown"):
             detected = self._classifier.classify(content)

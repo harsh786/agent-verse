@@ -30,13 +30,49 @@ def _make_app():
 # ── Embedding tests ─────────────────────────────────────────────────────────
 
 def test_embed_texts_returns_vectors():
-    client = TestClient(_make_app())
+    from app.providers.fake import FakeProvider
+
+    app = _make_app()
+    app.state.embedder = FakeProvider(embed_dim=16)
+    client = TestClient(app)
     resp = client.post("/embeddings/embed", json={"texts": ["hello world", "goodbye"]}, headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
     assert data["count"] == 2
-    assert data["dimension"] > 0
+    assert data["dimension"] == 16
     assert len(data["embeddings"][0]) == data["dimension"]
+    assert data["used_fallback"] is False
+
+
+def test_embed_without_provider_is_503_by_default():
+    """Regression: the default used to be fallback_lexical=True — no provider
+    silently produced fake 384-dim hash vectors with a 200."""
+    client = TestClient(_make_app())
+    resp = client.post("/embeddings/embed", json={"texts": ["hello"]}, headers=_HEADERS)
+    assert resp.status_code == 503
+
+
+def test_embed_provider_failure_reports_fallback_truthfully():
+    """used_fallback was ``provider is None`` — False even when the provider
+    failed and the hash fallback ran."""
+
+    class _Broken:
+        async def embed(self, request):
+            raise RuntimeError("provider down")
+
+    app = _make_app()
+    app.state.embedder = _Broken()
+    client = TestClient(app)
+    failed = client.post("/embeddings/embed", json={"texts": ["hello"]}, headers=_HEADERS)
+    assert failed.status_code == 503
+    opted = client.post(
+        "/embeddings/embed", json={"texts": ["hello"], "fallback_lexical": True}, headers=_HEADERS
+    )
+    assert opted.status_code == 200
+    data = opted.json()
+    assert data["used_fallback"] is True
+    assert data["model"] == "lexical-hash-384"
+    assert "provider down" in data["fallback_reason"]
 
 
 def test_embed_empty_list_returns_empty():

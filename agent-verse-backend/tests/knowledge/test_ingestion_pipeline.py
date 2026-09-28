@@ -165,13 +165,16 @@ def test_knowledge_api_has_github_ingest_endpoint():
         )
 
 
-def test_reindex_task_in_celery_beat():
-    import inspect
+def test_retired_reindex_task_is_not_in_celery_beat():
+    """reindex_stale_knowledge marked a legacy table nothing reads; it is retired
+    and must not be scheduled (freshness = per-Source re-sync)."""
+    from app.scaling.celery_app import celery_app
+    from app.scaling.tasks import reindex_stale_knowledge
 
-    from app.scaling import celery_app as ca
-    src = inspect.getsource(ca)
-    assert "reindex_stale_knowledge" in src or "reindex" in src.lower(), \
-        "reindex_stale_knowledge must be in beat schedule"
+    tasks = {entry["task"] for entry in celery_app.conf.beat_schedule.values()}
+    assert "agentverse.maintenance.reindex_stale_knowledge" not in tasks
+    assert "ingestion.dispatch_due_sources" in tasks
+    assert reindex_stale_knowledge.run() == {"status": "retired", "marked_for_reindex": 0}
 
 
 def test_rag_store_hybrid_search_returns_citation_fields():

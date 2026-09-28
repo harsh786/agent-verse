@@ -23,10 +23,13 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
+from app.observability.logging import get_logger
+
+_log = get_logger(__name__)
 
 router = APIRouter(prefix="/sources", tags=["ingestion"])
 documents_router = APIRouter(prefix="/ingestion", tags=["ingestion"])
@@ -146,6 +149,19 @@ async def create_source(request: Request, body: CreateSourceRequest) -> dict:
         family = SourceFamily(body.family)
     except ValueError as _b904_exc:
         raise HTTPException(status_code=422, detail=f"Unknown family: {body.family!r}") from _b904_exc  # noqa: E501
+
+    # Source quota (plan limit) — counted in the DB; it was never enforced.
+    enforcer = _get_quota_enforcer(request)
+    if enforcer is not None:
+        from app.ingestion.quota import IngestionQuotaExceededError
+
+        try:
+            await enforcer.check_source_quota(tenant.tenant_id, plan=_plan_of(tenant))
+        except IngestionQuotaExceededError as exc:
+            raise HTTPException(status_code=429, detail=str(exc)) from exc
+        except Exception as exc:
+            _log.exception("ingestion_source_quota_check_failed")
+            raise HTTPException(status_code=503, detail="Quota check is unavailable") from exc
 
     source_id = uuid.uuid4().hex
     config = SourceConfig(
@@ -358,43 +374,192 @@ async def source_stats(source_id: str, request: Request) -> dict:
 # ── Documents ─────────────────────────────────────────────────────────────────
 
 
-@documents_router.get("/documents", response_model=list[dict])
-async def list_documents(request: Request, source_id: str = "", limit: int = 50) -> list[dict]:
-    """List indexed documents for a source.
+def _get_quota_enforcer(request: Request) -> Any:
+    """DB-backed ``IngestionQuotaEnforcer`` (wired in the lifespan), or None."""
+    return getattr(request.app.state, "ingestion_quota", None)
 
-    NOTE (honest status): there is no per-document registry table yet — the
-    ingestion pipeline writes chunks to the RAG store but does not persist a
-    queryable ``indexed_documents`` row per source. This endpoint therefore
-    always returns an empty list; it is a stub, not a populated feature. Wiring
-    it requires a real ``indexed_documents`` table (see pipeline.py CQRS note).
+
+def _plan_of(tenant: Any) -> str:
+    plan = getattr(tenant, "plan", "free")
+    return str(getattr(plan, "value", plan) or "free")
+
+
+@documents_router.get("/documents", response_model=list[dict])
+async def list_documents(
+    request: Request,
+    source_id: str = "",
+    limit: int = Query(default=50, ge=1, le=500),
+    after: str | None = Query(default=None, max_length=64),
+) -> list[dict]:
+    """Indexed documents of one Source, one row per document.
+
+    Was a stub that always returned ``[]``. Now aggregated in SQL from the
+    Source's collection chunk table under tenant RLS (keyset-paginated by
+    document id via ``after``). 404 for an unknown Source; 5xx on failure — an
+    empty list only ever means "no documents".
     """
-    _require_tenant(request)
-    return []
+    tenant = _require_tenant(request)
+    if not source_id:
+        raise HTTPException(status_code=422, detail="source_id is required")
+    source = await _load_source(request, source_id, tenant.tenant_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    if not source.collection_id:
+        return []
+    store = getattr(request.app.state, "knowledge_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
+    try:
+        rows = await store.list_source_documents_async(
+            tenant_ctx=tenant,
+            collection_id=source.collection_id,
+            source_id=source_id,
+            limit=limit,
+            after=after,
+        )
+    except Exception as exc:
+        _log.exception("ingestion_documents_query_failed", source_id=source_id)
+        raise HTTPException(status_code=503, detail="Document index is unavailable") from exc
+    return list(rows)
 
 
 @documents_router.get("/quota", response_model=dict)
 async def get_quota(request: Request) -> dict:
+    """Tenant ingestion quota — usage read from the database.
+
+    Previously counted the API module's in-memory ``_SOURCES`` dict, which is
+    always empty once the DB-backed Source store is wired (i.e. in production).
+    """
+    from app.ingestion.quota import DOCUMENT_LIMITS, SOURCE_LIMITS
+
     tenant = _require_tenant(request)
+    plan = _plan_of(tenant)
+    enforcer = _get_quota_enforcer(request)
+    tracker = _get_tracker(request)
+    if enforcer is not None:
+        try:
+            usage = await enforcer.usage(tenant.tenant_id, plan=plan)
+        except Exception as exc:
+            _log.exception("ingestion_quota_query_failed")
+            raise HTTPException(status_code=503, detail="Quota usage is unavailable") from exc
+        sources_used, docs_used = usage.sources_used, usage.documents_indexed
+        sources_limit, docs_limit = usage.sources_limit, usage.documents_limit
+    else:
+        # No database (dev/tests): the in-process Source store is the truth.
+        store = _get_source_store(request)
+        if store is not None:
+            sources_used = len(await store.list(tenant.tenant_id))
+        else:
+            sources_used = sum(1 for s in _SOURCES.values() if s.tenant_id == tenant.tenant_id)
+        docs_used = 0
+        ks = getattr(request.app.state, "knowledge_store", None)
+        if ks is not None and hasattr(ks, "collection_counters_async"):
+            counters = await ks.collection_counters_async(tenant_ctx=tenant)
+            docs_used = sum(int(c["document_count"]) for c in counters)
+        sources_limit = SOURCE_LIMITS.get(plan, SOURCE_LIMITS["free"])
+        docs_limit = DOCUMENT_LIMITS.get(plan, DOCUMENT_LIMITS["free"])
+    tokens_used = 0
+    if tracker is not None and getattr(tracker, "_db", None) is not None:
+        try:
+            tokens_used = (await tracker.monthly_usage(tenant.tenant_id))["tokens"]
+        except Exception as exc:
+            _log.exception("ingestion_quota_usage_failed")
+            raise HTTPException(status_code=503, detail="Quota usage is unavailable") from exc
     return {
         "tenant_id": tenant.tenant_id,
-        "plan": getattr(tenant, "plan", "free"),
-        "sources_used": sum(1 for s in _SOURCES.values() if s.tenant_id == tenant.tenant_id),
-        "sources_limit": {"free": 2, "starter": 10, "professional": 50}.get(
-            getattr(tenant, "plan", "free"), 999_999
-        ),
+        "plan": plan,
+        "sources_used": sources_used,
+        "sources_limit": sources_limit,
+        "docs_used": docs_used,
+        "docs_limit": docs_limit,
+        "tokens_used_month": tokens_used,
+        "tokens_limit_month": None,  # no token quota is enforced
+        "cost_usd_month": _estimate_cost_usd(tokens_used)[0],
     }
+
+
+def _estimate_cost_usd(tokens: int) -> tuple[float | None, str | None]:
+    """Embedding cost for *tokens* at the configured model's list price.
+
+    ``None`` when the configured model has no known price — an honest "unknown"
+    instead of a fabricated $0.
+    """
+    import os
+
+    from app.embedding.router import BUILTIN_EMBEDDING_CONFIGS
+
+    model = (
+        os.getenv("EMBEDDING_MODEL", "").strip()
+        or os.getenv("NVIDIA_EMBED_MODEL", "").strip()
+    )
+    candidates = [
+        cfg for key, cfg in BUILTIN_EMBEDDING_CONFIGS.items() if model and model in (key, cfg.model)
+    ]
+    if not candidates:
+        return None, model or None
+    cfg = candidates[0]
+    return round(tokens / 1000.0 * cfg.cost_per_1k, 6), f"{cfg.provider}/{cfg.model}"
 
 
 @documents_router.get("/cost", response_model=dict)
 async def get_cost(request: Request) -> dict:
+    """This month's ingestion token usage (from ``ingestion_jobs``) and its cost.
+
+    Was a stub that always answered zeros. Covers connector/scheduled/manual
+    Source syncs (the jobs that record tokens); ``cost_usd_month`` is ``None``
+    when the embedding model's price is unknown.
+    """
     tenant = _require_tenant(request)
-    return {"tenant_id": tenant.tenant_id, "tokens_used_month": 0, "cost_usd_month": 0.0}
+    tracker = _get_tracker(request)
+    if tracker is None or getattr(tracker, "_db", None) is None:
+        raise HTTPException(status_code=503, detail="Ingestion usage requires a database")
+    try:
+        usage = await tracker.monthly_usage(tenant.tenant_id)
+    except Exception as exc:
+        _log.exception("ingestion_cost_query_failed")
+        raise HTTPException(status_code=503, detail="Ingestion usage is unavailable") from exc
+    cost, pricing_model = _estimate_cost_usd(usage["tokens"])
+    return {
+        "tenant_id": tenant.tenant_id,
+        "tokens_used_month": usage["tokens"],
+        "cost_usd_month": cost,
+        "pricing_model": pricing_model,
+        "jobs_month": usage["jobs"],
+        "docs_indexed_month": usage["docs_indexed"],
+        "chunks_created_month": usage["chunks_created"],
+        "bytes_processed_month": usage["bytes_processed"],
+        "basis": "ingestion_jobs",
+    }
 
 
 @documents_router.get("/dlq", response_model=list[dict])
-async def list_dlq(request: Request) -> list[dict]:
-    _require_tenant(request)
-    return []
+async def list_dlq(
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=500),
+    source_id: str = "",
+    include_resolved: bool = False,
+) -> list[dict]:
+    """The tenant's ingestion dead-letter queue (unresolved by default).
+
+    Was a stub that always returned ``[]`` although ``ingestion_dlq`` is written
+    by every failed sync.
+    """
+    tenant = _require_tenant(request)
+    tracker = _get_tracker(request)
+    if tracker is None or getattr(tracker, "_db", None) is None:
+        raise HTTPException(status_code=503, detail="Ingestion DLQ requires a database")
+    try:
+        return list(
+            await tracker.list_dlq_entries(
+                tenant.tenant_id,
+                limit=limit,
+                source_id=source_id,
+                include_resolved=include_resolved,
+            )
+        )
+    except Exception as exc:
+        _log.exception("ingestion_dlq_query_failed")
+        raise HTTPException(status_code=503, detail="Ingestion DLQ is unavailable") from exc
 
 
 # ── Background sync task ──────────────────────────────────────────────────────

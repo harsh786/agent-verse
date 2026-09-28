@@ -37,6 +37,17 @@ class EmbeddingModelRegistry:
 
     @classmethod
     def build_default(cls) -> EmbeddingModelRegistry:
+        """Default catalogue. ``fake-embedding`` is included only outside
+        production (no-provider dev/test fallback) — never a production choice."""
+        registry = cls._build_catalogue()
+        import os
+
+        if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+            return cls([m for m in registry.list_all() if m.provider != "fake"])
+        return registry
+
+    @classmethod
+    def _build_catalogue(cls) -> EmbeddingModelRegistry:
         import os
 
         # When a dedicated embedding model is configured (EMBEDDING_MODEL /

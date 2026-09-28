@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
 from app.ingestion.orchestrator import EmptyIndexedContentError
+from app.ingestion.pipeline import IngestionPolicyRejectedError
 from app.ingestion.repository_security import (
     RepositoryLimits,
     RepositorySecurityError,
@@ -340,6 +341,60 @@ async def _embed_texts_or_http(texts: list[str], embedder: Any) -> list[list[flo
     return embeddings
 
 
+async def _screen_or_http(
+    request: Request | None, tenant_id: str, text: str, *, doc_id: str = ""
+) -> str:
+    """Pipeline Stages 6 + 6b (PII redaction + Guardrails RAG_INGEST) for a
+    direct ingestion route, BEFORE the text is chunked or embedded.
+
+    LAW-01/LAW-06: these routes parse and chunk on their own, and used to skip
+    both stages entirely — PII went to the embedder and into the vector store,
+    and RAG_INGEST guardrail rules (GDPR/PCI bundles) never applied. Uses the
+    app's wired ``IngestionPipeline`` (same analyzer, same rules as connector
+    ingestion). A refused document is a 422; a scan failure fails closed (503).
+    """
+    from app.ingestion.pipeline import IngestionPolicyRejectedError, screen_ingest_text
+
+    try:
+        return await screen_ingest_text(
+            text,
+            tenant_id=tenant_id,
+            pipeline=(
+                getattr(request.app.state, "ingestion_pipeline", None)
+                if request is not None
+                else None
+            ),
+            doc_id=doc_id,
+        )
+    except IngestionPolicyRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Ingestion PII screening is unavailable"
+        ) from exc
+
+
+async def _already_indexed_or_http(
+    store: KnowledgeStore, doc_hash: str, *, tenant_id: str, collection_id: str
+) -> bool:
+    """Pipeline Stage 3 (LAW-02) for direct routes: is this exact document
+    (``doc_content_hash``) already in the collection? Skips the embed cost; the
+    in-transaction ``DuplicateContentError`` guard still closes the race."""
+    try:
+        return bool(
+            await store.exists_by_hash(
+                content_hash=doc_hash, tenant_id=tenant_id, collection_id=collection_id
+            )
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — collections
 # ---------------------------------------------------------------------------
@@ -461,10 +516,23 @@ async def ingest_document(request: Request, body: IngestRequest) -> dict[str, An
 
     content_hash = hashlib.sha256(body.content.encode()).hexdigest()
     str_metadata = {k: str(v) for k, v in body.metadata.items()}
+    # Stage 3 dedup (LAW-02): an identical document is not re-embedded/re-stored.
+    if await _already_indexed_or_http(
+        store, content_hash, tenant_id=tenant_ctx.tenant_id, collection_id=body.collection_id
+    ):
+        return {
+            "document_id": None,
+            "collection_id": body.collection_id,
+            "chunks_created": 0,
+            "content_hash": content_hash,
+            "deduplicated": True,
+        }
+    # Stages 6/6b: PII redaction + RAG_INGEST guardrails before chunk/embed.
+    screened = await _screen_or_http(request, tenant_ctx.tenant_id, body.content)
     document = Document(
         collection_id=body.collection_id,
         source=body.source_type,
-        content=body.content,
+        content=screened,
         content_hash=content_hash,
         metadata=str_metadata,
     )
@@ -472,19 +540,19 @@ async def ingest_document(request: Request, body: IngestRequest) -> dict[str, An
     # Split into token-aware chunks for accurate LLM context window usage.
     from app.knowledge.chunker_v2 import chunk_by_tokens
 
-    _raw_chunks = chunk_by_tokens(body.content, max_tokens=512, overlap_tokens=64)
+    _raw_chunks = chunk_by_tokens(screened, max_tokens=512, overlap_tokens=64)
     chunks_text = [
         type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
         for chunk in _raw_chunks
     ]
 
     # Fallback: very short content that doesn't meet min_chunk threshold
-    if not chunks_text and body.content.strip():
+    if not chunks_text and screened.strip():
         chunks_text = [
             type(
                 "_C",
                 (),
-                {"content": body.content.strip(), "start_char": 0, "end_char": len(body.content)},
+                {"content": screened.strip(), "start_char": 0, "end_char": len(screened)},
             )()
         ]
 
@@ -502,21 +570,27 @@ async def ingest_document(request: Request, body: IngestRequest) -> dict[str, An
                 content=chunk_text,
                 embedding=embeddings[idx],
                 chunk_index=idx,
-                metadata={**str_metadata, "source_type": body.source_type},
+                metadata={
+                    **str_metadata,
+                    "source_type": body.source_type,
+                    "doc_content_hash": content_hash,
+                },
             )
         )
-    await _persist_chunks_or_http(
+    stored = await _persist_chunks_or_http(
         store,
         chunks,
         collection_id=body.collection_id,
         tenant_ctx=tenant_ctx,
     )
 
+    # Report what was persisted: [] means a concurrent identical ingest won.
     return {
-        "document_id": document.document_id,
+        "document_id": document.document_id if stored else None,
         "collection_id": body.collection_id,
-        "chunks_created": len(chunks),
+        "chunks_created": len(stored),
         "content_hash": content_hash,
+        "deduplicated": not stored,
     }
 
 
@@ -691,6 +765,19 @@ async def ingest_file(
     if not text.strip():
         raise HTTPException(422, "File is empty or could not be parsed")
 
+    doc_hash = hashlib.sha256(content_bytes).hexdigest()
+    if await _already_indexed_or_http(
+        store, doc_hash, tenant_id=tenant.tenant_id, collection_id=collection_id
+    ):
+        return {
+            "filename": filename,
+            "chunks_created": 0,
+            "collection_id": collection_id,
+            "file_size_bytes": len(content_bytes),
+            "deduplicated": True,
+        }
+    text = await _screen_or_http(request, tenant.tenant_id, text, doc_id=filename)
+
     # Chunk using token-aware chunker
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
 
@@ -729,10 +816,11 @@ async def ingest_file(
                     "ext": ext,
                     "char_offset": str(chunk.start_char),
                     "source_type": source_type,
+                    "doc_content_hash": doc_hash,
                 },
             )
         )
-    await _persist_chunks_or_http(
+    stored = await _persist_chunks_or_http(
         store,
         rag_chunks,
         collection_id=collection_id,
@@ -741,9 +829,10 @@ async def ingest_file(
 
     return {
         "filename": filename,
-        "chunks_created": len(rag_chunks),
+        "chunks_created": len(stored),
         "collection_id": collection_id,
         "file_size_bytes": len(content_bytes),
+        "deduplicated": bool(rag_chunks) and not stored,
     }
 
 
@@ -1069,10 +1158,25 @@ async def _ingest_repo_background(
             )
             if blocked:
                 raise RepositorySecurityError("Repository content failed secret scan")
+            # Stages 6/6b (PII redaction + RAG_INGEST guardrails), as for every
+            # other ingestion path; a refused file fails the job like the
+            # secret scan above does.
+            from app.ingestion.pipeline import IngestionPolicyRejectedError, screen_ingest_text
+
+            try:
+                screened_content = await screen_ingest_text(
+                    repository_file.content,
+                    tenant_id=tenant_ctx.tenant_id,
+                    doc_id=repository_file.relative_path,
+                )
+            except IngestionPolicyRejectedError as policy_exc:
+                raise RepositorySecurityError(
+                    "Repository content failed ingestion policy"
+                ) from policy_exc
             suffix = pathlib.PurePosixPath(repository_file.relative_path).suffix.lstrip(".")
             source_type = "code" if suffix in {"py", "ts", "js"} else "text"
             raw_chunks = _chunk_by_tokens_repo(
-                repository_file.content,
+                screened_content,
                 max_tokens=512,
                 overlap_tokens=64,
             )
@@ -1189,9 +1293,21 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
     except Exception as exc:
         raise HTTPException(422, f"Could not parse OpenAPI spec: {exc}") from exc
 
+    if not isinstance(spec, dict):
+        raise HTTPException(422, "Could not parse OpenAPI spec: not a mapping")
     paths = spec.get("paths", {})
-    rag_chunks: list[Chunk] = []
+    doc_hash = hashlib.sha256(body.content.encode()).hexdigest()
+    if await _already_indexed_or_http(
+        store, doc_hash, tenant_id=tenant.tenant_id, collection_id=body.collection_id
+    ):
+        return {
+            "endpoints_ingested": 0,
+            "collection_id": body.collection_id,
+            "source_url": body.source_url,
+            "deduplicated": True,
+        }
     source_doc_id = _uuid.uuid4().hex
+    endpoint_texts: list[tuple[str, str]] = []
     for path, methods in paths.items():
         if not isinstance(methods, dict):
             continue
@@ -1213,24 +1329,37 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 
             if not chunk_text:
                 continue
-
-            embedding = (await _embed_texts_or_http([chunk_text], embedder))[0]
-
-            rag_chunks.append(
-                Chunk(
-                    document_id=source_doc_id,
-                    content=chunk_text,
-                    embedding=embedding,
-                    chunk_index=len(rag_chunks),
-                    metadata={
-                        "source_url": body.source_url,
-                        "source_type": "openapi",
-                        "source_doc_id": source_doc_id,
-                        "endpoint": f"{method.upper()} {path}",
-                    },
-                )
+            # Stages 6/6b per endpoint chunk (spec text is tenant-supplied).
+            chunk_text = await _screen_or_http(
+                request, tenant.tenant_id, chunk_text, doc_id=source_doc_id
             )
-    await _persist_chunks_or_http(
+            endpoint_texts.append((f"{method.upper()} {path}", chunk_text))
+
+    # One batched embed call instead of one provider round trip per endpoint.
+    embeddings = (
+        await _embed_texts_or_http([t for _, t in endpoint_texts], embedder)
+        if endpoint_texts
+        else []
+    )
+    rag_chunks: list[Chunk] = [
+        Chunk(
+            document_id=source_doc_id,
+            content=chunk_text,
+            embedding=embedding,
+            chunk_index=index,
+            metadata={
+                "source_url": body.source_url,
+                "source_type": "openapi",
+                "source_doc_id": source_doc_id,
+                "endpoint": endpoint,
+                "doc_content_hash": doc_hash,
+            },
+        )
+        for index, ((endpoint, chunk_text), embedding) in enumerate(
+            zip(endpoint_texts, embeddings, strict=True)
+        )
+    ]
+    stored = await _persist_chunks_or_http(
         store,
         rag_chunks,
         collection_id=body.collection_id,
@@ -1238,9 +1367,10 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
     )
 
     return {
-        "endpoints_ingested": len(rag_chunks),
+        "endpoints_ingested": len(stored),
         "collection_id": body.collection_id,
         "source_url": body.source_url,
+        "deduplicated": bool(rag_chunks) and not stored,
     }
 
 
@@ -1327,6 +1457,20 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     if not content.strip():
         raise HTTPException(422, "No content extracted from URL")
 
+    doc_hash = hashlib.sha256(content.encode()).hexdigest()
+    if await _already_indexed_or_http(
+        store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=body.collection_id
+    ):
+        return {
+            "collection_id": body.collection_id,
+            "source_url": body.url,
+            "source_type": body.source_type,
+            "chunks_ingested": 0,
+            "total_chars": len(content),
+            "deduplicated": True,
+        }
+    content = await _screen_or_http(request, tenant_ctx.tenant_id, content, doc_id=body.url)
+
     # Chunk and ingest
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_url
 
@@ -1350,24 +1494,28 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     from app.rag.models import Chunk as RagChunk
 
     doc_id = _uuid_mod.uuid4().hex
-    rag_chunks: list[Chunk] = []
-    for idx, chunk in enumerate(chunks):
-        if not chunk.content.strip():
-            continue
-        embedding = (await _embed_texts_or_http([chunk.content], embedder))[0]
-        rag_chunks.append(
-            RagChunk(
-                document_id=doc_id,
-                content=chunk.content,
-                embedding=embedding,
-                chunk_index=idx,
-                metadata={
-                    **{k: str(v) for k, v in metadata.items()},
-                    "source_type": body.source_type,
-                },
-            )
+    kept = [(idx, chunk) for idx, chunk in enumerate(chunks) if chunk.content.strip()]
+    # One batched embed call instead of one provider round trip per chunk.
+    embeddings = (
+        await _embed_texts_or_http([chunk.content for _, chunk in kept], embedder)
+        if kept
+        else []
+    )
+    rag_chunks: list[Chunk] = [
+        RagChunk(
+            document_id=doc_id,
+            content=chunk.content,
+            embedding=embedding,
+            chunk_index=idx,
+            metadata={
+                **{k: str(v) for k, v in metadata.items()},
+                "source_type": body.source_type,
+                "doc_content_hash": doc_hash,
+            },
         )
-    await _persist_chunks_or_http(
+        for (idx, chunk), embedding in zip(kept, embeddings, strict=True)
+    ]
+    stored = await _persist_chunks_or_http(
         store,
         rag_chunks,
         collection_id=body.collection_id,
@@ -1378,8 +1526,9 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
         "collection_id": body.collection_id,
         "source_url": body.url,
         "source_type": body.source_type,
-        "chunks_ingested": len(rag_chunks),
+        "chunks_ingested": len(stored),
         "total_chars": len(content),
+        "deduplicated": bool(rag_chunks) and not stored,
     }
 
 
@@ -1394,25 +1543,53 @@ async def _ingest_chunks_from_source(
     collection_id: str,
     tenant_ctx: Any,
     embedder: Any,
+    *,
+    request: Request | None = None,
 ) -> int:
-    """Embed and ingest a list of chunk dicts returned by an ingestor."""
+    """Screen, dedup, embed and persist chunk dicts returned by an ingestor.
+
+    Per source document (``source_doc_id``): Stage 3 dedup on the document's
+    ``doc_content_hash`` (the ingestor's, else SHA-256 of its chunk texts),
+    Stages 6/6b PII + RAG_INGEST screening of every chunk before it is
+    embedded, then one persistence transaction per document — so one
+    already-indexed document no longer voids (``DuplicateContentError``) the
+    whole multi-document batch.
+    """
     source_chunks = [chunk for chunk in chunks if str(chunk.get("content", "")).strip()]
-    embeddings = await _embed_texts_or_http(
-        [str(chunk["content"]) for chunk in source_chunks],
-        embedder,
-    )
     fallback_source_doc_id = _uuid.uuid4().hex
-    document_chunk_indexes: dict[str, int] = {}
-    rag_chunks: list[Chunk] = []
-    for chunk_data, embedding in zip(source_chunks, embeddings, strict=True):
-        content = chunk_data.get("content", "")
+    by_document: dict[str, list[dict[str, Any]]] = {}
+    for chunk_data in source_chunks:
         source_doc_id = str(chunk_data.get("source_doc_id") or fallback_source_doc_id)
-        chunk_index = document_chunk_indexes.get(source_doc_id, 0)
-        document_chunk_indexes[source_doc_id] = chunk_index + 1
-        rag_chunks.append(
+        by_document.setdefault(source_doc_id, []).append(chunk_data)
+
+    stored_total = 0
+    for source_doc_id, doc_chunks in by_document.items():
+        declared_hash = next(
+            (
+                str((c.get("metadata") or {}).get("doc_content_hash") or "")
+                for c in doc_chunks
+                if (c.get("metadata") or {}).get("doc_content_hash")
+            ),
+            "",
+        )
+        doc_hash = declared_hash or hashlib.sha256(
+            "\n".join(str(c["content"]) for c in doc_chunks).encode()
+        ).hexdigest()
+        if await _already_indexed_or_http(
+            store, doc_hash, tenant_id=tenant_ctx.tenant_id, collection_id=collection_id
+        ):
+            continue
+        texts = [
+            await _screen_or_http(
+                request, tenant_ctx.tenant_id, str(c["content"]), doc_id=source_doc_id
+            )
+            for c in doc_chunks
+        ]
+        embeddings = await _embed_texts_or_http(texts, embedder)
+        rag_chunks = [
             Chunk(
                 document_id=source_doc_id,
-                content=content,
+                content=text,
                 embedding=embedding,
                 chunk_index=chunk_index,
                 metadata={k: str(v) for k, v in (chunk_data.get("metadata") or {}).items()}
@@ -1421,20 +1598,24 @@ async def _ingest_chunks_from_source(
                     "source_type": chunk_data.get("source_type", ""),
                     "source_doc_id": source_doc_id,
                     "page_number": str(chunk_data.get("page_number") or ""),
+                    "doc_content_hash": doc_hash,
                 },
             )
+            for chunk_index, (chunk_data, text, embedding) in enumerate(
+                zip(doc_chunks, texts, embeddings, strict=True)
+            )
+        ]
+        stored_ids = await _persist_chunks_or_http(
+            store,
+            rag_chunks,
+            collection_id=collection_id,
+            tenant_ctx=tenant_ctx,
         )
-    stored_ids = await _persist_chunks_or_http(
-        store,
-        rag_chunks,
-        collection_id=collection_id,
-        tenant_ctx=tenant_ctx,
-    )
-    # Report what was actually persisted, not what was prepared — a caught
-    # DuplicateContentError (concurrent identical ingestion already won the
-    # race) makes _persist_chunks_or_http return [] and callers must not
-    # report a false-positive "ingested" count for content that was skipped.
-    return len(stored_ids)
+        # Report what was actually persisted, not what was prepared — a caught
+        # DuplicateContentError (a concurrent identical ingestion already won
+        # the race) returns [] and must not count as "ingested".
+        stored_total += len(stored_ids)
+    return stored_total
 
 
 @router.post("/ingest/pdf", status_code=201)
@@ -1461,7 +1642,9 @@ async def ingest_pdf(
         source_url=source_url or f"file://{filename}",
     )
 
-    ingested = await _ingest_chunks_from_source(store, chunks, collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, collection_id, tenant, embedder, request=request
+    )
     return {"chunks_ingested": ingested, "source": filename, "source_type": "pdf"}
 
 
@@ -1489,7 +1672,9 @@ async def ingest_docx(
         source_url=source_url or f"file://{filename}",
     )
 
-    ingested = await _ingest_chunks_from_source(store, chunks, collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, collection_id, tenant, embedder, request=request
+    )
     return {"chunks_ingested": ingested, "source": filename, "source_type": "docx"}
 
 
@@ -1510,7 +1695,9 @@ async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str
         max_files=body.max_files,
     )
 
-    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, body.collection_id, tenant, embedder, request=request
+    )
     return {
         "chunks_ingested": ingested,
         "source": f"github:{body.owner}/{body.repo}",
@@ -1534,7 +1721,9 @@ async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> 
     )
     chunks = await ingestor.ingest_space(body.space_key, max_pages=body.max_pages)
 
-    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, body.collection_id, tenant, embedder, request=request
+    )
     return {
         "chunks_ingested": ingested,
         "source": f"confluence:{body.space_key}",
@@ -1562,7 +1751,9 @@ async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, An
         max_issues=body.max_issues,
     )
 
-    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, body.collection_id, tenant, embedder, request=request
+    )
     return {
         "chunks_ingested": ingested,
         "source": f"jira:{body.project_key}",
@@ -1586,7 +1777,9 @@ async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, 
         max_messages=body.max_messages,
     )
 
-    ingested = await _ingest_chunks_from_source(store, chunks, body.collection_id, tenant, embedder)
+    ingested = await _ingest_chunks_from_source(
+        store, chunks, body.collection_id, tenant, embedder, request=request
+    )
     return {
         "chunks_ingested": ingested,
         "source": f"slack:{body.channel_id}",
@@ -1804,60 +1997,64 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
     }
 
 
+def _health_score(chunk_count: int, doc_count: int) -> float:
+    """0-1 composite over REAL counters: coverage (embedding is NOT NULL on every
+    persisted chunk, so any chunk is embedded), corpus size, document count."""
+    coverage = 1.0 if chunk_count > 0 else 0.0
+    score = (
+        (0.4 * coverage)
+        + (0.4 * min(1.0, chunk_count / 100))
+        + (0.2 * min(1.0, doc_count / 10))
+    )
+    return round(min(1.0, score), 3)
+
+
 @router.get("/collections/{collection_id}/stats")
 async def get_collection_stats(request: Request, collection_id: str) -> dict[str, Any]:
-    """Return quality and freshness statistics for a knowledge collection."""
+    """Quality/size statistics for one collection, from the source of truth.
+
+    Previously computed from the in-memory ``_data`` mirror, which is empty
+    whenever the DB-backed store is wired — so every production collection read
+    0 chunks / 0% coverage. Counts now come from the ``knowledge_collections``
+    counters (maintained exactly on every ingest/delete); the source-type
+    distribution is a bounded sample (``source_type_sample_size`` rows). 5xx on
+    failure.
+    """
     tenant_ctx = _require_tenant(request)
     store = _knowledge_store(request)
-
-    # Verify collection exists
-    collections = await store.list_collections_async(tenant_ctx=tenant_ctx)
-    col = next((c for c in collections if c.collection_id == collection_id), None)
-    if col is None:
+    try:
+        counters = await store.collection_counters_async(
+            tenant_ctx=tenant_ctx, collection_id=collection_id
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    if not counters:
         raise HTTPException(status_code=404, detail="Collection not found")
-
-    # Pull chunks from in-memory store for analytics
-    # _data maps (tenant_id, collection_id) → _CollectionStore; extract .chunks
-    raw_data = getattr(store, "_data", {})
-    cid_key = (tenant_ctx.tenant_id, collection_id)
-    col_store = raw_data.get(cid_key)
-    chunk_objs: list[Any] = col_store.chunks if col_store is not None else []
-    doc_count = getattr(col, "document_count", 0)
-    chunk_count = len(chunk_objs)
-
-    # Compute avg embedding magnitude as a proxy for embedding health
-    embeddings_present = sum(1 for c in chunk_objs if getattr(c, "embedding", None))
-    embedding_coverage = round(embeddings_present / max(chunk_count, 1), 4)
-
-    # Source type distribution
-    source_types: dict[str, int] = {}
-    for c in chunk_objs:
-        stype = (getattr(c, "metadata", None) or {}).get("source_type", "unknown")
-        source_types[stype] = source_types.get(stype, 0) + 1
-
-    # Average chunk length
-    avg_chunk_len = int(
-        sum(len(getattr(c, "content", "")) for c in chunk_objs) / max(chunk_count, 1)
-    )
+    col = counters[0]
+    chunk_count = int(col["chunk_count"])
+    doc_count = int(col["document_count"])
+    try:
+        source_types, sampled = await store.source_type_sample_async(
+            collection_id, tenant_ctx=tenant_ctx, embedding_dim=col["embedding_dim"]
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
 
     return {
         "collection_id": collection_id,
-        "name": col.name,
+        "name": col["name"],
         "doc_count": doc_count,
         "chunk_count": chunk_count,
-        "embedding_coverage_pct": round(embedding_coverage * 100, 1),
-        "avg_chunk_length": avg_chunk_len,
+        "embedding_coverage_pct": 100.0 if chunk_count else 0.0,
+        # Mean stored chunk size in bytes (UTF-8), from the maintained counter.
+        "avg_chunk_length": int(col["total_size_bytes"] / chunk_count) if chunk_count else 0,
+        "total_size_bytes": int(col["total_size_bytes"]),
         "source_type_distribution": source_types,
-        "embedder": getattr(col, "embedder", "unknown"),
-        "health_score": round(
-            min(
-                1.0,
-                (0.4 * embedding_coverage)
-                + (0.4 * min(1.0, chunk_count / 100))
-                + (0.2 * min(1.0, doc_count / 10)),
-            ),
-            3,
-        ),
+        "source_type_sample_size": sampled,
+        "embedder": col["embedder"] or "unknown",
+        "embedding_dim": col["embedding_dim"],
+        "last_indexed_at": col["last_indexed_at"],
+        "health_score": _health_score(chunk_count, doc_count),
     }
 
 
@@ -1970,9 +2167,18 @@ async def ingest_from_rpa_url(
             )
             continue
 
-        ingested = await _ingest_chunks_from_source(
-            store, scraped.chunks, body.collection_id, tenant_ctx, embedder
-        )
+        try:
+            ingested = await _ingest_chunks_from_source(
+                store, scraped.chunks, body.collection_id, tenant_ctx, embedder, request=request
+            )
+        except HTTPException as exc:
+            if exc.status_code != 422:
+                raise
+            # Refused by the PII/RAG_INGEST policy: report per URL, keep going.
+            results.append(
+                {"url": url, "success": False, "error": exc.detail, "chunks_ingested": 0}
+            )
+            continue
         total_chunks += ingested
         results.append(
             {
@@ -2008,42 +2214,45 @@ def _require_tenant_ctx(request: Request) -> TenantContext:
 
 @router.get("/analytics")
 async def get_knowledge_analytics(request: Request) -> dict[str, Any]:
-    """Return aggregate analytics for all knowledge collections."""
+    """Aggregate analytics for all of the tenant's collections.
+
+    Previously hardcoded ``total_chunks=0``, ``health_score=75`` and zero
+    relevance/cache rates, and answered 200 with an ``error`` field when the
+    lookup failed. Now every number comes from the ``knowledge_collections``
+    counters in one indexed query; metrics this service does not measure per
+    collection (relevance, cache hit rate) are ``None`` rather than invented;
+    a failure is a 503.
+    """
     tenant = _require_tenant_ctx(request)
     knowledge_store: KnowledgeStore | None = getattr(request.app.state, "knowledge_store", None)
-
     if knowledge_store is None:
-        return {"collections": [], "total_documents": 0, "total_collections": 0}
-
+        raise HTTPException(status_code=503, detail="Knowledge store not available")
     try:
-        collections = await knowledge_store.list_collections_async(tenant_ctx=tenant)
-        analytics: list[dict[str, Any]] = []
-        for col in collections:
-            analytics.append(
-                {
-                    "collection_id": col.collection_id,
-                    "name": col.name,
-                    "document_count": col.document_count,
-                    "total_chunks": 0,
-                    "last_indexed": None,
-                    "avg_relevance_score": 0.0,
-                    "cache_hit_rate": 0.0,
-                    "health_score": 75,
-                }
-            )
-
-        return {
-            "collections": analytics,
-            "total_documents": sum(a["document_count"] for a in analytics),
-            "total_collections": len(analytics),
-        }
+        counters = await knowledge_store.collection_counters_async(tenant_ctx=tenant)
     except Exception as exc:
-        return {
-            "collections": [],
-            "total_documents": 0,
-            "total_collections": 0,
-            "error": str(exc),
+        raise HTTPException(status_code=503, detail="Knowledge persistence is unavailable") from exc
+    analytics = [
+        {
+            "collection_id": c["collection_id"],
+            "name": c["name"],
+            "document_count": int(c["document_count"]),
+            "total_chunks": int(c["chunk_count"]),
+            "total_size_bytes": int(c["total_size_bytes"]),
+            "last_indexed": c["last_indexed_at"],
+            "avg_relevance_score": None,  # not measured per collection
+            "cache_hit_rate": None,  # semantic cache is not per-collection
+            "health_score": round(
+                _health_score(int(c["chunk_count"]), int(c["document_count"])) * 100
+            ),
         }
+        for c in counters
+    ]
+    return {
+        "collections": analytics,
+        "total_documents": sum(a["document_count"] for a in analytics),
+        "total_chunks": sum(a["total_chunks"] for a in analytics),
+        "total_collections": len(analytics),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2136,6 +2345,11 @@ async def ingest_document_into_collection(
         }
     except HTTPException:
         raise
+    except IngestionPolicyRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
     except EmptyIndexedContentError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2249,8 +2463,17 @@ async def list_documents(
                     for r in rows
                 ]
                 return {"documents": documents, "total": int(total)}
+    except HTTPException:
+        raise
     except Exception as exc:
-        return {"documents": [], "total": 0, "error": str(exc)}
+        # Was a 200 {"documents": [], "error": ...} — indistinguishable from an
+        # empty collection. A failed lookup is a failure.
+        from app.observability.logging import get_logger as _gl
+
+        _gl(__name__).exception("list_documents_failed", collection_id=collection_id)
+        raise HTTPException(
+            status_code=503, detail="Knowledge persistence is unavailable"
+        ) from exc
 
     return {"documents": [], "total": 0}
 
@@ -2488,6 +2711,11 @@ async def ingest_email(
         }
     except HTTPException:
         raise
+    except IngestionPolicyRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2548,6 +2776,11 @@ async def ingest_notion(
         return {"status": "ingested", "chunks_created": total_chunks, "source": "notion"}
     except HTTPException:
         raise
+    except IngestionPolicyRejectedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

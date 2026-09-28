@@ -187,12 +187,9 @@ celery_app.conf.update(
             "schedule": 300.0,
             "options": {"queue": "ingestion"},
         },
-        # Freshness reindex: mark stale knowledge chunks hourly
-        "reindex-stale-knowledge": {
-            "task": "agentverse.maintenance.reindex_stale_knowledge",
-            "schedule": 3600,
-            "options": {"queue": "maintenance"},
-        },
+        # (reindex-stale-knowledge removed: it marked a legacy table nothing
+        # reads — see app.scaling.tasks.reindex_stale_knowledge. Freshness comes
+        # from per-Source re-sync via ingestion-dispatch-due-sources.)
         "purge-expired-artifacts-daily": {
             "task": "agentverse.maintenance.purge_expired_artifacts",
             "schedule": 86400,  # daily

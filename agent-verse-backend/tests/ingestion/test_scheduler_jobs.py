@@ -131,9 +131,16 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     assert pipeline is fake_pipeline
     assert source_store is fake_source_store
     ks_cls.assert_called_once_with(fake_db_factory)
-    pipeline_cls.assert_called_once_with(
-        knowledge_store=fake_knowledge_store, embedder=fake_provider
-    )
+    pipeline_cls.assert_called_once()
+    kwargs = pipeline_cls.call_args.kwargs
+    assert kwargs["knowledge_store"] is fake_knowledge_store
+    assert kwargs["embedder"] is fake_provider
+    # Stage 6 PII + Stage 1 quota are wired (both were previously never passed).
+    from app.ingestion.pii import RegexPIIAnalyzer
+    from app.ingestion.quota import IngestionQuotaEnforcer
+
+    assert isinstance(kwargs["pii_analyzer"], RegexPIIAnalyzer)
+    assert isinstance(kwargs["quota_enforcer"], IngestionQuotaEnforcer)
     # Per-tenant work (job rows, cursors, the Source itself) runs on the
     # application factory under RLS; only the tracker's cross-tenant DLQ scan
     # gets the maintenance-role factory. The Source store gets no system access.

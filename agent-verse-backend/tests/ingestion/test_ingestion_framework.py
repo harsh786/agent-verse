@@ -243,8 +243,14 @@ async def test_pipeline_quota_exceeded():
     from app.ingestion.pipeline import IngestionPipeline
     from app.ingestion.source_config import RawDocument, SourceConfig, SourceFamily
 
+    from app.ingestion.quota import IngestionQuotaExceededError
+
     mock_quota = MagicMock()
-    mock_quota.check_doc_quota.side_effect = Exception("quota_exceeded")
+    # Only a real quota breach is a quota skip; any other error is now a failure
+    # (see test_pipeline_pii_quota_wiring.py).
+    mock_quota.check_doc_quota.side_effect = IngestionQuotaExceededError(
+        "document", 5, 5, "free"
+    )
     pipeline = IngestionPipeline(quota_enforcer=mock_quota)
 
     raw = RawDocument(doc_id="d1", source_id="s1", tenant_id="t1",

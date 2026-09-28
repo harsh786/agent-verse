@@ -333,6 +333,15 @@ class SemanticCache:
             except Exception as exc:
                 logger.debug("semantic_cache_store_error", error=str(exc)[:100])
 
+        # L2 backend write-through (pgvector ``semantic_cache_entries``). The
+        # backend was read on every lookup but never written, so the table
+        # stayed empty and every backend lookup was a guaranteed miss.
+        if self._backend is not None:
+            try:
+                await self._backend.store(query, embedding, response, tenant_id)
+            except Exception as exc:
+                logger.warning("semantic_cache_backend_store_error", error=str(exc)[:100])
+
     # Backward-compatible async API (used by old graph.py code)
     async def get(self, query: str, embedding: list[float] | None, tenant_id: str) -> str | None:
         """Backward-compatible wrapper for old hash-based API. Now uses true similarity."""
@@ -561,6 +570,13 @@ class SemanticCache:
                 deleted = await self._redis_clear_tenant(tid)
             except Exception as exc:
                 logger.warning("semantic_cache_clear_error", error=str(exc)[:100])
+        # Clear the backend too — otherwise a "cleared" tenant kept being served
+        # its old answers from semantic_cache_entries.
+        if self._backend is not None:
+            try:
+                await self._backend.clear(tid)
+            except Exception as exc:
+                logger.warning("semantic_cache_backend_clear_error", error=str(exc)[:100])
         # Reset stats
         self._stats.pop(tid, None)
         logger.info("semantic_cache_cleared", tenant=tid, redis_keys_deleted=deleted)

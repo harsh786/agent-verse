@@ -526,14 +526,68 @@ def test_source_stats_success() -> None:
     assert body["cursor_value"] == "c-9"
 
 
-# ── Documents / quota / cost / DLQ stubs ────────────────────────────────────────
+# ── Documents / quota / cost / DLQ (were stubs; now DB-backed) ─────────────────
 
 
-def test_list_documents_stub_always_empty() -> None:
+def test_list_documents_requires_source_id() -> None:
     client = _client()
     resp = client.get("/ingestion/documents", headers=_auth())
-    assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.status_code == 422
+
+
+def test_list_documents_unknown_source_is_404() -> None:
+    client = _client()
+    resp = client.get("/ingestion/documents?source_id=nope", headers=_auth())
+    assert resp.status_code == 404
+
+
+def test_list_documents_returns_the_sources_indexed_documents() -> None:
+    """Was a stub that always returned []."""
+    from app.rag.models import Chunk, KnowledgeCollection
+    from app.rag.store import KnowledgeStore
+
+    ks = KnowledgeStore()
+    col = KnowledgeCollection(name="c")
+    ks.create_collection(col, tenant_ctx=_CTX)
+    src = _make_source(tenant_id=_CTX.tenant_id, collection_id=col.collection_id)
+    ingestion_mod._SOURCES[src.source_id] = src
+    for doc, n in (("doc-a", 2), ("doc-b", 1)):
+        for i in range(n):
+            ks.ingest_chunk(
+                Chunk(
+                    document_id=doc,
+                    content=f"{doc} {i}",
+                    embedding=[0.1],
+                    chunk_index=i,
+                    metadata={"source_id": src.source_id, "doc_title": doc.upper()},
+                ),
+                collection_id=col.collection_id,
+                tenant_ctx=_CTX,
+            )
+    client = _client(knowledge_store=ks)
+    resp = client.get(f"/ingestion/documents?source_id={src.source_id}", headers=_auth())
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()
+    assert [(r["id"], r["chunk_count"], r["title"]) for r in rows] == [
+        ("doc-a", 2, "DOC-A"),
+        ("doc-b", 1, "DOC-B"),
+    ]
+    page = client.get(
+        f"/ingestion/documents?source_id={src.source_id}&after=doc-a", headers=_auth()
+    )
+    assert [r["id"] for r in page.json()] == ["doc-b"]
+
+
+def test_list_documents_store_failure_is_503_not_empty() -> None:
+    from unittest.mock import MagicMock
+
+    src = _make_source(tenant_id=_CTX.tenant_id, collection_id="c1")
+    ingestion_mod._SOURCES[src.source_id] = src
+    ks = MagicMock()
+    ks.list_source_documents_async = AsyncMock(side_effect=ConnectionError("db down"))
+    client = _client(knowledge_store=ks)
+    resp = client.get(f"/ingestion/documents?source_id={src.source_id}", headers=_auth())
+    assert resp.status_code == 503
 
 
 def test_get_quota_free_plan_default_limit() -> None:
@@ -554,7 +608,7 @@ def test_get_quota_free_plan_default_limit() -> None:
     assert body["sources_limit"] == 2
 
 
-def test_get_quota_unknown_plan_falls_back_to_unlimited() -> None:
+def test_get_quota_enterprise_is_unlimited() -> None:
     ctx = TenantContext(tenant_id="ent-tenant", plan=PlanTier.ENTERPRISE, api_key_id="k")
 
     async def _resolve(key: str) -> TenantContext | None:
@@ -567,7 +621,7 @@ def test_get_quota_unknown_plan_falls_back_to_unlimited() -> None:
 
     resp = client.get("/ingestion/quota", headers={"X-API-Key": "ent-key"})
     assert resp.status_code == 200
-    assert resp.json()["sources_limit"] == 999_999
+    assert resp.json()["sources_limit"] is None
 
 
 def test_get_quota_counts_only_current_tenants_sources() -> None:
@@ -581,20 +635,83 @@ def test_get_quota_counts_only_current_tenants_sources() -> None:
     assert resp.json()["sources_used"] == 1
 
 
-def test_get_cost_stub() -> None:
+def test_get_quota_uses_the_db_enforcer_not_the_in_memory_dict() -> None:
+    """Regression: counted the in-memory _SOURCES (always 0 with the DB store)."""
+    from app.ingestion.quota import IngestionUsage
+
+    class _Enforcer:
+        async def usage(self, tenant_id: str, *, plan: Any = None) -> IngestionUsage:
+            return IngestionUsage(
+                plan="professional", sources_used=7, documents_indexed=1234,
+                chunks_indexed=9000, bytes_indexed=10,
+            )
+
+    client = _client(ingestion_quota=_Enforcer())
+    body = client.get("/ingestion/quota", headers=_auth()).json()
+    assert (body["sources_used"], body["docs_used"]) == (7, 1234)
+    assert body["sources_limit"] == 50
+
+
+def test_create_source_enforces_the_source_quota() -> None:
+    from app.ingestion.quota import IngestionQuotaExceededError
+
+    class _Enforcer:
+        async def check_source_quota(self, tenant_id: str, *, plan: Any = None) -> None:
+            raise IngestionQuotaExceededError("source", 50, 50, "professional")
+
+    client = _client(ingestion_quota=_Enforcer())
+    resp = client.post(
+        "/sources",
+        json={"name": "n", "family": "web", "source_type": "http"},
+        headers=_auth(),
+    )
+    assert resp.status_code == 429
+    assert ingestion_mod._SOURCES == {}
+
+
+def test_get_cost_without_db_is_503_not_zeros() -> None:
     client = _client()
     resp = client.get("/ingestion/cost", headers=_auth())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["tenant_id"] == _CTX.tenant_id
-    assert body["cost_usd_month"] == 0.0
+    assert resp.status_code == 503
 
 
-def test_list_dlq_stub_always_empty() -> None:
+def test_get_cost_reports_this_months_job_tokens() -> None:
+    from unittest.mock import MagicMock
+
+    tracker = MagicMock()
+    tracker._db = object()
+    tracker.monthly_usage = AsyncMock(
+        return_value={
+            "jobs": 3, "tokens": 12_000, "docs_indexed": 40,
+            "chunks_created": 90, "bytes_processed": 5,
+        }
+    )
+    client = _client(ingestion_job_tracker=tracker)
+    body = client.get("/ingestion/cost", headers=_auth()).json()
+    assert body["tokens_used_month"] == 12_000
+    assert body["jobs_month"] == 3
+    tracker.monthly_usage.assert_awaited_once_with(_CTX.tenant_id)
+
+
+def test_list_dlq_without_db_is_503_not_empty() -> None:
     client = _client()
     resp = client.get("/ingestion/dlq", headers=_auth())
+    assert resp.status_code == 503
+
+
+def test_list_dlq_returns_the_tenants_entries() -> None:
+    from unittest.mock import MagicMock
+
+    tracker = MagicMock()
+    tracker._db = object()
+    tracker.list_dlq_entries = AsyncMock(return_value=[{"id": "d1", "doc_id": "x"}])
+    client = _client(ingestion_job_tracker=tracker)
+    resp = client.get("/ingestion/dlq?limit=10", headers=_auth())
     assert resp.status_code == 200
-    assert resp.json() == []
+    assert resp.json() == [{"id": "d1", "doc_id": "x"}]
+    tracker.list_dlq_entries.assert_awaited_once_with(
+        _CTX.tenant_id, limit=10, source_id="", include_resolved=False
+    )
 
 
 # ── _run_sync (background task) ─────────────────────────────────────────────────

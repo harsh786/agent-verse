@@ -86,7 +86,9 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     """
     from app.db.session import get_session_factory, get_system_session_factory
     from app.ingestion.job_tracker import IngestionJobTracker
+    from app.ingestion.pii import build_pii_analyzer
     from app.ingestion.pipeline import IngestionPipeline
+    from app.ingestion.quota import IngestionQuotaEnforcer
     from app.ingestion.source_store import SourceConfigStore
     from app.providers.registry import resolve_provider
     from app.rag.store import KnowledgeStore
@@ -94,7 +96,14 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     db_factory = get_session_factory()
     provider = resolve_provider()
     knowledge_store = KnowledgeStore(db_factory)
-    pipeline = IngestionPipeline(knowledge_store=knowledge_store, embedder=provider)
+    # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
+    # scheduled/DLQ-retried document skipped both.
+    pipeline = IngestionPipeline(
+        knowledge_store=knowledge_store,
+        embedder=provider,
+        pii_analyzer=build_pii_analyzer(),
+        quota_enforcer=IngestionQuotaEnforcer(db_factory),
+    )
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
@@ -189,6 +198,9 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
                 # PipelineResult exposes a ``status`` string, not success/skipped
                 # booleans — the old attributes raised AttributeError on the first
                 # document, killing every scheduled sync.
+                # Tokens/chunks feed ingestion_jobs → GET /ingestion/cost.
+                job.tokens_consumed += int(getattr(result, "tokens_consumed", 0) or 0)
+                job.chunks_created += int(getattr(result, "chunks_created", 0) or 0)
                 if result.status == "indexed":
                     docs_indexed += 1
                 elif result.status == "skipped":
@@ -243,7 +255,11 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
         # a nonexistent column and never ran, and once fixed they would have
         # double-counted every failure against the backoff.
         await source_store.mark_synced(
-            source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=docs_failed
+            source_id,
+            tenant_id,
+            docs_indexed=docs_indexed,
+            chunks=job.chunks_created,
+            failed=docs_failed,
         )
         if new_cursor and new_cursor != (config.cursor_value or ""):
             await source_store.update(source_id, tenant_id, cursor_value=new_cursor)
@@ -365,8 +381,15 @@ async def _retry_dlq_async() -> dict:
         retried += 1
         try:
             config = await source_store.get(source_id, tenant_id)
+            if config is None:
+                # The Source was deleted: nothing can ever replay this entry.
+                await tracker.mark_dlq_permanent_failure(dlq_id, tenant_id)
+                still_failed += 1
+                continue
             result = await pipeline.run(raw_doc, source_config=config)
-            if result.success:
+            # ``dedup`` means the content IS indexed (e.g. a concurrent sync
+            # got there first) — that resolves the entry, it is not a failure.
+            if result.success or (result.skipped and result.skip_reason == "dedup"):
                 await tracker.resolve_dlq_entry(dlq_id, tenant_id)
                 succeeded += 1
             else:
