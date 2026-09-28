@@ -582,23 +582,45 @@ class PostgresWorkflowRunStore:
                 for r in rows
             ]
 
-    async def delete_expired_runs(self) -> int:
+    async def delete_expired_runs(self, *, batch: int = 2000, max_batches: int = 500) -> int:
+        """Delete finished runs past their retention (step results cascade).
+
+        Three fixes: (1) only TERMINAL runs are eligible — a run waiting on a
+        human approval for longer than the retention window used to be deleted
+        mid-flight; (2) a definition without ``run_retention_days`` (and runs
+        with no definition) now falls back to the platform retention instead of
+        keeping every run and its step results forever; (3) deletes run in
+        bounded batches, each its own short transaction, instead of one
+        unbounded DELETE cascading over workflow_step_results.
+        """
         from sqlalchemy import text as sa_text
 
+        from app.core.config import get_settings
         from app.db.rls import system_session
 
+        default_days = int(getattr(get_settings(), "data_retention_days", 90) or 90)
         system_db = self._system_factory()
-        async with system_db() as session, session.begin():
-            async with system_session(session):
+        total = 0
+        for _ in range(max_batches):
+            async with system_db() as session, session.begin(), system_session(session):
                 result = await session.execute(
                     sa_text(
-                        "DELETE FROM workflow_runs r USING workflow_definitions d "
-                        "WHERE r.workflow_id = d.id "
-                        "AND d.run_retention_days IS NOT NULL "
-                        "AND r.created_at < NOW() - (d.run_retention_days || ' days')::interval"
-                    )
+                        "DELETE FROM workflow_runs WHERE id IN ("
+                        " SELECT r.id FROM workflow_runs r"
+                        " LEFT JOIN workflow_definitions d ON d.id = r.workflow_id"
+                        " WHERE r.status IN ("
+                        "   'complete', 'failed', 'cancelled', 'timed_out')"
+                        " AND COALESCE(r.completed_at, r.created_at) < NOW()"
+                        "   - make_interval(days => COALESCE(d.run_retention_days, :dflt))"
+                        " LIMIT :lim)"
+                    ),
+                    {"dflt": default_days, "lim": batch},
                 )
-            return int(result.rowcount or 0)
+            deleted = int(result.rowcount or 0)
+            total += deleted
+            if deleted < batch:
+                break
+        return total
 
     # ── Versions (workflow_definition_versions) ───────────────────────────────
     async def list_versions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:

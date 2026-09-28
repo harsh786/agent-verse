@@ -221,3 +221,87 @@ async def test_retention_drops_expired_month_partitions_and_keeps_recent_events(
         ]
     assert exists is None
     assert left == [2]
+
+
+async def test_batched_retention_covers_trigger_events_and_only_finished_workflow_runs(
+    roles: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """trigger_events had no retention at all; workflow run retention deleted
+    runs regardless of status (a run waiting on a human was removed mid-flight)
+    and kept every run of a definition without ``run_retention_days`` forever."""
+    from sqlalchemy import text
+
+    import app.db.session as dbs
+    from app.scaling.tasks import _delete_expired_records
+    from app.workflow.run_store import PostgresWorkflowRunStore
+
+    tenant_id = uuid.uuid4().hex
+    await _seed_goal(roles.owner, tenant_id)
+    old = datetime.now(UTC) - timedelta(days=200)
+    recent = datetime.now(UTC) - timedelta(days=2)
+    trig_old, trig_new = uuid.uuid4().hex, uuid.uuid4().hex
+    run_done_old, run_waiting_old, run_done_new = (str(uuid.uuid4()) for _ in range(3))
+    async with roles.owner() as s, s.begin():
+        for tid, fired in ((trig_old, old), (trig_new, recent)):
+            await s.execute(
+                text(
+                    "INSERT INTO trigger_events (id, tenant_id, trigger_id, trigger_type, "
+                    "idempotency_key, fired_at) VALUES (:id, :t, 'trg', 'cron', :k, :f)"
+                ),
+                {"id": tid, "t": tenant_id, "k": tid, "f": fired.replace(tzinfo=None)},
+            )
+        for rid, status, created in (
+            (run_done_old, "complete", old),
+            (run_waiting_old, "waiting_hitl", old),
+            (run_done_new, "complete", recent),
+        ):
+            await s.execute(
+                text(
+                    "INSERT INTO workflow_runs (id, tenant_id, status, created_at) "
+                    "VALUES (CAST(:id AS uuid), CAST(:t AS uuid), :st, :c)"
+                ),
+                {"id": rid, "t": tenant_id, "st": status, "c": created},
+            )
+        await s.execute(
+            text(
+                "INSERT INTO workflow_step_results (run_id, tenant_id, step_id, step_type) "
+                "VALUES (CAST(:r AS uuid), CAST(:t AS uuid), 's1', 'llm')"
+            ),
+            {"r": run_done_old, "t": tenant_id},
+        )
+
+    monkeypatch.setattr(dbs, "get_system_session_factory", lambda: roles.maint)
+    result = await _delete_expired_records(90)
+    assert "error" not in result, result
+    assert isinstance(result["deleted"]["trigger_events"], int), result
+
+    store = PostgresWorkflowRunStore(roles.app, system_db_factory=roles.maint)
+    assert await store.delete_expired_runs() >= 1
+
+    async with roles.owner() as s:
+        triggers = {
+            r[0]
+            for r in (
+                await s.execute(
+                    text("SELECT id FROM trigger_events WHERE tenant_id = :t"), {"t": tenant_id}
+                )
+            ).fetchall()
+        }
+        runs = {
+            str(r[0])
+            for r in (
+                await s.execute(
+                    text("SELECT id FROM workflow_runs WHERE tenant_id = CAST(:t AS uuid)"),
+                    {"t": tenant_id},
+                )
+            ).fetchall()
+        }
+        steps = (
+            await s.execute(
+                text("SELECT COUNT(*) FROM workflow_step_results WHERE run_id = CAST(:r AS uuid)"),
+                {"r": run_done_old},
+            )
+        ).scalar()
+    assert triggers == {trig_new}
+    assert runs == {run_waiting_old, run_done_new}
+    assert steps == 0

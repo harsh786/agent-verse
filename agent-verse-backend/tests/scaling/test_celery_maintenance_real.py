@@ -61,13 +61,12 @@ def test_retention_policy_physically_purges_expired_memory_records() -> None:
     """D-18: the scheduled retention task must delete expired memory rows (each has
     its own expires_at) — previously it only purged goal_events/decision_traces, so
     expired memory accumulated forever."""
-    from app.scaling.tasks import _delete_expired_records
+    from app.scaling.tasks import _RETENTION_DELETES
 
-    src = inspect.getsource(_delete_expired_records)
-    assert "memory_records" in src
+    sql = dict(_RETENTION_DELETES)["memory_records"]
     # Memory rows expire on their own deadline, not the global retention window.
-    assert "expires_at" in src
-    assert "DELETE FROM memory_records" in src
+    assert "DELETE FROM memory_records" in sql
+    assert "expires_at < NOW()" in sql
 
 
 def test_expire_stale_documents_has_real_sql() -> None:

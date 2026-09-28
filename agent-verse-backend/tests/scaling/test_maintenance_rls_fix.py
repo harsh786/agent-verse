@@ -327,6 +327,9 @@ class _FakePoisonableSession:
         return result
 
     def begin(self) -> _AsyncNullCM:
+        # A new transaction starts clean, as in Postgres (the aborted one was
+        # rolled back when its ``begin()`` block exited with the error).
+        self.poisoned = False
         return _AsyncNullCM()
 
     def begin_nested(self) -> _FakeSavepoint:

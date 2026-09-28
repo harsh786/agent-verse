@@ -4214,14 +4214,66 @@ def execute_retention_policy(self: Any) -> dict[str, Any]:
     return _run_async(_delete_expired_records(retention_days))
 
 
+# Rows per retention DELETE statement. Each batch is its own short transaction:
+# one table-wide DELETE over a large append-only table is a single huge
+# transaction (WAL spike, lock hold, table bloat) that grows with the table.
+_RETENTION_BATCH = 5000
+_RETENTION_MAX_BATCHES = 2000  # per table per run; the next run continues
+
+
+# (label, batched DELETE). Each selects at most :lim victims by an indexed column.
+_RETENTION_DELETES: tuple[tuple[str, str], ...] = (
+    (
+        "goal_events",
+        "DELETE FROM goal_events WHERE (id, created_at) IN ("
+        "SELECT id, created_at FROM goal_events WHERE created_at < :c LIMIT :lim)",
+    ),
+    (
+        "decision_traces",
+        "DELETE FROM decision_traces WHERE id IN ("
+        "SELECT id FROM decision_traces WHERE created_at < :c LIMIT :lim)",
+    ),
+    (
+        # The trigger audit/idempotency log had no retention at all. Its
+        # (tenant_id, idempotency_key) uniqueness is the durable replay gate, so
+        # a firing replayed after the retention window is no longer recognised —
+        # far beyond any real redelivery horizon.
+        "trigger_events",
+        "DELETE FROM trigger_events WHERE id IN ("
+        "SELECT id FROM trigger_events WHERE fired_at < :c_naive LIMIT :lim)",
+    ),
+    (
+        # D-18: each memory record carries its own deadline in expires_at.
+        "memory_records",
+        "DELETE FROM memory_records WHERE id IN ("
+        "SELECT id FROM memory_records WHERE expires_at IS NOT NULL AND expires_at < NOW() "
+        "LIMIT :lim)",
+    ),
+)
+
+
+async def _batched_delete(db: Any, sql: str, params: dict[str, Any]) -> int:
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+
+    total = 0
+    for _ in range(_RETENTION_MAX_BATCHES):
+        async with db() as session, session.begin(), system_session(session):
+            result = await session.execute(text(sql), {**params, "lim": _RETENTION_BATCH})
+        deleted = int(result.rowcount or 0)
+        total += deleted
+        if deleted < _RETENTION_BATCH:
+            break
+    return total
+
+
 async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
     from datetime import UTC, datetime, timedelta
 
     cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     counts: dict[str, Any] = {}
     try:
-        from sqlalchemy import text
-
         from app.db.rls import system_session
         from app.db.session import get_system_session_factory
 
@@ -4229,53 +4281,24 @@ async def _delete_expired_records(retention_days: int) -> dict[str, Any]:
         db = get_system_session_factory()
         # goal_events is range-partitioned by month (migration c5d6e7f8a9b0):
         # whole expired months are detached and dropped — O(partitions), no
-        # WAL/bloat — before the row DELETE below trims the partial month and
-        # the DEFAULT partition. It used to be one DELETE over the whole table.
-        async with db() as session, session.begin(), system_session(session):
+        # WAL/bloat — before the batched DELETEs trim the partial month and the
+        # DEFAULT partition.
+        try:
+            async with db() as session, session.begin(), system_session(session):
+                dropped = await _drop_expired_partitions(session, "goal_events", cutoff)
+            if dropped:
+                counts["goal_events_partitions_dropped"] = dropped
+        except Exception as exc:
+            counts["goal_events_partitions_dropped"] = f"error: {exc}"
+        # trigger_events.fired_at is a naive (UTC) timestamp column.
+        params = {"c": cutoff, "c_naive": cutoff.replace(tzinfo=None)}
+        for label, sql in _RETENTION_DELETES:
+            # One table's failure (missing optional table, permissions) must not
+            # stop the others; each batch is its own transaction.
             try:
-                async with session.begin_nested():
-                    dropped = await _drop_expired_partitions(session, "goal_events", cutoff)
-                if dropped:
-                    counts["goal_events_partitions_dropped"] = dropped
+                counts[label] = await _batched_delete(db, sql, params)
             except Exception as exc:
-                counts["goal_events_partitions_dropped"] = f"error: {exc}"
-            for table in ["goal_events", "decision_traces"]:
-                # Each table's DELETE runs in its own SAVEPOINT. Postgres aborts
-                # the *entire* enclosing transaction on any error (permission
-                # denied, constraint violation, etc.) until a ROLLBACK —
-                # without a savepoint here, one table's failure silently
-                # poisons every subsequent statement in this loop too (each
-                # one then raises "current transaction is aborted" and gets
-                # swallowed by the except below), so a single mid-list
-                # failure would make this task report a string of
-                # independent-looking "error: ..." entries while actually
-                # having deleted nothing for the rest of the tables.
-                try:
-                    async with session.begin_nested():
-                        r = await session.execute(
-                            text(f"DELETE FROM {table} WHERE created_at < :c"), {"c": cutoff}
-                        )
-                        counts[table] = r.rowcount
-                except Exception as exc:
-                    counts[table] = f"error: {exc}"
-            # D-18: physically purge expired memory rows. Unlike the tables above
-            # (age-based via the global retention window), each memory record carries
-            # its own retention deadline in ``expires_at`` — previously enforced only
-            # at read time, so expired rows accumulated forever. Delete them here so
-            # the scheduled retention policy actually reclaims them tenant-wide.
-            # Also run in its own SAVEPOINT so a prior table's failure above
-            # can't poison this DELETE too.
-            try:
-                async with session.begin_nested():
-                    r = await session.execute(
-                        text(
-                            "DELETE FROM memory_records "
-                            "WHERE expires_at IS NOT NULL AND expires_at < NOW()"
-                        )
-                    )
-                    counts["memory_records"] = r.rowcount
-            except Exception as exc:
-                counts["memory_records"] = f"error: {exc}"
+                counts[label] = f"error: {exc}"
         return {"retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": counts}
     except Exception as exc:
         return {"error": str(exc)}

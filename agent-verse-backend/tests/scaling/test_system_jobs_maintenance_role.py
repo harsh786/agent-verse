@@ -116,14 +116,21 @@ async def test_stuck_goal_scan_runs_on_maintenance_role() -> None:
 async def test_retention_runs_on_maintenance_role() -> None:
     from app.scaling.tasks import _delete_expired_records
 
-    session = _session(default=MagicMock(rowcount=4))
+    # One session for the partition sweep, then one short transaction per
+    # retention batch (a single batch per table here: 4 < batch size).
+    sessions = [_session(default=MagicMock(rowcount=4)) for _ in range(5)]
     sys_session = _Recorder()
-    p = _system_patches(_factory(session), sys_session)
+    p = _system_patches(_factory(*sessions), sys_session)
     with p[0], p[1], p[2]:
         result = await _delete_expired_records(30)
 
-    assert result["deleted"] == {"goal_events": 4, "decision_traces": 4, "memory_records": 4}
-    assert sys_session.calls == [(session,)]
+    assert result["deleted"] == {
+        "goal_events": 4,
+        "decision_traces": 4,
+        "trigger_events": 4,
+        "memory_records": 4,
+    }
+    assert sys_session.calls == [(s,) for s in sessions]
 
 
 @pytest.mark.asyncio
