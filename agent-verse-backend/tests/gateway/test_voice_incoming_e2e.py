@@ -9,6 +9,10 @@ turn), and a TwiML reply is spoken back.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,6 +25,7 @@ from app.identity import IdentityService
 
 TENANT = "tenant-voice"
 LINE = "+15550001111"   # the provisioned number (To)
+AUTH_TOKEN = "voice-e2e-token"  # test fixture; the webhook fails closed without one
 CALLER = "+15559998888"  # the caller (From)
 
 
@@ -33,12 +38,24 @@ def _app() -> tuple[FastAPI, ChatService]:
     reg.register(LINE, TENANT)
     app.state.chat_service = chat
     app.state.voice_phone_registry = reg
-    app.state.voice_phone_adapter = VoicePhoneChannelAdapter()
+    app.state.voice_phone_adapter = VoicePhoneChannelAdapter(auth_token=AUTH_TOKEN)
     return app, chat
 
 
+def _twilio_sig(url: str, form: dict[str, str]) -> str:
+    payload = url + "".join(f"{k}{form[k]}" for k in sorted(form))
+    return base64.b64encode(
+        hmac.new(AUTH_TOKEN.encode(), payload.encode(), hashlib.sha1).digest()
+    ).decode()
+
+
 def _post(client: TestClient, **form: str):
-    return client.post("/v1/gateway/voice/incoming", data=form)
+    url = "http://testserver/v1/gateway/voice/incoming"
+    return client.post(
+        "/v1/gateway/voice/incoming",
+        data=form,
+        headers={"X-Twilio-Signature": _twilio_sig(url, form)},
+    )
 
 
 def test_inbound_call_routes_through_chatservice_and_speaks_twiml() -> None:
@@ -102,7 +119,7 @@ def test_bad_signature_is_rejected_when_auth_token_configured() -> None:
     # Adapter with an auth token now enforces the Twilio signature.
     app.state.voice_phone_adapter = VoicePhoneChannelAdapter(auth_token="secret-token")
     client = TestClient(app)
-    r = _post(client, **{
+    r = _post(client, **{  # signed with AUTH_TOKEN, not "secret-token" → invalid
         "From": CALLER, "To": LINE, "CallSid": "CA5", "SpeechResult": "hi",
     })
     assert r.status_code == 403

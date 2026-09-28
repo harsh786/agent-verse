@@ -9,6 +9,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi.responses import Response
 
 _log = logging.getLogger(__name__)
 
@@ -222,19 +223,60 @@ async def email_inbound(request: Request) -> dict:
 # ── SMS (Twilio) ──────────────────────────────────────────────────────────────
 
 
+_EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
 @router.post("/sms/inbound")
-async def sms_inbound(request: Request) -> str:
-    """Handle Twilio SMS webhook."""
+async def sms_inbound(request: Request) -> Response:
+    """Handle Twilio SMS webhook.
+
+    Previously this verified nothing: any caller able to reach it could post an
+    "SMS" whose ``To`` maps to another tenant and have it ingested into that
+    tenant's gateway. It now requires a valid ``X-Twilio-Signature`` (fail closed:
+    503 when ``TWILIO_AUTH_TOKEN`` is unset, 403 when invalid), and honours the
+    STOP / START keywords in the telephony consent ledger — a STOP used to be
+    ingested as an ordinary message for the agent to act on.
+    """
+    import os
+
+    from app.gateway.telephony_consent import (
+        PLATFORM_TENANT,
+        get_telephony_consent_ledger,
+    )
+    from app.gateway.twilio_auth import require_twilio_signature
+
     form = await request.form()
-    to_number = str(form.get("To", ""))
+    params = {k: str(v) for k, v in form.items()}
+    require_twilio_signature(
+        (os.getenv("TWILIO_AUTH_TOKEN") or "").strip(),
+        url=str(request.url),
+        params=params,
+        signature=request.headers.get("X-Twilio-Signature", ""),
+        label="Twilio SMS",
+        env_var="TWILIO_AUTH_TOKEN",
+    )
+
+    to_number = params.get("To", "")
+    from_number = params.get("From", "")
     db = getattr(request.app.state, "db", None)
     tenant_id = await _resolve_tenant_from_channel("sms", to_number, db)
 
+    ledger = (
+        getattr(request.app.state, "telephony_consent_ledger", None)
+        or get_telephony_consent_ledger()
+    )
+    keyword = ledger.apply_inbound_keyword(
+        tenant_id or PLATFORM_TENANT, from_number, params.get("Body", "")
+    )
+    if keyword is not None:
+        _log.info("sms_consent_keyword keyword=%s tenant=%s", keyword, tenant_id or "platform")
+        return Response(content=_EMPTY_TWIML, media_type="application/xml")
+
     body = {
-        "from": str(form.get("From", "")),
+        "from": from_number,
         "to": to_number,
-        "body": str(form.get("Body", "")),
-        "message_sid": str(form.get("MessageSid", "")),
+        "body": params.get("Body", ""),
+        "message_sid": params.get("MessageSid", ""),
     }
     gateway = _get_gateway(request)
     if gateway and tenant_id:
@@ -243,7 +285,8 @@ async def sms_inbound(request: Request) -> str:
         await _emit_chat_event(
             request, "sms", body, tenant_id, verified=_channel_verified(request, "sms")
         )
-    return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+    # Twilio expects TwiML; returning a bare `str` made FastAPI JSON-encode it.
+    return Response(content=_EMPTY_TWIML, media_type="application/xml")
 
 
 # ── Voice transcript ──────────────────────────────────────────────────────────
