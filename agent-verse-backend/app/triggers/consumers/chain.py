@@ -27,6 +27,44 @@ _log = logging.getLogger(__name__)
 
 MAX_CHAIN_DEPTH = 10
 
+# Goal event type → lifecycle channel this consumer listens on. Published by
+# GoalService._dispatch_event (in-process goals) and the run_goal worker.
+CHAIN_CHANNEL_FOR_EVENT: dict[str, str] = {
+    "goal_complete": "goal.completed",
+    "goal_failed": "goal.failed",
+    "worker_failed": "goal.failed",
+}
+
+
+def build_chain_event(
+    *,
+    channel: str,
+    tenant_id: str,
+    goal_id: str,
+    agent_id: str = "",
+    status: str = "",
+    tenant_plan: str = "free",
+    trigger_chain_depth: int = 0,
+    score: float | None = None,
+) -> str:
+    """JSON payload for a goal lifecycle channel.
+
+    ``completion_event_id`` is deterministic (goal + channel) so the same terminal
+    event relayed twice maps to one dispatcher idempotency key.
+    """
+    payload: dict[str, object] = {
+        "tenant_id": tenant_id,
+        "goal_id": goal_id,
+        "agent_id": agent_id or "",
+        "status": status,
+        "tenant_plan": tenant_plan or "free",
+        "trigger_chain_depth": int(trigger_chain_depth or 0),
+        "completion_event_id": f"{goal_id}:{channel}",
+    }
+    if score is not None:
+        payload["score"] = score
+    return json.dumps(payload)
+
 
 class ChainTriggerConsumer:
     """Listens on Redis pub/sub for goal lifecycle events and fires chain triggers."""

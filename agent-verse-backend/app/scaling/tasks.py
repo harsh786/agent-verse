@@ -1505,6 +1505,7 @@ def run_goal(
     workflow_mode: str = "single_agent",
     goal_template: str = "",
     plan: str = "free",
+    trigger_chain_depth: int = 0,
 ) -> dict[str, Any]:
     """Run a goal worker task and return its local result.
 
@@ -1614,6 +1615,10 @@ def run_goal(
         except Exception as db_exc:
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
 
+    from app.triggers.consumers.chain import CHAIN_CHANNEL_FOR_EVENT, build_chain_event
+
+    _chain_published: set[str] = set()
+
     async def append_submitted_goal_event(event: dict[str, Any]) -> None:
         # ── ALWAYS publish to Redis pub/sub first (SSE real-time feed) ────────
         # This must happen regardless of DB availability. Previously the function
@@ -1635,6 +1640,30 @@ def run_goal(
                 _r.publish(f"goal_events:{tenant_id}:{goal_id}", _event_data)
         except Exception as _pub_exc:
             logger.debug("redis_event_publish_failed (non-fatal): %s", _pub_exc)
+
+        # ── Goal-chain lifecycle channel (goal.completed / goal.failed) ───────
+        # ChainTriggerConsumer listens on these; nothing published them, so goal-
+        # chain triggers never fired for worker-run goals.
+        _chain_channel = CHAIN_CHANNEL_FOR_EVENT.get(str(event.get("type", "")))
+        if _chain_channel and not dry_run and _chain_channel not in _chain_published:
+            try:
+                _rc = _get_sync_redis()
+                if _rc is not None:
+                    _rc.publish(
+                        _chain_channel,
+                        build_chain_event(
+                            channel=_chain_channel,
+                            tenant_id=tenant_id,
+                            goal_id=goal_id,
+                            agent_id=agent_id or "",
+                            status="complete" if _chain_channel == "goal.completed" else "failed",
+                            tenant_plan=getattr(plan, "value", str(plan)),
+                            trigger_chain_depth=trigger_chain_depth,
+                        ),
+                    )
+                    _chain_published.add(_chain_channel)
+            except Exception as _chain_exc:
+                logger.warning("goal_chain_event_publish_failed: %s", _chain_exc)
 
         # ── Also persist to event store (DB) for the historical Dev Log ───────
         if event_store is None:

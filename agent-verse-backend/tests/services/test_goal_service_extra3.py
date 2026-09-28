@@ -1027,9 +1027,13 @@ class TestDispatchEvent:
         svc._redis = mock_redis
         with patch("app.tenancy.limits.decrement_concurrent_goals", AsyncMock()):
             await svc._dispatch_event("g1", {"type": "goal_complete"}, tenant_ctx=_ctx())
-        assert mock_redis.publish.await_count == 2
+        # goal_events + platform_events + the goal-chain lifecycle channel.
+        assert mock_redis.publish.await_count == 3
         mock_redis.publish.assert_any_await(
             "goal_events:t1:g1", '{"type": "goal_complete"}'
+        )
+        assert any(
+            c.args[0] == "goal.completed" for c in mock_redis.publish.await_args_list
         )
         mock_redis.publish.assert_any_await(
             "platform_events:t1", '{"type": "goal_complete"}'

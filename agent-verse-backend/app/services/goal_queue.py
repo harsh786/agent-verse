@@ -43,13 +43,20 @@ class CeleryGoalTaskQueue:
         workflow_mode: str = "single_agent",
         goal_template: str = "",
         plan: str = "free",
+        trigger_chain_depth: int = 0,
     ) -> str:
         from app.scaling.celery_app import PLAN_QUEUE_MAP
         from app.scaling.tasks import run_goal
 
         target_queue = PLAN_QUEUE_MAP.get(plan, "goals.free")
+        # Sent only for chained goals, so workers predating the kwarg keep
+        # accepting ordinary goals during a rolling deploy.
+        extra: dict[str, Any] = (
+            {"trigger_chain_depth": int(trigger_chain_depth)} if trigger_chain_depth else {}
+        )
         result: Any = run_goal.apply_async(
             kwargs={
+                **extra,
                 "goal_id": goal_id,
                 "tenant_id": tenant_id,
                 "goal_text": goal_text,

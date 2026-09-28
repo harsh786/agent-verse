@@ -108,6 +108,9 @@ class GoalRecord:
     subscribers: list[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=list)
     started_monotonic: float = field(default_factory=lambda: _monotonic())
     terminal_metrics_recorded: bool = False
+    # Goal-chain lifecycle channels already published for this record
+    # ("goal.completed" / "goal.failed" / "goal.score_below").
+    chain_events_published: set[str] = field(default_factory=set)
     # Timestamp when the goal entered a terminal state (complete/failed/cancelled).
     # Used by _evict_stale_goals() to avoid evicting goals that just finished.
     completed_at: str | None = None
@@ -2020,6 +2023,12 @@ class GoalService:
                         db=self._db,
                     )
                     self._eval_scores[goal_id] = scorecard
+                    await self._publish_chain_event(
+                        record,
+                        "goal.score_below",
+                        tenant_ctx,
+                        score=float(scorecard.average_score()),
+                    )
                     # Trigger self-optimizer when score falls below threshold.
                     if scorecard.average_score() < 0.7:
                         # self_optimizer lives on app.state (self._app_state is the
@@ -2126,6 +2135,13 @@ class GoalService:
                 await self._redis.publish(_token_channel, json.dumps(sanitized_event))
             except Exception:
                 pass
+        # Goal-chain triggers (Family B): ChainTriggerConsumer subscribes to
+        # goal.completed / goal.failed, but nothing ever published them, so a
+        # "when goal X completes, run Y" trigger could never fire.
+        if etype == "goal_complete":
+            await self._publish_chain_event(record, "goal.completed", tenant_ctx)
+        elif etype == "goal_failed":
+            await self._publish_chain_event(record, "goal.failed", tenant_ctx)
         # Also publish terminal events to the broader platform channel used by
         # other subscribers (notification service, billing hooks, etc.).
         if etype in {"goal_complete", "goal_failed"} and self._redis and tenant_ctx:
@@ -2153,6 +2169,51 @@ class GoalService:
             for q in list(record.subscribers):
                 with suppress(Exception):
                     q.put_nowait(_SENTINEL)
+
+    async def _publish_chain_event(
+        self,
+        record: GoalRecord,
+        channel: str,
+        tenant_ctx: TenantContext | None,
+        *,
+        score: float | None = None,
+    ) -> None:
+        """Publish a goal lifecycle event for ChainTriggerConsumer, once per record.
+
+        ``completion_event_id`` is deterministic (goal + channel), so a replica that
+        relays the same terminal event yields the same dispatcher idempotency key
+        and the chained trigger fires once. ``trigger_chain_depth`` is carried from
+        the goal's execution context (set when a chain trigger created the goal) so
+        the consumer's MAX_CHAIN_DEPTH guard stops self-re-triggering loops.
+        """
+        if record.dry_run or self._redis is None or channel in record.chain_events_published:
+            return
+        record.chain_events_published.add(channel)
+        from app.triggers.consumers.chain import build_chain_event
+
+        plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or str(
+            getattr(tenant_ctx, "plan", "") or "free"
+        )
+        payload = build_chain_event(
+            channel=channel,
+            tenant_id=record.tenant_id,
+            goal_id=record.goal_id,
+            agent_id=record.agent_id or "",
+            status=record.status.value,
+            tenant_plan=plan,
+            trigger_chain_depth=int(record.execution_context.get("trigger_chain_depth", 0) or 0),
+            score=score,
+        )
+        try:
+            await self._redis.publish(channel, payload)
+        except Exception as exc:
+            record.chain_events_published.discard(channel)
+            _svc_logger.warning(
+                "goal_chain_event_publish_failed goal_id=%s channel=%s: %s",
+                record.goal_id,
+                channel,
+                exc,
+            )
 
     def _record_terminal_goal_metrics(self, record: GoalRecord, status: str) -> None:
         if record.terminal_metrics_recorded:
@@ -2880,6 +2941,7 @@ class GoalService:
         agent_id: str | None = None,
         idempotency_key: str | None = None,
         priority: str = "normal",
+        trigger_chain_depth: int = 0,
     ) -> dict[str, Any]:
         """Trigger-facing adapter over :meth:`submit_goal` (WT-1 / P0-5).
 
@@ -2898,6 +2960,9 @@ class GoalService:
             execution_context={
                 "source": "trigger",
                 "trigger_idempotency_key": idempotency_key,
+                # Chain depth of the event that created this goal; re-published
+                # on its own completion so chains are bounded (MAX_CHAIN_DEPTH).
+                "trigger_chain_depth": int(trigger_chain_depth or 0),
             },
         )
 
@@ -3275,6 +3340,15 @@ class GoalService:
                                 _connector_ids = [
                                     str(item) for item in _agent_for_queue.get("connector_ids", [])
                                 ]
+                    # Only chained goals carry a depth (the worker re-publishes it
+                    # on completion so goal chains stay bounded); other goals keep
+                    # the enqueue call shape unchanged.
+                    _chain_depth = int(
+                        (execution_context or {}).get("trigger_chain_depth", 0) or 0
+                    )
+                    _chain_kw: dict[str, Any] = (
+                        {"trigger_chain_depth": _chain_depth} if _chain_depth else {}
+                    )
                     self._task_queue.enqueue_goal(
                         goal_id=goal_id,
                         tenant_id=tenant_ctx.tenant_id,
@@ -3289,6 +3363,7 @@ class GoalService:
                         # non-request callers (e.g. the scheduled/beat dispatcher)
                         # may hand a plain string.
                         plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
+                        **_chain_kw,
                     )
                 else:
                     tool_context = await self._build_tool_context(

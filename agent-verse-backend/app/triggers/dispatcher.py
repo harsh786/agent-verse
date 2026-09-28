@@ -53,6 +53,16 @@ def _payload_for_audit(payload: Any) -> dict[str, Any]:
     }
 
 
+def _chain_depth(payload: object) -> int:
+    """``trigger_chain_depth`` from a chained event payload (0 when absent/bad)."""
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        return max(0, int(payload.get("trigger_chain_depth", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 class TriggerDispatcher:
     """Single entry point for all trigger dispatch operations."""
 
@@ -317,6 +327,7 @@ class TriggerDispatcher:
                     goal_text,
                     tenant_ctx,
                     idempotency_key,
+                    chain_depth=_chain_depth(payload),
                 )
                 if isinstance(_created, tuple):
                     goal_id, goal_deduplicated = _created
@@ -498,10 +509,14 @@ class TriggerDispatcher:
         goal_text: str,
         tenant_ctx: object,
         idempotency_key: str,
+        chain_depth: int = 0,
     ) -> tuple[str | None, bool]:
         """Create the goal; returns (goal_id, deduplicated_into_an_existing_goal)."""
         if self._goal_service is None:
             return None, False
+        # Only chained firings carry a depth (keeps the create_goal call shape
+        # unchanged for every other trigger family).
+        extra: dict[str, Any] = {"trigger_chain_depth": chain_depth} if chain_depth else {}
         try:
             result = await self._goal_service.create_goal(
                 tenant_ctx=tenant_ctx,
@@ -514,6 +529,7 @@ class TriggerDispatcher:
                 )
                 or None,
                 idempotency_key=idempotency_key,
+                **extra,
             )
             if hasattr(result, "goal_id"):
                 return result.goal_id, bool(getattr(result, "deduplicated", False))
