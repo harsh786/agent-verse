@@ -7,6 +7,8 @@ import hmac
 import json
 import logging
 import os
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -103,8 +105,11 @@ class VerifyPaymentRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
-    plan: str
-    cycle: str
+    # Accepted for backward compatibility with existing clients but IGNORED: the
+    # plan/cycle are read from the server-side order record (see _load_order).
+    # Trusting these let any tenant pay for Starter and claim Enterprise.
+    plan: str | None = None
+    cycle: str | None = None
 
 
 # ── Existing endpoints (usage / subscription / invoices / Stripe checkout) ────
@@ -326,9 +331,146 @@ async def list_plans(request: Request) -> list[dict[str, Any]]:
     ]
 
 
+# ── Server-side order records ─────────────────────────────────────────────────
+#
+# The plan a payment buys is fixed HERE, when the order is created, and stored
+# server-side (billing_orders, FORCE RLS). verify-payment and the webhook read it
+# back — they never take the plan from the client body or from free-form notes.
+
+
+@dataclass
+class _Order:
+    order_id: str
+    tenant_id: str
+    plan: str
+    cycle: str
+    amount: int
+    currency: str
+    is_mock: bool
+    status: str = "created"  # created | paid
+    payment_id: str | None = None
+
+
+def _db_factory(request: Request) -> Any | None:
+    return getattr(request.app.state, "db_session_factory", None)
+
+
+def _mem_orders(request: Request) -> dict[str, _Order]:
+    """Process-local order store — ONLY for builds with no database (tests/dev)."""
+    store: dict[str, _Order] | None = getattr(request.app.state, "billing_orders_mem", None)
+    if store is None:
+        store = {}
+        request.app.state.billing_orders_mem = store
+    return store
+
+
+async def _save_order(request: Request, order: _Order) -> None:
+    db = _db_factory(request)
+    if db is None:
+        _mem_orders(request)[order.order_id] = order
+        return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(
+            session, order.tenant_id
+        ):
+            await session.execute(
+                text(
+                    "INSERT INTO billing_orders "
+                    "(order_id, tenant_id, plan, cycle, amount, currency, is_mock, status) "
+                    "VALUES (:oid, :tid, :plan, :cycle, :amount, :currency, :mock, 'created')"
+                ),
+                {
+                    "oid": order.order_id,
+                    "tid": order.tenant_id,
+                    "plan": order.plan,
+                    "cycle": order.cycle,
+                    "amount": order.amount,
+                    "currency": order.currency,
+                    "mock": order.is_mock,
+                },
+            )
+    except Exception as exc:
+        _log.error("billing_order_persist_failed order=%s: %s", order.order_id, exc)
+        raise HTTPException(503, "Could not record the payment order; try again") from exc
+
+
+async def _load_order(request: Request, tenant_id: str, order_id: str) -> _Order | None:
+    db = _db_factory(request)
+    if db is None:
+        order = _mem_orders(request).get(order_id)
+        return order if order is not None and order.tenant_id == tenant_id else None
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT order_id, tenant_id, plan, cycle, amount, currency, is_mock, "
+                        "status, payment_id FROM billing_orders "
+                        "WHERE order_id = :oid AND tenant_id = :tid"
+                    ),
+                    {"oid": order_id, "tid": tenant_id},
+                )
+            ).fetchone()
+    except Exception as exc:
+        _log.error("billing_order_load_failed order=%s: %s", order_id, exc)
+        raise HTTPException(503, "Billing store unavailable; try again") from exc
+    if row is None:
+        return None
+    return _Order(
+        order_id=row[0],
+        tenant_id=row[1],
+        plan=row[2],
+        cycle=row[3],
+        amount=int(row[4]),
+        currency=row[5],
+        is_mock=bool(row[6]),
+        status=row[7],
+        payment_id=row[8],
+    )
+
+
+async def _mark_order_paid(request: Request, order: _Order, payment_id: str) -> None:
+    db = _db_factory(request)
+    if db is None:
+        order.status = "paid"
+        order.payment_id = payment_id
+        return
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(
+            session, order.tenant_id
+        ):
+            await session.execute(
+                text(
+                    "UPDATE billing_orders SET status = 'paid', payment_id = :pid, "
+                    "paid_at = NOW() WHERE order_id = :oid AND tenant_id = :tid "
+                    "AND status = 'created'"
+                ),
+                {"pid": payment_id, "oid": order.order_id, "tid": order.tenant_id},
+            )
+    except Exception as exc:
+        # The plan change already committed (it is applied first and is
+        # idempotent); a retry re-applies it and records the payment.
+        _log.error("billing_order_mark_paid_failed order=%s: %s", order.order_id, exc)
+        raise HTTPException(503, "Payment recorded partially; retry verification") from exc
+    order.status = "paid"
+    order.payment_id = payment_id
+
+
 @router.post("/create-order")
 async def create_razorpay_order(request: Request, body: CreateOrderRequest) -> dict[str, Any]:
-    """Create a Razorpay order for plan upgrade."""
+    """Create a Razorpay order for plan upgrade and record it server-side."""
     tenant = _require_tenant(request)
 
     if body.plan not in PLAN_PRICES:
@@ -340,9 +482,20 @@ async def create_razorpay_order(request: Request, body: CreateOrderRequest) -> d
     if rz is None:
         from app.core.config import get_settings
 
-        # Development / demo mode: return a mock order so the UI still functions
+        # Development / demo mode: a mock order so the UI still functions. It is
+        # still recorded, so a mock verification upgrades to exactly this plan.
+        order = _Order(
+            order_id=f"order_mock_{uuid.uuid4().hex}",
+            tenant_id=tenant.tenant_id,
+            plan=body.plan,
+            cycle=body.cycle,
+            amount=amount,
+            currency=body.currency,
+            is_mock=True,
+        )
+        await _save_order(request, order)
         return {
-            "order_id": f"order_{tenant.tenant_id[:8]}_mock",
+            "order_id": order.order_id,
             "amount": amount,
             "currency": body.currency,
             "plan": body.plan,
@@ -368,24 +521,42 @@ async def create_razorpay_order(request: Request, body: CreateOrderRequest) -> d
                 "cycle": body.cycle,
             },
         }
-        order = rz.order.create(data=order_data)
-        return {
-            "order_id": order["id"],
-            "amount": order["amount"],
-            "currency": order["currency"],
-            "plan": body.plan,
-            "cycle": body.cycle,
-            "razorpay_key_id": get_settings().razorpay_key_id,
-            "is_mock": False,
-        }
+        rz_order = rz.order.create(data=order_data)
     except Exception as exc:
         _log.error("Razorpay order creation failed: %s", exc)
         raise HTTPException(502, f"Payment service error: {exc}") from exc
 
+    await _save_order(
+        request,
+        _Order(
+            order_id=str(rz_order["id"]),
+            tenant_id=tenant.tenant_id,
+            plan=body.plan,
+            cycle=body.cycle,
+            amount=int(rz_order.get("amount", amount)),
+            currency=str(rz_order.get("currency", body.currency)),
+            is_mock=False,
+        ),
+    )
+    return {
+        "order_id": rz_order["id"],
+        "amount": rz_order["amount"],
+        "currency": rz_order["currency"],
+        "plan": body.plan,
+        "cycle": body.cycle,
+        "razorpay_key_id": get_settings().razorpay_key_id,
+        "is_mock": False,
+    }
+
 
 @router.post("/verify-payment")
 async def verify_razorpay_payment(request: Request, body: VerifyPaymentRequest) -> dict[str, Any]:
-    """Verify Razorpay payment signature and upgrade the tenant plan."""
+    """Verify a Razorpay payment and upgrade the tenant to the ORDER's plan.
+
+    The plan comes only from the server-side order record created by
+    ``/billing/create-order`` for this tenant; ``body.plan``/``body.cycle`` are
+    ignored. A failure to record the upgrade is an error, never a "success".
+    """
     tenant = _require_tenant(request)
     rz = _get_razorpay()
 
@@ -400,32 +571,40 @@ async def verify_razorpay_payment(request: Request, body: VerifyPaymentRequest) 
                     "Payment service not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET."
                 ),
             )
+
+    order = await _load_order(request, tenant.tenant_id, body.razorpay_order_id)
+    if order is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown payment order")
+
+    if rz is None:
+        if not order.is_mock:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Order requires a real payment")
         _log.warning(
             "MOCK_PAYMENT_ACCEPTED: allow_mock_payments=True — NEVER USE IN PRODUCTION. "
-            "tenant=%s plan=%s",
+            "tenant=%s order=%s plan=%s",
             tenant.tenant_id,
-            body.plan,
+            order.order_id,
+            order.plan,
         )
-        return await _upgrade_tenant_plan(
-            request, tenant, body.plan, body.cycle, body.razorpay_payment_id
-        )
+    else:
+        if order.is_mock:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Mock orders cannot be paid")
+        try:
+            from app.core.config import get_settings
 
-    try:
-        from app.core.config import get_settings
-
-        settings = get_settings()
-        generated_signature = hmac.new(
-            settings.razorpay_key_secret.encode(),
-            f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode(),
-            hashlib.sha256,
-        ).hexdigest()
-
+            generated_signature = hmac.new(
+                get_settings().razorpay_key_secret.encode(),
+                f"{body.razorpay_order_id}|{body.razorpay_payment_id}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
+        except Exception as exc:
+            _log.error("Payment verification failed: %s", exc)
+            raise HTTPException(502, f"Payment verification error: {exc}") from exc
         if not hmac.compare_digest(generated_signature, body.razorpay_signature):
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid payment signature")
 
-        return await _upgrade_tenant_plan(
-            request, tenant, body.plan, body.cycle, body.razorpay_payment_id
-        )
+    try:
+        return await _apply_paid_order(request, order, body.razorpay_payment_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -433,34 +612,62 @@ async def verify_razorpay_payment(request: Request, body: VerifyPaymentRequest) 
         raise HTTPException(502, f"Payment verification error: {exc}") from exc
 
 
-async def _upgrade_tenant_plan(
-    request: Request,
-    tenant: TenantContext,
-    plan: str,
-    cycle: str,
-    payment_id: str,
-) -> dict[str, Any]:
-    """Upgrade tenant plan after successful payment verification."""
-    tenant_service = getattr(request.app.state, "tenant_service", None)
-    if tenant_service is not None:
-        try:
-            await tenant_service.update_plan(tenant.tenant_id, plan)
-        except Exception as exc:
-            _log.warning("Could not update tenant plan in DB: %s", exc)
+async def _apply_paid_order(request: Request, order: _Order, payment_id: str) -> dict[str, Any]:
+    """Apply a verified payment for *order* exactly once (idempotent on retries)."""
+    if order.status == "paid":
+        if order.payment_id and order.payment_id != payment_id:
+            raise HTTPException(status.HTTP_409_CONFLICT, "Order already paid")
+        return _upgrade_result(order, payment_id)
+    # Plan first, then mark paid: if marking fails, a retry re-applies the (same,
+    # idempotent) plan instead of short-circuiting on a "paid" order whose plan
+    # change never landed.
+    await _upgrade_tenant_plan(request, order.tenant_id, order.plan)
+    await _mark_order_paid(request, order, payment_id)
+    return _upgrade_result(order, payment_id)
 
+
+def _upgrade_result(order: _Order, payment_id: str) -> dict[str, Any]:
     return {
         "status": "success",
-        "plan": plan,
-        "cycle": cycle,
+        "plan": order.plan,
+        "cycle": order.cycle,
         "payment_id": payment_id,
-        "message": f"Successfully upgraded to {plan.title()} plan!",
-        "limits": PLAN_FEATURES.get(plan, {}),
+        "order_id": order.order_id,
+        "message": f"Successfully upgraded to {order.plan.title()} plan!",
+        "limits": PLAN_FEATURES.get(order.plan, {}),
     }
+
+
+async def _upgrade_tenant_plan(request: Request, tenant_id: str, plan: str) -> None:
+    """Durably set the tenant's plan. Raises HTTP 503 if it could not be recorded.
+
+    Previously this called a non-existent ``TenantService.update_plan``, logged
+    the AttributeError as a warning and returned "Successfully upgraded" — the
+    customer paid and stayed on their old plan.
+    """
+    tenant_service = getattr(request.app.state, "tenant_service", None)
+    update_plan = getattr(tenant_service, "update_plan", None)
+    if update_plan is None:
+        raise HTTPException(503, "Tenant service unavailable; plan not changed")
+    try:
+        await update_plan(tenant_id, plan)
+    except Exception as exc:
+        _log.error("tenant_plan_update_failed tenant=%s plan=%s: %s", tenant_id, plan, exc)
+        raise HTTPException(
+            503, "Payment verified but the plan change could not be recorded; retry"
+        ) from exc
 
 
 @router.post("/webhook")
 async def razorpay_webhook(request: Request) -> dict[str, Any]:
-    """Handle Razorpay webhook events."""
+    """Handle Razorpay webhook events.
+
+    The plan is derived from the server-side order record (looked up by the
+    payment's ``order_id``), never from ``notes``; ``notes.tenant_id`` (written
+    by create-order) only selects the RLS scope, and the order row must belong
+    to that tenant. A failure to apply the upgrade answers 5xx so Razorpay
+    retries, instead of a 200 that silently drops a paid upgrade.
+    """
     body = await request.body()
 
     webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "")
@@ -477,57 +684,45 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
 
     try:
         event = json.loads(body)
-        event_type: str = event.get("event", "")
-
-        if event_type == "payment.captured":
-            payment = event.get("payload", {}).get("payment", {}).get("entity", {})
-            notes = payment.get("notes", {})
-            tenant_id = notes.get("tenant_id")
-            plan = notes.get("plan", "professional")
-            cycle = notes.get("cycle", "monthly")
-            payment_id = payment.get("id", "")
-            if tenant_id and plan:
-                _log.info(
-                    "Payment captured: tenant=%s plan=%s payment=%s",
-                    tenant_id,
-                    plan,
-                    payment_id,
-                )
-                try:
-                    from app.tenancy.context import PlanTier, TenantContext
-
-                    tenant_ctx = TenantContext(
-                        tenant_id=tenant_id,
-                        plan=PlanTier.FREE,
-                        api_key_id="webhook",
-                    )
-                    await _upgrade_tenant_plan(request, tenant_ctx, plan, cycle, payment_id)
-                    _log.info("Plan upgraded via webhook: tenant=%s → %s", tenant_id, plan)
-                except Exception as exc:
-                    _log.error("Webhook plan upgrade failed: %s", exc)
-
-        elif event_type in ("subscription.charged", "order.paid"):
-            entity_key = "subscription" if event_type == "subscription.charged" else "order"
-            entity = event.get("payload", {}).get(entity_key, {}).get("entity", {})
-            notes = entity.get("notes", {})
-            tenant_id = notes.get("tenant_id")
-            plan = notes.get("plan")
-            if tenant_id and plan:
-                try:
-                    from app.tenancy.context import PlanTier, TenantContext
-
-                    tenant_ctx = TenantContext(
-                        tenant_id=tenant_id,
-                        plan=PlanTier.FREE,
-                        api_key_id="webhook",
-                    )
-                    await _upgrade_tenant_plan(
-                        request, tenant_ctx, plan, "monthly", entity.get("id", "")
-                    )
-                except Exception as exc:
-                    _log.error("Subscription webhook upgrade failed: %s", exc)
-
-        return {"status": "ok", "event": event_type}
     except Exception as exc:
         _log.error("Webhook processing error: %s", exc)
         return {"status": "error", "message": str(exc)}
+    event_type: str = event.get("event", "")
+
+    if event_type in ("payment.captured", "order.paid"):
+        payload = event.get("payload", {})
+        payment = payload.get("payment", {}).get("entity", {}) or {}
+        rz_order = payload.get("order", {}).get("entity", {}) or {}
+        order_id = str(payment.get("order_id") or rz_order.get("id") or "")
+        notes = payment.get("notes") or rz_order.get("notes") or {}
+        tenant_id = str(notes.get("tenant_id") or "")
+        payment_id = str(payment.get("id") or "")
+        if event_type == "payment.captured":
+            paid_amount = int(payment.get("amount") or 0)
+        else:
+            paid_amount = int(rz_order.get("amount_paid") or 0)
+        if not (order_id and tenant_id):
+            _log.warning("webhook_%s_missing_order_or_tenant", event_type)
+            return {"status": "ignored", "event": event_type}
+
+        order = await _load_order(request, tenant_id, order_id)
+        if order is None or order.is_mock:
+            _log.warning("webhook_unknown_order order=%s tenant=%s", order_id, tenant_id)
+            return {"status": "ignored", "event": event_type}
+        if paid_amount < order.amount:
+            _log.error(
+                "webhook_amount_mismatch order=%s paid=%s expected=%s",
+                order_id,
+                paid_amount,
+                order.amount,
+            )
+            return {"status": "ignored", "event": event_type}
+        await _apply_paid_order(request, order, payment_id or order.payment_id or order_id)
+        _log.info("Plan upgraded via webhook: tenant=%s → %s", tenant_id, order.plan)
+
+    elif event_type == "subscription.charged":
+        # No subscription is ever created by this service, so there is no
+        # server-side record to derive a plan from; notes alone are not trusted.
+        _log.warning("webhook_subscription_charged_ignored: no server-side order record")
+
+    return {"status": "ok", "event": event_type}

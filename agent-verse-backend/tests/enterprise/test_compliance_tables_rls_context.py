@@ -213,7 +213,9 @@ def test_sign_and_list_contracts_run_under_tenant_guc() -> None:
 
 @pytest.mark.asyncio
 async def test_erasure_request_records_deleted_tenant_under_own_guc() -> None:
-    rec = _Recorder()
+    rec = _Recorder(
+        {"FROM deleted_tenants": _Result(rows=[("pending", None, None, 0, None, None, None)])}
+    )
     cc = ComplianceController()
     cc.configure_services(db=rec)
     result = await cc.request_data_deletion(tenant_ctx=_CTX)
@@ -223,12 +225,15 @@ async def test_erasure_request_records_deleted_tenant_under_own_guc() -> None:
 
 
 @pytest.mark.asyncio
-async def test_erasure_execution_clears_deleted_tenant_under_own_guc() -> None:
+async def test_erasure_execution_checks_legal_hold_and_keeps_job_row() -> None:
+    """The legal-hold gate reads legal_holds under the tenant's own GUC, and the
+    deleted_tenants job row is kept (it records the job's status/result)."""
     rec = _Recorder()
     cc = ComplianceController()
     await cc.execute_data_deletion_async(tenant_ctx=_CTX, db=_NestedRecorder(rec))
-    (delete,) = _stmts(rec, "DELETE FROM deleted_tenants")
-    _assert_tenant_scoped(delete)
+    (hold,) = _stmts(rec, "FROM legal_holds")
+    _assert_tenant_scoped(hold)
+    assert not [e for e in rec.log if "DELETE FROM deleted_tenants" in e["sql"]]
 
 
 @pytest.mark.asyncio

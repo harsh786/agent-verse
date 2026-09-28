@@ -122,11 +122,13 @@ class TestDbSaveDeletion:
         await ctrl._db_save_deletion("t1")
 
     @pytest.mark.asyncio
-    async def test_save_deletion_logs_on_exception(self):
-        """Lines 153-155: DB exception → warning logged."""
+    async def test_save_deletion_raises_on_exception(self):
+        """A DB failure must propagate — it used to be swallowed and the endpoint
+        answered deletion_scheduled=True for a request that was never recorded."""
         ctrl = ComplianceController()
         ctrl._db = _make_mock_db(raise_on_execute=True)
-        await ctrl._db_save_deletion("t1")  # should not raise
+        with pytest.raises(RuntimeError):
+            await ctrl._db_save_deletion("t1")
 
 
 # ── request_data_export — goal_service db path ───────────────────────────────

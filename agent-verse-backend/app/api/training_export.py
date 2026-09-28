@@ -37,6 +37,32 @@ def _require_tenant(request: Request) -> Any:
 _MIN_EXPORT_SCORE = 0.8
 
 
+def _db_factory(request: Request, goal_service: Any) -> Any:
+    """The DB session factory, or None for no-DB builds.
+
+    This used to read ``goal_service._db_session_factory`` — an attribute
+    GoalService does not have (it stores the factory as ``_db``), so the DB
+    path never ran and the export was always the (broken) in-memory fallback.
+    """
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None and goal_service is not None:
+        db = getattr(goal_service, "_db", None)
+    return db
+
+
+async def _collect(
+    db: Any, goal_service: Any, min_score: float, limit: int, tenant_id: str
+) -> list[dict[str, Any]]:
+    if db is None:
+        return _collect_training_examples_memory(goal_service, min_score, limit, tenant_id)
+    try:
+        return await _collect_training_examples_db(db, min_score, limit, tenant_id)
+    except Exception as exc:
+        # An export that silently comes back empty is indistinguishable from
+        # "no qualifying goals"; fail loudly instead.
+        raise HTTPException(503, "Training data store unavailable") from exc
+
+
 @router.get("/export-training-data/preview")
 async def preview_training_data(
     min_score: float = Query(_MIN_EXPORT_SCORE, ge=0.0, le=1.0),
@@ -50,16 +76,9 @@ async def preview_training_data(
     """
     tenant = _require_tenant(request)
     goal_service = getattr(request.app.state, "goal_service", None)
-    db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
+    db = _db_factory(request, goal_service)
 
-    if db is not None:
-        examples = await _collect_training_examples_db(
-            db, min_score, limit, tenant.tenant_id
-        )
-    else:
-        examples = _collect_training_examples_memory(
-            goal_service, min_score, limit, tenant.tenant_id
-        )
+    examples = await _collect(db, goal_service, min_score, limit, tenant.tenant_id)
 
     scores = [e["eval_score"] for e in examples]
     # Use ASCII hyphens in bucket keys (ruff RUF001)
@@ -120,17 +139,10 @@ async def export_training_data(
     """
     tenant = _require_tenant(request)
     goal_service = getattr(request.app.state, "goal_service", None)
-    db = getattr(goal_service, "_db_session_factory", None) if goal_service else None
+    db = _db_factory(request, goal_service)
 
-    # Prefer DB query; fall back to in-memory cache for no-DB environments
-    if db is not None:
-        examples = await _collect_training_examples_db(
-            db, min_score, limit, tenant.tenant_id
-        )
-    else:
-        examples = _collect_training_examples_memory(
-            goal_service, min_score, limit, tenant.tenant_id
-        )
+    # DB is authoritative when configured; in-memory only for no-DB builds.
+    examples = await _collect(db, goal_service, min_score, limit, tenant.tenant_id)
 
     if output_format == "openai":
         jsonl_lines = [_to_openai_format(ex) for ex in examples]
@@ -157,83 +169,93 @@ async def _collect_training_examples_db(
     limit: int,
     tenant_id: str,
 ) -> list[dict[str, Any]]:
-    """Query completed, high-scoring goals from PostgreSQL via the evaluations table."""
-    try:
-        from sqlalchemy import text
+    """Completed, high-scoring goals from Postgres, under the tenant's RLS context.
 
-        async with (
-            db() as session,
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
-            rows = (
+    The score is the goal's latest durable evaluation: ``evaluations.average_score``
+    (EvalRunner.score_and_persist), falling back to ``eval_scorecards.overall_score``
+    (the runtime scorecard). One latest row per goal (DISTINCT ON) so repeated
+    evaluations do not duplicate examples. Steps are fetched in ONE query. Raises
+    on DB failure (the caller turns it into a 503).
+    """
+    from sqlalchemy import text
+
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        rows = (
+            await session.execute(
+                text(
+                    """
+                    WITH ev AS (
+                        SELECT DISTINCT ON (goal_id) goal_id, average_score AS score
+                        FROM evaluations WHERE tenant_id = :tid
+                        ORDER BY goal_id, created_at DESC
+                    ), sc AS (
+                        SELECT DISTINCT ON (goal_id) goal_id, overall_score AS score
+                        FROM eval_scorecards WHERE tenant_id = :tid
+                        ORDER BY goal_id, created_at DESC
+                    )
+                    SELECT g.id, g.goal_text, COALESCE(ev.score, sc.score) AS score
+                    FROM goals g
+                    LEFT JOIN ev ON ev.goal_id = g.id
+                    LEFT JOIN sc ON sc.goal_id = g.id
+                    WHERE g.tenant_id = :tid
+                      AND g.status IN ('complete', 'completed')
+                      AND COALESCE(ev.score, sc.score) >= :min_score
+                    ORDER BY score DESC, g.id
+                    LIMIT :limit
+                    """
+                ),
+                {"min_score": min_score, "limit": limit, "tid": tenant_id},
+            )
+        ).fetchall()
+        goal_ids = [str(r[0]) for r in rows]
+        steps_by_goal: dict[str, list[dict[str, Any]]] = {gid: [] for gid in goal_ids}
+        if goal_ids:
+            step_rows = (
                 await session.execute(
                     text(
-                        """
-                        SELECT g.goal_text,
-                               g.error_message AS result,
-                               e.average_score,
-                               g.id AS goal_id
-                        FROM goals g
-                        INNER JOIN evaluations e ON e.goal_id = g.id
-                        WHERE g.tenant_id = :tid
-                          AND e.tenant_id = :tid
-                          AND g.status IN ('complete', 'completed')
-                          AND e.average_score >= :min_score
-                        ORDER BY e.average_score DESC
-                        LIMIT :limit
-                        """
+                        "SELECT goal_id, output, tool_calls FROM goal_steps "
+                        "WHERE tenant_id = :tid AND goal_id = ANY(:gids) "
+                        "ORDER BY goal_id, step_index ASC"
                     ),
-                    {"min_score": min_score, "limit": limit, "tid": tenant_id},
+                    {"tid": tenant_id, "gids": goal_ids},
                 )
             ).fetchall()
+            for gid, output, tool_calls in step_rows:
+                calls = tool_calls if isinstance(tool_calls, list) else []
+                first = calls[0] if calls and isinstance(calls[0], dict) else {}
+                steps_by_goal.setdefault(str(gid), []).append(
+                    {
+                        "type": "step_complete",
+                        "tool_name": first.get("tool_name", ""),
+                        "output": output or "",
+                    }
+                )
 
-        examples: list[dict[str, Any]] = []
-        for row in rows:
-            goal_text, result, avg_score, goal_id = row
-            # Fetch steps for this goal (best-effort; empty list on failure)
-            steps: list[dict[str, Any]] = []
-            try:
-                async with (
-                    db() as step_session,
-                    sqlalchemy_rls_context(step_session, tenant_id),
-                ):
-                    step_rows = (
-                        await step_session.execute(
-                            text(
-                                "SELECT description, output, tool_calls "
-                                "FROM goal_steps "
-                                "WHERE goal_id = :gid AND tenant_id = :tid "
-                                "ORDER BY step_index ASC"
-                            ),
-                            {"gid": goal_id, "tid": tenant_id},
-                        )
-                    ).fetchall()
-                for sr in step_rows:
-                    _desc, output, tool_calls = sr
-                    tool_name = ""
-                    if tool_calls and isinstance(tool_calls, list) and tool_calls:
-                        tool_name = tool_calls[0].get("tool_name", "")
-                    steps.append(
-                        {
-                            "type": "step_complete",
-                            "tool_name": tool_name,
-                            "output": output or "",
-                        }
-                    )
-            except Exception:
-                pass
-            examples.append(
-                {
-                    "goal": goal_text or "",
-                    "result": result or "",
-                    "steps": steps,
-                    "eval_score": float(avg_score or 0.0),
-                    "model": "unknown",
-                }
-            )
-        return examples
-    except Exception:
-        return []
+    examples: list[dict[str, Any]] = []
+    for goal_id, goal_text, score in rows:
+        steps = steps_by_goal.get(str(goal_id), [])
+        examples.append(
+            {
+                "goal": goal_text or "",
+                # goals has no result column; the final step's output is the answer
+                # (the old query exported error_message as the "result").
+                "result": steps[-1]["output"] if steps else "",
+                "steps": steps,
+                "eval_score": float(score or 0.0),
+                "model": "unknown",
+            }
+        )
+    return examples
+
+
+def _score_of(scorecard: Any) -> float | None:
+    if scorecard is None:
+        return None
+    avg = getattr(scorecard, "average_score", None)
+    value = avg() if callable(avg) else avg
+    if value is None:
+        value = getattr(scorecard, "overall_score", None)
+    return float(value) if isinstance(value, int | float) else None
 
 
 def _collect_training_examples_memory(
@@ -242,35 +264,41 @@ def _collect_training_examples_memory(
     limit: int,
     tenant_id: str,
 ) -> list[dict[str, Any]]:
-    """Fallback: extract high-scoring goal executions from the GoalService in-memory cache."""
+    """No-DB fallback: completed goals in the GoalService cache.
+
+    Scores come from ``GoalService._eval_scores`` (goal_id → EvalScorecard, the
+    in-process mirror of the evaluations row). The old code read a non-existent
+    ``GoalRecord.eval_score`` attribute, so nothing ever qualified.
+    """
     if goal_service is None:
         return []
 
     goals = list(getattr(goal_service, "_goals", {}).values())
+    scores = getattr(goal_service, "_eval_scores", {}) or {}
     examples: list[dict[str, Any]] = []
 
     for g in goals:
         if str(getattr(g, "tenant_id", "")) != tenant_id:
             continue
-        status = str(getattr(g, "status", "")).lower()
-        if status not in ("complete", "completed"):
+        status = str(getattr(getattr(g, "status", ""), "value", getattr(g, "status", "")))
+        if status.lower() not in ("complete", "completed"):
             continue
-        eval_score = getattr(g, "eval_score", None)
+        eval_score = _score_of(scores.get(getattr(g, "goal_id", None)))
         if eval_score is None or eval_score < min_score:
             continue
 
-        events = getattr(g, "events", [])
+        events = getattr(g, "events", []) or []
         steps = [e for e in events if e.get("type") == "step_complete"]
         if not steps:
             continue
 
         examples.append(
             {
-                "goal": getattr(g, "goal", ""),
-                "result": getattr(g, "result", ""),
+                "goal": getattr(g, "goal_text", ""),
+                "result": getattr(g, "result", None) or str(steps[-1].get("output", "")),
                 "steps": steps,
                 "eval_score": eval_score,
-                "model": getattr(g, "model", "unknown"),
+                "model": getattr(g, "model", None) or "unknown",
             }
         )
 

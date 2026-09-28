@@ -172,6 +172,18 @@ celery_app.conf.update(
             "schedule": 60.0,  # every 60s — launch autonomous missions for due schedules
             "options": {"queue": "schedules"},
         },
+        # Data-subject rights. These existed as tasks but were never scheduled,
+        # so recorded erasure requests were never executed.
+        "process-dpdp-erasures": {
+            "task": "agentverse.process_dpdp_erasures",
+            "schedule": crontab(minute=20),  # hourly
+            "options": {"queue": "maintenance"},
+        },
+        "process-tenant-erasures": {
+            "task": "agentverse.maintenance.process_tenant_erasures",
+            "schedule": crontab(minute=40),  # hourly (jobs are due after a 30-day grace)
+            "options": {"queue": "maintenance"},
+        },
         "execute-retention-policy": {
             "task": "app.scaling.tasks.execute_retention_policy",
             "schedule": crontab(hour=3, minute=0),  # 3 AM UTC daily

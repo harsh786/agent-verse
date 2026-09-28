@@ -760,12 +760,11 @@ class TestReEmbedCollection:
 class TestProcessFeedbackBatch:
     def test_success_aggregates_across_tenants(self):
         from app.scaling.tasks import process_feedback_batch
+        from tests._rls_recorder import RlsRecordingDb
 
-        session = _make_session(
-            execute_side_effect=[MagicMock(fetchall=MagicMock(return_value=[("t1",), ("t2",)]))]
+        system_db = RlsRecordingDb(
+            rows_for=lambda sql, _p: [("t1",), ("t2",)] if "goal_feedback" in sql else []
         )
-        db_factory = _make_db_factory(session)
-
         mock_engine_svc = MagicMock()
         mock_engine_svc.process_feedback_batch = AsyncMock(
             side_effect=[
@@ -775,8 +774,8 @@ class TestProcessFeedbackBatch:
         )
 
         with (
-            patch("sqlalchemy.ext.asyncio.create_async_engine", return_value=MagicMock()),
-            patch("sqlalchemy.ext.asyncio.async_sessionmaker", return_value=db_factory),
+            patch("app.db.session.get_session_factory", return_value=RlsRecordingDb()),
+            patch("app.db.session.get_system_session_factory", return_value=system_db),
             patch(
                 "app.evals.self_improvement_engine.SelfImprovementEngine",
                 return_value=mock_engine_svc,
@@ -790,7 +789,7 @@ class TestProcessFeedbackBatch:
         from app.scaling.tasks import process_feedback_batch
 
         with patch(
-            "sqlalchemy.ext.asyncio.create_async_engine",
+            "app.db.session.get_system_session_factory",
             side_effect=RuntimeError("no db configured"),
         ):
             result = process_feedback_batch.run()

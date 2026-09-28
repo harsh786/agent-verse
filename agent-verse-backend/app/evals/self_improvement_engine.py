@@ -144,7 +144,10 @@ class SelfImprovementEngine:
                 rows = (
                     await session.execute(
                         _t(
-                            "SELECT id, goal_id, rating, feedback_text, metadata "
+                            # goal_feedback's text column is ``correction`` (there
+                            # is no feedback_text/metadata column — this SELECT
+                            # always failed and the failure was swallowed).
+                            "SELECT id, goal_id, rating, correction AS feedback_text "
                             "FROM goal_feedback "
                             "WHERE tenant_id = :tid AND processed_at IS NULL "
                             "ORDER BY created_at ASC "
@@ -181,6 +184,10 @@ class SelfImprovementEngine:
                     except Exception:
                         continue
                 await session.commit()
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "feedback_batch_failed tenant=%s: %s", tenant_id, exc
+            )
         return {"processed": processed, "actions_derived": actions_derived}

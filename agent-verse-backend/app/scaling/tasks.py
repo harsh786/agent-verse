@@ -5575,92 +5575,271 @@ async def _expire_stale_documents(retention_days: int) -> dict:
         return {"status": "error", "error": str(exc)}
 
 
+# Erasure jobs that cannot be claimed again for this long are assumed to belong
+# to a worker that died mid-run and are reclaimed (erasure is idempotent).
+_ERASURE_RECLAIM_AFTER = "1 hour"
+_STALE_CLAIM_SQL = (
+    f"(claimed_at IS NULL OR claimed_at < now() - interval '{_ERASURE_RECLAIM_AFTER}')"
+)
+# Genuine failures (not legal holds) are retried up to this many times, then left
+# in 'failed' for an operator (the status endpoint shows last_error).
+_TENANT_ERASURE_MAX_ATTEMPTS = 10
+
+
+async def _process_dpdp_erasures_async(
+    *, db: Any = None, system_db: Any = None, batch: int = 50
+) -> dict[str, Any]:
+    """Claim and execute due DPDP erasure requests.
+
+    ``dpdp_erasure_requests`` is FORCE-RLS. The previous version scanned it on
+    the application session with no tenant context, so the policy hid every row
+    and the task "processed" 0 requests forever (it was also never scheduled).
+    Now: the cross-tenant SCAN + CLAIM runs as the maintenance role
+    (``system_session``); each erasure and its status update run on the app role
+    inside that request's tenant RLS context.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context, system_session
+    from app.db.session import get_session_factory, get_system_session_factory
+    from app.governance.audit_v3 import AuditV3
+    from app.lifecycle.deletion_orchestrator import DeletionOrchestrator
+
+    db = db or get_session_factory()
+    system_db = system_db or get_system_session_factory()
+
+    # 1. ATOMIC CLAIM (multi-replica): SKIP LOCKED + status flip in one txn, so no
+    # two workers run the same request; a stale 'processing' claim is reclaimed.
+    async with system_db() as s, s.begin(), system_session(s):
+        rows = (
+            await s.execute(
+                text(
+                    "SELECT id, tenant_id, data_principal_id FROM dpdp_erasure_requests "
+                    "WHERE status = 'pending' OR (status = 'processing' AND "
+                    f"{_STALE_CLAIM_SQL}) "
+                    "ORDER BY requested_at LIMIT :lim FOR UPDATE SKIP LOCKED"
+                ),
+                {"lim": batch},
+            )
+        ).fetchall()
+        if rows:
+            await s.execute(
+                text(
+                    "UPDATE dpdp_erasure_requests SET status = 'processing', claimed_at = now() "
+                    "WHERE id = ANY(:ids)"
+                ),
+                {"ids": [r[0] for r in rows]},
+            )
+
+    orchestrator = DeletionOrchestrator(db_factory=db, audit=AuditV3(db_factory=db))
+    processed = 0
+    failed = 0
+    for req_id, tenant_id, dpid in rows:
+        try:
+            # Real, verifiable erasure cascade (suspends on active legal hold).
+            receipt = await orchestrator.execute_deletion(tenant_id, dpid)
+            # A residue-positive run (a concurrent writer re-created a row after
+            # its store's DELETE pass — see verify_deleted) must not read as
+            # "completed"; surface it as its own status.
+            if receipt.suspended:
+                new_status = "suspended"
+            elif not receipt.verified:
+                new_status = "verification_failed"
+                logger.warning(
+                    "dpdp_erasure_residue_detected",
+                    req_id=req_id,
+                    tenant_id=tenant_id,
+                    residue=receipt.residue,
+                )
+            else:
+                new_status = "completed"
+        except Exception as exc:
+            # Back to 'pending' so the next run retries it.
+            logger.warning("dpdp_erasure_failed", req_id=req_id, error=str(exc))
+            new_status = "pending"
+            failed += 1
+        try:
+            async with db() as s2, s2.begin(), sqlalchemy_rls_context(s2, tenant_id):
+                await s2.execute(
+                    text(
+                        "UPDATE dpdp_erasure_requests SET status = :st, claimed_at = NULL, "
+                        "completed_at = CASE WHEN :done THEN NOW() ELSE NULL END "
+                        "WHERE id = :rid AND tenant_id = :tid"
+                    ),
+                    {
+                        "st": new_status,
+                        "done": new_status != "pending",
+                        "rid": req_id,
+                        "tid": tenant_id,
+                    },
+                )
+        except Exception as exc:
+            # Left 'processing'; reclaimed after _ERASURE_RECLAIM_AFTER.
+            logger.error("dpdp_erasure_status_update_failed", req_id=req_id, error=str(exc))
+            failed += 1
+            continue
+        if new_status != "pending":
+            processed += 1
+    return {
+        "status": "ok",
+        "processed": processed,
+        "failed": failed,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
 @celery_app.task(name="agentverse.process_dpdp_erasures", bind=True, max_retries=3)
 def process_dpdp_erasures(self: Any) -> dict:
-    """Process pending DPDP erasure requests — actually deletes tenant data.
+    """Process pending DPDP erasure requests (beat: ``process-dpdp-erasures``)."""
+    try:
+        return _run_async(_process_dpdp_erasures_async())  # type: ignore[no-any-return]
+    except Exception as exc:
+        logger.error("process_dpdp_erasures_failed", error=str(exc))
+        return {"status": "error", "error": str(exc)}
 
-    Runs daily. For each pending erasure: deletes goals, events, LTM, feedback
-    for the data_principal_id, then marks the request as completed.
+
+async def _process_tenant_erasures_async(
+    *, db: Any = None, system_db: Any = None, redis: Any = None, batch: int = 10
+) -> dict[str, Any]:
+    """Execute due GDPR tenant erasures (``deleted_tenants`` job rows).
+
+    ``POST /enterprise/compliance/delete`` records the job; before this task
+    nothing ever called ``execute_data_deletion_async``, so the API promised an
+    erasure that never happened. Scan + claim + status bookkeeping run as the
+    maintenance role (the table deliberately has no tenant UPDATE policy); the
+    erasure itself runs on the app role under the tenant's RLS context. An
+    active legal hold leaves the job 'on_hold' (re-checked every run, never
+    deleted); a genuine failure leaves it 'failed' with last_error and is
+    retried up to ``_TENANT_ERASURE_MAX_ATTEMPTS`` times.
     """
+    import json as _json
+    from datetime import UTC, datetime
 
-    async def _run() -> dict:
-        from datetime import UTC, datetime
+    from sqlalchemy import text
 
-        from app.db.session import get_session_factory as _get_fresh_db
+    from app.db.rls import sqlalchemy_rls_context, system_session
+    from app.db.session import get_session_factory, get_system_session_factory
+    from app.enterprise.compliance import ComplianceController
+    from app.tenancy.context import PlanTier, TenantContext
 
-        db = _get_fresh_db()
-        if db is None:
-            return {"status": "skipped", "reason": "no_db"}
-        from sqlalchemy import text
+    db = db or get_session_factory()
+    system_db = system_db or get_system_session_factory()
 
-        processed = 0
-        async with db() as session:
-            rows = (
-                await session.execute(
+    async with system_db() as s, s.begin(), system_session(s):
+        claimed = [
+            r[0]
+            for r in (
+                await s.execute(
                     text(
-                        "SELECT id, tenant_id, data_principal_id FROM dpdp_erasure_requests "
-                        "WHERE status = 'pending' ORDER BY requested_at LIMIT 50"
-                    )
+                        "SELECT tenant_id FROM deleted_tenants "
+                        "WHERE scheduled_for <= now() AND attempts < :max_attempts AND ("
+                        "status IN ('pending', 'on_hold', 'failed') OR (status = 'processing' "
+                        f"AND {_STALE_CLAIM_SQL})) "
+                        "ORDER BY scheduled_for LIMIT :lim FOR UPDATE SKIP LOCKED"
+                    ),
+                    {"lim": batch, "max_attempts": _TENANT_ERASURE_MAX_ATTEMPTS},
                 )
             ).fetchall()
-        from app.governance.audit_v3 import AuditV3
-        from app.lifecycle.deletion_orchestrator import DeletionOrchestrator
+        ]
+        if claimed:
+            await s.execute(
+                text(
+                    "UPDATE deleted_tenants SET status = 'processing', claimed_at = now() "
+                    "WHERE tenant_id = ANY(:ids)"
+                ),
+                {"ids": claimed},
+            )
 
-        orchestrator = DeletionOrchestrator(db_factory=db, audit=AuditV3(db_factory=db))
-        for row in rows:
-            req_id, tenant_id, dpid = row
-            try:
-                # Real, verifiable erasure cascade (suspends on active legal hold).
-                receipt = await orchestrator.execute_deletion(tenant_id, dpid)
-                # execute_deletion runs its cascade across several independent
-                # per-store transactions (see DeletionOrchestrator._apply), so a
-                # goal actively executing for this exact subject can write a new
-                # row (goal_feedback, a memory, ...) into a store that already had
-                # its DELETE pass — the cascade doesn't lock out concurrent
-                # writers. execute_deletion's own independent re-scan
-                # (verify_deleted) does catch that: receipt.verified is False and
-                # receipt.residue lists what survived. Previously this only
-                # branched on receipt.suspended, so a residue-positive run was
-                # still recorded as "completed" — silently failing the erasure
-                # guarantee with no operator visibility and no retry. Surface it
-                # as its own status instead of masquerading as success.
-                if receipt.suspended:
-                    new_status = "suspended"
-                elif not receipt.verified:
-                    new_status = "verification_failed"
-                    import logging as _logging
-
-                    _logging.getLogger(__name__).warning(
-                        "dpdp_erasure_residue_detected req_id=%s tenant=%s residue=%s",
-                        req_id,
-                        tenant_id,
-                        receipt.residue,
-                    )
-                else:
-                    new_status = "completed"
-                async with db() as session:
-                    await session.execute(
-                        text(
-                            "UPDATE dpdp_erasure_requests SET status = :st, "
-                            "completed_at = NOW() WHERE id = :rid"
-                        ),
-                        {"st": new_status, "rid": req_id},
-                    )
-                    await session.commit()
-                processed += 1
-            except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).warning(
-                    "dpdp_erasure_failed req_id=%s: %s", req_id, exc
+    controller = ComplianceController()
+    counts = {"completed": 0, "on_hold": 0, "failed": 0}
+    for tenant_id in claimed:
+        result: dict[str, Any] = {}
+        error: str | None = None
+        key_hashes: list[str] = []
+        try:
+            # api_keys is FORCE-RLS: read the hashes (for cache invalidation) in
+            # the tenant's context before the erasure removes the rows.
+            async with db() as s2, s2.begin(), sqlalchemy_rls_context(s2, tenant_id):
+                key_hashes = [
+                    str(r[0])
+                    for r in (
+                        await s2.execute(
+                            text("SELECT key_hash FROM api_keys WHERE tenant_id = :tid"),
+                            {"tid": tenant_id},
+                        )
+                    ).fetchall()
+                ]
+            result = await controller.execute_data_deletion_async(
+                tenant_ctx=TenantContext(
+                    tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="gdpr-erasure-job"
+                ),
+                db=db,
+            )
+            if result.get("blocked") == "legal_hold":
+                status = "on_hold"
+            elif result.get("complete"):
+                status = "completed"
+            else:
+                status = "failed"
+                error = "tables failed: " + ", ".join(result.get("failed_tables", []))
+        except Exception as exc:
+            status, error = "failed", str(exc)[:2000]
+        counts[status] += 1
+        try:
+            async with system_db() as s3, s3.begin(), system_session(s3):
+                await s3.execute(
+                    text(
+                        "UPDATE deleted_tenants SET status = :st, claimed_at = NULL, "
+                        "last_error = :err, result = CAST(:res AS jsonb), "
+                        "attempts = attempts + :inc, "
+                        "completed_at = CASE WHEN :done THEN now() ELSE NULL END "
+                        "WHERE tenant_id = :tid"
+                    ),
+                    {
+                        "st": status,
+                        "inc": 1 if status == "failed" else 0,
+                        "done": status == "completed",
+                        "err": error,
+                        "res": _json.dumps(result, default=str),
+                        "tid": tenant_id,
+                    },
                 )
-        return {"status": "ok", "processed": processed, "timestamp": datetime.now(UTC).isoformat()}
+        except Exception as exc:
+            # Left 'processing'; reclaimed (and, being idempotent, re-run) later.
+            logger.error(
+                "tenant_erasure_status_update_failed", tenant_id=tenant_id, error=str(exc)
+            )
+        if status == "completed":
+            # The tenant's keys no longer exist in the DB; drop the shared resolution
+            # caches so no replica keeps authenticating them for the 300 s TTL.
+            try:
+                r = redis if redis is not None else _get_sync_redis()
+                keys = [f"tenant:{tenant_id}", *(f"api_key:{h}" for h in key_hashes)]
+                maybe = r.delete(*keys)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+            except Exception as exc:
+                logger.warning(
+                    "tenant_erasure_cache_invalidation_failed", tenant_id=tenant_id, error=str(exc)
+                )
+    return {"status": "ok", **counts, "timestamp": datetime.now(UTC).isoformat()}
 
-    loop = asyncio.new_event_loop()
+
+@celery_app.task(
+    name="agentverse.maintenance.process_tenant_erasures",
+    queue="maintenance",
+    bind=True,
+    max_retries=0,
+)
+def process_tenant_erasures(self: Any) -> dict:
+    """Execute due GDPR tenant erasures (beat: ``process-tenant-erasures``)."""
     try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+        return _run_async(_process_tenant_erasures_async())  # type: ignore[no-any-return]
+    except Exception as exc:
+        logger.error("process_tenant_erasures_failed", error=str(exc))
+        return {"status": "error", "error": str(exc)}
 
 
 @celery_app.task(name="app.scaling.tasks.discover_and_tick_civilizations", queue="maintenance")
@@ -5877,50 +6056,48 @@ def process_feedback_batch(self: Any) -> dict[str, Any]:  # type: ignore[misc]
 
     Scheduled daily. Idempotent — already-processed rows are marked and skipped.
     """
-    from app.core.config import get_settings
-
-    settings = get_settings()
-
-    async def _run() -> dict[str, Any]:
-        total_processed = 0
-        total_actions = 0
-        try:
-            from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-            engine = create_async_engine(str(settings.database_url), pool_pre_ping=True)
-            db_factory = async_sessionmaker(engine, expire_on_commit=False)
-            # Get all active tenant IDs
-            from sqlalchemy import text as _t
-
-            async with db_factory() as session:
-                rows = (
-                    await session.execute(
-                        _t(
-                            "SELECT DISTINCT tenant_id FROM goal_feedback WHERE processed_at IS NULL LIMIT 500"  # noqa: E501
-                        )
-                    )
-                ).fetchall()
-                tenant_ids = [r[0] for r in rows]
-
-            from app.evals.self_improvement_engine import SelfImprovementEngine
-
-            engine_svc = SelfImprovementEngine()
-            for tid in tenant_ids:
-                result = await engine_svc.process_feedback_batch(
-                    db_session_factory=db_factory,
-                    tenant_id=str(tid),
-                )
-                total_processed += result.get("processed", 0)
-                total_actions += result.get("actions_derived", 0)
-        except Exception as exc:
-            return {"error": str(exc)}
-        return {"processed": total_processed, "actions_derived": total_actions}
-
-    loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_run())
-    finally:
-        loop.close()
+        return _run_async(_process_feedback_batch_async())  # type: ignore[no-any-return]
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def _process_feedback_batch_async(
+    *, db: Any = None, system_db: Any = None
+) -> dict[str, Any]:
+    """``goal_feedback`` is FORCE-RLS. The tenant scan used to run on a raw app
+    engine with no tenant context, so the policy hid every row: 0 tenants, 0
+    feedback processed, forever (and the ad-hoc engine was never disposed). The
+    cross-tenant DISTINCT scan now runs as the maintenance role; each tenant's
+    batch runs on the app role under that tenant's RLS context (inside
+    ``SelfImprovementEngine.process_feedback_batch``)."""
+    from sqlalchemy import text
+
+    from app.db.rls import system_session
+    from app.db.session import get_session_factory, get_system_session_factory
+    from app.evals.self_improvement_engine import SelfImprovementEngine
+
+    db = db or get_session_factory()
+    system_db = system_db or get_system_session_factory()
+    async with system_db() as session, session.begin(), system_session(session):
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT DISTINCT tenant_id FROM goal_feedback "
+                    "WHERE processed_at IS NULL LIMIT 500"
+                )
+            )
+        ).fetchall()
+    tenant_ids = [str(r[0]) for r in rows]
+
+    total_processed = 0
+    total_actions = 0
+    engine_svc = SelfImprovementEngine()
+    for tid in tenant_ids:
+        result = await engine_svc.process_feedback_batch(db_session_factory=db, tenant_id=tid)
+        total_processed += result.get("processed", 0)
+        total_actions += result.get("actions_derived", 0)
+    return {"processed": total_processed, "actions_derived": total_actions}
 
 
 # Register beat schedule for feedback processing
