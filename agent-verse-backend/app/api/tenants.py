@@ -250,19 +250,80 @@ class LLMProviderConfig(BaseModel):
         return value.strip()
 
 
+def _llm_store(request: Request) -> Any:
+    from app.services.llm_config_store import get_llm_config_store
+
+    return getattr(request.app.state, "llm_config_store", None) or get_llm_config_store()
+
+
+async def _read_llm_config(request: Request, tenant_id: str) -> dict[str, Any] | None:
+    store = _llm_store(request)
+    if store is not None:
+        cfg = await store.get_config(tenant_id)
+        if cfg is not None:
+            return dict(cfg)
+    # No store wired (tests / no infrastructure): the process-local copy.
+    local = getattr(request.app.state, "_llm_configs", {}).get(tenant_id)
+    return dict(local) if local else None
+
+
+def _safe_llm_view(tenant_id: str, cfg: dict[str, Any] | None) -> dict[str, Any]:
+    if cfg is None:
+        return {"tenant_id": tenant_id, "provider": None, "configured": False}
+    # Never return the raw key or the vault-encrypted ciphertext.
+    safe = {k: v for k, v in cfg.items() if k not in {"api_key", "encrypted_key"}}
+    safe.setdefault("default_model", safe.get("model"))
+    return {"tenant_id": tenant_id, **safe, "configured": True}
+
+
+async def _save_llm_config(
+    request: Request,
+    tenant_id: str,
+    *,
+    provider: str,
+    encrypted_key: str,
+    model: str,
+    base_url: str | None,
+    masked_key: str | None,
+) -> None:
+    from app.services.llm_config_store import LLMConfigPersistError
+
+    store = _llm_store(request)
+    if store is not None:
+        try:
+            await store.set_config(
+                tenant_id=tenant_id,
+                provider=provider,
+                encrypted_key=encrypted_key,
+                model=model,
+                base_url=base_url,
+                masked_key=masked_key,
+            )
+        except LLMConfigPersistError as exc:
+            raise HTTPException(
+                status_code=503, detail="LLM configuration could not be saved"
+            ) from exc
+    if not hasattr(request.app.state, "_llm_configs"):
+        request.app.state._llm_configs = {}
+    # Process-local copy only for deployments without a store (tests, no infra);
+    # the goal path reads the store first.
+    request.app.state._llm_configs[tenant_id] = {
+        "provider": provider,
+        "base_url": base_url,
+        "default_model": model,
+        "masked_key": masked_key,
+        "encrypted_key": encrypted_key,
+    }
+
+
 @router.get("/me/llm")
 async def get_llm_config(
     request: Request,
     ctx: TenantContext = Depends(_require_tenant),
 ) -> JSONResponse:
     """Return the current LLM provider config for this tenant (key never exposed)."""
-    llm_configs: dict[str, Any] = getattr(request.app.state, "_llm_configs", {})
-    cfg = llm_configs.get(ctx.tenant_id)
-    if cfg is None:
-        return JSONResponse({"tenant_id": ctx.tenant_id, "provider": None, "configured": False})
-    # Never return the raw key or the vault-encrypted ciphertext.
-    safe = {k: v for k, v in cfg.items() if k not in {"api_key", "encrypted_key"}}
-    return JSONResponse({"tenant_id": ctx.tenant_id, **safe, "configured": True})
+    cfg = await _read_llm_config(request, ctx.tenant_id)
+    return JSONResponse(_safe_llm_view(ctx.tenant_id, cfg))
 
 
 @router.put("/me/llm", status_code=200)
@@ -271,36 +332,24 @@ async def set_llm_config(
     request: Request,
     ctx: TenantContext = Depends(_require_tenant),
 ) -> JSONResponse:
-    """Configure the LLM provider for this tenant. The API key is stored encrypted."""
-    if not hasattr(request.app.state, "_llm_configs"):
-        request.app.state._llm_configs = {}
+    """Configure the LLM provider for this tenant. The API key is stored encrypted.
 
-    # Fix 7: Encrypt the key via CredentialVault before storing.
+    Durable in Postgres (tenant_llm_configs) with Redis as a cache. It used to
+    be kept in this replica's memory (which the goal path read) plus Redis, so
+    the provider applied only on the replica that handled this request.
+    """
     vault = get_vault()
     encrypted_key = vault.encrypt(body.api_key)
     masked_key = body.api_key[:8] + "..." + body.api_key[-4:] if len(body.api_key) > 12 else "****"
-
-    request.app.state._llm_configs[ctx.tenant_id] = {
-        "provider": body.provider,
-        "base_url": body.base_url,
-        "default_model": body.default_model,
-        "masked_key": masked_key,
-        "encrypted_key": encrypted_key,  # stored encrypted; never returned to callers
-    }
-
-    # Also persist to Redis so Celery workers can access it without app state.
-    from app.services.llm_config_store import get_llm_config_store
-
-    _config_store = get_llm_config_store()
-    if _config_store is not None:
-        await _config_store.set_config(
-            tenant_id=ctx.tenant_id,
-            provider=body.provider,
-            encrypted_key=encrypted_key,
-            model=body.default_model or "",
-            base_url=body.base_url,
-        )
-
+    await _save_llm_config(
+        request,
+        ctx.tenant_id,
+        provider=body.provider,
+        encrypted_key=encrypted_key,
+        model=body.default_model or "",
+        base_url=body.base_url,
+        masked_key=masked_key,
+    )
     return JSONResponse(
         {
             "tenant_id": ctx.tenant_id,
@@ -312,39 +361,55 @@ async def set_llm_config(
     )
 
 
-# ── LLM config (simple key-value store, no secret handling) ──────────────────
+# ── LLM config: non-secret fields ────────────────────────────────────────────
 
 
 @router.get("/me/llm-config")
 async def get_tenant_llm_config(request: Request) -> dict:
-    """Get the tenant's saved LLM configuration (lightweight, no secrets)."""
+    """The tenant's LLM configuration without secrets (same record as /me/llm)."""
     tenant = _require_tenant(request)
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    if tenant_svc and hasattr(tenant_svc, "get_llm_config"):
-        try:
-            config = await tenant_svc.get_llm_config(tenant.tenant_id)
-            return config or {}
-        except Exception:
-            pass
-    return {}
+    return _safe_llm_view(tenant.tenant_id, await _read_llm_config(request, tenant.tenant_id))
 
 
 @router.put("/me/llm-config")
 async def save_tenant_llm_config(request: Request) -> dict:
-    """Save the tenant's LLM configuration (lightweight, no secret encryption)."""
+    """Update the non-secret fields (provider, default_model, base_url).
+
+    This used to call TenantService methods that do not exist and answer
+    ``{"status": "saved_in_memory"}`` without saving anything. The API key is
+    set only through PUT /tenants/me/llm; with no key configured yet this is a
+    409 rather than a config that can never authenticate.
+    """
     tenant = _require_tenant(request)
     try:
         body = await request.json()
-    except Exception:
-        body = {}
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    if tenant_svc and hasattr(tenant_svc, "save_llm_config"):
-        try:
-            await tenant_svc.save_llm_config(tenant.tenant_id, body)
-            return {"status": "saved", **body}
-        except Exception:
-            pass
-    return {"status": "saved_in_memory", **body}
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="JSON body required") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="JSON object required")
+    current = await _read_llm_config(request, tenant.tenant_id)
+    if not current or not current.get("encrypted_key"):
+        raise HTTPException(
+            status_code=409,
+            detail="No LLM API key configured; set it with PUT /tenants/me/llm first",
+        )
+    provider = str(body.get("provider") or current.get("provider") or "")
+    model = str(
+        body.get("default_model") or body.get("model")
+        or current.get("model") or current.get("default_model") or ""
+    )
+    base_url = body.get("base_url", current.get("base_url"))
+    await _save_llm_config(
+        request,
+        tenant.tenant_id,
+        provider=provider,
+        encrypted_key=str(current["encrypted_key"]),
+        model=model,
+        base_url=base_url,
+        masked_key=current.get("masked_key"),
+    )
+    saved = await _read_llm_config(request, tenant.tenant_id)
+    return {"status": "saved", **_safe_llm_view(tenant.tenant_id, saved)}
 
 
 # ── Provider catalog (capabilities only — never returns secrets) ──────────────

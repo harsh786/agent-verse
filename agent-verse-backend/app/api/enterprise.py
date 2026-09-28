@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, model_validator
 from starlette.responses import StreamingResponse
 
+from app.auth.saml_provider import SAMLNotInstalledError
 from app.db.rls import sqlalchemy_rls_context
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
@@ -1975,6 +1976,8 @@ async def saml_login(request: Request) -> Response:
         return RedirectResponse(url=redirect_url)
     except HTTPException:
         raise
+    except SAMLNotInstalledError as exc:
+        raise HTTPException(501, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"SAML login error: {exc}") from exc
 
@@ -2038,6 +2041,9 @@ async def saml_acs(request: Request) -> dict[str, Any]:
         }
     except HTTPException:
         raise
+    except SAMLNotInstalledError as exc:
+        # Was a 500 ("SAML ACS error: python3-saml is not installed").
+        raise HTTPException(501, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(401, str(exc)) from exc
     except Exception as exc:

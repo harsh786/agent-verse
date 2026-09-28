@@ -16,6 +16,7 @@ import pytest
 
 from app.gateway.channels.voice_phone import VoicePhoneChannelAdapter
 from app.gateway.command import OrgResponse
+from app.gateway.telephony_consent import TelephonyConsentLedger
 
 TENANT = "00000000-0000-0000-0000-000000000002"
 ORG = "org-1"
@@ -114,6 +115,12 @@ class _FakeTelephonyClient:
         self.calls = _FakeCalls()
 
 
+def _consented(number: str) -> TelephonyConsentLedger:
+    ledger = TelephonyConsentLedger()
+    ledger.record("", number, granted=True, source="test")
+    return ledger
+
+
 async def test_place_call_invokes_client_with_args() -> None:
     adapter = VoicePhoneChannelAdapter()
     client = _FakeTelephonyClient()
@@ -122,6 +129,7 @@ async def test_place_call_invokes_client_with_args() -> None:
         from_="+15550000000",
         client=client,
         url="https://api.example.com/voice/twiml",
+        consent_ledger=_consented(CALLER),
     )
     assert client.calls.create_kwargs == {
         "to": CALLER,
@@ -137,7 +145,9 @@ async def test_place_call_invokes_client_with_args() -> None:
 async def test_place_call_uses_default_from() -> None:
     adapter = VoicePhoneChannelAdapter(default_from="+15551110000")
     client = _FakeTelephonyClient()
-    await adapter.place_call(to=CALLER, client=client, twiml="<Response/>")
+    await adapter.place_call(
+        to=CALLER, client=client, twiml="<Response/>", consent_ledger=_consented(CALLER)
+    )
     assert client.calls.create_kwargs is not None
     assert client.calls.create_kwargs["from_"] == "+15551110000"
     assert client.calls.create_kwargs["twiml"] == "<Response/>"
@@ -159,9 +169,11 @@ async def test_place_call_requires_from() -> None:
 # ── Auth verification ────────────────────────────────────────────────────────────
 
 
-async def test_verify_auth_open_without_token() -> None:
+async def test_verify_auth_fails_closed_without_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Was "open without token" (returned True) — a forged-webhook hole. Fail closed.
+    monkeypatch.delenv("VOICE_PHONE_AUTH_TOKEN", raising=False)
     adapter = VoicePhoneChannelAdapter(auth_token="")
-    assert await adapter.verify_auth({}, {"From": CALLER}) is True
+    assert await adapter.verify_auth({}, {"From": CALLER}) is False
 
 
 async def test_verify_auth_validates_twilio_signature() -> None:

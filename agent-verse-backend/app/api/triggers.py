@@ -38,6 +38,34 @@ def _get_db(request: Request) -> Any:
     return getattr(request.app.state, "db_session_factory", None)
 
 
+# The webhook token in ``/triggers/webhooks/{type}/{token}`` is the credential a
+# third party presents (it selects the tenant pre-auth), so it must not be
+# guessable: shorter tokens never authenticate and are refused on create.
+_MIN_WEBHOOK_TOKEN_LEN = 32
+
+
+def _push_webhook_types() -> frozenset[str]:
+    from app.triggers.dispatch_map import WEBHOOK_TYPE_MAP
+
+    return frozenset({*WEBHOOK_TYPE_MAP.values(), TriggerType.WEBHOOK.value})
+
+
+def _webhook_tenant_ctx(request: Request, tenant_id: str) -> TenantContext:
+    """Least-privilege context for a token-authenticated webhook delivery: the
+    token owner's tenant and plan, no roles (nothing here is scope-gated)."""
+    from app.tenancy.context import PlanTier
+
+    plan_value = "free"
+    tenants = getattr(getattr(request.app.state, "tenant_service", None), "_tenants", None)
+    if isinstance(tenants, dict):
+        plan_value = str((tenants.get(tenant_id) or {}).get("plan", "free"))
+    try:
+        plan = PlanTier(plan_value)
+    except ValueError:
+        plan = PlanTier.FREE
+    return TenantContext(tenant_id=tenant_id, plan=plan, api_key_id="webhook-token", roles=())
+
+
 # ── Request / Response models ─────────────────────────────────────────────────
 
 
@@ -218,6 +246,20 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
         raise HTTPException(status_code=503, detail="Trigger store unavailable")
 
     spec = _build_spec(body.spec)
+
+    # Push-webhook triggers: the path token now authenticates third-party
+    # delivery on its own, so it must be strong. Client-chosen tokens were
+    # accepted at any length ("abc") and none was issued when omitted.
+    if spec.trigger_type.value in _push_webhook_types():
+        if not spec.webhook_token:
+            import secrets
+
+            spec.webhook_token = secrets.token_urlsafe(32)
+        elif not _MIN_WEBHOOK_TOKEN_LEN <= len(spec.webhook_token) <= 64:  # column is 64
+            raise HTTPException(
+                status_code=422,
+                detail=f"webhook_token must be {_MIN_WEBHOOK_TOKEN_LEN}-64 characters",
+            )
 
     # Reject trigger types that have no runtime dispatch path — a tenant must not
     # be able to register a trigger that could never fire (2.W-10).
@@ -670,19 +712,27 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         except Exception:
             pass
 
-    # Tenant = the AUTHENTICATED caller only. This used to take the tenant from an
-    # ``X-Tenant-ID`` header and ignore the path token ("for now just
-    # broadcast"): any API-key holder could fire every trigger of any other
-    # tenant by naming it in the header. It now fires only the caller's trigger
-    # whose webhook_token matches the path token, and a trigger with a signing
-    # secret requires a valid signature (a missing signature header no longer
-    # skips verification).
+    # Tenant = the owner of the path TOKEN. Originally the tenant came from an
+    # ``X-Tenant-ID`` header (cross-tenant firing); then from the caller's API key
+    # — which GitHub/Stripe/Jira/... can never send, so real deliveries always
+    # got 401 (the route was not even past TenantMiddleware). The token is the
+    # credential a third party holds, so it alone selects the tenant: resolved
+    # pre-auth (constant-time; DB fallback via the maintenance session), after
+    # which everything runs as that tenant. Any API-key tenant or header is
+    # ignored. A trigger with a signing secret still requires a valid signature.
     import hmac
 
-    caller = getattr(request.state, "tenant", None)
-    tenant_id = str(getattr(caller, "tenant_id", "") or "")
+    if len(token) < _MIN_WEBHOOK_TOKEN_LEN:
+        raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
+    finder = getattr(store, "find_tenant_by_webhook_token", None)
+    tenant_id = (
+        await finder(token, system_db=getattr(request.app.state, "system_db_session_factory", None))
+        if finder is not None
+        else None
+    )
     if not tenant_id:
-        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+        raise HTTPException(status_code=404, detail="No trigger matches this webhook token")
+    caller = _webhook_tenant_ctx(request, tenant_id)
 
     triggers = await store.find_by_type_async(trigger_type, tenant_id=tenant_id)
     matched = 0
@@ -695,7 +745,7 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         else:
             spec = trigger.get("spec", trigger) if isinstance(trigger, dict) else trigger
         stored_token = str(getattr(spec, "webhook_token", "") or "")
-        if not stored_token or not hmac.compare_digest(stored_token, token):
+        if not stored_token or not hmac.compare_digest(stored_token.encode(), token.encode()):
             continue
         secret = getattr(spec, "webhook_signature_secret", "") or ""
         if secret and (

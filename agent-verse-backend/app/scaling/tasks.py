@@ -450,22 +450,30 @@ def _get_llm_provider(tenant_id: str) -> Any:
     """
     import os
 
-    redis_url = os.getenv("REDIS_URL", "")
-    if not redis_url:
-        return None
-
     try:
         import json
 
-        import redis as sync_redis
+        config: dict[str, Any] | None = None
+        redis_url = os.getenv("REDIS_URL", "")
+        if redis_url:
+            import redis as sync_redis
 
-        redis_from_url = cast(Any, sync_redis.from_url)
-        r = redis_from_url(redis_url, decode_responses=True)
-        raw = r.get(f"llm_config:{tenant_id}")
-        if raw is None:
+            redis_from_url = cast(Any, sync_redis.from_url)
+            r = redis_from_url(redis_url, decode_responses=True)
+            raw = r.get(f"llm_config:{tenant_id}")
+            config = json.loads(raw) if raw is not None else None
+        if config is None:
+            # Redis is only a cache: the config is durable in tenant_llm_configs.
+            # Reading Redis alone lost the tenant's provider whenever the key was
+            # evicted/expired (or Redis was flushed).
+            from app.services.llm_config_store import get_or_create_worker_llm_config_store
+
+            store = get_or_create_worker_llm_config_store()
+            if store is not None:
+                config = _run_async(store.get_config(tenant_id))
+        if config is None:
             return None
 
-        config = json.loads(raw)
         provider_name = config.get("provider", "")
         encrypted_key = config.get("encrypted_key", "")
         model = config.get("model", "")
@@ -1279,27 +1287,18 @@ def run_goal(
     started_monotonic = _monotonic()
     effective_goal = goal_text or goal_template
 
-    # Resolve actual tenant plan from Redis config (avoids hardcoded tier)
-    _plan_str = "professional"  # safe fallback
-    try:
-        from app.services.llm_config_store import get_llm_config_store
-
-        _config_store = get_llm_config_store()
-        if _config_store:
-            _tenant_cfg = _run_async(_config_store.get_config(tenant_id)) or {}
-            if _tenant_cfg is None:
-                logger.warning("tenant_llm_config_not_found", tenant_id=tenant_id)
-                _tenant_cfg = {}
-            _plan_str = _tenant_cfg.get("plan", "professional")
-    except Exception:
-        pass
-
+    # The tenant's plan is what the API enqueued with the goal. It used to be
+    # read from a "plan" field of the LLM-config cache that nothing writes, so
+    # every worker-run goal got PROFESSIONAL limits (goal timeout etc.)
+    # whatever the tenant's tier. An unknown value falls back to the most
+    # restrictive tier, never a paid one.
     from app.tenancy.context import PlanTier
 
     try:
-        plan = PlanTier(_plan_str)
+        plan = PlanTier(plan)
     except ValueError:
-        plan = PlanTier.PROFESSIONAL
+        logger.warning("run_goal_unknown_plan goal_id=%s plan=%s", goal_id, plan)
+        plan = PlanTier.FREE
 
     tenant_ctx = TenantContext(
         tenant_id=tenant_id,
@@ -1551,19 +1550,22 @@ def run_goal(
     _agent_max_iterations: int | None = None  # None = use graph default (100)
     _agent_system_prompt: str = ""
     _agent_collection_ids: list[str] = []
+    # The agent's pinned model. Only the API path applied it (GoalService ->
+    # ModelRouter.with_override); worker-run goals silently ignored it.
+    _agent_model_override: str = ""
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
 
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str]]:
+            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str], str]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (
                         await _sess.execute(
                             _sa_text(
                                 "SELECT autonomy_mode, max_iterations, system_prompt, "
-                                "allowed_collection_ids FROM agents "
+                                "allowed_collection_ids, model_override FROM agents "
                                 "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
                             ),
                             {"aid": agent_id, "tid": tenant_id},
@@ -1574,14 +1576,16 @@ def run_goal(
                         iters = int(row[1]) if row[1] else None
                         sys_prompt = str(row[2]) if row[2] else ""
                         collection_ids = list(row[3] or []) if len(row) > 3 else []
-                        return mode, iters, sys_prompt, collection_ids
-                    return "bounded-autonomous", None, "", []
+                        override = str(row[4] or "") if len(row) > 4 else ""
+                        return mode, iters, sys_prompt, collection_ids, override
+                    return "bounded-autonomous", None, "", [], ""
 
             (
                 _agent_autonomy_mode,
                 _agent_max_iterations,
                 _agent_system_prompt,
                 _agent_collection_ids,
+                _agent_model_override,
             ) = _run_async(_lookup_agent_config())
             logger.info(
                 "worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
@@ -1748,6 +1752,15 @@ def run_goal(
                     _model_router.set_role_map(_worker_roles)
                 except Exception as _rm_exc:
                     logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
+            if _agent_model_override:
+                try:
+                    if _model_router is None:
+                        from app.agent.model_router import ModelRouter
+
+                        _model_router = ModelRouter()
+                    _model_router = _model_router.with_override(_agent_model_override)
+                except Exception as _mo_exc:
+                    logger.warning("worker_model_override_apply_failed: %s", _mo_exc)
 
             # Build LLM response cache and semantic cache for the worker.
             # Use the Celery broker Redis URL as fallback for REDIS_URL so
@@ -2274,11 +2287,11 @@ def run_goal(
                     # Resolve scoped LLM key (G-28)
                     _iso_llm_key = ""
                     try:
-                        from app.services.llm_config_store import get_llm_api_key_for_tenant
+                        from app.services.llm_config_store import aget_llm_api_key_for_tenant
 
-                        _iso_llm_key = get_llm_api_key_for_tenant(tenant_id)
-                    except Exception:
-                        pass
+                        _iso_llm_key = _run_async(aget_llm_api_key_for_tenant(tenant_id))
+                    except Exception as _key_exc:
+                        logger.warning("isolated_llm_key_resolve_failed: %s", _key_exc)
 
                     _iso_envelope = _build_env(
                         tenant_id=tenant_id,
@@ -2373,6 +2386,15 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        if state.status.value == "waiting_human" and goal_bridge is not None:
+            # Supervised mode: the graph ENDED waiting for approvals. Mark the
+            # goal suspended so resume_goal relaunches it (from its step
+            # checkpoints) — nothing is left running to continue it otherwise.
+            try:
+                _, _, _bridge = _make_worker_goal_bridge()
+                _run_async(_bridge._db_set_suspended(goal_id, tenant_id, True))
+            except Exception as _susp_exc:
+                logger.warning("mark_suspended_failed goal=%s: %s", goal_id, _susp_exc)
         if state.status.value in {"complete", "failed"}:
             _record_goal_duration_metric(
                 state.status.value,
@@ -5128,10 +5150,15 @@ def warm_jwks_cache() -> dict:
     async def _run() -> dict:
         try:
             from app.auth.agent_identity import _build_jwks  # type: ignore[import]
-            from app.db.session import get_session_factory as _get_fresh_db
+            from app.db.session import get_system_session_factory
 
-            db = _get_fresh_db()
+            # Cross-tenant read of FORCE-RLS agent_credentials: the maintenance
+            # (BYPASSRLS) factory. The request factory saw zero rows under the
+            # NOBYPASSRLS role, and this task then cached that EMPTY set.
+            db = get_system_session_factory()
             jwks_keys = await _build_jwks(db)
+            if not jwks_keys:
+                return {"warmed": 0}
             import redis as _redis
 
             r = _redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379/0"))

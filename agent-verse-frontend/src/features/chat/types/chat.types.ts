@@ -81,6 +81,7 @@ export type SSEEventType =
   | 'error'
   // Generation
   | 'token'
+  | 'token_reset'             // executor model failover: discard the partial text streamed so far
   | 'reasoning'
   // Plan / execute / verify
   | 'plan_ready'

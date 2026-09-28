@@ -75,10 +75,28 @@ export const voiceApi = {
     return apiFetch<void>(`${BASE}/persona/${orgId}`, { method: 'DELETE' });
   },
 
-  /** Build authenticated WebSocket URL for real-time voice stream. */
+  /**
+   * WebSocket URL for the real-time voice stream. Carries NO credential: the
+   * API key used to be appended as `?api_key=`, which wrote it into proxy /
+   * load-balancer access logs and browser history. Authenticate with
+   * `streamProtocols()` instead (passed as the WebSocket subprotocols).
+   */
   streamUrl(orgId: string): string {
+    const base = API_BASE.replace(/^http/, 'ws');
+    return `${base}/v1/voice/stream/${encodeURIComponent(orgId)}`;
+  },
+
+  /**
+   * Browser WebSockets cannot set headers, so the key travels in the
+   * `Sec-WebSocket-Protocol` handshake header as `av.v1.<base64url(key)>`
+   * (the convention the backend's resolve_ws_tenant() accepts).
+   */
+  streamProtocols(): string[] {
     const apiKey = useAuthStore.getState().apiKey ?? '';
-    const base   = API_BASE.replace(/^http/, 'ws');
-    return `${base}/v1/voice/stream/${orgId}?api_key=${encodeURIComponent(apiKey)}`;
+    if (!apiKey) return [];
+    let binary = '';
+    new TextEncoder().encode(apiKey).forEach((b) => { binary += String.fromCharCode(b); });
+    const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    return [`av.v1.${encoded}`];
   },
 };

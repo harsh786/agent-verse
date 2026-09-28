@@ -17,6 +17,7 @@ Redis is read from ``request.app.state._rate_limiter_redis`` per request
 
 from __future__ import annotations
 
+import ipaddress
 from collections.abc import Callable
 from typing import Any
 
@@ -262,54 +263,91 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
 # ---------------------------------------------------------------------------
 
 
-def _get_client_ip(request: Request) -> str:
-    """Extract client IP with trusted-proxy validation.
-
-    Only trusts ``X-Forwarded-For`` if the connecting peer is a trusted proxy.
-    Loopback (127.x, ::1) and true RFC-1918 private addresses (10/8, 172.16/12,
-    192.168/16) are auto-trusted because they are always local reverse-proxies
-    (nginx/Traefik running on the same host or private network).
-    Additional proxies can be listed in the ``TRUSTED_PROXIES`` env var.
-    Prevents IP spoofing via attacker-injected XFF headers.
-    """
-    import ipaddress as _ip
+def _trusted_proxy_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse ``TRUSTED_PROXIES`` (settings; a live env var wins, for tests/ops)."""
     import os as _os
 
-    trusted_proxies_raw = _os.getenv("TRUSTED_PROXIES", "")
-    trusted_proxies = {p.strip() for p in trusted_proxies_raw.split(",") if p.strip()}
+    from app.core.config import get_settings
 
-    # RFC-1918 private ranges + loopback — always trusted as local reverse proxies
-    _always_trusted_networks = [
-        _ip.ip_network("127.0.0.0/8"),  # loopback
-        _ip.ip_network("10.0.0.0/8"),  # RFC-1918 private
-        _ip.ip_network("172.16.0.0/12"),  # RFC-1918 private
-        _ip.ip_network("192.168.0.0/16"),  # RFC-1918 private
-        _ip.ip_network("::1/128"),  # IPv6 loopback
-        _ip.ip_network("fc00::/7"),  # IPv6 ULA
-    ]
-
-    direct_client = ""
-    if request.client is not None:
-        direct_client = request.client.host or ""
-
-    def _is_trusted_peer(host: str) -> bool:
-        """Return True if this peer IP is a trusted proxy (loopback/RFC-1918/configured)."""
-        if not host:
-            return False
-        if host in trusted_proxies or trusted_proxies == {"*"}:
-            return True
+    raw = _os.environ.get("TRUSTED_PROXIES")
+    if raw is None:
+        raw = get_settings().trusted_proxies
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
         try:
-            addr = _ip.ip_address(host)
-            return any(addr in net for net in _always_trusted_networks)
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            logger.warning("trusted_proxies_invalid_entry", entry=item)
+    return networks
+
+
+def _is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract the client IP, believing forwarding headers only from trusted proxies.
+
+    Previously loopback / RFC-1918 / ULA peers were auto-trusted and the LEFT-most
+    ``X-Forwarded-For`` hop was returned. Every pod in a cluster has a private
+    address, so any workload that could reach the API directly could claim any
+    source IP (bypassing tenant IP allowlists and IP-keyed rate limits), and even
+    through a real proxy the left-most hop is attacker-written (proxies append).
+
+    Now: forwarding headers are honoured only when the TCP peer is in
+    ``TRUSTED_PROXIES`` (default empty → never), and the client is the RIGHT-most
+    XFF hop that is not itself a trusted proxy. A malformed hop stops the walk
+    (the last trusted address is returned rather than attacker garbage).
+    """
+    direct_client = request.client.host if request.client is not None else ""
+    direct_client = direct_client or ""
+    networks = _trusted_proxy_networks()
+
+    def _trusted(host: str) -> bool:
+        try:
+            addr = ipaddress.ip_address(host)
         except ValueError:
             return False
+        return any(addr in net for net in networks)
 
-    # Trust XFF when the direct peer is a local or explicitly-configured proxy
-    if _is_trusted_peer(direct_client):
-        xff = request.headers.get("X-Forwarded-For", "") or request.headers.get("X-Real-IP", "")
-        if xff:
-            return xff.split(",")[0].strip()
+    if not networks or not _trusted(direct_client):
+        # A loopback peer that forwards a client address is a local proxy
+        # (sidecar / same-host nginx) nobody listed in TRUSTED_PROXIES. Its claim
+        # can't be believed, but returning the loopback address would inherit
+        # is_ip_allowed's loopback exemption and silently disable every tenant IP
+        # allowlist — so report the client as unknown (fails any allowlist).
+        forwarded = request.headers.get("X-Forwarded-For") or request.headers.get("X-Real-IP")
+        if forwarded and _is_loopback(direct_client):
+            logger.warning("untrusted_loopback_proxy_forwarding", peer=direct_client)
+            return "0.0.0.0"
+        return direct_client or "0.0.0.0"
 
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        client = direct_client
+        for hop in reversed([h.strip() for h in xff.split(",")]):
+            try:
+                ipaddress.ip_address(hop)
+            except ValueError:
+                break
+            client = hop
+            if not _trusted(hop):
+                break
+        return client
+
+    real_ip = (request.headers.get("X-Real-IP", "") or "").strip()
+    if real_ip:
+        try:
+            ipaddress.ip_address(real_ip)
+            return real_ip
+        except ValueError:
+            pass
     return direct_client or "0.0.0.0"
 
 

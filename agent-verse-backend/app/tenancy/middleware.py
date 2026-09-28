@@ -87,6 +87,23 @@ _BYPASS_PREFIXES = (
     # Without this bypass every SCIM request from an IdP (Okta, Azure AD, ...)
     # is rejected here with a generic 401 before it ever reaches SCIM auth.
     "/v1/gateway/",  # channel webhooks (telegram/whatsapp/slack) use per-channel signature auth
+    # The routes below were missing, so their third-party / anonymous callers got
+    # a generic 401 here before the handler's own auth could run (unreachable):
+    "/.well-known/",  # JWKS + A2A agent cards — public discovery documents by definition
+    "/auth/google/",  # Google OIDC login start + callback — PKCE state + Google code exchange
+    "/triggers/webhooks/",  # typed webhook delivery — tenant resolved from the path token,
+    # signature verified per trigger (app.api.triggers.receive_typed_webhook)
+    # Inbound channel webhooks — each verifies its own signature / shared secret
+    # (app.api.channels.ingestion). Listed individually so /channels/mappings
+    # (tenant CRUD) stays behind API-key auth.
+    "/channels/slack/",
+    "/channels/teams/",
+    "/channels/discord/",
+    "/channels/email/",
+    "/channels/sms/",
+    "/channels/voice/",
+    "/channels/forms/",
+    "/channels/meeting/",
 )
 
 KeyResolver = Callable[[str], Awaitable[TenantContext | None]]
