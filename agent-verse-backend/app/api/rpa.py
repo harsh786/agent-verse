@@ -216,11 +216,15 @@ async def close_session(request: Request, session_id: str) -> None:
 @router.get("/sessions/{session_id}/screenshot")
 async def get_session_screenshot(request: Request, session_id: str) -> dict[str, Any]:
     """Take a read-only screenshot of the current viewport without recording an action."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     session_manager = getattr(request.app.state, "rpa_session_manager", None)
     if session_manager is None:
         raise HTTPException(503, "RPA session manager not available")
-    page = session_manager.get_page(session_id) if hasattr(session_manager, "get_page") else None
+    page = (
+        session_manager.get_page(session_id, tenant_id=tenant.tenant_id)
+        if hasattr(session_manager, "get_page")
+        else None
+    )
     if page is None:
         raise HTTPException(404, "Session not found or browser not active")
     try:
@@ -238,11 +242,15 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
 @router.get("/sessions/{session_id}/current-view")
 async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
     """Read-only viewport snapshot — does NOT create action log entry."""
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     session_manager = getattr(request.app.state, "rpa_session_manager", None)
     if session_manager is None:
         raise HTTPException(503, "RPA not available")
-    page = session_manager.get_page(session_id) if hasattr(session_manager, "get_page") else None
+    page = (
+        session_manager.get_page(session_id, tenant_id=tenant.tenant_id)
+        if hasattr(session_manager, "get_page")
+        else None
+    )
     if page is None:
         raise HTTPException(404, "Session not found or browser not active")
     try:

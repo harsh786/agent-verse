@@ -345,8 +345,10 @@ def test_browser_session_manager_get_page_finds_alive_session() -> None:
     session._page = MagicMock()     # the page to return
     manager._sessions[("s1", "t1")] = session
 
-    page = manager.get_page("s1")
-    assert page is not None  # line 260
+    page = manager.get_page("s1", tenant_id="t1")
+    assert page is not None
+    # Regression: another tenant must not reach this session's live page.
+    assert manager.get_page("s1", tenant_id="t2") is None
 
 
 def test_browser_session_manager_get_page_returns_none_not_found() -> None:
@@ -354,7 +356,7 @@ def test_browser_session_manager_get_page_returns_none_not_found() -> None:
     from app.rpa.session_manager import BrowserSessionManager
 
     manager = BrowserSessionManager()
-    page = manager.get_page("nonexistent")
+    page = manager.get_page("nonexistent", tenant_id="t1")
     assert page is None  # line 261
 
 

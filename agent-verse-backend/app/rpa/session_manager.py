@@ -245,10 +245,13 @@ class BrowserSessionManager:
         except Exception:
             return self.list_active(tenant_id=tenant_id)
 
-    def get_page(self, session_id: str) -> Any:
-        """Return the live Playwright page for a session, or None if not found."""
-        # Search across all tenants since we only have session_id here
-        for (sid, _tid), session in self._sessions.items():
-            if sid == session_id and session.is_alive:
-                return getattr(session, "_page", None) or getattr(session, "page", None)
+    def get_page(self, session_id: str, *, tenant_id: str) -> Any:
+        """Return the tenant's live Playwright page for a session, or None.
+
+        Scoped to the tenant: it used to search every tenant's sessions by id, so
+        any rpa:read key could screenshot another tenant's live browser.
+        """
+        session = self._sessions.get((session_id, tenant_id))
+        if session is not None and session.is_alive:
+            return getattr(session, "_page", None) or getattr(session, "page", None)
         return None
