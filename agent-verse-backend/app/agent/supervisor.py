@@ -18,6 +18,16 @@ from app.observability.logging import get_logger
 logger = get_logger(__name__)
 
 
+def _final_answer(event: dict[str, Any], step_outputs: list[str]) -> str:
+    """The sub-goal's real result: an answer carried on the terminal event, else the
+    outputs of the steps it executed. Empty when nothing real was produced."""
+    for key in ("answer", "cited_answer", "output", "result", "summary"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "\n\n".join(o for o in step_outputs if o.strip())
+
+
 @dataclass
 class SubAgentTask:
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
@@ -123,19 +133,33 @@ class SupervisorAgent:
                         }
                     )
 
-                    # Wait for completion
+                    # Wait for completion, collecting the sub-goal's REAL output. The
+                    # goal_complete event carries no "output" key, so the result used to
+                    # be the literal string 'completed' for every sub-task.
+                    step_outputs: list[str] = []
                     async with asyncio.timeout(self._timeout):
                         async for evt in self._goal_service.subscribe_events(
                             goal_id=goal_id, tenant_ctx=tenant_ctx
                         ):
-                            if evt.get("type") == "goal_complete":
-                                task.status = "complete"
-                                task.result = evt.get("output", "completed")
+                            etype = evt.get("type")
+                            if etype == "step_complete" and evt.get("output"):
+                                step_outputs.append(str(evt["output"]))
+                            elif etype == "goal_complete":
+                                answer = _final_answer(evt, step_outputs)
+                                if answer:
+                                    task.status = "complete"
+                                    task.result = answer
+                                else:
+                                    task.status = "failed"
+                                    task.error = "sub-goal completed without producing any output"
                                 break
-                            elif evt.get("type") == "goal_failed":
+                            elif etype in ("goal_failed", "goal_cancelled"):
                                 task.status = "failed"
-                                task.error = evt.get("reason", "unknown")
+                                task.error = str(evt.get("reason") or etype)
                                 break
+                    if task.status == "running":
+                        task.status = "failed"
+                        task.error = "event stream ended before the sub-goal finished"
                 except TimeoutError:
                     task.status = "failed"
                     task.error = f"Timeout after {self._timeout}s"
@@ -162,7 +186,9 @@ class SupervisorAgent:
         synthesis = await self._synthesize(goal, completed, failed, tenant_ctx)
 
         result = SupervisionResult(
-            success=len(failed) == 0 or len(completed) > len(failed),
+            # Every sub-task must succeed: a majority-completed run used to report
+            # success while silently dropping the failed sub-tasks' work.
+            success=bool(sub_tasks) and len(failed) == 0,
             tasks=sub_tasks,
             synthesized_result=synthesis,
         )
@@ -228,9 +254,17 @@ class SupervisorAgent:
             [f"Sub-task: {t.goal}\nResult: {t.result[:500]}" for t in completed]
         )
 
+        failed_text = "\n".join(f"- {t.goal}: {t.error[:200]}" for t in failed)
         prompt = (
             f"Original goal: {original_goal}\n\n"
             f"Completed sub-tasks:\n{results_text}\n\n"
+            + (
+                f"FAILED sub-tasks (state clearly that these parts were not achieved):\n"
+                f"{failed_text}\n\n"
+                if failed
+                else ""
+            )
+            +
             "Synthesize a coherent, comprehensive answer to the original goal based on "
             "all sub-task results. Be concise and actionable."
         )

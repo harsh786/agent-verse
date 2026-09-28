@@ -114,9 +114,17 @@ def breaker_key(provider: Any, request: Any = None) -> str:
     Callers used to pass ``type(provider).__name__`` — always "TracedProvider"
     for the agent roles — so a few timeouts on ONE slow model opened the circuit
     for every model, every role and every tenant in the process.
+
+    Scope: a tenant's BYOK provider (``_circuit_scope`` set by
+    ``app.providers.tenant_provider``) gets a tenant-keyed circuit. Keying only by
+    model let one tenant's revoked/over-quota key open the circuit for that model
+    for every tenant in the process. The platform provider stays unscoped on
+    purpose: it is shared infrastructure, so its failures ARE everyone's failures.
     """
     model = (getattr(request, "model", "") or getattr(provider, "_default_model", "") or "").strip()
-    return f"llm:{model}" if model else f"llm:{type(provider).__name__}"
+    key = f"llm:{model}" if model else f"llm:{type(provider).__name__}"
+    scope = getattr(provider, "_circuit_scope", None)
+    return f"{scope}:{key}" if isinstance(scope, str) and scope else key
 
 
 async def complete_with_failover(

@@ -124,11 +124,16 @@ async def call_tool(
     # app/knowledge/ingestors/github_ingestor.py): without a tenant token the
     # call is anonymous. The unused env-reading _headers() helper is removed too.
     token = creds.get("token") or creds.get("api_token") or creds.get("password") or ""
-    base_url = str(
-        creds.get("url")
-        or creds.get("base_url")
-        or os.getenv("GITHUB_BASE_URL", "https://api.github.com")
-    )
+    tenant_base = str(creds.get("url") or creds.get("base_url") or "")
+    base_url = tenant_base or os.getenv("GITHUB_BASE_URL", "https://api.github.com")
+    if tenant_base:
+        # Tenant-supplied (GitHub Enterprise) URL was used unchecked — SSRF.
+        from app.net.ssrf_guard import SSRFError, assert_public_url_async
+
+        try:
+            await assert_public_url_async(base_url, context="github connector")
+        except SSRFError:
+            return {"error": "GitHub URL blocked by SSRF guard"}
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",

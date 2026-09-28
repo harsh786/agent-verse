@@ -878,14 +878,13 @@ def create_app(
             if not encrypted_key or not provider_name:
                 return None
             try:
-                from app.providers.registry import instantiate_configured_provider
+                # Same BYOK builder as the goal paths. The registry builder used
+                # here sent together keys to api.openai.com and ollama keys to the
+                # platform's localhost:11434 when base_url was empty.
+                from app.providers.tenant_provider import build_tenant_provider
 
-                api_key = get_vault().decrypt(encrypted_key)
-                provider = instantiate_configured_provider(
-                    provider_name,
-                    api_key=api_key,
-                    model=configured_model,
-                    base_url=str(tenant_config.get("base_url") or ""),
+                provider = build_tenant_provider(
+                    tenant_config, tenant_id=tenant_context.tenant_id
                 )
             except Exception as exc:
                 logger.warning(
@@ -2567,7 +2566,14 @@ def create_app(
     app.state.strategy_goal_context_store = StrategyGoalContextStore()
     app.state.strategy_runner = StrategyRunner(
         app.state.strategy_registry,
-        executor=DistributedStrategyExecutor(context_store=app.state.strategy_goal_context_store),
+        executor=DistributedStrategyExecutor(
+            context_store=app.state.strategy_goal_context_store,
+            # Getter: the lifespan swaps in the Redis-backed controller later.
+            cost_controller=lambda: (
+                getattr(app.state, "redis_cost_controller", None)
+                or getattr(app.state, "cost_controller", None)
+            ),
+        ),
         admission=default_distributed_admission,
     )
     app.state.graph_factory = GraphFactory()

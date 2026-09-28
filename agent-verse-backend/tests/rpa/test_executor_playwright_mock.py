@@ -565,7 +565,7 @@ async def test_pw_upload_file_not_found_error() -> None:
     executor, _ = make_executor_with_session_manager()
     result = await executor.execute(
         tool_name="rpa_upload_file",
-        arguments={"selector": "#file-input", "file_path": "/nonexistent/path/file.pdf"},
+        arguments={"selector": "#file-input", "file_path": "nonexistent/path/file.pdf"},
         session_id="s1",
         tenant_id="t1",
     )
@@ -574,44 +574,55 @@ async def test_pw_upload_file_not_found_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pw_upload_file_success() -> None:
-    """Covers lines 304-305: upload success path."""
-    # Create a real temp file
-    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-        f.write(b"test content")
-        tmp_path = f.name
-    try:
-        executor, session = make_executor_with_session_manager()
-        result = await executor.execute(
-            tool_name="rpa_upload_file",
-            arguments={"selector": "#file-input", "file_path": tmp_path},
-            session_id="s1",
-            tenant_id="t1",
-        )
-        assert result.success is True
-        session.page.set_input_files.assert_called_once()
-    finally:
-        os.unlink(tmp_path)
+async def test_pw_upload_file_success(tmp_path, monkeypatch) -> None:
+    """Upload success path — the file lives in the tenant's upload dir."""
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t1").mkdir()
+    (tmp_path / "t1" / "doc.txt").write_bytes(b"test content")
+    executor, session = make_executor_with_session_manager()
+    result = await executor.execute(
+        tool_name="rpa_upload_file",
+        arguments={"selector": "#file-input", "file_path": "doc.txt"},
+        session_id="s1",
+        tenant_id="t1",
+    )
+    assert result.success is True
+    session.page.set_input_files.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_pw_upload_file_exception_returns_error() -> None:
+async def test_pw_upload_file_rejects_absolute_host_path(tmp_path, monkeypatch) -> None:
+    """Regression: an absolute host path (e.g. /etc/passwd) used to be uploaded."""
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    host_file = tmp_path / "host.txt"
+    host_file.write_bytes(b"secret")
+    executor, session = make_executor_with_session_manager()
+    result = await executor.execute(
+        tool_name="rpa_upload_file",
+        arguments={"selector": "#file-input", "file_path": str(host_file)},
+        session_id="s1",
+        tenant_id="t1",
+    )
+    assert result.success is False
+    session.page.set_input_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pw_upload_file_exception_returns_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t1").mkdir()
+    (tmp_path / "t1" / "d.txt").write_bytes(b"data")
     page = make_mock_page()
     page.set_input_files = AsyncMock(side_effect=Exception("Upload failed"))
     executor, _ = make_executor_with_session_manager(page)
-    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
-        f.write(b"data")
-        tmp_path = f.name
-    try:
-        result = await executor.execute(
-            tool_name="rpa_upload_file",
-            arguments={"selector": "#broken", "file_path": tmp_path},
-            session_id="s1",
-            tenant_id="t1",
-        )
-        assert result.success is False
-    finally:
-        os.unlink(tmp_path)
+    result = await executor.execute(
+        tool_name="rpa_upload_file",
+        arguments={"selector": "#broken", "file_path": "d.txt"},
+        session_id="s1",
+        tenant_id="t1",
+    )
+    assert result.success is False
+    assert "Upload failed" in (result.error or "")
 
 
 # ── rpa_download_file ─────────────────────────────────────────────────────────

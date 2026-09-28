@@ -95,6 +95,55 @@ async def test_submit_sandbox_goal_handler_no_tenant_raises_401() -> None:
     assert exc_info.value.status_code == 401
 
 
+def test_submit_sandbox_goal_fallback_is_honest_dry_run() -> None:
+    svc = MagicMock()
+    svc.submit_goal = AsyncMock(return_value={"goal_id": "g-9"})
+    client = TestClient(_make_app(goal_service=svc), raise_server_exceptions=False)
+    body = client.post("/sandbox/goals", json={"goal": "x"}, headers=AUTH_HEADERS).json()
+    assert body["executed"] is False
+    assert body["mode"] == "dry_run_validation"
+    assert "ran in sandbox" not in body["message"].lower()
+
+
+def test_submit_sandbox_goal_runs_against_mock_tools_via_simulation_runner() -> None:
+    from app.enterprise.simulation import SimulationRun
+
+    svc = MagicMock()
+    svc.submit_goal = AsyncMock()
+    runner = MagicMock()
+    runner.start = AsyncMock(
+        return_value=SimulationRun(
+            run_id="run-1",
+            goal="deploy",
+            mock_tools={"deploy": {"ok": True}},
+            status="complete",
+            steps_executed=[{"description": "deploy", "tool": "deploy", "output": "ok"}],
+            tools_called=["deploy"],
+            mock_tools_used=["deploy"],
+        )
+    )
+    app = _make_app(goal_service=svc)
+    app.state.simulation_runner = runner
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.post(
+        "/sandbox/goals",
+        json={"goal": "deploy", "mock_tools": {"deploy": {"ok": True}}},
+        headers=AUTH_HEADERS,
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["executed"] is True
+    assert body["mode"] == "mock_tool_run"
+    assert body["run_id"] == "run-1"
+    assert body["tools_called"] == ["deploy"]
+    kwargs = runner.start.await_args.kwargs
+    assert kwargs["mock_tools"] == {"deploy": {"ok": True}}
+    assert kwargs["tenant_ctx"] == _CTX
+    svc.submit_goal.assert_not_called()  # no dry-run pretending to be a run
+
+
 # ---------------------------------------------------------------------------
 # GET /sandbox/config
 # ---------------------------------------------------------------------------

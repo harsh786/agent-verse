@@ -31,6 +31,12 @@ def _denied_verdict(**kwargs) -> SpawnVerdict:
     return SpawnVerdict(**defaults)
 
 
+def _ok_goal_service():
+    svc = AsyncMock()
+    svc.submit_goal = AsyncMock(return_value={"goal_id": "goal-ok"})
+    return svc
+
+
 def _make_tenant_ctx():
     from app.tenancy.context import PlanTier, TenantContext
     return TenantContext(tenant_id="t1", plan=PlanTier.ENTERPRISE, api_key_id="k")
@@ -84,6 +90,9 @@ async def test_spawn_tool_returns_success_on_approval():
         "name": "JiraAgent",
     })
 
+    goal_service = AsyncMock()
+    goal_service.submit_goal = AsyncMock(return_value={"goal_id": "goal-1"})
+
     result = await execute_spawn_tool(
         capability="jira",
         goal="search bugs",
@@ -93,9 +102,11 @@ async def test_spawn_tool_returns_success_on_approval():
         parent_budget_usd=10.0,
         parent_policy_ids=[],
         tenant_ctx=_make_tenant_ctx(),
+        goal_service=goal_service,
         civilization_id="civ-1",
     )
     assert result["success"] is True
+    assert result["goal_id"] == "goal-1"
     assert result["agent_id"] == "new-agent-123"
     assert result["capability"] == "jira"
     assert result["budget_usd"] == 5.0
@@ -132,7 +143,7 @@ async def test_spawn_tool_submits_goal_when_goal_service_provided():
 
 
 @pytest.mark.asyncio
-async def test_spawn_tool_succeeds_even_if_goal_service_fails():
+async def test_spawn_tool_fails_honestly_if_goal_service_fails():
     mock_governor = AsyncMock()
     mock_governor.evaluate_spawn_request = AsyncMock(return_value=_approved_verdict())
     mock_governor.spawn_agent = AsyncMock(return_value={
@@ -155,9 +166,64 @@ async def test_spawn_tool_succeeds_even_if_goal_service_fails():
         goal_service=mock_goal_service,
         civilization_id="civ-1",
     )
-    # spawn still succeeds; goal_id is just None
-    assert result["success"] is True
+    # The child never got its goal, so nothing ran: report failure, not success.
+    assert result["success"] is False
     assert result["goal_id"] is None
+    assert result["agent_id"] == "new-agent-123"
+    assert "DB unavailable" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_without_goal_service_is_not_success():
+    mock_governor = AsyncMock()
+    mock_governor.evaluate_spawn_request = AsyncMock(return_value=_approved_verdict())
+    mock_governor.spawn_agent = AsyncMock(return_value={"agent_id": "a-2", "name": "X"})
+
+    result = await execute_spawn_tool(
+        capability="jira",
+        goal="search bugs",
+        governor=mock_governor,
+        requester_agent_id="a1",
+        depth=1,
+        parent_budget_usd=10.0,
+        parent_policy_ids=[],
+        tenant_ctx=_make_tenant_ctx(),
+        goal_service=None,
+        civilization_id="civ-1",
+    )
+    assert result["success"] is False
+    assert result["goal_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_tool_passes_dry_run_false_to_submit_goal():
+    """GoalService.submit_goal requires dry_run; omitting it raised TypeError."""
+    mock_governor = AsyncMock()
+    mock_governor.evaluate_spawn_request = AsyncMock(return_value=_approved_verdict())
+    mock_governor.spawn_agent = AsyncMock(return_value={"agent_id": "a-3", "name": "X"})
+
+    calls = []
+
+    class _StrictGoalService:
+        async def submit_goal(self, goal, priority, dry_run, tenant_ctx, agent_id=None):
+            calls.append(dry_run)
+            return {"goal_id": "g-strict"}
+
+    result = await execute_spawn_tool(
+        capability="jira",
+        goal="search bugs",
+        governor=mock_governor,
+        requester_agent_id="a1",
+        depth=1,
+        parent_budget_usd=10.0,
+        parent_policy_ids=[],
+        tenant_ctx=_make_tenant_ctx(),
+        goal_service=_StrictGoalService(),
+        civilization_id="civ-1",
+    )
+    assert result["success"] is True
+    assert result["goal_id"] == "g-strict"
+    assert calls == [False]
 
 
 @pytest.mark.asyncio
@@ -282,6 +348,7 @@ async def test_spawn_tool_handles_missing_agent_id_in_spawn_result() -> None:
         parent_budget_usd=10.0,
         parent_policy_ids=[],
         tenant_ctx=_make_tenant_ctx(),
+        goal_service=_ok_goal_service(),
         civilization_id="civ-1",
     )
     assert result["success"] is True
@@ -314,6 +381,7 @@ async def test_spawn_tool_repeated_calls_respect_governor_denials_after_limit_re
             parent_budget_usd=10.0,
             parent_policy_ids=[],
             tenant_ctx=_make_tenant_ctx(),
+            goal_service=_ok_goal_service(),
             civilization_id="civ-1",
         )
         for i in range(3)

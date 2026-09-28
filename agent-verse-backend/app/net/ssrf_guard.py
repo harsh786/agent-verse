@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from typing import Any
 from urllib.parse import urlparse
 
 from app.observability.logging import get_logger
@@ -164,6 +165,45 @@ def assert_public_url(
 
     logger.debug("ssrf_guard_passed", hostname=hostname, context=context)
     return ips
+
+
+async def assert_public_url_async(url: str, *, context: str = "") -> list[str]:
+    """:func:`assert_public_url` without blocking the event loop on DNS."""
+    import asyncio
+
+    return await asyncio.to_thread(assert_public_url, url, context=context)
+
+
+async def request_public(
+    client: Any,
+    method: str,
+    url: str,
+    *,
+    context: str = "",
+    max_redirects: int = 5,
+    **kwargs: Any,
+) -> Any:
+    """Send ``method url`` with ``client`` re-validating the URL at EVERY hop.
+
+    ``client`` must be an ``httpx.AsyncClient`` created with
+    ``follow_redirects=False``: with automatic redirects a public URL can 302 to
+    an internal address (169.254.169.254, 10.x, localhost) after the first check.
+    Same pattern as app/tools/http_tool.py. Raises :class:`SSRFError`.
+    """
+    current_url, current_method = url, method.upper()
+    for _hop in range(max_redirects + 1):
+        await assert_public_url_async(current_url, context=context)
+        resp = await client.request(current_method, current_url, **kwargs)
+        if not resp.is_redirect:
+            return resp
+        location = resp.headers.get("location", "")
+        if not location:
+            return resp
+        current_url = str(resp.url.join(location))
+        if resp.status_code in (301, 302, 303) and current_method not in ("GET", "HEAD"):
+            current_method = "GET"
+            kwargs = {k: v for k, v in kwargs.items() if k not in ("json", "content", "data")}
+    raise SSRFError(f"SSRF guard [{context}]: too many redirects (>{max_redirects})")
 
 
 def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool:

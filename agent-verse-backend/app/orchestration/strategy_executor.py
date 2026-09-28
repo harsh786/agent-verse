@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from app.coordination.patterns.common import InMemoryPatternCheckpointStore
@@ -56,6 +57,19 @@ class UnsupportedStrategyError(RuntimeError):
     """A strategy has a real adapter but no wired execution driver yet (see module docstring)."""
 
 
+class BudgetExceededError(RuntimeError):
+    """The cost controller denied a strategy LLM call's spend."""
+
+
+def _provider_model(provider: Any) -> str:
+    """The provider's configured model id ('' → the provider uses its own default)."""
+    for attr in ("default_model", "_default_model", "model"):
+        value = getattr(provider, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def default_distributed_admission(request: StrategyExecutionRequest) -> tuple[bool, str]:
     """Admission policy for the app-wired StrategyRunner.
 
@@ -76,8 +90,16 @@ class DistributedStrategyExecutor:
     adapter-created runtime with LLM-backed callback implementations.
     """
 
-    def __init__(self, *, context_store: StrategyGoalContextStore) -> None:
+    def __init__(
+        self,
+        *,
+        context_store: StrategyGoalContextStore,
+        cost_controller: Callable[[], Any] | Any = None,
+    ) -> None:
         self._context_store = context_store
+        # A cost controller (or a zero-arg getter, so the lifespan's Redis-backed
+        # swap is picked up). Every LLM call is charged to the goal/tenant budget.
+        self._cost_controller = cost_controller
         # Per-(tenant, goal) checkpoint stores so a retried execution within this process can
         # resume mid-flight. Not durable across process restarts — see module docstring.
         self._checkpoint_stores: dict[tuple[str, str], InMemoryPatternCheckpointStore] = {}
@@ -119,13 +141,21 @@ class DistributedStrategyExecutor:
 
         async def complete(prompt: str) -> str:
             nonlocal calls, tokens, cost_usd
-            model = getattr(context.provider, "default_model", None) or "fake-model"
+            # The provider's REAL model: this used to send model='fake-model' to real
+            # providers whenever a provider exposed ``_default_model`` (all of ours)
+            # rather than ``default_model``. Empty lets the provider pick its default.
+            model = _provider_model(context.provider)
             response = await context.provider.complete(
                 CompletionRequest(messages=[Message(role="user", content=prompt)], model=model)
             )
             calls += 1
             tokens += response.total_tokens
-            cost_usd += calculate_cost(model, response.input_tokens, response.output_tokens)
+            served_model = str(getattr(response, "model", "") or model)
+            call_cost = calculate_cost(
+                served_model, response.input_tokens, response.output_tokens
+            )
+            cost_usd += call_cost
+            await self._charge(request, context, call_cost)
             return response.content
 
         runtime = create_runtime(checkpoint_store=self._checkpoint_store_for(request))
@@ -140,6 +170,29 @@ class DistributedStrategyExecutor:
             metrics=ExecutionMetrics(calls=calls, tokens=tokens, cost_usd=round(cost_usd, 6)),
             safe_rationale_summary=f"{strategy_id} strategy executed via StrategyRunner.",
         )
+
+    def _resolve_cost_controller(self) -> Any:
+        cc = self._cost_controller
+        if cc is not None and not hasattr(cc, "check_and_record") and callable(cc):
+            cc = cc()
+        return cc
+
+    async def _charge(
+        self, request: StrategyExecutionRequest, context: Any, cost_usd: float
+    ) -> None:
+        """Charge one strategy LLM call; a denied spend stops the strategy."""
+        controller = self._resolve_cost_controller()
+        tenant_ctx = getattr(context, "tenant_ctx", None)
+        if controller is None or tenant_ctx is None or cost_usd <= 0.0:
+            return
+        ok = await controller.check_and_record(
+            goal_id=request.goal_id, cost_usd=cost_usd, tenant_ctx=tenant_ctx
+        )
+        if not ok:
+            raise BudgetExceededError(
+                f"budget_exceeded: strategy {request.strategy_id} stopped for goal "
+                f"{request.goal_id}"
+            )
 
     @staticmethod
     def _parse_steps(raw: str, *, fallback_summary: str) -> list[dict[str, str]]:

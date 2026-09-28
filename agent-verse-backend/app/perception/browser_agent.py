@@ -6,9 +6,11 @@ Provides web automation capabilities when no API is available:
 - Click elements, type text, scroll
 - Extract text content
 
-Note: Network is NOT restricted — RPA tasks have full internet access.
-Callers are responsible for enforcing domain-level access policies at the
-application layer if network isolation is required.
+Egress: every navigation target AND every request the page makes (redirect hops,
+subresources) is checked with the DNS-resolving SSRF guard; non-public hosts
+(loopback, RFC-1918, link-local/metadata) are refused. Previously only an
+``http(s)://`` prefix was checked, so a caller could screenshot/extract
+http://169.254.169.254/ or an internal service, directly or via a redirect.
 Automatic cleanup after each session and timeout enforcement (default 30s
 per action) are in place.
 """
@@ -32,6 +34,36 @@ except ImportError:
     logger.warning(
         "Playwright not installed. Browser agent disabled. Run: playwright install chromium"
     )
+
+
+async def _blocked_reason(url: str) -> str:
+    """Empty string when ``url`` is a public http(s) URL, else the reason."""
+    from app.net.ssrf_guard import SSRFError, assert_public_url_async
+
+    try:
+        await assert_public_url_async(url, context="perception browser")
+    except (SSRFError, ValueError) as exc:
+        return f"blocked by SSRF guard: {exc}"
+    return ""
+
+
+async def _guard_route(route: Any) -> None:
+    """Playwright route handler: abort any request to a non-public host."""
+    url = str(route.request.url)
+    if url.startswith(("http://", "https://")) and await _blocked_reason(url):
+        await route.abort("blockedbyclient")
+        return
+    await route.continue_()
+
+
+async def _guarded_context(browser: Any, **kwargs: Any) -> Any:
+    import inspect
+
+    context = await browser.new_context(**kwargs)
+    registered = context.route("**/*", _guard_route)
+    if inspect.isawaitable(registered):
+        await registered
+    return context
 
 
 @dataclass
@@ -79,11 +111,14 @@ class BrowserAgent:
             return BrowserResult(
                 success=False, action="screenshot", error="Playwright not installed"
             )
+        if reason := await _blocked_reason(url):
+            return BrowserResult(success=False, action="screenshot", error=reason)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
             try:
-                context = await browser.new_context(
+                context = await _guarded_context(
+                    browser,
                     viewport={"width": 1280, "height": 720},
                 )
                 page = await context.new_page()
@@ -108,11 +143,13 @@ class BrowserAgent:
             return BrowserResult(
                 success=False, action="extract_text", error="Playwright not installed"
             )
+        if reason := await _blocked_reason(url):
+            return BrowserResult(success=False, action="extract_text", error=reason)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
             try:
-                page = await (await browser.new_context()).new_page()
+                page = await (await _guarded_context(browser)).new_page()
                 page.set_default_timeout(self._timeout)
                 await page.goto(url, wait_until="domcontentloaded")
                 text = await page.inner_text(selector)
@@ -130,11 +167,13 @@ class BrowserAgent:
         """Navigate to URL, click element, return screenshot."""
         if not _PLAYWRIGHT_AVAILABLE:
             return BrowserResult(success=False, action="click", error="Playwright not installed")
+        if reason := await _blocked_reason(url):
+            return BrowserResult(success=False, action="click", error=reason)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
             try:
-                page = await (await browser.new_context()).new_page()
+                page = await (await _guarded_context(browser)).new_page()
                 page.set_default_timeout(self._timeout)
                 await page.goto(url, wait_until="domcontentloaded")
                 await page.click(selector)
@@ -161,11 +200,13 @@ class BrowserAgent:
         """Fill a form field and optionally submit."""
         if not _PLAYWRIGHT_AVAILABLE:
             return BrowserResult(success=False, action="fill", error="Playwright not installed")
+        if reason := await _blocked_reason(url):
+            return BrowserResult(success=False, action="fill", error=reason)
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=self._headless)
             try:
-                page = await (await browser.new_context()).new_page()
+                page = await (await _guarded_context(browser)).new_page()
                 page.set_default_timeout(self._timeout)
                 await page.goto(url, wait_until="domcontentloaded")
                 await page.fill(selector, value)

@@ -54,15 +54,18 @@ class TestGetLlmProvider:
         with patch("redis.from_url", return_value=mock_r):
             assert _get_llm_provider("t1") is None
 
-    def test_returns_none_when_no_encrypted_key(self, monkeypatch):
+    def test_raises_when_no_encrypted_key(self, monkeypatch):
+        """A BYOK config without a key fails the goal instead of using the platform."""
         import json
 
+        from app.providers.tenant_provider import TenantProviderError
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
         mock_r.get = MagicMock(return_value=json.dumps({"provider": "anthropic"}))
-        with patch("redis.from_url", return_value=mock_r):
-            assert _get_llm_provider("t1") is None
+        with patch("redis.from_url", return_value=mock_r), \
+             pytest.raises(TenantProviderError):
+            _get_llm_provider("t1")
 
     def test_returns_anthropic_provider(self, monkeypatch):
         """Lines 180-183: returns AnthropicProvider for anthropic config."""
@@ -110,9 +113,11 @@ class TestGetLlmProvider:
             result = _get_llm_provider("t1")
         assert result is mock_provider
 
-    def test_returns_none_for_unknown_provider(self, monkeypatch):
+    def test_raises_for_unknown_provider(self, monkeypatch):
+        """An unknown tenant provider used to be ignored (platform fallback)."""
         import json
 
+        from app.providers.tenant_provider import TenantProviderError
         from app.scaling.tasks import _get_llm_provider
         monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
         mock_r = MagicMock()
@@ -123,8 +128,9 @@ class TestGetLlmProvider:
         mock_vault = MagicMock()
         mock_vault.decrypt = MagicMock(return_value="key")
         with patch("redis.from_url", return_value=mock_r), \
-             patch("app.providers.vault.get_vault", return_value=mock_vault):
-            assert _get_llm_provider("t1") is None
+             patch("app.providers.vault.get_vault", return_value=mock_vault), \
+             pytest.raises(TenantProviderError):
+            _get_llm_provider("t1")
 
 
 # ── fire_due_schedules ────────────────────────────────────────────────────────

@@ -604,9 +604,11 @@ async def test_circuit_breaker_open_for_specific_tool_skips_step() -> None:
     graph = _make_graph(circuit_breakers={"salesforce": breaker})
     state = _make_state(step_desc="call salesforce to fetch records")
 
-    output = await graph._execute_step("call salesforce to fetch records", state, T)
+    from app.agent.graph_types import StepNotExecutedError
 
-    assert output == "Circuit open, step skipped."
+    # An open circuit fails the step; it is never returned as the step's output.
+    with pytest.raises(StepNotExecutedError, match="Circuit breaker open"):
+        await graph._execute_step("call salesforce to fetch records", state, T)
 
 
 # ---------------------------------------------------------------------------

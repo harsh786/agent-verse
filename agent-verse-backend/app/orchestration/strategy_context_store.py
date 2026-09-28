@@ -28,6 +28,8 @@ class StrategyGoalContext:
     goal_text: str
     provider: Any
     initial_context: dict[str, Any] = field(default_factory=dict)
+    # Tenant the goal runs for — lets the executor charge LLM spend to its budget.
+    tenant_ctx: Any = None
 
 
 class StrategyGoalContextStore:

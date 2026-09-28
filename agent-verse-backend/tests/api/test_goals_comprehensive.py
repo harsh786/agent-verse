@@ -180,6 +180,37 @@ def test_submit_goal_multi_agent_mode() -> None:
     assert body["mode"] == "multi_agent"
 
 
+def test_submit_goal_multi_agent_surfaces_failed_submissions() -> None:
+    svc = AsyncMock()
+    svc.submit_goal.side_effect = [{"goal_id": "sub-1"}, RuntimeError("agent-b unavailable")]
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.post(
+        "/goals",
+        json={"goal": "x", "workflow_mode": "multi_agent", "agent_ids": ["agent-a", "agent-b"]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["success"] is False
+    assert body["sub_goal_ids"] == ["sub-1"]
+    assert body["failed_submissions"] == [
+        {"agent_id": "agent-b", "error": "agent-b unavailable"}
+    ]
+
+
+def test_submit_goal_multi_agent_all_failed_is_an_error() -> None:
+    svc = AsyncMock()
+    svc.submit_goal.side_effect = RuntimeError("down")
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+    resp = client.post(
+        "/goals",
+        json={"goal": "x", "workflow_mode": "multi_agent", "agent_ids": ["agent-a"]},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["failed_submissions"][0]["agent_id"] == "agent-a"
+
+
 # ---------------------------------------------------------------------------
 # list_goals
 # ---------------------------------------------------------------------------

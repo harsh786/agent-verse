@@ -714,8 +714,13 @@ def test_complete_oauth_popup_expired_state_rejected(monkeypatch: pytest.MonkeyP
     assert "Invalid or expired" in resp.json()["detail"]
 
 
-def test_complete_oauth_popup_without_secret_registers_pending_placeholder() -> None:
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id")
+@pytest.mark.parametrize(
+    "extra", [{}, {"GITHUB_CLIENT_SECRET": "gh-secret"}], ids=["no-secret", "with-secret"]
+)
+def test_complete_oauth_popup_never_reports_connected_without_tokens(extra: dict) -> None:
+    """Regression: the popup callback never exchanged the code, registered a
+    token-less placeholder connector and answered status "connected"."""
+    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id", **extra)
     registry = _make_registry()
     app = _make_app(registry, settings=settings)
     app.state.mcp_registry = registry
@@ -733,38 +738,18 @@ def test_complete_oauth_popup_without_secret_registers_pending_placeholder() -> 
         json={"code": "auth-code-123", "state": state, "connector_name": "github"},
         headers={"X-API-Key": _KEY_A},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "connected"
-    assert "github" in body["name"]
+    assert resp.status_code == 501
+    assert resp.json()["detail"]["connected"] is False
+    assert resp.json().get("status") != "connected"
+    assert await_list_servers(registry) == []  # no placeholder connector
 
-    # The connector was registered with a clearly-marked pending status, never
-    # a fake working token.
-    servers = await_list_servers(registry)
-    assert any(s.auth_config.get("status") == "pending_oauth" for s in servers)
-
-
-def test_complete_oauth_popup_with_secret_marks_pending_token_exchange() -> None:
-    settings = _Settings(GITHUB_CLIENT_ID="gh-client-id", GITHUB_CLIENT_SECRET="gh-secret")
-    registry = _make_registry()
-    app = _make_app(registry, settings=settings)
-    client = TestClient(app, raise_server_exceptions=False)
-
-    started = client.post(
-        "/connectors/oauth/start",
-        json={"connector_name": "github"},
-        headers={"X-API-Key": _KEY_A},
-    )
-    state = started.json()["state"]
-
-    resp = client.post(
+    # The state was consumed: it cannot be replayed.
+    again = client.post(
         "/connectors/oauth/callback",
-        json={"code": "auth-code-456", "state": state, "connector_name": "github"},
+        json={"code": "auth-code-123", "state": state, "connector_name": "github"},
         headers={"X-API-Key": _KEY_A},
     )
-    assert resp.status_code == 200
-    servers = await_list_servers(registry)
-    assert any(s.auth_config.get("status") == "pending_token_exchange" for s in servers)
+    assert again.status_code == 400
 
 
 def await_list_servers(registry: MCPRegistry) -> list[MCPServerConfig]:

@@ -166,8 +166,8 @@ def test_generic_analyze_tool() -> None:
     assert classify_tool_risk("analyze_logs", "datadog") == "read"
 
 
-def test_unknown_tool_defaults_to_read() -> None:
-    assert classify_tool_risk("completely_unknown_op", "unknown_server") == "read"
+def test_unknown_tool_defaults_to_approval_required() -> None:
+    assert classify_tool_risk("completely_unknown_op", "unknown_server") == "write_high"
 
 
 def test_no_server_name_uses_tool_name_only() -> None:

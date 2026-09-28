@@ -836,20 +836,21 @@ async def test_with_playwright_select_option_no_selector():
 
 
 @pytest.mark.asyncio
-async def test_with_playwright_upload_file(tmp_path):
-    """Upload file succeeds when file exists."""
+async def test_with_playwright_upload_file(tmp_path, monkeypatch):
+    """Upload file succeeds when the file exists in the tenant upload dir."""
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
     ex = _make_playwright_executor()
     mock_session, mock_page = _mock_session()
     mock_sm = AsyncMock()
     mock_sm.get_or_create = AsyncMock(return_value=mock_session)
     ex._session_manager = mock_sm
 
-    test_file = tmp_path / "test_upload.csv"
-    test_file.write_text("col1,col2\n1,2\n")
+    (tmp_path / "t-001").mkdir()
+    (tmp_path / "t-001" / "test_upload.csv").write_text("col1,col2\n1,2\n")
 
     r = await ex._execute_with_playwright(
         tool_name="rpa_upload_file",
-        arguments={"selector": "#file-input", "file_path": str(test_file)},
+        arguments={"selector": "#file-input", "file_path": "test_upload.csv"},
         session_id="s-001",
         tenant_id="t-001",
         goal_id="g-001",
@@ -868,7 +869,7 @@ async def test_with_playwright_upload_file_not_found():
 
     r = await ex._execute_with_playwright(
         tool_name="rpa_upload_file",
-        arguments={"selector": "#file", "file_path": "/nonexistent/file.csv"},
+        arguments={"selector": "#file", "file_path": "nonexistent/file.csv"},
         session_id="s-001",
         tenant_id="t-001",
         goal_id="g-001",

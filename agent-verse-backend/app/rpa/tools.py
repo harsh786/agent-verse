@@ -94,7 +94,13 @@ RPA_TOOLS: tuple[dict[str, Any], ...] = (
             "type": "object",
             "properties": {
                 "selector": {"type": "string"},
-                "file_path": {"type": "string"},
+                "file_path": {
+                    "type": "string",
+                    "description": (
+                        "Path relative to the tenant's RPA upload directory "
+                        "(absolute paths and '..' are rejected)."
+                    ),
+                },
             },
             "required": ["selector", "file_path"],
         },

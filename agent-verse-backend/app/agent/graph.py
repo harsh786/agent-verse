@@ -550,6 +550,9 @@ class AgentGraph(
         initial_context: dict[str, Any] | None = None,
         event_callback: EventCallback | None = None,
         goal_id: str | None = None,
+        # Persistence attempt number (>1 = a retry): isolates the LangGraph thread and
+        # skips crash-resume so a retry never resumes the previous attempt's state.
+        attempt: int | None = None,
         # ── Org context (Integration Point 2: Org OS → AgentGraph wiring) ──
         # When an org mission dispatches a goal these carry department, role, and
         # mission identity so the agent's memory and knowledge access are scoped
@@ -688,6 +691,9 @@ class AgentGraph(
                         span.set_attribute("org.mission_id", mission_id)
                 self._tenant_ctx_ref = tenant_ctx
                 thread_id = f"goal-{goal_id}" if goal_id else uuid.uuid4().hex
+                _is_retry_attempt = attempt is not None and attempt > 1
+                if _is_retry_attempt:
+                    thread_id = f"{thread_id}-attempt-{attempt}"
                 config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
 
                 input_state: GraphState = {
@@ -712,7 +718,7 @@ class AgentGraph(
 
                 # H2: Attempt to resume from checkpoint if available
                 try:
-                    if goal_id:
+                    if goal_id and not _is_retry_attempt:
                         checkpoint_state = await self._load_checkpoint(goal_id, tenant_ctx)
                         # This used to look for an "agent_state" key the writer
                         # never stored, so a goal re-delivered after a worker crash

@@ -187,8 +187,18 @@ def classify_tool_risk(tool_name: str, server_name: str = "") -> str:
     -------
     str
         One of ``"read"``, ``"write_low"``, ``"write_high"``, or
-        ``"destructive"``.  Defaults to ``"read"`` (safe).
+        ``"destructive"``.  An unrecognised tool defaults to ``"write_high"`` so it
+        requires human approval under supervised / bounded-autonomous modes (it
+        used to default to ``"read"`` and silently skip approval).
     """
+    if not tool_name.strip():
+        return "read"  # no tool named → no action to gate
+
+    # 0. Built-ins with a known, declared risk (checked before token heuristics).
+    builtin = _builtin_risk(tool_name)
+    if builtin is not None:
+        return builtin
+
     combined = f"{server_name} {tool_name}".lower()
 
     # 1. High-risk connector override — Stripe, billing, etc. → always write_high
@@ -227,5 +237,37 @@ def classify_tool_risk(tool_name: str, server_name: str = "") -> str:
         if t in combined:
             return "read"
 
-    # Default to read (safe)
-    return "read"
+    # Unknown tool: default to the approval-requiring class, never to "read".
+    return _UNKNOWN_TOOL_RISK
+
+
+_UNKNOWN_TOOL_RISK = "write_high"
+
+# Platform built-ins whose names carry no read/write verb the heuristics recognise.
+_BUILTIN_TOOL_RISK: dict[str, str] = {
+    "web_search": "read",
+    "parse_document": "read",
+    "extract_document": "read",
+    "save_artifact": "write_low",
+    "knowledge.ingest": "write_low",
+}
+
+# RPA tools declare their own risk vocabulary (read / low / high). Read-only ones map
+# to "read"; interactive ones to "write_low" — the same no-approval execution they had
+# before (they fell through to the old "read" default), just no longer mislabelled.
+_RPA_RISK_MAP = {"read": "read", "low": "write_low", "high": "write_low"}
+
+
+def _builtin_risk(tool_name: str) -> str | None:
+    name = tool_name.split(".")[-1] if tool_name.startswith("rpa.") else tool_name
+    if name in _BUILTIN_TOOL_RISK:
+        return _BUILTIN_TOOL_RISK[name]
+    if name.startswith("rpa_"):
+        try:
+            from app.rpa.tools import classify_rpa_tool_risk
+
+            declared = str(classify_rpa_tool_risk(name))
+        except Exception:
+            return None
+        return _RPA_RISK_MAP.get(declared)
+    return None

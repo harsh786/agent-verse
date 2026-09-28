@@ -100,6 +100,25 @@ class PersistenceConfig:
         )
 
 
+def _attempt_kwargs(agent: Any, goal_id: str, attempt_number: int) -> dict[str, Any]:
+    """goal_id/attempt kwargs for ``agent.run``, limited to what its signature accepts."""
+    if not goal_id:
+        return {}
+    import inspect
+
+    try:
+        params = inspect.signature(agent.run).parameters
+    except (TypeError, ValueError):
+        return {}
+    accepts_any = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    kwargs: dict[str, Any] = {}
+    if accepts_any or "goal_id" in params:
+        kwargs["goal_id"] = goal_id
+    if accepts_any or "attempt" in params:
+        kwargs["attempt"] = attempt_number
+    return kwargs
+
+
 class GoalPersistenceEngine:
     """Manages persistent goal execution with intelligent retry strategies.
 
@@ -107,10 +126,67 @@ class GoalPersistenceEngine:
     strategies until success, human escalation, or permanent failure.
     """
 
-    def __init__(self, config: PersistenceConfig | None = None, db: Any = None) -> None:
+    def __init__(
+        self, config: PersistenceConfig | None = None, db: Any = None, redis: Any = None
+    ) -> None:
         self._config = config or PersistenceConfig()
         self._attempts: list[AttemptRecord] = []
         self._db = db  # Optional async session factory for DB persistence
+        # Operator controls written by POST /goals/{id}/persistence/{abort,
+        # skip-strategy,inject-guidance}. Those endpoints used to write Redis keys
+        # that nothing read; the engine now reads and honours them between attempts.
+        self._redis = redis
+        self._strategy_offset = 0
+        self._human_guidance = ""
+
+    # ── operator controls ────────────────────────────────────────────────────
+
+    @staticmethod
+    def control_key(kind: str, tenant_id: str, goal_id: str) -> str:
+        return f"persistence_{kind}:{tenant_id}:{goal_id}"
+
+    async def _take_control(self, kind: str, tenant_id: str, goal_id: str) -> str | None:
+        """Read-and-consume one operator control key (None when absent/unavailable)."""
+        if self._redis is None or not goal_id:
+            return None
+        key = self.control_key(kind, tenant_id, goal_id)
+        try:
+            value = await self._redis.get(key)
+            if value is None:
+                return None
+            await self._redis.delete(key)
+        except Exception as exc:
+            logger.warning("persistence_control_read_failed", kind=kind, error=str(exc))
+            return None
+        return value.decode() if isinstance(value, bytes) else str(value)
+
+    async def _apply_controls(self, tenant_id: str, goal_id: str) -> bool:
+        """Apply pending operator controls. Returns True when an abort was requested."""
+        if await self._take_control("abort", tenant_id, goal_id) is not None:
+            return True
+        if await self._take_control("skip_strategy", tenant_id, goal_id) is not None:
+            self._strategy_offset += 1
+        guidance = await self._take_control("guidance", tenant_id, goal_id)
+        if guidance:
+            self._human_guidance = guidance[:5000]
+        return False
+
+    async def _sleep_honouring_abort(self, seconds: float, tenant_id: str, goal_id: str) -> bool:
+        """Back off, polling for an abort. Returns True when aborted mid-wait."""
+        if self._redis is None or not goal_id:
+            await asyncio.sleep(seconds)
+            return False
+        deadline = time.monotonic() + seconds
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(5.0, remaining))
+            try:
+                if await self._redis.get(self.control_key("abort", tenant_id, goal_id)):
+                    return True
+            except Exception:
+                pass
 
     @property
     def attempts(self) -> list[AttemptRecord]:
@@ -138,9 +214,11 @@ class GoalPersistenceEngine:
         if attempt_number >= self._config.escalate_after_failures:
             return RetryStrategy.ESCALATE
 
-        if failures >= self._config.strategy_switch_after:
-            # Rotate through strategies
-            cycle = failures // self._config.strategy_switch_after
+        if failures >= self._config.strategy_switch_after or self._strategy_offset:
+            # Rotate through strategies. An operator skip advances the rotation by one;
+            # from SAME_APPROACH the first skip lands on DIFFERENT_TOOLS (index 0).
+            base = failures // self._config.strategy_switch_after
+            cycle = base + self._strategy_offset if base else self._strategy_offset - 1
             strategies = [
                 RetryStrategy.DIFFERENT_TOOLS,
                 RetryStrategy.SIMPLIFY,
@@ -169,7 +247,18 @@ class GoalPersistenceEngine:
         strategy: RetryStrategy,
         last_failure: str,
     ) -> str:
-        """Enrich the goal prompt with strategy hints for the planner."""
+        """Enrich the goal prompt with strategy hints (and any operator guidance)."""
+        enriched = self._strategy_enriched_goal(original_goal, strategy, last_failure)
+        if self._human_guidance:
+            enriched = f"{enriched}\n\n[Human operator guidance: {self._human_guidance}]"
+        return enriched
+
+    def _strategy_enriched_goal(
+        self,
+        original_goal: str,
+        strategy: RetryStrategy,
+        last_failure: str,
+    ) -> str:
         if strategy == RetryStrategy.SAME_APPROACH:
             return f"{original_goal}\n\n[Previous attempt failed: {last_failure}. Try again.]"
         elif strategy == RetryStrategy.DIFFERENT_TOOLS:
@@ -367,6 +456,11 @@ class GoalPersistenceEngine:
                     await event_callback(event)
 
         for attempt_number in range(1, config.max_attempts + 1):
+            # Operator controls (abort / skip-strategy / guidance) — between attempts.
+            if await self._apply_controls(tenant_id, goal_id):
+                await emit({"type": "persistence_aborted", "attempts": len(self._attempts)})
+                logger.info("persistent_goal_aborted", goal_id=goal_id)
+                return False, self._attempts
             # Check total timeout
             if config.total_timeout_seconds > 0:
                 elapsed = time.monotonic() - session_start
@@ -405,7 +499,14 @@ class GoalPersistenceEngine:
                         "max_attempts": config.max_attempts,
                     }
                 )
-                await asyncio.sleep(backoff)
+                if await self._sleep_honouring_abort(backoff, tenant_id, goal_id):
+                    await emit({"type": "persistence_aborted", "attempts": len(self._attempts)})
+                    return False, self._attempts
+                # Controls that arrived during the backoff apply to this attempt.
+                if await self._apply_controls(tenant_id, goal_id):
+                    await emit({"type": "persistence_aborted", "attempts": len(self._attempts)})
+                    return False, self._attempts
+                strategy = self._pick_strategy(attempt_number)
 
             attempt = AttemptRecord(
                 attempt_number=attempt_number,
@@ -457,10 +558,15 @@ class GoalPersistenceEngine:
                 else:
                     agent = agent_factory  # Already an agent instance
 
+                # Each attempt runs under the goal's id so checkpoints, events and
+                # evaluations attach to the real goal row (it used to run with no
+                # goal_id). ``attempt`` isolates the attempt's checkpoint thread so a
+                # retry does not resume the previous attempt's failed state.
                 state = await agent.run(
                     goal=enriched_goal,
                     tenant_ctx=tenant_ctx,
                     event_callback=event_callback,
+                    **_attempt_kwargs(agent, goal_id, attempt_number),
                 )
                 attempt.ended_at = datetime.now(UTC).isoformat()
                 attempt.iterations_used = getattr(state, "iterations", 0)

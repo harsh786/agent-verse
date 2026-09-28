@@ -28,3 +28,16 @@ class GraphState(TypedDict, total=False):
 
 class RetrievalEntryPointError(RuntimeError):
     """A required, tenant-scoped retrieval leg failed."""
+
+
+class StepNotExecutedError(RuntimeError):
+    """A plan step could not be executed (e.g. its circuit breaker is open).
+
+    Raised by ``_execute_step`` instead of returning a placeholder string as the
+    step's output. ``_node_execute`` marks the step FAILED with this reason and the
+    verifier treats it as a hard failure — a step that never ran is never "done".
+    """
+
+
+# Context key: failures recorded by the current execute pass (reset per pass).
+STEP_FAILURES_KEY = "_exec_step_failures"

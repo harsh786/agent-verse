@@ -894,37 +894,15 @@ class GoalService:
         else:
             tenant_cfg = llm_configs.get(tenant_ctx.tenant_id)
         if tenant_cfg:
-            encrypted_key = tenant_cfg.get("encrypted_key", "")
-            api_key = ""
-            if encrypted_key:
-                try:
-                    from app.providers.vault import get_vault
+            # One shared builder for the API and the worker. The inline copy here
+            # sent groq/together keys to api.openai.com (base_url=None), ignored
+            # gemini/nvidia/openrouter/openai_compatible configs and swallowed
+            # decrypt failures — each silently running the goal on the PLATFORM
+            # provider. It now returns the tenant's provider or raises
+            # TenantProviderError, which fails the goal (no platform spend).
+            from app.providers.tenant_provider import build_tenant_provider
 
-                    api_key = get_vault().decrypt(encrypted_key)
-                except Exception:
-                    pass
-            pname = tenant_cfg.get("provider", "")
-            if pname == "anthropic" and api_key:
-                from app.providers.anthropic_provider import AnthropicProvider
-
-                provider = AnthropicProvider(
-                    api_key=api_key,
-                    default_model=(
-                        tenant_cfg.get("default_model")
-                        or tenant_cfg.get("model")
-                        or "claude-opus-4-8"
-                    ),
-                )
-            elif pname in {"openai", "groq", "together", "azure", "ollama"} and api_key:
-                from app.providers.openai_compatible import OpenAICompatibleProvider
-
-                provider = OpenAICompatibleProvider(
-                    api_key=api_key,
-                    base_url=tenant_cfg.get("base_url"),
-                    default_model=(
-                        tenant_cfg.get("default_model") or tenant_cfg.get("model") or "gpt-5.2"
-                    ),
-                )
+            provider = build_tenant_provider(tenant_cfg, tenant_id=tenant_ctx.tenant_id)
 
         # 2. The app-wide provider resolved at startup from EVERY configured
         # backend (on-prem vLLM dispatcher, NVIDIA NIM, Ollama, OpenRouter,
@@ -1296,6 +1274,9 @@ class GoalService:
         # H-2: Wire app_state and agent_id for SelfOptimizerV2 A/B experiment tracking
         graph._app_state = app_state
         graph._agent_id = agent_id
+        # The civilization spawn tool submits the child's goal through this; it was
+        # never assigned, so every spawn created an agent that never ran anything.
+        graph._goal_service = self
         # Phase 25: Wire self-optimizer for automatic improvement on poor performance
         from app.intelligence.self_optimization import SelfOptimizer
 
@@ -2159,10 +2140,33 @@ class GoalService:
 
         engine = GoalPersistenceEngine(
             config=config,
-            db=getattr(self, "_db_session_factory", None),
+            # GoalService keeps its session factory on ``_db``; the old
+            # ``_db_session_factory`` lookup was always None, so attempts were
+            # never persisted.
+            db=getattr(self, "_db", None),
+            # Operator controls (abort / skip-strategy / guidance) live in Redis.
+            redis=getattr(self, "_redis", None),
         )
 
         _persist_llm_config = await self._resolve_tenant_llm_config(tenant_ctx)
+        if _persist_llm_config:
+            # Validate the tenant's BYOK once, up front: an unusable config fails
+            # the goal instead of being retried by the persistence engine.
+            from app.providers.tenant_provider import TenantProviderError, build_tenant_provider
+
+            try:
+                build_tenant_provider(_persist_llm_config, tenant_id=tenant_ctx.tenant_id)
+            except TenantProviderError as _byok_exc:
+                await self._dispatch_event(
+                    goal_id,
+                    {
+                        "type": "goal_failed",
+                        "reason": str(_byok_exc),
+                        "failure_reason": "tenant_llm_provider_unavailable",
+                    },
+                    tenant_ctx=tenant_ctx,
+                )
+                return
 
         def agent_factory() -> Any:
             # Set agent knowledge collection IDs for graph RAG
@@ -2210,16 +2214,25 @@ class GoalService:
                         goal: str,
                         tenant_ctx: TenantContext,
                         event_callback: Any = None,
+                        **attempt_kwargs: Any,
                     ) -> Any:
                         initial_ctx: dict[str, Any] = {
                             "tool_prompt": _tc.to_prompt_block(),
                             "tool_context": _tc,
                         }
+                        from app.agent.persistence import _attempt_kwargs
+
+                        _fwd = _attempt_kwargs(
+                            loop,
+                            str(attempt_kwargs.get("goal_id") or ""),
+                            int(attempt_kwargs.get("attempt") or 1),
+                        )
                         return await loop.run(
                             goal=goal,
                             tenant_ctx=tenant_ctx,
                             initial_context=initial_ctx,
                             event_callback=event_callback,
+                            **_fwd,
                         )
 
                 return _WrappedAgent()
@@ -2326,14 +2339,32 @@ class GoalService:
                 if record is not None and record.runtime_profile is not None
                 else {}
             )
-            loop = self._make_agent_loop_for_tenant(
-                tenant_ctx,
-                self._app_state,
-                agent_id=record.agent_id if record is not None else None,
-                execution_context=record.execution_context if record is not None else None,
-                **_profile_kwargs,
-                **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
-            )
+            from app.providers.tenant_provider import TenantProviderError
+
+            try:
+                loop = self._make_agent_loop_for_tenant(
+                    tenant_ctx,
+                    self._app_state,
+                    agent_id=record.agent_id if record is not None else None,
+                    execution_context=record.execution_context if record is not None else None,
+                    **_profile_kwargs,
+                    **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
+                )
+            except TenantProviderError as _byok_exc:
+                # BYOK configured but unusable: an explicit goal failure, not an
+                # escaped exception (goal stuck "executing") or platform spend.
+                if record is not None:
+                    record.error_message = str(_byok_exc)
+                await self._dispatch_event(
+                    goal_id,
+                    {
+                        "type": "goal_failed",
+                        "reason": str(_byok_exc),
+                        "failure_reason": "tenant_llm_provider_unavailable",
+                    },
+                    tenant_ctx=tenant_ctx,
+                )
+                return
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
             _agent_collection_ids: list[str] = []
@@ -2640,17 +2671,36 @@ class GoalService:
             )
             plan = build_static_workflow(goal_text)
             app_state = getattr(self._app_state, "state", self._app_state)
+            from app.agent.tool_gate import gate_from_app_state
+
             executor = WorkflowExecutor(
                 mcp_client=self._get_mcp_client(),
                 retrieval_gateway=getattr(app_state, "retrieval_gateway", None),
+                # Same governance as the AgentGraph executor (was: none at all).
+                tool_gate=gate_from_app_state(
+                    app_state, agent_id=record.agent_id if record is not None else None
+                ),
+                goal_id=goal_id,
             )
-            await executor.execute(
+            wf_result = await executor.execute(
                 plan,
                 tenant_ctx,
                 tool_context=tool_context,
                 event_callback=callback,
                 goal=goal_text,
             )
+            # goal_complete only when every step produced a real result — this used
+            # to fire unconditionally, even for failed / not-executed workflows.
+            if isinstance(wf_result, dict) and wf_result.get("status") != "complete":
+                await self._dispatch_event(
+                    goal_id,
+                    {
+                        "type": "goal_failed",
+                        "reason": str(wf_result.get("reason") or "workflow did not complete"),
+                    },
+                    tenant_ctx=tenant_ctx,
+                )
+                return
             await self._dispatch_event(goal_id, {"type": "goal_complete"}, tenant_ctx=tenant_ctx)
         except asyncio.CancelledError:
             if record is not None and record.status != GoalStatus.CANCELLED:

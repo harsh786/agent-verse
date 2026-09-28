@@ -67,6 +67,21 @@ def _absolute_http_url(url: str) -> str:
     return f"https://{stripped}"
 
 
+def _ws_to_http_url(url: str) -> str:
+    """Map ws:// / wss:// to http:// / https:// so the SSRF guard can check it."""
+    stripped = url.strip()
+    lower = stripped.lower()
+    if lower.startswith("wss://"):
+        return "https://" + stripped[6:]
+    if lower.startswith("ws://"):
+        return "http://" + stripped[5:]
+    return _absolute_http_url(stripped)
+
+
+# Credential keys a built-in handler uses as the vendor API endpoint.
+_BUILTIN_ENDPOINT_KEYS = ("url", "base_url", "instance_url", "server_url", "endpoint")
+
+
 def _extract_credentials_from_server(cfg: MCPServerConfig) -> dict[str, str]:
     """Extract credentials dict from an MCPServerConfig for passing to builtin handlers.
 
@@ -582,6 +597,32 @@ class MCPClient:
             has_tenant_credentials,
         )
 
+        # SSRF guard for the endpoint the handler will call. Built-in handlers
+        # (jira_server, github_server, ...) use the tenant's connector
+        # auth_config['url'/'base_url'] as their API base with no check, so a
+        # tenant could point one at http://169.254.169.254 or an internal host.
+        for _ep_key in _BUILTIN_ENDPOINT_KEYS:
+            _ep = credentials.get(_ep_key)
+            if not isinstance(_ep, str) or not _ep.strip() or _ep.startswith("builtin://"):
+                continue
+            try:
+                assert_public_url(
+                    _absolute_http_url(_ep), context=f"MCP built-in {server.server_id}"
+                )
+            except SSRFError as exc:
+                logger.warning(
+                    "ssrf_guard_blocked_builtin: server_id=%s key=%s error=%s",
+                    server.server_id,
+                    _ep_key,
+                    str(exc),
+                )
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error="Connector URL blocked by SSRF guard",
+                    server_id=server.server_id,
+                )
+
         _required_env = builtin_required_env(server.server_id, server.name)
         if _required_env and not has_tenant_credentials(credentials, _required_env):
             return ToolCallResult(
@@ -909,11 +950,36 @@ class MCPClient:
             except Exception as _bh_exc:
                 logger.warning("builtin_handler_restore_error: %s", _bh_exc)
 
+        # SSRF guard — validate the server URL (and WS URL) before ANY dispatch.
+        # It used to run only after the built-in and WebSocket branches had
+        # already returned, so a built-in connector (whose handler calls the
+        # connector's tenant-supplied URL) or a ws:// connector reached internal
+        # addresses unchecked.
+        _transport = cfg.transport or "http"
+        _guard_urls: list[str] = []
+        _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
+        if _request_url and not _request_url.startswith("builtin://"):
+            _guard_urls.append(_request_url)
+        if _transport in ("ws", "websocket") and cfg.ws_url:
+            _guard_urls.append(_ws_to_http_url(cfg.ws_url))
+        for _guard_url in _guard_urls:
+            try:
+                assert_public_url(_guard_url, context=f"MCP server {server_id}")
+            except SSRFError as exc:
+                logger.warning(
+                    "ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc)
+                )
+                return ToolCallResult(
+                    tool_name=tool_name,
+                    success=False,
+                    error="Server URL blocked by SSRF guard",
+                    server_id=server_id,
+                )
+
         if cfg.builtin_handler is not None:
             return await self._dispatch_builtin_tool(cfg, tool_name, arguments, tenant_ctx)
 
         # 1.5. WebSocket transport — route to MCPWebSocketClient when transport="ws"/"websocket"
-        _transport = cfg.transport or "http"
         if _transport in ("ws", "websocket") and cfg.ws_url:
             try:
                 from app.mcp.ws_client import MCPWebSocketClient
@@ -935,22 +1001,6 @@ class MCPClient:
                     str(_ws_exc)[:80],
                 )
                 # Fall through to HTTP dispatch
-
-        # SSRF guard — validate server URL before any outbound HTTP call
-        _request_url = _absolute_http_url(cfg.url or cfg.base_url or "")
-        if _request_url and not _request_url.startswith("builtin://"):
-            try:
-                assert_public_url(_request_url, context=f"MCP server {server_id}")
-            except SSRFError as exc:
-                logger.warning(
-                    "ssrf_guard_blocked_mcp: server_id=%s, error=%s", server_id, str(exc)
-                )
-                return ToolCallResult(
-                    tool_name=tool_name,
-                    success=False,
-                    error="Server URL blocked by SSRF guard",
-                    server_id=server_id,
-                )
 
         # 2. OpenAPI-imported tool stored in tool_definitions
         if cfg.tool_definitions:

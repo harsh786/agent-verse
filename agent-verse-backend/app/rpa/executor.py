@@ -15,6 +15,56 @@ from typing import Any
 # fallback (a click/type without a browser has no real effect to model).
 _HTTP_FETCH_TOOLS = frozenset({"rpa_open_url", "rpa_extract_text", "rpa_screenshot"})
 
+_DEFAULT_UPLOAD_ROOT = "/tmp/agentverse-rpa-uploads"
+
+
+def tenant_upload_dir(tenant_id: str) -> Any:
+    """The only directory ``rpa_upload_file`` may read from for ``tenant_id``.
+
+    ``<RPA_UPLOAD_DIR or /tmp/agentverse-rpa-uploads>/<tenant_id>/``.
+    """
+    import os
+    from pathlib import Path
+
+    from app.rpa.artifacts import _safe_path_component
+
+    root = Path(os.getenv("RPA_UPLOAD_DIR") or _DEFAULT_UPLOAD_ROOT)
+    return root / _safe_path_component(tenant_id, default="_")
+
+
+def resolve_upload_path(tenant_id: str, file_path: str) -> tuple[str, str]:
+    """Map an agent-supplied ``file_path`` into the tenant's upload dir.
+
+    Returns ``(resolved_path, "")`` or ``("", error)``. ``rpa_upload_file`` used
+    to pass ANY host path to ``set_input_files`` — an agent (reachable by prompt
+    injection) could upload /etc/passwd, the app's .env or another tenant's
+    artifacts to an attacker's page. Only relative paths inside the tenant's
+    upload dir are accepted: absolute paths, ``..`` and symlink escapes are
+    refused.
+    """
+    from pathlib import Path, PurePosixPath, PureWindowsPath
+
+    if not tenant_id:
+        return "", "rpa_upload_file requires a tenant context"
+    raw = file_path.replace("\\", "/")
+    if (
+        PurePosixPath(raw).is_absolute()
+        or PureWindowsPath(file_path).is_absolute()
+        or PureWindowsPath(file_path).drive
+        or ".." in PurePosixPath(raw).parts
+    ):
+        return "", (
+            "file_path must be a relative path inside the tenant upload directory "
+            "(absolute paths and '..' are not allowed)"
+        )
+    base = Path(tenant_upload_dir(tenant_id)).resolve()
+    candidate = (base / raw).resolve()
+    if not candidate.is_relative_to(base):
+        return "", "file_path escapes the tenant upload directory"
+    if not candidate.is_file():
+        return "", f"File not found: {file_path}"
+    return str(candidate), ""
+
 
 @dataclass
 class RPAResult:
@@ -133,6 +183,7 @@ class RPAExecutor:
                 tool_name=tool_name,
                 arguments=arguments,
                 goal_id=goal_id,
+                tenant_id=tenant_id,
             )
         elif allow_http_fetch and tool_name in _HTTP_FETCH_TOOLS:
             result = await self._execute_http_fallback(
@@ -332,14 +383,13 @@ class RPAExecutor:
                     return RPAResult(success=False, error="selector argument required")
                 if not file_path:
                     return RPAResult(success=False, error="file_path argument required")
-                if not os.path.exists(file_path):
-                    return RPAResult(
-                        success=False,
-                        error=f"File not found: {file_path}",
-                    )
+                # Confined to the tenant's upload dir (was: any host path).
+                safe_path, path_error = resolve_upload_path(tenant_id, str(file_path))
+                if path_error:
+                    return RPAResult(success=False, error=path_error)
                 try:
-                    await page.set_input_files(selector, file_path)
-                    filename = os.path.basename(file_path)
+                    await page.set_input_files(selector, safe_path)
+                    filename = os.path.basename(safe_path)
                     session.touch()
                     return RPAResult(
                         success=True,
@@ -435,6 +485,7 @@ class RPAExecutor:
         tool_name: str,
         arguments: dict[str, Any],
         goal_id: str = "",
+        tenant_id: str = "",
     ) -> RPAResult:
         """Execute using a short-lived Playwright browser (no session manager).
 
@@ -588,14 +639,13 @@ class RPAExecutor:
                         return RPAResult(success=False, error="selector argument required")
                     if not file_path:
                         return RPAResult(success=False, error="file_path argument required")
-                    if not os.path.exists(file_path):
-                        return RPAResult(
-                            success=False,
-                            error=f"File not found: {file_path}",
-                        )
+                    # Confined to the tenant's upload dir (was: any host path).
+                    safe_path, path_error = resolve_upload_path(tenant_id, str(file_path))
+                    if path_error:
+                        return RPAResult(success=False, error=path_error)
                     try:
-                        await page.set_input_files(selector, file_path)
-                        filename = os.path.basename(file_path)
+                        await page.set_input_files(selector, safe_path)
+                        filename = os.path.basename(safe_path)
                         return RPAResult(
                             success=True,
                             output=f"Uploaded file '{filename}' to '{selector}'",
