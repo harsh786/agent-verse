@@ -89,7 +89,14 @@ async def get_agent_manifest(
     ``{"id": agent_id}`` when the agent was not the caller's — which made the
     platform a signing oracle for agents the caller does not own.
     """
-    from app.auth.agent_manifest import build_manifest, sign_manifest
+    from app.auth.agent_manifest import (
+        ManifestSigningNotConfiguredError,
+        build_manifest,
+        sign_manifest,
+    )
 
     manifest = build_manifest(agent, request.state.tenant)
-    return sign_manifest(manifest)
+    try:
+        return sign_manifest(manifest)
+    except ManifestSigningNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

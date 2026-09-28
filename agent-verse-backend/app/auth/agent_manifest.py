@@ -25,8 +25,37 @@ import base64
 import hashlib
 import json
 import os
+import secrets as _secrets
 import time
 from typing import Any
+
+# Per-process random key used only outside production when no secret is set.
+_DEV_EPHEMERAL_SECRET = _secrets.token_urlsafe(32)
+
+
+class ManifestSigningNotConfiguredError(RuntimeError):
+    """MANIFEST_SIGNING_SECRET is required in production."""
+
+
+def _signing_secret(explicit: str) -> str:
+    """Resolve the HMAC key.
+
+    There used to be a hard-coded public default (``agentverse-manifest-secret``),
+    so anyone could forge a "signed" manifest that verified against any
+    deployment that had not set the env var. Production now requires
+    ``MANIFEST_SIGNING_SECRET``; other environments get a random per-process key
+    (unforgeable, but not verifiable across processes).
+    """
+    if explicit:
+        return explicit
+    configured = os.getenv("MANIFEST_SIGNING_SECRET", "").strip()
+    if configured and configured != "agentverse-manifest-secret":
+        return configured
+    if os.getenv("ENVIRONMENT", "development").lower() == "production":
+        raise ManifestSigningNotConfiguredError(
+            "MANIFEST_SIGNING_SECRET must be set (and not the old public default) in production"
+        )
+    return _DEV_EPHEMERAL_SECRET
 
 
 def build_manifest(
@@ -66,7 +95,7 @@ def sign_manifest(manifest: dict[str, Any], secret: str = "") -> dict[str, Any]:
     """Add an HMAC signature to the manifest."""
     import hmac as _hmac
 
-    signing_secret = secret or os.getenv("MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret")
+    signing_secret = _signing_secret(secret)
     canonical = json.dumps(manifest, sort_keys=True).encode()
     sig = _hmac.new(signing_secret.encode(), canonical, hashlib.sha256).digest()
     return {
@@ -84,7 +113,7 @@ def verify_manifest(manifest: dict[str, Any], secret: str = "") -> bool:
     manifest.pop("_signed", None)
     if not sig_b64:
         return False
-    signing_secret = secret or os.getenv("MANIFEST_SIGNING_SECRET", "agentverse-manifest-secret")
+    signing_secret = _signing_secret(secret)
     canonical = json.dumps(manifest, sort_keys=True).encode()
     expected = _hmac.new(signing_secret.encode(), canonical, hashlib.sha256).digest()
     try:
