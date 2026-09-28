@@ -2735,7 +2735,11 @@ async def ingest_email(
         content = "\n\n".join(parts)
         meta = {**parser.parse_metadata(body.raw_email), **body.metadata}
 
-        orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+        orch = IngestionOrchestrator(
+            knowledge_store=knowledge_store,
+            embedder=getattr(request.app.state, "embedder", None),
+            embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+        )
         result = await orch.ingest(
             content,
             content_type="text",
@@ -2781,7 +2785,11 @@ async def ingest_notion(
         from app.ingestion.orchestrator import IngestionOrchestrator
 
         connector = NotionConnector(api_key=body.api_key.get_secret_value())
-        orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+        orch = IngestionOrchestrator(
+            knowledge_store=knowledge_store,
+            embedder=getattr(request.app.state, "embedder", None),
+            embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+        )
 
         total_chunks = 0
         if body.page_id:
@@ -2853,7 +2861,11 @@ async def ingest_gdrive_folder(
         try:
             connector = GDriveConnector(key_path=key_path)
             files = connector.list_files(body.folder_id)
-            orch = IngestionOrchestrator(knowledge_store=knowledge_store)
+            orch = IngestionOrchestrator(
+                knowledge_store=knowledge_store,
+                embedder=getattr(request.app.state, "embedder", None),
+                embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+            )
             total_chunks = 0
             errors: list[str] = []
             for file_meta in files:
