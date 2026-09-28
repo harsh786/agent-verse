@@ -5168,43 +5168,38 @@ def create_guardrail_partitions() -> dict[str, Any]:
 
 @celery_app.task(name="app.scaling.tasks.enforce_hitl_sla", queue="governance")
 def enforce_hitl_sla() -> dict:
-    """Check pending HITL approvals past SLA deadline and escalate or auto-resolve."""
+    """Escalate / auto-deny pending HITL approvals that breached their SLA.
+
+    Acts on ``approval_requests`` (the table the HITL gateway writes) joined to
+    ``approval_sla_configs`` — see app/governance/hitl_sla.py. It used to scan
+    ``hitl_approval_requests``, which nothing writes, so it never did anything.
+    Cross-tenant beat scan → maintenance (BYPASSRLS) session.
+    """
 
     async def _run() -> dict:
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
+        from app.governance.hitl_sla import enforce_sla
+
+        redis = None
         try:
-            from sqlalchemy import text as _t
+            import redis.asyncio as aioredis
 
-            from app.db.session import get_session_factory as _get_fresh_db
-
-            db = _get_fresh_db()
-            enforced = 0
-            async with db() as session:
-                overdue = (
-                    await session.execute(
-                        _t("""
-                            SELECT id, tenant_id, sla_deadline
-                            FROM hitl_approval_requests
-                            WHERE status = 'pending'
-                              AND sla_deadline IS NOT NULL
-                              AND sla_deadline < NOW()
-                            LIMIT 100
-                        """)
-                    )
-                ).fetchall()
-                for row in overdue:
-                    await session.execute(
-                        _t("""
-                            UPDATE hitl_approval_requests
-                            SET status = 'sla_escalated', resolved_at = NOW()
-                            WHERE id = :id
-                        """),
-                        {"id": row[0]},
-                    )
-                    enforced += 1
-                await session.commit()
-            return {"enforced": enforced}
+            redis = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
         except Exception as exc:
+            logger.warning("enforce_hitl_sla_redis_unavailable: %s", exc)
+        try:
+            db = get_system_session_factory()
+            async with db() as session, session.begin(), system_session(session):
+                result = await enforce_sla(session, redis=redis)
+            return {**result, "enforced": result["auto_denied"] + result["escalated"]}
+        except Exception as exc:
+            logger.error("enforce_hitl_sla_failed: %s", exc)
             return {"error": str(exc), "enforced": 0}
+        finally:
+            if redis is not None:
+                with contextlib.suppress(Exception):
+                    await redis.aclose()
 
     return _run_async(_run())
 

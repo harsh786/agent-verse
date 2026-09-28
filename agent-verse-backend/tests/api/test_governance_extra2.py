@@ -180,7 +180,8 @@ class TestSlaStats:
     def test_sla_stats_returns_dict(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/governance/approvals/sla-stats", headers=_H)
-        assert resp.status_code in (200, 401)
+        # 503 when the (test) app has no reachable DB — never fake zeros.
+        assert resp.status_code in (200, 401, 503)
         if resp.status_code == 200:
             assert isinstance(resp.json(), dict)
 
