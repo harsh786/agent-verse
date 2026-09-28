@@ -158,8 +158,12 @@ class GovernedToolGate:
                 ok = await self._cost_controller.check_and_record(
                     goal_id=goal_id, cost_usd=0.0, tenant_ctx=tenant_ctx
                 )
-            except Exception:
-                ok = True
+            except Exception as exc:
+                # Fail closed: an unverifiable budget must not admit the tool call.
+                return GateDecision(
+                    False,
+                    f"budget_check_failed: cost budget could not be verified ({exc})"[:300],
+                )
             if not ok:
                 return GateDecision(False, "budget_exceeded: goal/tenant cost budget exhausted")
         return GateDecision(True)
@@ -206,7 +210,8 @@ class GovernedToolGate:
                 )
             )
         except Exception:
-            return True
+            # Fail closed: unmetered spend is denied, never waved through.
+            return False
 
 
 def gate_from_app_state(app_state: Any, *, agent_id: str | None = None) -> GovernedToolGate:

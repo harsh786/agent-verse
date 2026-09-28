@@ -866,8 +866,13 @@ class ExecutorMixin:
             if _asp.safety_level.value == ActionSafetyLevel.HITL_REQUIRED.value:
                 _asp_hitl_required = True
                 _asp_reason = _asp.reason
-        except Exception:
-            pass
+        except Exception as _asp_exc:
+            # Fail closed: an action-safety assessment that cannot be made must
+            # not let the step run unassessed (this used to be ``except: pass``).
+            raise StepNotExecutedError(
+                f"Action-safety assessment failed for '{tool_name or 'llm'}' "
+                f"({type(_asp_exc).__name__}); step was not executed (fail-closed)."
+            ) from _asp_exc
 
         # SAFE-3 (P0-14): route an action-safety HITL_REQUIRED verdict through the
         # HITL gateway. This is intentionally OUTSIDE the try/except above so an
@@ -977,25 +982,31 @@ class ExecutorMixin:
                 return f"Guardrail blocked step: {'; '.join(violations)}"
 
         # 6c. Profile-based GuardrailEnforcer (dynamic bundle selection from Part 11/13)
-        try:
-            from app.core.runtime_flags import get_runtime_flags as _ge_rtf
-            from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+        from app.core.runtime_flags import get_runtime_flags as _ge_rtf
 
-            _ge_flags = _ge_rtf()
-            _runtime_profile = state.context.get("_runtime_profile")
-            if (
-                _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
-            ) and _runtime_profile is not None:
+        _ge_flags = _ge_rtf()
+        _runtime_profile = state.context.get("_runtime_profile")
+        if (
+            _ge_flags.dynamic_orchestration or _ge_flags.enable_guardrail_profile
+        ) and _runtime_profile is not None:
+            try:
+                from app.security_runtime.guardrail_enforcer import GuardrailEnforcer
+
                 _ge = GuardrailEnforcer()
                 _ge_result = await _ge.check_tool_args(
                     tool_name=tool_name,
                     tool_args={},  # C2 fix: tool_args not defined at pre-LLM check stage
                     profile=_runtime_profile,
                 )
-                if _ge_result.blocked:
-                    return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
-        except Exception:
-            pass  # profile-based guardrail never crashes execution
+            except Exception as _ge_exc:
+                # Fail closed: the enabled profile guardrail could not evaluate the
+                # tool, so the step must not run unchecked (was: ``except: pass``).
+                raise StepNotExecutedError(
+                    f"Profile guardrail check failed for '{tool_name or 'llm'}' "
+                    f"({type(_ge_exc).__name__}); step was not executed (fail-closed)."
+                ) from _ge_exc
+            if _ge_result.blocked:
+                return f"GuardrailEnforcer blocked tool '{tool_name}': {_ge_result.reason}"
 
         # N6b: guardrail_profile_selected SSE — only when dynamic orchestration profile present
         if self._event_callback is not None and _runtime_profile is not None:

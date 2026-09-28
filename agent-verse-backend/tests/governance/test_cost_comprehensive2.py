@@ -173,7 +173,7 @@ class TestRedisCostController:
         ok = await ctrl.check_and_record(tenant_ctx=ctx, goal_id="g1", cost_usd=1.0)
         assert ok is False
 
-    async def test_redis_error_fails_open_in_dev(self) -> None:
+    async def test_redis_error_fails_closed_in_dev_too(self) -> None:
         mock_redis = AsyncMock()
         mock_redis.register_script = None
         mock_redis.get = AsyncMock(return_value=None)
@@ -182,7 +182,8 @@ class TestRedisCostController:
         ctx = _ctx()
         with patch.dict("os.environ", {"ENVIRONMENT": "development"}):
             ok = await ctrl.check_and_record(tenant_ctx=ctx, goal_id="g1", cost_usd=1.0)
-        assert ok is True  # fail-open in dev
+        # Fail closed everywhere: an unset ENVIRONMENT used to wave spend through.
+        assert ok is False
 
     async def test_redis_error_fails_closed_in_prod(self) -> None:
         mock_redis = AsyncMock()

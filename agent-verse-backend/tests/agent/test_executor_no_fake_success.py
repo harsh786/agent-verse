@@ -146,3 +146,45 @@ async def test_policy_approval_not_granted_denies_step(status: ApprovalStatus) -
     with pytest.raises(PermissionError):
         await graph._execute_step("do thing", _state(), T)
     assert executor.call_history == []
+
+
+# ── (d) safety checks fail closed ────────────────────────────────────────────
+
+
+async def test_action_safety_profile_error_fails_closed() -> None:
+    """An exception in the action-safety assessment must not let the step run."""
+    from unittest.mock import patch
+
+    executor = FakeProvider(responses=["should never be produced"])
+    graph = _graph(executor=executor)
+    with (
+        patch(
+            "app.security_runtime.action_safety_profile.ActionSafetyProfileSelector.select",
+            side_effect=RuntimeError("selector broken"),
+        ),
+        pytest.raises(StepNotExecutedError, match="Action-safety assessment failed"),
+    ):
+        await graph._execute_step("do thing", _state(), T)
+    assert executor.call_history == []
+
+
+async def test_profile_guardrail_error_fails_closed() -> None:
+    """An enabled profile GuardrailEnforcer that errors must block the step."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    executor = FakeProvider(responses=["should never be produced"])
+    graph = _graph(executor=executor)
+    state = _state()
+    state.context["_runtime_profile"] = object()
+    flags = SimpleNamespace(dynamic_orchestration=True, enable_guardrail_profile=True)
+    with (
+        patch("app.core.runtime_flags.get_runtime_flags", return_value=flags),
+        patch(
+            "app.security_runtime.guardrail_enforcer.GuardrailEnforcer.check_tool_args",
+            AsyncMock(side_effect=RuntimeError("enforcer broken")),
+        ),
+        pytest.raises(StepNotExecutedError, match="Profile guardrail check failed"),
+    ):
+        await graph._execute_step("do thing", state, T)
+    assert executor.call_history == []

@@ -695,10 +695,11 @@ class GoalService:
     async def _check_budget_preflight(self, tenant_ctx: TenantContext) -> None:
         """Reject goal submission when the tenant's daily cost budget is exhausted.
 
-        Best-effort and fail-open: a budgeting error must never block legitimate
-        goals. Prefers the Redis controller (cross-replica) and falls back to the
-        in-memory one. Raises PlanLimitExceededError (HTTP 429) with a budget
-        reason when there is no remaining daily budget.
+        Fail-closed: when a configured cost controller cannot be consulted the
+        goal is rejected with a retryable ExternalServiceError (it used to be
+        accepted unmetered). Prefers the Redis controller (cross-replica) and
+        falls back to the in-memory one. Raises PlanLimitExceededError (HTTP 429)
+        with a budget reason when there is no remaining daily budget.
         """
         from app.tenancy.limits import PlanLimitExceededError
 
@@ -725,8 +726,15 @@ class GoalService:
                 has_budget = mem_cc.has_remaining_budget(tenant_ctx=tenant_ctx)
         except PlanLimitExceededError:
             raise
-        except Exception:
-            return  # fail-open on any budgeting error
+        except Exception as exc:
+            from app.core.errors import ExternalServiceError
+
+            _svc_logger.warning("budget_preflight_fail_closed", error=str(exc)[:200])
+            raise ExternalServiceError(
+                "Cost budget could not be verified — goal rejected (fail-closed). "
+                "Retry once the budget service is reachable.",
+                cause=exc,
+            ) from exc
 
         if not has_budget:
             raise PlanLimitExceededError(

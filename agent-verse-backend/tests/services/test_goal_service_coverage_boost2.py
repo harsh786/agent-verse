@@ -132,9 +132,11 @@ async def test_budget_preflight_reraises_plan_limit_error_from_controller() -> N
 
 
 @pytest.mark.asyncio
-async def test_budget_preflight_fails_open_on_unexpected_controller_error() -> None:
-    """Any other (non-PlanLimitExceededError) failure must fail open — a
-    budgeting bug must never block legitimate goal submission."""
+async def test_budget_preflight_fails_closed_on_unexpected_controller_error() -> None:
+    """A controller outage must reject the goal (fail closed), not admit it
+    unmetered. It surfaces as a retryable ExternalServiceError."""
+    from app.core.errors import ExternalServiceError
+
     svc = _svc()
     state = _AppState()
     state.redis_cost_controller = AsyncMock()
@@ -143,7 +145,8 @@ async def test_budget_preflight_fails_open_on_unexpected_controller_error() -> N
     )
     svc._app_state = state
 
-    await svc._check_budget_preflight(_ctx())  # must not raise
+    with pytest.raises(ExternalServiceError, match="could not be verified"):
+        await svc._check_budget_preflight(_ctx())
 
 
 # ── _check_daily_goal_limit_redis ──────────────────────────────────────────

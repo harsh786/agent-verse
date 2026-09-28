@@ -66,8 +66,13 @@ async def charge_llm_call(
             ok = await cost_controller.check_and_record(
                 goal_id=goal_id, cost_usd=cost, tenant_ctx=tenant_ctx
             )
-        except Exception:
-            ok = True  # a controller outage must not crash planning/verification
+        except Exception as exc:
+            # Fail closed: a controller outage must not crash planning/verification,
+            # but it also must not let spend through unmetered (this used to set
+            # ok=True). Latch the goal so routing stops it with an explicit reason.
+            ok = False
+            if isinstance(context, dict):
+                context["_budget_check_error"] = f"{type(exc).__name__}: {exc}"[:200]
         if not ok and isinstance(context, dict):
             context["_budget_exhausted"] = True
 

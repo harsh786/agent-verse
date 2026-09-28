@@ -1134,7 +1134,7 @@ class TestSubmitGoal:
         ctx = _ctx()
         mock_store = MagicMock()
         mock_store.get = MagicMock(return_value={"name": "agent-1"})
-        app = MagicMock()
+        app = MagicMock(redis_cost_controller=None, cost_controller=None)
         app.agent_store = mock_store
         mock_decision = MagicMock()
         mock_decision.agent_id = "agent-1"

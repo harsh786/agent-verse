@@ -239,3 +239,27 @@ async def test_distributed_strategy_uses_real_model_and_charges_budget() -> None
     assert "fake-model" not in {r.model for r in provider.call_history}
     assert controller.charges and all(c > 0.0 for c in controller.charges)
     assert result.cost_usd > 0.0
+
+
+async def test_planner_spend_controller_error_fails_closed() -> None:
+    """A cost-controller exception latches the goal instead of ok=True."""
+    from app.agent.nodes.llm_cost import charge_llm_call
+    from app.agent.nodes.routing_mixin import RoutingMixin
+    from app.agent.state import AgentState, GoalStatus
+
+    controller = SimpleNamespace(
+        check_and_record=AsyncMock(side_effect=ConnectionError("redis down"))
+    )
+    graph = SimpleNamespace(_cost_controller=controller)
+    state = AgentState(goal="g", tenant_ctx=T)
+    resp = CompletionResponse(content="x", model="gpt-4o", input_tokens=100, output_tokens=50)
+
+    await charge_llm_call(
+        graph, resp=resp, role="planner", model="gpt-4o", agent_state=state, tenant_ctx=T
+    )
+
+    assert state.context["_budget_exhausted"] is True
+    assert "ConnectionError" in state.context["_budget_check_error"]
+    assert RoutingMixin._fail_if_budget_exhausted(state) is True
+    assert state.status is GoalStatus.FAILED
+    assert "could not be verified" in (state.error_message or "")
