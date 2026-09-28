@@ -81,7 +81,13 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
             f"Available: {sorted(_REGISTRY)}"
         )
 
-    # LAW-20: Feature flag check
+    # LAW-20: Feature flag check. Every caller (scheduler, sources API, Celery
+    # sync task) used to call this without ``settings``, so the flags were never
+    # enforced at all; fall back to the process settings instead.
+    if settings is None and source_type in _FEATURE_FLAGS:
+        from app.core.config import get_settings
+
+        settings = get_settings()
     if settings is not None and source_type in _FEATURE_FLAGS:
         flag_attr = _FEATURE_FLAGS[source_type]
         enabled = getattr(settings, flag_attr, True)
