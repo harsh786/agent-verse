@@ -253,11 +253,20 @@ async def _call_tool_inner(
     credentials: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     creds = credentials or {}
-    base = _absolute_http_url(
-        str(creds.get("url") or creds.get("base_url") or os.getenv("JIRA_BASE_URL", ""))
-    )
+    tenant_base = str(creds.get("url") or creds.get("base_url") or "")
+    base = _absolute_http_url(tenant_base or os.getenv("JIRA_BASE_URL", ""))
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
+    if tenant_base:
+        # The tenant-supplied instance URL was used unchecked (SSRF: a connector
+        # could point at the metadata service or an internal host). The
+        # platform's own JIRA_BASE_URL env is operator config and not checked.
+        from app.net.ssrf_guard import SSRFError, assert_public_url_async
+
+        try:
+            await assert_public_url_async(base, context="jira connector")
+        except SSRFError:
+            return {"error": "Jira URL blocked by SSRF guard"}
 
     email = creds.get("username") or creds.get("email") or os.getenv("JIRA_EMAIL", "")
     token = (

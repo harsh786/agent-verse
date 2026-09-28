@@ -17,6 +17,23 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+async def _require_public_url(url: str, field: str = "URL") -> None:
+    """400 unless ``url`` is a public http(s) URL (DNS-resolving SSRF guard).
+
+    These endpoints used to check only the ``http(s)://`` prefix, so any tenant
+    could make the server's headless browser load http://169.254.169.254/ (cloud
+    metadata) or internal services and get back a screenshot / page text.
+    """
+    from app.net.ssrf_guard import SSRFError, assert_public_url_async
+
+    try:
+        await assert_public_url_async(url, context="perception")
+    except (SSRFError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"{field} is not an allowed public http(s) URL"
+        ) from exc
+
+
 def _browser_agent(request: Request) -> Any:
     """Return browser agent from app.state, creating lazily if needed."""
     agent = getattr(request.app.state, "browser_agent", None)
@@ -62,8 +79,7 @@ class ScreenshotRequest(BaseModel):
 async def capture_screenshot(request: Request, body: ScreenshotRequest) -> dict[str, Any]:
     """Capture a headless browser screenshot of a URL."""
     _require_tenant(request)
-    if not body.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    await _require_public_url(body.url)
 
     agent = _browser_agent(request)
     result = await agent.take_screenshot(body.url)
@@ -90,8 +106,7 @@ async def analyze_page(request: Request, body: AnalyzeRequest) -> dict[str, Any]
 
     screenshot_b64 = body.screenshot_b64
     if not screenshot_b64 and body.url:
-        if not body.url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+        await _require_public_url(body.url)
         ss_result = await agent.take_screenshot(body.url)
         if not ss_result.success:
             raise HTTPException(status_code=502, detail=f"Screenshot failed: {ss_result.error}")
@@ -117,8 +132,7 @@ class ExtractRequest(BaseModel):
 async def extract_text(request: Request, body: ExtractRequest) -> dict[str, Any]:
     """Extract visible text content from a URL."""
     _require_tenant(request)
-    if not body.url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=400, detail="URL must start with http:// or https://")
+    await _require_public_url(body.url)
 
     agent = _browser_agent(request)
     result = await agent.extract_text(body.url, body.selector)
@@ -162,11 +176,7 @@ async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str
         raise HTTPException(status_code=400, detail="Maximum 10 URLs per batch")
 
     for url in body.urls:
-        if not url.startswith(("http://", "https://")):
-            raise HTTPException(
-                status_code=400,
-                detail=f"URL must start with http:// or https://: {url}",
-            )
+        await _require_public_url(url, field=f"URL {url!r}")
 
     analyzer = _page_analyzer(request)
     analyses = await analyzer.analyze_multiple(body.urls, question=body.question)
@@ -198,10 +208,7 @@ async def submit_goal_with_image(request: Request, body: GoalWithImageRequest) -
     image_context = ""
 
     if body.image_url:
-        if not body.image_url.startswith(("http://", "https://")):
-            raise HTTPException(
-                status_code=400, detail="image_url must start with http:// or https://"
-            )
+        await _require_public_url(body.image_url, field="image_url")
         # Capture screenshot of the URL
         agent = _browser_agent(request)
         ss_result = await agent.take_screenshot(body.image_url)

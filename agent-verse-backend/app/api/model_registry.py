@@ -162,8 +162,14 @@ async def get_provider_health(request: Request) -> dict[str, Any]:
 
 @router.post("/test")
 async def test_model(request: Request) -> dict[str, Any]:
-    """Test a specific model with a simple ping."""
+    """Test a specific model with a simple ping. Platform-admin only.
+
+    It calls the PLATFORM provider (platform spend) and writes the result into
+    the GLOBAL provider health that routing reads. Any tenant could call it, so a
+    tenant could burn platform LLM calls and mark a provider unhealthy for all.
+    """
     _require_tenant(request)
+    _require_platform_admin(request)
     body = await request.json()
     provider = body.get("provider", "")
     model_id = body.get("model_id", "")

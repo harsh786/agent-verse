@@ -5,10 +5,18 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.perception import router as perception_router
+
+
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every host to a public IP: these tests exercise the browser paths,
+    not the SSRF guard (tested in tests/perception/test_perception_ssrf.py)."""
+    monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda host: ["93.184.216.34"])
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 

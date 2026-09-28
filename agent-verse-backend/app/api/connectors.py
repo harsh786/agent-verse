@@ -377,6 +377,41 @@ async def list_catalog(request: Request) -> list[dict]:
     return result
 
 
+_ENDPOINT_AUTH_KEYS = ("url", "base_url", "instance_url", "server_url", "endpoint")
+
+
+async def _assert_connector_urls_public(
+    url: str | None, auth_config: dict[str, Any] | None, *, context: str
+) -> None:
+    """400 unless every endpoint a connector will call is a public URL.
+
+    Covers the connector URL AND endpoint-like auth_config keys (built-in
+    handlers such as jira/github call auth_config['url'] as their API base).
+    Registration checked only ``body.url``; update and OpenAPI import checked
+    nothing, so a tenant could PUT a connector to http://169.254.169.254/.
+    """
+    from app.net.ssrf_guard import assert_public_url_async
+
+    candidates = [url or ""]
+    for key in _ENDPOINT_AUTH_KEYS:
+        value = (auth_config or {}).get(key)
+        if isinstance(value, str) and value != _REDACTED and not is_connector_secret_ref(value):
+            candidates.append(value)
+    for raw in candidates:
+        candidate = raw.strip()
+        if not candidate or candidate.startswith("builtin://"):
+            continue
+        if "://" not in candidate:
+            candidate = f"https://{candidate}"  # same default as MCPClient
+        try:
+            await assert_public_url_async(candidate, context=context)
+        except (SSRFError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Connector URL rejected by SSRF guard: {exc}",
+            ) from exc
+
+
 @router.get("")
 async def list_connectors(request: Request) -> list[dict[str, Any]]:
     tenant_ctx = _require_tenant(request)
@@ -395,15 +430,11 @@ async def list_connectors(request: Request) -> list[dict[str, Any]]:
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def register_connector(request: Request, body: RegisterConnectorRequest) -> dict[str, Any]:
     tenant_ctx = _require_tenant(request)
-    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time.
-    if body.url and body.url != "builtin://":
-        try:
-            assert_public_url(body.url, context="connector registration")
-        except SSRFError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Connector URL rejected by SSRF guard: {exc}",
-            ) from exc
+    # SSRF guard: reject private/loopback/cloud-metadata URLs at registration time
+    # (the connector URL and endpoint-like auth_config keys).
+    await _assert_connector_urls_public(
+        body.url, body.auth_config, context="connector registration"
+    )
     reg = _registry(request)
     secret_store = _connector_secret_store(
         request,
@@ -472,6 +503,8 @@ async def update_connector(
             detail=f"Connector {server_id} not found",
         )
     auth_config = _preserve_redacted_auth_config(body.auth_config, dict(existing.auth_config))
+    # Update had no SSRF guard at all (only registration did).
+    await _assert_connector_urls_public(body.url, auth_config, context="connector update")
     secret_store = _connector_secret_store(
         request,
         needs_secret_storage=_auth_config_requires_secret_storage(auth_config),
@@ -1180,18 +1213,19 @@ class OAuthCallbackBody(BaseModel):
 
 @router.post("/oauth/callback")
 async def complete_oauth_popup(request: Request, body: OAuthCallbackBody) -> dict[str, Any]:
-    """Complete the OAuth popup flow.
+    """Complete the OAuth popup flow — honestly.
 
-    Validates the state token, (in production) exchanges the code for an access
-    token, and registers the connector for the tenant.
-
-    # NOTE: This endpoint currently does NOT perform the OAuth token exchange.
-    # The authorization code is received but not exchanged for an access token.
-    # To enable real OAuth, implement the token exchange for each connector type.
-    # See: https://tools.ietf.org/html/rfc6749#section-4.1.3
+    This endpoint used to validate the state, never exchange the code, register a
+    placeholder connector (``status: pending_oauth`` / ``pending_token_exchange``,
+    no token) and answer ``{"status": "connected"}``: the UI showed a working
+    connector that could never authenticate. The popup flow (POST /oauth/start)
+    creates no PKCE verifier and has no per-connector token endpoint, so there
+    is nothing it can exchange. It now consumes the state (CSRF check, bound to
+    the starting tenant) and returns 501 without registering anything. Use the
+    PKCE flow instead: GET /connectors/oauth/start?server_id=… then
+    GET /connectors/oauth/callback, which calls ``OAuthFlowManager.exchange_code``
+    (flows are bound to the starting tenant) and stores real tokens.
     """
-    import uuid
-
     tenant = _require_tenant(request)
 
     _cleanup_oauth_states()
@@ -1201,54 +1235,27 @@ async def complete_oauth_popup(request: Request, body: OAuthCallbackBody) -> dic
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state token")
 
     connector_name = body.connector_name.lower().strip() or state_data.get("connector_name", "")
-    server_id = f"{connector_name}-oauth-{uuid.uuid4().hex[:8]}"
-
-    # Determine whether real OAuth credentials are configured for this connector.
-    settings = getattr(request.app.state, "settings", None)
-    oauth_client_secret = getattr(settings, f"{connector_name.upper()}_CLIENT_SECRET", None)
-    if not oauth_client_secret:
-        # No OAuth credentials configured — store a pending state so the UI can
-        # prompt the admin to configure credentials rather than silently using a
-        # fake token that will never work against a real API.
-        auth_config: dict[str, str] = {
-            "status": "pending_oauth",
-            "oauth_code": body.code[:4] + "****",
-        }
-        _logger.warning(
-            "OAuth connector registered without real token exchange. "
-            "Set %s_CLIENT_SECRET to enable real OAuth. connector=%s",
-            connector_name.upper(),
-            server_id,
-        )
-    else:
-        # Real token exchange would happen here (e.g. POST to the provider's
-        # token endpoint with body.code + client_secret + redirect_uri).
-        # For now store a clearly-marked placeholder so the shape is correct.
-        auth_config = {"status": "pending_token_exchange", "grant_code": "****"}
-
-    # In production: exchange body.code for an access token here, then store it
-    # securely via the vault.  For now we register a placeholder connector so the
-    # frontend flow completes end-to-end.
-    reg = getattr(request.app.state, "mcp_registry", None)
-    if reg is not None:
-        try:
-            from app.mcp.registry import MCPServerConfig
-
-            cfg = MCPServerConfig(
-                name=f"{connector_name} (OAuth)",
-                url=f"https://api.{connector_name}.com",
-                auth_type="bearer",
-                auth_config=auth_config,
-            )
-            await reg.register(cfg, tenant_ctx=tenant)
-        except Exception:
-            _logger.debug("oauth_popup_register_skipped connector=%s", connector_name)
-
-    return {
-        "server_id": server_id,
-        "name": f"{connector_name} (OAuth)",
-        "status": "connected",
-    }
+    _logger.warning(
+        "oauth_popup_callback_without_token_exchange connector=%s tenant=%s",
+        connector_name,
+        tenant.tenant_id,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail={
+            "type": "oauth-token-exchange-unavailable",
+            "title": "OAuth token exchange not available for popup flow",
+            "status": 501,
+            "detail": (
+                f"The authorization code for '{connector_name}' was not exchanged and no "
+                "connector was created. Register the connector with auth_type 'pkce' or "
+                "'oauth_ac' (authorize_url, token_url, client_id in auth_config) and use "
+                "GET /connectors/oauth/start?server_id=... to connect it."
+            ),
+            "connector": connector_name,
+            "connected": False,
+        },
+    )
 
 
 def _default_redirect_uri(request: Request) -> str:
@@ -1564,6 +1571,10 @@ class OpenAPIImportRequest(BaseModel):
 async def import_openapi_connector(request: Request, body: OpenAPIImportRequest) -> dict[str, Any]:
     """Import an OpenAPI 3.x spec and register it as a connector with extracted tools."""
     tenant_ctx = _require_tenant(request)
+    # OpenAPI import registered base_url with no SSRF guard.
+    await _assert_connector_urls_public(
+        body.base_url, body.auth_config, context="connector OpenAPI import"
+    )
 
     from app.mcp.openapi_importer import extract_tools_from_spec, parse_openapi_spec
 

@@ -255,21 +255,23 @@ def test_get_llm_provider_returns_none_when_no_config(monkeypatch: pytest.Monkey
     assert result is None
 
 
-def test_get_llm_provider_returns_none_when_encrypted_key_missing(
+def test_get_llm_provider_raises_when_encrypted_key_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A BYOK config with no key fails the goal (was: None → platform provider)."""
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     import json
+
+    from app.providers.tenant_provider import TenantProviderError
 
     config = {"provider": "anthropic", "encrypted_key": "", "model": "claude-opus-4-8"}
     mock_redis = MagicMock()
     mock_redis.get.return_value = json.dumps(config)
 
-    with patch("redis.from_url", return_value=mock_redis):
+    with patch("redis.from_url", return_value=mock_redis), pytest.raises(TenantProviderError):
         from app.scaling.tasks import _get_llm_provider
-        result = _get_llm_provider("tenant-1")
 
-    assert result is None
+        _get_llm_provider("tenant-1")
 
 
 def test_get_llm_provider_returns_anthropic_provider(monkeypatch: pytest.MonkeyPatch) -> None:

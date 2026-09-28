@@ -14,6 +14,13 @@ import io
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve every host to a public IP (no network; SSRF guard tested separately)."""
+    monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda host: ["93.184.216.34"])
+
+
 # ── BrowserAgent — playwright NOT installed ────────────────────────────────────
 
 def test_browser_agent_available_false_without_playwright(monkeypatch):

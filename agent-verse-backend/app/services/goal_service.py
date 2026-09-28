@@ -894,37 +894,15 @@ class GoalService:
         else:
             tenant_cfg = llm_configs.get(tenant_ctx.tenant_id)
         if tenant_cfg:
-            encrypted_key = tenant_cfg.get("encrypted_key", "")
-            api_key = ""
-            if encrypted_key:
-                try:
-                    from app.providers.vault import get_vault
+            # One shared builder for the API and the worker. The inline copy here
+            # sent groq/together keys to api.openai.com (base_url=None), ignored
+            # gemini/nvidia/openrouter/openai_compatible configs and swallowed
+            # decrypt failures — each silently running the goal on the PLATFORM
+            # provider. It now returns the tenant's provider or raises
+            # TenantProviderError, which fails the goal (no platform spend).
+            from app.providers.tenant_provider import build_tenant_provider
 
-                    api_key = get_vault().decrypt(encrypted_key)
-                except Exception:
-                    pass
-            pname = tenant_cfg.get("provider", "")
-            if pname == "anthropic" and api_key:
-                from app.providers.anthropic_provider import AnthropicProvider
-
-                provider = AnthropicProvider(
-                    api_key=api_key,
-                    default_model=(
-                        tenant_cfg.get("default_model")
-                        or tenant_cfg.get("model")
-                        or "claude-opus-4-8"
-                    ),
-                )
-            elif pname in {"openai", "groq", "together", "azure", "ollama"} and api_key:
-                from app.providers.openai_compatible import OpenAICompatibleProvider
-
-                provider = OpenAICompatibleProvider(
-                    api_key=api_key,
-                    base_url=tenant_cfg.get("base_url"),
-                    default_model=(
-                        tenant_cfg.get("default_model") or tenant_cfg.get("model") or "gpt-5.2"
-                    ),
-                )
+            provider = build_tenant_provider(tenant_cfg, tenant_id=tenant_ctx.tenant_id)
 
         # 2. The app-wide provider resolved at startup from EVERY configured
         # backend (on-prem vLLM dispatcher, NVIDIA NIM, Ollama, OpenRouter,
@@ -2163,6 +2141,24 @@ class GoalService:
         )
 
         _persist_llm_config = await self._resolve_tenant_llm_config(tenant_ctx)
+        if _persist_llm_config:
+            # Validate the tenant's BYOK once, up front: an unusable config fails
+            # the goal instead of being retried by the persistence engine.
+            from app.providers.tenant_provider import TenantProviderError, build_tenant_provider
+
+            try:
+                build_tenant_provider(_persist_llm_config, tenant_id=tenant_ctx.tenant_id)
+            except TenantProviderError as _byok_exc:
+                await self._dispatch_event(
+                    goal_id,
+                    {
+                        "type": "goal_failed",
+                        "reason": str(_byok_exc),
+                        "failure_reason": "tenant_llm_provider_unavailable",
+                    },
+                    tenant_ctx=tenant_ctx,
+                )
+                return
 
         def agent_factory() -> Any:
             # Set agent knowledge collection IDs for graph RAG
@@ -2326,14 +2322,32 @@ class GoalService:
                 if record is not None and record.runtime_profile is not None
                 else {}
             )
-            loop = self._make_agent_loop_for_tenant(
-                tenant_ctx,
-                self._app_state,
-                agent_id=record.agent_id if record is not None else None,
-                execution_context=record.execution_context if record is not None else None,
-                **_profile_kwargs,
-                **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
-            )
+            from app.providers.tenant_provider import TenantProviderError
+
+            try:
+                loop = self._make_agent_loop_for_tenant(
+                    tenant_ctx,
+                    self._app_state,
+                    agent_id=record.agent_id if record is not None else None,
+                    execution_context=record.execution_context if record is not None else None,
+                    **_profile_kwargs,
+                    **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
+                )
+            except TenantProviderError as _byok_exc:
+                # BYOK configured but unusable: an explicit goal failure, not an
+                # escaped exception (goal stuck "executing") or platform spend.
+                if record is not None:
+                    record.error_message = str(_byok_exc)
+                await self._dispatch_event(
+                    goal_id,
+                    {
+                        "type": "goal_failed",
+                        "reason": str(_byok_exc),
+                        "failure_reason": "tenant_llm_provider_unavailable",
+                    },
+                    tenant_ctx=tenant_ctx,
+                )
+                return
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
             _agent_collection_ids: list[str] = []

@@ -2062,12 +2062,22 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
 
     import httpx
 
+    from app.net.ssrf_guard import SSRFError, request_public
+
     start = time.monotonic()
 
     try:
         if sso_url:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(sso_url, follow_redirects=True)
+            # Was client.get(sso_url, follow_redirects=True) on any caller URL: an
+            # internal-network probe (status code + latency as the oracle), direct
+            # or via redirect. Every hop is now SSRF-validated.
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                try:
+                    resp = await request_public(client, "GET", str(sso_url), context="saml test")
+                except SSRFError as exc:
+                    raise HTTPException(
+                        400, "sso_url is not an allowed public http(s) URL"
+                    ) from exc
                 latency_ms = int((time.monotonic() - start) * 1000)
                 return {
                     "success": resp.status_code < 500,
@@ -2085,6 +2095,8 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
                 return {"success": False, "message": f"Invalid XML: {exc}"}
         else:
             return {"success": False, "message": "No SSO URL or metadata XML provided"}
+    except HTTPException:
+        raise
     except Exception as exc:
         return {
             "success": False,

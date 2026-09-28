@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -747,14 +748,18 @@ class TestSamlConnectionTest:
         assert body["success"] is False
         assert "No SSO URL" in body["message"]
 
-    def test_sso_url_reachable(self) -> None:
+    def test_sso_url_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # saml/test is SSRF-guarded (DNS-resolving) and sends via client.request.
+        monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda h: ["93.184.216.34"])
+
         class _FakeResp:
             status_code = 200
+            is_redirect = False
 
         fake_client = MagicMock()
         fake_client.__aenter__ = AsyncMock(return_value=fake_client)
         fake_client.__aexit__ = AsyncMock(return_value=False)
-        fake_client.get = AsyncMock(return_value=_FakeResp())
+        fake_client.request = AsyncMock(return_value=_FakeResp())
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
         with patch("httpx.AsyncClient", return_value=fake_client):
@@ -768,11 +773,12 @@ class TestSamlConnectionTest:
         assert body["success"] is True
         assert body["status_code"] == 200
 
-    def test_sso_url_connection_error(self) -> None:
+    def test_sso_url_connection_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda h: ["93.184.216.34"])
         fake_client = MagicMock()
         fake_client.__aenter__ = AsyncMock(return_value=fake_client)
         fake_client.__aexit__ = AsyncMock(return_value=False)
-        fake_client.get = AsyncMock(side_effect=RuntimeError("connection refused"))
+        fake_client.request = AsyncMock(side_effect=RuntimeError("connection refused"))
         app = _make_app()
         client = TestClient(app, raise_server_exceptions=False)
         with patch("httpx.AsyncClient", return_value=fake_client):

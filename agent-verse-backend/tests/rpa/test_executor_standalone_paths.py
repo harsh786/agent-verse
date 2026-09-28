@@ -407,19 +407,59 @@ async def test_pw_select_option_exception_returns_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pw_upload_file_success(tmp_path) -> None:
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("some content")
+async def test_pw_upload_file_success(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t1").mkdir()
+    (tmp_path / "t1" / "test.txt").write_text("some content")
 
     ex, page = _build_executor()
     with _inject(page):
         result = await ex._execute_playwright_standalone(
             tool_name="rpa_upload_file",
-            arguments={"selector": "#file-input", "file_path": str(test_file)},
+            arguments={"selector": "#file-input", "file_path": "test.txt"},
             goal_id="g1",
+            tenant_id="t1",
         )
     assert result.success is True
     assert "test.txt" in result.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["/etc/passwd", "../t2/secret.txt", "a/../../x", "C:\\x.txt"])
+async def test_pw_upload_file_rejects_host_paths(tmp_path, monkeypatch, bad) -> None:
+    """Regression: any host path used to be uploaded (e.g. /etc/passwd, .env)."""
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t2").mkdir()
+    (tmp_path / "t2" / "secret.txt").write_text("other tenant")
+    ex, page = _build_executor()
+    with _inject(page):
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_upload_file",
+            arguments={"selector": "#f", "file_path": bad},
+            goal_id="g1",
+            tenant_id="t1",
+        )
+    assert result.success is False
+    page.set_input_files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pw_upload_file_rejects_symlink_escape(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path / "root"))
+    (tmp_path / "root" / "t1").mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host secret")
+    (tmp_path / "root" / "t1" / "link.txt").symlink_to(outside)
+    ex, page = _build_executor()
+    with _inject(page):
+        result = await ex._execute_playwright_standalone(
+            tool_name="rpa_upload_file",
+            arguments={"selector": "#f", "file_path": "link.txt"},
+            goal_id="g1",
+            tenant_id="t1",
+        )
+    assert result.success is False
+    assert "escapes" in result.error
 
 
 @pytest.mark.asyncio
@@ -450,25 +490,28 @@ async def test_pw_upload_file_not_found() -> None:
     with _inject(page):
         result = await ex._execute_playwright_standalone(
             tool_name="rpa_upload_file",
-            arguments={"selector": "#file", "file_path": "/nonexistent/file.txt"},
+            arguments={"selector": "#file", "file_path": "nonexistent/file.txt"},
             goal_id="g1",
+            tenant_id="t1",
         )
     assert result.success is False
     assert "File not found" in result.error
 
 
 @pytest.mark.asyncio
-async def test_pw_upload_file_set_input_files_exception(tmp_path) -> None:
-    test_file = tmp_path / "test.txt"
-    test_file.write_text("content")
+async def test_pw_upload_file_set_input_files_exception(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RPA_UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "t1").mkdir()
+    (tmp_path / "t1" / "test.txt").write_text("content")
 
     ex, page = _build_executor()
     page.set_input_files = AsyncMock(side_effect=Exception("input not interactable"))
     with _inject(page):
         result = await ex._execute_playwright_standalone(
             tool_name="rpa_upload_file",
-            arguments={"selector": "#file", "file_path": str(test_file)},
+            arguments={"selector": "#file", "file_path": "test.txt"},
             goal_id="g1",
+            tenant_id="t1",
         )
     assert result.success is False
     assert "input not interactable" in result.error

@@ -34,6 +34,13 @@ from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Placeholder hosts (api.example.com) resolve to a public IP: connector
+    create/update/import are SSRF-guarded (DNS-resolving, fail-closed)."""
+    monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda host: ["93.184.216.34"])
+
+
 _CTX = TenantContext(tenant_id="tid-conn-ex2", plan=PlanTier.PROFESSIONAL, api_key_id="kx2")
 _VALID_KEY = "av_test_connectors_ex2"
 

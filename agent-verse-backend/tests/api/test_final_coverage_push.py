@@ -3347,8 +3347,10 @@ class TestConnectorsWave7:
         # auth_config should be masked
         assert isinstance(data, list)
 
-    def test_update_connector_secret_fail_503(self) -> None:
+    def test_update_connector_secret_fail_503(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Lines 336-337: update_connector secret storage fails → 503."""
+        # Update is now SSRF-guarded: resolve the placeholder host to a public IP.
+        monkeypatch.setattr("app.net.ssrf_guard._resolve_host", lambda h: ["93.184.216.34"])
         from app.mcp.registry import MCPServerConfig as ExistingCfg
         from app.providers.vault import connector_secret_ref
 

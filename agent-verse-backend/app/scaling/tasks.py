@@ -472,48 +472,23 @@ def _get_llm_provider(tenant_id: str) -> Any:
             store = get_or_create_worker_llm_config_store()
             if store is not None:
                 config = _run_async(store.get_config(tenant_id))
-        if config is None:
-            return None
-
-        provider_name = config.get("provider", "")
-        encrypted_key = config.get("encrypted_key", "")
-        model = config.get("model", "")
-        base_url = config.get("base_url")
-
-        if not encrypted_key:
-            return None
-
-        from app.providers.vault import get_vault
-
-        api_key = get_vault().decrypt(encrypted_key)
-
-        if provider_name == "anthropic" and api_key:
-            from app.providers.anthropic_provider import AnthropicProvider
-
-            return AnthropicProvider(api_key=api_key, default_model=model or "claude-opus-4-8")
-
-        if (
-            provider_name in {"openai", "openai_compatible", "groq", "together", "azure", "ollama"}
-            and api_key
-        ):
-            from app.providers.openai_compatible import OpenAICompatibleProvider
-
-            # Fall back to the self-hosted model env (never a hardcoded cloud slug)
-            # so a tenant config without an explicit model still works on vLLM/Qwen.
-            _fallback_model = (
-                os.getenv("OPENAI_MODEL") or os.getenv("DEFAULT_MODEL") or "gpt-5.2"
-            )
-            return OpenAICompatibleProvider(
-                api_key=api_key,
-                base_url=base_url,
-                default_model=model or _fallback_model,
-                embed_model=os.getenv("EMBEDDING_MODEL") or None,
-            )
-
     except Exception as exc:
         logger.warning("Could not load tenant LLM config from Redis: %s", exc)
+        return None
+    if config is None:
+        return None
 
-    return None
+    # Built by the SAME helper as the API path. This copy used to send
+    # groq/together keys to api.openai.com when base_url was empty, return None
+    # (→ platform provider) for gemini/nvidia/openrouter configs, and swallow a
+    # decrypt failure into the same platform fallback. A tenant with BYOK now
+    # gets its provider or TenantProviderError, which run_goal turns into a
+    # failed goal — never silent platform spend.
+    from app.providers.tenant_provider import build_tenant_provider
+
+    return build_tenant_provider(
+        config, tenant_id=tenant_id, embed_model=os.getenv("EMBEDDING_MODEL") or None
+    )
 
 
 async def _run_with_signals(
@@ -1514,7 +1489,21 @@ def run_goal(
     # Try tenant-specific provider from Redis first, then fall back to
     # process-wide env-var providers, then the non-durable FakeProvider.
     _bind_worker_cost_breakdown_db()
-    real_provider = _get_llm_provider(tenant_id)
+    from app.providers.tenant_provider import TenantProviderError
+
+    try:
+        real_provider = _get_llm_provider(tenant_id)
+    except TenantProviderError as _byok_exc:
+        # The tenant configured BYOK but it is unusable: fail the goal rather
+        # than run it on the deployment/platform provider below.
+        _run_async(mark_worker_failed(_byok_exc))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {
+            "status": "failed",
+            "goal_id": goal_id,
+            "reason": "tenant_llm_provider_unavailable",
+            "message": str(_byok_exc),
+        }
 
     if real_provider is None:
         # Same precedence as the API (_app_provider = onprem cluster or registry):
@@ -3517,9 +3506,20 @@ def check_mcp_health() -> dict[str, Any]:
                     # Simple health check: GET {base_url}/health
                     import httpx
 
-                    async with httpx.AsyncClient(timeout=5.0) as client:
+                    from app.net.ssrf_guard import request_public
+
+                    _base = (cfg.base_url or cfg.url or "").rstrip("/")
+                    if not _base or _base.startswith("builtin://"):
+                        continue
+                    # Was client.get(..., follow_redirects=True) on the tenant's
+                    # URL with no SSRF guard: a connector pointed at (or 302-ing
+                    # to) an internal host made the worker probe it. Every hop is
+                    # now re-validated.
+                    async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
                         try:
-                            resp = await client.get(f"{cfg.base_url}/health", follow_redirects=True)
+                            resp = await request_public(
+                                client, "GET", f"{_base}/health", context="mcp health check"
+                            )
                             results.append(
                                 {
                                     "server": cfg.name,
@@ -3584,8 +3584,18 @@ def check_mcp_health() -> dict[str, Any]:
                             continue
                         t0 = _time.monotonic()
                         try:
-                            async with _httpx.AsyncClient(timeout=3.0) as http:
-                                resp = await http.get(f"{url.rstrip('/')}/health")
+                            from app.net.ssrf_guard import request_public
+
+                            # SSRF: tenant URL was probed unchecked.
+                            async with _httpx.AsyncClient(
+                                timeout=3.0, follow_redirects=False
+                            ) as http:
+                                resp = await request_public(
+                                    http,
+                                    "GET",
+                                    f"{url.rstrip('/')}/health",
+                                    context="mcp health check",
+                                )
                             latency_ms = round((_time.monotonic() - t0) * 1000)
                             status = "healthy" if resp.status_code < 400 else "degraded"
                             results.append(

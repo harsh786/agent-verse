@@ -988,7 +988,9 @@ class TestMakeAgentLoopForTenantProviderDispatch:
         inner = getattr(loop._planner, "_inner", loop._planner)
         assert type(inner).__name__ == "OpenAICompatibleProvider"
 
-    def test_vault_decrypt_failure_falls_back_gracefully(self):
+    def test_vault_decrypt_failure_fails_instead_of_platform_fallback(self):
+        from app.providers.tenant_provider import TenantProviderError
+
         svc = _svc()
         ctx = _ctx("cb-provider-3")
         app_state = MagicMock()
@@ -997,13 +999,13 @@ class TestMakeAgentLoopForTenantProviderDispatch:
             ctx.tenant_id: {"provider": "anthropic", "encrypted_key": "enc-blob"}
         }
 
-        with patch(
-            "app.providers.vault.get_vault", side_effect=RuntimeError("vault down")
+        # A BYOK tenant whose key cannot be decrypted must not silently run on
+        # the platform provider (the old behaviour).
+        with (
+            patch("app.providers.vault.get_vault", side_effect=RuntimeError("vault down")),
+            pytest.raises(TenantProviderError),
         ):
-            loop = svc._make_agent_loop_for_tenant(ctx, app_state)
-
-        # No API key resolved -> falls through to the default (Fake) provider.
-        assert loop is not None
+            svc._make_agent_loop_for_tenant(ctx, app_state)
 
 
 # ── _run_agent_loop_persistent: agent_factory closure ─────────────────────────
