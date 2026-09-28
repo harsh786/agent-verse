@@ -190,6 +190,32 @@ class PostgresWorkflowApprovalStore:
         start = (page - 1) * per_page
         return items[start : start + per_page], total
 
+    async def list_pending_all_tenants(
+        self, *, limit: int = 500, system_db: Any = None
+    ) -> list[WorkflowHITLRequest]:
+        """Cross-tenant pending approvals for the SLA sweep (maintenance role).
+
+        ``workflow_approvals`` is RLS-scoped, so this runs under
+        :func:`app.db.rls.system_session` on the BYPASSRLS maintenance factory.
+        """
+        from sqlalchemy import text as sa_text
+
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
+
+        factory = system_db or get_system_session_factory()
+        async with factory() as session, session.begin(), system_session(session):
+            rows = (
+                await session.execute(
+                    sa_text(
+                        "SELECT payload FROM workflow_approvals WHERE status = 'pending' "
+                        "ORDER BY created_at LIMIT :lim"
+                    ),
+                    {"lim": limit},
+                )
+            ).all()
+        return [self._from_payload(r[0]) for r in rows]
+
     async def get_stats(self, tenant_id: str) -> dict[str, Any]:
         from sqlalchemy import text as sa_text
 

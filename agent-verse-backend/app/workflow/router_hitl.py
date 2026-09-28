@@ -163,6 +163,7 @@ async def delegate_approval(
             from_user=user_id,
             to_user=body.to_user_id,
             note=body.note,
+            tenant_id=_tenant_id(request),
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -174,7 +175,9 @@ async def escalate_approval(request_id: str, request: Request) -> dict[str, Any]
     svc = _svc(request)
     user_id = _user_id(request)
     try:
-        req = await svc.escalate(request_id=request_id, actor_id=user_id)
+        req = await svc.escalate(
+            request_id=request_id, actor_id=user_id, tenant_id=_tenant_id(request)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return req.__dict__
@@ -251,6 +254,7 @@ async def delegate_all(body: DelegateAllRequest, request: Request) -> dict[str, 
                 from_user=user_id,
                 to_user=body.to_user_id,
                 note=body.note,
+                tenant_id=tenant_id,
             )
             count += 1
         except Exception:

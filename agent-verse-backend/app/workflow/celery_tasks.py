@@ -347,20 +347,25 @@ def wake_due_timer_waits() -> dict[str, int]:
 
 
 @celery_app.task(name="workflow.check_hitl_escalations")
-def check_hitl_escalations() -> None:
-    """Run every 15 minutes to auto-escalate overdue HITL requests."""
+def check_hitl_escalations() -> dict[str, int]:
+    """Run every 15 minutes to auto-escalate overdue HITL requests.
 
-    async def _check() -> None:
-        try:
-            from app.main import app as fastapi_app  # type: ignore[import]
+    It used to call a gateway method that did not exist (AttributeError logged
+    as a warning every run), so no approval was ever escalated. It now builds a
+    worker gateway with the durable approval store and runs the SLA sweep; a
+    failure fails the task instead of being swallowed.
+    """
+    from app.db.session import get_session_factory
+    from app.workflow.approval_store import PostgresWorkflowApprovalStore
+    from app.workflow.hitl_extension import HITLWorkflowGateway
 
-            gateway = getattr(fastapi_app.state, "hitl_workflow_gateway", None)
-            if gateway:
-                await gateway.check_and_escalate_overdue()
-        except Exception as exc:
-            _log.warning("hitl_escalation_check_failed", error=str(exc))
-
-    _run_async(_check())
+    gateway = HITLWorkflowGateway(
+        approval_store=PostgresWorkflowApprovalStore(get_session_factory())
+    )
+    result: dict[str, int] = _run_async(gateway.check_and_escalate_overdue())
+    if result.get("escalated"):
+        _log.info("hitl_sla_escalations", **result)
+    return result
 
 
 @celery_app.task(name="workflow.retry_dead_letter_webhooks")

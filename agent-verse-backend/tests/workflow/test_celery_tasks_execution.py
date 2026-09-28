@@ -179,32 +179,26 @@ def test_execute_workflow_run_reraises_on_failure(monkeypatch: pytest.MonkeyPatc
 # ── check_hitl_escalations ────────────────────────────────────────────────────
 
 
-def test_check_hitl_escalations_invokes_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.main import app as fastapi_app
+def test_check_hitl_escalations_runs_the_sla_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the task called a gateway method that did not exist."""
+    from app.workflow.hitl_extension import HITLWorkflowGateway
 
-    gateway = AsyncMock()
-    monkeypatch.setattr(fastapi_app.state, "hitl_workflow_gateway", gateway, raising=False)
-
-    ct.check_hitl_escalations.run()
-
-    gateway.check_and_escalate_overdue.assert_awaited_once()
-
-
-def test_check_hitl_escalations_no_gateway_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.main import app as fastapi_app
-
-    monkeypatch.setattr(fastapi_app.state, "hitl_workflow_gateway", None, raising=False)
-    ct.check_hitl_escalations.run()  # must not raise
+    sweep = AsyncMock(return_value={"checked": 2, "escalated": 1, "skipped": 0})
+    monkeypatch.setattr(HITLWorkflowGateway, "check_and_escalate_overdue", sweep)
+    assert ct.check_hitl_escalations.run() == {"checked": 2, "escalated": 1, "skipped": 0}
+    sweep.assert_awaited_once()
 
 
-def test_check_hitl_escalations_swallows_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.main import app as fastapi_app
+def test_check_hitl_escalations_failure_fails_the_task(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.workflow.hitl_extension import HITLWorkflowGateway
 
-    gateway = AsyncMock()
-    gateway.check_and_escalate_overdue.side_effect = RuntimeError("db down")
-    monkeypatch.setattr(fastapi_app.state, "hitl_workflow_gateway", gateway, raising=False)
-
-    ct.check_hitl_escalations.run()  # swallowed, not re-raised
+    monkeypatch.setattr(
+        HITLWorkflowGateway,
+        "check_and_escalate_overdue",
+        AsyncMock(side_effect=RuntimeError("db down")),
+    )
+    with pytest.raises(RuntimeError, match="db down"):
+        ct.check_hitl_escalations.run()
 
 
 # ── retry_dead_letter_webhooks ────────────────────────────────────────────────

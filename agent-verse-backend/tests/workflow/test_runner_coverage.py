@@ -166,7 +166,7 @@ async def test_run_dispatches_to_celery_when_not_inline() -> None:
     run_store = _FakeRunStore(definition)
     compiler = _FakeCompiler(_FakeCompiled())
     tenant_service = AsyncMock()
-    tenant_service.get = AsyncMock(return_value=MagicMock(plan="professional"))
+    tenant_service.get_tenant = AsyncMock(return_value={"plan": "professional"})
     runner = WorkflowRunner(
         compiler=compiler,
         run_store=run_store,
@@ -236,7 +236,7 @@ async def test_resume_dispatches_celery_when_configured() -> None:
     run_store = _FakeRunStore(definition)
     compiler = _FakeCompiler(_FakeCompiled())
     tenant_service = AsyncMock()
-    tenant_service.get = AsyncMock(return_value=MagicMock(plan="starter"))
+    tenant_service.get_tenant = AsyncMock(return_value={"plan": "starter"})
     runner = WorkflowRunner(
         compiler=compiler,
         run_store=run_store,
@@ -431,7 +431,7 @@ async def test_resume_from_hitl_dispatches_via_celery() -> None:
     definition = _wf()
     run_store = _FakeRunStore(definition)
     tenant_service = AsyncMock()
-    tenant_service.get = AsyncMock(return_value=MagicMock(plan="enterprise"))
+    tenant_service.get_tenant = AsyncMock(return_value={"plan": "enterprise"})
     runner = WorkflowRunner(
         compiler=_FakeCompiler(_FakeCompiled()),
         run_store=run_store,
@@ -484,12 +484,32 @@ async def test_load_definition_stamps_id_when_dsl_carries_none() -> None:
 
 async def test_get_plan_tier_falls_back_to_free_on_lookup_error() -> None:
     tenant_service = AsyncMock()
-    tenant_service.get = AsyncMock(side_effect=RuntimeError("db down"))
+    tenant_service.get_tenant = AsyncMock(side_effect=RuntimeError("db down"))
     runner = WorkflowRunner(compiler=MagicMock(), tenant_service=tenant_service)
 
     tier = await runner._get_plan_tier("t-1")
 
     assert tier == "free"
+
+
+@pytest.mark.parametrize(
+    "profile,expected",
+    [
+        ({"plan": "enterprise"}, "enterprise"),
+        ({"plan": "professional"}, "professional"),
+        ({"plan": "platinum"}, "free"),
+        ({}, "free"),
+    ],
+)
+async def test_get_plan_tier_reads_the_real_tenant_profile(profile, expected) -> None:
+    """Regression: it called a non-existent TenantService.get(), so every
+    workflow run was routed to workflows.free regardless of plan."""
+    from app.services.tenant_service import TenantService
+
+    svc = TenantService()
+    svc.get_tenant = AsyncMock(return_value=profile)  # type: ignore[method-assign]
+    runner = WorkflowRunner(compiler=MagicMock(), tenant_service=svc)
+    assert await runner._get_plan_tier("t-1") == expected
 
 
 # ── send_callback() ──────────────────────────────────────────────────────────

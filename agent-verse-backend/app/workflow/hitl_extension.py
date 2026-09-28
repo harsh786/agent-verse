@@ -112,6 +112,30 @@ class WorkflowHITLRequest:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+_SLA_ACTOR = "system:sla"
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _is_overdue(req: Any, now: datetime) -> bool:
+    deadline = _parse_ts(getattr(req, "deadline_at", None))
+    if deadline is not None:
+        return now >= deadline
+    created = _parse_ts(getattr(req, "created_at", None))
+    hours = float(getattr(req, "escalation_after_hours", 0) or 0)
+    if created is None or hours <= 0:
+        return False
+    return (now - created).total_seconds() >= hours * 3600
+
+
 class HITLWorkflowGateway:
     """Workflow-specific HITL gateway — wraps the base HITLGateway."""
 
@@ -261,10 +285,16 @@ class HITLWorkflowGateway:
         return req
 
     async def delegate(
-        self, request_id: str, from_user: str, to_user: str, note: str = ""
+        self,
+        request_id: str,
+        from_user: str,
+        to_user: str,
+        note: str = "",
+        *,
+        tenant_id: str | None = None,
     ) -> WorkflowHITLRequest:
-        """Delegate a pending request to another user."""
-        req = await self.get_request(request_id)
+        """Delegate a pending request to another user (resolved for ``tenant_id``)."""
+        req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
         if req.status != "pending":
@@ -292,9 +322,16 @@ class HITLWorkflowGateway:
         )
         return req
 
-    async def escalate(self, request_id: str, actor_id: str, note: str = "") -> WorkflowHITLRequest:
-        """Manually escalate a request."""
-        req = await self.get_request(request_id)
+    async def escalate(
+        self,
+        request_id: str,
+        actor_id: str,
+        note: str = "",
+        *,
+        tenant_id: str | None = None,
+    ) -> WorkflowHITLRequest:
+        """Escalate a request (manually, or by the SLA sweep)."""
+        req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
@@ -334,10 +371,15 @@ class HITLWorkflowGateway:
         return results
 
     async def add_comment(
-        self, request_id: str, actor_id: str, comment: str
+        self,
+        request_id: str,
+        actor_id: str,
+        comment: str,
+        *,
+        tenant_id: str | None = None,
     ) -> WorkflowHITLRequest:
         """Add a discussion thread comment."""
-        req = await self.get_request(request_id)
+        req = await self.get_request(request_id, tenant_id)
         if req is None:
             raise ValueError(f"HITL request not found: {request_id}")
 
@@ -455,11 +497,62 @@ class HITLWorkflowGateway:
                 found = None
             if found is not None:
                 return found
+        found_local: WorkflowHITLRequest | None = None
         if self._redis is not None:
             raw = await self._redis.get(f"hitl:req:{request_id}")
             if raw:
-                return WorkflowHITLRequest(**json.loads(raw))
-        return self._store.get(request_id)
+                found_local = WorkflowHITLRequest(**json.loads(raw))
+        if found_local is None:
+            found_local = self._store.get(request_id)
+        # The Redis / in-memory mirrors are keyed by request id alone: never hand
+        # one tenant's approval to a caller from another tenant.
+        if found_local is not None and tenant_id and found_local.tenant_id != tenant_id:
+            return None
+        return found_local
+
+    async def check_and_escalate_overdue(
+        self, *, now: datetime | None = None, candidates: list[Any] | None = None
+    ) -> dict[str, int]:
+        """SLA sweep: escalate pending approvals past their deadline.
+
+        The beat task ``workflow.check_hitl_escalations`` called this method,
+        which did not exist — so no approval was ever auto-escalated. A request
+        is overdue when ``deadline_at`` has passed, or (without a deadline) when
+        it has been pending longer than ``escalation_after_hours``. Only
+        ``timeout_action == "escalate"`` is acted on, once per request;
+        auto_approve / auto_reject / pause are NOT IMPLEMENTED and are counted as
+        ``skipped``. Candidates come from the durable store's cross-tenant scan
+        (maintenance role) when wired, else this process's mirror.
+        """
+        current = now or datetime.now(UTC)
+        if candidates is None:
+            scan = getattr(self._approval_store, "list_pending_all_tenants", None)
+            candidates = list(await scan()) if scan is not None else [
+                r for r in self._store.values() if r.status == "pending"
+            ]
+        escalated = skipped = 0
+        for req in candidates:
+            if getattr(req, "status", "") != "pending" or not _is_overdue(req, current):
+                continue
+            if req.timeout_action != "escalate" or not req.allow_escalate:
+                skipped += 1
+                continue
+            if any(
+                d.get("type") == "escalation" and d.get("by") == _SLA_ACTOR
+                for d in req.discussion
+            ):
+                continue  # already auto-escalated once
+            try:
+                await self.escalate(
+                    req.request_id, _SLA_ACTOR, note="SLA deadline passed",
+                    tenant_id=req.tenant_id,
+                )
+                escalated += 1
+            except Exception as exc:
+                _log.warning(
+                    "hitl_sla_escalation_failed", request_id=req.request_id, error=str(exc)
+                )
+        return {"checked": len(candidates), "escalated": escalated, "skipped": skipped}
 
     async def list_pending(
         self,

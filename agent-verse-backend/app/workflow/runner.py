@@ -52,6 +52,9 @@ _CALLBACK_STATUSES = {
 }
 
 
+_PLAN_QUEUES = frozenset({"free", "starter", "professional", "enterprise"})
+
+
 class WorkflowRunner:
     """Entry point for triggering and managing workflow runs."""
 
@@ -744,14 +747,22 @@ class WorkflowRunner:
 
     async def _get_plan_tier(self, tenant_id: str) -> str:
         """Get plan tier for Celery queue routing."""
+        # TenantService exposes get_tenant() → a profile dict. This called a
+        # non-existent get() and read ``.plan`` off the result; the AttributeError
+        # was swallowed, so EVERY workflow run was routed to workflows.free.
         tenant_service = self._services.get("tenant_service")
-        if tenant_service is None:
+        getter = getattr(tenant_service, "get_tenant", None)
+        if getter is None:
             return "free"
         try:
-            tenant = await tenant_service.get(tenant_id)
-            return getattr(tenant, "plan", "free") or "free"
-        except Exception:
+            tenant = await getter(tenant_id)
+        except Exception as exc:
+            # Unknown plan → the most restrictive queue, never a paid one.
+            _log.warning("workflow_plan_lookup_failed", tenant_id=tenant_id, error=str(exc))
             return "free"
+        plan = tenant.get("plan") if isinstance(tenant, dict) else getattr(tenant, "plan", None)
+        plan = str(getattr(plan, "value", plan) or "free").lower()
+        return plan if plan in _PLAN_QUEUES else "free"
 
     async def send_callback(
         self,
