@@ -177,13 +177,29 @@ def test_create_schedule_with_non_cron_type_skips_cron_validation() -> None:
     assert resp.status_code == 201
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"trigger_type": "once"},  # no fire time: would never fire
+        {"trigger_type": "interval", "interval_seconds": 0},
+        {"trigger_type": "geofence"},  # recognised type with no runtime
+    ],
+)
+def test_create_schedule_rejects_specs_that_could_never_fire(body: dict) -> None:
+    """Regression: POST /schedules skipped validate_spec / is_supported, so a
+    broken or unsupported trigger was stored and silently never fired."""
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/schedules", json=body, headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 422, resp.text
+
+
 def test_create_schedule_awaits_create_async_before_returning() -> None:
     store = _AsyncCreateStore()
     client = TestClient(_make_app(schedule_store=store), raise_server_exceptions=False)
 
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "name": "one-shot"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "name": "one-shot"},
         headers={"X-API-Key": _VALID_KEY},
     )
 
@@ -231,7 +247,7 @@ def test_delete_schedule() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     create_resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "name": "one-shot"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "name": "one-shot"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = create_resp.json()["schedule_id"]

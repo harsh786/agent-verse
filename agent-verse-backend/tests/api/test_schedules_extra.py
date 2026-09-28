@@ -140,7 +140,7 @@ def test_create_schedule_requires_auth():
     client = TestClient(_make_app())
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "test"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "test"},
     )
     assert resp.status_code == 401
 
@@ -153,7 +153,7 @@ def test_create_schedule_agent_not_found():
     client = TestClient(_make_app(agent_store=_FakeAgentStore()))
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "agent_id": "ghost-agent", "goal_template": "test"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "agent_id": "ghost-agent", "goal_template": "test"},
         headers=_HEADERS,
     )
     assert resp.status_code == 404
@@ -168,7 +168,7 @@ def test_create_schedule_agent_store_unavailable():
     client = TestClient(app)
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "agent_id": "some-agent", "goal_template": "test"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "agent_id": "some-agent", "goal_template": "test"},
         headers=_HEADERS,
     )
     assert resp.status_code == 500
@@ -185,7 +185,7 @@ def test_pause_schedule_success():
     # First create a schedule
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Pause test"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Pause test"},
         headers=_HEADERS,
     )
     assert resp.status_code == 201
@@ -428,7 +428,7 @@ def test_list_schedules_with_records():
 
     client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "task-1"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "task-1"},
         headers=_HEADERS,
     )
     resp = client.get("/schedules", headers=_HEADERS)
@@ -473,7 +473,7 @@ def test_delete_schedule_success():
 
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "delete me"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "delete me"},
         headers=_HEADERS,
     )
     schedule_id = resp.json()["schedule_id"]

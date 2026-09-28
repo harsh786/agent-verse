@@ -73,7 +73,7 @@ def test_list_schedules_requires_auth() -> None:
 
 def test_create_schedule_requires_auth() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
-    resp = client.post("/schedules", json={"trigger_type": "once"})
+    resp = client.post("/schedules", json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z"})
     assert resp.status_code == 401
 
 
@@ -98,7 +98,7 @@ def test_list_schedules_after_create() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Run daily report", "name": "daily"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Run daily report", "name": "daily"},
         headers={"X-API-Key": _VALID_KEY},
     )
     resp = client.get("/schedules", headers={"X-API-Key": _VALID_KEY})
@@ -115,7 +115,7 @@ def test_create_schedule_once() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Run once"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Run once"},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201
@@ -183,7 +183,7 @@ def test_create_schedule_with_agent_id() -> None:
 
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Task", "agent_id": agent_id},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Task", "agent_id": agent_id},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201
@@ -195,7 +195,7 @@ def test_create_schedule_invalid_agent_id() -> None:
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Task", "agent_id": "nonexistent"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Task", "agent_id": "nonexistent"},
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 404
@@ -209,7 +209,7 @@ def test_get_schedule_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Do it"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Do it"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = cr.json()["schedule_id"]
@@ -232,7 +232,7 @@ def test_update_schedule_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Do it"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Do it"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = cr.json()["schedule_id"]
@@ -256,7 +256,7 @@ def test_delete_schedule_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/schedules",
-        json={"trigger_type": "once"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = cr.json()["schedule_id"]
@@ -329,7 +329,7 @@ def test_pause_schedule_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Task"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Task"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = cr.json()["schedule_id"]
@@ -348,7 +348,7 @@ def test_resume_schedule_success() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     cr = client.post(
         "/schedules",
-        json={"trigger_type": "once", "goal_template": "Task"},
+        json={"trigger_type": "once", "fire_at_iso": "2030-01-01T00:00:00Z", "goal_template": "Task"},
         headers={"X-API-Key": _VALID_KEY},
     )
     sched_id = cr.json()["schedule_id"]

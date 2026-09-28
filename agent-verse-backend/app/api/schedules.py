@@ -33,6 +33,8 @@ class CreateScheduleRequest(BaseModel):
     trigger_type: str = "once"
     cron_expr: str = ""
     interval_seconds: int = 0
+    # Required for trigger_type="once": when to fire (ISO-8601).
+    fire_at_iso: str = ""
     endpoint: str = ""
     goal_template: str = ""
     agent_id: str = ""
@@ -195,9 +197,28 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
         trigger_type=ttype,
         cron_expression=body.cron_expr,
         interval_seconds=body.interval_seconds,
+        fire_at_iso=body.fire_at_iso,
         webhook_token=webhook_token,
         description=body.name or body.goal_template,
     )
+    # Same guards as POST /triggers: this endpoint accepted any TriggerType and
+    # any configuration, so an unsupported type (no runtime) or a misconfigured
+    # one (a "once" with no fire time, an interval of 0) was stored and then
+    # silently never fired.
+    from app.triggers.dispatch_map import is_supported, unsupported_reason
+    from app.triggers.validation import validate_spec
+
+    if not is_supported(spec.trigger_type):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=unsupported_reason(spec.trigger_type),
+        )
+    try:
+        validate_spec(spec, plan=str(getattr(tenant_ctx, "plan", "free") or "free"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from exc
 
     goal_id = body.goal_template or body.agent_id or "unset"
     schedule_id = await _create_with_quota(
