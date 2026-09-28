@@ -392,8 +392,14 @@ def test_notification_test_channel_success() -> None:
 
     svc = NotificationService()
     svc.add_channel(
-        NotificationChannel(channel_id="c1", tenant_id=_TENANT_ID, channel_type="webhook", config={})
+        NotificationChannel(
+            channel_id="c1",
+            tenant_id=_TENANT_ID,
+            channel_type="webhook",
+            config={"url": "https://hooks.example.com/x"},
+        )
     )
+    svc._send = AsyncMock(return_value=None)  # type: ignore[method-assign]
     client = TestClient(
         _make_app(notification_service=svc), raise_server_exceptions=False
     )
@@ -402,6 +408,23 @@ def test_notification_test_channel_success() -> None:
     body = resp.json()
     assert body["success"] is True
     assert "webhook" in body["message"]
+    # Only the tested channel is contacted (it used to broadcast to all channels).
+    assert svc._send.await_count == 1
+    assert svc._send.await_args.args[0].channel_id == "c1"
+
+
+def test_notification_test_channel_without_url_is_not_success() -> None:
+    """A channel with no URL delivered nothing; it used to answer success:true."""
+    from app.services.notification_service import NotificationChannel, NotificationService
+
+    svc = NotificationService()
+    svc.add_channel(
+        NotificationChannel(channel_id="c1", tenant_id=_TENANT_ID, channel_type="webhook", config={})
+    )
+    client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
+    resp = client.post("/governance/notifications/c1/test", headers=_h())
+    assert resp.status_code == 200
+    assert resp.json()["success"] is False
 
 
 def test_notification_test_channel_delivery_failure_returns_200_with_success_false() -> None:
@@ -411,7 +434,7 @@ def test_notification_test_channel_delivery_failure_returns_200_with_success_fal
     svc.add_channel(
         NotificationChannel(channel_id="c1", tenant_id=_TENANT_ID, channel_type="webhook", config={})
     )
-    svc.notify_approval_required = AsyncMock(side_effect=RuntimeError("smtp down"))
+    svc._send = AsyncMock(side_effect=RuntimeError("smtp down"))  # type: ignore[method-assign]
     client = TestClient(
         _make_app(notification_service=svc), raise_server_exceptions=False
     )

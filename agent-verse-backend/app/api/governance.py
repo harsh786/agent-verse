@@ -1216,20 +1216,22 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
     channel = next((c for c in channels if c.channel_id == channel_id), None)
     if channel is None:
         raise HTTPException(404, "Notification channel not found")
+    # Send to THIS channel only and report its real delivery result. It used to
+    # broadcast an approval notice to every channel of the tenant and answer
+    # success:true even when nothing was delivered.
+    message = {
+        "type": "test",
+        "request_id": "test-" + uuid.uuid4().hex[:8],
+        "text": "Test notification from AgentVerse",
+    }
     try:
-        await svc.notify_approval_required(
-            request_id="test-" + uuid.uuid4().hex[:8],
-            goal_id="test-goal",
-            action="Test notification from AgentVerse",
-            risk_level="low",
-            tenant_id=tenant.tenant_id,
-        )
-        return {
-            "success": True,
-            "message": f"Test notification sent to {channel.channel_type} channel.",
-        }
+        await svc._send(channel, message)
     except Exception as e:
         return {"success": False, "message": f"Delivery failed: {e}"}
+    return {
+        "success": True,
+        "message": f"Test notification sent to {channel.channel_type} channel.",
+    }
 
 
 # ---------------------------------------------------------------------------

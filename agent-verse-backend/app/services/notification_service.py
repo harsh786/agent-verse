@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from app.net.ssrf_guard import assert_public_url_async
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -336,17 +337,36 @@ class NotificationService:
                 logger.warning("goal_notification_failed", error=str(exc))
 
     async def _send(self, channel: NotificationChannel, message: dict[str, Any]) -> None:
+        """Deliver *message* to *channel*; raises when it was not delivered.
+
+        An unknown channel type or a missing URL used to return silently and be
+        counted as "sent". Webhook URLs are tenant-supplied, so every hop goes
+        through the SSRF guard (no internal / metadata addresses, redirects
+        re-validated) — they used to be posted with raw httpx.
+        """
         if channel.channel_type == "slack":
-            webhook_url = channel.config.get("webhook_url", "")
-            if webhook_url:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(
-                        webhook_url, json={"text": message.get("text", json.dumps(message))}
-                    )
-                    resp.raise_for_status()
+            url = str(channel.config.get("webhook_url", "") or "")
+            payload: dict[str, Any] = {"text": message.get("text", json.dumps(message))}
         elif channel.channel_type in {"webhook", "teams"}:
-            url = channel.config.get("url", "")
-            if url:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(url, json=message)
-                    resp.raise_for_status()
+            url = str(channel.config.get("url", "") or "")
+            payload = message
+        else:
+            raise ValueError(f"unsupported notification channel type {channel.channel_type!r}")
+        if not url:
+            raise ValueError(f"{channel.channel_type} channel has no URL configured")
+        await _post_public(url, payload)
+
+
+async def _post_public(url: str, payload: dict[str, Any]) -> None:
+    """POST *payload* to a tenant-supplied webhook URL behind the SSRF guard.
+
+    The URL is validated (public address, http/https, DNS anti-rebinding) and
+    redirects are NOT followed — a 3xx is a delivery failure, so a public URL
+    cannot bounce the request to an internal address.
+    """
+    await assert_public_url_async(url, context="notification webhook")
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        resp = await client.post(url, json=payload)
+        if getattr(resp, "is_redirect", False) is True:
+            raise ValueError("notification webhook answered with a redirect; not followed")
+        resp.raise_for_status()

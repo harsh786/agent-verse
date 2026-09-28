@@ -5,8 +5,19 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from app.services.notification_service import NotificationChannel, NotificationService
+
+
+@pytest.fixture(autouse=True)
+def _public_webhook_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Example webhook hosts don't resolve in tests; the SSRF guard is covered
+    by its own tests (and test_send_blocks_internal_webhook_url below)."""
+    monkeypatch.setattr(
+        "app.services.notification_service.assert_public_url_async",
+        AsyncMock(return_value=["93.184.216.34"]),
+    )
 
 
 def _slack_channel(
@@ -280,29 +291,62 @@ class TestNotifyGoalComplete:
 # ── _send (internal routing) ──────────────────────────────────────────────────
 
 class TestSendInternal:
-    async def test_slack_no_webhook_url_noop(self) -> None:
+    # A channel that cannot deliver used to return silently and be counted as
+    # "sent"; it now raises so notify_* reports it failed.
+    async def test_slack_no_webhook_url_raises(self) -> None:
         svc = NotificationService()
         ch = NotificationChannel(
             channel_id="c1", tenant_id="t1", channel_type="slack",
             config={}  # no webhook_url
         )
-        await svc._send(ch, {"text": "test"})  # no exception, no HTTP call
+        with pytest.raises(ValueError, match="no URL"):
+            await svc._send(ch, {"text": "test"})
 
-    async def test_webhook_no_url_noop(self) -> None:
+    async def test_webhook_no_url_raises(self) -> None:
         svc = NotificationService()
         ch = NotificationChannel(
             channel_id="c1", tenant_id="t1", channel_type="webhook",
             config={}  # no url
         )
-        await svc._send(ch, {"type": "test"})  # no exception
+        with pytest.raises(ValueError, match="no URL"):
+            await svc._send(ch, {"type": "test"})
 
-    async def test_unknown_channel_type_noop(self) -> None:
+    async def test_unknown_channel_type_raises(self) -> None:
         svc = NotificationService()
         ch = NotificationChannel(
             channel_id="c1", tenant_id="t1", channel_type="pagerduty",
             config={"key": "val"}
         )
-        await svc._send(ch, {"type": "test"})  # no exception
+        with pytest.raises(ValueError, match="unsupported"):
+            await svc._send(ch, {"type": "test"})
+
+    async def test_misconfigured_channel_is_counted_failed_not_sent(self) -> None:
+        svc = NotificationService()
+        svc.add_channel(
+            NotificationChannel(channel_id="c1", tenant_id="t1", channel_type="webhook", config={})
+        )
+        result = await svc.notify_approval_required(
+            request_id="r", goal_id="g", action="a", risk_level="low", tenant_id="t1"
+        )
+        assert result["sent"] == 0
+        assert result["channels"][0]["status"] == "failed"
+
+    async def test_send_blocks_internal_webhook_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Tenant webhook URLs go through the SSRF guard (were posted raw)."""
+        from app.net import ssrf_guard
+
+        monkeypatch.setattr(
+            "app.services.notification_service.assert_public_url_async",
+            ssrf_guard.assert_public_url_async,
+        )
+        svc = NotificationService()
+        ch = NotificationChannel(
+            channel_id="c1", tenant_id="t1", channel_type="webhook",
+            config={"url": "http://169.254.169.254/latest/meta-data"},
+        )
+        with patch("httpx.AsyncClient") as mock_httpx, pytest.raises(ssrf_guard.SSRFError):
+            await svc._send(ch, {"type": "test"})
+        mock_httpx.assert_not_called()
 
 
 # ── sync_from_db ──────────────────────────────────────────────────────────────

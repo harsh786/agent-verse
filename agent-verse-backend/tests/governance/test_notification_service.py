@@ -6,6 +6,17 @@ import pytest
 import respx
 
 from app.services.notification_service import NotificationChannel, NotificationService
+from unittest.mock import AsyncMock as _AsyncMock
+
+
+@pytest.fixture(autouse=True)
+def _public_webhook_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Example webhook hosts don't resolve in tests; the SSRF guard is covered
+    by its own tests (and test_send_blocks_internal_webhook_url below)."""
+    monkeypatch.setattr(
+        "app.services.notification_service.assert_public_url_async",
+        _AsyncMock(return_value=["93.184.216.34"]),
+    )
 
 # ---------------------------------------------------------------------------
 # Helpers
