@@ -6,9 +6,9 @@ factory function stays slim.  Import paths mirror the originals exactly.
 
 from __future__ import annotations
 
-import contextlib
 from typing import Any
 
+import structlog
 from fastapi import FastAPI
 
 from app.api.a2a import router as a2a_router
@@ -153,6 +153,9 @@ def _include_guarded(
     _guard(app, settings, logger, name, _include)
 
 
+_proactive_log = structlog.get_logger("app.proactive.audit")
+
+
 def _wire_proactive_engine(app: FastAPI) -> None:
     """Construct the ProactiveEngine on app.state with chat-backed delivery + audit."""
     from app.proactive.engine import ProactiveEngine
@@ -168,15 +171,44 @@ def _wire_proactive_engine(app: FastAPI) -> None:
             channel_user_id=signal.payload.get("_channel_user_id"),
         )
 
-    audit_log = getattr(app.state, "audit_log", None)
-
     def _audit(event: dict[str, Any]) -> None:
+        """Write a proactive delivery to the audit trail.
+
+        This used to capture ``app.state.audit_log`` at wiring time (missing the
+        lifespan's DB-backed swap) and call ``record(event_dict)`` — without the
+        required ``tenant_ctx`` and with a dict instead of an AuditEvent — inside
+        ``suppress(Exception)``, so every proactive audit was silently dropped.
+        """
+        import json as _json
+
+        from app.governance.audit import AuditEvent
+        from app.governance.permissions import ActionLevel
+        from app.tenancy.context import PlanTier, TenantContext
+
+        audit_log = getattr(app.state, "audit_log", None)  # resolved per call
         if audit_log is None:
+            _proactive_log.warning("proactive_audit_unavailable")
             return
-        recorder = getattr(audit_log, "record", None) or getattr(audit_log, "log", None)
-        if callable(recorder):
-            with contextlib.suppress(Exception):
-                recorder(event)
+        tenant_id = str(event.get("tenant_id") or "")
+        details = {k: v for k, v in event.items() if k != "tenant_id"}
+        try:
+            audit_log.record(
+                AuditEvent(
+                    goal_id="",
+                    tool_name=f"proactive.{event.get('action') or 'message'}",
+                    action_level=ActionLevel.ALLOW_LOG,
+                    outcome="delivered",
+                    note=_json.dumps(details, default=str)[:2000],
+                    api_key_id="proactive-engine",
+                ),
+                tenant_ctx=TenantContext(
+                    tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="proactive-engine"
+                ),
+            )
+        except Exception as exc:
+            _proactive_log.error(
+                "proactive_audit_write_failed", tenant_id=tenant_id, error=str(exc)
+            )
 
     app.state.proactive_engine = ProactiveEngine(deliver=_deliver, audit=_audit)
 
