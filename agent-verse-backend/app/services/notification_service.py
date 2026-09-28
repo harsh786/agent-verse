@@ -7,6 +7,7 @@ Uses only open-source libraries (httpx).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -36,61 +37,116 @@ class NotificationService:
     def __init__(self) -> None:
         self._channels: dict[str, list[NotificationChannel]] = {}
         self._db: Any = None
+        # Tenants whose persisted channels have been hydrated into the cache.
+        self._loaded_tenants: set[str] = set()
+        # Strong refs for the legacy fire-and-forget writes: asyncio only keeps
+        # weak refs to tasks, so an unreferenced write could be GC'd mid-flight.
+        self._bg_tasks: set[asyncio.Task[Any]] = set()
 
     def set_db(self, db_factory: Any) -> None:
-        """Wire in async SQLAlchemy session factory (called during lifespan)."""
-        self._db = db_factory
+        """Wire in async SQLAlchemy session factory (called during lifespan).
 
-    async def sync_from_db(self, tenant_id: str | None = None) -> None:
-        """Load persisted channels from DB into the in-memory cache."""
-        if self._db is None:
+        Only the request-path (tenant-RLS) factory belongs here. There is no
+        startup warm-up any more: channels are hydrated lazily, per tenant, under
+        that tenant's RLS context (see ``ensure_tenant_loaded``).
+        """
+        self._db = db_factory
+        self._loaded_tenants.clear()
+
+    async def ensure_tenant_loaded(self, tenant_id: str) -> None:
+        """Hydrate *tenant_id*'s persisted channels once per process (idempotent)."""
+        if self._db is None or not tenant_id or tenant_id in self._loaded_tenants:
             return
+        if await self.sync_from_db(tenant_id):
+            self._loaded_tenants.add(tenant_id)
+
+    async def sync_from_db(self, tenant_id: str | None = None) -> bool:
+        """Load one tenant's persisted channels into the in-memory cache.
+
+        Runs inside a transaction with the tenant GUC set, plus an explicit
+        ``tenant_id`` predicate. The previous no-argument form was a cross-tenant
+        startup scan issued WITHOUT the GUC: under the NOBYPASSRLS application
+        role the FORCE'd ``notification_channels`` policy filtered it down to
+        zero rows, so no channel ever survived a restart. A call without a
+        tenant is now a no-op. Returns True when the load succeeded.
+        """
+        if self._db is None:
+            return False
+        if not tenant_id:
+            logger.debug("notification_sync_skipped_no_tenant")
+            return False
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session:
-                if tenant_id:
-                    await session.execute(
-                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-                    )
-                query = (
-                    "SELECT channel_id, tenant_id, channel_type, config, enabled"
-                    " FROM notification_channels"
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    _t(
+                        "SELECT channel_id, tenant_id, channel_type, config, enabled"
+                        " FROM notification_channels WHERE tenant_id = :tid"
+                    ),
+                    {"tid": tenant_id},
                 )
-                params: dict[str, Any] = {}
-                if tenant_id:
-                    query += " WHERE tenant_id = :tid"
-                    params["tid"] = tenant_id
-                result = await session.execute(_t(query), params)
-                for row in result.fetchall():
-                    ch = NotificationChannel(
-                        channel_id=row[0],
-                        tenant_id=row[1],
-                        channel_type=row[2],
-                        config=row[3] or {},
-                        enabled=row[4],
-                    )
-                    self._channels.setdefault(row[1], [])
-                    if not any(c.channel_id == ch.channel_id for c in self._channels[row[1]]):
-                        self._channels[row[1]].append(ch)
+                rows = result.fetchall()
+            for row in rows:
+                if row[1] != tenant_id:  # defense in depth: never cache a foreign row
+                    continue
+                ch = NotificationChannel(
+                    channel_id=row[0],
+                    tenant_id=row[1],
+                    channel_type=row[2],
+                    config=row[3] or {},
+                    enabled=row[4],
+                )
+                cached = self._channels.setdefault(tenant_id, [])
+                if not any(c.channel_id == ch.channel_id for c in cached):
+                    cached.append(ch)
+            return True
         except Exception as exc:
-            logger.warning("notification_sync_failed", error=str(exc))
+            logger.warning("notification_sync_failed", tenant_id=tenant_id, error=str(exc))
+            return False
+
+    def _spawn(self, coro: Any) -> None:
+        task = asyncio.create_task(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     def add_channel(self, channel: NotificationChannel) -> None:
+        """Cache a channel and persist it in the background (legacy sync API).
+
+        Request paths should prefer ``add_channel_async`` so the row exists
+        before the caller is told it was created.
+        """
         self._channels.setdefault(channel.tenant_id, []).append(channel)
         if self._db is not None:
-            import asyncio
+            self._spawn(self._persist_channel(channel))
 
-            asyncio.create_task(self._persist_channel(channel))  # noqa: RUF006
+    async def add_channel_async(self, channel: NotificationChannel) -> None:
+        """Cache a channel and persist it before returning."""
+        await self.ensure_tenant_loaded(channel.tenant_id)
+        self._channels.setdefault(channel.tenant_id, []).append(channel)
+        if self._db is not None:
+            await self._persist_channel(channel)
 
     async def _persist_channel(self, channel: NotificationChannel) -> None:
-        """Persist a channel to the DB (fire-and-forget)."""
+        """Persist a channel to the DB under its tenant's RLS context."""
         try:
             import json as _json
 
             from sqlalchemy import text as _t
 
-            async with self._db() as session, session.begin():
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, channel.tenant_id),
+            ):
                 await session.execute(
                     _t("""
                     INSERT INTO notification_channels
@@ -98,6 +154,7 @@ class NotificationService:
                     VALUES (:cid, :tid, :ctype, CAST(:cfg AS jsonb), :enabled)
                     ON CONFLICT (channel_id) DO UPDATE
                         SET config = EXCLUDED.config, enabled = EXCLUDED.enabled
+                        WHERE notification_channels.tenant_id = EXCLUDED.tenant_id
                 """),
                     {
                         "cid": channel.channel_id,
@@ -114,28 +171,51 @@ class NotificationService:
         return [c for c in self._channels.get(tenant_id, []) if c.enabled]
 
     def remove_channel(self, channel_id: str, tenant_id: str) -> bool:
+        """Remove a cached channel and delete it in the background (legacy sync API)."""
         channels = self._channels.get(tenant_id, [])
         before = len(channels)
         self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
         removed = len(self._channels[tenant_id]) < before
         if removed and self._db is not None:
-            import asyncio
-
-            asyncio.create_task(self._delete_channel(channel_id))  # noqa: RUF006
+            self._spawn(self._delete_channel(channel_id, tenant_id))
         return removed
 
-    async def _delete_channel(self, channel_id: str) -> None:
-        """Remove a channel from the DB (fire-and-forget)."""
+    async def remove_channel_async(self, channel_id: str, tenant_id: str) -> bool:
+        """Remove a channel from the cache and the DB; True if it existed for *tenant_id*."""
+        await self.ensure_tenant_loaded(tenant_id)
+        channels = self._channels.get(tenant_id, [])
+        before = len(channels)
+        self._channels[tenant_id] = [c for c in channels if c.channel_id != channel_id]
+        removed = len(self._channels[tenant_id]) < before
+        if self._db is not None:
+            deleted = await self._delete_channel(channel_id, tenant_id)
+            removed = removed or deleted
+        return removed
+
+    async def _delete_channel(self, channel_id: str, tenant_id: str) -> bool:
+        """Delete a channel row under its tenant's RLS context; True if a row went."""
         try:
             from sqlalchemy import text as _t
 
-            async with self._db() as session, session.begin():
-                await session.execute(
-                    _t("DELETE FROM notification_channels WHERE channel_id = :cid"),
-                    {"cid": channel_id},
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    _t(
+                        "DELETE FROM notification_channels"
+                        " WHERE channel_id = :cid AND tenant_id = :tid"
+                    ),
+                    {"cid": channel_id, "tid": tenant_id},
                 )
+            rowcount = getattr(result, "rowcount", 0)
+            return isinstance(rowcount, int) and rowcount > 0
         except Exception as exc:
             logger.warning("notification_delete_failed", error=str(exc))
+            return False
 
     async def notify_approval_required(
         self,
@@ -148,6 +228,7 @@ class NotificationService:
         approval_token: str = "",
     ) -> dict[str, Any]:
         """Send notification to all tenant channels."""
+        await self.ensure_tenant_loaded(tenant_id)
         channels = self.get_channels(tenant_id)
         if not channels:
             return {"sent": 0, "channels": []}
@@ -208,6 +289,7 @@ class NotificationService:
 
         Called from HITLGateway.expire_timed_out_requests() for each expired request.
         """
+        await self.ensure_tenant_loaded(tenant_id)
         channels = self.get_channels(tenant_id)
         if not channels:
             return {"sent": 0, "channels": []}
@@ -239,6 +321,7 @@ class NotificationService:
 
     async def notify_goal_complete(self, *, goal_id: str, status: str, tenant_id: str) -> None:
         """Notify when a goal reaches a terminal state."""
+        await self.ensure_tenant_loaded(tenant_id)
         channels = self.get_channels(tenant_id)
         message = {
             "type": "goal_terminal",

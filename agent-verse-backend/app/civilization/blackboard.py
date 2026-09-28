@@ -13,6 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -84,7 +85,11 @@ class Blackboard:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     await session.execute(
                         text("""
                             INSERT INTO blackboard_entries
@@ -146,7 +151,11 @@ class Blackboard:
                 from sqlalchemy import text
 
                 # Atomic update with version check
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     result = await session.execute(
                         text("""
                             UPDATE blackboard_entries
@@ -241,7 +250,11 @@ class Blackboard:
                     conditions.append("author_agent_id = :author")
                     params["author"] = author_agent_id
                 where = " AND ".join(conditions)
-                async with self._db() as session:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     rows = (
                         await session.execute(
                             text(

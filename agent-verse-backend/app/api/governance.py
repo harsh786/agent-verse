@@ -968,7 +968,9 @@ async def create_notification_channel(
         channel_type=body.channel_type,
         config=body.config,
     )
-    svc.add_channel(channel)
+    # Awaited, RLS-scoped write: the row exists (for every replica) before the
+    # caller is told it was created.
+    await svc.add_channel_async(channel)
     return {"channel_id": channel.channel_id, "type": channel.channel_type, "status": "created"}
 
 
@@ -978,6 +980,7 @@ async def list_notification_channels(request: Request) -> list[dict[str, Any]]:
     svc = getattr(request.app.state, "notification_service", None)
     if svc is None:
         return []
+    await svc.ensure_tenant_loaded(tenant.tenant_id)
     return [
         {"channel_id": c.channel_id, "type": c.channel_type, "enabled": c.enabled}
         for c in svc.get_channels(tenant.tenant_id)
@@ -991,7 +994,7 @@ async def delete_notification_channel(request: Request, channel_id: str) -> None
     svc = getattr(request.app.state, "notification_service", None)
     if svc is None:
         raise HTTPException(404, "Notification channel not found")
-    removed = svc.remove_channel(channel_id, tenant.tenant_id)
+    removed = await svc.remove_channel_async(channel_id, tenant.tenant_id)
     if not removed:
         raise HTTPException(404, "Notification channel not found")
 
@@ -1003,6 +1006,7 @@ async def test_notification_channel(request: Request, channel_id: str) -> dict[s
     svc = getattr(request.app.state, "notification_service", None)
     if svc is None:
         raise HTTPException(503, "Notification service unavailable")
+    await svc.ensure_tenant_loaded(tenant.tenant_id)
     channels = svc.get_channels(tenant.tenant_id)
     channel = next((c for c in channels if c.channel_id == channel_id), None)
     if channel is None:

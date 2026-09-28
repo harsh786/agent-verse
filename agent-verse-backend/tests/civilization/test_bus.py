@@ -41,6 +41,12 @@ class _FakeSession:
         return _noop_ctx()
 
     async def execute(self, statement: Any, params: Any = None) -> Any:
+        if "set_config" in str(statement):
+            # The tenant RLS context (sqlalchemy_rls_context): record, don't count.
+            self.__dict__.setdefault("gucs", []).append(params)
+            from types import SimpleNamespace as _NS
+
+            return _NS(fetchall=lambda: [], fetchone=lambda: None, rowcount=1)
         self.executions.append((statement, params))
         return SimpleNamespace(
             fetchall=lambda: list(self._rows),
@@ -580,3 +586,14 @@ async def test_subscribe_no_topics_uses_all_valid():
 
     # Should have subscribed to all valid topics
     assert len(collected_channels) == len(_VALID_TOPICS)
+
+
+@pytest.mark.asyncio
+async def test_bus_reads_run_under_the_tenant_rls_context():
+    """Regression: bus reads/writes opened bare sessions, so under the NOBYPASSRLS
+    application role the FORCE'd civilization tables returned nothing / rejected
+    inserts. Every DB call now sets app.tenant_id first."""
+    session = _FakeSession(rows=[])
+    bus = _make_bus(db=lambda: session)
+    await bus.get_messages(limit=5)
+    assert session.gucs and session.gucs[0] == {"tid": "t1"}  # set before the query

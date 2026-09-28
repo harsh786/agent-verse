@@ -704,9 +704,9 @@ async def test_db_save_skill_executes_insert() -> None:
 
     await _db_save_skill(skill_dict, db_factory)
 
-    # session.execute is called once for the RLS `system_session` context manager
-    # (SET LOCAL) and once for the actual INSERT — assert the INSERT happened by
-    # checking for the call carrying the bound INSERT params.
+    # session.execute is called for the tenant RLS context (set_config) and for
+    # the actual INSERT — assert the INSERT happened by checking for the call
+    # carrying the bound INSERT params.
     assert session.execute.await_count >= 1
     insert_calls = [
         call
@@ -715,6 +715,57 @@ async def test_db_save_skill_executes_insert() -> None:
     ]
     assert len(insert_calls) == 1
     assert insert_calls[0].args[1]["name"] == "Persisted"
+    assert insert_calls[0].args[1]["tenant_id"] == "tenant-x"
+    # asyncpg binds timestamptz only from a datetime, never the cached ISO string.
+    import datetime as _dt
+
+    assert isinstance(insert_calls[0].args[1]["created_at"], _dt.datetime)
+
+
+async def test_db_save_skill_runs_under_tenant_rls_not_system_session() -> None:
+    """Request path: the write must set the owning tenant's GUC and must NEVER
+    switch RLS off (``system_session``) — under the NOBYPASSRLS role that made
+    every insert fail, and under a BYPASSRLS role it is a privilege escalation."""
+    from app.api.skills_runtime import _db_save_skill
+
+    session = AsyncMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    session.begin = MagicMock()
+    session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
+    session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
+    session.execute = AsyncMock()
+    db_factory = MagicMock(return_value=session)
+
+    await _db_save_skill(
+        {
+            "skill_id": str(uuid.uuid4()),
+            "tenant_id": "tenant-rls",
+            "name": "n",
+            "description": "d",
+            "created_at": "2024-01-01T00:00:00Z",
+        },
+        db_factory,
+    )
+
+    stmts = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert not any("row_security" in st for st in stmts), stmts
+    guc = [c for c in session.execute.await_args_list if "set_config('app.tenant_id'" in str(c.args[0])]
+    assert guc and guc[0].args[1] == {"tid": "tenant-rls"}
+    # GUC is set BEFORE the insert.
+    first_insert = next(i for i, st in enumerate(stmts) if "INSERT INTO skills" in st)
+    first_guc = next(i for i, st in enumerate(stmts) if "set_config('app.tenant_id'" in st)
+    assert first_guc < first_insert
+    # Defense in depth: the upsert can never rewrite another tenant's row.
+    assert "WHERE skills.tenant_id = EXCLUDED.tenant_id" in stmts[first_insert]
+
+
+async def test_db_save_skill_without_tenant_is_skipped() -> None:
+    from app.api.skills_runtime import _db_save_skill
+
+    db_factory = MagicMock()
+    await _db_save_skill({"skill_id": "x", "name": "n", "description": "d"}, db_factory)
+    db_factory.assert_not_called()
 
 
 async def test_db_save_skill_swallows_exception() -> None:
@@ -767,6 +818,12 @@ async def test_load_tenant_skills_from_db_populates_cache() -> None:
     await _load_tenant_skills_from_db(tenant_id, db_factory)
 
     assert tenant_id in _loaded_tenants
+    # The SELECT runs under this tenant's RLS GUC.
+    guc = [
+        c for c in session.execute.await_args_list
+        if "set_config('app.tenant_id'" in str(c.args[0])
+    ]
+    assert guc and guc[0].args[1] == {"tid": tenant_id}
     loaded = _tenant_skills.get(tenant_id, [])
     assert any(s["name"] == "Loaded From DB" for s in loaded)
 

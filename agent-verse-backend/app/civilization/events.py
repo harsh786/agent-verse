@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -56,7 +57,11 @@ async def emit_event(
         try:
             from sqlalchemy import text
 
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO civilization_events
@@ -113,7 +118,11 @@ async def get_events_since(
             conditions.append("type = ANY(:types)")
             params["types"] = event_types
         where = " AND ".join(conditions)
-        async with db() as session:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             rows = (
                 await session.execute(
                     text(

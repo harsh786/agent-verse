@@ -1677,8 +1677,10 @@ def create_app(
             # Wire DB into NotificationService for persistent channel storage
             _notif_svc = getattr(app.state, "notification_service", None)
             if _notif_svc is not None:
+                # No startup warm-up: a cross-tenant scan cannot see RLS-protected
+                # rows under the NOBYPASSRLS role. Channels hydrate lazily per
+                # tenant (NotificationService.ensure_tenant_loaded).
                 _notif_svc.set_db(db_factory)
-                await _notif_svc.sync_from_db()
                 logger.info("notification_service_db_wired")
 
             # Wire DB into MFAStore for persistent TOTP secret + recovery-code storage

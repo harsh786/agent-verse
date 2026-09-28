@@ -6,7 +6,7 @@ Targets: 60% → 80%+ coverage on app/api/governance.py
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -226,14 +226,17 @@ def test_list_notifications_with_service() -> None:
         config={},
     )
     svc.get_channels.return_value = [ch]
+    svc.ensure_tenant_loaded = AsyncMock()
     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
     resp = client.get("/governance/notifications", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
+    # The listing hydrates the caller's persisted channels (RLS-scoped) first.
+    svc.ensure_tenant_loaded.assert_awaited_once_with(_CTX.tenant_id)
 
 
 def test_create_notification_channel_with_service() -> None:
     svc = MagicMock()
-    svc.add_channel.return_value = None
+    svc.add_channel_async = AsyncMock(return_value=None)
     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
     resp = client.post(
         "/governance/notifications",
@@ -241,6 +244,9 @@ def test_create_notification_channel_with_service() -> None:
         headers={"X-API-Key": _VALID_KEY},
     )
     assert resp.status_code == 201
+    # Persistence is awaited (not fire-and-forget) and scoped to the caller.
+    svc.add_channel_async.assert_awaited_once()
+    assert svc.add_channel_async.await_args.args[0].tenant_id == _CTX.tenant_id
 
 
 def test_delete_notification_channel_no_service() -> None:

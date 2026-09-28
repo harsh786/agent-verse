@@ -20,6 +20,7 @@ from app.civilization.models import (
     SpawnDecision,
     SpawnVerdict,
 )
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 from app.observability.tracing import get_tracer
 
@@ -222,7 +223,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
@@ -344,7 +349,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 row = (
                     await session.execute(
                         text("""
@@ -391,7 +400,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 row = (
                     await session.execute(
                         text(
@@ -471,7 +484,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     INSERT INTO civilization_agents
@@ -503,7 +520,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE civilization_agents
@@ -521,7 +542,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE civilization_agents
@@ -585,7 +610,11 @@ class Governor:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text(
                         "UPDATE civilizations SET status=:status, updated_at=NOW() "
@@ -649,7 +678,11 @@ class Governor:
 
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     INSERT INTO spawn_requests

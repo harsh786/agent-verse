@@ -428,7 +428,9 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        # Tenant RLS transaction: without the GUC this INSERT violated the
+        # civilization_agents policy under the NOBYPASSRLS application role.
+        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
             await session.execute(
                 text("""
                     INSERT INTO civilization_agents
@@ -443,6 +445,7 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
                         status = 'active',
                         budget_usd = EXCLUDED.budget_usd,
                         last_active_at = NOW()
+                    WHERE civilization_agents.tenant_id = EXCLUDED.tenant_id
                 """),
                 {
                     "id": member_id,
@@ -453,7 +456,6 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
                     "budget_usd": body.budget_usd,
                 },
             )
-            await session.commit()
     except Exception as exc:
         logger.warning("add_member_failed", error=str(exc))
         raise HTTPException(500, f"Failed to add member: {exc}") from exc
@@ -490,7 +492,8 @@ async def list_civilization_members(request: Request, civ_id: str) -> list[dict]
                             ca.spawned_at, ca.last_active_at,
                             a.name AS agent_name, a.autonomy_mode, a.goal_template
                         FROM civilization_agents ca
-                        LEFT JOIN agents a ON a.id = ca.agent_id
+                        LEFT JOIN agents a
+                            ON a.id = ca.agent_id AND a.tenant_id = ca.tenant_id
                         WHERE ca.civilization_id = :cid AND ca.tenant_id = :tid
                           AND ca.status NOT IN ('retired')
                         ORDER BY ca.reputation DESC
@@ -534,7 +537,7 @@ async def remove_civilization_member(request: Request, civ_id: str, agent_id: st
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        async with db() as session, session.begin(), _rls_ctx(session, tenant_ctx.tenant_id):
             await session.execute(
                 text("""
                     UPDATE civilization_agents
@@ -543,7 +546,6 @@ async def remove_civilization_member(request: Request, civ_id: str, agent_id: st
                 """),
                 {"cid": civ_id, "aid": agent_id, "tid": tenant_ctx.tenant_id},
             )
-            await session.commit()
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
 

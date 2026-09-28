@@ -113,22 +113,72 @@ def _dict_to_skill_def(skill_dict: dict[str, Any]) -> SkillDefinition:
 # ── DB persistence helpers (write-through cache for custom tenant skills) ──────
 
 
+def _parse_ts(value: Any) -> datetime.datetime | None:
+    """ISO-8601 string (as kept in the in-memory cache) -> aware datetime.
+
+    asyncpg binds a ``timestamptz`` parameter only from a datetime; passing the
+    cached ISO string made every INSERT fail with a DataError.
+    """
+    if isinstance(value, datetime.datetime):
+        return value
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _request_db_factory(request: Request) -> Any:
+    """The request-path session factory (the NOBYPASSRLS application role).
+
+    Deliberately no fallback that builds a second engine: a request path must
+    use the app's own pool, and must never reach for the maintenance role.
+    """
+    return getattr(request.app.state, "db_session_factory", None)
+
+
+async def _tenant_skill_list(request: Request, tenant_id: str) -> list[dict[str, Any]]:
+    """This tenant's custom skills, lazily hydrated from Postgres once per process.
+
+    Without this the write-through cache was write-only: a skill created on one
+    replica (or before a restart) was never visible anywhere else.
+    """
+    await _load_tenant_skills_from_db(tenant_id, _request_db_factory(request))
+    return _tenant_skills.get(tenant_id, [])
+
+
 async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
     """Persist a custom tenant skill to the skills table.
 
     Uses the real 0074 migration schema: id=String(32), visibility, is_active.
     Fails silently — in-memory store is the source of truth.
+
+    Runs under the owning tenant's RLS context. This is a request path, so it
+    must never use ``system_session``: under the NOBYPASSRLS application role
+    ``SET LOCAL row_security = off`` makes every statement fail with "query
+    would be affected by row-level security policy for table skills" (so no
+    skill was ever persisted), and under a BYPASSRLS role it would be a
+    privilege escalation for a tenant-scoped write.
     """
     if db_factory is None:
+        return
+    tenant_id = str(skill_dict.get("tenant_id") or "")
+    if not tenant_id:
+        _log.warning("skill_db_persist_skipped_no_tenant skill_id=%s", skill_dict.get("skill_id"))
         return
     try:
         from sqlalchemy import text
 
-        from app.db.rls import system_session
+        from app.db.rls import sqlalchemy_rls_context
 
         # The DB id column is String(32); strip UUID dashes.
         db_id = skill_dict["skill_id"].replace("-", "")
-        async with db_factory() as session, session.begin(), system_session(session):
+        async with (
+            db_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             await session.execute(
                 text("""
                     INSERT INTO skills (
@@ -138,22 +188,26 @@ async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
                         visibility, is_active, created_by, created_at, updated_at
                     ) VALUES (
                         :id, :tenant_id, :name, :version, :description,
-                        :trigger_hints, :instructions, :few_shot_examples,
-                        :allowed_tools, :required_connectors, :token_estimate,
-                        :visibility, :is_active, :created_by, :created_at, NOW()
+                        CAST(:trigger_hints AS json), :instructions,
+                        CAST(:few_shot_examples AS json), CAST(:allowed_tools AS json),
+                        CAST(:required_connectors AS json), :token_estimate,
+                        :visibility, :is_active, :created_by,
+                        COALESCE(CAST(:created_at AS timestamptz), NOW()), NOW()
                     )
                     ON CONFLICT (id) DO UPDATE SET
                         name         = EXCLUDED.name,
+                        version      = EXCLUDED.version,
                         description  = EXCLUDED.description,
                         instructions = EXCLUDED.instructions,
                         trigger_hints = EXCLUDED.trigger_hints,
                         allowed_tools = EXCLUDED.allowed_tools,
                         is_active    = EXCLUDED.is_active,
                         updated_at   = NOW()
+                    WHERE skills.tenant_id = EXCLUDED.tenant_id
                 """),
                 {
                     "id": db_id,
-                    "tenant_id": skill_dict.get("tenant_id", ""),
+                    "tenant_id": tenant_id,
                     "name": skill_dict["name"],
                     "version": skill_dict.get("version", "1.0.0"),
                     "description": skill_dict["description"],
@@ -165,8 +219,8 @@ async def _db_save_skill(skill_dict: dict[str, Any], db_factory: Any) -> None:
                     "token_estimate": 0,
                     "visibility": "tenant",
                     "is_active": True,
-                    "created_by": skill_dict.get("tenant_id", ""),
-                    "created_at": skill_dict.get("created_at"),
+                    "created_by": tenant_id,
+                    "created_at": _parse_ts(skill_dict.get("created_at")),
                 },
             )
     except Exception as exc:
@@ -187,7 +241,15 @@ async def _load_tenant_skills_from_db(tenant_id: str, db_factory: Any) -> None:
     try:
         from sqlalchemy import text
 
-        async with db_factory() as session, session.begin():
+        from app.db.rls import sqlalchemy_rls_context
+
+        # Tenant GUC: without it the FORCE'd skill_access policy hides every
+        # tenant row from the NOBYPASSRLS application role (0 rows, no error).
+        async with (
+            db_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
             result = await session.execute(
                 text(
                     "SELECT id, tenant_id, name, version, description, "
@@ -258,7 +320,7 @@ async def list_skills(
             )
 
     # Tenant skills
-    for s in _tenant_skills.get(tenant.tenant_id, []):
+    for s in await _tenant_skill_list(request, tenant.tenant_id):
         if status and s.get("status") != status:
             continue
         skills.append({**s, "enabled": True, "is_platform": False})
@@ -296,7 +358,7 @@ async def execute_skill_by_id(
 
     skill_dict = _platform_skills.get(body.skill_id)
     if not skill_dict:
-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
         skill_dict = next((s for s in tenant_skills if s["skill_id"] == body.skill_id), None)
     if not skill_dict:
         raise HTTPException(404, f"Skill {body.skill_id!r} not found")
@@ -391,7 +453,7 @@ async def get_skill(request: Request, skill_id: str) -> dict[str, Any]:
 
     skill = _platform_skills.get(skill_id)
     if not skill:
-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
         skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
 
     if not skill:
@@ -423,22 +485,16 @@ async def create_tenant_skill(request: Request, body: CreateSkillRequest) -> dic
         "is_builtin": False,
         "created_at": now,
     }
+    # Hydrate first so a later lazy load cannot append a duplicate of this skill.
+    await _tenant_skill_list(request, tenant.tenant_id)
     _tenant_skills.setdefault(tenant.tenant_id, []).append(skill)
 
-    # Write-through: persist to DB (non-blocking, best-effort)
-    db_factory = getattr(request.app.state, "db_session_factory", None)
-    if db_factory is None:
-        try:
-            from app.db.session import get_session_factory
-
-            db_factory = get_session_factory()
-        except Exception:
-            db_factory = None
-    import asyncio
-
-    _save_task = asyncio.create_task(_db_save_skill(skill, db_factory))
-    # Suppress the task reference warning; fire-and-forget with best-effort error logging.
-    _save_task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    # Write-through: persist to DB under the tenant's RLS context (best-effort —
+    # a DB failure is logged, the in-memory cache stays authoritative). Awaited
+    # rather than fire-and-forget: an unreferenced asyncio task can be garbage
+    # collected mid-flight, and the caller should not get a 2xx before the row
+    # other replicas will read exists.
+    await _db_save_skill(skill, _request_db_factory(request))
 
     return {"skill_id": skill_id, "status": "created"}
 
@@ -449,7 +505,8 @@ async def enable_skill(request: Request, skill_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
 
     if skill_id not in _platform_skills and not any(
-        s["skill_id"] == skill_id for s in _tenant_skills.get(tenant.tenant_id, [])
+        s["skill_id"] == skill_id
+        for s in await _tenant_skill_list(request, tenant.tenant_id)
     ):
         raise HTTPException(404, f"Skill {skill_id} not found")
 
@@ -476,7 +533,7 @@ async def execute_skill(
 
     skill = _platform_skills.get(skill_id)
     if not skill:
-        tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+        tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
         skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
 
     if not skill:
@@ -567,7 +624,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
     body = await request.json()
 
     # Find existing skill
-    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+    tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
     skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
     if not skill:
         raise HTTPException(404, "Skill not found")
@@ -593,6 +650,9 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
     skill["version"] = ".".join(parts)
     skill["updated_at"] = datetime.datetime.now(datetime.UTC).isoformat()
 
+    # Write-through (upsert) so the edit survives a restart / is seen by other replicas.
+    await _db_save_skill(skill, _request_db_factory(request))
+
     return {"skill_id": skill_id, "version": skill["version"], "status": "updated"}
 
 
@@ -600,7 +660,7 @@ async def update_tenant_skill(request: Request, skill_id: str) -> dict[str, Any]
 async def get_skill_versions(request: Request, skill_id: str) -> dict[str, Any]:
     """List version history for a skill."""
     tenant = _require_tenant(request)
-    tenant_skills = _tenant_skills.get(tenant.tenant_id, [])
+    tenant_skills = await _tenant_skill_list(request, tenant.tenant_id)
     skill = next((s for s in tenant_skills if s["skill_id"] == skill_id), None)
     if not skill:
         # Check platform skills too
@@ -638,7 +698,7 @@ async def match_skill_by_trigger(request: Request) -> dict[str, Any]:
                 )
                 break
 
-    for skill in _tenant_skills.get(tenant.tenant_id, []):
+    for skill in await _tenant_skill_list(request, tenant.tenant_id):
         for hint in skill.get("trigger_hints", []):
             if hint.lower() in trigger or trigger in hint.lower():
                 matches.append(

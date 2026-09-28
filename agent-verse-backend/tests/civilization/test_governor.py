@@ -19,6 +19,16 @@ class _noop_ctx:
         return None
 
 
+class _AsyncNullCtx:
+    """What a real AsyncSession.begin() returns: an async context manager."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
 class _FakeSession:
     def __init__(self, rows=None, raise_on=None):
         self.executions = []
@@ -35,6 +45,12 @@ class _FakeSession:
         return _noop_ctx()
 
     async def execute(self, stmt, params=None):
+        if "set_config" in str(stmt):
+            # The tenant RLS context (sqlalchemy_rls_context): record, don't count.
+            self.__dict__.setdefault("gucs", []).append(params)
+            from types import SimpleNamespace as _NS
+
+            return _NS(fetchall=lambda: [], fetchone=lambda: None, rowcount=1)
         if self._raise:
             raise RuntimeError(self._raise)
         self.executions.append((stmt, params))
@@ -194,6 +210,7 @@ async def test_governor_auto_retire_below_reputation_floor():
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=_AsyncNullCtx())
     mock_session.execute = AsyncMock(return_value=AsyncMock(fetchall=lambda: [
         ("m1", "agent-1", 0.1, datetime.now(UTC)),  # below floor 0.2
         ("m2", "agent-2", 0.9, datetime.now(UTC)),  # healthy
@@ -215,6 +232,7 @@ async def test_governor_auto_retire_respects_min_viable_roster():
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=_AsyncNullCtx())
     mock_session.execute = AsyncMock(return_value=AsyncMock(fetchall=lambda: [
         ("m1", "agent-1", 0.05, datetime.now(UTC)),  # well below floor, but only member
     ]))
@@ -771,6 +789,7 @@ async def test_governor_auto_retire_idle_by_ttl():
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=_AsyncNullCtx())
     mock_session.execute = AsyncMock(return_value=AsyncMock(fetchall=lambda: [
         ("m1", "agent-1", 0.9, old_time),  # healthy rep but idle too long
         ("m2", "agent-2", 0.9, datetime.now(UTC)),  # recently active
@@ -794,6 +813,7 @@ async def test_governor_auto_retire_exception_returns_empty():
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session.begin = MagicMock(return_value=_AsyncNullCtx())
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
     mock_db = MagicMock(return_value=mock_session)
 

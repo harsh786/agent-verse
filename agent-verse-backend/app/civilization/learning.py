@@ -11,6 +11,7 @@ import uuid
 from typing import Any
 
 from app.civilization.events import CivEventType, emit_event
+from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -59,7 +60,11 @@ class LearningPipeline:
             try:
                 from sqlalchemy import text
 
-                async with self._db() as session, session.begin():
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, self._tenant_id),
+                ):
                     await session.execute(
                         text("""
                         INSERT INTO civilization_learnings
@@ -275,7 +280,11 @@ class LearningPipeline:
                 conditions.append("status = :status")
                 params["status"] = status
             where = " AND ".join(conditions)
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text(
@@ -312,7 +321,11 @@ class LearningPipeline:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 rows = (
                     await session.execute(
                         text("""
@@ -337,7 +350,11 @@ class LearningPipeline:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE civilization_learnings
@@ -362,7 +379,11 @@ class LearningPipeline:
         try:
             from sqlalchemy import text
 
-            async with self._db() as session, session.begin():
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, self._tenant_id),
+            ):
                 await session.execute(
                     text("""
                     UPDATE civilization_learnings

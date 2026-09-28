@@ -303,7 +303,7 @@ def test_delete_notification_channel_no_service() -> None:
 def test_delete_notification_channel_not_found() -> None:
     """Lines 722-723: channel not found → 404."""
     svc = MagicMock()
-    svc.remove_channel = MagicMock(return_value=False)
+    svc.remove_channel_async = AsyncMock(return_value=False)
 
     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
     resp = client.delete("/governance/notifications/missing-id", headers=_headers())
@@ -313,7 +313,7 @@ def test_delete_notification_channel_not_found() -> None:
 def test_delete_notification_channel_success() -> None:
     """Lines 722-723: channel found and removed → 204."""
     svc = MagicMock()
-    svc.remove_channel = MagicMock(return_value=True)
+    svc.remove_channel_async = AsyncMock(return_value=True)
 
     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)
     resp = client.delete("/governance/notifications/ch-1", headers=_headers())
@@ -884,7 +884,7 @@ def test_create_notification_channel_with_service() -> None:
     added = []
 
     svc = MagicMock()
-    svc.add_channel = MagicMock(side_effect=lambda ch: added.append(ch))
+    svc.add_channel_async = AsyncMock(side_effect=lambda ch: added.append(ch))
     svc.get_channels = MagicMock(return_value=added)
 
     client = TestClient(_make_app(notification_service=svc), raise_server_exceptions=False)

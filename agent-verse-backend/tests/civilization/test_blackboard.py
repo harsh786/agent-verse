@@ -277,6 +277,12 @@ class _FakeDBSession:
         return _noop_ctx()
 
     async def execute(self, statement, params=None):
+        if "set_config" in str(statement):
+            # The tenant RLS context (sqlalchemy_rls_context): record, don't count.
+            self.__dict__.setdefault("gucs", []).append(params)
+            from types import SimpleNamespace as _NS
+
+            return _NS(fetchall=lambda: [], fetchone=lambda: None, rowcount=1)
         if self._raise:
             raise RuntimeError("DB error")
         self.executions.append((statement, params))
@@ -384,6 +390,12 @@ async def test_update_with_db_version_conflict_raises():
             return _noop_ctx()
 
         async def execute(self, statement, params=None):
+            if "set_config" in str(statement):
+                # The tenant RLS context (sqlalchemy_rls_context): record, don't count.
+                self.__dict__.setdefault("gucs", []).append(params)
+                from types import SimpleNamespace as _NS
+
+                return _NS(fetchall=lambda: [], fetchone=lambda: None, rowcount=1)
             nonlocal call_count
             from types import SimpleNamespace
             call_count += 1

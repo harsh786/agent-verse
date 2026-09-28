@@ -46,6 +46,7 @@ async def test_civilization_tick_e2e(_migrated_backends: tuple[str, str]) -> Non
     from app.civilization.models import Constitution
     from app.civilization.orchestrator import CivilizationOrchestrator
     from app.civilization.society import Society
+    from app.db.rls import sqlalchemy_rls_context
 
     engine = create_async_engine(database_url)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -78,7 +79,8 @@ async def test_civilization_tick_e2e(_migrated_backends: tuple[str, str]) -> Non
     try:
         # ── Seed a civilization, two members, and a learning candidate ─────────
         now = datetime.now(UTC)
-        async with session_factory() as s, s.begin():
+        # Seed as the tenant (the harness may run as the NOBYPASSRLS app role).
+        async with session_factory() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             await s.execute(
                 text(
                     "INSERT INTO civilizations (id, tenant_id, name, status, constitution) "
@@ -186,7 +188,7 @@ async def test_civilization_tick_e2e(_migrated_backends: tuple[str, str]) -> Non
         assert learn["validated"] + learn["promoted"] + learn["rejected"] >= 1
 
         # ── Verify the real DB side effects ────────────────────────────────────
-        async with session_factory() as s:
+        async with session_factory() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
             retired_status = (
                 await s.execute(
                     text(
@@ -246,7 +248,11 @@ async def test_civilization_tick_e2e(_migrated_backends: tuple[str, str]) -> Non
         os.environ.pop("CIV_TICK_MIN_INTERVAL_SECONDS", None)
         # Best-effort cleanup so reruns against a persistent external DB stay clean.
         try:
-            async with session_factory() as s, s.begin():
+            async with (
+                session_factory() as s,
+                s.begin(),
+                sqlalchemy_rls_context(s, tenant_id),
+            ):
                 await s.execute(
                     text("DELETE FROM civilization_events WHERE tenant_id = :tid"),
                     {"tid": tenant_id},

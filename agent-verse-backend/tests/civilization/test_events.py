@@ -37,6 +37,12 @@ class _FakeSession:
         return _noop_ctx()
 
     async def execute(self, statement: Any, params: Any = None) -> Any:
+        if "set_config" in str(statement):
+            # The tenant RLS context (sqlalchemy_rls_context): record, don't count.
+            self.__dict__.setdefault("gucs", []).append(params)
+            from types import SimpleNamespace as _NS
+
+            return _NS(fetchall=lambda: [], fetchone=lambda: None, rowcount=1)
         self.executions.append((statement, params))
         return SimpleNamespace(
             fetchall=lambda: list(self._rows),
