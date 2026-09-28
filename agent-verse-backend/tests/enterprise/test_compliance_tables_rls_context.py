@@ -38,7 +38,9 @@ from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
 TENANT = "tenant-rls-a"
-_CTX = TenantContext(tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k-rls")
+_CTX = TenantContext(
+    tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k-rls", roles=("admin",)
+)
 _KEY = "av_test_rls_compliance"
 _HDR = {"X-API-Key": _KEY}
 
@@ -193,7 +195,11 @@ def test_record_and_revoke_consent_run_under_tenant_guc() -> None:
 
 
 def test_sign_and_list_contracts_run_under_tenant_guc() -> None:
-    rec = _Recorder()
+    from datetime import UTC, datetime
+
+    rec = _Recorder(
+        {"INSERT INTO enterprise_contracts": _Result(rows=[(datetime(2026, 1, 1, tzinfo=UTC),)])}
+    )
     client = TestClient(_app(rec), raise_server_exceptions=False)
     signed = client.post(
         "/enterprise/contracts/dpa/sign",
@@ -201,6 +207,7 @@ def test_sign_and_list_contracts_run_under_tenant_guc() -> None:
         headers=_HDR,
     )
     assert signed.status_code == 201
+    assert signed.json()["signed_at"] == "2026-01-01T00:00:00+00:00"
     assert client.get("/enterprise/contracts", headers=_HDR).status_code == 200
     (insert,) = _stmts(rec, "INSERT INTO enterprise_contracts")
     (select,) = _stmts(rec, "FROM enterprise_contracts")
@@ -290,3 +297,26 @@ async def test_check_soc2_reads_certifications_under_tenant_guc() -> None:
     assert report["controls"]["certification_on_file"]["pass"] is True
     (select,) = _stmts(rec, "FROM compliance_certifications")
     _assert_tenant_scoped(select, tx=False)
+
+
+def test_non_admin_cannot_sign_a_contract() -> None:
+    """Regression: any authenticated key could sign a BAA/DPA for the tenant."""
+    viewer = TenantContext(
+        tenant_id=TENANT, plan=PlanTier.ENTERPRISE, api_key_id="k-v", roles=("operator",)
+    )
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return viewer if key == _KEY else None
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.include_router(enterprise_router)
+    rec = _Recorder()
+    app.state.db_session_factory = rec
+    r = TestClient(app, raise_server_exceptions=False).post(
+        "/enterprise/contracts/dpa/sign",
+        json={"signer_name": "Eve", "signer_email": "eve@example.test"},
+        headers=_HDR,
+    )
+    assert r.status_code == 403
+    assert not any("INSERT INTO enterprise_contracts" in e["sql"] for e in rec.log)

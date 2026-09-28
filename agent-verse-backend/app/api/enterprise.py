@@ -1770,8 +1770,17 @@ async def list_contracts(request: Request) -> list[dict[str, Any]]:
 async def sign_contract(
     request: Request, contract_type: str, body: ContractSignRequest
 ) -> dict[str, Any]:
-    """Sign a contract (BAA, DPA, MSA, etc.)."""
+    """Sign a contract (BAA, DPA, MSA, etc.) on the tenant's behalf.
+
+    Admin-only: signing a legal agreement binds the tenant, and any
+    authenticated key (a viewer, a CI key) could do it. The response carries the
+    stored ``signed_at`` (it used to be the literal string ``"now"``).
+    """
     ctx = _require_tenant(request)
+    from app.tenancy.rbac import has_role
+
+    if not has_role(ctx, "admin"):
+        raise HTTPException(403, "Signing a contract requires the admin role")
     db = _get_db(request)
     valid_types = {"baa", "dpa", "msa", "nda", "sla", "custom"}
     if contract_type not in valid_types:
@@ -1788,32 +1797,40 @@ async def sign_contract(
             session.begin(),
             sqlalchemy_rls_context(session, ctx.tenant_id),
         ):
-            await session.execute(
-                text("""
-                INSERT INTO enterprise_contracts
-                    (id, tenant_id, contract_type, status, signed_by_name,
-                     signed_by_email, signed_at, created_at)
-                VALUES
-                    (:id, :tid, :ctype, 'signed', :name, :email, NOW(), NOW())
-                ON CONFLICT DO NOTHING
-            """),
-                {
-                    "id": contract_id,
-                    "tid": ctx.tenant_id,
-                    "ctype": contract_type,
-                    "name": body.signer_name,
-                    "email": body.signer_email,
-                },
-            )
+            row = (
+                await session.execute(
+                    text("""
+                    INSERT INTO enterprise_contracts
+                        (id, tenant_id, contract_type, status, signed_by_name,
+                         signed_by_email, signed_at, created_at)
+                    VALUES
+                        (:id, :tid, :ctype, 'signed', :name, :email, NOW(), NOW())
+                    RETURNING signed_at
+                """),
+                    {
+                        "id": contract_id,
+                        "tid": ctx.tenant_id,
+                        "ctype": contract_type,
+                        "name": body.signer_name,
+                        "email": body.signer_email,
+                    },
+                )
+            ).first()
     except Exception as exc:
-        raise HTTPException(500, f"Contract signing failed: {exc}") from exc
+        import logging
+
+        logging.getLogger(__name__).error("contract_sign_failed: %s", exc)
+        raise HTTPException(503, "Contract could not be recorded; retry") from exc
+    if row is None:
+        raise HTTPException(503, "Contract could not be recorded; retry")
+    signed_at = row[0]
 
     return {
         "contract_id": contract_id,
         "contract_type": contract_type,
         "status": "signed",
         "signed_by": body.signer_name,
-        "signed_at": "now",
+        "signed_at": signed_at.isoformat() if hasattr(signed_at, "isoformat") else str(signed_at),
     }
 
 

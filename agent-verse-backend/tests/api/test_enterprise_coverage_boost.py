@@ -696,7 +696,7 @@ def test_list_contracts_returns_empty_list_when_db_is_none() -> None:
     assert resp.json() == []
 
 
-def test_sign_contract_db_exception_is_500() -> None:
+def test_sign_contract_db_exception_is_503() -> None:
     session = _FakeSession(router=[], raise_on="enterprise_contracts")
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
@@ -705,7 +705,8 @@ def test_sign_contract_db_exception_is_500() -> None:
         json={"signer_name": "Alice", "signer_email": "alice@example.com"},
         headers=_headers(),
     )
-    assert resp.status_code == 500
+    assert resp.status_code == 503
+    assert "simulated" not in resp.text  # no exception text leaked
 
 
 # ---------------------------------------------------------------------------
