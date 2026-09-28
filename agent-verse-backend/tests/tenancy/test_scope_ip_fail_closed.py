@@ -224,3 +224,19 @@ async def test_scope_lookup_db_error_is_503(monkeypatch: pytest.MonkeyPatch) -> 
 def test_auth_refresh_needs_no_api_key() -> None:
     client = TestClient(_app(TenantService()), raise_server_exceptions=False)
     assert client.post("/auth/refresh").status_code == 200
+
+
+def test_csp_connect_src_does_not_allow_arbitrary_websocket_hosts() -> None:
+    """``connect-src 'self' ws: wss:`` let a page open a socket to ANY host."""
+    from app.tenancy.middleware import SecurityHeadersMiddleware
+
+    app = FastAPI()
+    app.add_middleware(SecurityHeadersMiddleware)
+
+    @app.get("/x")
+    async def x() -> dict[str, str]:
+        return {}
+
+    csp = TestClient(app).get("/x").headers["Content-Security-Policy"]
+    connect = next(d for d in csp.split(";") if d.strip().startswith("connect-src"))
+    assert connect.split()[1:] == ["'self'"]

@@ -515,7 +515,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data: blob:; "
             "font-src 'self'; "
-            "connect-src 'self' ws: wss:; "
+            # 'self' covers same-origin ws:/wss: (CSP Level 3). The bare
+            # "ws: wss:" schemes allowed a page to open a socket to ANY host.
+            "connect-src 'self'; "
             "frame-ancestors 'none'"
         )
         return response
