@@ -129,8 +129,8 @@ def test_post_consent_with_db_calls_insert() -> None:
     _assert_single_statement_under_tenant_guc(mock_session, "INSERT INTO consent_records")
 
 
-def test_post_consent_db_exception_returns_recorded_anyway() -> None:
-    """If the DB INSERT raises, the endpoint still returns status='recorded' (logs warning)."""
+def test_post_consent_db_exception_returns_503() -> None:
+    """Regression: a failed INSERT used to be swallowed and answered 'recorded'."""
     mock_session = MagicMock()
     mock_session.execute = AsyncMock(side_effect=RuntimeError("asyncpg connection lost"))
     session_cm = MagicMock()
@@ -146,10 +146,7 @@ def test_post_consent_db_exception_returns_recorded_anyway() -> None:
         json={"purpose": "ai_processing"},
         headers=_HDR,
     )
-    # Endpoint swallows DB error and returns recorded status
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "recorded"
+    assert resp.status_code == 503
 
 
 def test_post_consent_with_default_legal_basis() -> None:
@@ -205,8 +202,8 @@ def test_delete_consent_with_db_calls_update() -> None:
     _assert_single_statement_under_tenant_guc(mock_session, "UPDATE consent_records")
 
 
-def test_delete_consent_db_exception_returns_revoked_anyway() -> None:
-    """DELETE swallows DB error and returns revoked status."""
+def test_delete_consent_db_exception_returns_503() -> None:
+    """Regression: a failed UPDATE used to be swallowed and answered 'revoked'."""
     mock_session = MagicMock()
     mock_session.execute = AsyncMock(side_effect=RuntimeError("disk full"))
     session_cm = MagicMock()
@@ -218,8 +215,7 @@ def test_delete_consent_db_exception_returns_revoked_anyway() -> None:
         _make_app(db_factory=mock_factory), raise_server_exceptions=False
     )
     resp = client.delete("/compliance/consent/analytics", headers=_HDR)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "revoked"
+    assert resp.status_code == 503
 
 
 # ── GET /enterprise/compliance/{framework} ───────────────────────────────────
@@ -348,3 +344,19 @@ def test_list_contracts_db_exception_returns_empty_list() -> None:
     assert body == [] or (
         isinstance(body, dict) and body.get("contracts") == []
     )
+
+
+def test_delete_consent_with_no_active_row_is_404() -> None:
+    """Revoking consent that was never recorded must not answer 'revoked'."""
+    result = MagicMock()
+    result.rowcount = 0
+    mock_session = MagicMock()
+    mock_session.execute = AsyncMock(return_value=result)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=mock_session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    client = TestClient(
+        _make_app(db_factory=MagicMock(return_value=session_cm)), raise_server_exceptions=False
+    )
+    resp = client.delete("/compliance/consent/marketing", headers=_HDR)
+    assert resp.status_code == 404

@@ -1478,45 +1478,75 @@ async def get_variant_report(request: Request, variant_id: str) -> dict[str, Any
 # ── P2.10: Async GDPR Export + Consent Management ─────────────────────────────
 
 
+def _gdpr_db_or_503(request: Request, what: str) -> Any:
+    """GDPR export/consent state lives only in Postgres — without it there is
+    nothing to record, so answer 503 instead of a fabricated success."""
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(503, f"{what} is unavailable (no database configured)")
+    return db
+
+
 @compliance_router.post("/export/start")
 async def start_gdpr_export(request: Request) -> dict[str, Any]:
-    """Start async GDPR data export job. Returns job_id for polling."""
+    """Start async GDPR data export job. Returns job_id for polling.
+
+    503 when the job row cannot be recorded or the worker task cannot be
+    enqueued — this used to swallow both and answer ``pending`` for a job that
+    might not exist or that nothing would ever run.
+    """
+    import logging
+
+    from sqlalchemy import text
+
     ctx = _require_tenant(request)
-    db = _get_db(request)
+    db = _gdpr_db_or_503(request, "GDPR export")
+    log = logging.getLogger(__name__)
 
     job_id = uuid.uuid4().hex
-    if db is not None:
-        try:
-            from sqlalchemy import text
+    try:
+        # gdpr_export_jobs is tenant-isolated by RLS; under the API's
+        # NOBYPASSRLS role the INSERT is rejected unless the tenant GUC is set.
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at)
+                VALUES (:id, :tid, 'pending', NOW())
+            """),
+                {"id": job_id, "tid": ctx.tenant_id},
+            )
+    except Exception as exc:
+        log.error("gdpr_export_job_insert_failed: %s", exc)
+        raise HTTPException(503, "GDPR export job could not be recorded; retry") from exc
 
-            # gdpr_export_jobs is tenant-isolated by RLS; under the API's
-            # NOBYPASSRLS role the INSERT is rejected unless the tenant GUC is set.
+    try:
+        from app.scaling.tasks import run_gdpr_export
+
+        run_gdpr_export.delay(job_id, ctx.tenant_id)
+    except Exception as exc:
+        log.error("gdpr_export_enqueue_failed: %s", exc)
+        # The row exists but no worker will pick it up: mark it failed so a poll
+        # reports the truth instead of 'pending' forever.
+        try:
             async with (
                 db() as session,
                 session.begin(),
                 sqlalchemy_rls_context(session, ctx.tenant_id),
             ):
                 await session.execute(
-                    text("""
-                    INSERT INTO gdpr_export_jobs (id, tenant_id, status, created_at)
-                    VALUES (:id, :tid, 'pending', NOW())
-                """),
-                    {"id": job_id, "tid": ctx.tenant_id},
+                    text(
+                        "UPDATE gdpr_export_jobs SET status = 'failed', "
+                        "error_message = :err WHERE id = :id AND tenant_id = :tid"
+                    ),
+                    {"id": job_id, "tid": ctx.tenant_id, "err": "could not be enqueued"},
                 )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("gdpr_export_job_insert_failed: %s", exc)
-
-    # Enqueue Celery task (best-effort — job still exists if this fails)
-    try:
-        from app.scaling.tasks import run_gdpr_export
-
-        run_gdpr_export.delay(job_id, ctx.tenant_id)
-    except Exception as exc:
-        import logging
-
-        logging.getLogger(__name__).warning("gdpr_export_enqueue_failed: %s", exc)
+        except Exception as mark_exc:
+            log.error("gdpr_export_mark_failed_failed: %s", mark_exc)
+        raise HTTPException(503, "GDPR export could not be queued; retry") from exc
 
     return {
         "job_id": job_id,
@@ -1527,17 +1557,10 @@ async def start_gdpr_export(request: Request) -> dict[str, Any]:
 
 @compliance_router.get("/export/jobs/{job_id}")
 async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any]:
-    """Poll status of async GDPR export job."""
+    """Poll status of async GDPR export job (503 without a database — never a
+    fabricated 'pending')."""
     ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is None:
-        return {
-            "job_id": job_id,
-            "status": "pending",
-            "completed_at": None,
-            "download_url": None,
-            "error": None,
-        }
+    db = _gdpr_db_or_503(request, "GDPR export status")
     from sqlalchemy import text
 
     async with (
@@ -1572,69 +1595,80 @@ class ConsentRequest(BaseModel):
 
 @compliance_router.post("/consent")
 async def record_consent(request: Request, body: ConsentRequest) -> dict[str, Any]:
-    """Record tenant consent for data processing purposes."""
+    """Record tenant consent for data processing purposes.
+
+    503 when the record could not be written (the old handler swallowed the DB
+    error and answered ``recorded`` for consent that was never stored).
+    """
+    import logging
+
+    from sqlalchemy import text
+
     ctx = _require_tenant(request)
-    db = _get_db(request)
+    db = _gdpr_db_or_503(request, "Consent recording")
     consent_id = uuid.uuid4().hex
-    if db is not None:
-        try:
-            from sqlalchemy import text
-
-            ip = request.client.host if request.client else ""
-            ua = request.headers.get("user-agent", "")
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, ctx.tenant_id),
-            ):
-                await session.execute(
-                    text("""
-                    INSERT INTO consent_records
-                        (id, tenant_id, purpose, legal_basis, ip_address, user_agent)
-                    VALUES (:id, :tid, :purpose, :basis, :ip, :ua)
-                """),
-                    {
-                        "id": consent_id,
-                        "tid": ctx.tenant_id,
-                        "purpose": body.purpose,
-                        "basis": body.legal_basis,
-                        "ip": ip,
-                        "ua": ua,
-                    },
-                )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("consent_record_insert_failed: %s", exc)
+    ip = request.client.host if request.client else ""
+    ua = request.headers.get("user-agent", "")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            await session.execute(
+                text("""
+                INSERT INTO consent_records
+                    (id, tenant_id, purpose, legal_basis, ip_address, user_agent)
+                VALUES (:id, :tid, :purpose, :basis, :ip, :ua)
+            """),
+                {
+                    "id": consent_id,
+                    "tid": ctx.tenant_id,
+                    "purpose": body.purpose,
+                    "basis": body.legal_basis,
+                    "ip": ip,
+                    "ua": ua,
+                },
+            )
+    except Exception as exc:
+        logging.getLogger(__name__).error("consent_record_insert_failed: %s", exc)
+        raise HTTPException(503, "Consent could not be recorded; retry") from exc
     return {"consent_id": consent_id, "purpose": body.purpose, "status": "recorded"}
 
 
 @compliance_router.delete("/consent/{purpose}")
 async def revoke_consent(request: Request, purpose: str) -> dict[str, Any]:
-    """Revoke previously granted consent."""
+    """Revoke previously granted consent.
+
+    503 when the revocation could not be written, 404 when there is no active
+    consent for the purpose — never ``revoked`` for a write that did not happen.
+    """
+    import logging
+
+    from sqlalchemy import text
+
     ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is not None:
-        try:
-            from sqlalchemy import text
-
-            async with (
-                db() as session,
-                session.begin(),
-                sqlalchemy_rls_context(session, ctx.tenant_id),
-            ):
-                await session.execute(
-                    text("""
-                    UPDATE consent_records SET revoked_at = NOW()
-                    WHERE tenant_id = :tid AND purpose = :purpose AND revoked_at IS NULL
-                """),
-                    {"tid": ctx.tenant_id, "purpose": purpose},
-                )
-        except Exception as exc:
-            import logging
-
-            logging.getLogger(__name__).warning("consent_revoke_failed: %s", exc)
-    return {"purpose": purpose, "status": "revoked"}
+    db = _gdpr_db_or_503(request, "Consent revocation")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                UPDATE consent_records SET revoked_at = NOW()
+                WHERE tenant_id = :tid AND purpose = :purpose AND revoked_at IS NULL
+            """),
+                {"tid": ctx.tenant_id, "purpose": purpose},
+            )
+            revoked = int(getattr(result, "rowcount", 0) or 0)
+    except Exception as exc:
+        logging.getLogger(__name__).error("consent_revoke_failed: %s", exc)
+        raise HTTPException(503, "Consent could not be revoked; retry") from exc
+    if revoked == 0:
+        raise HTTPException(404, f"No active consent for purpose {purpose!r}")
+    return {"purpose": purpose, "status": "revoked", "revoked": revoked}
 
 
 # =============================================================================

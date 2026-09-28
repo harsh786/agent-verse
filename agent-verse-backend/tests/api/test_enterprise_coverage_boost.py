@@ -635,26 +635,32 @@ class TestPromptVariantsCRUD:
 # ---------------------------------------------------------------------------
 
 
-def test_start_gdpr_export_db_insert_failure_still_returns_pending() -> None:
+def test_start_gdpr_export_db_insert_failure_is_503() -> None:
+    """Regression: a failed INSERT was swallowed and answered 'pending' for a job
+    that does not exist."""
     session = _FakeSession(router=[], raise_on="gdpr_export_jobs")
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/compliance/export/start", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "pending"
+    assert resp.status_code == 503
 
 
-def test_start_gdpr_export_celery_enqueue_failure_still_returns_pending() -> None:
-    """Celery task import/enqueue is best-effort; job creation must not fail."""
-    session = _FakeSession(router=[])
+def test_start_gdpr_export_celery_enqueue_failure_is_503_and_marks_job_failed() -> None:
+    """Regression: with no worker enqueued the job stayed 'pending' forever while
+    the API answered success. Now 503, and the recorded row is marked failed."""
+    seen: list[str] = []
+
+    def _update(_p: dict) -> _FakeResult:
+        seen.append("update")
+        return _FakeResult(rows=[])
+
+    session = _FakeSession(router=[("UPDATE gdpr_export_jobs", _update)])
     app = _make_app(db_session_factory=_db_factory(session))
     client = TestClient(app, raise_server_exceptions=False)
     with patch("app.scaling.tasks.run_gdpr_export.delay", side_effect=RuntimeError("no broker")):
         resp = client.post("/compliance/export/start", headers=_headers())
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "pending"
-    assert "job_id" in body
+    assert resp.status_code == 503
+    assert seen == ["update"]
 
 
 def test_gdpr_export_status_found_row() -> None:

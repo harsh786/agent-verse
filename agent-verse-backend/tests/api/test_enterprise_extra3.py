@@ -803,14 +803,11 @@ def test_start_gdpr_export_with_db_exception() -> None:
 # ---------------------------------------------------------------------------
 
 def test_gdpr_export_status_no_db() -> None:
-    """Line 887: no DB → returns pending status."""
+    """No DB → 503 (it used to fabricate a 'pending' job that does not exist)."""
     with patch("app.api.enterprise._get_db", return_value=None):
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.get("/compliance/export/jobs/job-123", headers=_headers())
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["job_id"] == "job-123"
-        assert data["status"] == "pending"
+        assert resp.status_code == 503
 
 
 def test_gdpr_export_status_not_found() -> None:
@@ -1269,7 +1266,7 @@ def test_record_consent_with_db() -> None:
 
 
 def test_record_consent_with_db_exception() -> None:
-    """Line 921: DB fails gracefully → still returns consent_id."""
+    """DB failure → 503, never a consent_id for a record that was not stored."""
     db = _make_db_mock(fail=True)
     with patch("app.api.enterprise._get_db", return_value=db):
         client = TestClient(_make_app(), raise_server_exceptions=False)
@@ -1278,8 +1275,8 @@ def test_record_consent_with_db_exception() -> None:
             json={"purpose": "ai_processing"},
             headers=_headers(),
         )
-        assert resp.status_code == 200
-        assert "consent_id" in resp.json()
+        assert resp.status_code == 503
+        assert "consent_id" not in resp.json()
 
 
 # Lines 944-947 — revoke_consent with DB

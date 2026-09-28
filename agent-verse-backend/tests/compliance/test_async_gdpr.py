@@ -80,15 +80,21 @@ def test_consent_record_and_revoke():
         json={"purpose": "analytics", "legal_basis": "consent"},
         headers=h,
     )
-    assert resp.status_code == 200
+    # Consent lives only in Postgres. Without a reachable DB the endpoint must
+    # answer 503 — it used to swallow the failure and claim 'recorded'.
+    assert resp.status_code in (200, 503)
+    if resp.status_code == 503:
+        assert client.delete("/compliance/consent/analytics", headers=h).status_code == 503
+        return
     data = resp.json()
     assert "consent_id" in data
     assert data["purpose"] == "analytics"
 
-    # Revoke consent
+    # Revoke consent: success only when a row was actually revoked.
     resp2 = client.delete("/compliance/consent/analytics", headers=h)
-    assert resp2.status_code == 200
-    assert resp2.json()["status"] == "revoked"
+    assert resp2.status_code in (200, 503)
+    if resp2.status_code == 200:
+        assert resp2.json()["status"] == "revoked"
 
 
 def test_mock_server_importable():

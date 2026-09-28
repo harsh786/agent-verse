@@ -47,6 +47,7 @@ _HDR = {"X-API-Key": _KEY}
 class _Result:
     rows: list[Any] = field(default_factory=list)
     scalar_value: Any = 0
+    rowcount: int = 0
 
     def fetchone(self) -> Any:
         return self.rows[0] if self.rows else None
@@ -175,7 +176,7 @@ def test_gdpr_export_status_reads_job_under_tenant_guc() -> None:
 
 
 def test_record_and_revoke_consent_run_under_tenant_guc() -> None:
-    rec = _Recorder()
+    rec = _Recorder({"UPDATE consent_records": _Result(rowcount=1)})
     client = TestClient(_app(rec), raise_server_exceptions=False)
     assert (
         client.post("/compliance/consent", json={"purpose": "analytics"}, headers=_HDR)
