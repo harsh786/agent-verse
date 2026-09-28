@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, assert_public_url_async
 from app.providers.vault import (
     connector_secret_ref,
     is_connector_secret_ref,
@@ -919,19 +919,43 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
     secret_store = _connector_secret_store(request)
     for key, value in (cfg.auth_config or {}).items():
         if isinstance(value, str) and is_connector_secret_ref(value):
+            plain: str | None = None
             try:
                 plain = await resolve_connector_secret_ref_for_tenant(
                     value, store=secret_store, tenant_ctx=tenant
                 )
-                resolved_auth_config[key] = plain or value
             except Exception:
-                resolved_auth_config[key] = value
+                plain = None
+            if not plain:
+                # Used to fall back to sending the raw "vault://…" reference as
+                # the credential (and then report the vendor's 401 as the result).
+                return {
+                    "server_id": server_id,
+                    "reachable": False,
+                    "status": "failed",
+                    "error": f"Stored credential '{key}' could not be resolved; re-enter it.",
+                    "latency_ms": round((time.time() - started) * 1000),
+                }
+            resolved_auth_config[key] = plain
         else:
             resolved_auth_config[key] = value
     # Overlay resolved values onto a copy of cfg so test functions see plain text
     cfg = cfg.model_copy(update={"auth_config": resolved_auth_config})
 
     connector_name = cfg.name.lower().strip()
+
+    # Test-time SSRF guard. Registration/update check the URL, but rows written
+    # before those checks existed, or a DNS name re-pointed since (rebinding),
+    # reached the direct GitHub/Jira/GitLab probes and the generic GET unchecked.
+    for _url in {cfg.url or "", cfg.base_url or ""}:
+        if _url.startswith(("http://", "https://")):
+            try:
+                await assert_public_url_async(_url, context="connector test")
+            except SSRFError as ssrf_exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="SSRF protection: disallowed URL",
+                ) from ssrf_exc
 
     # ── 1. Direct REST test (primary path) ────────────────────────────────────
     direct_test_fn = _DIRECT_REST_TESTS.get(connector_name)
@@ -981,8 +1005,16 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
 
     # ── 3. Generic reachability check ─────────────────────────────────────────
     url = cfg.url or cfg.base_url
-    if not url or url == "builtin://":
-        return {"server_id": server_id, "reachable": True, "status": "not_tested", "latency_ms": 0}
+    if not url or url.startswith("builtin://"):
+        # Nothing was contacted and no credential was checked: say so instead
+        # of reporting the connector reachable.
+        return {
+            "server_id": server_id,
+            "reachable": None,
+            "status": "not_tested",
+            "detail": "No test is available for this connector; nothing was contacted.",
+            "latency_ms": 0,
+        }
 
     try:
         # SSRF protection: validate the URL before making any outbound request.
@@ -1008,13 +1040,21 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
             resp = await hclient.get(url, headers=headers)
         latency_ms = round((time.time() - started) * 1000)
         reachable = resp.status_code < 500
-        return {
+        # 401/403 (and any other 4xx) used to count as "passed" — the credential
+        # the tenant just entered could be rejected and the test still went green.
+        passed = resp.status_code < 400
+        out: dict[str, Any] = {
             "server_id": server_id,
             "reachable": reachable,
-            "status": "passed" if reachable else "failed",
+            "status": "passed" if passed else "failed",
             "latency_ms": latency_ms,
             "http_status": resp.status_code,
         }
+        if resp.status_code in (401, 403):
+            out["error"] = "Credentials were rejected by the connector endpoint"
+        elif not passed:
+            out["error"] = f"Connector endpoint returned HTTP {resp.status_code}"
+        return out
     except Exception as exc:
         return {
             "server_id": server_id,
@@ -1729,20 +1769,15 @@ async def list_capabilities(request: Request, q: str = "") -> list[dict]:
             }
             for r in rows
         ]
-    except Exception:
-        # Fall back to catalog when DB unavailable
-        from app.mcp.catalog import CONNECTOR_CATALOG
-
-        return [
-            {
-                "tool_name": c.name,
-                "connector_id": c.name,
-                "description": c.description,
-                "risk_level": "unknown",
-                "health_status": "unknown",
-            }
-            for c in CONNECTOR_CATALOG[:20]
-        ]
+    except Exception as exc:
+        # This used to return the first 20 CONNECTOR_CATALOG entries dressed up
+        # as this tenant's discovered tools on ANY error — connector names as
+        # tool names, for connectors the tenant never registered. Say it failed.
+        _logger.warning("capabilities_query_failed error=%s", str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="capability index unavailable",
+        ) from exc
 
 
 @router.get("/capabilities/search")

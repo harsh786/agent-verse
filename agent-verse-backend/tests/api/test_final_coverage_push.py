@@ -3224,7 +3224,7 @@ class TestConnectorsWave6:
         server_id = "auth-fail-v6"
         cfg = MCPServerConfig(
             server_id=server_id, name="AuthFail",
-            url="http://127.0.0.1:19998",
+            url="http://93.184.216.34:19998",
             auth_type="bearer", auth_config={"token": "bad"}
         )
         mock_registry = AsyncMock()
@@ -3234,14 +3234,16 @@ class TestConnectorsWave6:
         client = TestClient(app, raise_server_exceptions=False)
 
         with respx.mock:
-            respx.get("http://127.0.0.1:19998/health").mock(
+            respx.get("http://93.184.216.34:19998").mock(
                 return_value=_httpx.Response(401, text="Unauthorized")
             )
             resp = client.post(f"/connectors/{server_id}/test", headers=_H)
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data.get("status") in ("auth_failed", "failed")
+        # A 401 used to be reported as "passed" (any status < 500 counted).
+        assert data.get("status") == "failed"
+        assert "rejected" in data.get("error", "")
 
 
 class TestSimulationWave6:

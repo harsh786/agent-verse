@@ -589,16 +589,19 @@ def test_list_capabilities_with_db_and_query_filter() -> None:
     assert isinstance(resp.json(), list)
 
 
-def test_list_capabilities_without_db_falls_back_to_catalog() -> None:
-    """list_capabilities without DB returns catalog fallback."""
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+def test_list_capabilities_db_error_is_503_not_fake_catalog_tools() -> None:
+    """A DB failure used to return CONNECTOR_CATALOG entries as if they were the
+    tenant's discovered tools. It must report the failure instead."""
+
+    @asynccontextmanager
+    async def _broken_factory() -> Any:
+        raise RuntimeError("db down")
+        yield  # pragma: no cover
+
+    client = TestClient(_make_app(db_factory=_broken_factory), raise_server_exceptions=False)
     resp = client.get("/connectors/capabilities", headers={"X-API-Key": _VALID_KEY})
-    assert resp.status_code == 200
-    body = resp.json()
-    assert isinstance(body, list)
-    # Catalog entries have at minimum tool_name field
-    if body:
-        assert "tool_name" in body[0]
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "capability index unavailable"
 
 
 # ---------------------------------------------------------------------------

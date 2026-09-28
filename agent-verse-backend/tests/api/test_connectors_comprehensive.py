@@ -302,10 +302,10 @@ def test_test_connector_connection_failure() -> None:
         f"/connectors/{server_id}/test",
         headers={"X-API-Key": _VALID_KEY},
     )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "reachable" in body
-    assert body["reachable"] is False  # Should fail since server is unreachable
+    # A (legacy) row pointing at loopback is refused at test time by the SSRF
+    # guard instead of being probed.
+    assert resp.status_code == 400
+    assert "SSRF" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

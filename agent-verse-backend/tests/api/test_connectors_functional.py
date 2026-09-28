@@ -584,7 +584,7 @@ def test_test_connector_builtin_url_not_tested() -> None:
     resp = client.post(f"/connectors/{created['server_id']}/test", headers={"X-API-Key": _KEY_A})
     body = resp.json()
     assert body["status"] == "not_tested"
-    assert body["reachable"] is True
+    assert body["reachable"] is None  # nothing was contacted — never "reachable"
 
 
 def test_test_connector_resolves_vault_secret_before_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
