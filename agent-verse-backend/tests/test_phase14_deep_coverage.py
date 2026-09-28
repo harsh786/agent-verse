@@ -36,7 +36,10 @@ from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
 # Tenant fixtures
-_TENANT_A = TenantContext(tenant_id="isolation-test-tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka")
+_TENANT_A = TenantContext(
+    tenant_id="isolation-test-tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka",
+    roles=("admin",),
+)
 _TENANT_B = TenantContext(tenant_id="isolation-test-tenant-b", plan=PlanTier.FREE, api_key_id="kb")
 _KEY_A = "isolation_key_a"
 _KEY_B = "isolation_key_b"
@@ -45,7 +48,10 @@ _HDRS_B = {"X-API-Key": _KEY_B}
 # A second key of tenant A — trust approvers are identified by the authenticated
 # key, so a 2-approver flow needs two distinct keys.
 _TENANT_A2 = TenantContext(
-    tenant_id="isolation-test-tenant-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka2"
+    tenant_id="isolation-test-tenant-a",
+    plan=PlanTier.PROFESSIONAL,
+    api_key_id="ka2",
+    roles=("approver",),
 )
 _KEY_A2 = "isolation_key_a2"
 _HDRS_A2 = {"X-API-Key": _KEY_A2}

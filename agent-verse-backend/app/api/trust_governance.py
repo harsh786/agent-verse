@@ -9,8 +9,10 @@ import json
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/trust", tags=["trust-governance"])
 
@@ -220,7 +222,13 @@ async def submit_approval_request(request: Request) -> dict[str, Any]:
 
 
 @router.post("/approvals/{approval_id}/approve")
-async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
+async def approve_request(
+    request: Request,
+    approval_id: str,
+    # Any key could vote (as itself) — a viewer key counted toward an N-approver
+    # quorum. Same role as /governance/approvals.
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
     """Approve a pending request. Supports multi-approver."""
     tenant = _require_tenant(request)
     body = await request.json()
@@ -293,7 +301,11 @@ async def approve_request(request: Request, approval_id: str) -> dict[str, Any]:
 
 
 @router.post("/approvals/{approval_id}/reject")
-async def reject_request(request: Request, approval_id: str) -> dict[str, Any]:
+async def reject_request(
+    request: Request,
+    approval_id: str,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
     """Reject a pending request."""
     tenant = _require_tenant(request)
     body = await request.json()
@@ -435,7 +447,11 @@ async def get_active_compliance_bundles(request: Request) -> dict[str, Any]:
 
 
 @router.post("/compliance-bundles/{bundle_id}/enable")
-async def enable_compliance_bundle_for_tenant(request: Request, bundle_id: str) -> dict[str, Any]:
+async def enable_compliance_bundle_for_tenant(
+    request: Request,
+    bundle_id: str,
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Enable a compliance bundle for this tenant (governance/autonomy effects —
     distinct from POST /guardrails-v2/bundles/{name}, which materializes a
     bundle's guardrail rules).
@@ -462,7 +478,13 @@ async def enable_compliance_bundle_for_tenant(request: Request, bundle_id: str) 
 
 
 @router.delete("/compliance-bundles/{bundle_id}")
-async def disable_compliance_bundle_for_tenant(request: Request, bundle_id: str) -> dict[str, Any]:
+async def disable_compliance_bundle_for_tenant(
+    request: Request,
+    bundle_id: str,
+    # Disabling a bundle lifts its autonomy ceiling (e.g. HIPAA): tenant admins
+    # only. Any key, even a viewer's, could do it.
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Disable a compliance bundle for this tenant, lifting its autonomy ceiling."""
     tenant = _require_tenant(request)
     from app.governance.compliance_bundles import disable_bundle

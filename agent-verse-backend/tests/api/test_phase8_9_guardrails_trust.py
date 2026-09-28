@@ -14,8 +14,17 @@ from app.guardrails_v2.models import (
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
-_CTX = TenantContext(tenant_id="tid-p89", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p89")
-_CTX_B = TenantContext(tenant_id="tid-p89b", plan=PlanTier.FREE, api_key_id="kid-p89b")
+# A tenant's first key is its admin key (as in production).
+_CTX = TenantContext(
+    tenant_id="tid-p89", plan=PlanTier.PROFESSIONAL, api_key_id="kid-p89", roles=("admin",)
+)
+_CTX_B = TenantContext(
+    tenant_id="tid-p89b", plan=PlanTier.FREE, api_key_id="kid-p89b", roles=("admin",)
+)
+_VIEWER_CTX = TenantContext(
+    tenant_id="tid-p89", plan=PlanTier.PROFESSIONAL, api_key_id="kid-viewer", roles=("viewer",)
+)
+_VIEWER_HEADERS = {"X-API-Key": "ak_p89_viewer"}
 _KEY = "ak_phase89_test_key"
 _KEY_B = "ak_phase89b_test_key"
 _HEADERS = {"X-API-Key": _KEY}
@@ -24,7 +33,12 @@ _HEADERS_B = {"X-API-Key": _KEY_B}
 # Distinct principals of tenant A. The approver identity is the authenticated
 # key (api_key_id), so separation-of-duties tests need one key per approver.
 _APPROVER_CTX = {
-    who: TenantContext(tenant_id="tid-p89", plan=PlanTier.PROFESSIONAL, api_key_id=f"kid-{who}")
+    who: TenantContext(
+        tenant_id="tid-p89",
+        plan=PlanTier.PROFESSIONAL,
+        api_key_id=f"kid-{who}",
+        roles=("approver",),
+    )
     for who in ("alice", "bob", "carol")
 }
 _APPROVER_HEADERS = {who: {"X-API-Key": f"ak_p89_{who}"} for who in _APPROVER_CTX}
@@ -34,6 +48,7 @@ def _make_app():
     async def _resolve(key):
         if key == _KEY: return _CTX
         if key == _KEY_B: return _CTX_B
+        if key == "ak_p89_viewer": return _VIEWER_CTX
         for who, ctx in _APPROVER_CTX.items():
             if key == f"ak_p89_{who}":
                 return ctx
@@ -555,3 +570,30 @@ def test_rejector_cannot_be_spoofed_and_is_recorded_from_the_key():
     listed = client.get("/trust/approvals", headers=_HEADERS).json()
     approval = next(a for a in listed["approvals"] if a["approval_id"] == approval_id)
     assert approval["rejected_by"] == "kid-bob", approval
+
+
+# ── Role checks on votes and compliance bundles ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_viewer_key_cannot_approve_reject_or_toggle_compliance_bundles() -> None:
+    """Regression: any key (even a viewer's) could vote toward an approval quorum
+    and disable a compliance bundle, lifting its autonomy ceiling."""
+    from httpx import ASGITransport, AsyncClient
+
+    app = _make_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        created = await c.post(
+            "/trust/approvals",
+            json={"action": "deploy", "required_approvals": 1},
+            headers=_HEADERS,
+        )
+        approval_id = created.json().get("approval_id") or created.json().get("id")
+        for path in (f"/trust/approvals/{approval_id}/approve",
+                     f"/trust/approvals/{approval_id}/reject"):
+            r = await c.post(path, json={}, headers=_VIEWER_HEADERS)
+            assert r.status_code == 403, (path, r.text)
+        r = await c.post("/trust/compliance-bundles/hipaa/enable", headers=_VIEWER_HEADERS)
+        assert r.status_code == 403
+        r = await c.delete("/trust/compliance-bundles/hipaa", headers=_VIEWER_HEADERS)
+        assert r.status_code == 403
