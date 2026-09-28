@@ -354,7 +354,10 @@ class TestPersistTokenToDb:
 
         token = OAuthToken(access_token="tok-db", refresh_token="rt", expires_in=3600)
         await manager._persist_token_to_db("t1", "github", token)
-        mock_session.execute.assert_called_once()
+        # set_config (tenant RLS GUC) + the upsert.
+        sqls = [str(c.args[0]) for c in mock_session.execute.await_args_list]
+        assert any("INSERT INTO oauth_tokens" in q for q in sqls)
+        assert any("set_config" in q for q in sqls)
 
     @pytest.mark.asyncio
     async def test_persist_with_vault_encryption(self):
@@ -402,6 +405,17 @@ class TestPersistTokenToDb:
 
 # ── load_tokens_from_db ───────────────────────────────────────────────────────
 
+def _null_cm():
+    class _CM:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    return _CM()
+
+
 class TestLoadTokensFromDb:
     @pytest.mark.asyncio
     async def test_load_noop_when_no_db(self):
@@ -428,6 +442,9 @@ class TestLoadTokensFromDb:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
         manager._db_session_factory = MagicMock(return_value=mock_session)
+        # Cross-tenant restore runs on the maintenance-role factory.
+        manager._system_session_factory = MagicMock(return_value=mock_session)
+        mock_session.begin = MagicMock(return_value=_null_cm())
 
         count = await manager.load_tokens_from_db()
         assert count == 1
@@ -455,6 +472,9 @@ class TestLoadTokensFromDb:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
         manager._db_session_factory = MagicMock(return_value=mock_session)
+        # Cross-tenant restore runs on the maintenance-role factory.
+        manager._system_session_factory = MagicMock(return_value=mock_session)
+        mock_session.begin = MagicMock(return_value=_null_cm())
 
         count = await manager.load_tokens_from_db()
         assert count == 1
@@ -470,6 +490,9 @@ class TestLoadTokensFromDb:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(side_effect=RuntimeError("db offline"))
         manager._db_session_factory = MagicMock(return_value=mock_session)
+        # Cross-tenant restore runs on the maintenance-role factory.
+        manager._system_session_factory = MagicMock(return_value=mock_session)
+        mock_session.begin = MagicMock(return_value=_null_cm())
 
         count = await manager.load_tokens_from_db()
         assert count == 0

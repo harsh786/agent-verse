@@ -1427,7 +1427,6 @@ async def oauth_callback(
     encrypted_refresh = vault.encrypt(token.refresh_token) if token.refresh_token else ""
 
     if cfg is not None:
-        from app.mcp.registry import MCPServerConfig
 
         updated_config = dict(cfg.auth_config)
         updated_config["_encrypted_access_token"] = encrypted_access
@@ -1435,17 +1434,14 @@ async def oauth_callback(
         updated_config["_token_scope"] = token.scope
         updated_config["_token_type"] = token.token_type
 
-        updated_cfg = MCPServerConfig(
-            name=cfg.name,
-            url=cfg.url,
-            auth_type=cfg.auth_type,
-            auth_config=updated_config,
-            description=cfg.description,
-            priority=cfg.priority,
-        )
-        # Re-register with updated config (registry has no in-place update)
-        await reg.unregister(server_id, tenant_ctx=tenant_ctx)
-        await reg.register(updated_cfg, tenant_ctx=tenant_ctx)
+        # Update in place, keeping the server_id. It used to unregister and
+        # re-register a NEW config (new random server_id), so the token stored
+        # under the old id was never found by the MCP client, which looks the
+        # token up by the connector's (new) id — OAuth connect "succeeded" and
+        # the connector never sent a bearer token.
+        updated_cfg = cfg.model_copy(update={"auth_config": updated_config})
+        if not await reg.update(server_id, updated_cfg, tenant_ctx=tenant_ctx):
+            raise HTTPException(status_code=404, detail="Connector not found")
 
     return {
         "server_id": server_id,

@@ -407,18 +407,30 @@ class OAuthFlowManager:
 
             from sqlalchemy import text
 
+            from app.db.rls import sqlalchemy_rls_context
+
             expires_at = datetime.now(UTC) + timedelta(seconds=max(token.expires_in, 60))
             access_enc = self._encrypt_token(token.access_token)
             refresh_enc = self._encrypt_token(token.refresh_token or "")
-            async with self._db_session_factory() as session, session.begin():
+            # The write needs the tenant's RLS context (FORCE RLS), and the upsert
+            # key (tenant_id, server_id) only exists since migration f1a2b3c4d5e7:
+            # before it every insert was rejected, so no token was ever persisted.
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
                 await session.execute(
                     text(
                         """INSERT INTO oauth_tokens
-                            (id, tenant_id, server_id, access_token, refresh_token, expires_at)
-                            VALUES (:id, :tid, :sid, :at, :rt, :exp)
+                            (id, tenant_id, server_id, access_token, refresh_token,
+                             token_type, scope, expires_at)
+                            VALUES (:id, :tid, :sid, :at, :rt, :tt, :sc, :exp)
                             ON CONFLICT (tenant_id, server_id)
                             DO UPDATE SET access_token=EXCLUDED.access_token,
                                 refresh_token=EXCLUDED.refresh_token,
+                                token_type=EXCLUDED.token_type,
+                                scope=EXCLUDED.scope,
                                 expires_at=EXCLUDED.expires_at"""
                     ),
                     {
@@ -427,6 +439,8 @@ class OAuthFlowManager:
                         "sid": server_id,
                         "at": access_enc,
                         "rt": refresh_enc,
+                        "tt": token.token_type or "Bearer",
+                        "sc": token.scope or "",
                         "exp": expires_at,
                     },
                 )
@@ -447,23 +461,38 @@ class OAuthFlowManager:
 
             from sqlalchemy import text
 
-            async with self._db_session_factory() as session:
+            from app.db.rls import system_session
+            from app.db.session import get_system_session_factory
+
+            # Cross-tenant startup restore: the maintenance role (under the
+            # NOBYPASSRLS app role a GUC-less read sees nothing). obtained_at is
+            # "now" with the remaining lifetime as expires_in (it was 0, so every
+            # restored token counted as expired).
+            factory = getattr(self, "_system_session_factory", None) or get_system_session_factory()
+            async with factory() as session, session.begin(), system_session(session):
                 result = await session.execute(
                     text(
-                        "SELECT tenant_id, server_id, access_token, refresh_token, expires_at "
-                        "FROM oauth_tokens WHERE expires_at > NOW()"
+                        "SELECT tenant_id, server_id, access_token, refresh_token, "
+                        "expires_at, token_type, scope "
+                        "FROM oauth_tokens WHERE expires_at IS NULL OR expires_at > NOW()"
                     )
                 )
                 rows = result.fetchall()
             for row in rows:
                 access = self._decrypt_token(row[2])
                 refresh = self._decrypt_token(row[3]) if row[3] else ""
-                expires_in = int((row[4].replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds())
+                if row[4] is None:
+                    expires_in = 3600
+                else:
+                    expires_in = int(
+                        (row[4].replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds()
+                    )
                 token = OAuthToken(
                     access_token=access,
-                    refresh_token=refresh or None,  # type: ignore[arg-type]
+                    token_type=(row[5] if len(row) > 5 else None) or "Bearer",
+                    refresh_token=refresh or "",
                     expires_in=max(0, expires_in),
-                    obtained_at=0,
+                    scope=(row[6] if len(row) > 6 else None) or "",
                 )
                 self._tokens[(row[0], row[1])] = token
             return len(rows)
