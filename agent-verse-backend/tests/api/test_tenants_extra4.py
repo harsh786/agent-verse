@@ -277,8 +277,8 @@ def test_create_role_valid_roles() -> None:
             json={"user_id": "u-1", "role": role},
             headers=H,
         )
-        # No DB → returns dict or error, but not 422
-        assert resp.status_code in (200, 201, 500)
+        # Valid role → not 422; no DB → 503 (never a fabricated 201)
+        assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +320,7 @@ def test_list_roles_db_exception() -> None:
 # ---------------------------------------------------------------------------
 
 def test_create_role_no_db() -> None:
-    """Lines 311-318: create_role with no DB returns in-memory dict."""
+    """No DB → 503 (it returned a fabricated id for an unstored role)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     from app.tenancy.rbac import VALID_ROLES
     role = list(VALID_ROLES)[0]
@@ -329,10 +329,7 @@ def test_create_role_no_db() -> None:
         json={"user_id": "user-x", "role": role},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
-    body = resp.json()
-    assert body["user_id"] == "user-x"
-    assert body["role"] == role
+    assert resp.status_code == 503
 
 
 def test_create_role_with_db() -> None:
@@ -368,10 +365,10 @@ def test_create_role_db_exception() -> None:
 # ---------------------------------------------------------------------------
 
 def test_delete_role_no_db() -> None:
-    """Lines 350-351: delete_role with no DB returns immediately (204)."""
+    """No DB → 503 (it answered 204 for a delete that did nothing)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.delete("/tenants/me/roles/role-xyz", headers=H)
-    assert resp.status_code == 204
+    assert resp.status_code == 503
 
 
 def test_delete_role_with_db_not_found() -> None:
@@ -411,8 +408,8 @@ def test_ip_allowlist_valid_cidr_passes_validation() -> None:
         json={"cidr": "10.0.0.0/8", "description": "Internal"},
         headers=H,
     )
-    # No DB: returns early with dict, not 422
-    assert resp.status_code in (200, 201, 500)
+    # Valid CIDR → not 422; no DB → 503 (never a 201 for an unenforced CIDR)
+    assert resp.status_code == 503
 
 
 def test_ip_allowlist_invalid_cidr_rejected() -> None:
@@ -434,7 +431,7 @@ def test_ip_allowlist_ipv6_cidr() -> None:
         json={"cidr": "2001:db8::/32", "description": "IPv6"},
         headers=H,
     )
-    assert resp.status_code in (200, 201, 500)
+    assert resp.status_code == 503  # validated; no DB to store it
 
 
 # ---------------------------------------------------------------------------
@@ -483,16 +480,14 @@ def test_list_ip_allowlist_db_exception() -> None:
 # ---------------------------------------------------------------------------
 
 def test_create_ip_allowlist_no_db() -> None:
-    """Lines 443-444: create IP allowlist with no DB returns dict."""
+    """No DB → 503: a 201 for a CIDR stored (and enforced) nowhere was fake."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.post(
         "/tenants/me/ip-allowlist",
         json={"cidr": "172.16.0.0/12", "description": "VPN"},
         headers=H,
     )
-    assert resp.status_code in (200, 201)
-    body = resp.json()
-    assert body["cidr"] == "172.16.0.0/12"
+    assert resp.status_code == 503
 
 
 def test_create_ip_allowlist_with_db() -> None:
@@ -579,10 +574,10 @@ def test_byok_vault_key_missing_field() -> None:
 # ---------------------------------------------------------------------------
 
 def test_delete_ip_allowlist_no_db() -> None:
-    """Lines 503-504: delete IP allowlist with no DB returns 204."""
+    """No DB → 503."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.delete("/tenants/me/ip-allowlist/entry-xyz", headers=H)
-    assert resp.status_code == 204
+    assert resp.status_code == 503
 
 
 def test_delete_ip_allowlist_with_db_not_found() -> None:

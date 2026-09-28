@@ -11,7 +11,6 @@ Provides:
 from __future__ import annotations
 
 import os
-import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -21,51 +20,22 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 async def _check_auth_rate_limit(request: Request) -> None:
-    """Redis-backed sliding-window rate limiter for auth endpoints.
+    """Sliding-window limit for the SSO token endpoints: 10 / 60 s per client IP.
 
-    Falls back to no-op when Redis is unavailable (preserves availability).
-    10 requests per 60 seconds per client IP, enforced across all replicas.
+    Redis-backed across replicas; without Redis (or on a Redis error) an
+    in-process window applies — it used to allow everything. Its own 429 was
+    also swallowed by the Redis ``except``, so it never limited anything.
     """
-    client_ip: str = request.client.host if request.client else "unknown"
-    redis = getattr(request.app.state, "_rate_limiter_redis", None)
-    if redis is None:
-        # No Redis wired yet (startup / test) — allow all requests
-        return
+    from app.tenancy.ip_rate_limit import enforce_ip_rate_limit
 
-    key = f"auth_rl:{client_ip}"
-    now_ms = int(time.time() * 1000)
-    window_ms = 60_000
-    max_requests = 10
-
-    try:
-        pipe = redis.pipeline() if hasattr(redis, "pipeline") else None
-        if pipe is not None:
-            pipe.zremrangebyscore(key, 0, now_ms - window_ms)
-            pipe.zadd(key, {str(now_ms): now_ms})
-            pipe.zcard(key)
-            pipe.expire(key, 120)
-            results = await pipe.execute()
-            count = results[2]
-        else:
-            await redis.zremrangebyscore(key, 0, now_ms - window_ms)
-            await redis.zadd(key, {str(now_ms): now_ms})
-            count = await redis.zcard(key)
-            await redis.expire(key, 120)
-
-        if count > max_requests:
-            from fastapi import HTTPException
-
-            raise HTTPException(
-                status_code=429,
-                detail="Too many authentication requests. Please wait before trying again.",
-                headers={"Retry-After": "60"},
-            )
-    except Exception as exc:
-        # Import here to avoid circular
-        from app.observability.logging import get_logger as _gl
-
-        _gl(__name__).warning("auth_rate_limit_redis_error", error=str(exc))
-        # On Redis error, allow the request (prefer availability over blocking)
+    await enforce_ip_rate_limit(
+        request,
+        bucket="auth_rl",
+        limit=10,
+        window_s=60,
+        redis=getattr(request.app.state, "_rate_limiter_redis", None),
+        detail="Too many authentication requests. Please wait before trying again.",
+    )
 
 
 def _client_secret_or_503(settings: Any) -> str:

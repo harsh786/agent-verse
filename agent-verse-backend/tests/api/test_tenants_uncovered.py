@@ -60,6 +60,9 @@ class _FakeRedis:
     async def setex(self, key: str, ttl: int, value: str) -> None:
         self._store[key] = value
 
+    async def set(self, key: str, value: str) -> None:
+        self._store[key] = value
+
 
 class _RaisingRedis:
     async def incr(self, key: str) -> int:
@@ -155,8 +158,9 @@ def test_signup_succeeds_under_rate_limit() -> None:
     assert resp.status_code == 201
 
 
-def test_signup_fails_open_when_redis_errors() -> None:
-    """Lines 91-94: a Redis error during rate-limiting must not block signup."""
+def test_signup_redis_error_falls_back_to_local_window() -> None:
+    """A Redis error neither blocks signup nor disables the limit: the
+    in-process window applies (it used to fail open)."""
     svc = AsyncMock()
     svc.create_tenant.return_value = {"tenant_id": "t1", "api_key": "av_free_x", "name": "A"}
     app = _make_app(svc)
@@ -164,6 +168,11 @@ def test_signup_fails_open_when_redis_errors() -> None:
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/tenants/signup", json={"name": "Acme", "email": "acme3@example.com"})
     assert resp.status_code == 201
+    statuses = [
+        client.post("/tenants/signup", json={"name": "A", "email": f"x{i}@example.com"}).status_code
+        for i in range(10)
+    ]
+    assert statuses[-1] == 429
 
 
 # ---------------------------------------------------------------------------
@@ -468,33 +477,31 @@ def test_update_then_get_notifications_round_trips_via_redis() -> None:
     assert body["weeklyReport"] is True
 
 
-def test_get_notifications_falls_back_to_defaults_on_redis_error() -> None:
+def test_get_notifications_redis_error_is_503_not_defaults() -> None:
+    """Defaults on a Redis error made saved preferences look reset."""
     app = _make_app()
     app.state._redis = _RaisingRedis()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/tenants/me/notifications", headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["goalComplete"] is True
+    assert resp.status_code == 503
 
 
-def test_update_notifications_swallows_redis_error() -> None:
+def test_update_notifications_redis_error_is_503_not_updated() -> None:
     app = _make_app()
     app.state._redis = _RaisingRedis()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.put("/tenants/me/notifications", json={"goalComplete": False}, headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "updated"
+    assert resp.status_code == 503
 
 
-def test_update_notifications_malformed_body_defaults_to_empty() -> None:
+def test_update_notifications_malformed_body_is_422() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.put(
         "/tenants/me/notifications",
         content=b"not json",
         headers={**H, "Content-Type": "application/json"},
     )
-    assert resp.status_code == 200
-    assert resp.json()["preferences"] == {}
+    assert resp.status_code == 422
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +602,11 @@ def test_export_tenant_data_awaits_async_agent_list() -> None:
 
 
 def test_delete_tenant_schedules_deletion() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    from app.enterprise.compliance import ComplianceController
+
+    app = _make_app()
+    app.state.compliance_controller = ComplianceController()
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.delete("/tenants/me", headers=H)
     assert resp.status_code == 200
     body = resp.json()
