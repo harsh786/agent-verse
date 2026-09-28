@@ -86,12 +86,13 @@ class OAuthFlowManager:
         return f"oauth_pkce:{state}"
 
     def _encrypt_token(self, value: str) -> str:
-        """Encrypt *value* using the vault if available, else return as-is."""
+        """Encrypt *value* using the vault if available, else return as-is.
+
+        An encryption failure raises: it used to be swallowed and the token
+        silently stored/persisted in plaintext.
+        """
         if self._vault is not None and value:
-            try:
-                return self._vault.encrypt(value)
-            except Exception:
-                pass
+            return str(self._vault.encrypt(value))
         return value
 
     def _decrypt_token(self, value: str) -> str:

@@ -681,7 +681,9 @@ def create_app(
         _tool_cache_inmem = None
     _fake_redis = _FakeRedis()
     _mcp_registry = mcp_registry or MCPRegistry(redis=_fake_redis)
-    _oauth_manager = OAuthFlowManager()
+    # With no vault the manager stored/persisted OAuth access + refresh tokens
+    # in plaintext; always give it the credential vault.
+    _oauth_manager = OAuthFlowManager(vault=get_vault())
     _long_term_memory = LongTermMemoryStore()
     # Per-app state-machine registry (durable; db_factory wired in lifespan). A fresh
     # instance per app avoids mutating the module-level _sm_registry singleton (which
