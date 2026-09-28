@@ -1,11 +1,32 @@
-"""Channel Ingestion API — routes for Slack, Teams, Discord, email, SMS, voice, forms."""
+"""Channel Ingestion API — routes for Slack, Teams, Discord, email, SMS, voice, forms.
+
+The inbound webhook routes (everything except ``/channels/mappings``) are called
+by third parties that cannot send an AgentVerse API key, so they are exempt from
+TenantMiddleware and MUST authenticate the caller themselves, before touching
+any tenant data. Each one fails closed:
+
+* ``slack``   — Slack signing-secret HMAC + 5-minute timestamp window
+  (``app.state.slack_signing_secret`` or ``SLACK_SIGNING_SECRET``).
+* ``teams``   — Bot Framework JWT (``TEAMS_APP_ID``), via ``MicrosoftTeamsAdapter``.
+* ``discord`` — Ed25519 interaction signature (``DISCORD_PUBLIC_KEY``).
+* ``email`` / ``sms`` / ``voice`` / ``form`` / ``meeting`` — an operator shared
+  secret per channel (``app.state.channel_webhook_secrets[channel]`` or
+  ``CHANNEL_WEBHOOK_SECRET_<CHANNEL>``), presented as ``X-Webhook-Secret`` or as
+  the HTTP Basic password (SendGrid / Twilio put credentials in the URL).
+
+Unconfigured → 503, bad or missing credential → 401.
+"""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
 import logging
+import os
+import time
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -13,6 +34,10 @@ from fastapi import APIRouter, Header, HTTPException, Request
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/channels", tags=["channels"])
+
+# Slack rejects (and recommends rejecting) requests older than five minutes so a
+# captured, correctly-signed request cannot be replayed later.
+_SLACK_MAX_SKEW_SECONDS = 300
 
 
 # ── Dependency helpers ────────────────────────────────────────────────────────
@@ -30,23 +55,105 @@ def _get_dispatcher(request: Request) -> Any:
     return getattr(request.app.state, "trigger_dispatcher", None)
 
 
-def _channel_verified(request: Request, channel_type: str, *, slack_ok: bool = False) -> bool:
-    """Whether an inbound channel request is authenticated well enough to fire
-    triggers. Fail-closed: conversational triggers publish ONLY for a verified
-    request, so a spoofed webhook (e.g. a forged X-Tenant-ID) cannot fire a
-    victim tenant's triggers.
+def _lookup_db(request: Request) -> Any:
+    """Session factory for the pre-auth channel → tenant lookup.
 
-    * slack — HMAC signature verified (``slack_ok``, computed by the endpoint).
-    * others — a per-channel shared secret in ``app.state.channel_webhook_secrets``
-      must match the ``X-Webhook-Secret`` header. No secret configured → not
-      verified (the channel's triggers stay dormant until an operator sets one).
+    The caller is not a tenant yet, so the lookup is cross-tenant by nature and
+    must use the maintenance (BYPASSRLS) factory; under the NOBYPASSRLS API role
+    a GUC-less query sees zero rows. (It previously read ``app.state.db``, which
+    production never sets, so no mapping ever resolved.) ``app.state.db`` is kept
+    only as a fallback for tests that inject a fake factory there.
     """
-    if channel_type == "slack":
-        return slack_ok
+    state = request.app.state
+    return getattr(state, "system_db_session_factory", None) or getattr(state, "db", None)
+
+
+# ── Inbound authentication (fail closed) ─────────────────────────────────────
+
+
+def _slack_signing_secret(request: Request) -> str:
+    secret = str(getattr(request.app.state, "slack_signing_secret", "") or "")
+    return secret or os.getenv("SLACK_SIGNING_SECRET", "")
+
+
+def _require_slack_signature(request: Request, body: bytes, signature: str, ts: str) -> None:
+    """Old behaviour verified only when a secret was configured AND the request
+    carried ``X-Slack-Signature`` — dropping the header skipped verification."""
+    secret = _slack_signing_secret(request)
+    if not secret:
+        raise HTTPException(503, "Slack channel is not configured (SLACK_SIGNING_SECRET unset)")
+    if not signature or not ts:
+        raise HTTPException(401, "Missing Slack signature")
+    try:
+        skew = abs(time.time() - int(ts))
+    except ValueError:
+        raise HTTPException(401, "Invalid Slack timestamp") from None
+    if skew > _SLACK_MAX_SKEW_SECONDS:
+        raise HTTPException(401, "Stale Slack request")
+    base = b"v0:" + ts.encode() + b":" + body
+    expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(401, "Invalid Slack signature")
+
+
+def _channel_secret(request: Request, channel_type: str) -> str:
     secrets = getattr(request.app.state, "channel_webhook_secrets", None) or {}
-    expected = str(secrets.get(channel_type, "") or "")
-    provided = request.headers.get("X-Webhook-Secret", "")
-    return bool(expected) and bool(provided) and hmac.compare_digest(provided, expected)
+    configured = str(secrets.get(channel_type, "") or "")
+    return configured or os.getenv(f"CHANNEL_WEBHOOK_SECRET_{channel_type.upper()}", "")
+
+
+def _basic_auth_password(request: Request) -> str:
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("basic "):
+        return ""
+    try:
+        decoded = base64.b64decode(auth[6:].strip(), validate=True).decode()
+    except (binascii.Error, UnicodeDecodeError):
+        return ""
+    return decoded.partition(":")[2]
+
+
+def _require_channel_secret(request: Request, channel_type: str) -> None:
+    """Shared-secret auth for relay-style channels. These endpoints used to verify
+    nothing and took the tenant from ``X-Tenant-ID``, so anyone could inject
+    messages (and fire conversational triggers) into any tenant."""
+    expected = _channel_secret(request, channel_type)
+    if not expected:
+        raise HTTPException(
+            503,
+            f"{channel_type} channel is not configured "
+            f"(CHANNEL_WEBHOOK_SECRET_{channel_type.upper()} unset)",
+        )
+    presented = request.headers.get("X-Webhook-Secret", "") or _basic_auth_password(request)
+    if not presented or not hmac.compare_digest(expected, presented):
+        raise HTTPException(401, f"Invalid {channel_type} webhook credentials")
+
+
+async def _require_adapter_auth(adapter: Any, request: Request, body: bytes) -> None:
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    try:
+        payload = json.loads(body) if body else {}
+    except ValueError:
+        payload = {}
+    if not await adapter.verify_auth(headers, payload, body):
+        raise HTTPException(401, "Invalid channel signature")
+
+
+def _relay_tenant(request: Request) -> str:
+    """``X-Tenant-ID`` is honoured only on relay channels and only AFTER
+    :func:`_require_channel_secret` passed — the secret is operator-level, so its
+    holder is the operator's own relay (same model as GATEWAY_INGRESS_SECRET)."""
+    return (request.headers.get("X-Tenant-ID", "") or "").strip()
+
+
+def _parse_json(body: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(body) if body else {}
+    except ValueError:
+        raise HTTPException(400, "Body must be JSON") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(400, "Body must be a JSON object")
+    return parsed
 
 
 async def _emit_chat_event(
@@ -77,13 +184,15 @@ async def _resolve_tenant_from_channel(
     channel_id: str,
     db: Any,
 ) -> str | None:
-    """Look up tenant_id from channel_tenant_mappings table."""
-    if db is None:
+    """Look up tenant_id from channel_tenant_mappings (cross-tenant, system session)."""
+    if db is None or not channel_id:
         return None
     try:
         from sqlalchemy import text
 
-        async with db() as session:
+        from app.db.rls import system_session
+
+        async with db() as session, session.begin(), system_session(session):
             row = await session.execute(
                 text(
                     "SELECT tenant_id FROM channel_tenant_mappings "
@@ -92,8 +201,9 @@ async def _resolve_tenant_from_channel(
                 {"ct": channel_type, "ci": channel_id},
             )
             result = row.fetchone()
-            return result[0] if result else None
-    except Exception:
+            return str(result[0]) if result else None
+    except Exception as exc:
+        _log.warning("channel_tenant_lookup_failed channel=%s: %s", channel_type, exc)
         return None
 
 
@@ -108,28 +218,16 @@ async def slack_events(
 ) -> dict:
     """Handle Slack Events API webhook."""
     body_bytes = await request.body()
-    body = json.loads(body_bytes)
+    # Verify BEFORE anything else — including the url_verification challenge,
+    # which Slack signs too.
+    _require_slack_signature(request, body_bytes, x_slack_signature, x_slack_request_timestamp)
+    body = _parse_json(body_bytes)
 
-    # Slack URL verification challenge
     if body.get("type") == "url_verification":
         return {"challenge": body.get("challenge")}
 
-    # Signature verification
-    signing_secret = getattr(request.app.state, "slack_signing_secret", "")
-    slack_verified = False
-    if signing_secret and x_slack_signature:
-        sig_basestring = f"v0:{x_slack_request_timestamp}:{body_bytes.decode()}"
-        computed = (
-            "v0="
-            + hmac.new(signing_secret.encode(), sig_basestring.encode(), hashlib.sha256).hexdigest()
-        )
-        if not hmac.compare_digest(computed, x_slack_signature):
-            raise HTTPException(status_code=401, detail="Invalid Slack signature")
-        slack_verified = True
-
-    team_id = body.get("team_id", "")
-    db = getattr(request.app.state, "db", None)
-    tenant_id = await _resolve_tenant_from_channel("slack", team_id, db)
+    team_id = str(body.get("team_id", "") or "")
+    tenant_id = await _resolve_tenant_from_channel("slack", team_id, _lookup_db(request))
 
     gateway = _get_gateway(request)
     if gateway and tenant_id:
@@ -138,13 +236,7 @@ async def slack_events(
         _log.warning("slack_event_unknown_team team_id=%s", team_id)
 
     if tenant_id:
-        await _emit_chat_event(
-            request,
-            "slack",
-            body,
-            tenant_id,
-            verified=_channel_verified(request, "slack", slack_ok=slack_verified),
-        )
+        await _emit_chat_event(request, "slack", body, tenant_id, verified=True)
     return {"ok": True}
 
 
@@ -153,20 +245,23 @@ async def slack_events(
 
 @router.post("/teams/events")
 async def teams_events(request: Request) -> dict:
-    """Handle Microsoft Teams webhook."""
-    body = await request.json()
-    tenant_id_from_header = request.headers.get("X-Tenant-ID", "")
-    db = getattr(request.app.state, "db", None)
-    tenant_id = tenant_id_from_header or await _resolve_tenant_from_channel(
-        "teams", body.get("serviceUrl", ""), db
+    """Handle Microsoft Teams webhook (Bot Framework JWT authenticated)."""
+    from app.gateway.channels.teams import MicrosoftTeamsAdapter
+
+    body_bytes = await request.body()
+    await _require_adapter_auth(MicrosoftTeamsAdapter(), request, body_bytes)
+    body = _parse_json(body_bytes)
+    # The tenant comes only from the registered channel mapping. It used to fall
+    # back to a caller-supplied X-Tenant-ID header; a valid Bot Framework token
+    # proves the call is from Microsoft for OUR app, not which tenant it is for.
+    tenant_id = await _resolve_tenant_from_channel(
+        "teams", str(body.get("serviceUrl", "") or ""), _lookup_db(request)
     )
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("teams", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(
-            request, "teams", body, tenant_id, verified=_channel_verified(request, "teams")
-        )
+        await _emit_chat_event(request, "teams", body, tenant_id, verified=True)
     return {"type": "message", "text": "Received"}
 
 
@@ -175,20 +270,23 @@ async def teams_events(request: Request) -> dict:
 
 @router.post("/discord/events")
 async def discord_events(request: Request) -> dict:
-    """Handle Discord Interactions webhook."""
-    body = await request.json()
+    """Handle Discord Interactions webhook (Ed25519 signature authenticated)."""
+    from app.gateway.channels.discord import DiscordChannelAdapter
+
+    body_bytes = await request.body()
+    # Discord itself requires a 401 for bad signatures (it probes with one), and
+    # the PING is signed too — so verify before answering it.
+    await _require_adapter_auth(DiscordChannelAdapter(), request, body_bytes)
+    body = _parse_json(body_bytes)
     if body.get("type") == 1:  # PING
         return {"type": 1}
     guild_id = str(body.get("guild_id", ""))
-    db = getattr(request.app.state, "db", None)
-    tenant_id = await _resolve_tenant_from_channel("discord", guild_id, db)
+    tenant_id = await _resolve_tenant_from_channel("discord", guild_id, _lookup_db(request))
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("discord", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(
-            request, "discord", body, tenant_id, verified=_channel_verified(request, "discord")
-        )
+        await _emit_chat_event(request, "discord", body, tenant_id, verified=True)
     return {"type": 5}
 
 
@@ -198,10 +296,12 @@ async def discord_events(request: Request) -> dict:
 @router.post("/email/inbound")
 async def email_inbound(request: Request) -> dict:
     """Handle SendGrid Inbound Parse webhook."""
+    _require_channel_secret(request, "email")
     form = await request.form()
     to_email = str(form.get("to", ""))
-    db = getattr(request.app.state, "db", None)
-    tenant_id = await _resolve_tenant_from_channel("email", to_email, db)
+    tenant_id = _relay_tenant(request) or await _resolve_tenant_from_channel(
+        "email", to_email, _lookup_db(request)
+    )
 
     body = {
         "from": str(form.get("from", "")),
@@ -213,9 +313,7 @@ async def email_inbound(request: Request) -> dict:
     if gateway and tenant_id:
         await gateway.ingest("email", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(
-            request, "email", body, tenant_id, verified=_channel_verified(request, "email")
-        )
+        await _emit_chat_event(request, "email", body, tenant_id, verified=True)
     return {"status": "ok"}
 
 
@@ -225,10 +323,12 @@ async def email_inbound(request: Request) -> dict:
 @router.post("/sms/inbound")
 async def sms_inbound(request: Request) -> str:
     """Handle Twilio SMS webhook."""
+    _require_channel_secret(request, "sms")
     form = await request.form()
     to_number = str(form.get("To", ""))
-    db = getattr(request.app.state, "db", None)
-    tenant_id = await _resolve_tenant_from_channel("sms", to_number, db)
+    tenant_id = _relay_tenant(request) or await _resolve_tenant_from_channel(
+        "sms", to_number, _lookup_db(request)
+    )
 
     body = {
         "from": str(form.get("From", "")),
@@ -240,9 +340,7 @@ async def sms_inbound(request: Request) -> str:
     if gateway and tenant_id:
         await gateway.ingest("sms", body, tenant_id=tenant_id)
     if tenant_id:
-        await _emit_chat_event(
-            request, "sms", body, tenant_id, verified=_channel_verified(request, "sms")
-        )
+        await _emit_chat_event(request, "sms", body, tenant_id, verified=True)
     return '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
@@ -252,16 +350,15 @@ async def sms_inbound(request: Request) -> str:
 @router.post("/voice/transcript")
 async def voice_transcript(request: Request) -> dict:
     """Handle voice transcript webhook (Twilio, Deepgram, etc.)."""
-    body = await request.json()
-    tenant_id = request.headers.get("X-Tenant-ID", "")
+    _require_channel_secret(request, "voice")
+    body = _parse_json(await request.body())
+    tenant_id = _relay_tenant(request)
     if not tenant_id:
         raise HTTPException(status_code=401, detail="X-Tenant-ID header required")
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("voice", body, tenant_id=tenant_id)
-    await _emit_chat_event(
-        request, "voice", body, tenant_id, verified=_channel_verified(request, "voice")
-    )
+    await _emit_chat_event(request, "voice", body, tenant_id, verified=True)
     return {"status": "ok"}
 
 
@@ -271,20 +368,18 @@ async def voice_transcript(request: Request) -> dict:
 @router.post("/forms/{form_id}")
 async def form_submission(form_id: str, request: Request) -> dict:
     """Handle form submission webhook."""
-    body = await request.json()
-    tenant_id = request.headers.get("X-Tenant-ID", "")
-    db = getattr(request.app.state, "db", None)
-    if not tenant_id:
-        tenant_id = await _resolve_tenant_from_channel("form", form_id, db) or ""
+    _require_channel_secret(request, "form")
+    body = _parse_json(await request.body())
+    tenant_id = _relay_tenant(request) or (
+        await _resolve_tenant_from_channel("form", form_id, _lookup_db(request)) or ""
+    )
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Unable to resolve tenant from form_id")
     body["form_id"] = form_id
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("form", body, tenant_id=tenant_id)
-    await _emit_chat_event(
-        request, "form", body, tenant_id, verified=_channel_verified(request, "form")
-    )
+    await _emit_chat_event(request, "form", body, tenant_id, verified=True)
     return {"status": "ok"}
 
 
@@ -294,21 +389,20 @@ async def form_submission(form_id: str, request: Request) -> dict:
 @router.post("/meeting/ended")
 async def meeting_ended(request: Request) -> dict:
     """Handle a meeting-ended webhook (Zoom / Teams / Google Meet)."""
-    body = await request.json()
-    tenant_id = request.headers.get("X-Tenant-ID", "")
-    db = getattr(request.app.state, "db", None)
-    if not tenant_id:
-        tenant_id = (
-            await _resolve_tenant_from_channel("meeting", body.get("account_id", ""), db) or ""
+    _require_channel_secret(request, "meeting")
+    body = _parse_json(await request.body())
+    tenant_id = _relay_tenant(request) or (
+        await _resolve_tenant_from_channel(
+            "meeting", str(body.get("account_id", "") or ""), _lookup_db(request)
         )
+        or ""
+    )
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Unable to resolve tenant")
     gateway = _get_gateway(request)
     if gateway:
         await gateway.ingest("meeting", body, tenant_id=tenant_id)
-    await _emit_chat_event(
-        request, "meeting", body, tenant_id, verified=_channel_verified(request, "meeting")
-    )
+    await _emit_chat_event(request, "meeting", body, tenant_id, verified=True)
     return {"status": "ok"}
 
 

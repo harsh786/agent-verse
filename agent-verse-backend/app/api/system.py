@@ -36,11 +36,28 @@ async def metrics(request: Request) -> Response:
 
 
 @router.get("/.well-known/jwks.json")
-async def jwks_endpoint(request: Request) -> dict[str, Any]:
+async def jwks_endpoint(request: Request, tenant_id: str | None = None) -> dict[str, Any]:
     """Public key set for verifying agent JWT tokens (RS256).
 
-    Cached in Redis for 10 minutes. Invalidated when a credential is issued or revoked.
+    Without ``tenant_id``: the platform-wide set, cached in Redis for 10 minutes
+    and invalidated when a credential is issued or revoked. With ``tenant_id``
+    (the tenant is in every token's ``iss``): only that tenant's keys, read under
+    its RLS context and not cached (revocation must take effect immediately).
     """
+    from app.auth.agent_identity import _build_jwks
+
+    # agent_credentials is FORCE-RLS; the request factory under the NOBYPASSRLS
+    # role saw no rows without a tenant GUC, so this endpoint served an EMPTY key
+    # set. The cross-tenant read uses the maintenance (BYPASSRLS) factory.
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    db_factory = getattr(request.app.state, "system_db_session_factory", None) or (
+        getattr(svc, "_db", None) if svc else None
+    )
+
+    if tenant_id:
+        tenant_keys = await _build_jwks(db_factory, tenant_id=tenant_id) if db_factory else []
+        return {"keys": tenant_keys}
+
     redis_client = getattr(request.app.state, "_rate_limiter_redis", None)
     cache_key = "jwks:cache"
 
@@ -51,15 +68,13 @@ async def jwks_endpoint(request: Request) -> dict[str, Any]:
             if cached:
                 import json as _json
 
-                return _json.loads(cached.decode() if isinstance(cached, bytes) else cached)
+                cached_data = _json.loads(cached.decode() if isinstance(cached, bytes) else cached)
+                # Never serve a cached EMPTY set (the warm-up task used to cache
+                # one for 10 minutes); rebuild from the DB instead.
+                if isinstance(cached_data, dict) and cached_data.get("keys"):
+                    return cached_data
         except Exception:
             pass
-
-    # Build from DB via AgentIdentityService
-    from app.auth.agent_identity import _build_jwks
-
-    svc = getattr(request.app.state, "agent_identity_service", None)
-    db_factory = getattr(svc, "_db", None) if svc else None
 
     keys: list[dict[str, Any]] = []
     if db_factory:

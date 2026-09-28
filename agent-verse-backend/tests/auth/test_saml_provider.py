@@ -82,19 +82,17 @@ def test_saml_provider_custom_attribute_mapping():
 # ---------------------------------------------------------------------------
 
 
-def test_initiate_login_without_saml_returns_idp_url():
+def test_initiate_login_without_saml_raises_not_installed():
+    # Used to return the bare IdP SSO URL (no AuthnRequest) — a flow that could
+    # never complete. Now a typed error the API maps to 501.
+    from app.auth.saml_provider import SAMLNotInstalledError
+
     provider = _make_provider()
     with patch("app.auth.saml_provider.SAML_AVAILABLE", False):
-        url = provider.initiate_login()
-    assert url == "https://idp.example.com/sso"
-
-
-def test_initiate_login_without_saml_ignores_relay_state():
-    provider = _make_provider()
-    with patch("app.auth.saml_provider.SAML_AVAILABLE", False):
-        url = provider.initiate_login(relay_state="https://app.example.com/dashboard")
-    # Still returns the IdP SSO URL directly when SAML lib is absent
-    assert url == "https://idp.example.com/sso"
+        with pytest.raises(SAMLNotInstalledError):
+            provider.initiate_login()
+        with pytest.raises(SAMLNotInstalledError):
+            provider.initiate_login(relay_state="https://app.example.com/dashboard")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +342,7 @@ def test_build_saml_settings_structure():
     assert settings["sp"]["entityId"] == "https://sp.example.com"
     assert settings["idp"]["entityId"] == "https://idp.example.com"
     assert settings["security"]["wantAssertionsSigned"] is True
-    assert settings["strict"] is False
+    assert settings["strict"] is True  # non-strict skips signature enforcement
 
 
 # ---------------------------------------------------------------------------

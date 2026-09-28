@@ -1,5 +1,9 @@
 """Security: conversational events publish only for a verified webhook request
-(fail-closed), so a spoofed webhook cannot fire a victim tenant's triggers."""
+(fail-closed), so a spoofed webhook cannot fire a victim tenant's triggers.
+
+The per-event ``_channel_verified`` gate was replaced by request-level auth:
+every inbound channel endpoint now rejects an unauthenticated request (503/401)
+before any tenant work, via ``_require_channel_secret`` / signature checks."""
 
 from __future__ import annotations
 
@@ -8,7 +12,9 @@ from typing import Any
 
 import pytest
 
-from app.api.channels.ingestion import _channel_verified, _emit_chat_event
+from fastapi import HTTPException
+
+from app.api.channels.ingestion import _emit_chat_event, _require_channel_secret
 
 
 class _FakeRedis:
@@ -27,23 +33,23 @@ def _request(*, secrets: dict | None = None, headers: dict | None = None, redis:
     return SimpleNamespace(app=SimpleNamespace(state=state), headers=headers or {})
 
 
-def test_unconfigured_channel_is_not_verified() -> None:
-    assert _channel_verified(_request(), "teams") is False
+def test_unconfigured_channel_is_rejected_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CHANNEL_WEBHOOK_SECRET_TEAMS", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _require_channel_secret(_request(), "teams")
+    assert exc.value.status_code == 503
 
 
-def test_wrong_secret_is_not_verified() -> None:
+def test_wrong_secret_is_rejected_401() -> None:
     req = _request(secrets={"teams": "s3cret"}, headers={"X-Webhook-Secret": "wrong"})
-    assert _channel_verified(req, "teams") is False
+    with pytest.raises(HTTPException) as exc:
+        _require_channel_secret(req, "teams")
+    assert exc.value.status_code == 401
 
 
-def test_matching_secret_is_verified() -> None:
+def test_matching_secret_is_accepted() -> None:
     req = _request(secrets={"teams": "s3cret"}, headers={"X-Webhook-Secret": "s3cret"})
-    assert _channel_verified(req, "teams") is True
-
-
-def test_slack_uses_signature_result() -> None:
-    assert _channel_verified(_request(), "slack", slack_ok=True) is True
-    assert _channel_verified(_request(), "slack", slack_ok=False) is False
+    _require_channel_secret(req, "teams")  # no raise
 
 
 @pytest.mark.asyncio
