@@ -13,7 +13,7 @@
   once ``wake_at`` has passed. The partial index keeps that scan cheap.
 
 Revision ID: a8b9c0d1e2f3
-Revises: e8f9a0b1c2d3
+Revises: e4b7c1d9a2f3
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "a8b9c0d1e2f3"
-down_revision = "e8f9a0b1c2d3"
+down_revision = "e4b7c1d9a2f3"
 branch_labels = None
 depends_on = None
 
