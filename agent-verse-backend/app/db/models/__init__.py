@@ -58,6 +58,7 @@ from app.db.models.raft import (  # noqa: E402
     RAFTFineTuneJob,
 )
 from app.db.models.routing import RoutingDecisionRow, RoutingOutcomeRow  # noqa: E402
+from app.db.models.runtime_records import GoalCostBreakdownRow, SimulationRunRow  # noqa: E402
 from app.db.models.scheduling import Policy, Schedule  # noqa: E402
 from app.db.models.skill import Skill  # noqa: E402
 from app.db.models.state_machine import (  # noqa: E402
@@ -139,5 +140,7 @@ __all__ = [  # noqa: RUF022
     "StrategyCertificationEvidence",
     "COORDINATION_TABLES",
     "RoutingDecisionRow",
+    "GoalCostBreakdownRow",
+    "SimulationRunRow",
     "RoutingOutcomeRow",
 ]

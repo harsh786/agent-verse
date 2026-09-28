@@ -17,7 +17,7 @@ async def get_goal_cost_metrics(goal_id: str, request: Request) -> dict:
     Only for the caller's own goal. The breakdown is keyed by goal id alone, and
     this used to serve it to any authenticated tenant that knew (or guessed) the id.
     """
-    from app.observability.cost_breakdown import get_breakdown
+    from app.observability.cost_breakdown import aget_breakdown
 
     tenant_ctx = getattr(request.state, "tenant", None)
     if tenant_ctx is None:
@@ -32,7 +32,13 @@ async def get_goal_cost_metrics(goal_id: str, request: Request) -> dict:
     if not owned:
         raise HTTPException(status_code=404, detail=f"Goal {goal_id} not found")
 
-    breakdown = get_breakdown(goal_id)
+    # Read the durable, tenant-scoped breakdown (Postgres when bound). The old
+    # get_breakdown(goal_id) read this process's memory, so a goal run by a worker
+    # or another replica always showed an empty breakdown here.
+    try:
+        breakdown = await aget_breakdown(goal_id, tenant_id=str(tenant_ctx.tenant_id))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Cost breakdown unavailable") from exc
     bd = breakdown.to_dict()
 
     # Add cache metrics if available
