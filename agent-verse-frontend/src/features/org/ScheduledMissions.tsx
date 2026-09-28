@@ -53,8 +53,10 @@ function useSchedules() {
 function useCreateSchedule() {
   const qc = useQueryClient();
   return useMutation({
+    // trigger_type was omitted, so the API defaulted it to "once" (with no fire
+    // time — a schedule that never fired); it is now rejected, so send "cron".
     mutationFn: (body: { name: string; cron_expr: string; goal_template: string }) =>
-      apiClient.post<Schedule>('/schedules', body),
+      apiClient.post<Schedule>('/schedules', { ...body, trigger_type: 'cron' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['schedules'] }),
   });
 }
