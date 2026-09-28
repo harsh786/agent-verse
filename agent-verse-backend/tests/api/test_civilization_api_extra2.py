@@ -446,9 +446,8 @@ class TestControls:
                     "/civilizations/civ1/controls/pause",
                     headers=_AUTH,
                 )
-        assert resp.status_code in (200, 500)
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "paused"
+        # No database row for civ1: an honest 404/503, never a fake "paused".
+        assert resp.status_code in (404, 503)
 
     def test_resume_action(self):
         app = _make_app(civilization_enabled=True)
@@ -463,7 +462,7 @@ class TestControls:
                     "/civilizations/civ1/controls/resume",
                     headers=_AUTH,
                 )
-        assert resp.status_code in (200, 500)
+        assert resp.status_code in (404, 503)
 
 
 # ── Stream endpoint ───────────────────────────────────────────────────────────

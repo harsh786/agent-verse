@@ -186,10 +186,19 @@ describe('CivilizationPage — new civilization modal', () => {
     await waitFor(() =>
       expect(
         fetchSpy.mock.calls.some(
-          ([u, i]) => String(u).includes('/civilization/civilizations') && (i as RequestInit)?.method === 'POST',
+          ([u, i]) =>
+            /\/civilizations$/.test(String(u)) &&
+            !String(u).includes('/civilization/civilizations') &&
+            (i as RequestInit)?.method === 'POST',
         ),
       ).toBe(true),
     );
+    const post = fetchSpy.mock.calls.find(
+      ([u, i]) => /\/civilizations$/.test(String(u)) && (i as RequestInit)?.method === 'POST',
+    );
+    const sent = JSON.parse(String((post?.[1] as RequestInit).body));
+    expect(sent.name).toBe('Research Cluster');
+    expect(sent.constitution.max_total_agents).toBe(5);
   });
 
   it('closes the modal via Cancel without creating anything', async () => {

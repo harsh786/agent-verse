@@ -630,7 +630,7 @@ def test_control_pause_action() -> None:
             json={},
             headers=H,
         )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code in (404, 503)  # no civilization row → never a fake 200
 
 
 def test_control_resume_action() -> None:
@@ -642,7 +642,7 @@ def test_control_resume_action() -> None:
             json={},
             headers=H,
         )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code in (404, 503)
 
 
 def test_control_throttle_action_with_db() -> None:
@@ -697,7 +697,7 @@ def test_control_throttle_no_rate_param() -> None:
             json={"params": {}},
             headers=H,
         )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code in (404, 422, 503)
 
 
 def test_control_adjust_budget_no_budget_param() -> None:
@@ -708,7 +708,7 @@ def test_control_adjust_budget_no_budget_param() -> None:
         json={"params": {}},
         headers=H,
     )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code in (404, 422, 503)
 
 
 # ---------------------------------------------------------------------------
@@ -888,7 +888,7 @@ def test_get_civilization_db_generic_exception() -> None:
     assert resp.status_code == 500
 
 
-def test_control_throttle_db_update_exception_swallowed() -> None:
+def test_control_throttle_db_failure_is_503() -> None:
     """Lines 720-721: Throttle DB update exception is swallowed."""
     # First call returns constitution, second call (UPDATE) raises
     mock_ok = MagicMock()
@@ -916,10 +916,10 @@ def test_control_throttle_db_update_exception_swallowed() -> None:
             json={"params": {"spawn_rate_limit_per_min": 3}},
             headers=H,
         )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503  # was swallowed and answered "ok"
 
 
-def test_control_adjust_budget_db_update_exception_swallowed() -> None:
+def test_control_adjust_budget_db_failure_is_503() -> None:
     """Lines 743-744: Adjust budget DB update exception is swallowed."""
     mock_ok = MagicMock()
     mock_ok.fetchone.return_value = ({"total_budget_usd": 100.0},)
@@ -944,7 +944,7 @@ def test_control_adjust_budget_db_update_exception_swallowed() -> None:
         json={"params": {"total_budget_usd": 500.0}},
         headers=H,
     )
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503
 
 
 def test_build_orchestrator_runs_without_patch() -> None:

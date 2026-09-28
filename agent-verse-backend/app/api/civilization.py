@@ -842,10 +842,18 @@ async def control_civilization(
     tenant_ctx = _require_tenant(request)
     db = _get_db(request)
 
-    constitution_data: dict = {}
-    try:
-        from sqlalchemy import text
+    if action not in {"pause", "resume", "throttle", "adjust_budget"}:
+        raise HTTPException(
+            400,
+            f"Unknown action: {action}. Valid: pause|resume|throttle|adjust_budget",
+        )
 
+    from sqlalchemy import text
+
+    # A failed read used to be swallowed and the constitution treated as {} — a
+    # subsequent throttle/adjust_budget then OVERWROTE the whole constitution
+    # with just the one changed field. Unreadable → 503; unknown/foreign → 404.
+    try:
         async with db() as session, _rls_ctx(session, tenant_ctx.tenant_id):
             row = (
                 await session.execute(
@@ -853,9 +861,17 @@ async def control_civilization(
                     {"id": civ_id, "tid": tenant_ctx.tenant_id},
                 )
             ).fetchone()
-        constitution_data = (row[0] if row and isinstance(row[0], dict) else {}) if row else {}
-    except Exception:
-        pass
+    except Exception as exc:
+        raise HTTPException(503, "Civilization could not be loaded; retry") from exc
+    if row is None:
+        raise HTTPException(404, "Civilization not found")
+    raw_constitution = row[0]
+    if isinstance(raw_constitution, str):
+        try:
+            raw_constitution = json.loads(raw_constitution)
+        except ValueError:
+            raw_constitution = None
+    constitution_data: dict = raw_constitution if isinstance(raw_constitution, dict) else {}
 
     from app.civilization.governor import Governor
     from app.civilization.models import Constitution
@@ -874,68 +890,53 @@ async def control_civilization(
     if action == "pause":
         await governor.pause()
         return {"status": "paused", "civilization_id": civ_id}
-    elif action == "resume":
+    if action == "resume":
         await governor.resume()
         return {"status": "active", "civilization_id": civ_id}
-    elif action == "throttle":
-        # GAP 8: Actually update spawn_rate_limit_per_min in the constitution
-        rate = body.params.get("spawn_rate_limit_per_min")
-        if rate is not None:
-            constitution_data["spawn_rate_limit_per_min"] = int(rate)
-            try:
-                from sqlalchemy import text
 
-                async with (
-                    db() as session,
-                    session.begin(),
-                    _rls_ctx(session, tenant_ctx.tenant_id),
-                ):
-                    await session.execute(
-                        text(
-                            "UPDATE civilizations SET constitution=cast(:c as jsonb), updated_at=NOW() "  # noqa: E501
-                            "WHERE id=:id AND tenant_id=:tid"
-                        ),
-                        {
-                            "c": json.dumps(constitution_data),
-                            "id": civ_id,
-                            "tid": tenant_ctx.tenant_id,
-                        },
-                    )
-            except Exception:
-                pass
-        return {"status": "ok", "action": action, "spawn_rate_limit_per_min": rate}
-    elif action == "adjust_budget":
-        new_budget = body.params.get("total_budget_usd")
-        if new_budget is not None:
-            constitution_data["total_budget_usd"] = float(new_budget)
-            try:
-                from sqlalchemy import text
-
-                async with (
-                    db() as session,
-                    session.begin(),
-                    _rls_ctx(session, tenant_ctx.tenant_id),
-                ):
-                    await session.execute(
-                        text(
-                            "UPDATE civilizations "
-                            "SET constitution=cast(:c as jsonb), updated_at=NOW() "
-                            "WHERE id=:id AND tenant_id=:tid"
-                        ),
-                        {
-                            "c": json.dumps(constitution_data),
-                            "id": civ_id,
-                            "tid": tenant_ctx.tenant_id,
-                        },
-                    )
-            except Exception:
-                pass
-        return {"status": "ok", "action": action, "params": body.params}
-    else:
-        raise HTTPException(
-            400,
-            f"Unknown action: {action}. Valid: pause|resume|throttle|adjust_budget",
-        )
+    # throttle / adjust_budget: persist the change, or say it did not happen
+    # (both used to `except: pass` and still answer status "ok").
+    field, caster = (
+        ("spawn_rate_limit_per_min", int)
+        if action == "throttle"
+        else ("total_budget_usd", float)
+    )
+    raw_value = body.params.get(field)
+    if raw_value is None:
+        raise HTTPException(422, f"{action} requires params.{field}")
+    try:
+        value = caster(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(422, f"params.{field} must be a number") from exc
+    if value < 0:
+        raise HTTPException(422, f"params.{field} must be >= 0")
+    constitution_data[field] = value
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            _rls_ctx(session, tenant_ctx.tenant_id),
+        ):
+            result = await session.execute(
+                text(
+                    "UPDATE civilizations "
+                    "SET constitution=cast(:c as jsonb), updated_at=NOW() "
+                    "WHERE id=:id AND tenant_id=:tid"
+                ),
+                {
+                    "c": json.dumps(constitution_data),
+                    "id": civ_id,
+                    "tid": tenant_ctx.tenant_id,
+                },
+            )
+            updated = int(getattr(result, "rowcount", 0) or 0)
+    except Exception as exc:
+        raise HTTPException(503, f"{action} could not be saved; retry") from exc
+    if not updated:
+        raise HTTPException(404, "Civilization not found")
+    if action == "throttle":
+        return {"status": "ok", "action": action, "spawn_rate_limit_per_min": value}
+    return {"status": "ok", "action": action, "params": {field: value}}
 
 
 @router.post("/{civ_id}/agents/{agent_id}/kill")

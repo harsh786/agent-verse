@@ -316,9 +316,19 @@ function CivilizationList() {
                 onClick={async () => {
                   if (!newCivForm.name.trim()) return;
                   try {
-                    await apiFetch('/civilization/civilizations', {
+                    // Backend route is POST /civilizations (this posted to
+                    // /civilization/civilizations → 404) and takes
+                    // {name, constitution}; the form's limits map onto the
+                    // constitution instead of being silently dropped.
+                    await apiFetch('/civilizations', {
                       method: 'POST',
-                      body: JSON.stringify(newCivForm),
+                      body: JSON.stringify({
+                        name: newCivForm.name,
+                        constitution: {
+                          max_total_agents: newCivForm.max_agents,
+                          autonomy_ceiling: newCivForm.autonomy_level,
+                        },
+                      }),
                     });
                     toast({ kind: 'success', message: `Civilization "${newCivForm.name}" created!` });
                     setShowNewCivModal(false);
