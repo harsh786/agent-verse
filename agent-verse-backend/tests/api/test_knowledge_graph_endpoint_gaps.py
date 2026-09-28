@@ -278,3 +278,65 @@ def test_extract_with_deterministic_branch_stores_nodes_and_edges() -> None:
     assert "relationships_extracted" in body
     # Should have extracted at least 1 deterministic entity from the text
     assert body["entities_extracted"] >= 0  # entity extraction varies but should at least not crash
+
+
+# ── DELETE /knowledge-graph/rebuild — role gate ──────────────────────────────
+
+
+def _rebuild_app() -> tuple[FastAPI, dict[str, str], dict[str, str]]:
+    """App with a viewer key and an admin key for the same tenant."""
+    viewer = TenantContext(
+        tenant_id="tid-kg-rebuild", plan=PlanTier.ENTERPRISE,
+        api_key_id="kid-viewer", roles=("viewer",),
+    )
+    admin = TenantContext(
+        tenant_id="tid-kg-rebuild", plan=PlanTier.ENTERPRISE,
+        api_key_id="kid-admin", roles=("admin",),
+    )
+    keys = {"ak_kg_viewer": viewer, "ak_kg_admin": admin}
+    app = FastAPI()
+
+    async def _resolve(key: str) -> TenantContext | None:
+        return keys.get(key)
+
+    app.add_middleware(TenantMiddleware, key_resolver=_resolve)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.include_router(kg_router)
+    return app, {"X-API-Key": "ak_kg_viewer"}, {"X-API-Key": "ak_kg_admin"}
+
+
+def test_rebuild_rejects_a_non_admin_key_and_leaves_the_graph_intact() -> None:
+    """A viewer / read-only key must not be able to wipe the tenant graph.
+
+    Regression: DELETE /knowledge-graph/rebuild only called _require_tenant, so
+    any authenticated key of the tenant — including a read-only viewer key —
+    irreversibly deleted every node and edge (in memory AND in the DB).
+    """
+    import uuid
+
+    from app.knowledge_graph.models import GraphNode, NodeType
+
+    app, viewer_headers, _ = _rebuild_app()
+    node_id = uuid.uuid4().hex
+    kg_store.add_node(GraphNode(
+        node_id=node_id, tenant_id="tid-kg-rebuild",
+        node_type=NodeType.CONCEPT, label="must survive",
+    ))
+    try:
+        resp = TestClient(app, raise_server_exceptions=False).delete(
+            "/knowledge-graph/rebuild", headers=viewer_headers
+        )
+        assert resp.status_code == 403, resp.text
+        assert kg_store.get_node(node_id, "tid-kg-rebuild") is not None
+    finally:
+        kg_store._tenant_nodes.get("tid-kg-rebuild", set()).discard(node_id)
+        kg_store._nodes.pop(node_id, None)
+
+
+def test_rebuild_allows_an_admin_key() -> None:
+    app, _, admin_headers = _rebuild_app()
+    resp = TestClient(app, raise_server_exceptions=False).delete(
+        "/knowledge-graph/rebuild", headers=admin_headers
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "cleared"

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/knowledge-graph", tags=["knowledge-graph"])
 
@@ -268,7 +270,13 @@ async def get_graph_stats(request: Request) -> dict[str, Any]:
 
 
 @router.delete("/rebuild")
-async def rebuild_graph(request: Request) -> dict[str, Any]:
+async def rebuild_graph(
+    request: Request,
+    # Admin-only: this irreversibly wipes every node and edge of the tenant, in
+    # memory and in the DB. It used to check only _require_tenant, so any key of
+    # the tenant — even a read-only viewer key — could delete the whole graph.
+    _rbac: None = Depends(require_role("admin")),
+) -> dict[str, Any]:
     """Delete and rebuild the tenant's knowledge graph (idempotent)."""
     tenant = _require_tenant(request)
     from app.knowledge_graph.store import kg_store
