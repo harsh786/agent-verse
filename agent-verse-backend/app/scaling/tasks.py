@@ -1550,19 +1550,22 @@ def run_goal(
     _agent_max_iterations: int | None = None  # None = use graph default (100)
     _agent_system_prompt: str = ""
     _agent_collection_ids: list[str] = []
+    # The agent's pinned model. Only the API path applied it (GoalService ->
+    # ModelRouter.with_override); worker-run goals silently ignored it.
+    _agent_model_override: str = ""
     if agent_id and db_factory is not None:
         try:
             from sqlalchemy import text as _sa_text
 
             from app.db.rls import sqlalchemy_rls_context as _rls
 
-            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str]]:
+            async def _lookup_agent_config() -> tuple[str, int | None, str, list[str], str]:
                 async with db_factory() as _sess, _rls(_sess, tenant_id):
                     row = (
                         await _sess.execute(
                             _sa_text(
                                 "SELECT autonomy_mode, max_iterations, system_prompt, "
-                                "allowed_collection_ids FROM agents "
+                                "allowed_collection_ids, model_override FROM agents "
                                 "WHERE id = :aid AND tenant_id = :tid LIMIT 1"
                             ),
                             {"aid": agent_id, "tid": tenant_id},
@@ -1573,14 +1576,16 @@ def run_goal(
                         iters = int(row[1]) if row[1] else None
                         sys_prompt = str(row[2]) if row[2] else ""
                         collection_ids = list(row[3] or []) if len(row) > 3 else []
-                        return mode, iters, sys_prompt, collection_ids
-                    return "bounded-autonomous", None, "", []
+                        override = str(row[4] or "") if len(row) > 4 else ""
+                        return mode, iters, sys_prompt, collection_ids, override
+                    return "bounded-autonomous", None, "", [], ""
 
             (
                 _agent_autonomy_mode,
                 _agent_max_iterations,
                 _agent_system_prompt,
                 _agent_collection_ids,
+                _agent_model_override,
             ) = _run_async(_lookup_agent_config())
             logger.info(
                 "worker_agent_config goal=%s agent=%s mode=%s max_iter=%s",
@@ -1747,6 +1752,15 @@ def run_goal(
                     _model_router.set_role_map(_worker_roles)
                 except Exception as _rm_exc:
                     logger.warning("worker_model_role_map_apply_failed: %s", _rm_exc)
+            if _agent_model_override:
+                try:
+                    if _model_router is None:
+                        from app.agent.model_router import ModelRouter
+
+                        _model_router = ModelRouter()
+                    _model_router = _model_router.with_override(_agent_model_override)
+                except Exception as _mo_exc:
+                    logger.warning("worker_model_override_apply_failed: %s", _mo_exc)
 
             # Build LLM response cache and semantic cache for the worker.
             # Use the Celery broker Redis URL as fallback for REDIS_URL so
