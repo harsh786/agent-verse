@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import inspect
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # ── discover_and_tick_civilizations ───────────────────────────────────────────
@@ -439,9 +440,16 @@ def test_run_goal_dry_run_returns_complete() -> None:
     """run_goal with dry_run=True short-circuits after status update."""
     from app.scaling.tasks import run_goal
 
+    def _fake_run_async(coro: Any) -> Any:
+        # Nothing really runs; the atomic goal claim is granted.
+        name = getattr(coro, "__qualname__", "")
+        if hasattr(coro, "close"):
+            coro.close()
+        return "claimed" if "claim" in name else None
+
     # __wrapped__ for bind=True tasks does NOT include self
     with patch("app.scaling.tasks._get_sync_redis", return_value=None), \
-         patch("app.scaling.tasks._run_async", return_value=None), \
+         patch("app.scaling.tasks._run_async", side_effect=_fake_run_async), \
          patch("app.scaling.tasks._record_goal_duration_metric"), \
          patch("app.scaling.tasks._decrement_after_completion"), \
          patch("app.scaling.tasks.celery_app") as mock_celery:

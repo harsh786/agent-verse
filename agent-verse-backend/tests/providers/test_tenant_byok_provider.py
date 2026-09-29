@@ -229,7 +229,11 @@ def test_worker_run_goal_fails_on_decrypt_error(
         def __init__(self, **kwargs: Any) -> None:
             ran.append(kwargs)
 
+    async def _claimed(goal_id: str, tenant_id: str) -> str:
+        return "claimed"  # no goals table here; the worker's atomic claim is granted
+
     monkeypatch.setattr(graph_mod, "AgentGraph", _Graph)
+    monkeypatch.setattr(tasks, "_claim_goal_for_execution", _claimed)
     worker_store({"provider": "anthropic", "encrypted_key": "enc"})
     broken = MagicMock()
     broken.decrypt = MagicMock(side_effect=ValueError("bad token"))

@@ -37,3 +37,21 @@ def _reset_db_engine_singletons() -> Iterator[None]:
     finally:
         _sess._engine = prev_engine
         _sess._session_factory = prev_factory
+
+
+@pytest.fixture(autouse=True)
+def _goal_claim_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Most run_goal tests exercise what happens AFTER the worker claims its goal.
+
+    ``run_goal`` fails closed when it cannot atomically claim the goal row
+    (``_claim_goal_for_execution``), and these unit tests have no real goals
+    table — so the claim is stubbed as granted here. The claim itself, and
+    run_goal's handling of a terminal / unverifiable claim, are tested in
+    ``test_run_goal_claim.py`` (which restores the real function).
+    """
+    from app.scaling import tasks
+
+    async def _claimed(goal_id: str, tenant_id: str) -> str:
+        return "claimed"
+
+    monkeypatch.setattr(tasks, "_claim_goal_for_execution", _claimed)

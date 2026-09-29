@@ -1677,8 +1677,15 @@ async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
     return str(value or "")
 
 
-async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
-    """Mark a goal an emergency stop prevented from running as cancelled."""
+_TERMINAL_GOAL_STATUSES = ("complete", "failed", "cancelled")
+
+
+async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> bool:
+    """Mark a goal an emergency stop prevented from running as cancelled.
+
+    Conditional: a redelivered message for a goal that already finished must
+    not rewrite its terminal status. Returns whether the row was changed.
+    """
     from sqlalchemy import update
 
     from app.db.models.goal import Goal
@@ -1687,11 +1694,63 @@ async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
 
     db = get_session_factory()
     async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-        await session.execute(
+        result = await session.execute(
             update(Goal)
-            .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            .where(
+                Goal.id == goal_id,
+                Goal.tenant_id == tenant_id,
+                Goal.status.notin_(_TERMINAL_GOAL_STATUSES),
+            )
             .values(status="cancelled", error_message=f"Blocked by emergency stop: {reason}")
         )
+    rowcount = getattr(result, "rowcount", None)
+    return not isinstance(rowcount, int) or rowcount > 0
+
+
+async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
+    """Atomically claim a goal row for this worker run.
+
+    One conditional ``UPDATE goals SET status='executing' WHERE status NOT IN
+    terminal RETURNING id`` under the tenant's RLS context. Returns
+    ``"claimed"`` when this run may execute the goal, otherwise the row's
+    terminal status (the goal already finished — a redelivered message).
+    Raises ``LookupError`` when the row does not exist and propagates DB
+    errors: the caller fails closed rather than running an unverified goal.
+
+    A goal still ``executing`` is claimable: concurrent runs are excluded by the
+    per-goal execution lock taken before this, so a claim of a running goal only
+    succeeds when its previous worker died (crash recovery via acks_late).
+    """
+    from sqlalchemy import select, update
+
+    from app.db.models.goal import Goal
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        claimed = (
+            await session.execute(
+                update(Goal)
+                .where(
+                    Goal.id == goal_id,
+                    Goal.tenant_id == tenant_id,
+                    Goal.status.notin_(_TERMINAL_GOAL_STATUSES),
+                )
+                .values(status="executing")
+                .returning(Goal.id)
+            )
+        ).scalar()
+        if claimed is not None:
+            return "claimed"
+        existing = (
+            await session.execute(
+                select(Goal.status).where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            )
+        ).scalar()
+    if existing is None:
+        raise LookupError(f"goal row {goal_id} not found")
+    return str(existing)
 
 
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
@@ -1799,10 +1858,14 @@ def run_goal(
             )
             # Record it: the goal row used to stay "queued" forever and keep its
             # concurrency slot, so the stop looked like a hang.
+            _blocked: Any = None
             with contextlib.suppress(Exception):
-                _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
-            with contextlib.suppress(Exception):
-                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                _blocked = _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
+            # A redelivered message for an already-finished goal changes nothing
+            # and must not free a slot a running goal holds.
+            if _blocked is not False:
+                with contextlib.suppress(Exception):
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "blocked", "reason": _stop_reason}
     except Exception as _es_exc:
         logger.warning("emergency_stop_check_failed: %s", _es_exc)
@@ -1832,8 +1895,11 @@ def run_goal(
         *,
         error_message: str = "",
         iterations: int = 0,
-        only_if_active: bool = False,
+        only_if_active: bool = True,
     ) -> None:
+        # Conditional by default: a worker never rewrites a goal that already
+        # reached a terminal status (an operator cancel landing mid-run, or a
+        # redelivered message for a finished goal).
         if goal_bridge is None:
             return
         try:
@@ -2047,6 +2113,48 @@ def run_goal(
         _run_async(ensure_submitted_goal_row())
     except Exception as db_exc:
         logger.warning("DB operation failed (non-fatal): %s", db_exc)
+
+    # ── Terminal-state check + atomic claim ───────────────────────────────────
+    # With acks_late, Celery redelivers a message whose run outlived the broker
+    # visibility timeout (or whose worker died). The lock above excludes a
+    # concurrent run; this conditional UPDATE excludes RE-running a goal that
+    # already reached a terminal status. Fail closed when it cannot be verified.
+    if goal_bridge is not None:
+        try:
+            _claim = _run_async(_claim_goal_for_execution(goal_id, tenant_id))
+        except Exception as _claim_exc:
+            logger.error("goal_claim_unavailable goal_id=%s: %s", goal_id, _claim_exc)
+            if _lock:
+                with contextlib.suppress(Exception):
+                    _lock.release(goal_id)
+            if self.request.retries < self.max_retries:
+                raise self.retry(
+                    exc=_claim_exc, countdown=2**self.request.retries
+                ) from _claim_exc
+            _claim_reason = "Goal could not be claimed for execution; not run to avoid duplicates"
+            with contextlib.suppress(Exception):
+                _run_async(update_submitted_goal_status("failed", error_message=_claim_reason))
+            with contextlib.suppress(Exception):
+                _run_async(
+                    append_submitted_goal_event({"type": "worker_failed", "reason": _claim_reason})
+                )
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {"status": "failed", "goal_id": goal_id, "reason": "goal_claim_unavailable"}
+        if _claim != "claimed":
+            logger.warning(
+                "goal_already_terminal_skipping goal_id=%s status=%s", goal_id, _claim
+            )
+            if _lock:
+                with contextlib.suppress(Exception):
+                    _lock.release(goal_id)
+            # No counter decrement: the run that finished it released the slot.
+            return {
+                "status": "skipped",
+                "goal_id": goal_id,
+                "reason": "already_terminal",
+                "goal_status": _claim,
+            }
+
     try:
         _run_async(mark_worker_started())
     except Exception as db_exc:

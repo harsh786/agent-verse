@@ -214,6 +214,7 @@ def test_run_goal_updates_submitted_goal_status_and_events(monkeypatch: Any) -> 
             status: str,
             error_message: str = "",
             iterations: int = 0,
+            only_if_active: bool = False,
         ) -> None:
             assert goal_id == "goal-123"
             assert tenant_id == "tenant-1"
@@ -294,6 +295,7 @@ def test_run_goal_records_duration_metric_on_worker_failure(monkeypatch: Any) ->
             status: str,
             error_message: str = "",
             iterations: int = 0,
+            only_if_active: bool = False,
         ) -> None:
             pass
 
@@ -375,6 +377,7 @@ def test_run_goal_ensures_goal_row_before_status_and_events(monkeypatch: Any) ->
             status: str,
             error_message: str = "",
             iterations: int = 0,
+            only_if_active: bool = False,
         ) -> None:
             order.append(f"status:{status}")
 
