@@ -13,7 +13,6 @@ downgrade — and hands the observed profile to the scorecard path.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -88,11 +87,27 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(GoalService, "_db_merge_context_key", _merge)
     monkeypatch.setattr(GoalService, "_db_ensure_goal_row", _noop)
     monkeypatch.setattr(GoalService, "_db_update_goal_status", _update)
-    monkeypatch.setattr("app.db.session.get_session_factory", lambda: MagicMock())
+    class _NoDb:
+        """A configured-but-unreachable database: every session open fails."""
+
+        async def __aenter__(self) -> Any:
+            raise RuntimeError("no database in this unit test")
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: lambda: _NoDb())
     monkeypatch.setattr(tasks, "_get_llm_provider", lambda tenant_id: None)
     monkeypatch.setattr(tasks.celery_app.conf, "broker_url", "")
     monkeypatch.setattr(tasks, "_get_sync_redis", lambda: None)
     monkeypatch.setenv("ENVIRONMENT", "development")
+    # The profile's hybrid RAG strategy needs an embedder: give the worker one
+    # (construction only — the graph run itself is stubbed), whatever the env.
+    monkeypatch.setattr(
+        "app.core.config.get_provider_env",
+        lambda name: "sk-test" if name == "OPENAI_API_KEY" else "",
+    )
+    monkeypatch.delenv("EMBEDDING_BASE_URL", raising=False)
 
     def _with_context(ctx: dict[str, Any]) -> None:
         async def _ctx(goal_id: str, tenant_id: str) -> dict[str, Any]:
@@ -117,7 +132,8 @@ def test_v2_goal_runs_the_profiled_strategy_on_the_worker(worker: dict[str, Any]
         {"runtime_profile": profile.to_dict(), "strategy_runtime_path": "v2"}
     )
 
-    assert _run()["status"] == "complete"
+    result = _run()
+    assert result["status"] == "complete", result
 
     graph = worker["graphs"][-1]
     assert graph._enable_self_refine is True
