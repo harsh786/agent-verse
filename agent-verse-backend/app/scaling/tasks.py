@@ -2722,10 +2722,14 @@ def run_goal(
                 _reflexion_service: Any = None
                 if db_factory is not None:
                     try:
+                        from app.memory.embedding import memory_embedder_from_provider
                         from app.memory.postgres_repository import PostgresMemoryRepository
 
                         _reflexion_service = ReflexionService(
-                            repository=PostgresMemoryRepository(db_factory)
+                            repository=PostgresMemoryRepository(
+                                db_factory,
+                                embedder=memory_embedder_from_provider(_embedder_for_graph),
+                            )
                         )
                     except Exception as _refl_exc:  # pragma: no cover - defensive
                         logger.warning("worker_reflexion_wire_failed: %s", _refl_exc)
