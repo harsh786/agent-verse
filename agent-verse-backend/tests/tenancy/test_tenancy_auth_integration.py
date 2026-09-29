@@ -41,7 +41,17 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 TENANT_A = "tenant-int-a"
 TENANT_B = "tenant-int-b"
 _KEY = "ak_integration"
-_TABLES = ("ip_allowlist_entries", "legal_holds", "users", "tenant_memberships")
+# The scope lookup reads api_key_scopes on every request and fails closed (503)
+# when it cannot, so the least-privilege role needs it like production's does.
+_TABLES = (
+    "ip_allowlist_entries",
+    "legal_holds",
+    "users",
+    "tenant_memberships",
+    "api_key_scopes",
+    "custom_roles",
+    "role_assignments",
+)
 
 
 @pytest.fixture(scope="module")

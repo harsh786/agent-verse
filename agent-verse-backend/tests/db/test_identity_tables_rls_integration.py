@@ -368,6 +368,10 @@ async def test_scim_token_provision_and_bearer_auth_under_least_privilege(
 # ── SAML ──────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.skipif(
+    __import__("importlib").util.find_spec("onelogin") is None,
+    reason="python3-saml (the optional 'saml' extra, needs native libxmlsec1) is not installed",
+)
 async def test_saml_configure_and_login_under_least_privilege(dbs: dict[str, Any]) -> None:
     from app.api.enterprise import SAMLConfigRequest, configure_saml, saml_login
 

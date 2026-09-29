@@ -474,7 +474,13 @@ def _api(app_factory: Any, tenants: dict[str, str]) -> Any:
 
     async def _resolve(key: str) -> TenantContext | None:
         tid = tenants.get(key)
-        return TenantContext(tenant_id=tid, plan=PlanTier.ENTERPRISE, api_key_id=key) if tid else None
+        return (
+            TenantContext(
+                tenant_id=tid, plan=PlanTier.ENTERPRISE, api_key_id=key, roles=("admin",)
+            )
+            if tid
+            else None
+        )  # admin: signing a contract is admin-only (3bae0a371)
 
     api.add_middleware(TenantMiddleware, key_resolver=_resolve)
     api.include_router(enterprise_router)

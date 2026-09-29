@@ -199,6 +199,8 @@ async def test_retention_is_a_no_op_when_nothing_is_expired(
         "deleted": 0,
         "graph_nodes_deleted": 0,
         "graph_edges_deleted": 0,
+        "knowledge_chunks_expired": 0,
+        "knowledge_documents_expired": 0,
     }, result
 
     nodes = await _ids(seeded, "SELECT id FROM knowledge_nodes WHERE tenant_id = :t")
