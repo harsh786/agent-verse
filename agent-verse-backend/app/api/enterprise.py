@@ -1565,6 +1565,56 @@ async def start_gdpr_export(request: Request) -> dict[str, Any]:
     }
 
 
+@compliance_router.get("/export/jobs")
+async def list_gdpr_export_jobs(
+    request: Request, limit: int = Query(10, ge=1, le=100)
+) -> dict[str, Any]:
+    """The tenant's most recent GDPR export jobs, newest first.
+
+    Lets the privacy page show the real state of an export after a reload.
+    503 without a database or on a read error — never an empty list for a
+    read that did not happen.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    ctx = _require_tenant(request)
+    db = _gdpr_db_or_503(request, "GDPR export status")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, status, created_at, completed_at, download_url, "
+                        "error_message FROM gdpr_export_jobs WHERE tenant_id = :tid "
+                        "ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"tid": ctx.tenant_id, "lim": limit},
+                )
+            ).fetchall()
+    except Exception as exc:
+        logging.getLogger(__name__).error("gdpr_export_jobs_list_failed: %s", exc)
+        raise HTTPException(503, "GDPR export jobs could not be read; retry") from exc
+    return {
+        "jobs": [
+            {
+                "job_id": r[0],
+                "status": r[1],
+                "created_at": r[2].isoformat() if r[2] else None,
+                "completed_at": r[3].isoformat() if r[3] else None,
+                "download_url": r[4],
+                "error": r[5],
+            }
+            for r in rows
+        ]
+    }
+
+
 @compliance_router.get("/export/jobs/{job_id}")
 async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any]:
     """Poll status of async GDPR export job (503 without a database — never a
@@ -1601,6 +1651,54 @@ async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any
 class ConsentRequest(BaseModel):
     purpose: str  # "analytics", "marketing", "ai_processing", etc.
     legal_basis: str = "legitimate_interest"  # GDPR legal basis
+
+
+@compliance_router.get("/consent")
+async def list_consent(request: Request) -> dict[str, Any]:
+    """The tenant's active (non-revoked) consent records.
+
+    503 without a database or on a read error: an unreadable consent state must
+    never be shown as "not granted" (or granted).
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    ctx = _require_tenant(request)
+    db = _gdpr_db_or_503(request, "Consent state")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT purpose, legal_basis, granted_at FROM consent_records "
+                        "WHERE tenant_id = :tid AND revoked_at IS NULL "
+                        "ORDER BY granted_at DESC"
+                    ),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchall()
+    except Exception as exc:
+        logging.getLogger(__name__).error("consent_list_failed: %s", exc)
+        raise HTTPException(503, "Consent state could not be read; retry") from exc
+    consents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for purpose, basis, granted_at in rows:
+        if purpose in seen:  # newest active record per purpose
+            continue
+        seen.add(purpose)
+        consents.append(
+            {
+                "purpose": purpose,
+                "legal_basis": basis,
+                "granted_at": granted_at.isoformat() if granted_at else None,
+            }
+        )
+    return {"consents": consents, "active_purposes": [c["purpose"] for c in consents]}
 
 
 @compliance_router.post("/consent")

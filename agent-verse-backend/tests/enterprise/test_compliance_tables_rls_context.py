@@ -320,3 +320,87 @@ def test_non_admin_cannot_sign_a_contract() -> None:
     )
     assert r.status_code == 403
     assert not any("INSERT INTO enterprise_contracts" in e["sql"] for e in rec.log)
+
+
+# ── GET consent / export job listing (frontend privacy page contract) ─────────
+
+
+def test_get_consent_lists_active_purposes_under_tenant_guc() -> None:
+    """The privacy page needs to read consent state; there was no GET, so the
+    frontend called a non-existent /v1/account/consent."""
+    from datetime import UTC, datetime
+
+    granted = datetime(2026, 1, 2, tzinfo=UTC)
+    rec = _Recorder({"FROM consent_records": _Result(rows=[("analytics", "consent", granted)])})
+    client = TestClient(_app(rec), raise_server_exceptions=False)
+    resp = client.get("/compliance/consent", headers=_HDR)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active_purposes"] == ["analytics"]
+    assert body["consents"] == [
+        {"purpose": "analytics", "legal_basis": "consent", "granted_at": granted.isoformat()}
+    ]
+    (select,) = _stmts(rec, "FROM consent_records")
+    _assert_tenant_scoped(select)
+    assert "revoked_at IS NULL" in select["sql"]
+
+
+class _FailingRecorder(_Recorder):
+    """Sessions whose statements against ``needle`` raise (a DB outage)."""
+
+    def __init__(self, needle: str) -> None:
+        super().__init__()
+        self._needle = needle
+
+    def __call__(self) -> _Session:
+        s = _Session(self)
+        inner = s.execute
+
+        async def _execute(stmt: Any, params: dict[str, Any] | None = None) -> _Result:
+            if self._needle in str(stmt):
+                raise RuntimeError("db down")
+            return await inner(stmt, params)
+
+        s.execute = _execute  # type: ignore[method-assign]
+        return s
+
+
+@pytest.mark.parametrize("path", ["/compliance/consent", "/compliance/export/jobs"])
+def test_privacy_reads_are_503_without_db_and_on_db_error(path: str) -> None:
+    with patch("app.api.enterprise._get_db", return_value=None):
+        no_db = TestClient(_app(_Recorder()), raise_server_exceptions=False).get(
+            path, headers=_HDR
+        )
+    assert no_db.status_code == 503
+    table = "consent_records" if "consent" in path else "gdpr_export_jobs"
+    failing = TestClient(_app(_FailingRecorder(table)), raise_server_exceptions=False)
+    assert failing.get(path, headers=_HDR).status_code == 503
+
+
+def test_list_export_jobs_returns_latest_jobs_under_tenant_guc() -> None:
+    from datetime import UTC, datetime
+
+    created = datetime(2026, 1, 3, tzinfo=UTC)
+    rec = _Recorder(
+        {
+            "FROM gdpr_export_jobs": _Result(
+                rows=[("job-1", "complete", created, created, "/dl/job-1", None)]
+            )
+        }
+    )
+    client = TestClient(_app(rec), raise_server_exceptions=False)
+    resp = client.get("/compliance/export/jobs?limit=1", headers=_HDR)
+    assert resp.status_code == 200
+    (job,) = resp.json()["jobs"]
+    assert job == {
+        "job_id": "job-1",
+        "status": "complete",
+        "created_at": created.isoformat(),
+        "completed_at": created.isoformat(),
+        "download_url": "/dl/job-1",
+        "error": None,
+    }
+    (select,) = _stmts(rec, "FROM gdpr_export_jobs")
+    _assert_tenant_scoped(select)
+    assert "ORDER BY created_at DESC" in select["sql"]
+    assert select["params"]["lim"] == 1
