@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.providers.base import CompletionRequest, Message
@@ -20,26 +21,48 @@ async def grade_evidence(
     query: str,
     results: list[RetrievalResult],
 ) -> list[float]:
+    count = len(results)
     passages = "\n".join(
-        f"[{index}] {result.content[:500]}" for index, result in enumerate(results)
+        f"[{index + 1}] {result.content[:500]}" for index, result in enumerate(results)
     )
+    # The grade list must match the passages one-to-one. With a free-form
+    # prompt, no schema, no stated count and 200 tokens, a model grading the
+    # widened (20-passage) candidate set returned a short list, and the whole
+    # strategy failed with "invalid evidence grades".
+    schema = {
+        "type": "object",
+        "properties": {
+            "relevance": {
+                "type": "array",
+                "items": {"type": "number", "minimum": 0, "maximum": 1},
+                "minItems": count,
+                "maxItems": count,
+            }
+        },
+        "required": ["relevance"],
+        "additionalProperties": False,
+    }
     request = CompletionRequest(
         messages=[
             Message(
                 role="system",
                 content=(
-                    "Grade each passage for relevance to the query from 0.0 to 1.0. "
-                    'Return only JSON: {"relevance": [0.8, 0.2]}.'
+                    f"Grade each of the {count} passages for relevance to the query from "
+                    "0.0 to 1.0, in passage order. Return only JSON with exactly "
+                    f'{count} numbers, e.g. {{"relevance": [0.8, 0.2, ...]}}.'
                 ),
             ),
             Message(role="user", content=f"Query: {query}\nPassages:\n{passages}"),
         ],
         model=model,
-        max_tokens=200,
+        max_tokens=max(1024, 16 * count + 256),
+        response_schema=schema,
     )
     try:
         response = await provider.complete(request)
-        payload = json.loads(response.content.strip())
+        payload = json.loads(
+            re.sub(r"<think>.*?</think>", "", str(response.content), flags=re.DOTALL).strip()
+        )
         raw_scores = payload["relevance"]
         scores = [float(score) for score in raw_scores]
     except Exception as exc:
