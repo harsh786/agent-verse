@@ -112,11 +112,15 @@
             "type": "array"
           },
           "goal": {
+            "maxLength": 10000,
+            "minLength": 1,
             "title": "Goal",
             "type": "string"
           },
           "max_iterations": {
             "default": 15,
+            "maximum": 100.0,
+            "minimum": 1.0,
             "title": "Max Iterations",
             "type": "integer"
           },
@@ -219,6 +223,66 @@
           "rating"
         ],
         "title": "AddReviewRequest",
+        "type": "object"
+      },
+      "AgentKeyCreateRequest": {
+        "properties": {
+          "allowed_connectors": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Connectors"
+          },
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "denied_tools": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Denied Tools",
+            "type": "array"
+          },
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AgentKeyCreateRequest",
         "type": "object"
       },
       "AlertmanagerPayload": {
@@ -346,6 +410,22 @@
         ],
         "title": "ApproveRequest",
         "type": "object"
+      },
+      "AuthType": {
+        "enum": [
+          "bearer",
+          "api_key",
+          "oauth_ac",
+          "oauth_cc",
+          "pkce",
+          "basic",
+          "custom_header",
+          "mtls",
+          "hmac",
+          "none"
+        ],
+        "title": "AuthType",
+        "type": "string"
       },
       "AutoMatchRequest": {
         "properties": {
@@ -635,6 +715,20 @@
         "title": "Body_org_upload_attachment",
         "type": "object"
       },
+      "Body_upload_attachment_chat_sessions__session_id__attachments_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_attachment_chat_sessions__session_id__attachments_post",
+        "type": "object"
+      },
       "Body_voice_persona_upload": {
         "properties": {
           "audio": {
@@ -781,10 +875,19 @@
             "title": "Name",
             "type": "string"
           },
+          "params": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Params",
+            "type": "object"
+          },
           "template_ids": {
             "items": {
               "type": "string"
             },
+            "minItems": 1,
             "title": "Template Ids",
             "type": "array"
           }
@@ -1464,17 +1567,22 @@
         "properties": {
           "description": {
             "default": "",
+            "maxLength": 2000,
             "title": "Description",
             "type": "string"
           },
           "name": {
             "default": "",
+            "maxLength": 200,
             "title": "Name",
             "type": "string"
           },
           "suite_id": {
             "anyOf": [
               {
+                "maxLength": 32,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_-]+$",
                 "type": "string"
               },
               {
@@ -2098,6 +2206,11 @@
             "title": "Endpoint",
             "type": "string"
           },
+          "fire_at_iso": {
+            "default": "",
+            "title": "Fire At Iso",
+            "type": "string"
+          },
           "goal_template": {
             "default": "",
             "title": "Goal Template",
@@ -2482,6 +2595,7 @@
         "properties": {
           "description": {
             "default": "",
+            "maxLength": 2000,
             "title": "Description",
             "type": "string"
           },
@@ -3103,7 +3217,7 @@
       "EmbedRequest": {
         "properties": {
           "fallback_lexical": {
-            "default": true,
+            "default": false,
             "title": "Fallback Lexical",
             "type": "boolean"
           },
@@ -3348,6 +3462,17 @@
               }
             ],
             "title": "Payload"
+          },
+          "scheduled_fire_time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scheduled Fire Time"
           }
         },
         "title": "FireRequest",
@@ -3459,6 +3584,17 @@
             "default": "starter",
             "title": "Plan",
             "type": "string"
+          },
+          "tenant_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tenant Id"
           }
         },
         "required": [
@@ -3627,6 +3763,19 @@
           "repo": {
             "title": "Repo",
             "type": "string"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "format": "password",
+                "type": "string",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
           }
         },
         "required": [
@@ -4061,6 +4210,8 @@
       "IssueGrantRequest": {
         "properties": {
           "grantee_agent_id": {
+            "maxLength": 200,
+            "minLength": 1,
             "title": "Grantee Agent Id",
             "type": "string"
           },
@@ -4072,6 +4223,8 @@
           "max_cost_usd": {
             "anyOf": [
               {
+                "maximum": 10000.0,
+                "minimum": 0.0,
                 "type": "number"
               },
               {
@@ -4082,6 +4235,7 @@
           },
           "not_before_seconds": {
             "default": 0,
+            "minimum": 0.0,
             "title": "Not Before Seconds",
             "type": "integer"
           },
@@ -4224,6 +4378,11 @@
           },
           "mode": {
             "default": "simulation",
+            "enum": [
+              "simulation",
+              "live",
+              "comparison"
+            ],
             "title": "Mode",
             "type": "string"
           },
@@ -4261,9 +4420,64 @@
             ],
             "title": "Expires At"
           },
+          "legal_matter_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Legal Matter Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
           "reason": {
             "title": "Reason",
             "type": "string"
+          },
+          "resource_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Ids"
+          },
+          "resource_type": {
+            "default": "tenant",
+            "title": "Resource Type",
+            "type": "string"
+          },
+          "user_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Ids"
           }
         },
         "required": [
@@ -4274,6 +4488,11 @@
       },
       "MetaAgentCreateRequest": {
         "properties": {
+          "accept_heuristic": {
+            "default": false,
+            "title": "Accept Heuristic",
+            "type": "boolean"
+          },
           "autorun": {
             "default": false,
             "title": "Autorun",
@@ -5405,8 +5624,15 @@
             "type": "string"
           },
           "ref_audio_url": {
-            "title": "Ref Audio Url",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref Audio Url"
           },
           "ref_text": {
             "title": "Ref Text",
@@ -5420,7 +5646,6 @@
         "required": [
           "org_id",
           "tenant_id",
-          "ref_audio_url",
           "ref_text",
           "created_at"
         ],
@@ -5545,11 +5770,15 @@
         "properties": {
           "price_usd": {
             "default": 0.0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
             "title": "Price Usd",
             "type": "number"
           },
           "revenue_share_pct": {
             "default": 70,
+            "maximum": 100.0,
+            "minimum": 0.0,
             "title": "Revenue Share Pct",
             "type": "integer"
           },
@@ -5610,6 +5839,12 @@
           },
           "visibility": {
             "default": "community",
+            "enum": [
+              "private",
+              "team",
+              "community",
+              "public"
+            ],
             "title": "Visibility",
             "type": "string"
           }
@@ -5706,6 +5941,12 @@
           },
           "visibility": {
             "default": "private",
+            "enum": [
+              "private",
+              "team",
+              "community",
+              "public"
+            ],
             "title": "Visibility",
             "type": "string"
           }
@@ -5987,8 +6228,7 @@
             "type": "object"
           },
           "auth_type": {
-            "title": "Auth Type",
-            "type": "string"
+            "$ref": "#/components/schemas/AuthType"
           },
           "auto_approve": {
             "default": false,
@@ -6293,6 +6533,17 @@
       },
       "RunEvalRequest": {
         "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
           "dataset_id": {
             "default": "",
             "title": "Dataset Id",
@@ -6308,6 +6559,17 @@
               }
             ],
             "title": "Goal Id"
+          },
+          "judge_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judge Id"
           },
           "judge_model": {
             "default": "",
@@ -6477,6 +6739,17 @@
             ],
             "title": "From Addr"
           },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To"
+          },
           "subject": {
             "title": "Subject",
             "type": "string"
@@ -6575,6 +6848,77 @@
         "title": "SetBudgetRequest",
         "type": "object"
       },
+      "SignalRequest": {
+        "properties": {
+          "channel": {
+            "default": "web",
+            "description": "delivery channel",
+            "title": "Channel",
+            "type": "string"
+          },
+          "channel_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel User Id"
+          },
+          "kind": {
+            "description": "signal kind, e.g. flight_delayed, inbound_email",
+            "title": "Kind",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "principal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "who to reach; defaults to the tenant's default principal",
+            "title": "Principal Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "SignalRequest",
+        "type": "object"
+      },
+      "SignalResult": {
+        "properties": {
+          "delivered": {
+            "title": "Delivered",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requires_confirmation": {
+            "default": false,
+            "title": "Requires Confirmation",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "delivered",
+          "reason"
+        ],
+        "title": "SignalResult",
+        "type": "object"
+      },
       "SignupRequest": {
         "properties": {
           "email": {
@@ -6662,6 +7006,90 @@
           "instructions"
         ],
         "title": "SkillCreateRequest",
+        "type": "object"
+      },
+      "SkillTestRequest": {
+        "properties": {
+          "input": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Input",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "title": "SkillTestRequest",
+        "type": "object"
+      },
+      "SkillUpdateRequest": {
+        "properties": {
+          "allowed_tools": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Tools"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "trigger_hints": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Hints"
+          }
+        },
+        "title": "SkillUpdateRequest",
         "type": "object"
       },
       "SlackIngestRequest": {
@@ -7918,32 +8346,36 @@
       "UpdateBudgetRequest": {
         "properties": {
           "alert_pct_thresholds": {
-            "default": [
-              50,
-              75,
-              90
-            ],
             "items": {
+              "maximum": 100.0,
+              "minimum": 1.0,
               "type": "integer"
             },
+            "maxItems": 20,
             "title": "Alert Pct Thresholds",
             "type": "array"
           },
           "per_agent_daily_usd": {
             "additionalProperties": {
+              "maximum": 999999.0,
+              "minimum": 0.0,
               "type": "number"
             },
-            "default": {},
+            "maxProperties": 1000,
             "title": "Per Agent Daily Usd",
             "type": "object"
           },
           "per_goal_usd": {
             "default": 10.0,
+            "maximum": 999999.0,
+            "minimum": 0.0,
             "title": "Per Goal Usd",
             "type": "number"
           },
           "per_tenant_daily_usd": {
             "default": 500.0,
+            "maximum": 999999.0,
+            "minimum": 0.0,
             "title": "Per Tenant Daily Usd",
             "type": "number"
           }
@@ -8661,12 +9093,26 @@
       "VerifyPaymentRequest": {
         "properties": {
           "cycle": {
-            "title": "Cycle",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cycle"
           },
           "plan": {
-            "title": "Plan",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plan"
           },
           "razorpay_order_id": {
             "title": "Razorpay Order Id",
@@ -8684,9 +9130,7 @@
         "required": [
           "razorpay_order_id",
           "razorpay_payment_id",
-          "razorpay_signature",
-          "plan",
-          "cycle"
+          "razorpay_signature"
         ],
         "title": "VerifyPaymentRequest",
         "type": "object"
@@ -9081,6 +9525,22 @@
         "title": "WorkflowResponse",
         "type": "object"
       },
+      "WorkflowRunRequest": {
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          }
+        },
+        "title": "WorkflowRunRequest",
+        "type": "object"
+      },
       "WorkflowUpdate": {
         "properties": {
           "definition": {
@@ -9412,10 +9872,13 @@
         "type": "object"
       },
       "_MissionScheduleRequest": {
+        "description": "Create-schedule body.\n\nEvery field is bounded to what ``org_mission_schedules`` can store and what\nthe mission it launches accepts (``priority`` / ``autonomy_level`` mirror\n``CreateMissionRequest``). Previously ``priority`` was unbounded (a value over\nthe VARCHAR(20) column was a DB truncation error \u2192 500), ``autonomy_level``\naccepted any integer (int32 overflow \u2192 500), a non-UUID ``dept_id`` crashed\n``uuid.UUID()`` in the service (\u2192 500), and an unknown ``timezone`` was\nstored and then silently evaluated as UTC.",
         "properties": {
           "autonomy_level": {
             "anyOf": [
               {
+                "maximum": 5.0,
+                "minimum": 0.0,
                 "type": "integer"
               },
               {
@@ -9460,6 +9923,7 @@
           },
           "priority": {
             "default": "medium",
+            "pattern": "^(low|medium|high|critical)$",
             "title": "Priority",
             "type": "string"
           },
@@ -10129,6 +10593,64 @@
         "title": "CreateMemoryRequest",
         "type": "object"
       },
+      "app__api__memory__UpdateMemoryRequest": {
+        "properties": {
+          "confidence": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "memory_type": {
+            "anyOf": [
+              {
+                "maxLength": 50,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Type"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "title": "UpdateMemoryRequest",
+        "type": "object"
+      },
       "app__api__memory_v2__CreateMemoryRequest": {
         "properties": {
           "confidence": {
@@ -10573,7 +11095,7 @@
     },
     "/.well-known/agents": {
       "get": {
-        "description": "List public agents in the A2A directory.",
+        "description": "Public A2A agent directory \u2014 not implemented.",
         "operationId": "list_public_agents__well_known_agents_get",
         "parameters": [
           {
@@ -10619,7 +11141,7 @@
     },
     "/.well-known/agents/{agent_id}.json": {
       "get": {
-        "description": "Return AgentCard for a specific agent (A2A protocol).",
+        "description": "Per-agent AgentCard (A2A protocol) \u2014 not implemented.",
         "operationId": "get_agent_card__well_known_agents__agent_id__json_get",
         "parameters": [
           {
@@ -10664,8 +11186,26 @@
     },
     "/.well-known/jwks.json": {
       "get": {
-        "description": "Public key set for verifying agent JWT tokens (RS256).\n\nCached in Redis for 10 minutes. Invalidated when a credential is issued or revoked.",
+        "description": "Public key set for verifying agent JWT tokens (RS256).\n\nWithout ``tenant_id``: the platform-wide set, cached in Redis for 10 minutes\nand invalidated when a credential is issued or revoked. With ``tenant_id``\n(the tenant is in every token's ``iss``): only that tenant's keys, read under\nits RLS context and not cached (revocation must take effect immediately).",
         "operationId": "jwks_endpoint__well_known_jwks_json_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tenant_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tenant Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -10678,6 +11218,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Jwks Endpoint",
@@ -10688,7 +11238,7 @@
     },
     "/a2a/tasks": {
       "get": {
-        "description": "List recent A2A tasks for this tenant.",
+        "description": "List recent A2A tasks for the authenticated tenant.\n\nAlways tenant-scoped: the previous version dropped the WHERE clause entirely\nwhen no tenant was resolved, and fell back to a process-local dict on any DB\nerror.",
         "operationId": "list_a2a_tasks_a2a_tasks_get",
         "parameters": [
           {
@@ -10779,7 +11329,7 @@
     },
     "/a2a/tasks/{task_id}": {
       "get": {
-        "description": "Get A2A task status and result.",
+        "description": "Get A2A task status and result (the caller's own tasks only).",
         "operationId": "get_a2a_task_a2a_tasks__task_id__get",
         "parameters": [
           {
@@ -10880,7 +11430,7 @@
     },
     "/admin/tenants": {
       "get": {
-        "description": "List all tenants with basic stats.",
+        "description": "List all tenants with basic stats. Optional ``search`` filters by name/email/id\nserver-side (so it covers all tenants, not just the current page).",
         "operationId": "list_tenants_admin_tenants_get",
         "parameters": [
           {
@@ -10901,6 +11451,22 @@
               "default": 0,
               "title": "Offset",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
             }
           },
           {
@@ -11299,6 +11865,31 @@
     "/agents": {
       "get": {
         "operationId": "list_agents_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -11314,6 +11905,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Agents",
@@ -11797,6 +12398,201 @@
         "summary": "Export Agent",
         "tags": [
           "agents"
+        ]
+      }
+    },
+    "/agents/{agent_id}/keys": {
+      "get": {
+        "operationId": "list_agent_keys_agents__agent_id__keys_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Agent Keys Agents  Agent Id  Keys Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Agent Keys",
+        "tags": [
+          "agent-identity"
+        ]
+      },
+      "post": {
+        "description": "Create a new API key scoped to this agent.",
+        "operationId": "create_agent_key_agents__agent_id__keys_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentKeyCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Agent Key Agents  Agent Id  Keys Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent Key",
+        "tags": [
+          "agent-identity"
+        ]
+      }
+    },
+    "/agents/{agent_id}/keys/manifest": {
+      "get": {
+        "description": "Return the signed capability manifest for one of the caller's agents.\n\nIt used to sign a manifest for ANY agent id \u2014 falling back to a bare\n``{\"id\": agent_id}`` when the agent was not the caller's \u2014 which made the\nplatform a signing oracle for agents the caller does not own.",
+        "operationId": "get_agent_manifest_agents__agent_id__keys_manifest_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Manifest Agents  Agent Id  Keys Manifest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Manifest",
+        "tags": [
+          "agent-identity"
+        ]
+      }
+    },
+    "/agents/{agent_id}/keys/{key_id}": {
+      "delete": {
+        "operationId": "revoke_agent_key_agents__agent_id__keys__key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Revoke Agent Key Agents  Agent Id  Keys  Key Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Agent Key",
+        "tags": [
+          "agent-identity"
         ]
       }
     },
@@ -12516,7 +13312,7 @@
     },
     "/ai-ops/datasets/{dataset_id}/run": {
       "post": {
-        "description": "Run an evaluation suite against a dataset.",
+        "description": "Start a run of a dataset's golden tasks against the live agent.\n\nEvery case is executed as a real goal (tenant-scoped, through GoalService)\nand scored against its REAL output \u2014 by the configured LLM judge when\n``judge_id`` (or an ad-hoc ``judge_model``) is given, else by lexical\noverlap with ``expected_output``. Returns 202 with a ``result_id``; poll\n``GET /ai-ops/eval-results/{result_id}``.\n\nThis used to score each case's ``expected_output`` against itself (1.0 \u2192\nevery run passed without executing anything) and ignored created judges.",
         "operationId": "run_eval_ai_ops_datasets__dataset_id__run_post",
         "parameters": [
           {
@@ -12540,7 +13336,7 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -12632,6 +13428,51 @@
           }
         },
         "summary": "List Eval Results",
+        "tags": [
+          "ai-ops"
+        ]
+      }
+    },
+    "/ai-ops/eval-results/{result_id}": {
+      "get": {
+        "description": "One eval result (poll target for a 202 dataset run).",
+        "operationId": "get_eval_result_ai_ops_eval_results__result_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "result_id",
+            "required": true,
+            "schema": {
+              "title": "Result Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Eval Result Ai Ops Eval Results  Result Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Eval Result",
         "tags": [
           "ai-ops"
         ]
@@ -15130,7 +15971,7 @@
     },
     "/api/v1/runs/{run_id}/retry": {
       "post": {
-        "description": "Retry a failed run from the last completed checkpoint.",
+        "description": "Retry a failed run as a new, dispatched run that reuses the failed run's\ncompleted step results (only the failed/unfinished steps execute again).",
         "operationId": "retry_run_api_v1_runs__run_id__retry_post",
         "parameters": [
           {
@@ -17125,6 +17966,52 @@
         ]
       }
     },
+    "/api/v1/workflows/{workflow_id}/webhook": {
+      "get": {
+        "description": "The workflow's real inbound webhook URL (``POST /wf-hooks/{token}``) and\nthe key used to sign its run-completion callbacks.\n\nThe UI used to display ``/api/v1/webhooks/workflows/{id}`` \u2014 a route that\ndoes not exist. The token is only issued for a PUBLISHED workflow (the\nwebhook endpoint rejects unpublished ones), so it is withheld otherwise.",
+        "operationId": "get_webhook_trigger_api_v1_workflows__workflow_id__webhook_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "workflow_id",
+            "required": true,
+            "schema": {
+              "title": "Workflow Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Webhook Trigger Api V1 Workflows  Workflow Id  Webhook Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Webhook Trigger",
+        "tags": [
+          "workflows",
+          "workflow-webhooks"
+        ]
+      }
+    },
     "/api/v1/workflows/{workflow_id}/webhooks": {
       "get": {
         "operationId": "list_webhook_events_api_v1_workflows__workflow_id__webhooks_get",
@@ -17836,10 +18723,15 @@
     },
     "/auth/sessions": {
       "delete": {
-        "description": "Revoke all sessions except the current one.",
+        "description": "Revoke all other login sessions \u2014 not implemented (501).",
         "operationId": "revoke_all_other_sessions_auth_sessions_delete",
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
             "description": "Successful Response"
           }
         },
@@ -17849,20 +18741,13 @@
         ]
       },
       "get": {
-        "description": "List all active login sessions for the current user.",
+        "description": "List login sessions \u2014 not implemented (501).",
         "operationId": "list_active_sessions_auth_sessions_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response List Active Sessions Auth Sessions Get",
-                  "type": "array"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -17876,7 +18761,7 @@
     },
     "/auth/sessions/{session_id}": {
       "delete": {
-        "description": "Revoke a specific session (remote logout).",
+        "description": "Revoke one login session \u2014 not implemented (501).",
         "operationId": "revoke_session_auth_sessions__session_id__delete",
         "parameters": [
           {
@@ -17890,7 +18775,12 @@
           }
         ],
         "responses": {
-          "204": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
             "description": "Successful Response"
           },
           "422": {
@@ -18035,7 +18925,7 @@
     },
     "/billing/create-order": {
       "post": {
-        "description": "Create a Razorpay order for plan upgrade.",
+        "description": "Create a Razorpay order for plan upgrade and record it server-side.",
         "operationId": "create_razorpay_order_billing_create_order_post",
         "requestBody": {
           "content": {
@@ -18363,7 +19253,7 @@
     },
     "/billing/verify-payment": {
       "post": {
-        "description": "Verify Razorpay payment signature and upgrade the tenant plan.",
+        "description": "Verify a Razorpay payment and upgrade the tenant to the ORDER's plan.\n\nThe plan comes only from the server-side order record created by\n``/billing/create-order`` for this tenant; ``body.plan``/``body.cycle`` are\nignored. A failure to record the upgrade is an error, never a \"success\".",
         "operationId": "verify_razorpay_payment_billing_verify_payment_post",
         "requestBody": {
           "content": {
@@ -18407,7 +19297,7 @@
     },
     "/billing/webhook": {
       "post": {
-        "description": "Handle Razorpay webhook events.",
+        "description": "Handle Razorpay webhook events.\n\nThe plan is derived from the server-side order record (looked up by the\npayment's ``order_id``), never from ``notes``; ``notes.tenant_id`` (written\nby create-order) only selects the RLS scope, and the order row must belong\nto that tenant. A failure to apply the upgrade answers 5xx so Razorpay\nretries, instead of a 200 that silently drops a paid upgrade.",
         "operationId": "razorpay_webhook_billing_webhook_post",
         "responses": {
           "200": {
@@ -18429,9 +19319,33 @@
         ]
       }
     },
+    "/billing/webhook/stripe": {
+      "post": {
+        "description": "Apply Stripe Checkout subscription events to the tenant's plan.\n\n``POST /billing/checkout`` created a Stripe subscription session, but no\nwebhook ever consumed its result, so a paying customer was never moved to\nthe plan they bought. This endpoint (public \u2014 under ``/billing/webhook`` in\nTenantMiddleware's bypass list; authenticated by the ``Stripe-Signature``\nheader, verified against ``STRIPE_WEBHOOK_SECRET``):\n\n* ``checkout.session.completed`` (subscription mode, paid) \u2192 upgrade the\n  tenant in ``client_reference_id`` to ``metadata.plan`` (both written\n  server-side at session creation; they must agree);\n* ``customer.subscription.deleted`` \u2192 downgrade that tenant to ``free``.\n\nA plan change that cannot be recorded answers 503 so Stripe retries.",
+        "operationId": "stripe_webhook_billing_webhook_stripe_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Stripe Webhook Billing Webhook Stripe Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Stripe Webhook",
+        "tags": [
+          "billing"
+        ]
+      }
+    },
     "/builder/assets/{workspace_id}/{file_path}": {
       "get": {
-        "description": "Serve a static asset (CSS, JS, image) for a workspace preview.",
+        "description": "NOT IMPLEMENTED (501) \u2014 same reasons as :func:`serve_preview` (it also\nreturned ``str(exc)`` in a 500 body).",
         "operationId": "serve_asset_builder_assets__workspace_id___file_path__get",
         "parameters": [
           {
@@ -18481,7 +19395,7 @@
     },
     "/builder/preview/{workspace_id}": {
       "get": {
-        "description": "Serve a preview of the built site for this workspace.\n\nTries to load index.html from the artifact store for the project.\nFalls back to a status page showing build progress.",
+        "description": "NOT IMPLEMENTED (501).\n\nThe old handler listed artifacts by a workspace-id substring across ALL\ntenants (no tenant scoping), called ``read_bytes`` positionally although it\nis keyword-only (a TypeError swallowed by a bare except), and so always\nshowed a \"Building...\" page that refreshed forever.",
         "operationId": "serve_preview_builder_preview__workspace_id__get",
         "parameters": [
           {
@@ -18497,10 +19411,8 @@
         "responses": {
           "200": {
             "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
+              "application/json": {
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -18566,7 +19478,7 @@
     },
     "/builder/projects/{project_id}": {
       "get": {
-        "description": "Get project status and artifacts.",
+        "description": "NOT IMPLEMENTED (501).\n\nThis was a stub that answered ``status: building, artifacts: []`` for any id\n(including ones that never existed), forever.",
         "operationId": "get_builder_project_builder_projects__project_id__get",
         "parameters": [
           {
@@ -18611,7 +19523,7 @@
     },
     "/channels/discord/events": {
       "post": {
-        "description": "Handle Discord Interactions webhook.",
+        "description": "Handle Discord Interactions webhook (Ed25519 signature authenticated).",
         "operationId": "discord_events_channels_discord_events_post",
         "responses": {
           "200": {
@@ -18833,16 +19745,13 @@
     },
     "/channels/sms/inbound": {
       "post": {
-        "description": "Handle Twilio SMS webhook.",
+        "description": "Handle Twilio SMS webhook.\n\nPreviously this verified nothing: any caller able to reach it could post an\n\"SMS\" whose ``To`` maps to another tenant and have it ingested into that\ntenant's gateway. It now requires a valid ``X-Twilio-Signature`` (fail closed:\n503 when ``TWILIO_AUTH_TOKEN`` is unset, 403 when invalid), and honours the\nSTOP / START keywords in the telephony consent ledger \u2014 a STOP used to be\ningested as an ordinary message for the agent to act on. The Twilio\nsignature is this channel's credential (Twilio cannot send the generic\nchannel secret), and the tenant comes only from the ``To`` number mapping.",
         "operationId": "sms_inbound_channels_sms_inbound_post",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "title": "Response Sms Inbound Channels Sms Inbound Post",
-                  "type": "string"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -18856,7 +19765,7 @@
     },
     "/channels/teams/events": {
       "post": {
-        "description": "Handle Microsoft Teams webhook.",
+        "description": "Handle Microsoft Teams webhook (Bot Framework JWT authenticated).",
         "operationId": "teams_events_channels_teams_events_post",
         "responses": {
           "200": {
@@ -18899,6 +19808,47 @@
         "summary": "Voice Transcript",
         "tags": [
           "channels"
+        ]
+      }
+    },
+    "/chat/artifacts/{artifact_id}/download": {
+      "get": {
+        "description": "Download a chat-generated document (Phase 4), tenant-scoped.",
+        "operationId": "download_artifact_chat_artifacts__artifact_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Artifact",
+        "tags": [
+          "chat"
         ]
       }
     },
@@ -19368,6 +20318,51 @@
         ]
       }
     },
+    "/chat/services/{service_id}/complete": {
+      "post": {
+        "description": "OAuth callback landing \u2014 flips a pending connector to connected.",
+        "operationId": "complete_service_chat_services__service_id__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service_id",
+            "required": true,
+            "schema": {
+              "title": "Service Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Complete Service Chat Services  Service Id  Complete Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Service",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
     "/chat/sessions": {
       "get": {
         "operationId": "list_sessions_chat_sessions_get",
@@ -19757,6 +20752,61 @@
           }
         },
         "summary": "Update Artifact",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/sessions/{session_id}/attachments": {
+      "post": {
+        "description": "Upload a file; it's parsed and added to the conversation as context (Phase 4).",
+        "operationId": "upload_attachment_chat_sessions__session_id__attachments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_attachment_chat_sessions__session_id__attachments_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Upload Attachment Chat Sessions  Session Id  Attachments Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Attachment",
         "tags": [
           "chat"
         ]
@@ -20452,6 +21502,30 @@
           }
         },
         "summary": "Session Usage",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/chat/skills": {
+      "get": {
+        "description": "Discover the chat command-surface skills available to this tenant (Phase 5).",
+        "operationId": "list_skills_chat_skills_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Skills Chat Skills Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Skills",
         "tags": [
           "chat"
         ]
@@ -21975,8 +23049,30 @@
       }
     },
     "/compliance/consent": {
+      "get": {
+        "description": "The tenant's active (non-revoked) consent records.\n\n503 without a database or on a read error: an unreadable consent state must\nnever be shown as \"not granted\" (or granted).",
+        "operationId": "list_consent_compliance_consent_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Consent Compliance Consent Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Consent",
+        "tags": [
+          "compliance"
+        ]
+      },
       "post": {
-        "description": "Record tenant consent for data processing purposes.",
+        "description": "Record tenant consent for data processing purposes.\n\n503 when the record could not be written (the old handler swallowed the DB\nerror and answered ``recorded`` for consent that was never stored).",
         "operationId": "record_consent_compliance_consent_post",
         "requestBody": {
           "content": {
@@ -22020,7 +23116,7 @@
     },
     "/compliance/consent/{purpose}": {
       "delete": {
-        "description": "Revoke previously granted consent.",
+        "description": "Revoke previously granted consent.\n\n503 when the revocation could not be written, 404 when there is no active\nconsent for the purpose \u2014 never ``revoked`` for a write that did not happen.",
         "operationId": "revoke_consent_compliance_consent__purpose__delete",
         "parameters": [
           {
@@ -22267,9 +23363,57 @@
         ]
       }
     },
+    "/compliance/export/jobs": {
+      "get": {
+        "description": "The tenant's most recent GDPR export jobs, newest first.\n\nLets the privacy page show the real state of an export after a reload.\n503 without a database or on a read error \u2014 never an empty list for a\nread that did not happen.",
+        "operationId": "list_gdpr_export_jobs_compliance_export_jobs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response List Gdpr Export Jobs Compliance Export Jobs Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Gdpr Export Jobs",
+        "tags": [
+          "compliance"
+        ]
+      }
+    },
     "/compliance/export/jobs/{job_id}": {
       "get": {
-        "description": "Poll status of async GDPR export job.",
+        "description": "Poll status of async GDPR export job (503 without a database \u2014 never a\nfabricated 'pending').",
         "operationId": "get_gdpr_export_status_compliance_export_jobs__job_id__get",
         "parameters": [
           {
@@ -22314,7 +23458,7 @@
     },
     "/compliance/export/start": {
       "post": {
-        "description": "Start async GDPR data export job. Returns job_id for polling.",
+        "description": "Start async GDPR data export job. Returns job_id for polling.\n\n503 when the job row cannot be recorded or the worker task cannot be\nenqueued \u2014 this used to swallow both and answer ``pending`` for a job that\nmight not exist or that nothing would ever run.",
         "operationId": "start_gdpr_export_compliance_export_start_post",
         "responses": {
           "200": {
@@ -22615,7 +23759,7 @@
     },
     "/connectors/oauth/callback": {
       "get": {
-        "description": "OAuth callback \u2014 exchange authorization code for access tokens via PKCE.",
+        "description": "OAuth callback \u2014 exchange authorization code for access tokens via PKCE.\n\nThe token request reuses the redirect_uri stored with the PKCE state by\n/oauth/start; ``redirect_uri`` here is only used for a flow started without\none (OAuthFlowManager.exchange_code prefers the stored value).",
         "operationId": "oauth_callback_connectors_oauth_callback_get",
         "parameters": [
           {
@@ -22689,7 +23833,7 @@
         ]
       },
       "post": {
-        "description": "Complete the OAuth popup flow.\n\nValidates the state token, (in production) exchanges the code for an access\ntoken, and registers the connector for the tenant.\n\n# NOTE: This endpoint currently does NOT perform the OAuth token exchange.\n# The authorization code is received but not exchanged for an access token.\n# To enable real OAuth, implement the token exchange for each connector type.\n# See: https://tools.ietf.org/html/rfc6749#section-4.1.3",
+        "description": "Complete the OAuth popup flow \u2014 honestly.\n\nThis endpoint used to validate the state, never exchange the code, register a\nplaceholder connector (``status: pending_oauth`` / ``pending_token_exchange``,\nno token) and answer ``{\"status\": \"connected\"}``: the UI showed a working\nconnector that could never authenticate. The popup flow (POST /oauth/start)\ncreates no PKCE verifier and has no per-connector token endpoint, so there\nis nothing it can exchange. It now consumes the state (CSRF check, bound to\nthe starting tenant) and returns 501 without registering anything. Use the\nPKCE flow instead: GET /connectors/oauth/start?server_id=\u2026 then\nGET /connectors/oauth/callback, which calls ``OAuthFlowManager.exchange_code``\n(flows are bound to the starting tenant) and stores real tokens.",
         "operationId": "complete_oauth_popup_connectors_oauth_callback_post",
         "requestBody": {
           "content": {
@@ -22908,6 +24052,49 @@
           "connectors"
         ]
       },
+      "get": {
+        "description": "One of the caller's connectors, with secrets masked (404 otherwise).",
+        "operationId": "get_connector_connectors__server_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "server_id",
+            "required": true,
+            "schema": {
+              "title": "Server Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Connector Connectors  Server Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Connector",
+        "tags": [
+          "connectors"
+        ]
+      },
       "put": {
         "operationId": "update_connector_connectors__server_id__put",
         "parameters": [
@@ -23109,9 +24296,75 @@
         ]
       }
     },
+    "/connectors/{server_id}/tools": {
+      "get": {
+        "description": "Live tool list of one of the caller's connectors (MCP ``tools/list``,\nbuilt-in definitions or OpenAPI operations, via the MCP client).\n\n404 when the caller has no such connector; 503 without an MCP client; 502\nwhen discovery fails \u2014 never an empty list standing in for an error.",
+        "operationId": "list_connector_tools_connectors__server_id__tools_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "server_id",
+            "required": true,
+            "schema": {
+              "title": "Server Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Connector Tools Connectors  Server Id  Tools Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Connector Tools",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
     "/coordination/v1/sessions": {
       "post": {
         "operationId": "create_session_coordination_v1_sessions_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "idempotency_key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency Key"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -23308,7 +24561,7 @@
         ]
       },
       "put": {
-        "description": "Update budget limits for the authenticated tenant.",
+        "description": "Update budget limits for the authenticated tenant (admin only).\n\nbudget_configs is the single source of truth: every replica and Celery worker\nenforces it (via the cost controllers' TenantBudgetSource). With no DB the\nbudget cannot be made durable or shared, so this is a 503 \u2014 it used to answer\nsuccess without persisting anything.",
         "operationId": "update_budgets_costs_budgets_put",
         "requestBody": {
           "content": {
@@ -23636,7 +24889,7 @@
     },
     "/embeddings/embed": {
       "post": {
-        "description": "Embed texts using the configured provider.",
+        "description": "Embed texts on the app's configured embedding provider.\n\n503 when no provider is configured or it fails, unless the caller opted into\n``fallback_lexical``; ``used_fallback`` reports whether the fallback actually\nran, and ``model`` is what produced the vectors.",
         "operationId": "embed_texts_embeddings_embed_post",
         "requestBody": {
           "content": {
@@ -23796,7 +25049,30 @@
       }
     },
     "/enterprise/compliance/delete": {
+      "get": {
+        "description": "The tenant's erasure job as stored: pending | processing | on_hold | failed |\ncompleted, with attempts / last_error / result.",
+        "operationId": "get_data_deletion_status_enterprise_compliance_delete_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Data Deletion Status Enterprise Compliance Delete Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Data Deletion Status",
+        "tags": [
+          "enterprise"
+        ]
+      },
       "post": {
+        "description": "Record a durable GDPR erasure job (executed by the process_tenant_erasures\nbeat task after the grace period). 503 if the request could not be recorded \u2014\nnever ``deletion_scheduled: true`` for a request that does not exist.",
         "operationId": "request_data_deletion_enterprise_compliance_delete_post",
         "responses": {
           "202": {
@@ -24095,7 +25371,7 @@
     },
     "/enterprise/contracts/{contract_type}/sign": {
       "post": {
-        "description": "Sign a contract (BAA, DPA, MSA, etc.).",
+        "description": "Sign a contract (BAA, DPA, MSA, etc.) on the tenant's behalf.\n\nAdmin-only: signing a legal agreement binds the tenant, and any\nauthenticated key (a viewer, a CI key) could do it. The response carries the\nstored ``signed_at`` (it used to be the literal string ``\"now\"``).",
         "operationId": "sign_contract_enterprise_contracts__contract_type__sign_post",
         "parameters": [
           {
@@ -24191,22 +25467,39 @@
         ]
       }
     },
-    "/enterprise/saml/acs": {
+    "/enterprise/saml/acs/{tenant_id}": {
       "post": {
-        "description": "SAML Assertion Consumer Service \u2014 validate assertion and return user identity.\nAmendment 8.4: Replay protection via Redis.",
-        "operationId": "saml_acs_enterprise_saml_acs_post",
+        "description": "SAML Assertion Consumer Service for *tenant_id* (the IdP's HTTP-POST target).\n\nPublic by design (TenantMiddleware bypass ``/enterprise/saml/acs/``): the\nsigned assertion, validated against the tenant's configured IdP\ncertificate in python3-saml strict mode, is the authentication. Replay\nprotection (Redis) fails closed (503).\n\nNOT IMPLEMENTED: turning a verified identity into an AgentVerse session (JIT\nuser provisioning + a credential TenantMiddleware accepts). The endpoint\nused to answer 200 ``{\"authenticated\": true}`` with no session at all; it\nnow answers 501 after verifying the assertion.",
+        "operationId": "saml_acs_enterprise_saml_acs__tenant_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Saml Acs Enterprise Saml Acs Post",
-                  "type": "object"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Saml Acs",
@@ -24387,7 +25680,7 @@
     },
     "/enterprise/simulation/available-tools": {
       "get": {
-        "description": "Return MCP tools available for mock configuration in simulation.",
+        "description": "Return MCP tools available for mock configuration in simulation.\n\nNOTE: this route MUST be registered before GET /simulation/{run_id} below \u2014\nFastAPI matches routes in registration order, and a static path like\n\"available-tools\" would otherwise be swallowed by the {run_id} path\nparameter, producing a spurious 404 \"Simulation run not found\".",
         "operationId": "get_simulation_available_tools_enterprise_simulation_available_tools_get",
         "responses": {
           "200": {
@@ -24696,6 +25989,31 @@
     "/goals": {
       "get": {
         "operationId": "list_goals_goals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -24714,6 +26032,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Goals",
@@ -25232,7 +26560,7 @@
     },
     "/goals/{goal_id}/cost-metrics": {
       "get": {
-        "description": "Return per-role (planner/executor/verifier) token and cost breakdown for a goal.",
+        "description": "Return per-role (planner/executor/verifier) token and cost breakdown for a goal.\n\nOnly for the caller's own goal. The breakdown is keyed by goal id alone, and\nthis used to serve it to any authenticated tenant that knew (or guessed) the id.",
         "operationId": "get_goal_cost_metrics_goals__goal_id__cost_metrics_get",
         "parameters": [
           {
@@ -25410,8 +26738,7 @@
     },
     "/goals/{goal_id}/explain": {
       "get": {
-        "description": "Return explainability traces \u2014 why each decision was made.",
-        "operationId": "get_goal_explanation_goals__goal_id__explain_get",
+        "operationId": "explain_goal_goals__goal_id__explain_get",
         "parameters": [
           {
             "in": "path",
@@ -25429,7 +26756,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Get Goal Explanation Goals  Goal Id  Explain Get",
+                  "title": "Response Explain Goal Goals  Goal Id  Explain Get",
                   "type": "object"
                 }
               }
@@ -25447,7 +26774,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Goal Explanation",
+        "summary": "Explain Goal",
         "tags": [
           "goals"
         ]
@@ -26174,7 +27501,7 @@
     },
     "/governance/approvals/sla-stats": {
       "get": {
-        "description": "Return SLA compliance stats for HITL approvals.",
+        "description": "SLA compliance stats for HITL approvals, from ``approval_requests``.\n\nPreviously read ``hitl_approval_requests``, which no code path ever writes,\nso every tenant saw all-zero stats. A missing/failed DB is a 503, never a\nzeroed (fake) answer.",
         "operationId": "get_sla_stats_governance_approvals_sla_stats_get",
         "responses": {
           "200": {
@@ -26411,6 +27738,38 @@
               ],
               "title": "End Time"
             }
+          },
+          {
+            "in": "query",
+            "name": "outcome",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Outcome"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
           }
         ],
         "responses": {
@@ -26537,6 +27896,7 @@
         ]
       },
       "put": {
+        "description": "Set the tenant budget \u2014 persisted to budget_configs (same store as /costs/budgets).\n\nThis used to write only a per-replica dict that nothing enforced; now the\nrow is DB-authoritative and applied to the cost controllers.",
         "operationId": "set_budget_governance_budget_put",
         "requestBody": {
           "content": {
@@ -26580,7 +27940,7 @@
     },
     "/governance/emergency-stop": {
       "delete": {
-        "description": "Clear the emergency stop signal to allow new goals to be submitted.",
+        "description": "Clear the emergency stop signal to allow new goals to be submitted (admin only).",
         "operationId": "clear_emergency_stop_governance_emergency_stop_delete",
         "responses": {
           "200": {
@@ -26602,7 +27962,7 @@
         ]
       },
       "post": {
-        "description": "Immediately cancel all running and queued goals for this tenant.\n\nUse for: security incidents, runaway agents, cost overruns.\nThis is irreversible \u2014 cancelled goals must be resubmitted.",
+        "description": "Immediately cancel all running and queued goals for this tenant.\n\nUse for: security incidents, runaway agents, cost overruns.\nThis is irreversible \u2014 cancelled goals must be resubmitted.\n\nAdmin-only (RBAC docs: \"admin \u2014 emergency stop\"). Every per-goal cancel and\nper-approval reject failure is reported in the response (``failed_*`` lists,\n``partial``) instead of being swallowed, so an operator can see that the stop\ndid not fully take effect.",
         "operationId": "emergency_stop_governance_emergency_stop_post",
         "responses": {
           "200": {
@@ -26663,6 +28023,62 @@
           }
         },
         "summary": "Batch Approve",
+        "tags": [
+          "governance"
+        ]
+      }
+    },
+    "/governance/hitl/pending": {
+      "get": {
+        "operationId": "list_approvals_governance_hitl_pending_get",
+        "parameters": [
+          {
+            "description": "Filter approvals by org id (G-10)",
+            "in": "query",
+            "name": "org_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter approvals by org id (G-10)",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Approvals Governance Hitl Pending Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Approvals",
         "tags": [
           "governance"
         ]
@@ -26780,7 +28196,7 @@
     },
     "/governance/legal-hold": {
       "post": {
-        "description": "Place a legal hold on tenant data to prevent retention deletion.",
+        "description": "Place a legal hold on tenant data to prevent retention deletion.\n\nThis used to INSERT a ``reason`` column that ``legal_holds`` (migration 0057)\ndoes not have, omit the NOT NULL ``name``/``resource_type`` and run without\nthe RLS tenant context \u2014 so every call failed. It now goes through\n``LegalHoldManager`` (the real schema, under RLS). The default hold is\ntenant-wide (``resource_type=\"tenant\"``), which the delete gates and the\nretention sweeps honour.",
         "operationId": "create_legal_hold_governance_legal_hold_post",
         "requestBody": {
           "content": {
@@ -26824,7 +28240,7 @@
     },
     "/governance/legal-holds": {
       "get": {
-        "description": "List active legal holds for this tenant (empty when DB unavailable).",
+        "description": "List active legal holds for this tenant (empty when no DB is configured).\n\nA query failure is a 503, not ``[]``: an empty list reads as \"nothing is on\nhold\", which is exactly the wrong conclusion to hand a compliance officer.",
         "operationId": "list_legal_holds_governance_legal_holds_get",
         "responses": {
           "200": {
@@ -27165,7 +28581,7 @@
     },
     "/governance/policies/{policy_id}/rollback": {
       "post": {
-        "description": "Roll back a policy to a previous version snapshot.",
+        "description": "Roll back a policy to a previous version snapshot \u2014 and actually apply it.\n\nPreviously this only appended a policy_versions row: governance_policies (what\nevery engine loads) and the in-process PolicyEngine were never touched, so the\n\"rolled back\" policy kept being enforced exactly as before. Now, in one\ntenant-scoped transaction, the target snapshot is re-written into\ngovernance_policies (or the policy is removed, if the target is a deletion\nsnapshot) and a new version row records the rollback; then this replica's\nengine reloads from the DB and the change is published so every other\nreplica reloads too.",
         "operationId": "rollback_policy_governance_policies__policy_id__rollback_post",
         "parameters": [
           {
@@ -27220,7 +28636,7 @@
     },
     "/governance/policies/{policy_id}/versions": {
       "get": {
-        "description": "Return the full version history for a policy.",
+        "description": "Return the full version history for a policy (this tenant only).",
         "operationId": "get_policy_versions_governance_policies__policy_id__versions_get",
         "parameters": [
           {
@@ -27538,6 +28954,51 @@
           }
         },
         "summary": "Issue Grant",
+        "tags": [
+          "grants"
+        ]
+      }
+    },
+    "/grants/{grant_id}": {
+      "get": {
+        "description": "One grant of the caller's tenant (including ``spent_usd``), or 404.",
+        "operationId": "get_grant_grants__grant_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "grant_id",
+            "required": true,
+            "schema": {
+              "title": "Grant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Grant Grants  Grant Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Grant",
         "tags": [
           "grants"
         ]
@@ -28259,6 +29720,7 @@
     },
     "/ingestion/cost": {
       "get": {
+        "description": "This month's ingestion token usage (from ``ingestion_jobs``) and its cost.\n\nWas a stub that always answered zeros. Covers connector/scheduled/manual\nSource syncs (the jobs that record tokens); ``cost_usd_month`` is ``None``\nwhen the embedding model's price is unknown.",
         "operationId": "get_cost_ingestion_cost_get",
         "responses": {
           "200": {
@@ -28282,7 +29744,42 @@
     },
     "/ingestion/dlq": {
       "get": {
+        "description": "The tenant's ingestion dead-letter queue (unresolved by default).\n\nWas a stub that always returned ``[]`` although ``ingestion_dlq`` is written\nby every failed sync.",
         "operationId": "list_dlq_ingestion_dlq_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source_id",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_resolved",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Resolved",
+              "type": "boolean"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -28298,6 +29795,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Dlq",
@@ -28308,7 +29815,7 @@
     },
     "/ingestion/documents": {
       "get": {
-        "description": "List indexed documents \u2014 paginated.",
+        "description": "Indexed documents of one Source, one row per document.\n\nWas a stub that always returned ``[]``. Now aggregated in SQL from the\nSource's collection chunk table under tenant RLS (keyset-paginated by\ndocument id via ``after``). 404 for an unknown Source; 5xx on failure \u2014 an\nempty list only ever means \"no documents\".",
         "operationId": "list_documents_ingestion_documents_get",
         "parameters": [
           {
@@ -28327,8 +29834,27 @@
             "required": false,
             "schema": {
               "default": 50,
+              "maximum": 500,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
             }
           }
         ],
@@ -28367,6 +29893,7 @@
     },
     "/ingestion/quota": {
       "get": {
+        "description": "Tenant ingestion quota \u2014 usage read from the database.\n\nPreviously counted the API module's in-memory ``_SOURCES`` dict, which is\nalways empty once the DB-backed Source store is wired (i.e. in production).",
         "operationId": "get_quota_ingestion_quota_get",
         "responses": {
           "200": {
@@ -28637,7 +30164,7 @@
     },
     "/integrations/events/alertmanager": {
       "post": {
-        "description": "Receive Alertmanager webhook and create goals for firing alerts.",
+        "description": "Receive Alertmanager webhook and create goals for firing alerts.\n\nAuthenticated with a bearer token (Alertmanager ``http_config.authorization``)\nmatching ALERTMANAGER_WEBHOOK_TOKEN. It had no authentication at all: anyone\ncould submit autonomous agent goals into the configured tenant.",
         "operationId": "receive_alertmanager_event_integrations_events_alertmanager_post",
         "requestBody": {
           "content": {
@@ -28681,7 +30208,7 @@
     },
     "/integrations/events/datadog": {
       "post": {
-        "description": "Receive Datadog webhook events and create goals for critical alerts.",
+        "description": "Receive Datadog webhook events and create goals for critical alerts.\n\nThe HMAC signature (DATADOG_WEBHOOK_SECRET) is always required; it used to be\nchecked only when the secret happened to be set, i.e. open by default.",
         "operationId": "receive_datadog_event_integrations_events_datadog_post",
         "requestBody": {
           "content": {
@@ -28929,7 +30456,7 @@
     },
     "/integrations/zapier/goals": {
       "get": {
-        "description": "Zapier polling trigger \u2014 returns recently completed goals.",
+        "description": "Zapier polling trigger \u2014 returns recently completed goals.\n\nRequires the same X-Zapier-Secret as /zapier/trigger; it had none, so anyone\ncould read the Zapier tenant's completed goals (goal text and results).",
         "operationId": "zapier_poll_completed_goals_integrations_zapier_goals_get",
         "responses": {
           "200": {
@@ -29058,7 +30585,7 @@
     },
     "/intelligence/eval-suites": {
       "get": {
-        "description": "List all eval suites with metadata.",
+        "description": "List the caller's eval suites with metadata.",
         "operationId": "list_eval_suites_intelligence_eval_suites_get",
         "responses": {
           "200": {
@@ -29126,8 +30653,42 @@
       }
     },
     "/intelligence/eval-suites/{suite_id}": {
+      "delete": {
+        "description": "Delete one of the caller's eval suites and its run history.",
+        "operationId": "delete_eval_suite_intelligence_eval_suites__suite_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "suite_id",
+            "required": true,
+            "schema": {
+              "title": "Suite Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Eval Suite",
+        "tags": [
+          "intelligence"
+        ]
+      },
       "get": {
-        "description": "Get a single eval suite by ID.",
+        "description": "Get one of the caller's eval suites, including its golden tasks.",
         "operationId": "get_eval_suite_intelligence_eval_suites__suite_id__get",
         "parameters": [
           {
@@ -29172,7 +30733,7 @@
     },
     "/intelligence/eval-suites/{suite_id}/results": {
       "get": {
-        "description": "Get historical results for an eval suite.",
+        "description": "Newest-first run history of one of the caller's eval suites.",
         "operationId": "get_suite_results_intelligence_eval_suites__suite_id__results_get",
         "parameters": [
           {
@@ -29220,7 +30781,7 @@
     },
     "/intelligence/eval-suites/{suite_id}/run": {
       "post": {
-        "description": "Run an eval suite against the live agent.",
+        "description": "Start a run of one of the caller's eval suites against the live agent.\n\nReturns 202 immediately with a ``run_id``; poll ``GET .../results`` for the\noutcome. Every golden task is a real goal that may take up to a minute, so\nthe run no longer executes inside the request (which held the connection\nfor the whole suite and was cut off by any proxy timeout).",
         "operationId": "run_eval_suite_intelligence_eval_suites__suite_id__run_post",
         "parameters": [
           {
@@ -29234,7 +30795,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -29265,7 +30826,7 @@
     },
     "/intelligence/eval-suites/{suite_id}/tasks": {
       "post": {
-        "description": "Add a golden task to an eval suite.",
+        "description": "Add a golden task to one of the caller's eval suites.",
         "operationId": "add_golden_task_intelligence_eval_suites__suite_id__tasks_post",
         "parameters": [
           {
@@ -29598,7 +31159,7 @@
     },
     "/intelligence/prompt-variants": {
       "get": {
-        "description": "List prompt variants for the tenant, optionally filtered by key.",
+        "description": "List the tenant's prompt variants (the shared \"global\" ones when it has none).",
         "operationId": "list_prompt_variants_intelligence_prompt_variants_get",
         "parameters": [
           {
@@ -29689,7 +31250,7 @@
     },
     "/intelligence/prompt-variants/{variant_id}": {
       "delete": {
-        "description": "Delete a prompt variant. Returns 204 No Content.",
+        "description": "Delete one of the caller's own variants (shared \"global\" ones are read-only).",
         "operationId": "delete_prompt_variant_intelligence_prompt_variants__variant_id__delete",
         "parameters": [
           {
@@ -29725,7 +31286,7 @@
     },
     "/intelligence/prompt-variants/{variant_id}/promote": {
       "post": {
-        "description": "Manually promote a challenger variant to control.",
+        "description": "Manually promote one of the caller's own variants to control.\n\nUsed to search every tenant's variants and promote whatever matched \u2014 one\ntenant could flip another tenant's live planner prompt \u2014 and to demote the\ncaller's control while promoting a foreign row. Only the caller's own\nvariants are eligible now; shared \"global\" variants are read-only.",
         "operationId": "promote_prompt_variant_intelligence_prompt_variants__variant_id__promote_post",
         "parameters": [
           {
@@ -29770,7 +31331,7 @@
     },
     "/intelligence/prompt-variants/{variant_id}/report": {
       "get": {
-        "description": "Get score report for a specific prompt variant.",
+        "description": "Score, cost and latency report for a variant the caller can see.",
         "operationId": "get_variant_report_intelligence_prompt_variants__variant_id__report_get",
         "parameters": [
           {
@@ -29870,6 +31431,7 @@
     },
     "/intelligence/suggestions/{suggestion_id}/apply": {
       "post": {
+        "description": "Deprecated v1 apply \u2014 410 Gone.\n\nIt called the v1 ``SelfOptimizer.apply_suggestion`` with no agent config, so\nnothing was ever changed: it flipped an in-process ``applied`` flag (lost on\nrestart, invisible to other replicas) and answered ``applied: true``. v1\nsuggestions carry no agent id or candidate config, so there is nothing to\ndelegate to ``SelfOptimizerV2.apply_suggestion``. Refuse honestly and point\nat the v2 path, which really updates the agent's config in the DB.",
         "operationId": "apply_suggestion_intelligence_suggestions__suggestion_id__apply_post",
         "parameters": [
           {
@@ -29883,7 +31445,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "410": {
             "content": {
               "application/json": {
                 "schema": {
@@ -30026,8 +31588,54 @@
     },
     "/knowledge-graph/export": {
       "get": {
-        "description": "Export the tenant's knowledge graph as JSON.",
+        "description": "Export the tenant's knowledge graph as JSON, one keyset page at a time.\n\nUsed to dump every node and edge in a single response built from the\nreplica's in-memory copy of the graph. Pass ``next_node_cursor`` /\n``next_edge_cursor`` back to fetch the next page; both are ``null`` on the\nlast one.",
         "operationId": "export_graph_knowledge_graph_export_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "node_cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Node Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "edge_cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Edge Cursor"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -30040,6 +31648,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Export Graph",
@@ -30386,7 +32004,7 @@
     },
     "/knowledge/analytics": {
       "get": {
-        "description": "Return aggregate analytics for all knowledge collections.",
+        "description": "Aggregate analytics for all of the tenant's collections.\n\nPreviously hardcoded ``total_chunks=0``, ``health_score=75`` and zero\nrelevance/cache rates, and answered 200 with an ``error`` field when the\nlookup failed. Now every number comes from the ``knowledge_collections``\ncounters in one indexed query; metrics this service does not measure per\ncollection (relevance, cache hit rate) are ``None`` rather than invented;\na failure is a 503.",
         "operationId": "get_knowledge_analytics_knowledge_analytics_get",
         "responses": {
           "200": {
@@ -30763,7 +32381,7 @@
     },
     "/knowledge/collections/{collection_id}/documents/{document_id}": {
       "delete": {
-        "description": "Delete a document from a knowledge collection.",
+        "description": "Delete a document from one of the caller's collections (404 if absent).",
         "operationId": "delete_document_knowledge_collections__collection_id__documents__document_id__delete",
         "parameters": [
           {
@@ -30817,7 +32435,7 @@
     },
     "/knowledge/collections/{collection_id}/documents/{document_id}/reingest": {
       "post": {
-        "description": "Re-ingest a document (re-fetch source URL, re-chunk, re-embed).",
+        "description": "Re-fetch a URL-sourced document, re-chunk and re-embed it.\n\nThe new version is persisted before the old one is removed, so a failed\nfetch or embed leaves the existing document intact. This used to flip a\nstatus nothing ever processed (and crash on the table's status values),\nreporting \"queued\" for work that never happened.",
         "operationId": "reingest_document_knowledge_collections__collection_id__documents__document_id__reingest_post",
         "parameters": [
           {
@@ -30869,9 +32487,54 @@
         ]
       }
     },
+    "/knowledge/collections/{collection_id}/reingest-webhook": {
+      "get": {
+        "description": "URLs + signing secret for this collection's push-to-reingest webhooks.\n\nConfigure the secret in the source system (GitHub \"Secret\" field; for\nConfluence/Notion sign the raw body as ``X-AgentVerse-Signature:\nsha256=<hex HMAC-SHA256>``). The secret is derived per (tenant, collection),\nso it authenticates only this collection.",
+        "operationId": "get_reingest_webhook_knowledge_collections__collection_id__reingest_webhook_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "collection_id",
+            "required": true,
+            "schema": {
+              "title": "Collection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Reingest Webhook Knowledge Collections  Collection Id  Reingest Webhook Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Reingest Webhook",
+        "tags": [
+          "knowledge"
+        ]
+      }
+    },
     "/knowledge/collections/{collection_id}/stats": {
       "get": {
-        "description": "Return quality and freshness statistics for a knowledge collection.",
+        "description": "Quality/size statistics for one collection, from the source of truth.\n\nPreviously computed from the in-memory ``_data`` mirror, which is empty\nwhenever the DB-backed store is wired \u2014 so every production collection read\n0 chunks / 0% coverage. Counts now come from the ``knowledge_collections``\ncounters (maintained exactly on every ingest/delete); the source-type\ndistribution is a bounded sample (``source_type_sample_size`` rows). 5xx on\nfailure.",
         "operationId": "get_collection_stats_knowledge_collections__collection_id__stats_get",
         "parameters": [
           {
@@ -30916,7 +32579,7 @@
     },
     "/knowledge/collections/{collection_id}/sync": {
       "post": {
-        "description": "Sync all documents in a collection from their source URLs.",
+        "description": "Sync every ingestion source that feeds one of the caller's collections.\n\nEach source goes through the same locked sync as ``POST\n/ingestion/sources/{id}/sync``. It used to answer 200 \"unsupported\" for any\ncollection id, the caller's or not.",
         "operationId": "sync_collection_knowledge_collections__collection_id__sync_post",
         "parameters": [
           {
@@ -30930,7 +32593,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -31886,7 +33549,7 @@
     },
     "/lab/tools": {
       "get": {
-        "description": "List available tools for lab use.",
+        "description": "List the caller's MCP tools available for lab mocking.\n\nThis used to always return an empty list (discovery was a stub). 503 when\nthe MCP client is wired but discovery fails, rather than an empty 200.",
         "operationId": "list_lab_tools_lab_tools_get",
         "responses": {
           "200": {
@@ -31968,7 +33631,7 @@
     },
     "/marketplace/bundles": {
       "post": {
-        "description": "Deploy multiple templates as a bundle (group deployment).",
+        "description": "Deploy multiple templates as a bundle (group deployment).\n\nGoes through the v2 atomic install per template and reports each item's\nreal outcome: 201 when every item deployed, 207 when some failed, 422 (with\nthe per-item report) when none did. It used to go through the v1 gallery,\nwhich handed back a made-up agent id when an agent was never created.",
         "operationId": "deploy_bundle_marketplace_bundles_post",
         "requestBody": {
           "content": {
@@ -32012,7 +33675,7 @@
     },
     "/marketplace/domains/counts": {
       "get": {
-        "description": "Return counts of marketplace templates and goal templates per domain.",
+        "description": "Counts per domain: marketplace templates the caller can see (\"agents\") and\nthe caller's goal templates (\"templates\").\n\nThis used to call ``list_templates`` on the deprecated v1 gallery (which has\nno such method) and swallow the error, so marketplace templates were never\ncounted. Errors now surface as 503 instead of silently empty counts.",
         "operationId": "get_domain_counts_marketplace_domains_counts_get",
         "responses": {
           "200": {
@@ -32036,7 +33699,7 @@
     },
     "/marketplace/installs": {
       "get": {
-        "description": "Return list of template IDs this tenant has deployed.",
+        "description": "The caller's marketplace installs (from marketplace_installs in DB mode).\n\nThis used to probe the deprecated v1 gallery for methods it does not have\nand swallow every error, so it always answered an empty list.",
         "operationId": "list_installs_marketplace_installs_get",
         "responses": {
           "200": {
@@ -32060,7 +33723,7 @@
     },
     "/marketplace/monetization/onboard-author": {
       "post": {
-        "description": "Start Stripe Connect onboarding for marketplace authors.",
+        "description": "Start Stripe Connect onboarding and persist the author's account id.\n\nThe account id used to be returned but never stored, so payouts could never\nbe routed to the author.",
         "operationId": "onboard_author_marketplace_monetization_onboard_author_post",
         "requestBody": {
           "content": {
@@ -32104,7 +33767,7 @@
     },
     "/marketplace/monetization/purchase/{template_id}": {
       "post": {
-        "description": "Purchase a paid marketplace template.",
+        "description": "Start a purchase of a paid template: PaymentIntent + a *pending* record.\n\nThe template is read under the buyer's RLS context (the read policy exposes\npublic/community templates and the buyer's own) \u2014 the old unscoped SELECT\non a non-existent column was a SQL error.",
         "operationId": "purchase_template_marketplace_monetization_purchase__template_id__post",
         "parameters": [
           {
@@ -32149,7 +33812,7 @@
     },
     "/marketplace/monetization/set-price": {
       "post": {
-        "description": "Set pricing on a marketplace template.",
+        "description": "Set pricing on one of the caller's OWN marketplace templates.\n\nThe old statement matched a non-existent ``template_id`` column (every call\nwas a SQL error) and had no ownership predicate \u2014 it would have let any\ntenant price, and claim authorship of, another tenant's template.",
         "operationId": "set_template_price_marketplace_monetization_set_price_post",
         "requestBody": {
           "content": {
@@ -32193,7 +33856,7 @@
     },
     "/marketplace/publish": {
       "post": {
-        "description": "Publish an agent template to the community marketplace.",
+        "description": "Publish an agent template to the marketplace.\n\nStored through the DB-backed marketplace (with security review). It used to\ngo into a per-process dict: gone on restart, invisible on other replicas,\nand never security-reviewed.",
         "operationId": "publish_template_marketplace_publish_post",
         "requestBody": {
           "content": {
@@ -32419,7 +34082,7 @@
     },
     "/marketplace/templates/{template_id}": {
       "get": {
-        "description": "Get a template by ID from the V2 DB-backed service.",
+        "description": "Get a template the caller may see (own, or shared and security-approved).",
         "operationId": "get_template_v2_marketplace_templates__template_id__get",
         "parameters": [
           {
@@ -32684,6 +34347,7 @@
     },
     "/marketplace/{template_id}/deploy": {
       "post": {
+        "description": "Legacy deploy route \u2014 same atomic, visibility-checked install as\n``POST /templates/{id}/deploy`` (it used to deploy from a separate\nin-memory catalogue that did not include DB-published templates).",
         "operationId": "deploy_template_marketplace__template_id__deploy_post",
         "parameters": [
           {
@@ -32738,7 +34402,7 @@
     },
     "/marketplace/{template_id}/publish": {
       "post": {
-        "description": "Publish a versioned snapshot of a template.",
+        "description": "Publish a versioned snapshot of one of the caller's own templates.\n\nAny tenant could previously snapshot any template id as a new \"version\".",
         "operationId": "publish_template_version_marketplace__template_id__publish_post",
         "parameters": [
           {
@@ -32795,7 +34459,7 @@
     },
     "/marketplace/{template_id}/versions": {
       "get": {
-        "description": "Return version history for a template.",
+        "description": "Return version history for a template the caller may see.",
         "operationId": "get_template_versions_marketplace__template_id__versions_get",
         "parameters": [
           {
@@ -32965,7 +34629,7 @@
     },
     "/memory-v2": {
       "get": {
-        "description": "List memories with lifecycle filtering.",
+        "description": "List memories with lifecycle filtering (filters + limit pushed into SQL).",
         "operationId": "list_memories_memory_v2_get",
         "parameters": [
           {
@@ -33171,7 +34835,7 @@
     },
     "/memory-v2/consolidate": {
       "post": {
-        "description": "Run memory consolidation - dedup, merge, lifecycle management.",
+        "description": "Run memory consolidation - dedup, merge, lifecycle management.\n\nWith a DB the tenant's live memories are loaded and locked in one\ntransaction, consolidated, and every lifecycle change is written back (the\nold code only mutated the per-process cache, so nothing persisted).",
         "operationId": "consolidate_memories_memory_v2_consolidate_post",
         "responses": {
           "200": {
@@ -33195,7 +34859,7 @@
     },
     "/memory-v2/export/gdpr": {
       "get": {
-        "description": "Export all memories for GDPR data subject request.",
+        "description": "Export all memories for GDPR data subject request.\n\nWith a DB this is read entirely from Postgres; a DB failure is a 503 rather\nthan a silently partial export.",
         "operationId": "export_gdpr_memory_v2_export_gdpr_get",
         "responses": {
           "200": {
@@ -33243,7 +34907,7 @@
     },
     "/memory-v2/{memory_id}": {
       "delete": {
-        "description": "Soft-delete a memory (GDPR compliant \u2014 marks as deleted).",
+        "description": "Soft-delete a memory (GDPR compliant \u2014 marks as deleted). 503 if not durable.",
         "operationId": "delete_memory_memory_v2__memory_id__delete",
         "parameters": [
           {
@@ -33329,7 +34993,7 @@
         ]
       },
       "patch": {
-        "description": "Update a memory entry.",
+        "description": "Update a memory entry.\n\nWith a DB the read-modify-write happens in ONE transaction on a row locked\n``FOR UPDATE``, so a concurrent (or earlier, on another replica) delete is\nseen and the memory is never written back as active.",
         "operationId": "update_memory_memory_v2__memory_id__patch",
         "parameters": [
           {
@@ -33411,8 +35075,33 @@
     },
     "/memory/long-term": {
       "get": {
-        "description": "List all long-term memories for this tenant.",
+        "description": "List long-term memories for this tenant (bounded + offset-pageable).",
         "operationId": "list_long_term_memories_memory_long_term_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -33428,6 +35117,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Long Term Memories",
@@ -33682,6 +35381,59 @@
           }
         },
         "summary": "Delete Memory By Id",
+        "tags": [
+          "memory"
+        ]
+      },
+      "patch": {
+        "description": "Edit a long-term memory (only the fields sent are changed).\n\nWith a database the row is authoritative: 404 when the caller has no such\nmemory, 503 on a DB error (never a cache-only \"updated\").",
+        "operationId": "update_memory_memory__memory_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "memory_id",
+            "required": true,
+            "schema": {
+              "title": "Memory Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__api__memory__UpdateMemoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Memory Memory  Memory Id  Patch",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Memory",
         "tags": [
           "memory"
         ]
@@ -34017,7 +35769,7 @@
     },
     "/models/test": {
       "post": {
-        "description": "Test a specific model with a simple ping.",
+        "description": "Test a specific model with a simple ping. Platform-admin only.\n\nIt calls the PLATFORM provider (platform spend) and writes the result into\nthe GLOBAL provider health that routing reads. Any tenant could call it, so a\ntenant could burn platform LLM calls and mark a provider unhealthy for all.",
         "operationId": "test_model_models_test_post",
         "responses": {
           "200": {
@@ -34175,9 +35927,54 @@
         ]
       }
     },
+    "/observability/goals/{goal_id}/trace": {
+      "get": {
+        "description": "Per-goal execution timeline for the Run Inspector.\n\nReturns the goal's captured steps \u2014 LangGraph nodes, LLM generations\n(model/tokens/cost/latency/role) and tool calls \u2014 each carrying its\ntrace_id/span_id for deep-linking into Jaeger/Langfuse, plus a cost/token\nsummary. Tenant-scoped (a tenant only sees its own goals' traces).\n\nThe timeline is captured in-process by ``RunTimelineSpanProcessor``; when goals\nmay run in another process or replica this answers 501 instead of serving an\nempty or partial trace. Durable per-goal cost/token totals remain available\nfrom ``GET /goals/{id}/cost-metrics``; full traces from the OTLP backend.",
+        "operationId": "get_goal_trace_observability_goals__goal_id__trace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "goal_id",
+            "required": true,
+            "schema": {
+              "title": "Goal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Goal Trace Observability Goals  Goal Id  Trace Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Goal Trace",
+        "tags": [
+          "observability"
+        ]
+      }
+    },
     "/observability/logs": {
       "get": {
-        "description": "Return recent log entries from the Redis Streams store (falls back to goal events).",
+        "description": "Recent tenant log entries (newest first) from the tenant log store.\n\n``source`` is ``redis_stream`` (shared across replicas) or ``memory``\n(process-local: only this replica's lines).",
         "operationId": "list_logs_observability_logs_get",
         "parameters": [
           {
@@ -34187,6 +35984,7 @@
             "schema": {
               "default": 50,
               "maximum": 500,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -34256,7 +36054,7 @@
     },
     "/observability/logs/stream": {
       "get": {
-        "description": "SSE stream of real-time log entries via Redis XREAD (event-driven).",
+        "description": "SSE stream of tenant log entries (Redis ``XREAD`` tailing when wired).\n\nBackend errors are surfaced as ``{\"type\": \"error\"}`` events rather than a\nsilently idle stream.",
         "operationId": "stream_logs_observability_logs_stream_get",
         "responses": {
           "200": {
@@ -34276,8 +36074,42 @@
     },
     "/observability/metrics": {
       "get": {
-        "description": "Return structured observability metrics including DB-backed latency percentiles.",
+        "description": "Goal count, success rate, duration percentiles and token usage by model.\n\nWindow: goals created since ``since`` (default: last 24 h); ``until`` is\nvalidated but the window always ends now. Percentiles and success rate are\n``null`` when no goal in the window has finished.",
         "operationId": "get_structured_metrics_observability_metrics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -34290,6 +36122,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Get Structured Metrics",
@@ -34300,7 +36142,7 @@
     },
     "/observability/timeseries": {
       "get": {
-        "description": "Return time-series data for goals, cost, and latency bucketed by time.",
+        "description": "Goals, cost and duration percentiles bucketed by time (default: last 24 h).",
         "operationId": "get_timeseries_observability_timeseries_get",
         "parameters": [
           {
@@ -35519,6 +37361,31 @@
     "/schedules": {
       "get": {
         "operationId": "list_schedules_schedules_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -35534,6 +37401,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Schedules",
@@ -35775,7 +37652,7 @@
     },
     "/schedules/{schedule_id}/history": {
       "get": {
-        "description": "Get execution history for a schedule.",
+        "description": "Get execution history for a schedule, from the ``trigger_events`` audit log.\n\nThis used to filter ``goals`` on ``execution_context->>'schedule_id'`` \u2014 a\nkey nothing ever writes \u2014 so it was always empty, and a bare\n``except: pass`` hid every error. Every fire (beat, manual, webhook) goes\nthrough the TriggerDispatcher, which records one ``trigger_events`` row per\nfiring *including suppressed ones* (skip_reason), keyed by the schedule id;\nthe goal's live status comes from a join on ``goals``.",
         "operationId": "get_schedule_history_schedules__schedule_id__history_get",
         "parameters": [
           {
@@ -35939,6 +37816,17 @@
               "default": 100,
               "title": "Count",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 1000,
+              "title": "Filter",
+              "type": "string"
             }
           }
         ],
@@ -36981,6 +38869,114 @@
         "tags": [
           "skills"
         ]
+      },
+      "put": {
+        "description": "Edit one of the tenant's custom skills (only the fields sent change).\n\n403 for platform skills, 409 for a name that collides with a platform\nskill, 404 when the tenant has no such active skill, 503 without a DB or on\na DB error.",
+        "operationId": "update_skill_skills__skill_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "skill_id",
+            "required": true,
+            "schema": {
+              "title": "Skill Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Update Skill Skills  Skill Id  Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Skill",
+        "tags": [
+          "skills"
+        ]
+      }
+    },
+    "/skills/{skill_id}/test": {
+      "post": {
+        "description": "Dry-run a skill: apply its instructions to ``input`` with the tenant's LLM.\n\n503 when no real LLM provider is configured (never canned output), 502\nwhen the provider call fails.",
+        "operationId": "run_skill_test_skills__skill_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "skill_id",
+            "required": true,
+            "schema": {
+              "title": "Skill Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SkillTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Run Skill Test Skills  Skill Id  Test Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Skill Test",
+        "tags": [
+          "skills"
+        ]
       }
     },
     "/sla/my-plan": {
@@ -37960,6 +39956,30 @@
         ]
       }
     },
+    "/status": {
+      "get": {
+        "description": "Public system health: ``operational`` | ``degraded`` | ``unknown``.\n\n``unknown`` when no dependency checks are registered or they could not be\nrun \u2014 the API answering this request is not evidence its dependencies work.\nComponent details carry only up/down, never error text.",
+        "operationId": "get_public_status_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Public Status Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Public Status",
+        "tags": [
+          "status"
+        ]
+      }
+    },
     "/strategies": {
       "get": {
         "operationId": "list_strategies_strategies_get",
@@ -38403,7 +40423,7 @@
     },
     "/tenants/me": {
       "delete": {
-        "description": "Delete the current tenant account (soft delete / schedule for deletion).",
+        "description": "Schedule the current tenant's deletion (durable GDPR erasure job).\n\nThis returned ``scheduled_for_deletion`` and did nothing. It now records the\nsame erasure job as ``POST /enterprise/compliance/delete`` (executed by the\n``process_tenant_erasures`` beat task after the grace period) and answers\n503 when the job could not be recorded.",
         "operationId": "delete_tenant_tenants_me_delete",
         "responses": {
           "200": {
@@ -38494,7 +40514,7 @@
         ]
       },
       "post": {
-        "description": "Add a CIDR range to this tenant's IP allowlist.",
+        "description": "Add a CIDR range to this tenant's IP allowlist (enforced on every request).",
         "operationId": "create_ip_allowlist_entry_tenants_me_ip_allowlist_post",
         "requestBody": {
           "content": {
@@ -38737,7 +40757,7 @@
         ]
       },
       "put": {
-        "description": "Configure the LLM provider for this tenant. The API key is stored encrypted.",
+        "description": "Configure the LLM provider for this tenant. The API key is stored encrypted.\n\nDurable in Postgres (tenant_llm_configs) with Redis as a cache. It used to\nbe kept in this replica's memory (which the goal path read) plus Redis, so\nthe provider applied only on the replica that handled this request.",
         "operationId": "set_llm_config_tenants_me_llm_put",
         "requestBody": {
           "content": {
@@ -38777,7 +40797,7 @@
     },
     "/tenants/me/llm-config": {
       "get": {
-        "description": "Get the tenant's saved LLM configuration (lightweight, no secrets).",
+        "description": "The tenant's LLM configuration without secrets (same record as /me/llm).",
         "operationId": "get_tenant_llm_config_tenants_me_llm_config_get",
         "responses": {
           "200": {
@@ -38799,7 +40819,7 @@
         ]
       },
       "put": {
-        "description": "Save the tenant's LLM configuration (lightweight, no secret encryption).",
+        "description": "Update the non-secret fields (provider, default_model, base_url).\n\nThis used to call TenantService methods that do not exist and answer\n``{\"status\": \"saved_in_memory\"}`` without saving anything. The API key is\nset only through PUT /tenants/me/llm; with no key configured yet this is a\n409 rather than a config that can never authenticate.",
         "operationId": "save_tenant_llm_config_tenants_me_llm_config_put",
         "responses": {
           "200": {
@@ -38823,7 +40843,7 @@
     },
     "/tenants/me/members": {
       "get": {
-        "description": "List all members of the current tenant.",
+        "description": "List all members of the current tenant (from tenant_memberships).",
         "operationId": "list_members_tenants_me_members_get",
         "responses": {
           "200": {
@@ -38847,7 +40867,7 @@
     },
     "/tenants/me/members/invite": {
       "post": {
-        "description": "Invite a user to the tenant.",
+        "description": "Invite a user to the tenant \u2014 persists a pending tenant_memberships row.\n\nRequires the admin role (membership management is privileged): this prevents\nprivilege-escalation and cross-user role tampering by non-admin callers.",
         "operationId": "invite_member_tenants_me_members_invite_post",
         "requestBody": {
           "content": {
@@ -39066,23 +41086,60 @@
     },
     "/tenants/me/sessions": {
       "get": {
-        "description": "List active sessions for the tenant (returns empty list \u2014 future: session tracking).",
+        "description": "List login sessions \u2014 not implemented (501).\n\nThis always returned ``[]`` although nothing records sessions, so the UI\nshowed \"no other sessions\" as if that were verified. See app/api/sessions.py.",
         "operationId": "list_sessions_tenants_me_sessions_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "items": {},
-                  "title": "Response List Sessions Tenants Me Sessions Get",
-                  "type": "array"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
           }
         },
         "summary": "List Sessions",
+        "tags": [
+          "tenants"
+        ]
+      }
+    },
+    "/tenants/me/sessions/{session_id}": {
+      "delete": {
+        "description": "Revoke a login session \u2014 not implemented (501); the UI calls this path.",
+        "operationId": "revoke_tenant_session_tenants_me_sessions__session_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Tenant Session",
         "tags": [
           "tenants"
         ]
@@ -39194,7 +41251,7 @@
     },
     "/tools/email/send": {
       "post": {
-        "description": "Send an email via SMTP (uses env-var config; MailHog in dev).",
+        "description": "Send an email via SMTP (uses env-var config; MailHog in dev).\n\nThe ``From`` header is always the platform-verified sender: this relay uses\nplatform SMTP credentials, so a tenant-chosen From was sender spoofing.",
         "operationId": "send_email_tools_email_send_post",
         "requestBody": {
           "content": {
@@ -39557,7 +41614,7 @@
     },
     "/triggers/dlq/{dlq_id}/retry": {
       "post": {
-        "description": "Re-queue a DLQ entry for immediate retry.",
+        "description": "Re-queue a DLQ entry for another delivery attempt.\n\nRecords the attempt on the entry itself (``retry_count`` + ``next_retry_at``\nfrom :data:`~app.triggers.dlq.RETRY_DELAYS`) and re-dispatches the stored\n``raw_payload`` through the live trigger dispatcher. The UPDATE is scoped by\n``tenant_id`` *and* runs under RLS, so another tenant's entry is invisible\nand answers 404 rather than reporting a retry that never happened.",
         "operationId": "retry_dlq_entry_triggers_dlq__dlq_id__retry_post",
         "parameters": [
           {
@@ -39575,9 +41632,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
+                  "additionalProperties": true,
                   "title": "Response Retry Dlq Entry Triggers Dlq  Dlq Id  Retry Post",
                   "type": "object"
                 }
@@ -39888,7 +41943,7 @@
     },
     "/triggers/{schedule_id}/events": {
       "get": {
-        "description": "Return recent trigger events from the audit table.",
+        "description": "Return recent trigger events from the audit table, scoped to the tenant.\n\nThe ``tenant_id`` predicate is load-bearing, not belt-and-braces: this query\nused to filter on ``trigger_id`` alone with no RLS context, so any\nauthenticated caller who knew another tenant's trigger id read that tenant's\nfiring history \u2014 including the raw inbound webhook ``payload``. Both the\nexplicit predicate and the RLS GUC are now in place.",
         "operationId": "list_trigger_events_triggers__schedule_id__events_get",
         "parameters": [
           {
@@ -40189,8 +42244,26 @@
     },
     "/trust/approvals": {
       "get": {
-        "description": "List approval requests for the tenant.",
+        "description": "List approval requests for the tenant, optionally filtered by status.",
         "operationId": "list_approvals_trust_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -40203,6 +42276,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Approvals",
@@ -40325,7 +42408,7 @@
     },
     "/trust/audit/export": {
       "get": {
-        "description": "Export audit evidence as signed JSON package.",
+        "description": "Export audit evidence as an integrity-hashed JSON package.\n\nNote on `integrity_hash`: it is an UNKEYED SHA-256 over the events. It\ndetects accidental corruption in transit, but it is not a signature \u2014\nanyone who alters the events can recompute it. This endpoint previously\ndescribed the result as a \"signed\" package, which overstated that.\n\nAn unavailable or failing audit source is now an error rather than an empty\npackage. Returning `{\"event_count\": 0, \"events\": []}` when the audit log\nsimply could not be read is indistinguishable from \"this tenant genuinely\nhad no audit events\", and the difference matters when the file is filed as\ncompliance evidence.",
         "operationId": "export_audit_evidence_trust_audit_export_get",
         "responses": {
           "200": {
@@ -40347,7 +42430,7 @@
     },
     "/trust/audit/integrity": {
       "get": {
-        "description": "Check audit log hash chain integrity.",
+        "description": "Check audit log hash chain integrity.\n\nThis endpoint is a tamper-detection attestation, so it must never claim a\nchain was verified when no verification happened. It previously fell through\nto a hardcoded ``{\"status\": \"ok\", \"verified\": True, \"chain_tip_hash\":\nsha256(tenant_id + \":chain-tip\")}`` \u2014 a \"chain tip\" derived from nothing but\nthe tenant id \u2014 in two situations that were both permanent:\n\n  * ``app.state.audit_log`` is an ``AuditLog`` (app/governance/audit.py),\n    which has no ``verify_chain`` at all, so the ``hasattr`` guard never\n    passed; and\n  * even where a verifier existed, the call was ``await\n    audit_svc.verify_chain(...)`` while ``AuditV3.verify_chain`` is a plain\n    ``def`` returning a dict \u2014 awaiting a dict raises TypeError, which the\n    bare ``except Exception: pass`` swallowed straight into the same fake\n    \"verified\" response.\n\nSo a broken chain and an unwired service were both reported as intact.",
         "operationId": "get_audit_integrity_trust_audit_integrity_get",
         "responses": {
           "200": {
@@ -40393,6 +42476,120 @@
         ]
       }
     },
+    "/trust/compliance-bundles/active": {
+      "get": {
+        "description": "List the compliance bundles this tenant has enabled, and the resulting\neffective (most restrictive) autonomy cap across all of them.",
+        "operationId": "get_active_compliance_bundles_trust_compliance_bundles_active_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Active Compliance Bundles Trust Compliance Bundles Active Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Active Compliance Bundles",
+        "tags": [
+          "trust-governance"
+        ]
+      }
+    },
+    "/trust/compliance-bundles/{bundle_id}": {
+      "delete": {
+        "description": "Disable a compliance bundle for this tenant, lifting its autonomy ceiling.",
+        "operationId": "disable_compliance_bundle_for_tenant_trust_compliance_bundles__bundle_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bundle_id",
+            "required": true,
+            "schema": {
+              "title": "Bundle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Disable Compliance Bundle For Tenant Trust Compliance Bundles  Bundle Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disable Compliance Bundle For Tenant",
+        "tags": [
+          "trust-governance"
+        ]
+      }
+    },
+    "/trust/compliance-bundles/{bundle_id}/enable": {
+      "post": {
+        "description": "Enable a compliance bundle for this tenant (governance/autonomy effects \u2014\ndistinct from POST /guardrails-v2/bundles/{name}, which materializes a\nbundle's guardrail rules).\n\nThe resulting ``effective_max_autonomy`` is a real ceiling: every goal this\ntenant submits is clamped to it (see\n``app.services.goal_service.resolve_effective_autonomy_mode``). It used to be\na number this endpoint computed and nothing ever read.",
+        "operationId": "enable_compliance_bundle_for_tenant_trust_compliance_bundles__bundle_id__enable_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bundle_id",
+            "required": true,
+            "schema": {
+              "title": "Bundle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Enable Compliance Bundle For Tenant Trust Compliance Bundles  Bundle Id  Enable Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enable Compliance Bundle For Tenant",
+        "tags": [
+          "trust-governance"
+        ]
+      }
+    },
     "/trust/policy/simulate": {
       "post": {
         "description": "Simulate what would happen if a policy/guardrail were applied to content.",
@@ -40417,17 +42614,37 @@
         ]
       }
     },
-    "/v1/gateway/{org_id}/channels/status": {
-      "get": {
-        "description": "Q10: Gateway Admin UI \u2014 shows all active channels and their status.\nSETTINGS \u2192 Command Gateway \u2192 ACTIVE CHANNELS",
-        "operationId": "gateway_channel_status",
+    "/v1/gateway/voice/incoming": {
+      "post": {
+        "description": "Handle one inbound call turn and speak a reply.\n\nTwilio posts form params (``From`` / ``To`` / ``CallSid`` / ``SpeechResult``).\nThe tenant is resolved from the *called* number (``To``) via the voice registry\n(the webhook carries no API key). The caller's speech is routed through the\nSAME unified pipeline as web/WhatsApp (``ChatService.ahandle_channel_message``,\nchannel ``voice_phone``, caller number as the channel user) so a call is a\ndurable, identity-aware conversation. The reply is returned as TwiML the\nprovider speaks, with a ``<Gather>`` that loops the next turn back here.",
+        "operationId": "gateway_voice_incoming",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Inbound phone-call webhook (Twilio/Vonage) \u2192 ChatService, returns TwiML",
+        "tags": [
+          "gateway"
+        ]
+      }
+    },
+    "/v1/gateway/{channel}/chat": {
+      "post": {
+        "description": "Route an inbound messaging webhook through the SAME ChatService as web chat.\n\nThe tenant is resolved from the *addressee* (the bot/number that received the\nmessage) via the channel registry, so Telegram/WhatsApp share the durable,\nidentity-aware chat brain (sessions, memory, cross-channel continuity). The\nreply is sent back over the channel's outbound API when a token is configured,\nand always returned in the response (so it is testable without live creds).",
+        "operationId": "gateway_channel_chat",
         "parameters": [
           {
             "in": "path",
-            "name": "org_id",
+            "name": "channel",
             "required": true,
             "schema": {
-              "title": "Org Id",
+              "title": "Channel",
               "type": "string"
             }
           }
@@ -40438,7 +42655,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Gateway Channel Status",
+                  "title": "Response Gateway Channel Chat",
                   "type": "object"
                 }
               }
@@ -40456,7 +42673,52 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Q10 \u2014 Get all channel connection statuses",
+        "summary": "Inbound Telegram/WhatsApp message \u2192 unified ChatService, replies back",
+        "tags": [
+          "gateway"
+        ]
+      }
+    },
+    "/v1/gateway/{org_id}/channels/status": {
+      "get": {
+        "description": "Was a hard-coded status list identical for every org; see the note above.",
+        "operationId": "gateway_channel_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "title": "Org Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Gateway Channel Status",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Not implemented"
+          }
+        },
+        "summary": "Q10 \u2014 Channel connection statuses (not implemented \u2014 501)",
         "tags": [
           "gateway"
         ]
@@ -40477,16 +42739,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GatewayConfig"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
           "422": {
             "content": {
               "application/json": {
@@ -40496,9 +42748,19 @@
               }
             },
             "description": "Validation Error"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayConfig"
+                }
+              }
+            },
+            "description": "Not implemented"
           }
         },
-        "summary": "Get gateway channel configuration",
+        "summary": "Get gateway channel configuration (not implemented \u2014 501)",
         "tags": [
           "gateway"
         ]
@@ -40527,16 +42789,6 @@
           "required": true
         },
         "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GatewayConfig"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
           "422": {
             "content": {
               "application/json": {
@@ -40546,9 +42798,19 @@
               }
             },
             "description": "Validation Error"
+          },
+          "501": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayConfig"
+                }
+              }
+            },
+            "description": "Not implemented"
           }
         },
-        "summary": "Update gateway channel configuration",
+        "summary": "Update gateway channel configuration (not implemented \u2014 501)",
         "tags": [
           "gateway"
         ]
@@ -42919,7 +45181,7 @@
     },
     "/v1/org/{org_id}/graph/versions": {
       "get": {
-        "description": "Return the version history of the org's knowledge graph.",
+        "description": "Return the version history of the org's knowledge graph (caller's tenant only).",
         "operationId": "org_graph_version_history",
         "parameters": [
           {
@@ -45234,7 +47496,7 @@
     },
     "/v1/org/{org_id}/twin/capacity": {
       "get": {
-        "description": "Return the current capacity plan \u2014 department utilisation, queued work,\nand predicted time-to-clear.  Never modifies production state.",
+        "description": "Return the current capacity plan \u2014 per-department utilisation and queued work.\n\nUtilisation is measured, not estimated: staffed agents (members/managers of\nthe department's active teams) with in-flight tasks / staffed agents. A\ndepartment with no staffed agents reports ``utilisation: null`` plus a\n``reason``; time-to-clear is ``null`` because there is no throughput model.\nNever modifies production state.",
         "operationId": "org_twin_capacity",
         "parameters": [
           {
@@ -45334,7 +47596,7 @@
     },
     "/v1/org/{org_id}/twin/what-if": {
       "post": {
-        "description": "Run a what-if scenario through the digital twin.\n\nExample scenarios:\n  - {\"department\": \"Engineering\", \"speed_multiplier\": 2.0}\n  - {\"add_agents\": 3, \"team\": \"Finance\"}",
+        "description": "Run a what-if scenario through the digital twin.\n\nThe twin has no throughput model to re-simulate a scenario against, so this\nreturns **501 Not Implemented** rather than a canned projection (it used to\nanswer every scenario with \"Estimated 15-20% throughput gain\").",
         "operationId": "org_twin_what_if",
         "parameters": [
           {
@@ -45379,11 +47641,55 @@
               }
             },
             "description": "Validation Error"
+          },
+          "501": {
+            "description": "What-if re-simulation is not implemented"
           }
         },
-        "summary": "SUPP-H Digital Twin \u2014 what-if scenario analysis",
+        "summary": "SUPP-H Digital Twin \u2014 what-if scenario analysis (not implemented: 501)",
         "tags": [
           "org"
+        ]
+      }
+    },
+    "/v1/proactive/signals": {
+      "post": {
+        "operationId": "proactive_ingest_signal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignalResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Signal",
+        "tags": [
+          "proactive"
         ]
       }
     },
@@ -45772,7 +48078,7 @@
     },
     "/webhooks/{token}": {
       "post": {
-        "description": "Receive an inbound webhook and fire the associated schedule.",
+        "description": "Receive an inbound webhook and fire the caller's matching webhook trigger.\n\nThis used to be a stub: it looked ``token`` up in a process-local\n``{token: schedule_id}`` dict \u2014 global across tenants, empty after a restart\nor on another replica \u2014 and returned ``{\"status\": \"ok\"}`` without dispatching\nanything, so every webhook was silently dropped while the sender was told it\nsucceeded. It now resolves the AUTHENTICATED tenant's own ``webhook`` trigger\nfrom the ScheduleStore and runs it through the real ``TriggerDispatcher``\n(the path ``POST /triggers/webhooks/webhook/{token}`` uses), enforcing the\ntrigger's signing secret when it has one.",
         "operationId": "webhook_trigger_webhooks__token__post",
         "parameters": [
           {
@@ -45786,7 +48092,7 @@
           }
         ],
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
@@ -46093,7 +48399,7 @@
     },
     "/workflows/{workflow_id}/run": {
       "post": {
-        "description": "Execute a saved workflow using WorkflowExecutor for parallel DAG execution.\n\nWhen the definition contains ``steps``, ``WorkflowExecutor.execute()`` runs\nthe parallel DAG directly.  Falls back to ``GoalService`` submission for\ndefinitions without step metadata.\n\nPass ``dry_run=true`` to validate and return plan metadata without executing.",
+        "description": "Start a durable run of a saved workflow (same path as ``/trigger``).\n\nCreates a persisted ``workflow_runs`` row and dispatches it through the\nworkflow engine (Celery per-plan queue, or inline when no broker is wired).\nReturns the REAL run id; poll ``GET /api/v1/runs/{run_id}`` for progress.\n\nOld bug: this ran ``WorkflowExecutor`` synchronously inside the request with\nno persistence (a random, unqueryable run id) and, on any error, silently\nfell back to submitting a generic goal \"Execute workflow <name>\", reporting\nsuccess for something that was never the workflow. Errors are now HTTP\nerrors (422 invalid inputs/definition, 503 engine unavailable).\n\nPass ``dry_run=true`` to validate and return plan metadata without executing.",
         "operationId": "run_workflow_workflows__workflow_id__run_post",
         "parameters": [
           {
@@ -46118,6 +48424,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/WorkflowRunRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "202": {
             "content": {
