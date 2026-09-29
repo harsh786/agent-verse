@@ -120,11 +120,16 @@ def test_downgrade_restores_0059_policy_and_drops_functions(
     assert f"WITH CHECK (reviewer_tenant_id = {_GUC})" in restored
 
 
-def test_is_the_single_alembic_head() -> None:
+def test_is_on_the_single_alembic_head_lineage() -> None:
+    """One head, and this migration is part of its history (later migrations
+    may chain on top of it)."""
     from alembic.config import Config
     from alembic.script import ScriptDirectory
 
     module = importlib.import_module(_MOD)
     backend_root = inspect.getfile(module).split("/app/db/")[0]
     script = ScriptDirectory.from_config(Config(f"{backend_root}/alembic.ini"))
-    assert script.get_heads() == ["d2b7e4f1a8c6"]
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    lineage = {rev.revision for rev in script.iterate_revisions(heads[0], "base")}
+    assert "d2b7e4f1a8c6" in lineage

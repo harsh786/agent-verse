@@ -163,7 +163,7 @@ async def test_downgrade_then_upgrade(urls: dict[str, str]) -> None:
         "SELECT count(*) FROM information_schema.tables "
         "WHERE table_name IN ('chat_channel_sessions', 'chat_principal_sessions')"
     )
-    _alembic(urls["admin"], "downgrade", "a9c4e2f7b1d3")
+    _alembic(urls["admin"], "downgrade", "d2b7e4f1a8c6")
     assert await _count(urls["admin"], exists) == 0
     _alembic(urls["admin"], "upgrade", "head")
     assert await _count(urls["admin"], exists) == 2

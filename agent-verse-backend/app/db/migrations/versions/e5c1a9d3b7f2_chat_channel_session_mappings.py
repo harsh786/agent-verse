@@ -15,7 +15,7 @@ Tenant-isolated with ENABLE + FORCE RLS on the TEXT ``tenant_id`` (matching
 ``chat_sessions``), policy ``<table>_tenant_isolation``.
 
 Revision ID: e5c1a9d3b7f2
-Revises: a9c4e2f7b1d3
+Revises: d2b7e4f1a8c6
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "e5c1a9d3b7f2"
-down_revision = "a9c4e2f7b1d3"
+down_revision = "d2b7e4f1a8c6"
 branch_labels = None
 depends_on = None
 

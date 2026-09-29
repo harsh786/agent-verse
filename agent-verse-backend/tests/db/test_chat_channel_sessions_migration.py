@@ -71,7 +71,7 @@ def _ddl_columns(sql: list[str], table: str) -> set[str]:
 def test_revision_chain() -> None:
     mig = _mig()
     assert mig.revision == "e5c1a9d3b7f2"
-    assert mig.down_revision == "a9c4e2f7b1d3"
+    assert mig.down_revision == "d2b7e4f1a8c6"
 
 
 @pytest.mark.parametrize("table", ["chat_channel_sessions", "chat_principal_sessions"])
