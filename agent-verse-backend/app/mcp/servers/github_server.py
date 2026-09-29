@@ -13,6 +13,7 @@ from __future__ import annotations
 import contextlib
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -126,14 +127,19 @@ async def call_tool(
     token = creds.get("token") or creds.get("api_token") or creds.get("password") or ""
     tenant_base = str(creds.get("url") or creds.get("base_url") or "")
     base_url = tenant_base or os.getenv("GITHUB_BASE_URL", "https://api.github.com")
+    from app.net.ssrf_guard import SSRFError, assert_public_url_async, public_async_client
+
+    # An operator GITHUB_BASE_URL (GHES on the LAN) is trusted config: its own
+    # host is the connect-time allowlist. A tenant URL gets none.
+    pin_allowlist: list[str] | None = None
     if tenant_base:
         # Tenant-supplied (GitHub Enterprise) URL was used unchecked — SSRF.
-        from app.net.ssrf_guard import SSRFError, assert_public_url_async
-
         try:
             await assert_public_url_async(base_url, context="github connector")
         except SSRFError:
             return {"error": "GitHub URL blocked by SSRF guard"}
+    elif os.getenv("GITHUB_BASE_URL"):
+        pin_allowlist = [(urlparse(base_url).hostname or "").lower()]
     headers: dict[str, str] = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -141,7 +147,10 @@ async def call_tool(
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        async with httpx.AsyncClient(base_url=base_url, headers=headers, timeout=30.0) as client:
+        # Pinned to the checked address: a plain client re-resolved the name.
+        async with public_async_client(
+            allowed_domains=pin_allowlist, base_url=base_url, headers=headers, timeout=30.0
+        ) as client:
             return await _dispatch_github_tool(tool_name, arguments, client)
     except httpx.HTTPStatusError as exc:
         error_body = ""

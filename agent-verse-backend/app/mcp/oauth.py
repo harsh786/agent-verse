@@ -244,9 +244,9 @@ class OAuthFlowManager:
         effective_redirect_uri = flow.redirect_uri or redirect_uri
         # token_url comes from the tenant's connector config: never POST the
         # authorization code (and client credentials) to an internal host.
-        try:
-            from app.net.ssrf_guard import assert_public_url_async
+        from app.net.ssrf_guard import assert_public_url_async, public_async_client
 
+        try:
             await assert_public_url_async(token_url, context="oauth_token_url")
         except ValueError:
             import logging
@@ -256,7 +256,9 @@ class OAuthFlowManager:
 
         data: dict[str, Any]
         try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
+            # Pinned to the address validated at connect time: a plain client
+            # re-resolved token_url (DNS rebinding past the check above).
+            async with public_async_client(timeout=15.0) as client:
                 resp = await client.post(
                     token_url,
                     data={
