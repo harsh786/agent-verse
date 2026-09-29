@@ -53,6 +53,13 @@ _PUBLIC_PREFIXES = (
     # the provider secret is unset, 401/403 on a bad signature, 404 for an
     # unknown webhook token): API-key auth cannot apply, the sender has no key.
     "/triggers/webhooks/",
+    # Self-authenticating credentials (not API keys): a refresh JWT, an SSO
+    # bearer JWT, and an IdP-signed SAML assertion. Without one they refuse
+    # (401 bad token / 400-422 missing token or SAMLResponse); they cannot
+    # require an API key because the caller does not have one yet.
+    "/auth/refresh",
+    "/auth/userinfo",
+    "/enterprise/saml/acs/",
     "/channels/slack/",
     "/channels/teams/",
     "/channels/discord/",
