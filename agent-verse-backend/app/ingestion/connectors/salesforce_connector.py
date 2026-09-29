@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -35,9 +35,8 @@ class SalesforceConnector(BaseConnector):
         t0 = time.perf_counter()
         try:
             token, instance_url = await self._authenticate(config)
-            import httpx
 
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(
                     f"{instance_url}/services/data/v58.0/",
                     headers={"Authorization": f"Bearer {token}"},
@@ -53,7 +52,6 @@ class SalesforceConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -65,7 +63,7 @@ class SalesforceConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             for sobject in sobjects:
                 # Discover fields if not specified
                 fields = fields_map.get(sobject) or await self._get_fields(
@@ -110,12 +108,11 @@ class SalesforceConnector(BaseConnector):
                     params = {}
 
     async def _authenticate(self, config: SourceConfig) -> tuple[str, str]:
-        import httpx
 
         cc = config.connection_config
         login_url = cc.get("login_url", "https://login.salesforce.com")
         assert_source_url(login_url, context="salesforce", config=config)
-        async with httpx.AsyncClient() as client:
+        async with source_client() as client:
             r = await client.post(
                 f"{login_url}/services/oauth2/token",
                 data={

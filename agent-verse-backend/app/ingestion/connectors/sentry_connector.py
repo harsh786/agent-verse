@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,7 +31,6 @@ class SentryConnector(BaseConnector):
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
-        import httpx
 
         t0 = time.perf_counter()
         try:
@@ -42,7 +41,7 @@ class SentryConnector(BaseConnector):
             # skips the egress guard entirely for that URL.
             base_url = config.connection_config.get("base_url", _SENTRY_BASE)
             assert_source_url(base_url, context="sentry.validate", config=config)
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(
                     f"{base_url}/",
                     headers={"Authorization": f"Bearer {token}"},
@@ -56,7 +55,6 @@ class SentryConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -70,7 +68,7 @@ class SentryConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {token}"}
         new_cursor = cursor or ""
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             for project_slug in project_slugs or [""]:
                 url_path = (
                     f"{base_url}/projects/{org_slug}/{project_slug}/issues/"

@@ -21,8 +21,9 @@ Response shape: ``{"results": [{"index": int, "relevance_score": float}, ...]}``
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -96,13 +97,16 @@ class HostedReranker:
         return self._parse(data, n_documents=len(documents))
 
     async def _post(self, payload: dict[str, Any], headers: dict[str, str]) -> Any:
-        import httpx
-
         if self._client is not None:
             resp = await self._client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        # Pinned to the address checked at connect time (a plain client
+        # re-resolved the name — DNS rebinding past the check in rerank). A
+        # trusted internal endpoint gets its own host as the allowlist: private
+        # ranges open, cloud metadata still refused.
+        allowlist = [(urlparse(self._url).hostname or "").lower()] if self._allow_internal else None
+        async with public_async_client(allowed_domains=allowlist, timeout=self._timeout) as client:
             resp = await client.post(self._url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.json()

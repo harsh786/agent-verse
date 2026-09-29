@@ -5,9 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, cast
 
-import httpx
-
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +52,7 @@ class JiraIngestor:
                     "summary,description,status,assignee,priority,comment,labels,created,updated"
                 ),
             }
-            async with httpx.AsyncClient(timeout=30) as c:
+            async with source_client(timeout=30) as c:
                 r = await c.get(
                     f"{self._base}/rest/api/3/search", params=params, headers=self._headers
                 )

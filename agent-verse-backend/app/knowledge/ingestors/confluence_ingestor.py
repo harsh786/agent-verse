@@ -6,9 +6,7 @@ import asyncio
 import re
 from typing import Any, cast
 
-import httpx
-
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -44,7 +42,7 @@ class ConfluenceIngestor:
             "limit": limit,
             "start": start,
         }
-        async with httpx.AsyncClient(timeout=30, auth=self._auth) as c:
+        async with source_client(timeout=30, auth=self._auth) as c:
             r = await c.get(url, params=params)
             r.raise_for_status()
             data = r.json()

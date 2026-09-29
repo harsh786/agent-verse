@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,7 +31,6 @@ class GitLabConnector(BaseConnector):
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
-        import httpx
 
         t0 = time.perf_counter()
         try:
@@ -40,7 +39,7 @@ class GitLabConnector(BaseConnector):
             assert_source_url(base, context="gitlab", config=config)
             token = cc.get("token", "")
             headers = {"PRIVATE-TOKEN": token}
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(f"{base}/api/v4/user", headers=headers)
                 r.raise_for_status()
                 user = r.json()
@@ -56,7 +55,6 @@ class GitLabConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -69,7 +67,7 @@ class GitLabConnector(BaseConnector):
         headers = {"PRIVATE-TOKEN": token}
         new_cursor = cursor or ""
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             for project_id in project_ids:
                 # Issues
                 if "issues" in ingest_types:

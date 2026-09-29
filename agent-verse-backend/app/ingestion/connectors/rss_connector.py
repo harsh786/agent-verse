@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url, guarded_request
+from app.ingestion.connector_egress import assert_source_url, guarded_request, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -31,10 +31,9 @@ async def _fetch_feed(url: str) -> bytes:
     a path or ``file://`` URI, reads the platform's own filesystem. The URL is
     guarded here, every redirect hop re-checked, and feedparser only parses bytes.
     """
-    import httpx
 
     assert_source_url(url, context="rss")
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with source_client(timeout=30) as client:
         r = await guarded_request(client, "GET", url, context="rss")
         r.raise_for_status()
         return bytes(r.content[:_MAX_FEED_BYTES])

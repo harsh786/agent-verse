@@ -17,6 +17,7 @@ from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_egress import (
     ConnectorEgressBlockedError,
     assert_source_url,
+    source_client,
 )
 from app.ingestion.connector_registry import register
 
@@ -100,13 +101,12 @@ class SharePointConnector:
             return resp.json()
 
     async def _download(self, download_url: str) -> bytes:
-        import httpx
-
         # ``@microsoft.graph.downloadUrl`` comes from a response body, so it is
         # checked like any tenant-influenced URL before it is fetched (the client
-        # does not follow redirects, so this one check covers the request).
+        # does not follow redirects, so this one check covers the request; the
+        # connection is pinned to the checked address).
         await asyncio.to_thread(assert_source_url, download_url, context="sharepoint")
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client:
+        async with source_client(timeout=60.0) as client:
             resp = await client.get(download_url)
             resp.raise_for_status()
             return resp.content

@@ -21,6 +21,11 @@ The escape hatch is deliberately **operator-scoped, never tenant-scoped**:
 ``INGESTION_INTERNAL_SOURCE_ALLOWLIST`` of hostnames. A value in
 ``connection_config`` can never widen it — that field is exactly what an attacker
 controls.
+
+Checking a URL and then fetching it with a plain ``httpx.AsyncClient`` leaves a
+DNS-rebinding window (the client resolves the name again). Connectors build
+their HTTP clients with :func:`source_client`, which pins every connection to an
+address validated at connect time under this same policy.
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote, urlsplit
 
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 
 if TYPE_CHECKING:
@@ -44,6 +49,7 @@ __all__ = [
     "check_source_dsn",
     "check_source_host",
     "guarded_request",
+    "source_client",
     "source_url_is_allowed",
 ]
 
@@ -68,6 +74,26 @@ def _operator_allowlist() -> tuple[bool, list[str]]:
     return allow, domains
 
 
+def _effective_allowlist() -> list[str] | None:
+    """The operator allowlist, honoured only when the escape hatch is also on."""
+    allow_internal, allowed_domains = _operator_allowlist()
+    # Both halves are env-only: an allowlist alone must not be able to punch a
+    # hole, and connection_config can never reach either.
+    return allowed_domains if (allow_internal and allowed_domains) else None
+
+
+def source_client(**httpx_kwargs: Any) -> Any:
+    """An ``httpx.AsyncClient`` for connector fetches, pinned under the egress policy.
+
+    Connections are dialled only to addresses checked at connect time (public,
+    or an operator-allowlisted internal host), so a name that re-resolves to
+    127.0.0.1 / 169.254.169.254 after :func:`assert_source_url` passed is
+    refused. Redirects are never followed automatically — use
+    :func:`guarded_request` for URLs that can redirect.
+    """
+    return public_async_client(allowed_domains=_effective_allowlist(), **httpx_kwargs)
+
+
 def assert_source_url(url: str, *, context: str, config: SourceConfig | None = None) -> None:
     """Raise :class:`ConnectorEgressBlockedError` unless ``url`` is safe to fetch.
 
@@ -80,11 +106,7 @@ def assert_source_url(url: str, *, context: str, config: SourceConfig | None = N
     if not url:
         raise ConnectorEgressBlockedError(f"SSRF guard [{context}]: empty URL")
 
-    allow_internal, allowed_domains = _operator_allowlist()
-    # The allowlist is only honoured when the operator has *also* turned the
-    # escape hatch on. Both halves are env-only: an allowlist alone must not be
-    # able to punch a hole, and connection_config can never reach either.
-    effective_allowlist = allowed_domains if (allow_internal and allowed_domains) else None
+    effective_allowlist = _effective_allowlist()
     try:
         assert_public_url(url, allowed_domains=effective_allowlist, context=context)
     except (SSRFError, ValueError) as exc:

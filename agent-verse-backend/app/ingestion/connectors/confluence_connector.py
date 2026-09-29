@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -33,13 +33,12 @@ class ConfluenceConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
-            import httpx
 
             cc = config.connection_config
             base_url = cc.get("base_url", "").rstrip("/")
             assert_source_url(base_url, context="confluence", config=config)
             auth = (cc.get("username", ""), cc.get("api_token", ""))
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(
                     f"{base_url}/rest/api/space",
                     params={"limit": 1},
@@ -59,7 +58,6 @@ class ConfluenceConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -73,7 +71,7 @@ class ConfluenceConnector(BaseConnector):
 
         new_cursor = cursor or ""
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             for ctype in content_types:
                 for space_key in space_keys or [""]:
                     params: dict = {
