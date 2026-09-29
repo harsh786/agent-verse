@@ -8,20 +8,17 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 An agent receives a natural-language goal, plans its own execution, calls real-world tools
 via MCP, verifies the result, and replans on failure — with **zero hardcoded workflows**.
 
-This is a **monorepo of five independently deployable projects**. They share a git root but
+This is a **monorepo of independently deployable projects**. They share a git root but
 have separate toolchains and build/test commands:
 
 | Directory | Stack | Role |
 |-----------|-------|------|
 | `agent-verse-backend/` | Python 3.12 · FastAPI · LangGraph · Celery · Postgres+pgvector | Source of truth. Publishes the OpenAPI contract. |
 | `agent-verse-frontend/` | React 19 · Vite · TanStack Query · Zustand · Tailwind | Consumes backend over HTTP / SSE / WebSocket. |
-| `agent-verse-sdk-python/` | Python 3.11+ · httpx · pydantic | Official Python client + CLI (`agentverse`). |
-| `agent-verse-sdk-typescript/` | TypeScript · vitest (zero runtime deps) | Official TS/JS client. |
 | `agent-verse-github-action/` | Python entrypoint in Docker | GitHub Action to submit/await a goal from CI. |
 
-> The backend's dev dependencies include `agentverse-sdk` via a local path source
-> (`[tool.uv.sources]` in `agent-verse-backend/pyproject.toml`) so backend tests exercise the
-> real SDK. Changes to the Python SDK are picked up by the backend after `uv sync`.
+> The Python and TypeScript SDKs (`agent-verse-sdk-python/`, `agent-verse-sdk-typescript/`)
+> were removed in `cabce1238` (2026-08-17). Backend tests that import `agentverse` skip.
 
 ## Local environment quirks (this machine)
 
@@ -32,7 +29,7 @@ These are non-obvious and have bitten previous sessions — read before running 
 - **Docker runs via colima**, which is **not** auto-started — run `colima start` first. The
   `docker compose` v2 plugin is absent; use the standalone **`docker-compose`** binary.
 - **Integration tests (testcontainers)** need these env vars set:
-  `DOCKER_HOST="unix:///Users/harsh.kumar01/.colima/default/docker.sock"` and
+  `DOCKER_HOST="unix:///Users/harsh/.colima/default/docker.sock"` and
   `TESTCONTAINERS_RYUK_DISABLED=true`.
 - **`httpx2`** is a dev dependency because Starlette's `TestClient` requires it; plain httpx
   raises a deprecation that `filterwarnings=error` turns into a test failure.
@@ -74,14 +71,6 @@ npm run lint         # eslint
 npm run typecheck    # tsc --noEmit
 npm run test         # vitest (unit/component, src/)
 npm run test:e2e     # Playwright e2e (e2e/)
-```
-
-### SDKs
-```bash
-# Python SDK (agent-verse-sdk-python/)
-uv run pytest
-# TypeScript SDK (agent-verse-sdk-typescript/)
-npm run build && npm test
 ```
 
 CI (`agent-verse-backend/.github/workflows/ci.yml`) runs ruff, mypy, and pytest.
