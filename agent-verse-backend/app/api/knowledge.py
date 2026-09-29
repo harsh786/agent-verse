@@ -294,6 +294,15 @@ def _raise_retrieval_http_error(exc: Exception) -> None:
         raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
     if isinstance(exc, UnavailableRAGStrategyError):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    from app.observability.logging import get_logger as _get_logger
+
+    # These 503s used to carry no trace of the cause anywhere.
+    _get_logger(__name__).warning(
+        "knowledge_retrieval_failed",
+        error_type=type(exc).__name__,
+        error=str(exc)[:500],
+        cause=repr(exc.__cause__)[:500] if exc.__cause__ else None,
+    )
     if isinstance(exc, RAGSynthesisError):
         raise HTTPException(status_code=503, detail="Answer synthesis is unavailable") from exc
     raise HTTPException(status_code=503, detail="Retrieval service is unavailable") from exc
@@ -748,6 +757,33 @@ async def warm_cache(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _extract_upload_text(content_bytes: bytes, *, ext: str, filename: str) -> str:
+    """Text of an uploaded file; 422 when unparseable, 503 when the parser is missing."""
+    from app.ingestion.document_text import (
+        DocumentParseError,
+        ParserUnavailableError,
+        extract_docx_text,
+        extract_pdf_pages,
+    )
+
+    try:
+        if ext == "pdf":
+            return "\n".join(extract_pdf_pages(content_bytes, filename=filename))
+        if ext == "docx":
+            return extract_docx_text(content_bytes, filename=filename)
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ParserUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if ext == "doc" or b"\x00" in content_bytes[:8192]:
+        # Legacy .doc and other binaries have no text decoder here.
+        raise HTTPException(
+            status_code=415,
+            detail=f"{filename}: unsupported binary file type; upload PDF, DOCX or text",
+        )
+    return content_bytes.decode("utf-8", errors="replace")
+
+
 @router.post("/ingest/file", status_code=201)
 async def ingest_file(
     request: Request,
@@ -768,29 +804,9 @@ async def ingest_file(
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
     source_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
 
-    # Parse content
-    if ext == "pdf":
-        try:
-            import io
-
-            import pypdf  # type: ignore[import-not-found]
-
-            reader = pypdf.PdfReader(io.BytesIO(content_bytes))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        except ImportError:
-            text = content_bytes.decode("utf-8", errors="replace")
-    elif ext in {"docx", "doc"}:
-        try:
-            import io
-
-            import docx  # type: ignore[import-not-found]
-
-            doc = docx.Document(io.BytesIO(content_bytes))
-            text = "\n".join(para.text for para in doc.paragraphs)
-        except ImportError:
-            text = content_bytes.decode("utf-8", errors="replace")
-    else:
-        text = content_bytes.decode("utf-8", errors="replace")
+    # Parse content. A binary format is parsed or refused — never decoded as
+    # UTF-8 (that indexed raw "%PDF-1.3 … endobj" and reported success).
+    text = _extract_upload_text(content_bytes, ext=ext, filename=filename)
 
     if not text.strip():
         raise HTTPException(422, "File is empty or could not be parsed")
@@ -1648,6 +1664,27 @@ async def _ingest_chunks_from_source(
     return stored_total
 
 
+def _extract_document_chunks_or_http(
+    ingestor: Any, content_bytes: bytes, *, filename: str, source_url: str
+) -> list[dict[str, Any]]:
+    """Run a PDF/DOCX ingestor; 422 unparseable or textless, 503 parser missing."""
+    from app.ingestion.document_text import DocumentParseError, ParserUnavailableError
+
+    try:
+        chunks: list[dict[str, Any]] = ingestor.extract_chunks(
+            content=content_bytes,
+            filename=filename,
+            source_url=source_url or f"file://{filename}",
+        )
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ParserUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not chunks:
+        raise HTTPException(status_code=422, detail=f"{filename}: no extractable text")
+    return chunks
+
+
 @router.post("/ingest/pdf", status_code=201)
 async def ingest_pdf(
     request: Request,
@@ -1665,11 +1702,8 @@ async def ingest_pdf(
 
     from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
 
-    ingestor = PdfIngestor()
-    chunks = ingestor.extract_chunks(
-        content=content_bytes,
-        filename=filename,
-        source_url=source_url or f"file://{filename}",
+    chunks = _extract_document_chunks_or_http(
+        PdfIngestor(), content_bytes, filename=filename, source_url=source_url
     )
 
     ingested = await _ingest_chunks_from_source(
@@ -1695,11 +1729,8 @@ async def ingest_docx(
 
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
 
-    ingestor = DocxIngestor()
-    chunks = ingestor.extract_chunks(
-        content=content_bytes,
-        filename=filename,
-        source_url=source_url or f"file://{filename}",
+    chunks = _extract_document_chunks_or_http(
+        DocxIngestor(), content_bytes, filename=filename, source_url=source_url
     )
 
     ingested = await _ingest_chunks_from_source(

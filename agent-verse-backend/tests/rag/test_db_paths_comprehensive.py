@@ -189,7 +189,8 @@ class TestLongTermMemoryDBPaths:
 
     @pytest.mark.asyncio
     async def test_store_async_db_error_gracefully_logged(self):
-        """Lines 199-201: DB exception is caught and logged."""
+        """A failed durable write raises: returning an id for a memory that only
+        lives in this process's cache reported persistence that never happened."""
         class _BadDB:
             def __call__(self):
                 class CM:
@@ -197,13 +198,16 @@ class TestLongTermMemoryDBPaths:
                     async def __aexit__(self, *a): pass
                 return CM()
 
-        from app.memory.long_term import LongTermMemory, LongTermMemoryStore
+        from app.memory.long_term import (
+            LongTermMemory,
+            LongTermMemoryStore,
+            LongTermMemoryUnavailableError,
+        )
 
         store = LongTermMemoryStore()
         m = LongTermMemory(content="test content", source_goal_id="g1", memory_type="domain_fact")
-        # Should not raise; exception is caught inside store_async
-        mid = await store.store_async(memory=m, tenant_ctx=_CTX, db=_BadDB())
-        assert mid == m.memory_id
+        with pytest.raises(LongTermMemoryUnavailableError):
+            await store.store_async(memory=m, tenant_ctx=_CTX, db=_BadDB())
 
 
 # ── tool_reliability.py DB paths ─────────────────────────────────────────────

@@ -68,8 +68,10 @@ class DOCXParser:
                 source_name=source_name, paragraphs=paragraphs, headings=headings
             )
         except ImportError:
-            text = docx_bytes.decode("utf-8", errors="replace")
-            paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-            return DOCXParseResult(source_name=source_name, paragraphs=paras)
+            # A .docx is a zip container: decoding it as UTF-8 yields "PK…<w:"
+            # garbage. Refuse instead of indexing that.
+            return DOCXParseResult(
+                source_name=source_name, error="DOCX parsing requires python-docx"
+            )
         except Exception as exc:
             return DOCXParseResult(source_name=source_name, error=str(exc))

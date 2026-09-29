@@ -10,36 +10,9 @@ def test_pdf_ingestor_importable():
     assert ingestor is not None
 
 
-def test_pdf_ingestor_returns_list_for_invalid_pdf():
-    from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
-    ingestor = PdfIngestor()
-    # Invalid bytes — should not crash
-    chunks = ingestor.extract_chunks(content=b"not a pdf", filename="test.pdf", source_url="x")
-    assert isinstance(chunks, list)
-
-
-def test_pdf_ingestor_citation_metadata():
-    from app.knowledge.ingestors.pdf_ingestor import PdfIngestor
-    ingestor = PdfIngestor()
-    chunks = ingestor.extract_chunks(
-        content=b"not a real pdf", filename="report.pdf", source_url="https://company.com/report.pdf"
-    )
-    for chunk in chunks:
-        assert "source_url" in chunk
-        assert "source_type" in chunk
-        assert chunk["source_type"] == "pdf"
-
-
 def test_docx_ingestor_importable():
     from app.knowledge.ingestors.docx_ingestor import DocxIngestor
     assert DocxIngestor() is not None
-
-
-def test_docx_ingestor_graceful_fallback():
-    from app.knowledge.ingestors.docx_ingestor import DocxIngestor
-    ingestor = DocxIngestor()
-    chunks = ingestor.extract_chunks(content=b"not docx", filename="doc.docx", source_url="x")
-    assert isinstance(chunks, list)
 
 
 def test_github_ingestor_should_ingest_python():

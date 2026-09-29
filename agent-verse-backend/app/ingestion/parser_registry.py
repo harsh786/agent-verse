@@ -275,10 +275,13 @@ class ParserRegistry:
         has_fitz = importlib.util.find_spec("fitz") is not None
         has_pdfminer = importlib.util.find_spec("pdfminer") is not None
         if not has_fitz and not has_pdfminer:
-            meta["pdf_degraded"] = "no fitz/pdfminer — text-layer extraction unavailable"
+            # pypdf (core) still extracts the text layer; layout/tables need these.
+            meta["pdf_parser"] = "pypdf"
 
         result = PDFParser().parse_bytes(content, name)
         text = result.full_text
+        if result.error:
+            meta["pdf_error"] = result.error
 
         # Scanned-PDF branch: no extractable text layer → OCR the rendered pages.
         if not text.strip() and ocr_engine is not None:

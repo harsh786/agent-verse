@@ -66,11 +66,20 @@ class PDFParser:
         result = self._parse_with_pdfminer(pdf_bytes, source_name)
         if result and result.pages:
             return result
+        # pypdf (a core dependency) — the optional backends above are extras.
+        # Never decode the bytes as UTF-8: that indexed raw PDF syntax.
+        from app.ingestion.document_text import DocumentParseError, extract_pdf_pages
+
         try:
-            text = pdf_bytes.decode("utf-8", errors="replace")
-            return self.parse_text(text, source_name)
-        except Exception as exc:
+            texts = extract_pdf_pages(pdf_bytes, filename=source_name)
+        except (DocumentParseError, RuntimeError) as exc:
             return PDFParseResult(source_name=source_name, error=str(exc))
+        pages = [
+            PDFPage(page_number=i + 1, content=t.strip())
+            for i, t in enumerate(texts)
+            if t.strip()
+        ]
+        return PDFParseResult(source_name=source_name, pages=pages)
 
     def parse_text(self, text: str, source_name: str = "document.pdf") -> PDFParseResult:
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]

@@ -190,11 +190,12 @@ def test_parse_pdf_with_pypdf():
 
 def test_parse_pdf_unavailable():
     parser = _parser()
-    with patch.dict("sys.modules", {"pypdf": None, "PyPDF2": None}):
-        doc = parser._parse_pdf(b"fake pdf", filename="doc.pdf")
-    assert doc.format == "pdf"
-    # Content should indicate unavailability
-    assert "unavailable" in doc.content.lower() or doc.content != ""
+    # No placeholder text is returned as the document's content any more.
+    with (
+        patch.dict("sys.modules", {"pypdf": None, "PyPDF2": None}),
+        pytest.raises(RuntimeError, match="requires pypdf"),
+    ):
+        parser._parse_pdf(b"fake pdf", filename="doc.pdf")
 
 
 def test_parse_pdf_truncation():
@@ -276,9 +277,11 @@ def test_parse_docx_empty_paragraphs_filtered():
 
 def test_parse_docx_unavailable():
     parser = _parser()
-    with patch.dict("sys.modules", {"docx": None}):
-        doc = parser._parse_docx(b"fake", filename="doc.docx")
-    assert "unavailable" in doc.content.lower()
+    with (
+        patch.dict("sys.modules", {"docx": None}),
+        pytest.raises(RuntimeError, match="requires python-docx"),
+    ):
+        parser._parse_docx(b"fake", filename="doc.docx")
 
 
 # ── 8. _parse_sync routing ────────────────────────────────────────────────────

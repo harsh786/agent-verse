@@ -118,13 +118,7 @@ class DocumentParserTool:
                 )
             except ImportError:
                 pass
-            return ParsedDocument(
-                filename=filename,
-                content="[PDF parsing unavailable: install pypdf]",
-                page_count=None,
-                metadata={},
-                format="pdf",
-            )
+            raise RuntimeError("PDF parsing requires pypdf") from None
 
         reader = pypdf.PdfReader(io.BytesIO(data))
         pages = []
@@ -184,13 +178,7 @@ class DocumentParserTool:
         try:
             from docx import Document  # type: ignore[import]
         except ImportError:
-            return ParsedDocument(
-                filename=filename,
-                content="[DOCX parsing unavailable: install python-docx]",
-                page_count=None,
-                metadata={},
-                format="docx",
-            )
+            raise RuntimeError("DOCX parsing requires python-docx") from None
 
         doc = Document(io.BytesIO(data))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
