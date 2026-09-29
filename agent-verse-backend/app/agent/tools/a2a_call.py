@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -49,7 +49,10 @@ async def call_external_a2a_agent(
         headers["Authorization"] = f"Bearer {auth_token}"
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # Pinned to the address validated at connect time: a plain client
+        # re-resolved the endpoint (DNS rebinding past the check above).
+        # Redirects are not followed (as before).
+        async with public_async_client(timeout=timeout) as client:
             resp = await client.post(
                 agent_endpoint,
                 json={
