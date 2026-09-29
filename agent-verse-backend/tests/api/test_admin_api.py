@@ -201,68 +201,133 @@ class TestChangeTenantPlan:
         assert resp.status_code == 503
 
 
+class _SysSession:
+    """Fake maintenance session: routes a Core select by one of its labels."""
+
+    def __init__(self, routes: dict[str, list[dict]], fail: bool = False) -> None:
+        self.routes = routes
+        self.fail = fail
+        self.sql: list[str] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return False
+
+    def begin(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def _b():
+            yield self
+
+        return _b()
+
+    async def execute(self, stmt, params=None):
+        q = str(stmt)
+        self.sql.append(q)
+        res = types.SimpleNamespace()
+        if "row_security" in q:
+            return res
+        if self.fail:
+            raise RuntimeError("connection refused")
+        labels = set(getattr(stmt, "selected_columns", {}).keys())
+        for marker, rows in self.routes.items():
+            if marker in labels:
+                res.mappings = lambda rows=rows: types.SimpleNamespace(
+                    all=lambda: rows, one=lambda: rows[0]
+                )
+                return res
+        raise AssertionError(f"unrouted statement: {labels}")
+
+
 class TestPlatformUsage:
-    def test_aggregates_active_goals_and_tenants(self):
+    """Regression: /admin/usage read GoalService._active_goals, which does not
+    exist, so active_goals was always 0; tenant count came from one replica's
+    in-memory cache. It now counts the goals and tenants tables."""
+
+    def _usage_session(self, **kw):
+        return _SysSession(
+            {
+                "active": [
+                    {
+                        "total": 40, "active": 3, "goals_today": 7,
+                        "completed_today": 4, "avg_latency_s_today": 12.5,
+                    }
+                ],
+                "status": [
+                    {"status": "complete", "n": 30},
+                    {"status": "executing", "n": 3},
+                    {"status": "failed", "n": 7},
+                ],
+                "total_tenants": [{"total_tenants": 5}],
+            },
+            **kw,
+        )
+
+    def test_counts_goals_and_tenants_from_the_database(self):
         app = _make_app()
-        app.state.goal_service = types.SimpleNamespace(_active_goals={"g1": 1, "g2": 2})
-        app.state.tenant_service = types.SimpleNamespace(_tenants={"t1": {}, "t2": {}})
-        client = TestClient(app)
-        resp = client.get("/admin/usage", headers=_ADMIN_HEADERS)
-        assert resp.status_code == 200
-        assert resp.json() == {"active_goals": 2, "total_tenants": 2}
+        session = self._usage_session()
+        app.state.system_db_session_factory = lambda: session
+        # Stale in-memory state must not leak into the answer.
+        app.state.goal_service = types.SimpleNamespace(_active_goals={"g1": 1})
+        app.state.tenant_service = types.SimpleNamespace(_tenants={"t1": {}})
+        resp = TestClient(app).get("/admin/usage", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["active_goals"] == 3
+        assert data["total_tenants"] == 5
+        assert data["total_goals"] == 40
+        assert data["goals_today"] == 7
+        assert data["avg_latency_ms"] == 12500
+        assert data["goals_by_status"] == {"complete": 30, "executing": 3, "failed": 7}
+        assert any("row_security = off" in q for q in session.sql)
 
-    def test_missing_services_defaults_to_zero(self):
-        client = TestClient(_make_app())
-        resp = client.get("/admin/usage", headers=_ADMIN_HEADERS)
-        assert resp.status_code == 200
-        assert resp.json() == {"active_goals": 0, "total_tenants": 0}
-
-    def test_goal_service_error_is_suppressed(self):
+    def test_no_completed_goal_today_has_null_latency(self):
         app = _make_app()
+        session = _SysSession(
+            {
+                "active": [
+                    {"total": 0, "active": 0, "goals_today": 0, "completed_today": 0,
+                     "avg_latency_s_today": None}
+                ],
+                "status": [],
+                "total_tenants": [{"total_tenants": 0}],
+            }
+        )
+        app.state.system_db_session_factory = lambda: session
+        data = TestClient(app).get("/admin/usage", headers=_ADMIN_HEADERS).json()
+        assert data["avg_latency_ms"] is None
+        assert data["active_goals"] == 0
 
-        class _BadGoalSvc:
-            @property
-            def _active_goals(self):
-                raise RuntimeError("boom")
+    def test_no_database_is_501_not_zeros(self):
+        resp = TestClient(_make_app()).get("/admin/usage", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 501
 
-        app.state.goal_service = _BadGoalSvc()
-        client = TestClient(app)
-        resp = client.get("/admin/usage", headers=_ADMIN_HEADERS)
-        assert resp.status_code == 200
-        assert resp.json()["active_goals"] == 0
+    def test_database_error_is_503_not_zeros(self):
+        app = _make_app()
+        session = self._usage_session(fail=True)
+        app.state.system_db_session_factory = lambda: session
+        resp = TestClient(app).get("/admin/usage", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 503
 
 
 class TestIncidents:
-    def test_no_guardrail_engine_returns_empty(self):
-        client = TestClient(_make_app())
-        resp = client.get("/admin/incidents", headers=_ADMIN_HEADERS)
-        assert resp.status_code == 200
-        assert resp.json() == {"incidents": [], "total": 0}
+    """Regression: /admin/incidents read guardrail_engine._incidents, which no
+    engine defines, so the feed was always empty. Nothing persists guardrail
+    incidents, so the endpoint is an honest 501."""
 
-    def test_returns_recent_incidents_limited(self):
+    def test_is_501_with_a_reason(self):
         app = _make_app()
-        incidents = [{"id": i} for i in range(10)]
-        app.state.guardrail_engine = types.SimpleNamespace(_incidents=incidents)
-        client = TestClient(app)
-        resp = client.get("/admin/incidents", headers=_ADMIN_HEADERS, params={"limit": 3})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["total"] == 3
-        assert data["incidents"] == incidents[-3:]
+        app.state.guardrail_engine = types.SimpleNamespace(_incidents=[{"id": 1}])
+        resp = TestClient(app).get("/admin/incidents", headers=_ADMIN_HEADERS)
+        assert resp.status_code == 501
+        assert "not persisted" in resp.json()["detail"]
 
-    def test_guardrail_engine_error_returns_empty(self):
-        app = _make_app()
-
-        class _BadEngine:
-            @property
-            def _incidents(self):
-                raise RuntimeError("boom")
-
-        app.state.guardrail_engine = _BadEngine()
-        client = TestClient(app)
-        resp = client.get("/admin/incidents", headers=_ADMIN_HEADERS)
-        assert resp.status_code == 200
-        assert resp.json() == {"incidents": [], "total": 0}
+    def test_still_requires_the_admin_key(self):
+        resp = TestClient(_make_app()).get("/admin/incidents")
+        assert resp.status_code == 401
 
 
 def test_tenant_context_replace_smoke():

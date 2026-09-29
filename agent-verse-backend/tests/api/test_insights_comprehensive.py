@@ -54,18 +54,10 @@ def test_benchmarks_requires_auth() -> None:
 
 # ── POST /insights/estimate ───────────────────────────────────────────────────
 
-def test_estimate_returns_defaults_without_goal_service() -> None:
+def test_estimate_without_db_is_501_not_platform_defaults() -> None:
     client = TestClient(_make_app())
     resp = client.post("/insights/estimate", json={"goal": "Deploy my app"}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "estimated_cost_usd" in data
-    assert "estimated_duration_s" in data
-    assert "estimated_iterations" in data
-    assert "success_probability" in data
-    assert "confidence" in data
-    assert data["confidence"] == "low"
-    assert data["based_on"] == "platform_defaults"
+    assert resp.status_code == 501
 
 
 def test_estimate_requires_non_empty_goal() -> None:
@@ -74,14 +66,14 @@ def test_estimate_requires_non_empty_goal() -> None:
     assert resp.status_code == 422
 
 
-def test_estimate_with_agent_id() -> None:
+def test_estimate_with_agent_id_without_db_is_501() -> None:
     client = TestClient(_make_app())
     resp = client.post(
         "/insights/estimate",
         json={"goal": "Do something", "agent_id": "my-agent"},
         headers=_HEADERS,
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 501
 
 
 def test_estimate_goal_too_long_returns_422() -> None:
@@ -318,7 +310,7 @@ def test_nl_query_no_goal_service_returns_empty() -> None:
 
 
 def test_nl_query_today_filter() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -333,7 +325,7 @@ def test_nl_query_today_filter() -> None:
 
 
 def test_nl_query_week_filter() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -346,7 +338,7 @@ def test_nl_query_week_filter() -> None:
 
 
 def test_nl_query_month_filter() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -361,7 +353,7 @@ def test_nl_query_month_filter() -> None:
 
 
 def test_nl_query_year_filter() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -374,7 +366,7 @@ def test_nl_query_year_filter() -> None:
 
 
 def test_nl_query_default_30_days() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -398,7 +390,7 @@ def test_nl_query_invalid_entity_returns_422() -> None:
 
 
 def test_nl_query_agents_entity() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": []})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -411,7 +403,7 @@ def test_nl_query_agents_entity() -> None:
 
 
 def test_nl_query_respects_limit() -> None:
-    mock_svc = MagicMock()
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(return_value={"goals": [{"id": f"g{i}"} for i in range(50)]})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -424,8 +416,8 @@ def test_nl_query_respects_limit() -> None:
     assert resp.json()["total"] <= 5
 
 
-def test_nl_query_goal_service_raises_returns_empty() -> None:
-    mock_svc = MagicMock()
+def test_nl_query_goal_service_raises_is_503() -> None:
+    mock_svc = MagicMock(_db=None)  # in-memory mode
     mock_svc.list_goals = AsyncMock(side_effect=RuntimeError("DB error"))
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
@@ -433,57 +425,28 @@ def test_nl_query_goal_service_raises_returns_empty() -> None:
         json={"query": "all goals"},
         headers=_HEADERS,
     )
-    assert resp.status_code == 200
-    assert resp.json()["results"] == []
+    assert resp.status_code == 503
 
 
 # ── GET /insights/agent-health/{agent_id} ────────────────────────────────────
 
-def test_agent_health_no_goal_service_returns_defaults() -> None:
+def test_agent_health_without_db_is_501_not_defaults() -> None:
     client = TestClient(_make_app())
     resp = client.get("/insights/agent-health/agent-xyz", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["agent_id"] == "agent-xyz"
-    assert "health" in data
-    health = data["health"]
-    assert "speed" in health
-    assert "accuracy" in health
-    assert "cost_efficiency" in health
-    assert "tool_coverage" in health
-    assert "success_rate" in health
-    assert "coherence" in health
-    assert data["sample_size"] == 0
+    assert resp.status_code == 501
 
 
-def test_agent_health_with_no_db_on_goal_service() -> None:
+def test_agent_health_with_no_db_on_goal_service_is_501() -> None:
     mock_svc = MagicMock()
     mock_svc._db = None
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.get("/insights/agent-health/agent-1", headers=_HEADERS)
-    assert resp.status_code == 200
-    assert resp.json()["sample_size"] == 0
+    assert resp.status_code == 501
 
 
 # ── GET /insights/benchmarks ──────────────────────────────────────────────────
 
-def test_benchmarks_returns_platform_data() -> None:
+def test_benchmarks_without_db_is_501() -> None:
     client = TestClient(_make_app())
     resp = client.get("/insights/benchmarks", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "platform_avg_success_rate" in data
-    assert "platform_avg_cost_usd" in data
-    assert "percentile_bands" in data
-    # When no DB is available, insufficient_data path returns empty percentile_bands
-    # and a message/sample_count instead of computed percentiles
-    assert "data_source" in data or "sample_note" in data or "message" in data
-
-
-def test_benchmarks_values_are_reasonable() -> None:
-    client = TestClient(_make_app())
-    data = client.get("/insights/benchmarks", headers=_HEADERS).json()
-    # Without DB, values are None (insufficient_data path) — just check keys exist
-    assert "platform_avg_success_rate" in data
-    assert "platform_avg_cost_usd" in data
-    assert "platform_avg_duration_s" in data
+    assert resp.status_code == 501

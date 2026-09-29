@@ -2337,13 +2337,17 @@ export const redTeamApi = {
 
 // ── Insights API ──────────────────────────────────────────────────────────────
 
+export interface EstimateBand { min: number; mean: number; max: number }
+
+/** POST /insights/estimate — derived from the tenant's similar finished goals.
+ *  Every band is null when no similar goal carries that data (never a default). */
 export interface CostEstimate {
-  estimated_cost_usd: { min: number; mean: number; max: number };
-  estimated_duration_s: { min: number; mean: number; max: number };
-  estimated_iterations: { min: number; mean: number; max: number };
-  success_probability: number;
+  estimated_cost_usd: EstimateBand | null;
+  estimated_duration_s: EstimateBand | null;
+  estimated_iterations: EstimateBand | null;
+  success_probability: number | null;
   similar_goals_count: number;
-  confidence: "low" | "medium" | "high";
+  confidence: "none" | "low" | "medium" | "high";
   based_on: string;
 }
 
@@ -2361,20 +2365,24 @@ export interface FailureAnalysis {
   failure_reason: string;
   suggestions: Array<{ action: string; description: string }>;
   iterations_used: number;
-  cost_usd: number;
+  cost_usd: number | null;
 }
 
+/** GET /insights/agent-health/{id} — each axis is null when the agent has no
+ *  data behind it (no finished runs, no scorecards, no tool calls). */
 export interface AgentHealth {
   agent_id: string;
   health: {
-    speed: number;
-    accuracy: number;
-    cost_efficiency: number;
-    tool_coverage: number;
-    success_rate: number;
-    coherence: number;
+    speed: number | null;
+    accuracy: number | null;
+    cost_efficiency: number | null;
+    tool_coverage: number | null;
+    success_rate: number | null;
+    coherence: number | null;
   };
   sample_size: number;
+  finished_count?: number;
+  eval_sample_size?: number;
 }
 
 export const insightsApi = {
@@ -3058,7 +3066,11 @@ export interface PlatformUsage {
   active_goals: number;
   total_tenants: number;
   goals_today?: number;
-  avg_latency_ms?: number;
+  /** Mean duration of goals completed today (UTC); null when none has. */
+  avg_latency_ms?: number | null;
+  total_goals?: number;
+  completed_today?: number;
+  goals_by_status?: Record<string, number>;
 }
 
 export const adminApi = {

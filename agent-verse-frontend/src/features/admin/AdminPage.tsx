@@ -38,7 +38,8 @@ interface PlatformUsage {
   active_goals: number;
   total_tenants: number;
   goals_today?: number;
-  avg_latency_ms?: number;
+  /** Mean duration of goals completed today; null when none has. */
+  avg_latency_ms?: number | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -185,9 +186,11 @@ export default function AdminPage() {
       </div>
 
       {/* Metrics */}
+      {/* Unavailable usage (501/503) renders "—": a 0 here would read as "no
+          goals running" when the truth is "unknown". */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="metrics-row">
-        <MetricCard label="Total Tenants"  value={usageLoading ? '…' : (usage?.total_tenants ?? allTenants.length)} icon={Users}      accent="indigo"  testId="metric-tenants" />
-        <MetricCard label="Active Goals"   value={usageLoading ? '…' : (usage?.active_goals ?? 0)}                  icon={Zap}        accent="emerald" sub="running now" testId="metric-active-goals" />
+        <MetricCard label="Total Tenants"  value={usageLoading ? '…' : (usage?.total_tenants ?? '—')}            icon={Users}      accent="indigo"  testId="metric-tenants" />
+        <MetricCard label="Active Goals"   value={usageLoading ? '…' : (usage?.active_goals ?? '—')}             icon={Zap}        accent="emerald" sub="running now" testId="metric-active-goals" />
         <MetricCard label="Goals Today"    value={usage?.goals_today ?? '—'}                                         icon={TrendingUp} accent="indigo"  testId="metric-goals-today" />
         <MetricCard label="Avg Latency"    value={usage?.avg_latency_ms ? `${usage.avg_latency_ms}ms` : '—'}         icon={Clock}      accent={usage?.avg_latency_ms && usage.avg_latency_ms > 5000 ? 'amber' : 'emerald'} testId="metric-latency" />
       </div>

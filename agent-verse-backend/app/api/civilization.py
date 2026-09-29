@@ -65,6 +65,25 @@ def _get_db(request: Request) -> Any:
     return db
 
 
+def _require_db(request: Request) -> Any:
+    """The session factory, or 503 -- a list read must never pass off a missing
+    database as "no rows"."""
+    db = _get_db(request)
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database not available"
+        )
+    return db
+
+
+def _db_unavailable(what: str) -> HTTPException:
+    """503 for a failed DB read; driver/SQL text is logged, not returned."""
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"Could not load {what}: the civilization store is unavailable",
+    )
+
+
 # ── Request models ──────────────────────────────────────────────────────────
 
 
@@ -246,12 +265,14 @@ async def create_civilization(request: Request, body: CreateCivilizationRequest)
 
 @router.get("")
 async def list_civilizations(request: Request) -> list[dict]:
-    """List all civilizations for this tenant."""
+    """List all civilizations for this tenant.
+
+    ``[]`` only when the tenant genuinely has none; a missing or failing
+    database is a 503 (it used to answer ``[]`` either way).
+    """
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is None:
-        return []
+    db = _require_db(request)
     try:
         from sqlalchemy import text
 
@@ -280,7 +301,7 @@ async def list_civilizations(request: Request) -> list[dict]:
         ]
     except Exception as exc:
         logger.warning("civilization_list_failed", error=str(exc))
-        return []
+        raise _db_unavailable("civilizations") from exc
 
 
 @router.get("/{civ_id}")
@@ -472,12 +493,14 @@ async def add_civilization_member(request: Request, civ_id: str, body: AddMember
 
 @router.get("/{civ_id}/members")
 async def list_civilization_members(request: Request, civ_id: str) -> list[dict]:
-    """List all members of this civilization with agent config."""
+    """List all members of this civilization with agent config.
+
+    ``[]`` only when there genuinely are no members; a missing or failing
+    database is a 503.
+    """
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is None:
-        return []
+    db = _require_db(request)
 
     try:
         from sqlalchemy import text
@@ -522,7 +545,7 @@ async def list_civilization_members(request: Request, civ_id: str) -> list[dict]
         ]
     except Exception as exc:
         logger.warning("list_members_failed", error=str(exc))
-        return []
+        raise _db_unavailable("civilization members") from exc
 
 
 @router.delete("/{civ_id}/members/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -758,12 +781,14 @@ async def get_learnings(
 
 @router.get("/{civ_id}/spawns")
 async def get_spawn_audit(request: Request, civ_id: str) -> list[dict]:
-    """Get spawn-request audit timeline."""
+    """Get spawn-request audit timeline (latest 100).
+
+    ``[]`` only when there genuinely are no spawn requests; a missing or
+    failing database is a 503.
+    """
     _require_feature_enabled(request)
     tenant_ctx = _require_tenant(request)
-    db = _get_db(request)
-    if db is None:
-        return []
+    db = _require_db(request)
     try:
         from sqlalchemy import text
 
@@ -796,7 +821,7 @@ async def get_spawn_audit(request: Request, civ_id: str) -> list[dict]:
         ]
     except Exception as exc:
         logger.warning("civilization_spawns_failed", error=str(exc))
-        return []
+        raise _db_unavailable("spawn requests") from exc
 
 
 @router.get("/{civ_id}/replay")

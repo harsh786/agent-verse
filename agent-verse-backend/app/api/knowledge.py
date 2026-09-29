@@ -18,6 +18,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
     status,
 )
@@ -2918,12 +2919,33 @@ async def ingest_notion(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.post("/ingest/gdrive-folder")
+@router.post(
+    "/ingest/gdrive-folder",
+    responses={
+        207: {"description": "Some files ingested, some failed (status: partial)"},
+        502: {"description": "Every attempted file failed (detail.status: failed)"},
+    },
+)
 async def ingest_gdrive_folder(
     body: GDriveIngestRequest,
     request: Request,
+    response: Response,
 ) -> dict[str, Any]:
-    """Ingest all supported files from a Google Drive folder."""
+    """Ingest all supported files from a Google Drive folder.
+
+    Outcome is reported honestly per file -- a folder where files failed is
+    never answered as a plain success:
+
+    * **200** ``status: "ingested"`` -- no file failed (files with blank
+      content are listed in ``skipped`` with ``reason: "empty"``).
+    * **207** ``status: "partial"`` -- at least one file ingested and at least
+      one failed; failures are listed in ``failed``.
+    * **502** ``detail.status: "failed"`` -- every attempted file failed
+      (nothing was ingested); ``detail`` carries the same body shape.
+
+    Each ``failed`` entry is ``{"file_id", "filename", "error"}``. ``errors``
+    keeps the legacy ``"<filename>: <error>"`` strings for older clients.
+    """
     tenant = _require_tenant(request)
     knowledge_store = getattr(request.app.state, "knowledge_store", None)
     if knowledge_store is None:
@@ -2950,7 +2972,9 @@ async def ingest_gdrive_folder(
                 embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
             )
             total_chunks = 0
-            errors: list[str] = []
+            ingested_count = 0
+            failed: list[dict[str, str]] = []
+            skipped: list[dict[str, str]] = []
             for file_meta in files:
                 fid = file_meta["id"]
                 fname = file_meta.get("name", fid)
@@ -2958,6 +2982,7 @@ async def ingest_gdrive_folder(
                 try:
                     content = connector.download_file(fid, mime)
                     if not content.strip():
+                        skipped.append({"file_id": fid, "filename": fname, "reason": "empty"})
                         continue
                     res = await orch.ingest(
                         content,
@@ -2969,18 +2994,33 @@ async def ingest_gdrive_folder(
                         in_memory_only=False,
                     )
                     total_chunks += res.chunks_created
+                    ingested_count += 1
                 except Exception as file_exc:
-                    errors.append(f"{fname}: {file_exc!s}")
+                    failed.append({"file_id": fid, "filename": fname, "error": str(file_exc)})
         finally:
             os.unlink(key_path)
 
-        return {
-            "status": "ingested",
+        if failed and ingested_count == 0:
+            outcome = "failed"
+        elif failed:
+            outcome = "partial"
+        else:
+            outcome = "ingested"
+        result: dict[str, Any] = {
+            "status": outcome,
             "chunks_created": total_chunks,
             "source": "gdrive",
             "files_processed": len(files),
-            "errors": errors,
+            "files_ingested": ingested_count,
+            "failed": failed,
+            "skipped": skipped,
+            "errors": [f"{f['filename']}: {f['error']}" for f in failed],
         }
+        if outcome == "failed":
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result)
+        if outcome == "partial":
+            response.status_code = status.HTTP_207_MULTI_STATUS
+        return result
     except HTTPException:
         raise
     except Exception as exc:

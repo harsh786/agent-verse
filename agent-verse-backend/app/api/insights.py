@@ -7,16 +7,44 @@ Endpoints:
     POST /insights/query      — natural language goal/agent query
     GET  /insights/agent-health/{agent_id}  — 6-axis health radar data
     GET  /insights/benchmarks  — anonymized platform benchmarks
+
+Fail-closed contract (estimate / agent-health / benchmarks / query): nothing here
+invents numbers.
+
+* Every statement is SQLAlchemy Core over the ORM tables, so a column that does not
+  exist fails to *build* (and ``tests/api/test_insights_real_schema.py`` checks every
+  referenced column against the ORM metadata). The old raw SQL read goal columns
+  for cost, duration and a vector that do not exist; the error was swallowed and
+  platform defaults (success probability 0.82, every health axis 0.7) came back
+  as if they were measurements.
+* Goal duration is ``completed_at - created_at``; cost is the durable per-goal
+  ``goal_cost_breakdowns`` ledger. Similar goals are found by trigram similarity
+  of ``goal_text`` (pg_trgm) — the goals table stores no vector.
+* Tenant reads run under the tenant's RLS context. The cross-tenant benchmark
+  aggregate runs on the maintenance (BYPASSRLS) session factory — on the tenant
+  session FORCE RLS hid every other tenant, so it was always ``insufficient_data``.
+  It returns only aggregates, and only when at least five tenants contribute.
+* No database configured -> 501. Database error -> 503. No data -> ``null``.
 """
 
 from __future__ import annotations
 
 import re
+import statistics
+import uuid
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import Select, case, extract, func, literal_column, select, true
+from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy.sql.selectable import Subquery
 
+from app.db.models.goal import Goal, GoalEvent
+from app.db.models.intelligence import Evaluation
+from app.db.models.runtime_records import GoalCostBreakdownRow
 from app.observability.logging import get_logger
 from app.tenancy.context import TenantContext
 
@@ -24,69 +52,23 @@ logger = get_logger(__name__)
 
 router = APIRouter(prefix="/insights", tags=["insights"])
 
-# Platform benchmark window: bound the cross-tenant PERCENTILE_CONT scan to recent
-# goals instead of the entire (unbounded) goals table.
+# Platform benchmark window: bound the cross-tenant scan to recent goals.
 _BENCHMARK_WINDOW_DAYS = 90
+_BENCHMARK_MIN_GOALS = 10
+_BENCHMARK_MIN_TENANTS = 5
+# Estimator: how far back, how many neighbours, and the minimum pg_trgm similarity
+# for a past goal to count as "similar".
+_ESTIMATE_WINDOW_DAYS = 180
+_ESTIMATE_SAMPLE = 20
+_ESTIMATE_MIN_SIMILARITY = 0.2
 
+_goals = Goal.__table__
+_events = GoalEvent.__table__
+_evals = Evaluation.__table__
+_costs = GoalCostBreakdownRow.__table__
 
-async def _query_goals_filtered_from_db(
-    db_factory: Any,
-    *,
-    tenant_id: str,
-    days: int,
-    status_filter: str | None,
-    cost_min: float | None,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """Fetch a tenant's goals with time/status/cost filters + LIMIT pushed into SQL.
-
-    Cost is not a ``goals`` column, so a per-goal ``cost_ledger`` rollup is LEFT
-    JOINed and exposed as ``cost_usd`` (additive to the response). This replaces the
-    previous ``list_goals()``-then-Python-filter path, which only ever inspected the
-    newest page and does not scale.
-    """
-    from sqlalchemy import text
-
-    clauses = ["g.tenant_id = :tid", "g.created_at > NOW() - (:days * INTERVAL '1 day')"]
-    params: dict[str, Any] = {"tid": tenant_id, "days": days, "limit": limit}
-    if status_filter:
-        clauses.append("lower(g.status) = :status")
-        params["status"] = status_filter.lower()
-    cost_join = ""
-    if cost_min is not None:
-        cost_join = (
-            " LEFT JOIN (SELECT goal_id, SUM(COALESCE(cost_usd, 0)) AS goal_cost "
-            "FROM cost_ledger WHERE tenant_id = :tid GROUP BY goal_id) c ON c.goal_id = g.id"
-        )
-        clauses.append("COALESCE(c.goal_cost, 0) >= :cost_min")
-        params["cost_min"] = cost_min
-    cost_select = "COALESCE(c.goal_cost, 0)" if cost_min is not None else "0"
-    sql = (
-        f"SELECT g.id, g.status, g.goal_text, g.priority, g.dry_run, g.agent_id, "
-        f"g.workflow_mode, g.created_at, {cost_select} AS cost_usd "
-        f"FROM goals g{cost_join} "
-        f"WHERE {' AND '.join(clauses)} "
-        "ORDER BY g.created_at DESC LIMIT :limit"
-    )
-    from app.db.rls import sqlalchemy_rls_context
-
-    async with db_factory() as session, sqlalchemy_rls_context(session, tenant_id):
-        rows = (await session.execute(text(sql), params)).fetchall()
-    return [
-        {
-            "id": r[0],
-            "goal_id": r[0],
-            "status": r[1],
-            "goal": r[2],
-            "priority": r[3],
-            "dry_run": r[4],
-            "agent_id": r[5],
-            "workflow_mode": r[6],
-            "created_at": r[7].isoformat() if r[7] else "",
-            "cost_usd": round(float(r[8] or 0), 6),
-        }
-        for r in rows
-    ]
+_SUCCESS = ("complete", "completed")
+_TERMINAL = (*_SUCCESS, "failed")
 
 
 def _require_tenant(request: Request) -> TenantContext:
@@ -94,6 +76,243 @@ def _require_tenant(request: Request) -> TenantContext:
     if ctx is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return ctx
+
+
+# ── SQL (SQLAlchemy Core over the ORM tables: a missing column fails to build) ─
+
+
+def _tenant_uuid(tenant_id: str) -> uuid.UUID | None:
+    """``goal_cost_breakdowns.tenant_id`` is a UUID; non-UUID tenants own no rows."""
+    try:
+        return uuid.UUID(str(tenant_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _duration_s() -> ColumnElement[Any]:
+    """Goal wall-clock duration in seconds (NULL until the goal is terminal)."""
+    return extract("epoch", _goals.c.completed_at - _goals.c.created_at)
+
+
+def _goal_cost_subquery(tenant_id: str | None) -> Subquery:
+    """Per-goal spend from the durable ledger (``tenant_id=None``: every tenant)."""
+    q = select(
+        _costs.c.goal_id.label("goal_id"), func.sum(_costs.c.cost_usd).label("goal_cost")
+    ).group_by(_costs.c.goal_id)
+    if tenant_id is not None:
+        q = q.where(_costs.c.tenant_id == _tenant_uuid(tenant_id))
+    return q.subquery("goal_cost")
+
+
+def build_estimate_stmt(
+    tenant_id: str,
+    goal_text: str,
+    agent_id: str | None,
+    *,
+    since: datetime | None = None,
+) -> Select[Any]:
+    """The tenant's finished goals most similar to *goal_text* (pg_trgm)."""
+    since = since or datetime.now(UTC) - timedelta(days=_ESTIMATE_WINDOW_DAYS)
+    sim = func.similarity(_goals.c.goal_text, goal_text)
+    gc = _goal_cost_subquery(tenant_id)
+    stmt = (
+        select(
+            _goals.c.status.label("status"),
+            _goals.c.iterations.label("iterations"),
+            _duration_s().label("duration_s"),
+            gc.c.goal_cost.label("cost_usd"),
+            sim.label("similarity"),
+        )
+        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
+        .where(
+            _goals.c.tenant_id == tenant_id,
+            _goals.c.status.in_(_TERMINAL),
+            _goals.c.created_at >= since,
+            sim >= _ESTIMATE_MIN_SIMILARITY,
+        )
+        .order_by(sim.desc(), _goals.c.created_at.desc())
+        .limit(_ESTIMATE_SAMPLE)
+    )
+    if agent_id:
+        stmt = stmt.where(_goals.c.agent_id == agent_id)
+    return stmt
+
+
+def build_agent_goal_summary_stmt(tenant_id: str, agent_id: str) -> Select[Any]:
+    """Run counts, mean successful-run duration and mean per-goal cost of one agent."""
+    gc = _goal_cost_subquery(tenant_id)
+    return (
+        select(
+            func.count().label("total"),
+            func.count().filter(_goals.c.status.in_(_SUCCESS)).label("completed"),
+            func.count().filter(_goals.c.status.in_(_TERMINAL)).label("finished"),
+            func.avg(_duration_s()).filter(_goals.c.status.in_(_SUCCESS)).label("avg_duration_s"),
+            func.avg(gc.c.goal_cost).label("avg_cost_usd"),
+        )
+        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
+        .where(_goals.c.tenant_id == tenant_id, _goals.c.agent_id == agent_id)
+    )
+
+
+def build_agent_eval_summary_stmt(tenant_id: str, agent_id: str) -> Select[Any]:
+    """Mean accuracy / coherence from the persisted scorecards of the agent's goals."""
+    return (
+        select(
+            func.count().label("evaluated"),
+            func.avg(_evals.c.scores["accuracy"].as_float()).label("avg_accuracy"),
+            func.avg(_evals.c.scores["coherence"].as_float()).label("avg_coherence"),
+        )
+        .select_from(_evals.join(_goals, _goals.c.id == _evals.c.goal_id))
+        .where(
+            _evals.c.tenant_id == tenant_id,
+            _goals.c.tenant_id == tenant_id,
+            _goals.c.agent_id == agent_id,
+        )
+    )
+
+
+def build_agent_tool_count_stmt(tenant_id: str, agent_id: str) -> Select[Any]:
+    """Distinct tools the agent actually called (``tool_call_complete`` events)."""
+    tool = _events.c.payload["tool"].as_string()
+    return (
+        select(func.count(func.distinct(tool)).label("unique_tools"))
+        .select_from(_events.join(_goals, _goals.c.id == _events.c.goal_id))
+        .where(
+            _events.c.tenant_id == tenant_id,
+            _events.c.event_type == "tool_call_complete",
+            _goals.c.tenant_id == tenant_id,
+            _goals.c.agent_id == agent_id,
+        )
+    )
+
+
+def build_benchmark_stmt(since: datetime) -> Select[Any]:
+    """Anonymised cross-tenant aggregate: goal-level means + per-tenant bands.
+
+    Percentile bands are over *tenants* (each tenant's success rate / mean goal
+    cost), which is what "where does my tenant sit" needs — a percentile over
+    per-goal 0/1 outcomes is meaningless. Only aggregates leave the database.
+    """
+    gc = _goal_cost_subquery(None)
+    # Literal constants (not binds): an all-parameter CASE would type as text.
+    ok = case((_goals.c.status.in_(_SUCCESS), literal_column("1.0")), else_=literal_column("0.0"))
+    per_goal = (
+        select(
+            _goals.c.tenant_id.label("tenant_id"),
+            ok.label("ok"),
+            gc.c.goal_cost.label("cost"),
+            _duration_s().label("dur"),
+            _goals.c.iterations.label("iters"),
+        )
+        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
+        .where(_goals.c.status.in_(_TERMINAL), _goals.c.created_at >= since)
+        .cte("bench_goals")
+    )
+    per_tenant = (
+        select(
+            per_goal.c.tenant_id,
+            func.avg(per_goal.c.ok).label("sr"),
+            func.avg(per_goal.c.cost).label("cost"),
+        )
+        .group_by(per_goal.c.tenant_id)
+        .cte("bench_tenants")
+    )
+    totals = select(
+        func.count().label("total"),
+        func.count(func.distinct(per_goal.c.tenant_id)).label("n_tenants"),
+        func.avg(per_goal.c.ok).label("avg_success_rate"),
+        func.avg(per_goal.c.cost).label("avg_cost_usd"),
+        func.avg(per_goal.c.dur).label("avg_duration_s"),
+        func.avg(per_goal.c.iters).label("avg_iterations"),
+    ).subquery("bench_totals")
+
+    def _pct(p: float, col: Any, label: str) -> Any:
+        return func.percentile_cont(p).within_group(col).label(label)
+
+    bands = select(
+        *(_pct(p / 100, per_tenant.c.sr, f"p{p}_sr") for p in (25, 50, 75, 90)),
+        *(_pct(p / 100, per_tenant.c.cost, f"p{p}_cost") for p in (10, 25, 50, 75, 90)),
+    ).subquery("bench_bands")
+    return select(*totals.c, *bands.c).select_from(totals.join(bands, true()))
+
+
+def build_goal_query_stmt(
+    tenant_id: str,
+    *,
+    since: datetime,
+    status_filter: str | None,
+    cost_min: float | None,
+    limit: int,
+) -> Select[Any]:
+    """A tenant's goals with time/status/cost filters and LIMIT pushed into SQL."""
+    gc = _goal_cost_subquery(tenant_id)
+    stmt = (
+        select(
+            _goals.c.id,
+            _goals.c.status,
+            _goals.c.goal_text,
+            _goals.c.priority,
+            _goals.c.dry_run,
+            _goals.c.agent_id,
+            _goals.c.workflow_mode,
+            _goals.c.created_at,
+            gc.c.goal_cost.label("cost_usd"),
+        )
+        .select_from(_goals.outerjoin(gc, gc.c.goal_id == _goals.c.id))
+        .where(_goals.c.tenant_id == tenant_id, _goals.c.created_at > since)
+        .order_by(_goals.c.created_at.desc())
+        .limit(limit)
+    )
+    if status_filter:
+        stmt = stmt.where(func.lower(_goals.c.status) == status_filter.lower())
+    if cost_min is not None:
+        stmt = stmt.where(gc.c.goal_cost >= cost_min)
+    return stmt
+
+
+# ── DB access (fail closed) ───────────────────────────────────────────────────
+
+
+def _tenant_db(request: Request, what: str) -> Any:
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        goal_svc = getattr(request.app.state, "goal_service", None)
+        db = getattr(goal_svc, "_db", None) if goal_svc is not None else None
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f"{what} is computed in Postgres and is not available without a database",
+        )
+    return db
+
+
+async def _run_tenant(
+    db: Any, tenant_id: str, what: str, *stmts: Select[Any]
+) -> list[Sequence[Mapping[str, Any]]]:
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+            return [(await session.execute(s)).mappings().all() for s in stmts]
+    except Exception as exc:
+        logger.warning("insights_query_failed", what=what, error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"{what} unavailable: database query failed",
+        ) from exc
+
+
+def _f(value: Any) -> float | None:
+    return None if value is None else float(value)
+
+
+def _band(values: list[float], *, digits: int | None) -> dict[str, float | int] | None:
+    if not values:
+        return None
+    lo, mean, hi = min(values), statistics.mean(values), max(values)
+    if digits is None:
+        return {"min": int(lo), "mean": int(mean), "max": int(hi)}
+    return {"min": round(lo, digits), "mean": round(mean, digits), "max": round(hi, digits)}
 
 
 # ── Pre-run Cost & Time Estimator ────────────────────────────────────────────
@@ -106,117 +325,40 @@ class EstimateRequest(BaseModel):
 
 @router.post("/estimate")
 async def estimate_goal(request: Request, body: EstimateRequest) -> dict[str, Any]:
-    """Estimate cost, duration, and success probability based on similar historical goals."""
+    """Estimate cost, duration, iterations and success from the tenant's similar goals.
+
+    Every figure is derived from finished goals whose text is similar to this one;
+    with none, every estimate is ``null`` and ``confidence`` is ``"none"``.
+    """
     tenant = _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
-    embedder = getattr(request.app.state, "embedder", None)
+    db = _tenant_db(request, "Goal estimate")
+    stmt = build_estimate_stmt(tenant.tenant_id, body.goal, body.agent_id)
+    (rows,) = await _run_tenant(db, tenant.tenant_id, "Goal estimate", stmt)
 
-    # Default estimate (no history available)
-    result: dict[str, Any] = {
-        "estimated_cost_usd": {"min": 0.01, "mean": 0.05, "max": 0.20},
-        "estimated_duration_s": {"min": 15, "mean": 45, "max": 120},
-        "estimated_iterations": {"min": 1, "mean": 3, "max": 8},
-        "success_probability": 0.82,
-        "similar_goals_count": 0,
-        "confidence": "low",
-        "based_on": "platform_defaults",
+    n = len(rows)
+    if n == 0:
+        return {
+            "estimated_cost_usd": None,
+            "estimated_duration_s": None,
+            "estimated_iterations": None,
+            "success_probability": None,
+            "similar_goals_count": 0,
+            "confidence": "none",
+            "based_on": "no_similar_history",
+        }
+    completed = sum(1 for r in rows if r["status"] in _SUCCESS)
+    costs = [float(r["cost_usd"]) for r in rows if r["cost_usd"] is not None]
+    durations = [float(r["duration_s"]) for r in rows if r["duration_s"] is not None]
+    iters = [float(r["iterations"]) for r in rows if r["iterations"] is not None]
+    return {
+        "estimated_cost_usd": _band(costs, digits=4),
+        "estimated_duration_s": _band(durations, digits=None),
+        "estimated_iterations": _band(iters, digits=None),
+        "success_probability": round(completed / n, 3),
+        "similar_goals_count": n,
+        "confidence": "high" if n >= 10 else "medium" if n >= 3 else "low",
+        "based_on": "similar_tenant_goals",
     }
-
-    # Try to find similar historical goals via embedding similarity
-    db_factory = getattr(goal_svc, "_db", None) if goal_svc else None
-    if db_factory is not None and embedder is not None:
-        try:
-            # Embed the goal text
-            embedding = await embedder.embed(body.goal)
-            if embedding:
-                from sqlalchemy import text as _t
-
-                async with db_factory() as session:
-                    await session.execute(
-                        _t("SELECT set_config('app.tenant_id', :tid, true)"),
-                        {"tid": tenant.tenant_id},
-                    )
-                    # Use pgvector cosine similarity (<=> operator) when available;
-                    # fall back to recency-ordered query if pgvector is absent.
-                    vector_str = "[" + ",".join(str(x) for x in embedding) + "]"
-                    try:
-                        rows = (
-                            await session.execute(
-                                _t("""
-                                SELECT cost_usd, duration_s, iterations, status,
-                                       1 - (embedding <=> CAST(:vec AS vector)) AS similarity
-                                FROM goals
-                                WHERE tenant_id = :tid
-                                  AND status IN ('complete', 'failed')
-                                  AND cost_usd IS NOT NULL
-                                  AND embedding IS NOT NULL
-                                ORDER BY embedding <=> CAST(:vec AS vector)
-                                LIMIT 20
-                            """),
-                                {"tid": tenant.tenant_id, "vec": vector_str},
-                            )
-                        ).fetchall()
-                    except Exception:
-                        # pgvector extension unavailable or no embedding column
-                        rows = (
-                            await session.execute(
-                                _t("""
-                                SELECT cost_usd, duration_s, iterations, status,
-                                       1.0 AS similarity
-                                FROM goals
-                                WHERE tenant_id = :tid
-                                  AND status IN ('complete', 'failed')
-                                  AND cost_usd IS NOT NULL
-                                ORDER BY created_at DESC
-                                LIMIT 50
-                            """),
-                                {"tid": tenant.tenant_id},
-                            )
-                        ).fetchall()
-
-                    if rows:
-                        completed = [r for r in rows if r[3] == "complete"]
-                        all_costs = [float(r[0]) for r in rows if r[0] is not None]
-                        all_durations = [float(r[1]) for r in rows if r[1] is not None]
-                        all_iters = [int(r[2]) for r in rows if r[2] is not None]
-                        success_rate = len(completed) / len(rows) if rows else 0.82
-
-                        if all_costs:
-                            import statistics
-
-                            result = {
-                                "estimated_cost_usd": {
-                                    "min": round(min(all_costs), 4),
-                                    "mean": round(statistics.mean(all_costs), 4),
-                                    "max": round(max(all_costs), 4),
-                                },
-                                "estimated_duration_s": {
-                                    "min": int(min(all_durations)) if all_durations else 15,
-                                    "mean": (
-                                        int(statistics.mean(all_durations)) if all_durations else 45
-                                    ),
-                                    "max": int(max(all_durations)) if all_durations else 120,
-                                },
-                                "estimated_iterations": {
-                                    "min": int(min(all_iters)) if all_iters else 1,
-                                    "mean": int(statistics.mean(all_iters)) if all_iters else 3,
-                                    "max": int(max(all_iters)) if all_iters else 8,
-                                },
-                                "success_probability": round(success_rate, 3),
-                                "similar_goals_count": len(rows),
-                                "confidence": (
-                                    "high"
-                                    if len(rows) >= 10
-                                    else "medium"
-                                    if len(rows) >= 3
-                                    else "low"
-                                ),
-                                "based_on": "historical_data",
-                            }
-        except Exception:
-            pass  # Return defaults on any error
-
-    return result
 
 
 # ── Execution Graph ───────────────────────────────────────────────────────────
@@ -502,7 +644,7 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
         "failure_reason": failure_reason,
         "suggestions": suggestions,
         "iterations_used": goal.get("iterations", 0),
-        "cost_usd": goal.get("cost_usd", 0),
+        "cost_usd": goal.get("cost_usd"),
     }
 
 
@@ -542,10 +684,10 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
                 '"status": "complete|failed|executing|planning|cancelled|null", '
                 '"cost_min": null, "cost_max": null, "search": null}\n\n'
                 "Examples:\n"
-                '- "failed goals today" \u2192 {"days": 1, "status": "failed"}\n'
-                '- "expensive goals over $1" \u2192 {"cost_min": 1.0}\n'
+                '- "failed goals today" → {"days": 1, "status": "failed"}\n'
+                '- "expensive goals over $1" → {"cost_min": 1.0}\n'
                 '- "goals about deployment this week"'
-                ' \u2192 {"days": 7, "search": "deploy"}\n'
+                ' → {"days": 7, "search": "deploy"}\n'
             )
             resp = await provider.complete(
                 CompletionRequest(
@@ -562,7 +704,7 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             cost_min = float(parsed["cost_min"]) if parsed.get("cost_min") else None
             llm_parsed = True
         except Exception:
-            pass  # Fall back to regex on any failure
+            pass  # Fall back to regex parsing (the filters, not the results)
 
     # ── Regex/string fallback ─────────────────────────────────────────────────
     if not llm_parsed:
@@ -586,11 +728,6 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
         if cost_match:
             cost_min = float(cost_match.group(1))
 
-    # Execute query
-    goal_svc = getattr(request.app.state, "goal_service", None)
-    if goal_svc is None:
-        return {"results": [], "total": 0, "query_parsed": {}}
-
     query_parsed = {
         "days": days,
         "status_filter": status_filter,
@@ -598,52 +735,70 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
         "entity": body.entity,
     }
 
-    # DB path: push time/status/cost filters + LIMIT into SQL (bounded, scalable).
-    db_factory = getattr(goal_svc, "_db", None)
-    if db_factory is not None:
-        try:
-            results = await _query_goals_filtered_from_db(
-                db_factory,
-                tenant_id=tenant.tenant_id,
-                days=days,
-                status_filter=status_filter,
-                cost_min=cost_min,
-                limit=body.limit,
-            )
-            return {"results": results, "total": len(results), "query_parsed": query_parsed}
-        except Exception as exc:
-            logger.warning("insights_query_db_failed", error=str(exc)[:120])
+    goal_svc = getattr(request.app.state, "goal_service", None)
+    db = getattr(request.app.state, "db_session_factory", None) or (
+        getattr(goal_svc, "_db", None) if goal_svc is not None else None
+    )
 
-    # In-memory fallback (no DB / on error): bounded list_goals then Python filter.
+    # DB path: filters + LIMIT in SQL, cost from the durable breakdown ledger.
+    # A DB error is a 503 — never a silent switch to a partial in-memory view.
+    if db is not None:
+        since = datetime.now(UTC) - timedelta(days=days)
+        stmt = build_goal_query_stmt(
+            tenant.tenant_id,
+            since=since,
+            status_filter=status_filter,
+            cost_min=cost_min,
+            limit=body.limit,
+        )
+        (rows,) = await _run_tenant(db, tenant.tenant_id, "Goal query", stmt)
+        results = [
+            {
+                "id": r["id"],
+                "goal_id": r["id"],
+                "status": r["status"],
+                "goal": r["goal_text"],
+                "priority": r["priority"],
+                "dry_run": r["dry_run"],
+                "agent_id": r["agent_id"],
+                "workflow_mode": r["workflow_mode"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else "",
+                "cost_usd": None if r["cost_usd"] is None else round(float(r["cost_usd"]), 6),
+            }
+            for r in rows
+        ]
+        return {"results": results, "total": len(results), "query_parsed": query_parsed}
+
+    if goal_svc is None:
+        return {"results": [], "total": 0, "query_parsed": query_parsed}
+
+    # In-memory mode (no database configured): filter the service's own goals.
     try:
         resp = await goal_svc.list_goals(tenant_ctx=tenant)
-        all_goals = resp.get("goals", []) if isinstance(resp, dict) else (resp or [])
-    except Exception:
-        all_goals = []
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Goal query unavailable: goal service failed",
+        ) from exc
+    all_goals = resp.get("goals", []) if isinstance(resp, dict) else (resp or [])
 
-    # Apply filters
-    import datetime as _dt
-
-    cutoff = _dt.datetime.now(_dt.UTC) - _dt.timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=days)
     results = []
     for g in all_goals:
-        # Time filter
         created = g.get("created_at", "")
         if created:
             try:
                 from dateutil.parser import parse as _parse
 
-                if _parse(created).replace(tzinfo=_dt.UTC) < cutoff:
+                if _parse(created).replace(tzinfo=UTC) < cutoff:
                     continue
             except Exception:
                 pass
-        # Status filter
         if status_filter and g.get("status", "").lower() != status_filter:
             continue
-        # Cost filter
         if cost_min is not None:
-            g_cost = float(g.get("cost_usd", 0) or 0)
-            if g_cost < cost_min:
+            g_cost = g.get("cost_usd")
+            if g_cost is None or float(g_cost) < cost_min:
                 continue
         results.append(g)
 
@@ -660,257 +815,130 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
 
 @router.get("/agent-health/{agent_id}")
 async def get_agent_health(agent_id: str, request: Request) -> dict[str, Any]:
-    """Return 6-axis health radar data for a specific agent."""
+    """Return 6-axis health radar data for a specific agent.
+
+    Each axis is derived from the agent's real runs; an axis with no underlying
+    data is ``null`` (never a neutral-looking default):
+
+    * ``success_rate`` — completed / finished goals.
+    * ``speed`` — ``1 / (1 + mean successful-run seconds / 60)`` (60 s -> 0.5).
+    * ``cost_efficiency`` — ``1 / (1 + mean per-goal USD / 0.05)`` ($0.05 -> 0.5).
+    * ``accuracy`` / ``coherence`` — mean of the persisted eval scorecards.
+    * ``tool_coverage`` — distinct tools called / 10, capped at 1.0.
+    """
     tenant = _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
+    tid = tenant.tenant_id
+    db = _tenant_db(request, "Agent health")
+    goals_rows, eval_rows, tool_rows = await _run_tenant(
+        db,
+        tid,
+        "Agent health",
+        build_agent_goal_summary_stmt(tid, agent_id),
+        build_agent_eval_summary_stmt(tid, agent_id),
+        build_agent_tool_count_stmt(tid, agent_id),
+    )
+    g = goals_rows[0] if goals_rows else {}
+    e = eval_rows[0] if eval_rows else {}
+    t = tool_rows[0] if tool_rows else {}
 
-    # Default health values
-    health: dict[str, float] = {
-        "speed": 0.7,
-        "accuracy": 0.7,
-        "cost_efficiency": 0.7,
-        "tool_coverage": 0.7,
-        "success_rate": 0.7,
-        "coherence": 0.7,
+    total = int(g.get("total") or 0)
+    finished = int(g.get("finished") or 0)
+    evaluated = int(e.get("evaluated") or 0)
+    unique_tools = int(t.get("unique_tools") or 0)
+    avg_duration = _f(g.get("avg_duration_s"))
+    avg_cost = _f(g.get("avg_cost_usd"))
+    accuracy = _f(e.get("avg_accuracy")) if evaluated else None
+    coherence = _f(e.get("avg_coherence")) if evaluated else None
+
+    def _r(v: float | None) -> float | None:
+        return None if v is None else round(max(0.0, min(1.0, v)), 3)
+
+    health: dict[str, float | None] = {
+        "speed": _r(None if avg_duration is None else 1.0 / (1.0 + avg_duration / 60.0)),
+        "accuracy": _r(accuracy),
+        "cost_efficiency": _r(None if avg_cost is None else 1.0 / (1.0 + avg_cost / 0.05)),
+        "tool_coverage": _r(unique_tools / 10.0) if unique_tools else None,
+        "success_rate": _r(int(g.get("completed") or 0) / finished) if finished else None,
+        "coherence": _r(coherence),
     }
-    sample_size = 0
-
-    if goal_svc is None:
-        return {"agent_id": agent_id, "health": health, "sample_size": sample_size}
-
-    db_factory = getattr(goal_svc, "_db", None)
-    if db_factory is not None:
-        try:
-            from sqlalchemy import text as _t
-
-            async with db_factory() as session:
-                await session.execute(
-                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
-                )
-
-                # Query goals for this specific agent
-                goals_row = (
-                    await session.execute(
-                        _t("""
-                        SELECT
-                            COUNT(*) as total,
-                            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) as completed,
-                            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
-                            AVG(COALESCE(cost_usd, 0)) as avg_cost,
-                            AVG(COALESCE(duration_s, 0)) as avg_duration,
-                            AVG(COALESCE(iterations, 0)) as avg_iterations
-                        FROM goals
-                        WHERE tenant_id = :tid
-                          AND agent_id = :aid
-                    """),
-                        {"tid": tenant.tenant_id, "aid": agent_id},
-                    )
-                ).fetchone()
-
-                if goals_row and goals_row[0] and int(goals_row[0]) > 0:
-                    total = int(goals_row[0])
-                    completed = int(goals_row[1] or 0)
-                    avg_cost = float(goals_row[3] or 0)
-                    avg_duration = float(goals_row[4] or 0)
-
-                    success_rate = completed / total if total > 0 else 0.0
-
-                    # Speed: inverse of avg_duration (faster = higher score)
-                    # Normalize: 0s = 1.0, 60s = 0.5, 300s = 0.1
-                    speed = (
-                        max(0.0, min(1.0, 1.0 / (1.0 + avg_duration / 60.0)))
-                        if avg_duration > 0
-                        else 0.7
-                    )
-
-                    # Cost efficiency: inverse of avg_cost (cheaper = more efficient)
-                    # Normalize: $0 = 1.0, $0.10 = 0.5, $1.00 = 0.1
-                    cost_efficiency = (
-                        max(0.0, min(1.0, 1.0 / (1.0 + avg_cost / 0.05))) if avg_cost > 0 else 0.7
-                    )
-
-                    # Try to get eval scores for this agent
-                    eval_row = (
-                        await session.execute(
-                            _t("""
-                            SELECT
-                                COUNT(*) as total,
-                                AVG(score_task_completion) as accuracy,
-                                AVG(score_coherence) as coherence
-                            FROM evaluations e
-                            JOIN goals g ON e.goal_id = g.id
-                            WHERE e.tenant_id = :tid
-                              AND g.agent_id = :aid
-                        """),
-                            {"tid": tenant.tenant_id, "aid": agent_id},
-                        )
-                    ).fetchone()
-
-                    accuracy = float(eval_row[1] or 0.7) if eval_row and eval_row[0] else 0.7
-                    coherence = float(eval_row[2] or 0.7) if eval_row and eval_row[0] else 0.7
-
-                    # Tool coverage: default until refined by distinct-tool query below
-                    tool_coverage = 0.7
-
-                    health = {
-                        "speed": round(speed, 3),
-                        "accuracy": round(accuracy, 3),
-                        "cost_efficiency": round(cost_efficiency, 3),
-                        "tool_coverage": round(tool_coverage, 3),
-                        "success_rate": round(success_rate, 3),
-                        "coherence": round(coherence, 3),
-                    }
-                    sample_size = total
-
-                    # Refine tool_coverage using actual distinct tools from execution_context
-                    try:
-                        tool_rows = (
-                            await session.execute(
-                                _t("""
-                                SELECT COUNT(DISTINCT (execution_context->>'last_tool_used'))
-                                    AS unique_tools
-                                FROM goals
-                                WHERE tenant_id = :tid
-                                  AND agent_id = :aid
-                                  AND execution_context->>'last_tool_used' IS NOT NULL
-                            """),
-                                {"tid": tenant.tenant_id, "aid": agent_id},
-                            )
-                        ).fetchone()
-                        if tool_rows and tool_rows[0]:
-                            unique_tools = int(tool_rows[0])
-                            # 10+ unique tools = 1.0, 0 = 0.0
-                            tool_coverage = min(1.0, unique_tools / 10.0)
-                    except Exception:
-                        pass
-                    health["tool_coverage"] = round(tool_coverage, 3)
-        except Exception:
-            pass  # Return defaults on any DB error
-
-    return {"agent_id": agent_id, "health": health, "sample_size": sample_size}
+    return {
+        "agent_id": agent_id,
+        "health": health,
+        "sample_size": total,
+        "finished_count": finished,
+        "eval_sample_size": evaluated,
+    }
 
 
 # ── Platform Benchmarks ───────────────────────────────────────────────────────
 
 
+def _insufficient_benchmarks() -> dict[str, Any]:
+    return {
+        "platform_avg_success_rate": None,
+        "platform_avg_cost_usd": None,
+        "platform_avg_duration_s": None,
+        "platform_avg_iterations": None,
+        "top_10_pct_success_rate": None,
+        "top_10_pct_cost_usd": None,
+        "percentile_bands": {},
+        "sample_count": 0,
+        "data_source": "insufficient_data",
+        "message": (
+            f"Benchmarks need at least {_BENCHMARK_MIN_GOALS} finished goals from "
+            f"{_BENCHMARK_MIN_TENANTS} or more tenants in the last "
+            f"{_BENCHMARK_WINDOW_DAYS} days."
+        ),
+    }
+
+
+def _round(v: Any, digits: int) -> float | None:
+    return None if v is None else round(float(v), digits)
+
+
 @router.get("/benchmarks")
 async def get_benchmarks(request: Request) -> dict[str, Any]:
-    """Return platform-wide benchmarks. Uses real data when available, clearly-labeled estimates otherwise."""  # noqa: E501
+    """Anonymised platform-wide benchmarks, or all-null ``insufficient_data``."""
     _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
+    system_db = getattr(request.app.state, "system_db_session_factory", None)
+    if system_db is None:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Platform benchmarks are computed in Postgres and need a database",
+        )
+    from app.db.rls import system_session
 
-    # Try to compute real benchmarks from the platform's goal data
-    real_data = False
-    benchmarks: dict[str, Any] = {}
+    since = datetime.now(UTC) - timedelta(days=_BENCHMARK_WINDOW_DAYS)
+    try:
+        async with system_db() as session, session.begin(), system_session(session):
+            row = (await session.execute(build_benchmark_stmt(since))).mappings().one()
+    except Exception as exc:
+        logger.warning("insights_benchmarks_query_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Platform benchmarks unavailable: database query failed",
+        ) from exc
 
-    if goal_svc is not None:
-        db = getattr(goal_svc, "_db", None)
-        if db is not None:
-            try:
-                from sqlalchemy import text as _t
+    total = int(row.get("total") or 0)
+    if total < _BENCHMARK_MIN_GOALS or int(row.get("n_tenants") or 0) < _BENCHMARK_MIN_TENANTS:
+        return _insufficient_benchmarks()
 
-                async with db() as session:
-                    # Cross-tenant aggregate (anonymized). Real schema: goals has no
-                    # cost_usd / duration_s — the old SQL referenced both, always
-                    # raised, and the endpoint could never show real data. Cost is
-                    # summed per goal from cost_ledger; duration is completed_at -
-                    # created_at. Reported only when >= 5 tenants contributed.
-                    row = (
-                        await session.execute(
-                            _t("""
-                            WITH g AS (
-                                SELECT goals.tenant_id,
-                                       CASE WHEN goals.status IN ('complete','completed')
-                                            THEN 1.0 ELSE 0.0 END AS ok,
-                                       COALESCE(c.goal_cost, 0) AS cost,
-                                       EXTRACT(EPOCH FROM (goals.completed_at
-                                                           - goals.created_at)) AS dur,
-                                       goals.iterations AS iters
-                                FROM goals
-                                JOIN (
-                                    SELECT goal_id, SUM(cost_usd) AS goal_cost
-                                    FROM cost_ledger
-                                    WHERE goal_id IS NOT NULL AND goal_id <> ''
-                                    GROUP BY goal_id
-                                ) c ON c.goal_id = goals.id
-                                WHERE goals.status IN ('complete','completed','failed')
-                                  AND goals.created_at > NOW() - (:days * INTERVAL '1 day')
-                            )
-                            SELECT
-                                COUNT(*) as total,
-                                AVG(ok) as success_rate,
-                                AVG(cost) as avg_cost,
-                                AVG(COALESCE(dur, 0)) as avg_duration,
-                                AVG(COALESCE(iters, 0)) as avg_iterations,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY cost) as p25_cost,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY cost) as p50_cost,
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY cost) as p75_cost,
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY cost) as p90_cost,
-                                PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY ok) as p25_sr,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY ok) as p50_sr,
-                                PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY ok) as p75_sr,
-                                PERCENTILE_CONT(0.90) WITHIN GROUP (ORDER BY ok) as p90_sr,
-                                COUNT(DISTINCT tenant_id) as n_tenants
-                            FROM g
-                        """),
-                            {"days": _BENCHMARK_WINDOW_DAYS},
-                        )
-                    ).fetchone()
-
-                    if (
-                        row
-                        and row[0]
-                        and int(row[0]) >= 10
-                        and len(row) > 13
-                        and int(row[13] or 0) >= 5
-                    ):
-                        real_data = True
-                        benchmarks = {
-                            "platform_avg_success_rate": round(float(row[1] or 0), 3),
-                            "platform_avg_cost_usd": round(float(row[2] or 0), 4),
-                            "platform_avg_duration_s": int(float(row[3] or 0)),
-                            "platform_avg_iterations": round(float(row[4] or 0), 1),
-                            "top_10_pct_success_rate": round(float(row[12] or 0), 3),
-                            "top_10_pct_cost_usd": round(float(row[8] or 0), 4),
-                            "percentile_bands": {
-                                "p25": {
-                                    "success_rate": round(float(row[9] or 0), 3),
-                                    "cost_usd": round(float(row[5] or 0), 4),
-                                },
-                                "p50": {
-                                    "success_rate": round(float(row[10] or 0), 3),
-                                    "cost_usd": round(float(row[6] or 0), 4),
-                                },
-                                "p75": {
-                                    "success_rate": round(float(row[11] or 0), 3),
-                                    "cost_usd": round(float(row[7] or 0), 4),
-                                },
-                                "p90": {
-                                    "success_rate": round(float(row[12] or 0), 3),
-                                    "cost_usd": round(
-                                        float(row[8] or 0), 4
-                                    ),  # p90 cost > p75 > p50 (correct order)
-                                },
-                            },
-                            "sample_count": int(row[0]),
-                            "data_source": "live_platform_data",
-                        }
-            except Exception:
-                pass
-
-    if not real_data:
-        # Return clearly-labeled placeholder values (no fabricated "real" data)
-        benchmarks = {
-            "platform_avg_success_rate": None,
-            "platform_avg_cost_usd": None,
-            "platform_avg_duration_s": None,
-            "platform_avg_iterations": None,
-            "top_10_pct_success_rate": None,
-            "top_10_pct_cost_usd": None,
-            "percentile_bands": {},
-            "sample_count": 0,
-            "data_source": "insufficient_data",
-            "message": "Benchmarks require at least 10 completed goals with cost data to compute. Run more goals to see real benchmarks.",  # noqa: E501
-        }
-
-    return benchmarks
+    avg_duration = row.get("avg_duration_s")
+    return {
+        "platform_avg_success_rate": _round(row.get("avg_success_rate"), 3),
+        "platform_avg_cost_usd": _round(row.get("avg_cost_usd"), 4),
+        "platform_avg_duration_s": None if avg_duration is None else int(float(avg_duration)),
+        "platform_avg_iterations": _round(row.get("avg_iterations"), 1),
+        # Best decile of tenants: highest success rate, lowest mean goal cost.
+        "top_10_pct_success_rate": _round(row.get("p90_sr"), 3),
+        "top_10_pct_cost_usd": _round(row.get("p10_cost"), 4),
+        "percentile_bands": {
+            f"p{p}": {
+                "success_rate": _round(row.get(f"p{p}_sr"), 3),
+                "cost_usd": _round(row.get(f"p{p}_cost"), 4),
+            }
+            for p in (25, 50, 75, 90)
+        },
+        "sample_count": total,
+        "data_source": "live_platform_data",
+    }

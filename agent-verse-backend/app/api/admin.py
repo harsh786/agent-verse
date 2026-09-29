@@ -8,19 +8,20 @@ Endpoints:
   GET  /admin/tenants/{tenant_id}     — get tenant detail + usage
   PUT  /admin/tenants/{tenant_id}/plan — change plan
   POST /admin/tenants/{tenant_id}/keys/revoke — revoke API key
-  GET  /admin/usage                   — aggregated platform usage
-  GET  /admin/incidents               — guardrail incident feed
+  GET  /admin/usage                   — aggregated platform usage (Postgres)
+  GET  /admin/incidents               — 501: guardrail incidents are not persisted
 """
 
 from __future__ import annotations
 
-import contextlib
 import hmac
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import Select, extract, func, select
 
 from app.observability.logging import get_logger
 
@@ -161,40 +162,102 @@ async def change_tenant_plan(
     return {"tenant_id": tenant_id, "plan": body.plan, "status": "updated"}
 
 
+# ── Platform usage (computed from Postgres on the maintenance session) ────────
+# Old bug: this read ``GoalService._active_goals`` — an attribute that does not
+# exist — so ``active_goals`` was always 0, and the tenant count was whatever one
+# replica happened to hold in memory. Both now come from the goals / tenants
+# tables. The query is cross-tenant, so it runs on the maintenance (BYPASSRLS)
+# session factory with ``row_security = off``; under FORCE RLS a tenant session
+# would count zero rows.
+
+_ACTIVE_STATUSES = ("planning", "executing", "verifying", "waiting_human")
+_SUCCESS_STATUSES = ("complete", "completed")
+
+
+def build_usage_summary_stmt(day_start: datetime) -> Select[Any]:
+    from app.db.models.goal import Goal
+
+    g = Goal.__table__
+    today = g.c.created_at >= day_start
+    done_today = today & g.c.status.in_(_SUCCESS_STATUSES) & g.c.completed_at.is_not(None)
+    return select(
+        func.count().label("total"),
+        func.count().filter(g.c.status.in_(_ACTIVE_STATUSES)).label("active"),
+        func.count().filter(today).label("goals_today"),
+        func.count().filter(done_today).label("completed_today"),
+        func.avg(extract("epoch", g.c.completed_at - g.c.created_at))
+        .filter(done_today)
+        .label("avg_latency_s_today"),
+    )
+
+
+def build_goals_by_status_stmt() -> Select[Any]:
+    from app.db.models.goal import Goal
+
+    g = Goal.__table__
+    return select(g.c.status.label("status"), func.count().label("n")).group_by(g.c.status)
+
+
+def build_tenant_count_stmt() -> Select[Any]:
+    from app.db.models.tenant import Tenant
+
+    return select(func.count().label("total_tenants")).select_from(Tenant.__table__)
+
+
 @router.get("/usage", dependencies=[Depends(_require_admin)])
 async def get_platform_usage(request: Request) -> dict[str, Any]:
-    """Aggregate platform-wide usage."""
-    app_state = request.app.state
-    goal_svc = getattr(app_state, "goal_service", None)
-    tenant_svc = getattr(app_state, "tenant_service", None)
+    """Aggregate platform-wide usage from the goals and tenants tables.
 
-    active_goals = 0
-    if goal_svc is not None:
-        with contextlib.suppress(Exception):
-            active_goals = len(getattr(goal_svc, "_active_goals", {}))
+    No database configured -> 501; database error -> 503 (never zeros).
+    ``avg_latency_ms`` is the mean wall-clock time of goals completed today
+    (UTC), ``null`` when none has.
+    """
+    system_db = getattr(request.app.state, "system_db_session_factory", None)
+    if system_db is None:
+        raise HTTPException(
+            status_code=501,
+            detail="Platform usage is computed in Postgres and needs a database",
+        )
+    from app.db.rls import system_session
 
-    total_tenants = 0
-    if tenant_svc is not None:
-        total_tenants = len(getattr(tenant_svc, "_tenants", {}))
+    day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        async with system_db() as session, session.begin(), system_session(session):
+            summary = (await session.execute(build_usage_summary_stmt(day_start))).mappings().one()
+            by_status = (await session.execute(build_goals_by_status_stmt())).mappings().all()
+            tenants = (await session.execute(build_tenant_count_stmt())).mappings().one()
+    except Exception as exc:
+        logger.warning("admin_usage_query_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=503, detail="Platform usage unavailable: database query failed"
+        ) from exc
 
+    latency_s = summary["avg_latency_s_today"]
     return {
-        "active_goals": active_goals,
-        "total_tenants": total_tenants,
+        "active_goals": int(summary["active"] or 0),
+        "total_tenants": int(tenants["total_tenants"] or 0),
+        "total_goals": int(summary["total"] or 0),
+        "goals_today": int(summary["goals_today"] or 0),
+        "completed_today": int(summary["completed_today"] or 0),
+        "avg_latency_ms": None if latency_s is None else round(float(latency_s) * 1000),
+        "goals_by_status": {str(r["status"]): int(r["n"] or 0) for r in by_status},
+        "source": "postgres",
     }
 
 
 @router.get("/incidents", dependencies=[Depends(_require_admin)])
 async def get_incidents(request: Request, limit: int = 50) -> dict[str, Any]:
-    """Guardrail incident feed — recent blocked/flagged requests."""
-    app_state = request.app.state
-    guardrail_engine = getattr(app_state, "guardrail_engine", None)
+    """Guardrail incident feed — not implemented (honest 501).
 
-    incidents: list[Any] = []
-    if guardrail_engine is not None:
-        try:
-            raw = getattr(guardrail_engine, "_incidents", [])
-            incidents = list(raw)[-limit:]
-        except Exception:
-            pass
-
-    return {"incidents": incidents, "total": len(incidents)}
+    This read ``guardrail_engine._incidents``, which no engine defines, so it was
+    always an empty feed that looked like "no incidents". Guardrail blocks are
+    not persisted anywhere (the ``guardrail_violations`` table from migration
+    0055 has no writer), so there is no source to serve a feed from.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Guardrail incidents are not persisted, so there is no incident feed to "
+            "serve. Per-goal guardrail blocks appear in each goal's event stream."
+        ),
+    )

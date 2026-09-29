@@ -526,15 +526,30 @@ def test_list_sessions_requires_auth() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_export_tenant_data_bare_minimum() -> None:
-    """No goal_service/agent_store wired → export still succeeds with empty lists."""
+def test_export_tenant_data_without_services_is_503() -> None:
+    """No goal_service/agent_store wired → 503, not an export that claims the
+    tenant has no data (it used to answer 200 with empty lists)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/tenants/me/export", headers=H)
+    assert resp.status_code == 503
+
+
+def test_export_tenant_data_empty_tenant() -> None:
+    app = _make_app()
+    goal_svc = AsyncMock()
+    goal_svc.list_goals.return_value = {"goals": []}
+    app.state.goal_service = goal_svc
+    agent_store = AsyncMock()
+    agent_store.list_async.return_value = []
+    app.state.agent_store = agent_store
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/tenants/me/export", headers=H)
     assert resp.status_code == 200
     body = resp.json()
     assert body["tenant_id"] == _CTX.tenant_id
     assert body["goals"] == []
     assert body["agents"] == []
+    assert body["counts"] == {"goals": 0, "agents": 0}
     assert "exported_at" in body
 
 
@@ -547,11 +562,11 @@ def test_export_tenant_data_requires_auth() -> None:
 def test_export_tenant_data_includes_goals_and_agents() -> None:
     app = _make_app()
     goal_svc = AsyncMock()
-    goal_svc.list_goals.return_value = {"goals": [{"id": "g1", "status": "completed"}]}
+    goal_svc.list_goals.side_effect = [{"goals": [{"id": "g1", "status": "completed"}]}, {"goals": []}]
     app.state.goal_service = goal_svc
 
-    agent_store = MagicMock()
-    agent_store.list.return_value = [{"id": "a1", "name": "Agent One"}]
+    agent_store = AsyncMock()
+    agent_store.list_async.side_effect = [[{"agent_id": "a1", "name": "Agent One"}], []]
     app.state.agent_store = agent_store
 
     client = TestClient(app, raise_server_exceptions=False)
@@ -559,41 +574,33 @@ def test_export_tenant_data_includes_goals_and_agents() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["goals"] == [{"id": "g1", "status": "completed"}]
-    assert body["agents"] == [{"id": "a1", "name": "Agent One"}]
+    assert body["agents"] == [{"agent_id": "a1", "name": "Agent One"}]
 
 
-def test_export_tenant_data_swallows_goal_service_exception() -> None:
+def test_export_tenant_data_goal_service_exception_is_503() -> None:
+    """A read failure used to be swallowed into ``goals: []``."""
     app = _make_app()
     goal_svc = AsyncMock()
     goal_svc.list_goals.side_effect = RuntimeError("goal service down")
     app.state.goal_service = goal_svc
+    app.state.agent_store = AsyncMock()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/tenants/me/export", headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["goals"] == []
+    assert resp.status_code == 503
+    assert "goal service down" not in resp.json()["detail"]
 
 
-def test_export_tenant_data_swallows_agent_store_exception() -> None:
+def test_export_tenant_data_agent_store_exception_is_503() -> None:
     app = _make_app()
-    agent_store = MagicMock()
-    agent_store.list.side_effect = RuntimeError("agent store down")
-    app.state.agent_store = agent_store
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.post("/tenants/me/export", headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["agents"] == []
-
-
-def test_export_tenant_data_awaits_async_agent_list() -> None:
-    """agent_store.list may be async — the endpoint must await it when awaitable."""
-    app = _make_app()
+    goal_svc = AsyncMock()
+    goal_svc.list_goals.return_value = {"goals": []}
+    app.state.goal_service = goal_svc
     agent_store = AsyncMock()
-    agent_store.list.return_value = [{"id": "a-async"}]
+    agent_store.list_async.side_effect = RuntimeError("agent store down")
     app.state.agent_store = agent_store
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/tenants/me/export", headers=H)
-    assert resp.status_code == 200
-    assert resp.json()["agents"] == [{"id": "a-async"}]
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------

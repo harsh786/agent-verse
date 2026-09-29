@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -741,6 +742,87 @@ async def razorpay_webhook(request: Request) -> dict[str, Any]:
 # ── Stripe (legacy checkout) webhook ──────────────────────────────────────────
 
 _STRIPE_PAID_PLANS = frozenset({"starter", "professional", "enterprise"})
+# Live subscription statuses that keep the paid plan / that lose it.
+_STRIPE_ENTITLED = frozenset({"active", "trialing"})
+_STRIPE_DELINQUENT = frozenset({"past_due", "unpaid", "canceled", "incomplete_expired", "paused"})
+
+
+async def _retrieve_subscription(subscription_id: str) -> dict[str, Any]:
+    """The live Stripe subscription (status + metadata). Raises 503 if unreachable.
+
+    Webhook events are resolved against the live object because Stripe does not
+    guarantee delivery order: a late ``active`` update must not undo a
+    ``past_due`` downgrade, and vice versa.
+    """
+    from app.core.config import get_settings
+
+    api_key = get_settings().stripe_api_key
+    if not api_key:
+        raise HTTPException(
+            503, "Stripe API not configured (STRIPE_API_KEY); subscription state unknown"
+        )
+    try:
+        import stripe
+
+        stripe.api_key = api_key
+        sub = await asyncio.to_thread(stripe.Subscription.retrieve, subscription_id)
+    except Exception as exc:
+        _log.error("stripe_subscription_retrieve_failed id=%s: %s", subscription_id, exc)
+        raise HTTPException(503, "Could not read the subscription from Stripe; retry") from exc
+    to_dict = getattr(sub, "to_dict_recursive", None) or getattr(sub, "to_dict", None)
+    return dict(to_dict() if callable(to_dict) else sub)
+
+
+def _invoice_subscription_id(invoice: dict[str, Any]) -> str:
+    """Subscription id of an invoice (pre-2025 ``subscription`` or new ``parent``)."""
+    sub = invoice.get("subscription")
+    if isinstance(sub, dict):
+        sub = sub.get("id")
+    if not sub:
+        details = (invoice.get("parent") or {}).get("subscription_details") or {}
+        sub = details.get("subscription")
+    return str(sub or "")
+
+
+async def _sync_plan_from_subscription(
+    request: Request, subscription_id: str, event_type: str
+) -> dict[str, Any]:
+    """Set the tenant's plan from the live subscription's status.
+
+    active/trialing -> ``metadata.plan`` (restores a recovered subscription);
+    past_due/unpaid/canceled/incomplete_expired/paused -> ``free``;
+    anything else (e.g. ``incomplete``) changes nothing.
+    """
+    try:
+        sub = await _retrieve_subscription(subscription_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.error("stripe_subscription_retrieve_failed id=%s: %s", subscription_id, exc)
+        raise HTTPException(503, "Could not read the subscription from Stripe; retry") from exc
+    metadata = sub.get("metadata") or {}
+    tenant_id = str(metadata.get("tenant_id") or "")
+    live_status = str(sub.get("status") or "")
+    if not tenant_id:
+        _log.warning("stripe_subscription_without_tenant id=%s", subscription_id)
+        return {"status": "ignored", "event": event_type}
+    if live_status in _STRIPE_DELINQUENT:
+        await _upgrade_tenant_plan(request, tenant_id, "free")
+        _log.info(
+            "Plan downgraded via Stripe (%s): tenant=%s status=%s",
+            event_type,
+            tenant_id,
+            live_status,
+        )
+        return {"status": "ok", "event": event_type, "plan": "free"}
+    plan = str(metadata.get("plan") or "").lower()
+    if live_status in _STRIPE_ENTITLED and plan in _STRIPE_PAID_PLANS:
+        await _upgrade_tenant_plan(request, tenant_id, plan)
+        return {"status": "ok", "event": event_type, "plan": plan}
+    _log.warning(
+        "stripe_subscription_status_unhandled id=%s status=%s", subscription_id, live_status
+    )
+    return {"status": "ignored", "event": event_type}
 
 
 @router.post("/webhook/stripe")
@@ -756,9 +838,15 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
     * ``checkout.session.completed`` (subscription mode, paid) → upgrade the
       tenant in ``client_reference_id`` to ``metadata.plan`` (both written
       server-side at session creation; they must agree);
-    * ``customer.subscription.deleted`` → downgrade that tenant to ``free``.
+    * ``customer.subscription.deleted`` → downgrade that tenant to ``free``;
+    * ``customer.subscription.updated`` / ``invoice.payment_failed`` → read the
+      LIVE subscription and apply its status: past_due / unpaid / canceled /
+      incomplete_expired / paused → ``free``; active / trialing → its plan.
+      (Previously unhandled, so a subscription whose renewal failed kept its
+      paid plan indefinitely.)
 
-    A plan change that cannot be recorded answers 503 so Stripe retries.
+    A plan change that cannot be recorded, or a subscription that cannot be
+    read from Stripe, answers 503 so Stripe retries.
     """
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
@@ -801,5 +889,18 @@ async def stripe_webhook(request: Request) -> dict[str, Any]:
         await _upgrade_tenant_plan(request, tenant_id, "free")
         _log.info("Plan downgraded via Stripe cancellation: tenant=%s", tenant_id)
         return {"status": "ok", "event": event_type, "plan": "free"}
+
+    if event_type == "customer.subscription.updated":
+        sub_id = str(obj.get("id") or "")
+        if not sub_id:
+            return {"status": "ignored", "event": event_type}
+        return await _sync_plan_from_subscription(request, sub_id, event_type)
+
+    if event_type == "invoice.payment_failed":
+        sub_id = _invoice_subscription_id(obj)
+        if not sub_id:
+            _log.warning("stripe_invoice_failed_without_subscription id=%s", obj.get("id"))
+            return {"status": "ignored", "event": event_type}
+        return await _sync_plan_from_subscription(request, sub_id, event_type)
 
     return {"status": "ignored", "event": event_type}

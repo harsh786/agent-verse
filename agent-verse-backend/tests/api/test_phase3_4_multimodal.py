@@ -165,7 +165,11 @@ def test_ingest_pdf_base64():
     }, headers=_HEADERS)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["status"] in ("completed", "failed")  # May fail gracefully
+    # This PDF has a page but no text layer: it must fail honestly rather than
+    # "complete" with a placeholder span stored as its content.
+    assert data["status"] == "failed"
+    assert data["span_count"] == 0
+    assert data["error"]
     assert "job_id" in data
 
 

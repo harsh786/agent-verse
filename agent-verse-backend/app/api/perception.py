@@ -7,7 +7,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 
+from app.observability.logging import get_logger
+
 router = APIRouter(prefix="/perception", tags=["perception"])
+_log = get_logger(__name__)
 
 
 def _require_tenant(request: Request) -> Any:
@@ -61,10 +64,12 @@ async def get_perception_status(request: Request) -> dict[str, Any]:
     _require_tenant(request)
     from app.perception.browser_agent import _PLAYWRIGHT_AVAILABLE
 
-    vision_provider = getattr(request.app.state, "embedder", None)
+    # Vision is what the browser agent can actually do: an embedder without
+    # vision support used to advertise vision_available=True while every
+    # analyze endpoint answered 501.
     return {
         "playwright_available": _PLAYWRIGHT_AVAILABLE,
-        "vision_available": vision_provider is not None,
+        "vision_available": bool(_browser_agent(request).has_vision),
         "browser_actions": ["screenshot", "extract_text", "click", "fill", "navigate"],
         "image_formats": ["png", "jpeg", "webp"],
     }
@@ -177,9 +182,15 @@ class BatchAnalyzeRequest(BaseModel):
 async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str, Any]:
     """Analyze multiple URLs concurrently with the vision LLM.
 
-    Returns an ordered list of analysis results — one per input URL.
-    Invalid URLs are returned with success=False rather than raising.
+    Returns an ordered list of analysis results — one per input URL. A URL
+    whose page could not be captured or whose vision analysis failed comes
+    back with success=False and an ``error``; its ``analysis`` is empty.
+
+    Answers **501** when no vision-capable provider is configured (it used to
+    answer 200 with "No vision provider configured." as every analysis).
     """
+    from app.perception.page_analyzer import VisionUnavailableError
+
     _require_tenant(request)
 
     if not body.urls:
@@ -191,7 +202,14 @@ async def batch_analyze(request: Request, body: BatchAnalyzeRequest) -> dict[str
         await _require_public_url(url, field=f"URL {url!r}")
 
     analyzer = _page_analyzer(request)
-    analyses = await analyzer.analyze_multiple(body.urls, question=body.question)
+    try:
+        analyses = await analyzer.analyze_multiple(
+            body.urls, question=body.question, require_vision=True
+        )
+    except VisionUnavailableError as exc:
+        raise HTTPException(
+            status_code=501, detail="NOT IMPLEMENTED: no vision-capable provider is configured"
+        ) from exc
 
     return {
         "results": [
@@ -226,13 +244,20 @@ async def submit_goal_with_image(request: Request, body: GoalWithImageRequest) -
         ss_result = await agent.take_screenshot(body.image_url)
         if ss_result.success:
             image_context = f"\n[Visual context: screenshot of {body.image_url}]"
-            if ss_result.screenshot_b64:
-                # Analyze the screenshot if vision is available
-                vision_text = await agent.analyze_screenshot(
-                    ss_result.screenshot_b64,
-                    f"Briefly describe what you see on this page that is relevant to: {body.goal}",
-                )
-                if vision_text and "No vision provider" not in vision_text:
+            if ss_result.screenshot_b64 and agent.has_vision:
+                # Best-effort enrichment: a vision failure adds nothing rather
+                # than injecting the error text into the goal as "analysis".
+                try:
+                    vision_text = await agent.analyze_screenshot(
+                        ss_result.screenshot_b64,
+                        "Briefly describe what you see on this page that is relevant to: "
+                        f"{body.goal}",
+                        raise_errors=True,
+                    )
+                except Exception as exc:
+                    _log.warning("goal_with_image_page_analysis_failed", error=str(exc))
+                    vision_text = ""
+                if vision_text:
                     image_context += f"\nPage analysis: {vision_text}"
 
     if body.image_b64:

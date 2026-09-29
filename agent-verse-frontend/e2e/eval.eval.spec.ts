@@ -17,10 +17,7 @@ test.describe('Eval Regression', () => {
     // Either 200 (ok), 401/403 (no auth but server is up), or 0 (connection refused in CI)
     expect([200, 401, 403, 0]).toContain(response.status());
   });
-
-  test('golden datasets page loads', async ({ page }) => {
-    await page.route('**/golden-datasets**', r => r.fulfill({ json: { datasets: [] } }));
-    await page.goto('/observability');
-    await expect(page.locator('body')).toBeVisible();
-  });
+  // /eval/golden-datasets is an honest 501 (nothing consumes it); the old
+  // "golden datasets page loads" case mocked a success payload for an endpoint
+  // no page calls, so it asserted nothing and is gone.
 });

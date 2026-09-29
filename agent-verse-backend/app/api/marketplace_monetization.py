@@ -1,8 +1,13 @@
 """Marketplace monetization — paid templates, Stripe Connect, author payouts.
 
-NOT IMPLEMENTED (reported honestly rather than faked): purchase completion.
-``POST /purchase/{id}`` records a *pending* purchase with its PaymentIntent, but
-no Stripe webhook marks it paid and installs are not gated on it.
+NOT IMPLEMENTED (reported honestly rather than faked): buying a paid template.
+``POST /purchase/{id}`` used to create a real Stripe PaymentIntent and a
+*pending* purchase row, but nothing ever marked the purchase paid (no
+``payment_intent.succeeded`` handling), installs were not gated on payment and
+the author was never paid (no Connect ``transfer_data`` / application fee) — a
+buyer could be charged for nothing. Until purchase completion, install gating
+and payouts exist, a paid purchase is refused with 501 *before* any Stripe call.
+Free templates still answer ``{"status": "free"}``.
 """
 
 from __future__ import annotations
@@ -163,13 +168,19 @@ async def onboard_author(body: OnboardAuthorRequest, request: Request) -> dict[s
     return {"onboarding_url": link.url, "stripe_account_id": account.id}
 
 
+_PAID_PURCHASE_UNAVAILABLE = (
+    "Paid template purchases are not available yet: payment completion, install "
+    "gating and author payouts are not implemented. No charge was created."
+)
+
+
 @router.post("/purchase/{template_id}")
 async def purchase_template(template_id: str, request: Request) -> dict[str, Any]:
-    """Start a purchase of a paid template: PaymentIntent + a *pending* record.
+    """Purchase a template: free ones answer ``free``; paid ones are a 501.
 
     The template is read under the buyer's RLS context (the read policy exposes
-    public/community templates and the buyer's own) — the old unscoped SELECT
-    on a non-existent column was a SQL error.
+    public/community templates and the buyer's own). A paid template is refused
+    before Stripe is touched, so no PaymentIntent (and no charge) is created.
     """
     from sqlalchemy import text
 
@@ -189,43 +200,9 @@ async def purchase_template(template_id: str, request: Request) -> dict[str, Any
     price_usd = float(row[0] or 0)
     if price_usd == 0:
         return {"status": "free", "template_id": template_id}
-    stripe = _stripe()
-    try:
-        intent = stripe.PaymentIntent.create(
-            amount=round(price_usd * 100),
-            currency="usd",
-            metadata={"template_id": template_id, "buyer_tenant_id": tenant.tenant_id},
-        )
-    except Exception as exc:
-        _log.error("marketplace_purchase_intent_failed", error=str(exc)[:200])
-        raise HTTPException(502, "Purchase failed") from exc
-    purchase_id = uuid.uuid4().hex
-    try:
-        async with (
-            db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant.tenant_id),
-        ):
-            await session.execute(
-                text(
-                    "INSERT INTO marketplace_purchases "
-                    "(id, template_id, buyer_tenant_id, amount_usd, stripe_payment_intent, "
-                    " status) VALUES (:id, :tmpl, :tid, :amt, :pi, 'pending')"
-                ),
-                {
-                    "id": purchase_id,
-                    "tmpl": template_id,
-                    "tid": tenant.tenant_id,
-                    "amt": price_usd,
-                    "pi": getattr(intent, "id", None),
-                },
-            )
-    except Exception as exc:
-        _log.error("marketplace_purchase_record_failed", error=str(exc)[:200])
-        raise HTTPException(503, "Purchase could not be recorded; retry") from exc
-    return {
-        "purchase_id": purchase_id,
-        "status": "pending",
-        "client_secret": intent.client_secret,
-        "amount_usd": price_usd,
-    }
+    _log.info(
+        "marketplace_paid_purchase_refused",
+        template_id=template_id,
+        buyer_tenant_id=tenant.tenant_id,
+    )
+    raise HTTPException(501, _PAID_PURCHASE_UNAVAILABLE)

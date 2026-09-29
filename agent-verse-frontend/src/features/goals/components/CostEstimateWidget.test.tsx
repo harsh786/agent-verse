@@ -104,12 +104,12 @@ describe('CostEstimateWidget — populated estimate', () => {
     expect(screen.getByText('~3m')).toBeInTheDocument();
   });
 
-  test('omits the similar-goals suffix when similar_goals_count is 0', async () => {
+  test('zero similar goals never renders an estimate, whatever the bands say', async () => {
     estimateGoal.mockResolvedValue(makeEstimate({ similar_goals_count: 0, confidence: 'low' }));
     renderWidget();
-    await waitFor(() => expect(screen.getByText('Estimated run')).toBeInTheDocument());
-    expect(screen.getByText(/low confidence/)).toBeInTheDocument();
-    expect(screen.queryByText(/similar/)).not.toBeInTheDocument();
+    expect(await screen.findByTestId('estimate-no-history')).toBeInTheDocument();
+    expect(screen.queryByText('Estimated run')).not.toBeInTheDocument();
+    expect(screen.queryByText(/low confidence/)).not.toBeInTheDocument();
   });
 
   test('renders medium confidence styling', async () => {
@@ -164,5 +164,32 @@ describe('CostEstimateWidget — populated estimate', () => {
     const { container } = renderWidget({ className: 'my-widget' });
     await waitFor(() => expect(screen.getByText('Estimated run')).toBeInTheDocument());
     expect(container.querySelector('.my-widget')).toBeInTheDocument();
+  });
+});
+
+describe('CostEstimateWidget — honest empty states', () => {
+  test('no similar history: says so instead of showing numbers', async () => {
+    estimateGoal.mockResolvedValue(makeEstimate({
+      estimated_cost_usd: null,
+      estimated_duration_s: null,
+      estimated_iterations: null,
+      success_probability: null,
+      similar_goals_count: 0,
+      confidence: 'none',
+      based_on: 'no_similar_history',
+    }));
+    renderWidget();
+    const empty = await screen.findByTestId('estimate-no-history');
+    expect(empty).toHaveTextContent(/no similar past goals/i);
+    expect(screen.queryByText('Estimated run')).not.toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+
+  test('a band with no data renders a dash, not a number', async () => {
+    estimateGoal.mockResolvedValue(makeEstimate({ estimated_cost_usd: null, similar_goals_count: 2 }));
+    renderWidget();
+    await waitFor(() => expect(screen.getByText('Estimated run')).toBeInTheDocument());
+    expect(screen.getByTestId('estimate-cost')).toHaveTextContent('—');
+    expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
   });
 });

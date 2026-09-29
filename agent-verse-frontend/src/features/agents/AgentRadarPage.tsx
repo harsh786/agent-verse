@@ -54,17 +54,21 @@ export function AgentRadarPage() {
     staleTime: 600_000,
   });
 
+  // An axis is null when the agent has no data behind it; it is plotted at 0 on
+  // the radar (the chart needs every spoke) but labelled "not enough data" below
+  // and excluded from the overall score — never shown as a neutral default.
   const radarData = health
     ? Object.entries(health.health).map(([key, value]) => ({
         metric: DIMENSION_LABELS[key] ?? key,
-        value: Math.min(1, Math.max(0, value)),
+        value: isMetric(value) ? Math.min(1, Math.max(0, value)) : 0,
         fullMark: 1,
       }))
     : [];
 
-  const avgScore = health
-    ? Object.values(health.health).reduce((a, b) => a + b, 0) / Object.keys(health.health).length
-    : 0;
+  const measured = health ? Object.values(health.health).filter(isMetric) : [];
+  const avgScore = measured.length
+    ? measured.reduce((a, b) => a + b, 0) / measured.length
+    : null;
 
   // No invented platform average: the backend returns null until enough tenants
   // contributed, and then there is nothing honest to compare against.
@@ -95,9 +99,9 @@ export function AgentRadarPage() {
             {agent?.name ?? agentId}
           </p>
         </div>
-        {health && (
+        {health && avgScore !== null && (
           <div className="ml-auto text-right">
-            <p className="text-2xl font-bold text-[#00D4FF]">{Math.round(avgScore * 100)}%</p>
+            <p data-testid="radar-overall" className="text-2xl font-bold text-[#00D4FF]">{Math.round(avgScore * 100)}%</p>
             <p className="text-xs text-muted-foreground">Overall health</p>
           </div>
         )}
@@ -155,9 +159,24 @@ export function AgentRadarPage() {
       {health && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {Object.entries(health.health).map(([key, value]) => {
-            const pct = Math.round(value * 100);
             const label = DIMENSION_LABELS[key] ?? key;
             const desc = DIMENSION_DESCRIPTIONS[key] ?? "";
+            if (!isMetric(value)) {
+              return (
+                <div
+                  key={key}
+                  data-testid="radar-dimension-empty"
+                  className="bg-card border border-border rounded-xl p-4"
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium">{label}</span>
+                    <span className="text-xs text-muted-foreground">{NOT_ENOUGH_DATA}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{desc}</p>
+                </div>
+              );
+            }
+            const pct = Math.round(value * 100);
             return (
               <div key={key} className="bg-card border border-border rounded-xl p-4">
                 <div className="flex items-center justify-between mb-2">

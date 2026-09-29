@@ -183,4 +183,36 @@ describe('AgentRadarPage', () => {
     expect(notice).toHaveTextContent(/No runs yet/);
     expect(screen.queryByText(/(Above|Below) platform average/i)).not.toBeInTheDocument();
   });
+
+  test('axes with no data render "not enough data", never a default score', async () => {
+    mockRadarFetch(MOCK_BENCHMARKS, {
+      agent_id: 'agent-radar-1',
+      health: {
+        speed: null, accuracy: null, cost_efficiency: null,
+        tool_coverage: null, success_rate: 0.5, coherence: null,
+      },
+      sample_size: 2,
+    });
+    renderPage();
+    const cards = await screen.findAllByTestId('radar-dimension-empty');
+    expect(cards).toHaveLength(5);
+    cards.forEach((c) => expect(c).toHaveTextContent(/not enough data yet/i));
+    // Overall health is the mean of the axes that have data only.
+    expect(screen.getByTestId('radar-overall')).toHaveTextContent('50%');
+    expect(screen.queryByText('70%')).not.toBeInTheDocument();
+  });
+
+  test('an agent with no data on any axis shows no overall score', async () => {
+    mockRadarFetch(MOCK_BENCHMARKS, {
+      agent_id: 'agent-radar-1',
+      health: {
+        speed: null, accuracy: null, cost_efficiency: null,
+        tool_coverage: null, success_rate: null, coherence: null,
+      },
+      sample_size: 0,
+    });
+    renderPage();
+    expect(await screen.findAllByTestId('radar-dimension-empty')).toHaveLength(6);
+    expect(screen.queryByTestId('radar-overall')).not.toBeInTheDocument();
+  });
 });

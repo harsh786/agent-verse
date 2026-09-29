@@ -65,7 +65,7 @@ def test_context_block_text_truncated_at_1000() -> None:
 
 async def test_analyze_url_screenshot_and_text_success() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
 
     mock_browser.take_screenshot = AsyncMock(
         return_value=BrowserResult(
@@ -94,7 +94,7 @@ async def test_analyze_url_screenshot_and_text_success() -> None:
 
 async def test_analyze_url_screenshot_fails_text_succeeds() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
 
     mock_browser.take_screenshot = AsyncMock(
         return_value=BrowserResult(success=False, action="screenshot", error="Timeout")
@@ -114,7 +114,7 @@ async def test_analyze_url_screenshot_fails_text_succeeds() -> None:
 
 async def test_analyze_url_both_fail_returns_failure() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
 
     mock_browser.take_screenshot = AsyncMock(
         return_value=BrowserResult(success=False, action="screenshot", error="No network")
@@ -132,7 +132,7 @@ async def test_analyze_url_both_fail_returns_failure() -> None:
 
 async def test_analyze_url_with_vision_calls_analyze_screenshot() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = MagicMock()  # Non-None vision
+    mock_browser.has_vision = True
 
     mock_browser.take_screenshot = AsyncMock(
         return_value=BrowserResult(
@@ -155,7 +155,7 @@ async def test_analyze_url_with_vision_calls_analyze_screenshot() -> None:
 
 async def test_analyze_url_extract_text_skipped_when_disabled() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
     mock_browser.take_screenshot = AsyncMock(
         return_value=BrowserResult(success=True, action="screenshot", screenshot_b64="img")
     )
@@ -170,7 +170,7 @@ async def test_analyze_url_extract_text_skipped_when_disabled() -> None:
 
 async def test_analyze_url_screenshot_skipped_when_disabled() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
     mock_browser.take_screenshot = AsyncMock()
     mock_browser.extract_text = AsyncMock(
         return_value=BrowserResult(success=True, action="extract_text", output="text")
@@ -188,7 +188,7 @@ async def test_analyze_url_screenshot_skipped_when_disabled() -> None:
 
 async def test_analyze_multiple_runs_concurrently() -> None:
     mock_browser = MagicMock()
-    mock_browser._vision = None
+    mock_browser.has_vision = False
 
     call_count = 0
 

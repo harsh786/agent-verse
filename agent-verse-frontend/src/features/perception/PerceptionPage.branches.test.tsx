@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
 import { PerceptionPage } from './PerceptionPage';
 
 // Companion suite to PerceptionPage.test.tsx — targets branches not covered
@@ -242,6 +243,30 @@ describe('PerceptionPage branches', () => {
     expect(screen.getByText('Looks fine')).toBeInTheDocument();
     expect(screen.getByText('DNS failure')).toBeInTheDocument();
     await userEvent.click(screen.getByText(/clear/i));
+    expect(screen.queryByText(/succeeded/i)).not.toBeInTheDocument();
+  });
+
+  test('batch tab: a 501 (no vision provider) surfaces the backend reason and renders no results', async () => {
+    useToastStore.setState({ toasts: [] });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      if (url.includes('/perception/status')) return json({ ...STATUS_OK, vision_available: false });
+      if (url.includes('/perception/batch-analyze') && init?.method === 'POST')
+        return json({ detail: 'NOT IMPLEMENTED: no vision-capable provider is configured' }, 501);
+      return json({});
+    });
+    renderPage();
+    await screen.findByLabelText(/^url$/i);
+    await userEvent.click(screen.getByText('Batch Analysis'));
+    await userEvent.type(await screen.findByLabelText(/urls/i), 'http://ok.com');
+    await userEvent.click(screen.getByTestId('btn-run-batch'));
+    await waitFor(() =>
+      expect(
+        useToastStore
+          .getState()
+          .toasts.filter((t) => t.kind === 'error' && /no vision-capable provider/i.test(t.message))
+      ).toHaveLength(1)
+    );
     expect(screen.queryByText(/succeeded/i)).not.toBeInTheDocument();
   });
 

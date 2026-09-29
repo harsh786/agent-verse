@@ -215,6 +215,21 @@ describe('CivilizationPage', () => {
     expect(screen.queryByText(/Is the backend running\?/i)).not.toBeInTheDocument();
   });
 
+  it('a 503 from a failing civilization store is an error, not the "turned off" state', async () => {
+    const { civilizationApi } = await import('../../lib/api/civilizationApi');
+    const { ApiError } = await import('@/lib/api/client');
+    vi.mocked(civilizationApi.list).mockRejectedValueOnce(
+      new ApiError(503, 'Could not load civilizations: the civilization store is unavailable'),
+    );
+    renderPage();
+    await waitFor(() => {
+      expect(screen.getByText(/Failed to load civilizations/i)).toBeInTheDocument();
+    }, { timeout: 3000 });
+    expect(screen.getByText(/civilization store is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/turned off/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/No civilizations yet/i)).not.toBeInTheDocument();
+  });
+
   it('still shows the generic failure state for a non-503 error', async () => {
     const { civilizationApi } = await import('../../lib/api/civilizationApi');
     const { ApiError } = await import('@/lib/api/client');
