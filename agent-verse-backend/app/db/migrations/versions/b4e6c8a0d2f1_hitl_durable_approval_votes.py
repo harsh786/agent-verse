@@ -11,7 +11,7 @@ with the default threshold of 1, was released by a single vote.
   is ``COUNT(*)`` under the tenant's RLS context. Tenant-isolated by FORCE'd RLS.
 
 Revision ID: b4e6c8a0d2f1
-Revises: a9c4e2f7b1d3
+Revises: b3d5f7a9c1e2
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "b4e6c8a0d2f1"
-down_revision = "a9c4e2f7b1d3"
+down_revision = "b3d5f7a9c1e2"
 branch_labels = None
 depends_on = None
 
