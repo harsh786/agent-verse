@@ -752,3 +752,25 @@ async def test_flare_retrieves_even_when_the_first_draft_is_confident() -> None:
             context_for(RAGStrategy.FLARE, provider, embedder),
         )
     assert [c.chunk_id for c in result.citations] == ["c1"]
+
+
+@pytest.mark.parametrize(
+    ("claims", "draft", "expected"),
+    [
+        # a lightly reworded claim anchors to the draft's own sentence
+        (
+            ["Full-time employees receive 22 days of paid annual leave each year"],
+            "Every full-time employee receives 22 days of paid annual leave per year. Extra.",
+            ["Every full-time employee receives 22 days of paid annual leave per year."],
+        ),
+        # a changed figure never anchors (digits or number words)
+        (["Employees receive 25 days of paid leave."], "Employees receive 22 days of paid leave.", []),
+        (["Records are retained for ten years."], "Records are retained for seven years.", []),
+        # an unrelated claim never anchors
+        (["The office closes at noon."], "Employees receive 22 days of paid leave.", []),
+    ],
+)
+def test_speculative_claim_anchoring(claims: list[str], draft: str, expected: list[str]) -> None:
+    from app.rag.agentic.patterns.speculative import _anchor_claims_to_draft
+
+    assert _anchor_claims_to_draft(claims, draft) == expected

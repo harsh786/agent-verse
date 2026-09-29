@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -36,9 +37,12 @@ Be concise, direct and specific. If the evidence does not contain the answer, sa
 _VERIFY_SYSTEM = (
     "Given a question, a candidate answer, and supporting context,\n"
     "score how well the context supports the answer.\n"
-    'Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>}\n'
+    'Respond with JSON: {"score": <0.0-1.0>, "supported": <true/false>, '
+    '"verified_claims": [<sentences copied word for word from the candidate that the '
+    'context supports>]}\n'
     "Score 0.9+ if context directly confirms the answer. Score below 0.5 if context "
-    "contradicts or doesn't support."
+    "contradicts or doesn't support. Copy each verified claim exactly as it appears in "
+    "the candidate; leave out any sentence the context does not support."
 )
 
 
@@ -155,7 +159,10 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                         ),
                     ],
                     model=model,
-                    max_tokens=180,
+                    # The claims are checked word for word against the draft,
+                    # so the verifier must be asked for them (it was not), and
+                    # needs room to copy them out (180 tokens truncated them).
+                    max_tokens=1024,
                     temperature=0.0,
                     response_schema={
                         "type": "object",
@@ -167,6 +174,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                                 "items": {"type": "string"},
                             },
                         },
+                        "required": ["score", "supported", "verified_claims"],
                     },
                 )
             )
@@ -208,10 +216,9 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
             )
         best = max(supported, key=lambda candidate: candidate.score)
         verified_claims = [claim.strip() for claim in best.verified_claims or [] if claim.strip()]
-        normalized_draft = best.text.casefold()
-        if not verified_claims or any(
-            claim.casefold() not in normalized_draft for claim in verified_claims
-        ):
+
+        verified_claims = _anchor_claims_to_draft(verified_claims, best.text)
+        if not verified_claims:
             raise RetrievalStrategyExecutionError(
                 self.strategy.value,
                 "supported speculative candidate requires explicit verified claims",
@@ -435,3 +442,78 @@ class SpeculativeRAGPattern(RAGPattern):
         except Exception:
             pass
         return best.text
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
+_WORD = re.compile(r"[\w'-]+")
+
+
+def _anchor_claims_to_draft(claims: list[str], draft: str) -> list[str]:
+    """Map each verifier claim onto the draft sentence it states; [] if any cannot be.
+
+    The claims must come from the draft (the answer IS the draft), but a model
+    copying them out often changes a word or the punctuation, and an exact
+    substring check then rejected a correct, verified answer. A claim is anchored
+    to the draft sentence it overlaps most (>= 80% of the claim's words), and the
+    draft's own wording is kept. A claim that matches no sentence still rejects.
+    """
+    sentences = [s.strip() for s in _SENTENCE_SPLIT.split(draft) if s.strip()]
+    normalized_draft = " ".join(draft.casefold().split())
+    anchored: list[str] = []
+    for claim in claims:
+        norm = " ".join(claim.casefold().split()).rstrip(".!? ")
+        if norm and norm in normalized_draft:
+            anchored.append(claim)
+            continue
+        words = _terms(claim)
+        numbers = {w for w in words if is_figure(w)}
+        if not words:
+            return []
+        best_sentence, best_overlap = "", 0.0
+        for sentence in sentences:
+            sentence_words = _terms(sentence)
+            if not numbers <= sentence_words:
+                continue  # a claim's figures must all be in the sentence it anchors to
+            overlap = len(words & sentence_words) / len(words)
+            if overlap > best_overlap:
+                best_sentence, best_overlap = sentence, overlap
+        if best_overlap < 0.8:
+            return []
+        anchored.append(best_sentence)
+    return list(dict.fromkeys(anchored))
+
+
+_STOPWORDS = frozenset(
+    [
+        "the", "and", "for", "are", "was", "were", "has", "have", "had", "with", "from", "that",
+        "this", "into", "per", "each", "any", "all", "its", "their", "our", "your", "his",
+        "her", "not", "but", "can", "may", "will", "shall", "does", "did", "been", "being",
+        "also", "than", "then", "there", "here", "which", "who", "whom", "what", "when",
+        "where", "how"
+    ]
+)
+_NUMBER_WORDS = frozenset(
+    [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
+        "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+        "eighty", "ninety", "hundred", "thousand", "million", "billion", "half", "quarter",
+        "first", "second", "third"
+    ]
+)
+
+
+def is_figure(term: str) -> bool:
+    return term[:1].isdigit() or term in _NUMBER_WORDS
+
+
+def _terms(text: str) -> set[str]:
+    """Content words (plural 's' stripped, stopwords dropped) and every figure —
+    digits or number words — for claim anchoring."""
+    out: set[str] = set()
+    for token in _WORD.findall(text.casefold()):
+        if is_figure(token):
+            out.add(token)
+        elif len(token) > 2 and token not in _STOPWORDS:
+            out.add(token[:-1] if len(token) > 3 and token.endswith("s") else token)
+    return out
