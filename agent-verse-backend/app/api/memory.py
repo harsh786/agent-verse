@@ -371,6 +371,90 @@ async def list_memory_records(
     return {"records": serialized, "total": len(serialized), "kinds": kind_counts}
 
 
+class UpdateMemoryRequest(BaseModel):
+    content: str | None = Field(default=None, min_length=1)
+    memory_type: str | None = Field(default=None, min_length=1, max_length=50)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    tags: list[str] | None = None
+
+
+_UPDATABLE_MEMORY_FIELDS = ("content", "memory_type", "confidence", "tags")
+
+
+@router.patch("/{memory_id}")
+async def update_memory(request: Request, memory_id: str, body: UpdateMemoryRequest) -> dict:
+    """Edit a long-term memory (only the fields sent are changed).
+
+    With a database the row is authoritative: 404 when the caller has no such
+    memory, 503 on a DB error (never a cache-only "updated").
+    """
+    tenant_ctx = _require_tenant(request)
+    changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    if not changes:
+        raise HTTPException(status_code=422, detail="No fields to update")
+
+    db = _get_db(request)
+    if db is not None:
+        from sqlalchemy import text
+
+        sets: list[str] = []
+        params: dict[str, Any] = {"id": memory_id, "tid": tenant_ctx.tenant_id}
+        for field in _UPDATABLE_MEMORY_FIELDS:  # fixed column list — no user SQL
+            if field not in changes:
+                continue
+            if field == "tags":
+                sets.append("tags = CAST(:tags AS json)")
+                params["tags"] = json.dumps(changes["tags"])
+            else:
+                sets.append(f"{field} = :{field}")
+                params[field] = changes[field]
+        sql = (
+            f"UPDATE long_term_memory SET {', '.join(sets)} "
+            "WHERE id = :id AND tenant_id = :tid "
+            "RETURNING id, content, memory_type, confidence, tags, created_at"
+        )
+        try:
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                row = (await session.execute(text(sql), params)).fetchone()
+        except Exception as exc:
+            raise _db_unavailable("update_memory", exc) from exc
+        if row is None:
+            raise HTTPException(404, f"Memory {memory_id} not found")
+        # Keep this replica's cache consistent with the row.
+        _evict_cached(request, tenant_ctx, memory_id)
+        return {
+            "id": row[0],
+            "content": row[1],
+            "memory_type": row[2],
+            "confidence": row[3],
+            "tags": row[4] or [],
+            "created_at": row[5].isoformat() if row[5] else "",
+        }
+
+    # No DB configured: the in-memory store is the only store.
+    ltm = _get_ltm(request)
+    raw = getattr(ltm, "_memories", None) if ltm is not None else None
+    if not isinstance(raw, dict):
+        raise HTTPException(503, "Memory store not available")
+    for mem in raw.get(tenant_ctx.tenant_id, []):
+        if memory_id in (getattr(mem, "id", None), getattr(mem, "memory_id", None)):
+            for field, value in changes.items():
+                setattr(mem, field, value)
+            return {
+                "id": memory_id,
+                "content": getattr(mem, "content", ""),
+                "memory_type": getattr(mem, "memory_type", ""),
+                "confidence": getattr(mem, "confidence", 0.8),
+                "tags": list(getattr(mem, "tags", []) or []),
+                "created_at": str(getattr(mem, "created_at", "") or ""),
+            }
+    raise HTTPException(404, f"Memory {memory_id} not found")
+
+
 @router.delete("/{memory_id}")
 async def delete_memory_by_id(request: Request, memory_id: str) -> dict:
     """Delete a specific memory entry (GDPR right-to-erasure for individual records)."""
