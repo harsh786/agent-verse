@@ -373,7 +373,9 @@ class PublishTemplateRequest(BaseModel):
 
 class BundleDeployRequest(BaseModel):
     name: str
-    template_ids: list[str]
+    template_ids: list[str] = Field(..., min_length=1)
+    # Optional per-template install parameters, keyed by template id.
+    params: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 # ── V2 request/response models ────────────────────────────────────────────────
@@ -478,12 +480,29 @@ async def _publish_v2(request: Request, ctx: Any, data: dict[str, Any]) -> dict[
 
 
 @marketplace_router.post("/bundles", status_code=201)
-async def deploy_bundle(request: Request, body: BundleDeployRequest) -> dict[str, Any]:
-    """Deploy multiple templates as a bundle (group deployment)."""
+async def deploy_bundle(
+    request: Request, body: BundleDeployRequest, response: Response
+) -> dict[str, Any]:
+    """Deploy multiple templates as a bundle (group deployment).
+
+    Goes through the v2 atomic install per template and reports each item's
+    real outcome: 201 when every item deployed, 207 when some failed, 422 (with
+    the per-item report) when none did. It used to go through the v1 gallery,
+    which handed back a made-up agent id when an agent was never created.
+    """
     ctx = _require_tenant(request)
-    return await _marketplace(request).create_bundle(
-        name=body.name, template_ids=body.template_ids, tenant_ctx=ctx
+    report: dict[str, Any] = await _marketplace_v2(request).create_bundle(
+        name=body.name,
+        template_ids=body.template_ids,
+        tenant_ctx=ctx,
+        params=body.params,
+        agent_store=getattr(request.app.state, "agent_store", None),
     )
+    if report["status"] == "failed":
+        raise HTTPException(status_code=422, detail=report)
+    if report["status"] == "partial":
+        response.status_code = 207
+    return report
 
 
 @marketplace_router.get("/browse")

@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.enterprise.marketplace_v2 import bundle_report as _bundle_report
 from app.tenancy.context import TenantContext
 
 warnings.warn(
@@ -229,24 +230,24 @@ class Marketplace:
                 "next_step": (f"Register these connectors first: {', '.join(missing_connectors)}"),
             }
 
-        agent_id: str
-        if self._agent_store is not None:
-            try:
-                agent_config = {
-                    "name": params.get("name", template["name"]),
-                    "goal_template": template.get(
-                        "goal_template",
-                        f"Execute tasks: {template['description'][:200]}",
-                    ),
-                    "autonomy_mode": template.get("autonomy_mode", "bounded-autonomous"),
-                    "connector_ids": [],
-                    "description": template.get("description", ""),
-                }
-                agent_id = await self._agent_store.create(agent_config, tenant_ctx=tenant_ctx)
-            except Exception:
-                agent_id = uuid.uuid4().hex  # Fallback
-        else:
-            agent_id = uuid.uuid4().hex
+        # No fallback id: this used to substitute ``uuid4().hex`` when there was
+        # no agent store or ``create`` failed, reporting an agent that was never
+        # created. A deploy either creates the agent or raises.
+        if self._agent_store is None:
+            raise RuntimeError("Cannot deploy: no agent store is configured")
+        agent_config = {
+            "name": params.get("name", template["name"]),
+            "goal_template": template.get(
+                "goal_template",
+                f"Execute tasks: {template['description'][:200]}",
+            ),
+            "autonomy_mode": template.get("autonomy_mode", "bounded-autonomous"),
+            "connector_ids": [],
+            "description": template.get("description", ""),
+        }
+        agent_id = await self._agent_store.create(agent_config, tenant_ctx=tenant_ctx)
+        if not agent_id:
+            raise RuntimeError(f"Agent store did not create an agent for {template_id}")
 
         deployment = DeployedTemplate(
             template_id=template_id,
@@ -284,34 +285,39 @@ class Marketplace:
     async def create_bundle(
         self, *, name: str, template_ids: list[str], tenant_ctx: Any
     ) -> dict[str, Any]:
-        """Deploy multiple templates as a group (a 'bundle')."""
-        results = []
-        errors = []
+        """Deploy multiple templates as a group (a 'bundle').
+
+        Every item reports its own ``status`` (``deployed`` with the real agent
+        id, or ``failed`` with the error); the bundle is ``complete``,
+        ``partial`` or ``failed``. A failed item never carries an agent id.
+        """
+        items: list[dict[str, Any]] = []
         for template_id in template_ids:
             try:
                 result = await self.deploy(
                     template_id=template_id, params={}, tenant_ctx=tenant_ctx
                 )
-                if isinstance(result, dict) and result.get("status") == "failed":
-                    errors.append(
-                        {"template_id": template_id, "error": result.get("reason", "deploy failed")}
-                    )
-                else:
-                    results.append(
-                        result
-                        if isinstance(result, dict)
-                        else {"deployment_id": result.deployment_id, "agent_id": result.agent_id}
-                    )
             except Exception as exc:
-                errors.append({"template_id": template_id, "error": str(exc)})
-
-        return {
-            "bundle_name": name,
-            "templates_deployed": len(results),
-            "errors": errors,
-            "results": results,
-            "status": "complete" if not errors else "partial",
-        }
+                items.append({"template_id": template_id, "status": "failed", "error": str(exc)})
+                continue
+            if isinstance(result, dict):
+                items.append(
+                    {
+                        "template_id": template_id,
+                        "status": "failed",
+                        "error": result.get("reason", "deploy failed"),
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "template_id": template_id,
+                        "status": "deployed",
+                        "deployment_id": result.deployment_id,
+                        "agent_id": result.agent_id,
+                    }
+                )
+        return _bundle_report(name, items)
 
     async def publish_version(
         self,
@@ -386,3 +392,4 @@ class Marketplace:
             ]
         except Exception:
             return []
+

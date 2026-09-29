@@ -1298,6 +1298,26 @@ def _visible_to(template: dict[str, Any], tenant_id: str | None) -> bool:
     )
 
 
+def bundle_report(name: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarise per-item bundle results without overstating success."""
+    deployed = [i for i in items if i["status"] == "deployed"]
+    failed = [i for i in items if i["status"] != "deployed"]
+    if not failed:
+        status = "complete"
+    elif deployed:
+        status = "partial"
+    else:
+        status = "failed"
+    return {
+        "bundle_name": name,
+        "status": status,
+        "templates_deployed": len(deployed),
+        "templates_failed": len(failed),
+        "items": items,
+        "results": deployed,
+        "errors": [{"template_id": i["template_id"], "error": i.get("error", "")} for i in failed],
+    }
+
 class TemplateSlugTakenError(Exception):
     """The slug belongs to another tenant's template."""
 
@@ -2092,6 +2112,63 @@ class MarketplaceV2:
             page_size=page_size,
         )
         return result.get("templates", [])
+
+    # ------------------------------------------------------------------
+    # Bundles
+    # ------------------------------------------------------------------
+
+    async def create_bundle(
+        self,
+        *,
+        name: str,
+        template_ids: list[str],
+        tenant_ctx: TenantContext,
+        params: dict[str, dict[str, Any]] | None = None,
+        agent_store: Any = None,
+    ) -> dict[str, Any]:
+        """Install several templates; report each item's real outcome.
+
+        Each template goes through the atomic ``install`` (visibility check,
+        parameter validation, one transaction). An item is ``deployed`` with
+        the agent id the install returned, or ``failed`` with its error — never
+        a made-up id. The bundle is ``complete``, ``partial`` or ``failed``.
+        """
+        if not template_ids:
+            raise ValueError("A bundle needs at least one template")
+        per_template = params or {}
+        items: list[dict[str, Any]] = []
+        for template_id in template_ids:
+            try:
+                result = await self.install(
+                    template_id=template_id,
+                    params=dict(per_template.get(template_id) or {}),
+                    tenant_ctx=tenant_ctx,
+                    agent_store=agent_store,
+                )
+            except Exception as exc:
+                logger.error(
+                    "marketplace_bundle_item_failed", template_id=template_id, error=str(exc)
+                )
+                result = {"success": False, "error": str(exc)}
+            if result.get("success"):
+                items.append(
+                    {
+                        "template_id": template_id,
+                        "status": "deployed",
+                        "agent_id": result["agent_id"],
+                        "install_id": result["install_id"],
+                    }
+                )
+                continue
+            item: dict[str, Any] = {"template_id": template_id, "status": "failed"}
+            missing = result.get("missing_connectors")
+            if missing:
+                item["error"] = f"Required connectors not configured: {missing}"
+                item["missing_connectors"] = missing
+            else:
+                item["error"] = result.get("error") or "Install failed"
+            items.append(item)
+        return bundle_report(name, items)
 
     # ------------------------------------------------------------------
     # Installs / domain counts
