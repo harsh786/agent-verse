@@ -42,6 +42,18 @@ def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
 _SUSPENDED_KEY = "_suspended_for_approval"
 # execution_context: fingerprint of the goal's dedup scope (see services/dedup.py)
 _DEDUP_SCOPE_KEY = "_dedup_scope"
+# execution_context key naming who runs the goal: {"kind": "worker"} (Celery —
+# redelivery and the stuck-goal sweeper own it) or {"kind": "in_process",
+# "replica": <GoalService._replica_id>}. Restart recovery only touches the latter,
+# and only once that replica's heartbeat is gone.
+_RUNNER_KEY = "runner"
+_RUNNER_WORKER = "worker"
+_RUNNER_IN_PROCESS = "in_process"
+_REPLICA_ALIVE_KEY = "goal_replica_alive:{replica}"
+_REPLICA_HEARTBEAT_TTL_SECONDS = 45
+_REPLICA_HEARTBEAT_INTERVAL_SECONDS = 15
+# Worker per-goal execution lock (scaling/tasks.py _SyncGoalLock.KEY_PREFIX).
+_WORKER_GOAL_LOCK_KEY = "goal_lock:{goal_id}"
 # Events that produce usage records (see app/services/usage_metering.py).
 _METERED_EVENT_TYPES = {"tool_call_complete", "goal_complete", "goal_failed", "goal_cancelled"}
 from app.agent.sanitization import sanitize_event
@@ -69,6 +81,9 @@ _tracer = trace.get_tracer(__name__)
 # Poison-pill sentinel — placed on a subscriber queue to signal end-of-stream.
 _SENTINEL: dict[str, Any] | None = None
 _TERMINAL_STATUSES = {GoalStatus.COMPLETE, GoalStatus.FAILED, GoalStatus.CANCELLED}
+# Recovery never re-runs these: terminal, or parked waiting for a human
+# (a suspended goal is relaunched by resume_goal, not by restart recovery).
+_NOT_RECOVERABLE_STATUSES = {*_TERMINAL_STATUSES, GoalStatus.WAITING_HUMAN}
 
 
 def _agent_grants_enforced() -> bool:
@@ -516,6 +531,67 @@ class GoalService:
         self._goal_durations: dict[str, list[float]] = {}
         # Time-based eviction: track last eviction timestamp.
         self._last_eviction_time: float = time.monotonic()
+        # Identity of this process as an in-process goal runner. Recorded on
+        # every goal it runs (execution_context.runner) and kept alive in Redis
+        # by a heartbeat, so restart recovery on another replica can tell a
+        # goal whose runner died from one that is still running.
+        self._replica_id: str = uuid.uuid4().hex
+        self._heartbeat_task: asyncio.Task[None] | None = None
+
+    # ── Runner ownership + liveness (restart recovery) ───────────────────────
+
+    def _runner_marker(self) -> dict[str, Any]:
+        """``execution_context.runner`` for a goal this service launches now."""
+        if self._task_queue is not None:
+            return {"kind": _RUNNER_WORKER}
+        return {"kind": _RUNNER_IN_PROCESS, "replica": self._replica_id}
+
+    async def _touch_replica_heartbeat(self) -> None:
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            return
+        await redis.set(
+            _REPLICA_ALIVE_KEY.format(replica=self._replica_id),
+            "1",
+            ex=_REPLICA_HEARTBEAT_TTL_SECONDS,
+        )
+
+    async def _ensure_replica_heartbeat(self) -> None:
+        """Mark this replica alive now and keep refreshing it while it runs goals."""
+        if getattr(self, "_redis", None) is None:
+            return
+        try:
+            await self._touch_replica_heartbeat()
+        except Exception as exc:
+            _svc_logger.warning("replica_heartbeat_failed", error=str(exc)[:120])
+        if self._heartbeat_task is None or self._heartbeat_task.done():
+            self._heartbeat_task = asyncio.create_task(
+                self._replica_heartbeat_loop(), name=f"goal-replica-heartbeat-{self._replica_id}"
+            )
+
+    async def _replica_heartbeat_loop(self) -> None:
+        while True:
+            await asyncio.sleep(_REPLICA_HEARTBEAT_INTERVAL_SECONDS)
+            try:
+                await self._touch_replica_heartbeat()
+            except Exception as exc:
+                _svc_logger.warning("replica_heartbeat_failed", error=str(exc)[:120])
+
+    def stop_replica_heartbeat(self) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+    async def _replica_alive(self, replica_id: str) -> bool | None:
+        """True/False from the replica's Redis heartbeat; None when it can't be known."""
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            return None
+        try:
+            return bool(await redis.exists(_REPLICA_ALIVE_KEY.format(replica=replica_id)))
+        except Exception as exc:
+            _svc_logger.warning("replica_liveness_check_failed", error=str(exc)[:120])
+            return None
 
     # ── P1.3: HITL rejection subscriber ──────────────────────────────────────
 
@@ -820,42 +896,247 @@ class GoalService:
         except Exception:
             raise
 
-    async def _recover_interrupted_goals(self) -> int:
-        """Re-enqueue goals that were executing when the process died.
+    async def recover_interrupted_goals(self) -> int:
+        """Startup recovery (call once Redis is wired — see the lifespan)."""
+        return await self._recover_interrupted_goals()
 
-        Called after sync_from_db() on startup so that goals whose agent task
-        was killed by a restart are not silently stuck in a non-terminal state.
+    async def _recover_interrupted_goals(self) -> int:
+        """Re-run goals whose IN-PROCESS runner is provably gone. Returns # re-enqueued.
+
+        It used to re-enqueue every unfinished goal without a local task on
+        every replica start — including goals running on Celery workers
+        (duplicate execution), always on the free queue, and once per replica
+        when several started together. Now a goal is recovered only when:
+
+        * it was run in-process (``execution_context.runner.kind == in_process``)
+          — worker goals belong to Celery (acks-late redelivery and the
+          stuck-goal sweeper); goals with no recorded runner are not provably
+          orphaned and are left to the sweeper as well;
+        * its replica's Redis heartbeat is gone (unknown ⇒ not recovered) and no
+          worker holds its execution lock;
+        * this replica wins an atomic claim on the row (UPDATE … WHERE runner is
+          still the dead replica … RETURNING), so replicas starting at once
+          recover it exactly once;
+        * the tenant's plan is known — it is re-enqueued on that plan's queue
+          (never defaulted to free).
+
+        Without a task queue the claimed goal is failed durably (resubmit).
         """
-        terminal = {
-            GoalStatus.COMPLETE,
-            GoalStatus.FAILED,
-            GoalStatus.CANCELLED,
-            GoalStatus.WAITING_HUMAN,
-        }
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            _svc_logger.warning("goal_recovery_skipped_no_redis")
+            return 0
         recovered = 0
         for goal_id, record in list(self._goals.items()):
-            if record.status not in terminal and getattr(record, "task", None) is None:
-                if self._task_queue is not None:
-                    try:
-                        self._task_queue.enqueue_goal(
-                            goal_id=goal_id,
-                            goal_text=record.goal_text,
-                            tenant_id=record.tenant_id,
-                            priority=getattr(record, "priority", "normal"),
-                            dry_run=getattr(record, "dry_run", False),
-                            agent_id=record.agent_id,
-                            workflow_mode=record.workflow_mode,
-                            goal_template="",
-                        )
-                        record.status = GoalStatus.PLANNING
-                        recovered += 1
-                    except Exception as exc:
-                        _svc_logger.warning("goal_recovery_failed", goal_id=goal_id, error=str(exc))
-                else:
-                    # No task queue — mark as failed so callers know to resubmit
-                    record.status = GoalStatus.FAILED
-                    record.error_message = "Goal interrupted by process restart. Please resubmit."
+            if record.status in _NOT_RECOVERABLE_STATUSES or self._runs_locally(record):
+                continue
+            runner = record.execution_context.get(_RUNNER_KEY)
+            if not isinstance(runner, dict) or runner.get("kind") != _RUNNER_IN_PROCESS:
+                continue
+            owner = str(runner.get("replica") or "")
+            if not owner or owner == self._replica_id:
+                continue
+            try:
+                if await redis.exists(_WORKER_GOAL_LOCK_KEY.format(goal_id=goal_id)):
+                    continue  # a worker is executing it
+            except Exception as exc:
+                _svc_logger.warning("goal_recovery_lock_check_failed", error=str(exc)[:120])
+                continue
+            if await self._replica_alive(owner) is not False:
+                continue  # alive, or liveness unknown: not provably orphaned
+            try:
+                if await self._recover_one(record, owner):
+                    recovered += 1
+            except Exception as exc:
+                _svc_logger.warning("goal_recovery_failed", goal_id=goal_id, error=str(exc))
         return recovered
+
+    async def _recover_one(self, record: GoalRecord, dead_replica: str) -> bool:
+        """Claim and re-dispatch one orphaned goal; True when it was re-enqueued."""
+        goal_id, tenant_id = record.goal_id, record.tenant_id
+        recovered_runner: dict[str, Any] = {"recovered_from": dead_replica}
+        if self._task_queue is None:
+            claimed = await self._db_claim_goal_runner(
+                goal_id,
+                tenant_id,
+                expected_replica=dead_replica,
+                runner={"kind": _RUNNER_IN_PROCESS, "replica": self._replica_id,
+                        **recovered_runner},
+            )
+            if not claimed:
+                return False
+            reason = "Goal interrupted by process restart. Please resubmit."
+            record.error_message = reason
+            await self._db_update_goal_status(
+                goal_id, tenant_id, GoalStatus.FAILED.value, error_message=reason
+            )
+            # Terminal event: releases the dead runner's concurrency slot and
+            # dedup key, and tells any SSE subscriber.
+            await self._dispatch_event(
+                goal_id,
+                {"type": "goal_failed", "reason": reason, "failure_reason": "runner_lost"},
+                tenant_ctx=TenantContext(
+                    tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="goal-recovery"
+                ),
+            )
+            record.status = GoalStatus.FAILED
+            return False
+        plan = await self._tenant_plan(tenant_id)
+        if not plan:
+            _svc_logger.error("goal_recovery_plan_unknown", goal_id=goal_id, tenant_id=tenant_id)
+            return False
+        worker_runner = {"kind": _RUNNER_WORKER, **recovered_runner}
+        if not await self._db_claim_goal_runner(
+            goal_id, tenant_id, expected_replica=dead_replica, runner=worker_runner
+        ):
+            return False  # another replica recovered it
+        record.execution_context[_RUNNER_KEY] = worker_runner
+        try:
+            self._task_queue.enqueue_goal(
+                goal_id=goal_id,
+                goal_text=record.goal_text,
+                tenant_id=tenant_id,
+                priority=getattr(record, "priority", "normal"),
+                dry_run=getattr(record, "dry_run", False),
+                agent_id=record.agent_id,
+                connector_ids=[],
+                workflow_mode=record.workflow_mode,
+                goal_template="",
+                plan=plan,
+            )
+        except Exception:
+            # Hand the claim back so a later start can retry, then surface it.
+            with suppress(Exception):
+                await self._db_set_runner(
+                    goal_id,
+                    tenant_id,
+                    {"kind": _RUNNER_IN_PROCESS, "replica": dead_replica},
+                )
+            record.execution_context[_RUNNER_KEY] = {
+                "kind": _RUNNER_IN_PROCESS,
+                "replica": dead_replica,
+            }
+            raise
+        record.status = GoalStatus.PLANNING
+        _svc_logger.info("goal_recovered", goal_id=goal_id, plan=plan, dead_replica=dead_replica)
+        return True
+
+    async def _db_claim_goal_runner(
+        self,
+        goal_id: str,
+        tenant_id: str,
+        *,
+        expected_replica: str,
+        runner: dict[str, Any],
+    ) -> bool:
+        """Atomically take over an orphaned goal; False when someone else already did.
+
+        ``UPDATE … WHERE runner.replica = <dead replica> AND status is active
+        RETURNING id`` under the tenant's RLS context: of several replicas
+        starting at once exactly one gets the row back.
+        """
+        if self._db is None:
+            return False
+        from sqlalchemy import text as _sql
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        _sql(
+                            "UPDATE goals SET execution_context = ("
+                            "COALESCE(execution_context::jsonb, '{}'::jsonb) "
+                            "|| jsonb_build_object(CAST(:key AS text), CAST(:runner AS jsonb))"
+                            ")::json "
+                            "WHERE id = :g AND tenant_id = :t "
+                            "AND status NOT IN ('complete', 'failed', 'cancelled', "
+                            "'waiting_human') "
+                            "AND execution_context::jsonb -> CAST(:key AS text) "
+                            "->> 'replica' = :old "
+                            "RETURNING id"
+                        ),
+                        {
+                            "key": _RUNNER_KEY,
+                            "runner": json.dumps(runner),
+                            "g": goal_id,
+                            "t": tenant_id,
+                            "old": expected_replica,
+                        },
+                    )
+                ).first()
+            return row is not None
+        except Exception as exc:
+            _svc_logger.warning("goal_runner_claim_failed", goal_id=goal_id, error=str(exc))
+            return False
+
+    async def _db_set_runner(self, goal_id: str, tenant_id: str, runner: dict[str, Any]) -> None:
+        """Record *runner* in goals.execution_context (atomic JSON merge)."""
+        if self._db is None:
+            return
+        from sqlalchemy import text as _sql
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            await session.execute(
+                _sql(
+                    "UPDATE goals SET execution_context = ("
+                    "COALESCE(execution_context::jsonb, '{}'::jsonb) "
+                    "|| jsonb_build_object(CAST(:key AS text), CAST(:runner AS jsonb))"
+                    ")::json WHERE id = :g AND tenant_id = :t"
+                ),
+                {"key": _RUNNER_KEY, "runner": json.dumps(runner), "g": goal_id, "t": tenant_id},
+            )
+
+    async def _tenant_plan(self, tenant_id: str) -> str | None:
+        """The tenant's real plan tier (for the per-plan Celery queue), or None."""
+        aps: Any = self._app_state
+        with suppress(Exception):
+            from starlette.applications import Starlette as _Starlette
+
+            if isinstance(aps, _Starlette):
+                aps = aps.state
+        tenant_svc = getattr(aps, "tenant_service", None) if aps is not None else None
+        if tenant_svc is not None:
+            try:
+                tenant = await tenant_svc.get_tenant(tenant_id)
+                plan = tenant.get("plan") if isinstance(tenant, dict) else None
+                if plan:
+                    return str(getattr(plan, "value", plan))
+            except Exception as exc:
+                _svc_logger.warning("tenant_plan_lookup_failed", error=str(exc)[:120])
+        if self._db is None:
+            return None
+        try:
+            from sqlalchemy import text as _sql
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                value = (
+                    await session.execute(
+                        _sql("SELECT plan_tier FROM tenants WHERE id = :t"),
+                        {"t": tenant_id},
+                    )
+                ).scalar()
+            return str(value) if value else None
+        except Exception as exc:
+            _svc_logger.warning("tenant_plan_db_lookup_failed", error=str(exc)[:120])
+            return None
 
     async def _batch_event_counts(self, goal_ids: list[str], tenant_id: str) -> dict[str, int]:
         """Fetch event counts for multiple goals in one DB query.
@@ -3434,6 +3715,14 @@ class GoalService:
             # Fix 6: record that a new goal has been started.
             record_goal_started(tenant_id=tenant_ctx.tenant_id, priority=priority)
 
+            # Record who runs the goal (persisted with it) so restart recovery on
+            # any replica can tell a worker-owned goal — or one whose in-process
+            # runner is still alive — from a genuinely orphaned one.
+            if not dry_run:
+                record.execution_context[_RUNNER_KEY] = self._runner_marker()
+                if self._task_queue is None:
+                    await self._ensure_replica_heartbeat()
+
             # Persist to PostgreSQL in the background when a DB factory is wired.
             if self._db is not None and self._task_queue is not None and not dry_run:
                 try:
@@ -4149,6 +4438,16 @@ class GoalService:
         await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
         record.execution_context.pop(_SUSPENDED_KEY, None)
         await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, False)
+        # The relaunch may run somewhere else than the original run did.
+        record.execution_context[_RUNNER_KEY] = self._runner_marker()
+        try:
+            await self._db_set_runner(
+                record.goal_id, tenant_ctx.tenant_id, record.execution_context[_RUNNER_KEY]
+            )
+        except Exception as exc:
+            _svc_logger.warning("db_set_runner_failed", goal_id=record.goal_id, error=str(exc))
+        if self._task_queue is None:
+            await self._ensure_replica_heartbeat()
         if self._task_queue is not None:
             self._task_queue.enqueue_goal(
                 goal_id=record.goal_id,
@@ -4884,10 +5183,9 @@ class GoalService:
                             loaded += 1
 
             _svc_logger.info("Synced %d recent goals from DB", loaded)
-            # Re-enqueue any goal that was interrupted mid-execution by a restart.
-            recovered = await self._recover_interrupted_goals()
-            if recovered:
-                _svc_logger.info("Recovered %d interrupted goals after restart", recovered)
+            # Restart recovery is NOT run here: it needs Redis (runner liveness,
+            # worker locks), which the lifespan wires after this sync. The
+            # lifespan calls recover_interrupted_goals() once it is.
             return loaded
         except Exception as exc:
             _svc_logger.warning("DB sync goals failed: %s", exc)

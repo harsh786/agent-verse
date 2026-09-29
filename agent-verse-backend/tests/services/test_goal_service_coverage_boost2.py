@@ -189,15 +189,34 @@ async def test_daily_goal_limit_redis_rolls_back_increment_when_over_limit() -> 
 # ── _recover_interrupted_goals ──────────────────────────────────────────────
 
 
+def _orphan_of_dead_replica(record: GoalRecord) -> GoalRecord:
+    """Recovery only touches in-process goals whose runner replica is gone."""
+    record.task = None
+    record.execution_context["runner"] = {"kind": "in_process", "replica": "dead-replica"}
+    return record
+
+
+def _recovery_ready(svc: GoalService) -> GoalService:
+    import fakeredis.aioredis
+
+    svc._redis = fakeredis.aioredis.FakeRedis(decode_responses=True)  # no heartbeat, no lock
+    svc._db_claim_goal_runner = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    svc._db_set_runner = AsyncMock()  # type: ignore[method-assign]
+    svc._tenant_plan = AsyncMock(return_value="starter")  # type: ignore[method-assign]
+    return svc
+
+
 @pytest.mark.asyncio
 async def test_recover_interrupted_goals_continues_after_one_enqueue_failure() -> None:
     """If re-enqueuing one interrupted goal raises, the remaining interrupted
     goals must still be recovered rather than aborting the whole sweep."""
-    svc = _svc()
-    broken = _inject_goal(svc, goal_id="g-broken", status=GoalStatus.EXECUTING)
-    broken.task = None
-    healthy = _inject_goal(svc, goal_id="g-healthy", status=GoalStatus.PLANNING)
-    healthy.task = None
+    svc = _recovery_ready(_svc())
+    broken = _orphan_of_dead_replica(
+        _inject_goal(svc, goal_id="g-broken", status=GoalStatus.EXECUTING)
+    )
+    healthy = _orphan_of_dead_replica(
+        _inject_goal(svc, goal_id="g-healthy", status=GoalStatus.PLANNING)
+    )
 
     task_queue = MagicMock()
 
@@ -216,6 +235,9 @@ async def test_recover_interrupted_goals_continues_after_one_enqueue_failure() -
     assert healthy.status == GoalStatus.PLANNING
     assert broken.status == GoalStatus.EXECUTING
     assert task_queue.enqueue_goal.call_count == 2
+    # The failed one's claim is handed back so a later start can retry it.
+    assert broken.execution_context["runner"] == {"kind": "in_process",
+                                                  "replica": "dead-replica"}
 
 
 @pytest.mark.asyncio
@@ -223,9 +245,10 @@ async def test_recover_interrupted_goals_marks_failed_without_task_queue() -> No
     """With no task queue configured at all, interrupted goals can't be
     re-enqueued anywhere — they must be marked FAILED with a clear message
     so the caller knows to resubmit, rather than sitting stuck forever."""
-    svc = _svc()
-    record = _inject_goal(svc, goal_id="g-orphan", status=GoalStatus.EXECUTING)
-    record.task = None
+    svc = _recovery_ready(_svc())
+    record = _orphan_of_dead_replica(
+        _inject_goal(svc, goal_id="g-orphan", status=GoalStatus.EXECUTING)
+    )
     svc._task_queue = None
 
     recovered = await svc._recover_interrupted_goals()

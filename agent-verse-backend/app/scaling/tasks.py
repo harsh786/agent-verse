@@ -1823,7 +1823,14 @@ def run_goal(
     # used during release(), silently breaking the release.
     _lock: _SyncGoalLock | None = None
     try:
-        _redis_url = celery_app.conf.broker_url or ""
+        _broker_url = str(celery_app.conf.broker_url or "")
+        # The lock lives in Redis: the broker when it is Redis, else REDIS_URL.
+        # Neither configured (eager/test mode) is the only lock-less path.
+        _redis_url = (
+            _broker_url
+            if _broker_url.startswith(("redis://", "rediss://", "unix://"))
+            else (os.getenv("REDIS_URL", "") if _broker_url else "")
+        )
         if _redis_url:
             import uuid as _uuid
 
@@ -1856,8 +1863,27 @@ def run_goal(
                     "reason": "already_executing",
                 }
     except Exception as _lock_exc:
-        logger.warning("Lock acquire failed (continuing without lock): %s", _lock_exc)
-        _lock = None
+        # Fail closed: running without the lock let a redelivered/duplicated
+        # task execute the same goal concurrently. Retry; after the last retry
+        # record the goal as failed (and release its slot) instead.
+        logger.error("goal_execution_lock_unavailable goal_id=%s: %s", goal_id, _lock_exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=_lock_exc, countdown=2**self.request.retries) from _lock_exc
+        _lock_reason = "Goal execution lock unavailable (Redis); not run to avoid duplicates"
+        with contextlib.suppress(Exception):
+            _run_async(update_submitted_goal_status("failed", error_message=_lock_reason))
+        with contextlib.suppress(Exception):
+            _run_async(append_submitted_goal_event({"type": "worker_failed",
+                                                    "reason": _lock_reason}))
+        if not dry_run:
+            with contextlib.suppress(Exception):
+                _run_async(_finalize_owning_mission(goal_id, tenant_id))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {
+            "status": "failed",
+            "goal_id": goal_id,
+            "reason": "execution_lock_unavailable",
+        }
 
     try:
         _run_async(ensure_submitted_goal_row())
