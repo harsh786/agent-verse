@@ -39,6 +39,7 @@ from app.providers.base import LLMProvider
 from app.rag.store import KnowledgeStore
 from app.reliability.circuit_breaker import CircuitBreaker
 from app.reliability.dedup import DeduplicationCache
+from app.reliability.goal_lifecycle import GoalCancelledError
 from app.reliability.result_processor import ResultProcessor
 from app.reliability.rollback import RollbackEngine
 from app.tenancy.context import TenantContext
@@ -847,6 +848,11 @@ class AgentGraph(
                             await self._emit({"type": "goal_failed", "reason": _exc_str})
                         return err_state
                     raise  # genuine governance denials surface to the caller
+                except GoalCancelledError:
+                    # An operator cancel observed at a step boundary (pause gate).
+                    # It must reach the runner as a cancel — folding it into the
+                    # generic handler below reported the goal as "failed".
+                    raise
                 except Exception as exc:
                     if isinstance(exc, RetrievalEntryPointError):
                         failed_state = input_state.get("agent_state")

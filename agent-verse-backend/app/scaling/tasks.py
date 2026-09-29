@@ -19,6 +19,7 @@ from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
 from app.org.feature_flags import is_feature_enabled
+from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
 
@@ -522,6 +523,48 @@ def _get_llm_provider(tenant_id: str) -> Any:
     )
 
 
+_WORKER_SIGNAL_POLL_SECONDS = 5.0
+
+
+def _pause_gate_host(runner: Any) -> Any:
+    """The object in the runner wrapper chain that honours ``_pause_gate``, or None."""
+    seen: set[int] = set()
+    current = runner
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        attrs = getattr(current, "__dict__", {})
+        if "_pause_gate" in attrs:
+            return current
+        current = attrs.get("_runner") or attrs.get("_inner")
+    return None
+
+
+def _make_worker_pause_gate(goal_id: str, sync_r: Any, event_callback: Any) -> Any:
+    """Step-boundary gate for worker runs, driven by the cross-replica Redis flags."""
+    from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
+
+    async def _emit(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            with contextlib.suppress(Exception):
+                await event_callback(event)
+
+    async def _gate() -> None:
+        if is_cancelled_sync(goal_id, sync_r):
+            raise GoalCancelledError(f"Goal {goal_id} cancelled")
+        if not is_paused_sync(goal_id, sync_r):
+            return
+        logger.info("goal_paused_in_worker goal_id=%s", goal_id)
+        await _emit({"type": "goal_paused_at_step_boundary"})
+        while is_paused_sync(goal_id, sync_r):
+            await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+            if is_cancelled_sync(goal_id, sync_r):
+                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+        logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
+        await _emit({"type": "goal_execution_resumed"})
+
+    return _gate
+
+
 async def _run_with_signals(
     agent_runner: Any,
     goal: str,
@@ -530,14 +573,25 @@ async def _run_with_signals(
     goal_id: str,
     initial_context: dict[str, Any] | None = None,
 ) -> Any:
-    """Run agent_runner.run() while periodically polling pause/cancel signals.
+    """Run agent_runner.run() while observing cross-replica pause/cancel signals.
 
-    Polls every 5 seconds. On cancel → raises GoalCancelledError.
-    On pause → cancels the current run task and waits until resumed, then restarts.
+    The signals are the Redis flags any API replica sets (``pause_goal`` /
+    ``cancel_goal`` / ``resume_goal``, app/reliability/goal_lifecycle.py).
+
+    * Cancel → the run is cancelled and ``GoalCancelledError`` raised (polled
+      every ``_WORKER_SIGNAL_POLL_SECONDS``; the pause gate also raises it at
+      the next step boundary).
+    * Pause → when the runner exposes a step-boundary pause gate (AgentGraph's
+      ``_pause_gate``) the worker installs one that blocks between steps until
+      the flag is cleared — never mid tool call, and the run continues where it
+      stopped. Legacy runners without a gate fall back to cancel-and-rerun.
     """
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
 
     sync_r = _get_sync_redis()
+    gate_host = _pause_gate_host(agent_runner)
+    if gate_host is not None and sync_r is not None:
+        gate_host._pause_gate = _make_worker_pause_gate(goal_id, sync_r, event_callback)
 
     run_task = asyncio.create_task(
         agent_runner.run(
@@ -550,7 +604,7 @@ async def _run_with_signals(
     )
 
     while not run_task.done():
-        await asyncio.sleep(5)
+        await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
         # Re-check: task may have completed during the sleep
         if run_task.done():
             break
@@ -561,14 +615,14 @@ async def _run_with_signals(
                     await run_task
                 raise GoalCancelledError(f"Goal {goal_id} cancelled during execution")
 
-            if is_paused_sync(goal_id, sync_r):
+            if gate_host is None and is_paused_sync(goal_id, sync_r):
                 # Pause: cancel current run and wait for resume signal
                 run_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
                 logger.info("goal_paused_in_worker goal_id=%s", goal_id)
                 while is_paused_sync(goal_id, sync_r):
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
                     if is_cancelled_sync(goal_id, sync_r):
                         raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
                 logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
@@ -1616,7 +1670,11 @@ def run_goal(
         logger.warning("Goal %s status bridge unavailable: %s", goal_id, exc)
 
     async def update_submitted_goal_status(
-        status: str, *, error_message: str = "", iterations: int = 0
+        status: str,
+        *,
+        error_message: str = "",
+        iterations: int = 0,
+        only_if_active: bool = False,
     ) -> None:
         if goal_bridge is None:
             return
@@ -1628,6 +1686,7 @@ def run_goal(
                 status,
                 error_message=error_message,
                 iterations=iterations,
+                **({"only_if_active": True} if only_if_active else {}),
             )
         except Exception as db_exc:
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
@@ -2833,6 +2892,27 @@ def run_goal(
                 "execution, but submitted goal status/events were bridged when DB was available."
             )
         return result
+    except GoalCancelledError as exc:
+        # An operator cancel from any replica (Redis flag). It used to fall into
+        # the generic handler below, which scheduled a Celery RETRY of the
+        # cancelled goal (and on the last attempt marked it failed/DLQ'd).
+        logger.info("goal_cancelled_in_worker goal_id=%s: %s", goal_id, exc)
+        _record_goal_duration_metric(
+            "cancelled", started_monotonic=started_monotonic, priority=priority
+        )
+        with contextlib.suppress(Exception):
+            # Conditional: a HITL rejection already recorded FAILED — keep it.
+            _run_async(
+                update_submitted_goal_status(
+                    "cancelled", error_message=str(exc), only_if_active=True
+                )
+            )
+        with contextlib.suppress(Exception):
+            _run_async(append_submitted_goal_event({"type": "goal_cancelled"}))
+        with contextlib.suppress(Exception):
+            _run_async(meter_worker_goal("cancelled"))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {"status": "cancelled", "goal_id": goal_id, "reason": "cancelled_by_operator"}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
         _record_goal_duration_metric(

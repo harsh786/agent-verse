@@ -635,7 +635,8 @@ class TestPauseGoal:
         svc._redis = mock_redis
         with patch("app.reliability.goal_lifecycle.signal_pause", AsyncMock()) as mock_sig:
             await svc.pause_goal("g1", _ctx())
-        mock_sig.assert_called_once_with("g1", mock_redis)
+        # Not running on this replica -> the flag is the only route: strict.
+        mock_sig.assert_called_once_with("g1", mock_redis, strict=True)
 
     async def test_pause_not_found_raises(self):
         svc = _svc()

@@ -6,6 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1337,6 +1338,9 @@ async def test_pause_goal_status_survives_concurrent_get_goal_poll() -> None:
         created_at="2024-01-01T00:00:00",
     )
     svc.fake_db_status[goal_id] = GoalStatus.EXECUTING.value
+    # A queued goal runs on a worker, reachable only via the Redis pause flag
+    # (without Redis the pause now fails closed with 503).
+    svc._redis = AsyncMock()
 
     pause_result, get_result = await asyncio.gather(
         svc.pause_goal(goal_id, _CTX_A),
