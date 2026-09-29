@@ -347,4 +347,25 @@ describe('ConnectorDetailPage', () => {
     expect(screen.getByText('Connection successful')).toBeInTheDocument();
     expect(screen.getByText('Authenticated previously')).toBeInTheDocument();
   });
+
+  test('a failed tool discovery is shown as an error, not "No tools discovered"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/tools'))
+        return new Response(JSON.stringify({ detail: 'Tool discovery failed: upstream down' }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(CONNECTOR), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await screen.findByRole('heading', { name: 'GitHub' });
+    expect(await screen.findByText(/Tool discovery failed: upstream down/i)).toBeInTheDocument();
+    expect(screen.queryByText('No tools discovered')).not.toBeInTheDocument();
+  });
+
+  test('a server error loading the connector is not reported as "not found"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'registry unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+    renderPage();
+    expect(await screen.findByText(/could not be loaded: registry unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Connector not found/i)).not.toBeInTheDocument();
+  });
 });

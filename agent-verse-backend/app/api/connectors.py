@@ -1921,3 +1921,47 @@ async def missing_capabilities(request: Request, goal: str = Query(...)) -> dict
         "missing_connectors": suggestions[:5],
         "can_proceed": len(suggestions) == 0 or len(available_tools) > 0,
     }
+
+
+# ── Single-connector reads (connector detail page) ────────────────────────────
+# Declared LAST so the literal GET routes above (/catalog, /capabilities,
+# /oauth/start, …) win over the /{server_id} path parameter.
+
+
+@router.get("/{server_id}/tools")
+async def list_connector_tools(request: Request, server_id: str) -> list[dict[str, Any]]:
+    """Live tool list of one of the caller's connectors (MCP ``tools/list``,
+    built-in definitions or OpenAPI operations, via the MCP client).
+
+    404 when the caller has no such connector; 503 without an MCP client; 502
+    when discovery fails — never an empty list standing in for an error.
+    """
+    tenant_ctx = _require_tenant(request)
+    if await _registry(request).get(server_id, tenant_ctx=tenant_ctx) is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    mcp_client = getattr(request.app.state, "mcp_client", None)
+    if mcp_client is None:
+        raise HTTPException(status_code=503, detail="MCP client not available")
+    try:
+        tools = await mcp_client.discover_tools(server_id=server_id, tenant_ctx=tenant_ctx)
+    except Exception as exc:
+        _logger.warning("connector_tools_discovery_failed server=%s: %s", server_id, exc)
+        raise HTTPException(status_code=502, detail=f"Tool discovery failed: {exc}") from exc
+    return [
+        {
+            "name": getattr(t, "name", ""),
+            "description": getattr(t, "description", ""),
+            "input_schema": getattr(t, "input_schema", {}) or {},
+        }
+        for t in tools
+    ]
+
+
+@router.get("/{server_id}")
+async def get_connector(request: Request, server_id: str) -> dict[str, Any]:
+    """One of the caller's connectors, with secrets masked (404 otherwise)."""
+    tenant_ctx = _require_tenant(request)
+    cfg = await _registry(request).get(server_id, tenant_ctx=tenant_ctx)
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    return _public_connector(server_id, cfg)
