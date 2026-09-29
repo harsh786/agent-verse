@@ -32,6 +32,7 @@ async def test_redirect_into_internal_address_is_blocked() -> None:
 
     def _client(**kw: Any) -> httpx.AsyncClient:
         kw.pop("follow_redirects", None)
+        kw.pop("transport", None)  # replace the IP-pinned transport with the mock
         return real_client(transport=httpx.MockTransport(handler), follow_redirects=False, **kw)
 
     with (
@@ -53,6 +54,7 @@ async def test_public_redirect_is_followed() -> None:
 
     def _client(**kw: Any) -> httpx.AsyncClient:
         kw.pop("follow_redirects", None)
+        kw.pop("transport", None)  # replace the IP-pinned transport with the mock
         return real_client(transport=httpx.MockTransport(handler), follow_redirects=False, **kw)
 
     with (
@@ -61,3 +63,40 @@ async def test_public_redirect_is_followed() -> None:
     ):
         out = await HttpRequestTool().execute(url="https://public.example.com/start")
     assert out["status_code"] == 200 and out["body"] == {"ok": True}
+
+
+async def test_connect_time_pinning_blocks_rebinding_even_if_precheck_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DNS rebinding: the URL check can see a public address and the connection a
+    private one. The client pins to an IP validated at connect time, so a request
+    that slipped past the pre-check still never reaches an internal host."""
+    import http.server
+    import threading
+
+    from app.tools import http_tool
+
+    hits: list[str] = []
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"internal secret")
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(http_tool, "_is_blocked", lambda url: False)  # pre-check fooled
+        result = await http_tool.HttpRequestTool().execute(
+            url=f"http://127.0.0.1:{server.server_port}/latest/meta-data"
+        )
+    finally:
+        server.shutdown()
+    assert "error" in result, result
+    assert hits == []

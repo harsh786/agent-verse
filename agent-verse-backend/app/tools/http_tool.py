@@ -113,7 +113,12 @@ class HttpRequestTool:
         try:
             # Redirects are followed manually so EVERY hop is re-validated: with
             # follow_redirects=True a public URL could 302 to an internal address.
-            async with httpx.AsyncClient(timeout=_timeout, follow_redirects=False) as client:
+            # The client pins each connection to an IP validated at connect time:
+            # checking the URL and then letting a plain client re-resolve DNS left a
+            # rebinding window (public at check, 169.254.169.254 at connect).
+            from app.net.ssrf_guard import public_async_client
+
+            async with public_async_client(timeout=_timeout) as client:
                 send_kwargs: dict[str, Any] = {"headers": _headers}
                 if body is not None:
                     if isinstance(body, dict):
