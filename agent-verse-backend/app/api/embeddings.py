@@ -37,7 +37,7 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
     ``fallback_lexical``; ``used_fallback`` reports whether the fallback actually
     ran, and ``model`` is what produced the vectors.
     """
-    _require_tenant(request)
+    tenant = _require_tenant(request)
     from app.embedding.router import EmbeddingUnavailableError, embedding_router
 
     provider = getattr(request.app.state, "embedder", None) or getattr(
@@ -50,6 +50,7 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
             model=body.model,
             fallback_lexical=body.fallback_lexical,
             provider_impl=provider,
+            tenant_id=tenant.tenant_id,
         )
     except EmbeddingUnavailableError as exc:
         raise HTTPException(
@@ -116,11 +117,11 @@ async def validate_dimension(request: Request) -> dict[str, Any]:
 
 @router.get("/usage")
 async def get_embedding_usage(request: Request) -> dict[str, Any]:
-    """Get embedding usage statistics for the current session."""
-    _require_tenant(request)
+    """The calling tenant's embedding usage statistics (this replica)."""
+    tenant = _require_tenant(request)
     from app.embedding.router import embedding_router
 
-    return embedding_router.get_usage_stats()
+    return embedding_router.get_usage_stats(tenant_id=tenant.tenant_id)
 
 
 async def _collection_avg_similarity(
