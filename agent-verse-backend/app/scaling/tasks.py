@@ -1649,6 +1649,97 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
     return out or None
 
 
+async def _goal_execution_context(goal_id: str, tenant_id: str) -> dict[str, Any]:
+    """The goal's persisted ``execution_context`` (runtime profile, pattern flags …).
+
+    Raises on a DB error; the caller decides how to degrade (and records it).
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        raw = (
+            await session.execute(
+                text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                {"g": goal_id, "t": tenant_id},
+            )
+        ).scalar()
+    try:
+        ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        ctx = {}
+    return ctx if isinstance(ctx, dict) else {}
+
+
+def _pattern_flags_from_context(ctx: dict[str, Any]) -> dict[str, bool]:
+    """The agent's reasoning-pattern flags snapshotted on the goal at submission."""
+    from app.services.goal_service import AGENT_PATTERN_FLAG_KEYS
+
+    raw = ctx.get("agent_pattern_flags") if isinstance(ctx, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {k: bool(raw[k]) for k in AGENT_PATTERN_FLAG_KEYS if k in raw}
+
+
+def _runtime_profile_from_context(
+    ctx: dict[str, Any],
+) -> tuple[Any | None, Any | None, dict[str, str] | None]:
+    """``(profile_that_drives, observed_profile, downgrade)`` from a persisted goal.
+
+    Mirrors GoalService._build_runtime_profile's rollout decision: the profile
+    drives execution only on the ``v2`` strategy-runtime path; it is always the
+    observed profile (eval scorecards). A snapshot that cannot be rebuilt here is
+    an honest downgrade — never a claim that the requested strategy ran.
+    """
+    snapshot = ctx.get("runtime_profile") if isinstance(ctx, dict) else None
+    if not isinstance(snapshot, dict):
+        return None, None, None
+    drives = str(ctx.get("strategy_runtime_path") or "legacy") == "v2"
+    try:
+        from app.orchestration.runtime_profile import GoalRuntimeProfile
+
+        profile = GoalRuntimeProfile.from_dict(snapshot)
+    except Exception as exc:
+        logger.warning("worker_runtime_profile_rehydrate_failed: %s", exc)
+        requested = snapshot.get("primary_strategy")
+        requested_id = (
+            str(requested.get("strategy_id")) if isinstance(requested, dict) else "unknown"
+        )
+        downgrade = (
+            {
+                "strategy_id": requested_id,
+                "from": "runtime_profile",
+                "to": "agent_graph",
+                "reason": "runtime_profile_unavailable_on_worker",
+            }
+            if drives
+            else None
+        )
+        return None, None, downgrade
+    return (profile if drives else None), profile, None
+
+
+def _worker_bulkhead_registry() -> Any:
+    """The distributed per-tenant bulkhead the API path gives its graphs (or None)."""
+    try:
+        import redis.asyncio as _aioredis_bh
+
+        from app.reliability.bulkhead import RedisBulkheadRegistry
+
+        return RedisBulkheadRegistry(
+            redis=_aioredis_bh.from_url(REDIS_URL, decode_responses=True),
+            default_max_concurrent=20,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("worker_bulkhead_registry_wire_failed: %s", exc)
+        return None
+
+
 async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
     """The goal-level ``model_override`` persisted in goals.execution_context ("" if none).
 
@@ -2285,6 +2376,35 @@ def run_goal(
         except Exception as _ae:
             logger.debug("worker_agent_config_lookup_failed: %s", _ae)
 
+    # ── Runtime profile + pattern flags persisted on the goal ────────────────
+    # The worker used to build a plain loop whatever the goal's persisted runtime
+    # profile / agent pattern flags said (while the goal was recorded as running
+    # the profile's strategy). Read them back and build the graph like GoalService.
+    _worker_exec_ctx: dict[str, Any] = {}
+    if goal_bridge is not None:
+        try:
+            _worker_exec_ctx = _run_async(_goal_execution_context(goal_id, tenant_id)) or {}
+        except Exception as _ctx_exc:
+            logger.warning("worker_execution_context_lookup_failed goal=%s: %s", goal_id, _ctx_exc)
+    _worker_pattern_flags = _pattern_flags_from_context(_worker_exec_ctx)
+    (
+        _worker_profile,
+        _worker_observed_profile,
+        _worker_profile_downgrade,
+    ) = _runtime_profile_from_context(_worker_exec_ctx)
+
+    async def _record_worker_strategy_execution(execution: dict[str, Any]) -> None:
+        """Persist which strategy the worker actually runs (goals.execution_context)."""
+        if goal_bridge is None:
+            return
+        try:
+            _, _, _bridge = _make_worker_goal_bridge()
+            await _bridge._db_merge_context_key(
+                goal_id, tenant_id, "strategy_execution", execution
+            )
+        except Exception as _se_exc:
+            logger.warning("worker_strategy_execution_persist_failed: %s", _se_exc)
+
     _agent_runner: Any = None
     _use_agent_graph = False
     # Canonical Reflexion memory (recall in the planner, learning after the goal).
@@ -2375,7 +2495,6 @@ def run_goal(
     if not _loop_is_patched:
         # Production path: Try AgentGraph first (full capabilities)
         try:
-            from app.agent.graph import AgentGraph
             from app.governance.audit import AuditLog
             from app.governance.cost import CostController, RedisCostController
             from app.governance.hitl import HITLGateway
@@ -2766,7 +2885,7 @@ def run_goal(
                 # means tool calls are denied (enforce_tool_call has no grants).
                 logger.warning("worker_governance_wire_failed: %s", _gov_exc)
 
-            _agent_runner = AgentGraph(
+            _worker_graph_services: dict[str, Any] = dict(
                 planner=provider,
                 executor=provider,
                 verifier=_verifier_for_graph,
@@ -2800,7 +2919,31 @@ def run_goal(
                 answer_synthesizer=_phase3_synthesizer,
                 calibration_store=_phase3_calibration,
                 consensus_verifier=_phase3_consensus,
+                # Distributed per-tenant concurrency bulkhead — same registry the
+                # API path gives its graphs (tool-call concurrency per tenant).
+                bulkhead_registry=_worker_bulkhead_registry(),
+                # The agent's reasoning-pattern flags (snapshotted on the goal at
+                # submission — the worker has no in-memory agent store).
+                **_worker_pattern_flags,
             )
+            # Same assembly as GoalService: the persisted runtime profile is
+            # compiled (GraphFactory) when the rollout lets it drive; what runs —
+            # including any downgrade — is recorded on the goal.
+            from app.orchestration.profiled_graph import build_profiled_graph
+
+            _agent_runner, _worker_strategy_execution = build_profiled_graph(
+                _worker_profile,
+                _worker_graph_services,
+                dict(_worker_pattern_flags),
+            )
+            if _worker_profile_downgrade:
+                _worker_strategy_execution.setdefault("downgrades", []).append(
+                    _worker_profile_downgrade
+                )
+            # Scorecards read the observed profile (set for non-v2 tenants too).
+            with contextlib.suppress(Exception):
+                _agent_runner._observed_runtime_profile = _worker_observed_profile
+            _run_async(_record_worker_strategy_execution(_worker_strategy_execution))
             # RPA parity with the in-process path (goal_service sets
             # graph._rpa_executor from app.state): without it every rpa_* tool
             # call on a queued goal fell through to "Tool not found". Same

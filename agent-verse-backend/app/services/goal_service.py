@@ -12,7 +12,6 @@ Responsible for:
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import time
 import uuid
@@ -514,6 +513,22 @@ GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
     "debate_error",
     "supervisor_applied",
     "supervisor_fallback",
+)
+
+
+# Agent-config reasoning-pattern flags the graph is compiled with. Snapshotted on
+# the goal at submission (execution_context["agent_pattern_flags"]) so the Celery
+# worker — which has no in-memory agent store — builds the same graph.
+AGENT_PATTERN_FLAG_KEYS: tuple[str, ...] = (
+    "enable_cot",
+    "enable_reflection",
+    "enable_goal_tree",
+    "enable_self_refine",
+    "enable_self_consistency",
+    "enable_tree_of_thoughts",
+    "enable_peer_review",
+    "enable_supervisor",
+    "enable_debate",
 )
 
 
@@ -1261,7 +1276,6 @@ class GoalService:
 
         This is the production path — every goal runs with full pipeline.
         """
-        from app.agent.graph import AgentGraph
         from app.core.config import get_provider_env
         from app.intelligence.guardrails import GuardrailChecker
         from app.reliability.result_processor import ResultProcessor
@@ -1666,94 +1680,23 @@ class GoalService:
             "reflexion_service": getattr(app_state, "reflexion_service", None),
         }
         # What actually runs is recorded on the goal (execution_context
-        # ["strategy_execution"]) from the constructed runtime — never inferred from what the
-        # profile asked for — so a downgrade is visible instead of silent.
-        from app.orchestration.execution_drivers import describe_agent_graph_execution
+        # ["strategy_execution"]) from the constructed runtime — never inferred from
+        # what the profile asked for — so a downgrade is visible instead of silent.
+        # Shared with the Celery worker (app.scaling.tasks.run_goal).
+        from app.orchestration.profiled_graph import build_profiled_graph
 
-        _strategy_execution: dict[str, Any] = {"driver": "agent_graph"}
-        _downgrades: list[dict[str, str]] = []
-        if runtime_profile is not None:
-            from app.orchestration.graph_factory import GraphFactory
-            from app.orchestration.strategy_adapters import ExecutionTier
-
-            _requested_primary = runtime_profile.primary_strategy.strategy_id
-            _strategy_execution["requested_primary"] = _requested_primary
-            _strategy_execution["profile_id"] = runtime_profile.profile_id
-            if runtime_profile.execution_tier is ExecutionTier.DISTRIBUTED:
-                _distributed_loop = self._try_build_distributed_strategy_loop(
-                    runtime_profile,
-                    tenant_ctx=tenant_ctx,
-                    app_state=app_state,
-                    agent_id=agent_id,
-                    provider=provider,
-                )
-                if _distributed_loop is not None:
-                    graph = _distributed_loop
-                    _strategy_execution["driver"] = "strategy_runner"
-                    _strategy_execution["patterns"] = [_requested_primary]
-                else:
-                    _svc_logger.warning(
-                        "distributed_strategy_runner_unavailable_local_fallback",
-                        strategy_id=_requested_primary,
-                        goal_id=runtime_profile.goal_id,
-                    )
-                    # supervisor / debate / goal_tree also exist as local AgentGraph
-                    # nodes: compile the same profile on the local tier so the requested
-                    # pattern still runs, rather than a bare ReAct loop claiming it.
-                    try:
-                        graph = GraphFactory().create(
-                            dataclasses.replace(
-                                runtime_profile, execution_tier=ExecutionTier.LOCAL
-                            ),
-                            graph_services,
-                            agent_config=_agent_config,
-                        )
-                        _downgrades.append(
-                            {
-                                "strategy_id": _requested_primary,
-                                "from": "strategy_runner",
-                                "to": "agent_graph",
-                                "reason": "strategy_runner_unavailable",
-                            }
-                        )
-                    except ValueError:
-                        graph = AgentGraph(**graph_services)
-                        _downgrades.append(
-                            {
-                                "strategy_id": _requested_primary,
-                                "from": "strategy_runner",
-                                "to": "react",
-                                "reason": "strategy_runner_unavailable_no_local_node",
-                            }
-                        )
-            else:
-                try:
-                    graph = GraphFactory().create(
-                        runtime_profile,
-                        graph_services,
-                        agent_config=_agent_config,
-                    )
-                except ValueError as _graph_factory_exc:
-                    _svc_logger.error(
-                        "graph_factory_compile_failed_local_fallback",
-                        error=str(_graph_factory_exc),
-                        goal_id=runtime_profile.goal_id,
-                    )
-                    graph = AgentGraph(**graph_services)
-                    _downgrades.append(
-                        {
-                            "strategy_id": _requested_primary,
-                            "from": "agent_graph",
-                            "to": "react",
-                            "reason": "graph_compile_failed",
-                        }
-                    )
-        else:
-            graph = AgentGraph(**graph_services)
-        if "patterns" not in _strategy_execution:
-            _strategy_execution["patterns"] = describe_agent_graph_execution(graph)
-        if _downgrades:
-            _strategy_execution["downgrades"] = _downgrades
+        graph, _strategy_execution = build_profiled_graph(
+            runtime_profile,
+            graph_services,
+            _agent_config,
+            distributed_loop_builder=lambda: self._try_build_distributed_strategy_loop(
+                runtime_profile,
+                tenant_ctx=tenant_ctx,
+                app_state=app_state,
+                agent_id=agent_id,
+                provider=provider,
+            ),
+        )
         if execution_context is not None:
             execution_context["strategy_execution"] = _strategy_execution
         # Wire attributes that are set externally (not constructor params)
@@ -3993,6 +3936,23 @@ class GoalService:
                     )
             except Exception:
                 pass
+
+            # The agent's pattern flags travel with the goal: a queued goal runs on a
+            # worker that cannot see this replica's agent store.
+            if agent_id:
+                with suppress(Exception):
+                    _agent_rec = None
+                    _agent_store_for_flags = self._get_agent_store()
+                    if _agent_store_for_flags is not None:
+                        _agent_rec = _agent_store_for_flags.get(agent_id, tenant_ctx=tenant_ctx)
+                    if isinstance(_agent_rec, dict):
+                        _flags = {
+                            k: bool(_agent_rec[k])
+                            for k in AGENT_PATTERN_FLAG_KEYS
+                            if k in _agent_rec
+                        }
+                        if _flags:
+                            record.execution_context["agent_pattern_flags"] = _flags
 
             # Dynamic orchestration: build the runtime profile, record it on the goal, and
             # let the v2 rollout decide whether it drives execution. The profile columns
