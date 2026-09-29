@@ -114,7 +114,11 @@ For each wave: if its branch has the commits for every item below, merge it
 **All four wave-7 branches are merged to `main` (2026-09-29).** Validation on the merged
 `main`: unit suite 28,358 passed / 30 failed and e2e 148 passed / 1 failed; all 31 were
 tests asserting pre-wave-7 behaviour or depending on real DNS, fixed in the commit after
-the merge (`test: align three suites with wave 7 behaviour`). **Next:** check `validation-status.md` (written by `sh docs/audits/2026-09-29-reaudit/run_validation.sh`,
+the merge (`test: align three suites with wave 7 behaviour`). **Confirmation run (`1ea29be23`): unit 28,387 passed / 1 failed; least-privilege e2e 149 passed.**
+The one failure, `tests/api/test_workflows.py::test_tenant_isolation_prevents_cross_tenant_access`,
+passes alone and with its file (19/19) — an order-dependent leak from an earlier test; find
+the leaking test (bisect as in `tests/_lifespan_singletons.py`'s history) and fix it first.
+**Next:** check `validation-status.md` (written by `sh docs/audits/2026-09-29-reaudit/run_validation.sh`,
 which runs the full unit suite + least-privilege e2e and commits the result — re-run it after any change) to confirm green, then re-certify the wave-7 features
 (section 7) and work through the follow-ups listed per wave below.
 
