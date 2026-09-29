@@ -22,7 +22,7 @@ Two defects in 0059's RLS, both on the marketplace tables:
   the number of rows updated so the application can fail loudly on 0.
 
 Revision ID: d2b7e4f1a8c6
-Revises: a9c4e2f7b1d3
+Revises: b3d5f7a9c1e2
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "d2b7e4f1a8c6"
-down_revision = "a9c4e2f7b1d3"
+down_revision = "b3d5f7a9c1e2"
 branch_labels = None
 depends_on = None
 

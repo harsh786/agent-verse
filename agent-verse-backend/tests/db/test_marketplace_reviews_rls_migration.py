@@ -43,7 +43,7 @@ def _policy(stmts: list[str], name: str) -> str:
 def test_revision_chain() -> None:
     module = importlib.import_module(_MOD)
     assert module.revision == "d2b7e4f1a8c6"
-    assert module.down_revision == "a9c4e2f7b1d3"
+    assert module.down_revision == "b3d5f7a9c1e2"
 
 
 def test_upgrade_drops_the_for_all_policy_and_keeps_rls_forced(
