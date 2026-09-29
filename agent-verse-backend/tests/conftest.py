@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import pytest
@@ -320,3 +321,53 @@ def _restore_environment_variable():
         os.environ.pop("ENVIRONMENT", None)
     else:
         os.environ["ENVIRONMENT"] = saved
+
+
+# Module-level singletons the app lifespan wires to a DB session factory
+# (app/main.py ``.set_db(db_factory)``). A lifespan test that runs with a fake
+# factory left them wired, so unrelated later tests hit the fake DB (503s,
+# AttributeErrors on 'scalars'/'add') — only in full-suite order.
+_LIFESPAN_DB_SINGLETONS = (
+    ("app.api.mfa", "_mfa_db_store"),
+    ("app.api.templates", "template_store"),
+    ("app.chat.router", "_services_api"),
+    ("app.auth.agent_credentials", "_agent_credential_store"),
+    ("app.knowledge_graph.store", "kg_store"),
+    ("app.optimization.ab_testing", "ab_testing_engine"),
+    ("app.intelligence.prompt_optimizer", "_default_optimizer"),
+)
+_DB_ATTRS = ("_db", "_db_factory", "_session_factory")
+
+
+@pytest.fixture(autouse=True)
+def _restore_lifespan_db_singletons():
+    """Snapshot each lifespan-wired singleton's DB attributes; restore after."""
+    import sys
+
+    saved: list[tuple[object, str, object]] = []
+    for module_name, attr in _LIFESPAN_DB_SINGLETONS:
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue  # not imported yet: nothing to leak
+        obj = getattr(module, attr, None)
+        if obj is None:
+            continue
+        for name in _DB_ATTRS:
+            if hasattr(obj, name):
+                saved.append((obj, name, getattr(obj, name)))
+    yield
+    for obj, name, value in saved:
+        with contextlib.suppress(Exception):
+            setattr(obj, name, value)
+    # Singletons first imported during the test start unwired next time.
+    for module_name, attr in _LIFESPAN_DB_SINGLETONS:
+        if any(o is getattr(sys.modules.get(module_name), attr, None) for o, _, _ in saved):
+            continue
+        module = sys.modules.get(module_name)
+        obj = getattr(module, attr, None) if module is not None else None
+        if obj is None:
+            continue
+        for name in _DB_ATTRS:
+            if hasattr(obj, name):
+                with contextlib.suppress(Exception):
+                    setattr(obj, name, None)
