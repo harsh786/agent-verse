@@ -8,7 +8,7 @@ import hmac
 import time
 import urllib.parse
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient as _BaseTestClient
@@ -230,7 +230,8 @@ def test_slack_events_returns_ok_for_unknown_type() -> None:
 
 
 def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
-    monkeypatch.setenv("SLACK_TENANT_ID", "evt-tenant")
+    """The decision runs in the tenant BOUND to the Slack workspace (team id)."""
+    monkeypatch.setenv("SLACK_TENANT_ID", "env-tenant-must-be-ignored")
 
     mock_hitl = MagicMock()
     mock_hitl.approve = MagicMock(side_effect=AssertionError("sync approve() must not be used"))
@@ -239,19 +240,61 @@ def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
 
     body_data = {
         "type": "block_actions",
+        "team": {"id": "T-BOUND"},
         "actions": [{"action_id": "approve_hitl", "value": "req-123"}],
-        "user": {"name": "alice"},
+        "user": {"id": "U1", "name": "alice"},
     }
     import json
     body = json.dumps(body_data).encode()
-    client = TestClient(_make_app(hitl_gateway=mock_hitl))
-    resp = client.post(
-        "/integrations/slack/events",
-        content=body,
-        headers={"Content-Type": "application/json"},
-    )
+    lookups: list[str] = []
+
+    async def _resolve(channel_type: str, channel_id: str, db: object) -> str | None:
+        lookups.append(f"{channel_type}:{channel_id}")
+        return "bound-tenant" if channel_id == "T-BOUND" else None
+
+    with patch("app.api.channels.ingestion._resolve_tenant_from_channel", _resolve):
+        client = TestClient(_make_app(hitl_gateway=mock_hitl))
+        resp = client.post(
+            "/integrations/slack/events",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
     assert resp.status_code == 200
+    assert lookups == ["slack:T-BOUND"]
     mock_hitl.approve_async.assert_awaited_once()
+    assert mock_hitl.approve_async.await_args.kwargs["tenant_ctx"].tenant_id == "bound-tenant"
+
+
+def test_slack_hitl_from_unbound_workspace_is_ignored(monkeypatch) -> None:
+    """Regression: the tenant came from SLACK_TENANT_ID for ANY workspace."""
+    monkeypatch.setenv("SLACK_TENANT_ID", "env-tenant")
+
+    mock_hitl = MagicMock()
+    mock_hitl.approve_async = AsyncMock(return_value=True)
+    mock_hitl.reject = AsyncMock()
+    import json
+    body = json.dumps(
+        {
+            "type": "block_actions",
+            "team": {"id": "T-STRANGER"},
+            "actions": [{"action_id": "approve_hitl", "value": "req-1"}],
+            "user": {"id": "U2"},
+        }
+    ).encode()
+
+    async def _resolve(channel_type: str, channel_id: str, db: object) -> str | None:
+        return None
+
+    with patch("app.api.channels.ingestion._resolve_tenant_from_channel", _resolve):
+        client = TestClient(_make_app(hitl_gateway=mock_hitl))
+        resp = client.post(
+            "/integrations/slack/events",
+            content=body,
+            headers={"Content-Type": "application/json"},
+        )
+    assert resp.status_code == 200
+    mock_hitl.approve_async.assert_not_awaited()
+    mock_hitl.reject.assert_not_awaited()
 
 
 def test_slack_events_block_actions_reject_hitl(monkeypatch) -> None:
