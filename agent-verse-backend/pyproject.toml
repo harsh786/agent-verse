@@ -83,7 +83,7 @@ agentverse = "app.cli.main:app"
 voyage = []
 gemini = ["google-genai>=1.33.0"]
 local-embed = ["sentence-transformers>=3.0.0"]
-browser = ["playwright>=1.40.0"]
+browser = ["playwright>=1.48.0"]  # route_web_socket (browser SSRF guard)
 artifacts = ["aioboto3>=13.0"]
 pdf = ["pypdf>=5.0"]
 docx = ["python-docx>=1.1"]

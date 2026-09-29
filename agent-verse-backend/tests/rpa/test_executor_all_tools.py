@@ -816,20 +816,21 @@ async def test_with_playwright_unknown_tool_falls_back_to_simulation():
 
 @pytest.mark.asyncio
 async def test_with_playwright_outer_exception():
-    """get_or_create exception propagates (called before the try block)."""
+    """A get_or_create failure (e.g. SSRF guard not installable) fails closed."""
     ex = _make_playwright_executor()
     mock_sm = AsyncMock()
     mock_sm.get_or_create = AsyncMock(side_effect=RuntimeError("session failed"))
     ex._session_manager = mock_sm
 
-    with pytest.raises(RuntimeError, match="session failed"):
-        await ex._execute_with_playwright(
-            tool_name="rpa_open_url",
-            arguments={"url": "http://test.com"},
-            session_id="s-001",
-            tenant_id="t-001",
-            goal_id="g-001",
-        )
+    result = await ex._execute_with_playwright(
+        tool_name="rpa_open_url",
+        arguments={"url": "http://test.com"},
+        session_id="s-001",
+        tenant_id="t-001",
+        goal_id="g-001",
+    )
+    assert result.success is False
+    assert "session failed" in (result.error or "")
 
 
 # ── execute() with playwright + session_manager path ────────────────────────

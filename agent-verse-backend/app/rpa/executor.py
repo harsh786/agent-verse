@@ -259,11 +259,24 @@ class RPAExecutor:
         goal_id: str,
     ) -> RPAResult:
         """Execute using a stateful Playwright session from session_manager."""
-        session = await self._session_manager.get_or_create(session_id, tenant_id)
+        try:
+            session = await self._session_manager.get_or_create(
+                session_id, tenant_id, allowed_domains=self._allowed_domains
+            )
+        except Exception as exc:
+            # e.g. the browser SSRF guard could not be installed — fail closed.
+            return RPAResult(success=False, error=f"browser session unavailable: {exc}")
         page = session.page
 
         if page is None:
             return await self._execute_simulation(tool_name=tool_name, arguments=arguments)
+        if not getattr(session, "ssrf_guarded", False):
+            # Only the goto URL is checked above; an unguarded context would let
+            # Chromium follow redirects/clicks/subresources to internal hosts.
+            return RPAResult(
+                success=False,
+                error="blocked by SSRF guard: browser session has no request guard installed",
+            )
 
         try:
             url = arguments.get("url", "")
@@ -538,7 +551,14 @@ class RPAExecutor:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=self._headless)
             try:
-                context = await browser.new_context(
+                from app.net.browser_guard import new_guarded_context
+
+                # Every request of this context (redirect hops, click
+                # navigations, subresources, WebSockets) is SSRF-checked.
+                context = await new_guarded_context(
+                    browser,
+                    allowed_domains=self._allowed_domains,
+                    context="rpa_browser",
                     viewport={"width": 1280, "height": 720},
                     user_agent="AgentVerse-RPA/1.0",
                 )

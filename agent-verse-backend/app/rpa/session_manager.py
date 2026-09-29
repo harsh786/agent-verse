@@ -25,6 +25,10 @@ class BrowserSession:
     created_at: float = field(default_factory=time.monotonic)
     last_used_at: float = field(default_factory=time.monotonic)
     current_url: str = ""
+    # True once the context's SSRF request/WebSocket guard is installed
+    # (app.net.browser_guard). The executor refuses a page that is not guarded.
+    ssrf_guarded: bool = False
+    allowed_domains: list[str] | None = None
     _playwright: Any = field(default=None, repr=False)
     _browser: Any = field(default=None, repr=False)
     _context: Any = field(default=None, repr=False)
@@ -71,7 +75,10 @@ class BrowserSessionManager:
         max_idle_seconds: int = 300,
         max_sessions_per_tenant: int = 5,
         redis: Any = None,
+        allowed_domains: list[str] | None = None,
     ) -> None:
+        # Default SSRF egress allowlist for new sessions (None → public only).
+        self._allowed_domains = allowed_domains
         self._sessions: dict[tuple[str, str], BrowserSession] = {}
         self._headless = headless
         self._max_idle = max_idle_seconds
@@ -80,8 +87,18 @@ class BrowserSessionManager:
         self._redis = redis
         self._SESSION_TTL = 3600  # 1 hour
 
-    async def get_or_create(self, session_id: str, tenant_id: str) -> BrowserSession:
-        """Get existing session or create a new one, enforcing per-tenant cap."""
+    async def get_or_create(
+        self,
+        session_id: str,
+        tenant_id: str,
+        *,
+        allowed_domains: list[str] | None = None,
+    ) -> BrowserSession:
+        """Get existing session or create a new one, enforcing per-tenant cap.
+
+        ``allowed_domains`` is the SSRF egress allowlist the new session's
+        browser guard enforces (defaults to the manager's).
+        """
         key = (session_id, tenant_id)
         async with self._lock:
             existing = self._sessions.get(key)
@@ -120,7 +137,9 @@ class BrowserSessionManager:
                     )
                     return BrowserSession(session_id=session_id, tenant_id=tenant_id)
 
-            session = await self._create_session(session_id, tenant_id)
+            session = await self._create_session(
+                session_id, tenant_id, allowed_domains=allowed_domains
+            )
             self._sessions[key] = session
             logger.info(
                 "browser_session_created",
@@ -130,24 +149,56 @@ class BrowserSessionManager:
             await self._register_in_redis(session)
             return session
 
-    async def _create_session(self, session_id: str, tenant_id: str) -> BrowserSession:
-        session = BrowserSession(session_id=session_id, tenant_id=tenant_id)
+    async def _create_session(
+        self,
+        session_id: str,
+        tenant_id: str,
+        *,
+        allowed_domains: list[str] | None = None,
+    ) -> BrowserSession:
+        """Launch a browser whose context carries the SSRF request guard.
+
+        Only the first goto URL used to be validated; Chromium then followed
+        redirects, click navigations and subresource requests to internal hosts
+        (169.254.169.254, localhost, RFC-1918) unchecked. Every request is now
+        validated by app.net.browser_guard. If the guard cannot be installed the
+        browser is closed and the error raised (fail closed).
+        """
+        domains = allowed_domains if allowed_domains is not None else self._allowed_domains
+        session = BrowserSession(
+            session_id=session_id, tenant_id=tenant_id, allowed_domains=domains
+        )
         try:
             from playwright.async_api import async_playwright
+        except ImportError:
+            return session  # Playwright not installed — no page; the executor fails closed
 
-            pw = await async_playwright().start()
+        from app.net.browser_guard import new_guarded_context
+
+        pw = await async_playwright().start()
+        browser: Any = None
+        try:
             browser = await pw.chromium.launch(headless=self._headless)
-            context = await browser.new_context(
+            context = await new_guarded_context(
+                browser,
+                allowed_domains=domains,
+                context="rpa_browser",
                 viewport={"width": 1280, "height": 720},
                 user_agent="AgentVerse-RPA/1.0",
             )
             page = await context.new_page()
-            session._playwright = pw
-            session._browser = browser
-            session._context = context
-            session._page = page
-        except ImportError:
-            pass  # Playwright not installed — session has no page, uses simulation
+        except BaseException:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    await browser.close()
+            with contextlib.suppress(Exception):
+                await pw.stop()
+            raise
+        session._playwright = pw
+        session._browser = browser
+        session._context = context
+        session._page = page
+        session.ssrf_guarded = True
         return session
 
     async def close(self, session_id: str, tenant_id: str) -> bool:

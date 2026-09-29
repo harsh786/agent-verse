@@ -47,23 +47,18 @@ async def _blocked_reason(url: str) -> str:
     return ""
 
 
-async def _guard_route(route: Any) -> None:
-    """Playwright route handler: abort any request to a non-public host."""
-    url = str(route.request.url)
-    if url.startswith(("http://", "https://")) and await _blocked_reason(url):
-        await route.abort("blockedbyclient")
-        return
-    await route.continue_()
-
-
 async def _guarded_context(browser: Any, **kwargs: Any) -> Any:
-    import inspect
+    """A browser context whose every request is SSRF-checked.
 
-    context = await browser.new_context(**kwargs)
-    registered = context.route("**/*", _guard_route)
-    if inspect.isawaitable(registered):
-        await registered
-    return context
+    Shared with the RPA executor (app.net.browser_guard). The previous local
+    route handler used ``route.continue_()``, which lets Chromium follow redirect
+    hops unrouted (Playwright does not intercept redirects), and passed
+    ``file:``/other schemes through; WebSockets and service workers were
+    unguarded too.
+    """
+    from app.net.browser_guard import new_guarded_context
+
+    return await new_guarded_context(browser, context="perception browser", **kwargs)
 
 
 @dataclass

@@ -70,13 +70,44 @@ async def test_browser_agent_refuses_internal_url_directly() -> None:
     assert "SSRF" in res.error
 
 
-async def test_browser_route_guard_aborts_redirect_to_internal_host() -> None:
-    from app.perception.browser_agent import _guard_route
+async def test_browser_route_guard_aborts_request_to_internal_host() -> None:
+    from app.perception.browser_agent import _guarded_context
+
+    context = MagicMock(route=AsyncMock(), route_web_socket=AsyncMock())
+    browser = MagicMock(new_context=AsyncMock(return_value=context))
+    await _guarded_context(browser)
+    assert browser.new_context.await_args.kwargs["service_workers"] == "block"
+    handler = context.route.await_args.args[1]
 
     route = MagicMock()
     route.request.url = "http://169.254.169.254/latest"
     route.abort = AsyncMock()
     route.continue_ = AsyncMock()
-    await _guard_route(route)
+    route.fetch = AsyncMock()
+    await handler(route)
     route.abort.assert_awaited_once()
     route.continue_.assert_not_called()
+    route.fetch.assert_not_called()
+
+
+async def test_browser_route_guard_aborts_redirect_to_internal_host() -> None:
+    """Playwright never routes redirect hops, so the guard follows them itself."""
+    from app.perception.browser_agent import _guarded_context
+
+    context = MagicMock(route=AsyncMock(), route_web_socket=AsyncMock())
+    context.request.fetch = AsyncMock()
+    browser = MagicMock(new_context=AsyncMock(return_value=context))
+    await _guarded_context(browser)
+    handler = context.route.await_args.args[1]
+
+    route = MagicMock()
+    route.request.url = "http://93.184.215.14/"
+    route.abort = AsyncMock()
+    route.fulfill = AsyncMock()
+    route.fetch = AsyncMock(
+        return_value=MagicMock(status=302, headers={"location": "http://169.254.169.254/"})
+    )
+    await handler(route)
+    route.abort.assert_awaited_once()
+    route.fulfill.assert_not_called()
+    context.request.fetch.assert_not_called()
