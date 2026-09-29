@@ -45,6 +45,40 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+function mockStopState(active: boolean) {
+  return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.includes('/governance/emergency-stop') && (!init?.method || init.method === 'GET'))
+      return new Response(
+        JSON.stringify({ active, activated_at: active ? '2026-09-29T10:00:00+00:00' : null }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  });
+}
+
+describe('AppLayout emergency banner follows the server', () => {
+  test('shows the banner when the server reports an active stop', async () => {
+    mockStopState(true);
+    renderLayout();
+    expect(await screen.findByText(/Emergency Stop Active/i)).toBeInTheDocument();
+    expect(useEmergencyStore.getState().isActive).toBe(true);
+  });
+
+  test('drops a stale local banner when the server reports no stop', async () => {
+    mockStopState(false);
+    useEmergencyStore.setState({
+      isActive: true,
+      activatedAt: new Date().toISOString(),
+      cancelledGoals: 3,
+      rejectedApprovals: 0,
+    });
+    renderLayout();
+    await waitFor(() => expect(useEmergencyStore.getState().isActive).toBe(false));
+    expect(screen.queryByText(/Emergency Stop Active/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('AppLayout', () => {
   test('renders the sidebar navigation labels', () => {
     mockFetch();

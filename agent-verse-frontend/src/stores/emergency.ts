@@ -7,6 +7,8 @@ interface EmergencyState {
   cancelledGoals: number;
   rejectedApprovals: number;
   setActive: (stats: { cancelledGoals: number; rejectedApprovals: number }) => void;
+  /** Apply the server's stop state (GET /governance/emergency-stop). */
+  syncFromServer: (server: { active: boolean; activatedAt?: string | null }) => void;
   clear: () => void;
 }
 
@@ -24,6 +26,12 @@ export const useEmergencyStore = create<EmergencyState>()(
           cancelledGoals: stats.cancelledGoals,
           rejectedApprovals: stats.rejectedApprovals,
         }),
+      syncFromServer: ({ active, activatedAt }) =>
+        set((s) =>
+          active
+            ? { isActive: true, activatedAt: activatedAt ?? s.activatedAt ?? null }
+            : { isActive: false, activatedAt: null, cancelledGoals: 0, rejectedApprovals: 0 }
+        ),
       clear: () =>
         set({
           isActive: false,
