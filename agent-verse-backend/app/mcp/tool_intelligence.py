@@ -277,6 +277,7 @@ class SelfHealingToolCaller:
         original_arguments: dict[str, Any],
         failed_result: Any,
         resolver: UniversalArgumentResolver | None = None,
+        tenant_ctx: Any = None,
     ) -> dict[str, Any]:
         """
         Given a failed tool call, attempt to produce fixed arguments.
@@ -306,6 +307,7 @@ class SelfHealingToolCaller:
                     tool_schema=tool_schema,
                     original_arguments=original_arguments,
                     error=error_msg,
+                    tenant_ctx=tenant_ctx,
                 )
                 if fixed and isinstance(fixed, dict):
                     logger.info(
@@ -331,8 +333,13 @@ class SelfHealingToolCaller:
         tool_schema: dict,
         original_arguments: dict,
         error: str,
+        tenant_ctx: Any = None,
     ) -> dict | None:
-        """Ask the LLM to produce correct arguments given the schema + error."""
+        """Ask the LLM to produce correct arguments given the schema + error.
+
+        Charged (to the running goal, else ``tenant_ctx``) and circuit-broken; a
+        failure, budget refusal included, leaves the arguments to the
+        schema-default fallback."""
         from app.providers.base import CompletionRequest, Message
 
         schema_str = json.dumps(tool_schema, indent=2)
@@ -365,7 +372,11 @@ Produce a corrected JSON object with the right parameter names and values.
             model=configured_default_model("claude-haiku-3-5"),
             max_tokens=500,
         )
-        resp = await self._provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            self._provider, req, role="tool_self_heal", tenant_ctx=tenant_ctx
+        )
         content = resp.content.strip()
         # Extract JSON from the response
         json_match = re.search(r"\{.*\}", content, re.DOTALL)

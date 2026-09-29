@@ -296,8 +296,22 @@ class _BudgetedProvider:
         self._operation = operation
 
     async def complete(self, request: Any) -> Any:
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
         event_index = await self._guard.reserve(self._operation)
-        response = await self._provider.complete(request)
+        # Already metered by the RAG cost guard, so breaker + timeout only
+        # (charge=False): a hung strategy model used to stall retrieval
+        # indefinitely and never opened the per-model circuit.
+        response = await complete_decision(
+            self._provider,
+            request,
+            role="rag_strategy",
+            charge=False,
+            timeout_seconds=generation_timeout_seconds(),
+        )
         self._guard.record_tokens(event_index, int(getattr(response, "total_tokens", 0)))
         return response
 

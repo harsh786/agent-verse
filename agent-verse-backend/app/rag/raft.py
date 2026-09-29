@@ -313,6 +313,7 @@ class FineTunedInferenceProvider(Protocol):
         query: str,
         evidence: tuple[str, ...],
         fine_tuned_model_id: str,
+        tenant_id: str | None = None,
     ) -> str: ...
 
 
@@ -1104,6 +1105,7 @@ class RAFTService:
             query=query,
             evidence=evidence,
             fine_tuned_model_id=job.fine_tuned_model,
+            tenant_id=job.tenant_id,
         )
         if not answer.strip():
             raise RAFTModelUnavailableError("RAFT inference returned no answer")

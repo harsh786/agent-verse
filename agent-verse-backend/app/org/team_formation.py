@@ -406,6 +406,7 @@ class TeamFormationEngine:
         manifest = await self.form_team(
             mission=_SimpleMission(goal_text=goal, title=goal[:80]),
             org=_SimpleOrg(org_id=org_id),
+            tenant_id=tenant_id,
         )
         # Attach routing context
         object.__setattr__(manifest, "org_id", org_id) if dataclasses.is_dataclass(
@@ -418,14 +419,21 @@ class TeamFormationEngine:
             pass
         return manifest
 
-    async def form_team(self, mission: Any, org: Any) -> TeamManifest:
+    async def form_team(
+        self, mission: Any, org: Any, *, tenant_id: str | None = None
+    ) -> TeamManifest:
         with _tracer.start_as_current_span("team_formation.form_team") as span:
             span.set_attribute("mission_id", str(getattr(mission, "id", "new")))
             span.set_attribute("org_id", str(getattr(org, "id", "unknown")))
             _log.info("team_formation.start", mission_id=str(getattr(mission, "id", "new")))
 
             goal_text = str(getattr(mission, "goal_text", "") or getattr(mission, "title", ""))
-            capabilities = await self._extract_capabilities(goal_text)
+            tenant = tenant_id or getattr(org, "tenant_id", None) or getattr(
+                mission, "tenant_id", None
+            )
+            capabilities = await self._extract_capabilities(
+                goal_text, tenant_id=str(tenant) if tenant else None
+            )
             span.set_attribute("capabilities_count", len(capabilities))
 
             roles = await self._map_capabilities_to_roles(capabilities)
@@ -472,11 +480,13 @@ class TeamFormationEngine:
             )
             return manifest
 
-    async def _extract_capabilities(self, goal_text: str) -> list[str]:
+    async def _extract_capabilities(
+        self, goal_text: str, *, tenant_id: str | None = None
+    ) -> list[str]:
         with _tracer.start_as_current_span("team_formation.extract_capabilities") as span:
             if self._llm is not None:
                 try:
-                    caps = await self._extract_capabilities_llm(goal_text)
+                    caps = await self._extract_capabilities_llm(goal_text, tenant_id=tenant_id)
                     span.set_attribute("source", "llm")
                     span.set_attribute("capabilities_found", len(caps))
                     return caps
@@ -488,7 +498,9 @@ class TeamFormationEngine:
             span.set_attribute("capabilities_found", len(caps))
             return caps
 
-    async def _extract_capabilities_llm(self, goal_text: str) -> list[str]:
+    async def _extract_capabilities_llm(
+        self, goal_text: str, *, tenant_id: str | None = None
+    ) -> list[str]:
         prompt = (
             "You are an AI org OS team planner. Given a mission goal, "
             "return a JSON array of required capability names. "
@@ -504,7 +516,12 @@ class TeamFormationEngine:
             model=getattr(self._llm, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=512,
         )
-        resp = await self._llm.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        # Charged to the tenant + circuit-broken; failures fall back to heuristics.
+        resp = await complete_decision(
+            self._llm, req, role="org_team_formation", tenant_id=tenant_id
+        )
         raw = resp.content.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]

@@ -155,6 +155,24 @@ def test_ingest_fails_closed_503_when_guardrail_rules_unavailable(monkeypatch: A
     assert embedder.seen == [] and not store._data[(_TENANT, cid)].chunks
 
 
+def test_collection_ingest_budget_refusal_is_429_not_storage_outage(monkeypatch: Any) -> None:
+    """RAPTOR / agentic-chunking indexing is charged to the tenant; a refused
+    charge fails the ingest honestly instead of "persistence is unavailable"."""
+    from app.ingestion.orchestrator import IngestionOrchestrator
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    async def _refuse(*_a: Any, **_k: Any) -> Any:
+        raise DecisionBudgetExceededError("tenant daily LLM budget exhausted")
+
+    monkeypatch.setattr(IngestionOrchestrator, "ingest", _refuse)
+    client, _store, _embedder, cid = _app()
+    resp = client.post(
+        f"/knowledge/collections/{cid}/documents", json={"content": _BODY}, headers=_HDRS
+    )
+    assert resp.status_code == 429, resp.text
+    assert "budget" in resp.json()["detail"].lower()
+
+
 def test_ingest_file_redacts_pii() -> None:
     client, store, embedder, cid = _app()
     resp = client.post(

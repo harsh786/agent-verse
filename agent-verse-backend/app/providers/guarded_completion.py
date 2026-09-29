@@ -92,6 +92,20 @@ def _timeout(explicit: float | None) -> float:
         return _DEFAULT_TIMEOUT_S
 
 
+def generation_timeout_seconds() -> float:
+    """Timeout for a *generative* call routed through :func:`complete_decision`.
+
+    The decision default (``AGENTVERSE_DECISION_CALL_TIMEOUT_SECONDS``, 20s) is
+    sized for short classifier/judge replies. Summaries, workflow steps and
+    answers use the general LLM call timeout the agent roles use
+    (``AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS``, 60s).
+    """
+    try:
+        return float(os.getenv("AGENTVERSE_LLM_CALL_TIMEOUT_SECONDS", "60"))
+    except ValueError:
+        return 60.0
+
+
 def _tenant(tenant_ctx: Any, tenant_id: str | None) -> Any:
     if tenant_ctx is not None:
         return tenant_ctx

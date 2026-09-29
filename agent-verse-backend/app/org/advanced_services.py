@@ -129,6 +129,13 @@ class StrategicBrief:
             self.generated_at = datetime.now(UTC).isoformat()
 
 
+def _brief_provider() -> Any:
+    """The app's LLM provider for the strategic brief (None when unwired)."""
+    from app.main import app as _app
+
+    return getattr(_app.state, "provider", None)
+
+
 class StrategicAdvisor:
     """P4 — AI-generated weekly intelligence brief.
 
@@ -143,8 +150,13 @@ class StrategicAdvisor:
         org_name: str,
         health: dict[str, Any],
         recent_missions: list[dict[str, Any]] | None = None,
+        *,
+        tenant_id: str | None = None,
     ) -> StrategicBrief:
-        """Generate the weekly strategic brief for an org."""
+        """Generate the weekly strategic brief for an org.
+
+        The LLM brief is charged to ``tenant_id`` and circuit-broken; any failure
+        (budget refusal included) falls back to the template brief."""
         with _tracer.start_as_current_span("strategic_advisor.generate") as span:
             span.set_attribute("org_id", org_id)
 
@@ -156,7 +168,9 @@ class StrategicAdvisor:
             h_status = health.get("health", "healthy")
 
             # --- Try LLM if available ---
-            brief = await self._llm_brief(org_id, org_name, health, recent_missions or [])
+            brief = await self._llm_brief(
+                org_id, org_name, health, recent_missions or [], tenant_id=tenant_id
+            )
             if brief:
                 brief.week_ending = week_ending
                 return brief
@@ -207,18 +221,19 @@ class StrategicAdvisor:
         org_name: str,
         health: dict[str, Any],
         missions: list[dict[str, Any]],
+        *,
+        tenant_id: str | None = None,
     ) -> StrategicBrief | None:
         """Use LLM for richer brief when provider available."""
         try:
-            from app.main import app as _app
-
-            provider = getattr(_app.state, "provider", None)
+            provider = _brief_provider()
             if provider is None:
                 return None
 
             import json as _json
 
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
             prompt = (
                 f"Generate a concise weekly strategic brief for '{org_name}'. "
@@ -228,13 +243,16 @@ class StrategicAdvisor:
                 'Return JSON: {"health_summary": str, "accomplishments": [str], '
                 '"risks": [str], "opportunities": [str], "recommendations": [str]}'
             )
-            resp = await provider.complete(
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model=getattr(provider, "default_model", "claude-sonnet-4-5"),
                     max_tokens=600,
                     temperature=0.3,
-                )
+                ),
+                role="org_strategic_brief",
+                tenant_id=tenant_id,
             )
             data = _json.loads(
                 resp.content.strip()[resp.content.find("{") : resp.content.rfind("}") + 1]

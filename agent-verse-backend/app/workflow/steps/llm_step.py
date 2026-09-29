@@ -98,7 +98,24 @@ class LLMStepNode:
                 # a reasoning model that would otherwise emit a prose preamble.
                 json_object=self.step.json_output,
             )
-            response = await self.llm_provider.complete(req)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            # Charged to the run's tenant (under the run id, so the per-run cap
+            # pools this run's steps only) and circuit-broken with a bounded
+            # timeout. A budget refusal raises and fails the step (on_failure
+            # policy applies), like any other provider error.
+            run_id = str(state.get("run_id") or "")
+            response = await complete_decision(
+                self.llm_provider,
+                req,
+                role="workflow_llm_step",
+                tenant_id=str(state.get("tenant_id") or "") or None,
+                goal_id=f"workflow:{run_id}" if run_id else None,
+                timeout_seconds=generation_timeout_seconds(),
+            )
             raw_text = response.content.strip()
             # CompletionResponse exposes input_tokens/output_tokens (and a `usage`
             # object); the older prompt_tokens/completion_tokens names don't exist

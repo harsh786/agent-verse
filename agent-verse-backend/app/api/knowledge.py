@@ -2503,8 +2503,16 @@ async def ingest_document_into_collection(
         # Never swallow the real error silently: log type+message with a traceback
         # so a genuine persistence failure is diagnosable, not a blank 503.
         from app.observability.logging import get_logger as _gl
+        from app.providers.guarded_completion import DecisionBudgetExceededError
         from app.rag.indexing import IndexingProviderError
 
+        if isinstance(exc, DecisionBudgetExceededError):
+            # RAPTOR / agentic-chunking indexing is charged to the tenant; a
+            # refused charge fails the ingest honestly (nothing was persisted).
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"LLM budget exhausted — cannot build the strategy index: {exc}",
+            ) from exc
         _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
         if isinstance(exc, IndexingProviderError):
             # The RAPTOR/agentic-chunking model returned unusable output: an

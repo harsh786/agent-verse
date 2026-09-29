@@ -1373,6 +1373,7 @@ class MCPClient:
                         original_arguments=arguments,
                         failed_result=result,
                         resolver=_resolver,  # type: ignore[name-defined]
+                        tenant_ctx=tenant_ctx,
                     )
                     if _healed_args != arguments:
                         result = await self._call_tool_impl(

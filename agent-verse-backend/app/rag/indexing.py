@@ -173,7 +173,7 @@ class RAGIndexingPipeline:
         if RAGStrategy.RAPTOR in self._config.strategies:
             leaves = self._make_raptor_leaves(document_id, leaf_contents, metadata or {})
             records.extend(leaves)
-            records = await self._add_raptor_hierarchy(records, leaves)
+            records = await self._add_raptor_hierarchy(records, leaves, tenant_ctx=tenant_ctx)
 
         if RAGStrategy.AGENTIC_CHUNKING in self._config.strategies:
             proposition_parents = self._make_parent_leaves(
@@ -188,6 +188,7 @@ class RAGIndexingPipeline:
                     leaf_contents,
                     proposition_parents,
                     metadata or {},
+                    tenant_ctx=tenant_ctx,
                 )
             )
 
@@ -263,6 +264,8 @@ class RAGIndexingPipeline:
         self,
         records: list[RAGIndexRecord],
         leaves: list[RAGIndexRecord],
+        *,
+        tenant_ctx: TenantContext,
     ) -> list[RAGIndexRecord]:
         current = leaves
         for level in range(1, self._config.raptor_max_levels + 1):
@@ -277,6 +280,7 @@ class RAGIndexingPipeline:
                 _RAPTOR_SUMMARY_SYSTEM,
                 [[record.content for record in group] for group in groups],
                 self._config.raptor_summary_batch_size,
+                tenant_ctx=tenant_ctx,
             )
             if len(summaries) != len(groups) or not all(
                 isinstance(summary, str) and summary.strip() for summary in summaries
@@ -326,12 +330,15 @@ class RAGIndexingPipeline:
         chunks: list[str],
         parents: list[RAGIndexRecord],
         metadata: dict[str, Any],
+        *,
+        tenant_ctx: TenantContext,
     ) -> list[RAGIndexRecord]:
         payload = await self._complete_json_batches(
             RAGStrategy.AGENTIC_CHUNKING,
             _PROPOSITION_SYSTEM,
             chunks,
             self._config.proposition_batch_size,
+            tenant_ctx=tenant_ctx,
         )
         if len(payload) != len(chunks) or not all(isinstance(item, list) for item in payload):
             raise RuntimeError("Agentic chunking provider returned an incomplete batch")
@@ -374,11 +381,15 @@ class RAGIndexingPipeline:
         system: str,
         payload: list[Any],
         batch_size: int,
+        *,
+        tenant_ctx: TenantContext,
     ) -> list[Any]:
         completed: list[Any] = []
         for start in range(0, len(payload), batch_size):
             batch = payload[start : start + batch_size]
-            parsed = await self._complete_json_batch(strategy, system, batch)
+            parsed = await self._complete_json_batch(
+                strategy, system, batch, tenant_ctx=tenant_ctx
+            )
             if len(parsed) != len(batch):
                 raise IndexingProviderError(
                     f"{strategy.value} provider returned {len(parsed)} results for "
@@ -392,8 +403,16 @@ class RAGIndexingPipeline:
         strategy: RAGStrategy,
         system: str,
         payload: list[Any],
+        *,
+        tenant_ctx: TenantContext,
     ) -> list[Any]:
         """One structured completion returning exactly ``len(payload)`` results.
+
+        Charged to the tenant and circuit-broken (``complete_decision``): the
+        number of these calls scales with document count, so a direct
+        ``provider.complete`` let bulk ingestion spend without any budget.
+        A budget refusal (``DecisionBudgetExceededError``) propagates and fails
+        the ingest before anything is persisted.
 
         It used to ask for a bare top-level JSON array with no schema and
         ``json.loads`` the raw reply. JSON mode on vLLM/NVIDIA can only return an
@@ -421,8 +440,14 @@ class RAGIndexingPipeline:
             "required": ["items"],
             "additionalProperties": False,
         }
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
         dependency = self._dependencies[strategy]
-        response = await dependency.provider.complete(
+        response = await complete_decision(
+            dependency.provider,
             CompletionRequest(
                 messages=[
                     Message(
@@ -438,7 +463,10 @@ class RAGIndexingPipeline:
                 max_tokens=max(2_000, 400 * len(payload)),
                 temperature=0.0,
                 response_schema=schema,
-            )
+            ),
+            role=f"rag_indexing_{strategy.value}",
+            tenant_ctx=tenant_ctx,
+            timeout_seconds=generation_timeout_seconds(),
         )
         parsed = _parse_json_reply(str(response.content))
         if isinstance(parsed, dict):

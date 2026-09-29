@@ -2730,6 +2730,7 @@ async def org_strategic_brief(
             org_id=org_id,
             org_name=str(org.name),
             health=health,
+            tenant_id=_require_tenant(request).tenant_id,
         )
         return {
             "org_id": org_id,

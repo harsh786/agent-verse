@@ -89,12 +89,19 @@ class EntityExtractor:
                 f'"confidence": 0.0-1.0}}]\n\n'
                 f"Text: {text[:1000]}"
             )
-            resp = await self._provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            # Charged to the tenant + circuit-broken; a budget refusal is an
+            # exception like any other and degrades to pattern extraction.
+            resp = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=500,
-                )
+                ),
+                role="kg_entity_extraction",
+                tenant_id=tenant_id,
             )
 
             import json
@@ -151,12 +158,17 @@ class EntityExtractor:
                 f'"evidence": "quote from text", "confidence": 0.0-1.0}}]\n\n'
                 f"Text: {text[:800]}"
             )
-            resp = await self._provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=500,
-                )
+                ),
+                role="kg_relationship_extraction",
+                tenant_id=tenant_id,
             )
 
             import datetime

@@ -79,8 +79,13 @@ class MemoryConsolidator:
         self,
         memories: list[dict[str, Any]],
         provider: LLMProvider | None = None,
+        *,
+        tenant_id: str | None = None,
     ) -> ConsolidationResult:
-        """Consolidate clusters; use LLM for summaries when provider is available."""
+        """Consolidate clusters; use LLM for summaries when provider is available.
+
+        Each summary call is charged to ``tenant_id`` and circuit-broken; a
+        failure (budget refusal included) falls back to the plain join."""
         clusters = self._cluster(memories)
         result: list[dict[str, Any]] = []
         clusters_merged = 0
@@ -88,7 +93,9 @@ class MemoryConsolidator:
             if len(cluster) >= self._threshold:
                 if provider is not None:
                     try:
-                        merged = await self._summarise_with_llm(cluster, provider)
+                        merged = await self._summarise_with_llm(
+                            cluster, provider, tenant_id=tenant_id
+                        )
                     except Exception:
                         merged = self._merge_cluster(cluster)
                 else:
@@ -150,8 +157,11 @@ class MemoryConsolidator:
         self,
         cluster: list[dict[str, Any]],
         provider: LLMProvider,
+        *,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         from app.providers.base import CompletionRequest, Message
+        from app.providers.guarded_completion import complete_decision
 
         contents = "\n".join(f"- {m.get('content', '')[:150]}" for m in cluster)
         prompt = (
@@ -164,7 +174,9 @@ class MemoryConsolidator:
             max_tokens=80,
             temperature=0.0,
         )
-        resp = await provider.complete(req)
+        resp = await complete_decision(
+            provider, req, role="memory_consolidation", tenant_id=tenant_id
+        )
         summary = (resp.content or "").strip()[:200]
         base = cluster[0].copy()
         base["content"] = f"[Summary of {len(cluster)}] {summary}"
