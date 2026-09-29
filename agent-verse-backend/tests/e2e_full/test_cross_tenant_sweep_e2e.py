@@ -196,6 +196,10 @@ async def test_no_path_param_operation_leaks_across_tenants(
                 # A feature switched off by configuration, reported as such —
                 # not a server error (e.g. CIVILIZATION_ENABLED unset).
                 notes.append(f"feature disabled: POST {path}")
+            elif resp.status_code == 501:
+                # An honest "not implemented" (e.g. golden datasets) creates
+                # nothing and returns no data, so there is nothing to leak.
+                notes.append(f"not implemented: POST {path}")
             else:
                 server_errors.append(f"{resp.status_code} POST {path} (tenant A create)")
         if resp is None or resp.status_code >= 300:
@@ -278,6 +282,9 @@ async def test_no_path_param_operation_leaks_across_tenants(
             probed += 1
             if resp is None:
                 findings.append(f"HUNG {m} {path}")
+                continue
+            if resp.status_code == 501:
+                notes.append(f"not implemented: {m} {path}")
                 continue
             if resp.status_code >= 500:
                 server_errors.append(f"{resp.status_code} {m} {path} (tenant B probe)")

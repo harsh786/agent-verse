@@ -31,6 +31,29 @@ from app.mcp.registry import MCPRegistry, MCPServerConfig
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
+
+@pytest.fixture(autouse=True)
+def _resolve_hosts_without_real_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve connector hostnames to a public documentation address.
+
+    The SSRF guard resolves every connector host and fails closed on a DNS
+    error; these unit tests only exercise the endpoint logic (the HTTP calls
+    are mocked), so they must not depend on real DNS — they failed whenever
+    api.github.com etc. could not be resolved at that moment.
+    """
+    import ipaddress
+
+    import app.net.ssrf_guard as guard
+
+    def _resolve(host: str) -> list[str]:
+        try:
+            ipaddress.ip_address(host)
+            return [host]
+        except ValueError:
+            return ["93.184.216.34"]
+
+    monkeypatch.setattr(guard, "_resolve_host", _resolve)
+
 _CTX_A = TenantContext(tenant_id="tid-func-a", plan=PlanTier.PROFESSIONAL, api_key_id="ka")
 _CTX_B = TenantContext(tenant_id="tid-func-b", plan=PlanTier.PROFESSIONAL, api_key_id="kb")
 _KEY_A = "av_func_tenant_a"

@@ -145,6 +145,13 @@ def test_run_goal_task_executes_with_fake_provider(monkeypatch: Any) -> None:
     )
     monkeypatch.setattr("app.scaling.tasks._get_llm_provider", lambda _tenant_id: None)
     monkeypatch.setattr("app.scaling.tasks._get_sync_redis", lambda: None)
+
+    # run_goal atomically claims the goal row first and fails closed when it
+    # cannot (no DB here); this test covers what happens after the claim.
+    async def _claimed(goal_id: str, tenant_id: str) -> str:
+        return "claimed"
+
+    monkeypatch.setattr("app.scaling.tasks._claim_goal_for_execution", _claimed)
     monkeypatch.setattr("app.core.config.get_provider_env", lambda _name: None)
     # Without a DB, _load_worker_policy_engine falls into fail-closed mode (deny
     # all tools). Patch it to return a permissive empty engine so llm_call is not
