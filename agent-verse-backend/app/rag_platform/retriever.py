@@ -9,6 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
+from app.observability.logging import get_logger
 from app.providers.base import CompletionRequest, Message
 from app.rag.contracts import (
     RAGCitation,
@@ -19,6 +20,8 @@ from app.rag.contracts import (
 from app.rag.engine import RetrievalStrategyExecutionError
 from app.rag.gateway import ResolvedLLM, RetrievalGateway
 from app.tenancy.context import TenantContext
+
+logger = get_logger(__name__)
 
 
 class RAGSynthesisError(RuntimeError):
@@ -112,17 +115,21 @@ class MinimalCitationVerifier:
                             role="user",
                             content=(
                                 "Determine whether the claim is fully entailed by the evidence. "
-                                "Return only the requested JSON fields.\n\n"
+                                'Reply with only this JSON object: {"supported": true, '
+                                '"reason": "entailed"} or {"supported": false, '
+                                '"reason": "not_entailed"}.\n\n'
                                 f"Claim: {claim}\nEvidence: {evidence}"
                             ),
                         )
                     ],
                     model=self.model,
-                    max_tokens=100,
+                    # Reasoning models (nemotron-3, Qwen3 with thinking) spend
+                    # tokens before the JSON; 100 truncated them mid-thought.
+                    max_tokens=1024,
                     response_schema=schema,
                 )
             )
-            parsed = json.loads(str(response.content))
+            parsed = _parse_json_object(str(response.content))
             if (
                 not isinstance(parsed, dict)
                 or set(parsed) != {"supported", "reason"}
@@ -134,7 +141,14 @@ class MinimalCitationVerifier:
                 raise ValueError("Invalid entailment response")
         except RetrievalStrategyExecutionError:
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "citation_entailment_failed",
+                model=self.model,
+                error_type=type(exc).__name__,
+                error=str(exc)[:500],
+                raw=str(locals().get("response") and response.content)[:300],
+            )
             return CitationVerification(False, [claim], "verifier_failure")
         return CitationVerification(
             bool(parsed["supported"]),
@@ -413,3 +427,13 @@ class RAGRetriever:
 
 # Kept for callers that configure a process-local singleton explicitly.
 rag_retriever = RAGRetriever()
+
+
+def _parse_json_object(text: str) -> Any:
+    """The reply as strict JSON, after dropping ``<think>…</think>`` blocks.
+
+    Some reasoning models inline their thought in tags even in JSON mode. Any
+    other prose around the object is still rejected (it could carry a
+    different, contradicting verdict).
+    """
+    return json.loads(re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip())

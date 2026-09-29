@@ -289,6 +289,11 @@ class OpenAICompatibleProvider:
             # json_object mode instead — the schema shape is already described in
             # the prompt, and this reliably yields a single parseable JSON object.
             kwargs["response_format"] = {"type": "json_object"}
+            # json_object mode enforces "some JSON", not the schema: without the
+            # schema in the prompt a model invents its own keys (the on-prem Qwen
+            # answered {"is_entailed": true} to the citation verifier, so every
+            # grounded RAG answer was rejected). State the contract explicitly.
+            kwargs["messages"] = _with_schema_instruction(messages, request.response_schema)
         elif request.json_object:
             # Plain JSON-object mode: no schema to enforce, just force the model to
             # emit a single JSON object (suppresses prose / chain-of-thought that a
@@ -646,14 +651,32 @@ class OpenAICompatibleProvider:
         """
         return requested or self._embed_model_name or "text-embedding-3-small"
 
+    def _embed_kwargs(self, input_type: str) -> dict[str, Any]:
+        """Vendor extensions for /embeddings.
+
+        NVIDIA's retrieval embedders are asymmetric: ``input_type`` selects the
+        query vs passage encoder (``nv-embedqa-*`` rejects requests without it).
+        The OpenAI API has no such field, so it is only sent to NVIDIA endpoints.
+        """
+        if "nvidia.com" not in self._base_url:
+            return {}
+        return {
+            "extra_body": {
+                "input_type": "query" if input_type == "query" else "passage",
+                "truncate": "END",
+            }
+        }
+
     async def embed(self, request: EmbedRequest) -> EmbedResponse:
         model = self._embed_model(request.model)
         response = await self._client.embeddings.create(
             model=model,
             input=request.texts,
+            **self._embed_kwargs(request.input_type),
         )
+        data = sorted(response.data, key=lambda e: getattr(e, "index", 0))
         return EmbedResponse(
-            embeddings=[item.embedding for item in response.data],
+            embeddings=[item.embedding for item in data],
             model=response.model,
             total_tokens=response.usage.total_tokens if response.usage else 0,
         )
@@ -676,6 +699,7 @@ class OpenAICompatibleProvider:
             response = await self._client.embeddings.create(
                 model=model,
                 input=batch,
+                **self._embed_kwargs("document"),
             )
             # Sort by index to preserve input order (OpenAI may reorder)
             sorted_data = sorted(response.data, key=lambda e: e.index)
@@ -691,3 +715,23 @@ class OpenAICompatibleProvider:
 
     def supports_structured_output(self) -> bool:
         return True
+
+
+def _with_schema_instruction(
+    messages: list[dict[str, Any]], schema: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Put the JSON-schema contract in the (leading) system message.
+
+    Merged into an existing first system message or prepended as one — several
+    chat templates (Qwen's among them) reject a system message after the first turn.
+    """
+    instruction = (
+        "Respond with a single JSON object that validates against this JSON Schema, "
+        "using exactly these property names:\n" + json.dumps(schema)
+    )
+    if messages and messages[0].get("role") == "system" and isinstance(
+        messages[0].get("content"), str
+    ):
+        first = {**messages[0], "content": f"{messages[0]['content']}\n\n{instruction}"}
+        return [first, *messages[1:]]
+    return [{"role": "system", "content": instruction}, *messages]

@@ -13,7 +13,7 @@ class IndexStrategy(enum.StrEnum):
 
 _HNSW_THRESHOLD = 1_000
 _IVF_THRESHOLD = 100_000
-_SUPPORTED_DIMS = {768, 1024, 1536, 3072}
+_SUPPORTED_DIMS = {768, 1024, 1536, 2048, 3072}
 
 
 class VectorIndexPolicy:

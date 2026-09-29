@@ -219,8 +219,16 @@ async def test_response_schema_downgrades_to_json_object_for_third_party() -> No
                 response_schema=schema,
             )
         )
-    rf = mock_client.chat.completions.create.call_args.kwargs["response_format"]
-    assert rf == {"type": "json_object"}
+    kwargs = mock_client.chat.completions.create.call_args.kwargs
+    assert kwargs["response_format"] == {"type": "json_object"}
+    # json_object mode does not carry the schema, so it must reach the model in
+    # the prompt — as the leading system message (Qwen templates reject a later
+    # one). Without it the on-prem Qwen invented {"is_entailed": true} for the
+    # citation verifier and every grounded RAG answer was rejected.
+    first = kwargs["messages"][0]
+    assert first["role"] == "system"
+    assert json.dumps(schema) in first["content"]
+    assert kwargs["messages"][1]["content"] == "plan"
 
 
 @pytest.mark.asyncio
@@ -724,3 +732,38 @@ class _AsyncIterator:
             return next(self._items)
         except StopIteration:
             raise StopAsyncIteration from None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("base_url", "input_type", "expected"),
+    [
+        ("https://integrate.api.nvidia.com/v1", "query", "query"),
+        ("https://integrate.api.nvidia.com/v1", "document", "passage"),
+        (None, "query", None),
+        ("http://10.0.0.5:30082/v1", "query", None),
+    ],
+)
+async def test_embed_sends_nvidia_input_type_only_to_nvidia(
+    base_url: str | None, input_type: str, expected: str | None
+) -> None:
+    """NVIDIA retrieval embedders are asymmetric (query vs passage encoder);
+    nv-embedqa-* rejects requests without input_type. Other APIs get no extras."""
+    from app.providers.base import EmbedRequest
+
+    mock_openai, mock_client = _make_openai_module()
+    item = MagicMock(embedding=[0.1, 0.2], index=0)
+    mock_client.embeddings.create = AsyncMock(
+        return_value=MagicMock(data=[item], model="m", usage=None)
+    )
+    with patch.dict(sys.modules, {"openai": mock_openai}):
+        from app.providers.openai_compatible import OpenAICompatibleProvider
+
+        provider = OpenAICompatibleProvider(api_key="k", base_url=base_url, embed_model="e")
+        out = await provider.embed(EmbedRequest(texts=["t"], input_type=input_type))
+    assert out.embeddings == [[0.1, 0.2]]
+    kwargs = mock_client.embeddings.create.call_args.kwargs
+    if expected is None:
+        assert "extra_body" not in kwargs
+    else:
+        assert kwargs["extra_body"]["input_type"] == expected
