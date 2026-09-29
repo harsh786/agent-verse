@@ -1306,6 +1306,10 @@ class TemplateSlugTakenError(Exception):
         self.slug = slug
 
 
+class CounterUpdateError(RuntimeError):
+    """A template counter (install_count / rating) update matched no row."""
+
+
 class MarketplaceV2:
     """DB-backed marketplace with atomic install, security review, and search.
 
@@ -1681,6 +1685,23 @@ class MarketplaceV2:
         record["id"] = saved[0]
         return record
 
+    @staticmethod
+    async def _require_counter_update(
+        session: Any, sql: str, template_id: str, *, what: str
+    ) -> None:
+        """Run a counter function (migration d2b7e4f1a8c6); raise unless it hit a row.
+
+        The functions return the number of template rows updated: 0 means the
+        caller may not see the template (or, for installs, has no install
+        record), and the counter did NOT move — never report that as success.
+        """
+        updated = (await session.execute(_t(sql), {"id": template_id})).scalar_one()
+        if not updated:
+            logger.error(
+                "marketplace_counter_not_updated", template_id=template_id, counter=what
+            )
+            raise CounterUpdateError(f"{what} for template {template_id!r} was not updated")
+
     # ------------------------------------------------------------------
     # Atomic install (fixes ghost-agent bug)
     # ------------------------------------------------------------------
@@ -1845,19 +1866,25 @@ class MarketplaceV2:
                             "system_prompt": system_prompt,
                         },
                     )
-                    # Increment install count
-                    await session.execute(
-                        _t(
-                            "UPDATE marketplace_templates "
-                            "SET install_count = install_count + 1, updated_at = NOW() "
-                            "WHERE id = :id"
-                        ),
-                        {"id": template_id},
+                    # Increment install count. The template row usually belongs
+                    # to another tenant (or is a system built-in), and its RLS
+                    # write policy matches only the owner — a direct UPDATE here
+                    # matched 0 rows, silently. The SECURITY DEFINER function
+                    # (migration d2b7e4f1a8c6) does the owner-context update and
+                    # returns the row count; 0 aborts the whole install.
+                    await self._require_counter_update(
+                        session,
+                        "SELECT marketplace_bump_install_count(:id)",
+                        template_id,
+                        what="install_count",
                     )
                     # ALL OR NOTHING
                     await session.commit()
             except Exception as exc:
                 # Atomic failure — no ghost agent since session was not committed
+                logger.error(
+                    "marketplace_install_failed", template_id=template_id, error=str(exc)
+                )
                 return {
                     "success": False,
                     "error": str(exc),
@@ -1867,6 +1894,14 @@ class MarketplaceV2:
             # In-memory path for tests (B.2: include connector_ids + system_prompt)
             _connector_ids = template.get("required_connectors", [])
             _system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
+            cached = self._cache.get(template_id)
+            if cached is None:
+                logger.error("marketplace_install_count_not_updated", template_id=template_id)
+                return {
+                    "success": False,
+                    "error": f"install_count for template {template_id!r} was not updated",
+                    "template_id": template_id,
+                }
             self._installs.append(
                 {
                     "install_id": install_id,
@@ -1878,10 +1913,7 @@ class MarketplaceV2:
                     "system_prompt": _system_prompt,
                 }
             )
-            if template_id in self._cache:
-                self._cache[template_id]["install_count"] = (
-                    self._cache[template_id].get("install_count", 0) + 1
-                )
+            cached["install_count"] = cached.get("install_count", 0) + 1
 
         return {
             "success": True,
@@ -1957,30 +1989,30 @@ class MarketplaceV2:
                             "verified": verified_install,
                         },
                     )
-                    # Aggregate: update rating_avg and rating_count
-                    await session.execute(
-                        _t("""
-                            UPDATE marketplace_templates SET
-                                rating_avg   = (
-                                    SELECT AVG(rating)::float
-                                    FROM marketplace_reviews
-                                    WHERE template_id = :tid
-                                ),
-                                rating_count = (
-                                    SELECT COUNT(*)
-                                    FROM marketplace_reviews
-                                    WHERE template_id = :tid
-                                ),
-                                updated_at = NOW()
-                            WHERE id = :tid
-                        """),
-                        {"tid": template_id},
+                    # Aggregate rating_avg / rating_count on the template row via
+                    # the SECURITY DEFINER function — a direct UPDATE as the
+                    # reviewer matched 0 rows on any template it does not own.
+                    await self._require_counter_update(
+                        session,
+                        "SELECT marketplace_refresh_template_rating(:id)",
+                        template_id,
+                        what="rating",
                     )
                     await session.commit()
             except Exception as exc:
+                logger.error(
+                    "marketplace_add_review_failed", template_id=template_id, error=str(exc)
+                )
                 return {"success": False, "error": str(exc)}
         else:
             # In-memory
+            cached = self._cache.get(template_id)
+            if cached is None:
+                logger.error("marketplace_rating_not_updated", template_id=template_id)
+                return {
+                    "success": False,
+                    "error": f"rating for template {template_id!r} was not updated",
+                }
             verified_install = any(
                 i.get("template_id") == template_id and i.get("tenant_id") == tenant_ctx.tenant_id
                 for i in self._installs
@@ -1996,15 +2028,9 @@ class MarketplaceV2:
                     "verified_install": verified_install,
                 }
             )
-            # Update in-memory cache
-            if template_id in self._cache:
-                all_ratings = [
-                    r["rating"] for r in self._reviews if r["template_id"] == template_id
-                ]
-                self._cache[template_id]["rating_avg"] = (
-                    sum(all_ratings) / len(all_ratings) if all_ratings else None
-                )
-                self._cache[template_id]["rating_count"] = len(all_ratings)
+            all_ratings = [r["rating"] for r in self._reviews if r["template_id"] == template_id]
+            cached["rating_avg"] = sum(all_ratings) / len(all_ratings)
+            cached["rating_count"] = len(all_ratings)
 
         return {"success": True, "review_id": review_id}
 
