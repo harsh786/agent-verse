@@ -954,10 +954,13 @@ def test_ingest_gdrive_folder_file_error_collected() -> None:
             },
             headers=_auth(),
         )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert len(body["errors"]) == 1
-    assert "download failed" in body["errors"][0]
+    # The only file failed: nothing was ingested, so this is not a success.
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert detail["status"] == "failed"
+    assert len(detail["errors"]) == 1
+    assert "download failed" in detail["errors"][0]
+    assert detail["failed"][0]["file_id"] == "f1"
 
 
 def test_ingest_gdrive_folder_exception_returns_500() -> None:
