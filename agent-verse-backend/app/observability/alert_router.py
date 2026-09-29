@@ -53,7 +53,15 @@ class AlertRouter:
     # ------------------------------------------------------------------
 
     def register_rule(self, rule: AlertRule) -> None:
-        """Add or replace a rule with the same name."""
+        """Add or replace a rule with the same name.
+
+        A webhook URL must be a public http(s) URL (SSRF guard); it is checked
+        again, IP-pinned, on every delivery.
+        """
+        if rule.webhook_url:
+            from app.net.ssrf_guard import assert_public_url
+
+            assert_public_url(rule.webhook_url, context="alert webhook")
         self._rules = [r for r in self._rules if r.name != rule.name]
         self._rules.append(rule)
 
@@ -113,16 +121,24 @@ class AlertRouter:
         """POST the alert as a JSON payload to *webhook_url*.
 
         The payload is compatible with Slack's incoming webhook format.
-        """
-        import httpx
 
+        SSRF: the URL is validated (public http(s) only), the connection is
+        IP-pinned to the checked address (no DNS rebinding) and redirects are
+        not followed — a 3xx is a delivery failure. This used to post with a
+        plain redirect-following client and no check at all.
+        """
+        from app.net.ssrf_guard import assert_public_url_async, public_async_client
+
+        await assert_public_url_async(webhook_url, context="alert webhook")
         payload = self._build_payload(alert)
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with public_async_client(timeout=5.0) as client:
             resp = await client.post(
                 webhook_url,
                 json=payload,
                 headers={"Content-Type": "application/json"},
             )
+            if resp.is_redirect:
+                raise ValueError("alert webhook answered with a redirect; not followed")
             resp.raise_for_status()
 
     # ------------------------------------------------------------------

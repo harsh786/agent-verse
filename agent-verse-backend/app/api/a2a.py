@@ -9,11 +9,10 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -288,7 +287,7 @@ async def _send_callback(callback_url: str, task_id: str, status: str, result: s
         logger.warning("a2a_callback_blocked", task_id=task_id, error=str(exc)[:200])
         return
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+        async with public_async_client(timeout=10.0) as client:
             await client.post(
                 callback_url,
                 json={

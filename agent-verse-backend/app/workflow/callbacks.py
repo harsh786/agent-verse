@@ -102,9 +102,16 @@ async def deliver_callback(
         # Stable per (run, status) so receivers can dedupe our retries.
         "Idempotency-Key": f"{payload.get('run_id')}:{payload.get('status')}",
     }
+    from app.net.ssrf_guard import public_async_client
+
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
+        # IP-pinned: the host is re-resolved and re-checked at connect time and
+        # the socket dials the checked address (a plain client re-resolved the
+        # name after validation, so a rebinding DNS answer reached loopback).
+        async with public_async_client(timeout=_TIMEOUT_S) as client:
             resp = await client.post(url, content=body, headers=headers)
+    except SSRFError as exc:  # the name now resolves somewhere internal
+        raise CallbackPermanentError(f"callback URL blocked at connect: {exc}") from exc
     except httpx.HTTPError as exc:
         raise CallbackTransientError(f"callback transport error: {exc}") from exc
     if 200 <= resp.status_code < 300:

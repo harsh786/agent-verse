@@ -12,9 +12,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
-from app.net.ssrf_guard import assert_public_url_async
+from app.net.ssrf_guard import assert_public_url_async, public_async_client
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -360,12 +358,15 @@ class NotificationService:
 async def _post_public(url: str, payload: dict[str, Any]) -> None:
     """POST *payload* to a tenant-supplied webhook URL behind the SSRF guard.
 
-    The URL is validated (public address, http/https, DNS anti-rebinding) and
-    redirects are NOT followed — a 3xx is a delivery failure, so a public URL
-    cannot bounce the request to an internal address.
+    The URL is validated (public address, http/https) and redirects are NOT
+    followed — a 3xx is a delivery failure, so a public URL cannot bounce the
+    request to an internal address. The connection is IP-pinned
+    (``public_async_client``): the host is resolved and re-checked at connect
+    time and the socket dials the checked address. A plain client resolved the
+    name again after the check, so a rebinding DNS answer reached loopback.
     """
     await assert_public_url_async(url, context="notification webhook")
-    async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+    async with public_async_client(timeout=10.0) as client:
         resp = await client.post(url, json=payload)
         if getattr(resp, "is_redirect", False) is True:
             raise ValueError("notification webhook answered with a redirect; not followed")
