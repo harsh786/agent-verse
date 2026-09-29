@@ -16,7 +16,12 @@ from pydantic import BaseModel
 
 from app.mcp.catalog import CONNECTOR_CATALOG
 from app.mcp.registry import AuthType, MCPRegistry, MCPServerConfig
-from app.net.ssrf_guard import SSRFError, assert_public_url, assert_public_url_async
+from app.net.ssrf_guard import (
+    SSRFError,
+    assert_public_url,
+    assert_public_url_async,
+    public_async_client,
+)
 from app.providers.vault import (
     connector_secret_ref,
     is_connector_secret_ref,
@@ -621,7 +626,7 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _probe_client() as client:
             resp = await client.get(f"{rest_base}/user", headers=headers)
         latency_ms = round((time.time() - started) * 1000)
 
@@ -694,6 +699,17 @@ async def _test_github(cfg: Any, started: float, server_id: str) -> dict[str, An
         }
 
 
+def _probe_client() -> httpx.AsyncClient:
+    """Client for connector test probes, pinned to the IPs checked at connect.
+
+    ``test_connector`` SSRF-checks the tenant URL first; a plain
+    ``httpx.AsyncClient`` resolved the name again, so a DNS answer flipping to
+    127.0.0.1 / 169.254.169.254 (rebinding) was probed with the tenant's token.
+    """
+    client: httpx.AsyncClient = public_async_client(timeout=10.0)
+    return client
+
+
 async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
     token = _get_cred(cfg, "api_token", "token", "password")
     email = _get_cred(cfg, "email", "username", "user")
@@ -715,7 +731,7 @@ async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]
             headers["Authorization"] = f"Basic {cred}"
         elif token:
             headers["Authorization"] = f"Bearer {token}"
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _probe_client() as client:
             resp = await client.get(f"{base}/rest/api/3/myself", headers=headers)
         latency_ms = round((time.time() - started) * 1000)
         if resp.status_code == 200:
@@ -755,7 +771,7 @@ async def _test_jira(cfg: Any, started: float, server_id: str) -> dict[str, Any]
 async def _test_slack(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
     token = _get_cred(cfg, "token", "bot_token", "api_token", "access_token")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _probe_client() as client:
             resp = await client.post(
                 "https://slack.com/api/auth.test",
                 headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -798,7 +814,7 @@ async def _test_slack(cfg: Any, started: float, server_id: str) -> dict[str, Any
 async def _test_stripe(cfg: Any, started: float, server_id: str) -> dict[str, Any]:
     token = _get_cred(cfg, "api_key", "secret_key", "token", "api_token")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _probe_client() as client:
             resp = await client.get(
                 "https://api.stripe.com/v1/account",
                 headers={"Authorization": f"Bearer {token}"},
@@ -842,7 +858,7 @@ async def _test_gitlab(cfg: Any, started: float, server_id: str) -> dict[str, An
     token = _get_cred(cfg, "token", "private_token", "api_token", "access_token")
     base = (cfg.url or cfg.base_url or "https://gitlab.com").rstrip("/")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with _probe_client() as client:
             resp = await client.get(
                 f"{base}/api/v4/user",
                 headers={"PRIVATE-TOKEN": token} if token else {},
@@ -1036,7 +1052,7 @@ async def test_connector(request: Request, server_id: str) -> dict[str, Any]:
             ):
                 headers["Authorization"] = f"Bearer {value}"
                 break
-        async with httpx.AsyncClient(timeout=10.0) as hclient:
+        async with _probe_client() as hclient:
             resp = await hclient.get(url, headers=headers)
         latency_ms = round((time.time() - started) * 1000)
         reachable = resp.status_code < 500

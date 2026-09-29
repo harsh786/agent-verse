@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -32,7 +32,6 @@ class ElasticsearchConnector(BaseConnector):
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
-        import httpx
 
         t0 = time.perf_counter()
         try:
@@ -40,7 +39,7 @@ class ElasticsearchConnector(BaseConnector):
             url = cc.get("url", "http://localhost:9200")
             assert_source_url(url, context="elasticsearch", config=config)
             auth = (cc.get("username", ""), cc.get("password", "")) if cc.get("username") else None
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(url, auth=auth)
                 r.raise_for_status()
                 info = r.json()
@@ -59,7 +58,6 @@ class ElasticsearchConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -74,7 +72,7 @@ class ElasticsearchConnector(BaseConnector):
 
         new_cursor: list = cursor_parsed or []
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             while True:
                 body: dict = {
                     "size": batch_size,

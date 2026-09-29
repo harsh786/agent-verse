@@ -239,18 +239,19 @@ async def _download_command_file(cf: Any) -> bytes | None:
     # SSRF guard: file URLs arrive from external chat payloads, so they must be
     # confined to public hosts before any request (blocks localhost, link-local,
     # cloud metadata, and private ranges).
-    try:
-        from app.net.ssrf_guard import assert_public_url
+    from app.net.ssrf_guard import assert_public_url, public_async_client, request_public
 
+    try:
         assert_public_url(str(url), context="gateway.file_download")
     except Exception as exc:
         _log.warning("gateway.file_url_blocked", error=str(exc)[:120])
         return None
     try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            r = await client.get(url)
+        # Pinned to the address checked at connect time (a plain client
+        # re-resolved the name: DNS rebinding); chat file links commonly
+        # redirect to a CDN, so redirects are followed with every hop checked.
+        async with public_async_client(timeout=20.0) as client:
+            r = await request_public(client, "GET", str(url), context="gateway.file_download")
             r.raise_for_status()
             return r.content
     except Exception as exc:

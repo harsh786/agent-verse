@@ -12,6 +12,7 @@ import base64
 import os
 from contextlib import suppress
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -267,16 +268,21 @@ async def _call_tool_inner(
     base = _absolute_http_url(tenant_base or _env("JIRA_BASE_URL"))
     if not base:
         return {"error": "JIRA_BASE_URL not configured"}
+    from app.net.ssrf_guard import SSRFError, assert_public_url_async, public_async_client
+
+    # The platform's own JIRA_BASE_URL env is operator config: it may be an
+    # internal host, so its own name is the connect-time allowlist (private
+    # ranges open, cloud metadata still refused). A tenant URL gets none.
+    pin_allowlist: list[str] | None = None
     if tenant_base:
         # The tenant-supplied instance URL was used unchecked (SSRF: a connector
-        # could point at the metadata service or an internal host). The
-        # platform's own JIRA_BASE_URL env is operator config and not checked.
-        from app.net.ssrf_guard import SSRFError, assert_public_url_async
-
+        # could point at the metadata service or an internal host).
         try:
             await assert_public_url_async(base, context="jira connector")
         except SSRFError:
             return {"error": "Jira URL blocked by SSRF guard"}
+    else:
+        pin_allowlist = [(urlparse(base).hostname or "").lower()]
 
     email = creds.get("username") or creds.get("email") or _env("JIRA_EMAIL")
     token = (
@@ -293,7 +299,11 @@ async def _call_tool_inner(
         "Accept": "application/json",
     }
 
-    async with httpx.AsyncClient(base_url=base, headers=headers, timeout=30.0) as client:
+    # Pinned to the checked address (a plain client re-resolved the name —
+    # DNS rebinding past the check above).
+    async with public_async_client(
+        allowed_domains=pin_allowlist, base_url=base, headers=headers, timeout=30.0
+    ) as client:
         if tool_name == "jira_search_issues":
             default_fields = [
                 "summary",

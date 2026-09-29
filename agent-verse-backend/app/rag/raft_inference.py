@@ -63,10 +63,19 @@ class LLMFineTunedInferenceProvider:
         query: str,
         evidence: tuple[str, ...],
         fine_tuned_model_id: str,
+        tenant_id: str | None = None,
     ) -> str:
         if not fine_tuned_model_id.strip():
             raise ValueError("fine_tuned_model_id is required")
-        response = await self._llm.complete(
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        # Charged to the tenant (budget + ledger) and circuit-broken with a
+        # bounded timeout; a budget refusal raises to the caller.
+        response = await complete_decision(
+            self._llm,
             CompletionRequest(
                 messages=[
                     Message(role="system", content=RAFT_SYSTEM_PROMPT),
@@ -75,7 +84,10 @@ class LLMFineTunedInferenceProvider:
                 model=fine_tuned_model_id,
                 max_tokens=self._max_tokens,
                 temperature=0.0,
-            )
+            ),
+            role="rag_raft_inference",
+            tenant_id=tenant_id,
+            timeout_seconds=generation_timeout_seconds(),
         )
         return str(getattr(response, "content", "") or "").strip()
 

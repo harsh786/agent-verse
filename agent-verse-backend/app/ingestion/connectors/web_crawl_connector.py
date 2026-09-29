@@ -12,7 +12,11 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url, source_url_is_allowed
+from app.ingestion.connector_egress import (
+    assert_source_url,
+    source_client,
+    source_url_is_allowed,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -35,13 +39,12 @@ class WebCrawlConnector(BaseConnector):
         if not seed_urls:
             return ConnectionHealth(ok=False, error="No seed_urls configured")
         try:
-            import httpx
 
             url = seed_urls[0]
             assert_source_url(url, context="web_crawl.validate", config=config)
             # No automatic redirect following: a public seed that 302s to
             # 169.254.169.254 would otherwise be fetched past the guard.
-            async with httpx.AsyncClient(timeout=10, follow_redirects=False) as c:
+            async with source_client(timeout=10) as c:
                 r = await c.get(url)
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(
@@ -83,19 +86,15 @@ class WebCrawlConnector(BaseConnector):
 
         import asyncio
 
-        try:
-            import httpx
-        except ImportError:
-            _log.error("httpx not installed")
-            return
-
-        # follow_redirects=False on purpose: httpx would follow a 302 without
-        # re-checking the target, so a public page could bounce the crawler to a
-        # link-local/metadata address past the egress guard. Redirect targets go
-        # back onto the frontier below, where they are guarded like any other URL.
-        async with httpx.AsyncClient(
+        # Redirects are not followed (source_client forces follow_redirects=False):
+        # httpx would follow a 302 without re-checking the target, so a public
+        # page could bounce the crawler to a link-local/metadata address past the
+        # egress guard. Redirect targets go back onto the frontier below, where
+        # they are guarded like any other URL. source_client also pins each
+        # connection to the address checked at connect time (a plain client
+        # re-resolved the name — DNS rebinding).
+        async with source_client(
             timeout=30,
-            follow_redirects=False,
             headers={"User-Agent": "AgentVerse-KnowledgeCrawler/1.0"},
         ) as client:
             while urls_to_visit and visited < max_pages:

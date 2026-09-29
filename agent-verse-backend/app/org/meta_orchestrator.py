@@ -157,12 +157,12 @@ class GoalAnalyzer:
     def __init__(self, llm_provider: Any | None = None) -> None:
         self._llm = llm_provider
 
-    async def analyze(self, goal: str) -> GoalAnalysis:
+    async def analyze(self, goal: str, *, tenant_id: str | None = None) -> GoalAnalysis:
         with _tracer.start_as_current_span("meta_orchestrator.analyze_goal") as span:
             span.set_attribute("goal_length", len(goal))
             if self._llm is not None:
                 try:
-                    result = await self._analyze_llm(goal)
+                    result = await self._analyze_llm(goal, tenant_id=tenant_id)
                     span.set_attribute("source", "llm")
                     return result
                 except Exception as exc:
@@ -171,7 +171,7 @@ class GoalAnalyzer:
             span.set_attribute("source", "heuristic")
             return result
 
-    async def _analyze_llm(self, goal: str) -> GoalAnalysis:
+    async def _analyze_llm(self, goal: str, *, tenant_id: str | None = None) -> GoalAnalysis:
         prompt = (
             "Analyse this mission goal and return a JSON object with exactly these fields:\n"
             "complexity (low|medium|high), domain_count (int), has_dependencies (bool),\n"
@@ -192,7 +192,12 @@ class GoalAnalyzer:
             # enough room to reach it.
             max_tokens=1024,
         )
-        resp = await self._llm.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        # Charged to the tenant + circuit-broken; failures fall back to heuristics.
+        resp = await complete_decision(
+            self._llm, req, role="org_goal_analysis", tenant_id=tenant_id or None
+        )
         # Robust parse: reasoning models wrap the JSON in <think>…</think> and/or
         # prose, so a bare json.loads fails. Reuse the agent nodes' extractor.
         from app.agent.nodes._helpers import _first_json_object, _strip_reasoning
@@ -279,7 +284,7 @@ class MetaOrchestrator:
             span.set_attribute("goal_length", len(goal))
             _log.info("meta_orchestrator.plan_mission.start", tenant_id=tenant_id)
 
-            goal_analysis = await self._analyzer.analyze(goal)
+            goal_analysis = await self._analyzer.analyze(goal, tenant_id=tenant_id)
             span.set_attribute("complexity", goal_analysis.complexity)
             span.set_attribute("domain_count", goal_analysis.domain_count)
             span.set_attribute("task_type", goal_analysis.task_type)
@@ -295,7 +300,7 @@ class MetaOrchestrator:
                     title=goal[:60],
                 )
 
-            manifest = await self._team_engine.form_team(mission, org)
+            manifest = await self._team_engine.form_team(mission, org, tenant_id=tenant_id)
             phases = await self._plan_execution_phases(manifest, goal_analysis)
             approval_gates = _compute_approval_gates(goal_analysis, manifest)
             model_profile = get_model_profile_for_dept(

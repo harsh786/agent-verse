@@ -303,7 +303,13 @@ class GoalClassifier:
         goal: str,
         provider: Any,
         fast_props: GoalProperties | None = None,
+        *,
+        tenant_id: str | None = None,
+        goal_id: str | None = None,
     ) -> GoalProperties:
+        """Tier 2 for unsure MEDIUM goals. The LLM call is charged to the goal's
+        tenant and circuit-broken; any failure (budget refusal included)
+        returns the heuristic result, as before."""
         base = fast_props or self.classify_fast(goal)
         if provider is None:
             return base
@@ -322,13 +328,19 @@ class GoalClassifier:
                 '"requires_code":true|false,"estimated_steps":1-10,"confidence":0.0-1.0}'
                 "\n\nGoal: " + goal[:500]
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=150,
                     temperature=0.0,
-                )
+                ),
+                role="goal_classifier",
+                tenant_id=tenant_id,
+                goal_id=goal_id,
             )
             data = json.loads(resp.content.strip())
             return GoalProperties(

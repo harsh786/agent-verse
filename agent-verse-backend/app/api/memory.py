@@ -67,6 +67,65 @@ def _evict_cached(request: Request, tenant_ctx: Any, memory_id: str) -> bool:
     return bool(mem.delete(memory_id=memory_id, tenant_ctx=tenant_ctx))
 
 
+async def _screen_memory_or_http(tenant_id: str, content: str) -> str:
+    """MEMORY_WRITE guardrail for a user-authored memory (create / edit).
+
+    Every other write path (``LongTermMemoryStore.store_async``, chat, goal
+    learning) screens memory content; these routes wrote it unvetted. Scans the
+    full text. A block is a 422, a redacting rule's output is what gets stored,
+    and content the guardrail could not vet is never stored (503, fail closed).
+    """
+    try:
+        from app.guardrails_v2.engine import guardrails_engine
+        from app.guardrails_v2.models import GuardrailLayer
+
+        guardrails_engine.ensure_default_rules(tenant_id)
+        result = await guardrails_engine.evaluate(
+            content=content, layer=GuardrailLayer.MEMORY_WRITE, tenant_id=tenant_id
+        )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("memory_write_guardrail_failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Memory-write guardrail is unavailable; memory was not saved",
+        ) from exc
+    if result.get("blocked"):
+        raise HTTPException(
+            status_code=422, detail="Memory content rejected by the memory-write guardrail"
+        )
+    redacted = result.get("redacted_content")
+    return redacted if isinstance(redacted, str) and redacted else content
+
+
+async def _embed_memory(request: Request, content: str) -> tuple[str, str, int] | None:
+    """``(pgvector literal, model, raw dim)`` for *content*, or None.
+
+    Non-fatal like ``LongTermMemoryStore.store_async``: without a vector the
+    row is still found by keyword recall. Never silent.
+    """
+    embedder = getattr(request.app.state, "embedder", None)
+    if embedder is None:
+        return None
+    try:
+        from app.memory.long_term import _fit_ltm_vector
+        from app.providers.base import EmbedRequest
+
+        resp = await embedder.embed(EmbedRequest(texts=[content]))
+        raw_vec = resp.embeddings[0] if resp.embeddings else None
+        fitted = _fit_ltm_vector(raw_vec) if raw_vec else None
+        if raw_vec is None or fitted is None:
+            return None
+        literal = "[" + ",".join(str(v) for v in fitted) + "]"
+        return literal, str(getattr(resp, "model", "") or ""), len(raw_vec)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("memory_embedding_failed: %s", str(exc)[:200])
+        return None
+
+
 class CreateMemoryRequest(BaseModel):
     content: str
     memory_type: str = "fact"
@@ -81,36 +140,47 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
     db = _get_db(request)
     # long_term_memory.id is VARCHAR(32): a dashed uuid4 (36 chars) failed every insert.
     memory_id = uuid.uuid4().hex
+    content = await _screen_memory_or_http(tenant_ctx.tenant_id, body.content)
 
     if db is not None:
+        embedded = await _embed_memory(request, content)
         try:
             from sqlalchemy import text
 
+            params: dict[str, Any] = {
+                "id": memory_id,
+                "tid": tenant_ctx.tenant_id,
+                "content": content,
+                "mt": body.memory_type,
+                "conf": body.confidence,
+                # JSON column: a raw Python list failed every insert
+                # ("invalid input for query argument $6: []").
+                "tags": json.dumps(body.tags),
+            }
+            if embedded is not None:
+                params["emb"], params["emodel"], params["edim"] = embedded
+                sql = """
+                        INSERT INTO long_term_memory
+                            (id, tenant_id, content, memory_type, confidence, tags, created_at,
+                             embedding, embedding_model, embedding_dim)
+                        VALUES (:id, :tid, :content, :mt, :conf, CAST(:tags AS json), NOW(),
+                                CAST(:emb AS vector), :emodel, :edim)
+                    """
+            else:
+                sql = """
+                        INSERT INTO long_term_memory
+                            (id, tenant_id, content, memory_type, confidence, tags, created_at)
+                        VALUES (:id, :tid, :content, :mt, :conf, CAST(:tags AS json), NOW())
+                    """
             async with (
                 db() as session,
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
             ):
-                await session.execute(
-                    text("""
-                        INSERT INTO long_term_memory
-                            (id, tenant_id, content, memory_type, confidence, tags, created_at)
-                        VALUES (:id, :tid, :content, :mt, :conf, CAST(:tags AS json), NOW())
-                    """),
-                    {
-                        "id": memory_id,
-                        "tid": tenant_ctx.tenant_id,
-                        "content": body.content,
-                        "mt": body.memory_type,
-                        "conf": body.confidence,
-                        # JSON column: a raw Python list failed every insert
-                        # ("invalid input for query argument $6: []").
-                        "tags": json.dumps(body.tags),
-                    },
-                )
+                await session.execute(text(sql), params)
             return {
                 "id": memory_id,
-                "content": body.content,
+                "content": content,
                 "memory_type": body.memory_type,
                 "confidence": body.confidence,
                 "tags": body.tags,
@@ -139,7 +209,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
             mem_obj = SimpleNamespace(
                 id=memory_id,
                 memory_id=memory_id,
-                content=body.content,
+                content=content,
                 memory_type=body.memory_type,
                 confidence=body.confidence,
                 tags=body.tags,
@@ -150,7 +220,7 @@ async def create_memory(request: Request, body: CreateMemoryRequest) -> dict:
 
     return {
         "id": memory_id,
-        "content": body.content,
+        "content": content,
         "memory_type": body.memory_type,
         "confidence": body.confidence,
         "tags": body.tags,
@@ -392,6 +462,12 @@ async def update_memory(request: Request, memory_id: str, body: UpdateMemoryRequ
     changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
     if not changes:
         raise HTTPException(status_code=422, detail="No fields to update")
+    if "content" in changes:
+        # Same MEMORY_WRITE gate as every other memory write (it used to be
+        # skipped here, so an edit could store what a create would refuse).
+        changes["content"] = await _screen_memory_or_http(
+            tenant_ctx.tenant_id, str(changes["content"])
+        )
 
     db = _get_db(request)
     if db is not None:
@@ -408,6 +484,20 @@ async def update_memory(request: Request, memory_id: str, body: UpdateMemoryRequ
             else:
                 sets.append(f"{field} = :{field}")
                 params[field] = changes[field]
+        if "content" in changes:
+            # Re-embed the new content. The row used to keep the OLD content's
+            # vector, so semantic recall matched text that no longer exists;
+            # without a new vector the stale one is cleared (keyword recall
+            # still finds the row).
+            embedded = await _embed_memory(request, str(changes["content"]))
+            if embedded is not None:
+                sets.append(
+                    "embedding = CAST(:emb AS vector), embedding_model = :emodel, "
+                    "embedding_dim = :edim"
+                )
+                params["emb"], params["emodel"], params["edim"] = embedded
+            else:
+                sets.append("embedding = NULL, embedding_model = NULL, embedding_dim = NULL")
         sql = (
             f"UPDATE long_term_memory SET {', '.join(sets)} "
             "WHERE id = :id AND tenant_id = :tid "

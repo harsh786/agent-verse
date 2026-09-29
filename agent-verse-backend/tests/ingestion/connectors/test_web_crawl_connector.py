@@ -105,12 +105,6 @@ class TestValidateConnection:
 
 
 class TestGetDelta:
-    async def test_no_httpx_yields_nothing(self):
-        config = _make_config({"seed_urls": ["https://example.com/"]})
-        with patch.dict("sys.modules", {"httpx": None}):
-            docs = await _collect(WebCrawlConnector().get_delta(config, None))
-        assert docs == []
-
     async def test_crawls_seed_and_extracts_doc(self):
         html = (
             b"<html><head><title>Home Page</title></head><body>"

@@ -96,6 +96,17 @@ def azure_blob_endpoints(connection_config: Mapping[str, Any]) -> list[str]:
     return endpoints
 
 
+def _download_capped(container_client: Any, name: str, cap: int) -> bytes | None:
+    """Stream blob *name*; its bytes, or None once it exceeds *cap* bytes."""
+    downloader = container_client.download_blob(name, offset=0, length=cap + 1)
+    buf = bytearray()
+    for chunk in downloader.chunks():
+        buf.extend(chunk)
+        if len(buf) > cap:
+            return None
+    return bytes(buf)
+
+
 def _assert_azure_egress(config: SourceConfig) -> None:
     for endpoint in azure_blob_endpoints(config.connection_config):
         assert_source_url(endpoint, context="azure_blob", config=config)
@@ -181,8 +192,25 @@ class AzureBlobConnector(BaseConnector):
             blob_ts = blob.last_modified.isoformat() if blob.last_modified else ""
             if cursor and blob_ts <= cursor:
                 continue
+            # Bounded download. Every blob used to be read whole (readall()),
+            # buffering arbitrarily large objects before the pipeline's size cap
+            # could refuse them. Skip an oversized blob by its declared size, and
+            # stream the rest — at most cap + 1 bytes — aborting past the cap.
+            cap = int(config.max_doc_size_bytes)
+            declared = getattr(blob, "size", None)
+            if isinstance(declared, int) and declared > cap:
+                _log.info(
+                    "azure_blob: skip blob %s: %d bytes exceeds the %d-byte cap",
+                    blob.name,
+                    declared,
+                    cap,
+                )
+                continue
             try:
-                data = cc.download_blob(blob.name).readall()
+                data = _download_capped(cc, blob.name, cap)
+                if data is None:
+                    _log.info("azure_blob: skip blob %s: exceeds the %d-byte cap", blob.name, cap)
+                    continue
                 doc = RawDocument(
                     doc_id=str(uuid.uuid4()),
                     source_id=config.source_id,

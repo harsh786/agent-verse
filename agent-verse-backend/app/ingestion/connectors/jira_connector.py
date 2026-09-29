@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -33,13 +33,12 @@ class JiraConnector(BaseConnector):
 
         t0 = time.perf_counter()
         try:
-            import httpx
 
             cc = config.connection_config
             base_url = cc.get("base_url", "").rstrip("/")
             assert_source_url(base_url, context="jira", config=config)
             auth = (cc.get("username", ""), cc.get("api_token", ""))
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(f"{base_url}/rest/api/3/myself", auth=auth)
                 r.raise_for_status()
                 user = r.json()
@@ -55,7 +54,6 @@ class JiraConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -80,7 +78,7 @@ class JiraConnector(BaseConnector):
         if "ORDER BY" not in jql:
             jql += " ORDER BY updated ASC"
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             start = 0
             while True:
                 r = await client.get(

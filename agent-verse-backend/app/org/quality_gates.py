@@ -380,7 +380,15 @@ class QualityGateSystem:
                     "required": ["score"],
                 },
             )
-            resp = await self._llm.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            tenant_id = context.get("tenant_id")
+            resp = await complete_decision(
+                self._llm,
+                req,
+                role="org_quality_gate",
+                tenant_id=str(tenant_id) if tenant_id else None,
+            )
             raw = (resp.content or "").strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]

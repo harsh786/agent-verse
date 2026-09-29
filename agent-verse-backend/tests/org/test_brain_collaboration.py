@@ -71,7 +71,7 @@ class _FakeModelGateway:
         self._cost_usd = cost_usd
 
     async def complete_short(
-        self, prompt: str, *, max_tokens: int
+        self, prompt: str, *, max_tokens: int, tenant_id: str | None = None
     ) -> tuple[str, int, int, float]:
         idx = len(self.calls)
         self.calls.append((prompt, max_tokens))

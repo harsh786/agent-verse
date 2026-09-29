@@ -66,6 +66,11 @@ class EmbeddingRouter:
         self._configs = dict(BUILTIN_EMBEDDING_CONFIGS)
         self._usage: dict[str, int] = {}  # model → total tokens embedded
         self._errors: dict[str, int] = {}  # model → error count
+        # Per-tenant counters for GET /embeddings/usage. The process-wide ones
+        # above feed platform drift metrics only; returning them per request
+        # showed every tenant every other tenant's embedding volume.
+        self._tenant_usage: dict[str, dict[str, int]] = {}
+        self._tenant_errors: dict[str, dict[str, int]] = {}
 
     def set_provider(self, provider: Any) -> None:
         self._provider = provider
@@ -83,6 +88,7 @@ class EmbeddingRouter:
         provider: str = "openai",
         model: str = "text-embedding-3-small",
         fallback_lexical: bool = False,
+        tenant_id: str = "",
     ) -> list[list[float]]:
         """Embed *texts* on the configured provider.
 
@@ -93,7 +99,11 @@ class EmbeddingRouter:
         fake 384-dim vectors as if they were real embeddings.
         """
         result = await self.embed_texts_report(
-            texts, provider=provider, model=model, fallback_lexical=fallback_lexical
+            texts,
+            provider=provider,
+            model=model,
+            fallback_lexical=fallback_lexical,
+            tenant_id=tenant_id,
         )
         return result.embeddings
 
@@ -105,6 +115,7 @@ class EmbeddingRouter:
         model: str = "text-embedding-3-small",
         fallback_lexical: bool = False,
         provider_impl: Any = None,
+        tenant_id: str = "",
     ) -> EmbeddingRunResult:
         """Like :meth:`embed_texts` but reports what actually produced the vectors.
 
@@ -132,10 +143,16 @@ class EmbeddingRouter:
                     )
                 token_count = sum(len(t.split()) for t in texts)
                 self._usage[model_key] = self._usage.get(model_key, 0) + token_count
+                if tenant_id:
+                    t_usage = self._tenant_usage.setdefault(tenant_id, {})
+                    t_usage[model_key] = t_usage.get(model_key, 0) + token_count
                 actual = str(getattr(resp, "model", "") or "") or model_key
                 return EmbeddingRunResult(embeddings=embeddings, model=actual, used_fallback=False)
             except Exception as exc:
                 self._errors[model_key] = self._errors.get(model_key, 0) + 1
+                if tenant_id:
+                    t_errors = self._tenant_errors.setdefault(tenant_id, {})
+                    t_errors[model_key] = t_errors.get(model_key, 0) + 1
                 error = f"{type(exc).__name__}: {exc}"[:300]
                 _log.warning("Embedding via provider failed: %s", exc)
 
@@ -161,8 +178,12 @@ class EmbeddingRouter:
         norm = math.sqrt(sum(x * x for x in vec)) or 1.0
         return [x / norm for x in vec]
 
-    def get_usage_stats(self) -> dict[str, Any]:
-        return {"usage_by_model": self._usage, "errors_by_model": self._errors}
+    def get_usage_stats(self, *, tenant_id: str) -> dict[str, Any]:
+        """One tenant's embedding usage/error counters (this process)."""
+        return {
+            "usage_by_model": dict(self._tenant_usage.get(tenant_id, {})),
+            "errors_by_model": dict(self._tenant_errors.get(tenant_id, {})),
+        }
 
     def get_drift_metrics(self) -> dict[str, Any]:
         """Return embedding usage and error metrics for drift monitoring."""

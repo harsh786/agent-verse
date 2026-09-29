@@ -20,7 +20,7 @@ from typing import Any, cast
 import httpx
 
 from app.mcp.registry import MCPRegistry, MCPServerConfig
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 from app.observability.logging import get_logger
 from app.providers.vault import is_connector_secret_ref, resolve_connector_secret_ref
 from app.tenancy.context import TenantContext
@@ -232,6 +232,17 @@ class MCPClient:
             }:
                 positional_count += 1
         return positional_count >= 2
+
+    def _http_client(self) -> httpx.AsyncClient:
+        """Client for tenant connector URLs, pinned to the IPs checked at connect.
+
+        Every caller SSRF-checks the connector URL first; a plain
+        ``httpx.AsyncClient`` would resolve the name again (DNS rebinding:
+        checked public IP, connected 127.0.0.1 / 169.254.169.254). Redirects are
+        not followed (as before).
+        """
+        client: httpx.AsyncClient = public_async_client(timeout=self._timeout)
+        return client
 
     def _get_circuit_breaker(self, server_id: str, tenant_id: str = "") -> Any:
         """Get or create a per-tenant circuit breaker for a server."""
@@ -475,7 +486,7 @@ class MCPClient:
                 raise ValueError(f"Connector URL blocked by SSRF guard: {exc}") from exc
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with self._http_client() as client:
                 _list_req_id: str | None = None
                 if is_mcp_endpoint:
                     _list_req = _jsonrpc("tools/list")
@@ -782,7 +793,7 @@ class MCPClient:
         headers = {"Content-Type": "application/json", **auth_headers}
 
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with self._http_client() as client:
                 if http_method == "GET":
                     resp = await client.get(url, params={**args, **auth_params}, headers=headers)
                 else:
@@ -863,7 +874,7 @@ class MCPClient:
 
         try:
             base_url = _absolute_http_url(server.url or server.base_url).rstrip("/")
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with self._http_client() as client:
                 resp = await client.post(
                     f"{base_url}/rest/api/3/search/jql",
                     json=payload,
@@ -1055,7 +1066,7 @@ class MCPClient:
         if using_jsonrpc:
             headers["Accept"] = "application/json, text/event-stream"
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        async with self._http_client() as client:
             _call_req_id: str | None = None
             if using_jsonrpc:
                 _call_req = _jsonrpc(
@@ -1373,6 +1384,7 @@ class MCPClient:
                         original_arguments=arguments,
                         failed_result=result,
                         resolver=_resolver,  # type: ignore[name-defined]
+                        tenant_ctx=tenant_ctx,
                     )
                     if _healed_args != arguments:
                         result = await self._call_tool_impl(

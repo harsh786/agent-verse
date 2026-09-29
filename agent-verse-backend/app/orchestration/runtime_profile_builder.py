@@ -115,7 +115,9 @@ class RuntimeProfileBuilder:
             # Tier 2 (opt-in: the caller passes a provider only when the setting is on).
             # classify_with_llm only consults the LLM for unsure MEDIUM goals and returns
             # the heuristic result unchanged when the call fails or cannot be parsed.
-            refined = await self._classifier.classify_with_llm(goal, self._provider, props)
+            refined = await self._classifier.classify_with_llm(
+                goal, self._provider, props, tenant_id=tenant_id, goal_id=goal_id
+            )
             if refined is not props:
                 props, method = refined, "llm"
         cls_ms = (time.perf_counter() - t_cls) * 1000

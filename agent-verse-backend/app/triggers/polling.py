@@ -63,20 +63,21 @@ def fetch_json(
     (public host only; loopback/private/link-local/metadata blocked, fail-closed)
     and redirects are disabled so a public URL cannot bounce to an internal one.
     """
-    import httpx
-
-    from app.net.ssrf_guard import assert_public_url
+    from app.net.ssrf_guard import assert_public_url, public_client
 
     assert_public_url(url, context="api_poll")  # raises SSRFError if unsafe
-    # Stream with a hard size cap so a huge response cannot exhaust memory.
-    with httpx.stream(
-        method.upper() or "GET",
-        url,
-        headers=headers or {},
-        json=body or None,
-        timeout=timeout,
-        follow_redirects=False,
-    ) as resp:
+    # Stream with a hard size cap so a huge response cannot exhaust memory. The
+    # pinned client (redirects off) re-checks the address at connect time: a
+    # plain request re-resolved the name (DNS rebinding past the check above).
+    with (
+        public_client(timeout=timeout) as client,
+        client.stream(
+            method.upper() or "GET",
+            url,
+            headers=headers or {},
+            json=body or None,
+        ) as resp,
+    ):
         resp.raise_for_status()
         buf = bytearray()
         for chunk in resp.iter_bytes():

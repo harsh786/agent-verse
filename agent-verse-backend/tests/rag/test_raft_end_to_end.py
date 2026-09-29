@@ -100,7 +100,12 @@ class RecordingInferenceProvider:
     answer: str = "Fine-tuned grounded answer."
 
     async def infer(
-        self, *, query: str, evidence: tuple[str, ...], fine_tuned_model_id: str
+        self,
+        *,
+        query: str,
+        evidence: tuple[str, ...],
+        fine_tuned_model_id: str,
+        tenant_id: str | None = None,
     ) -> str:
         self.calls.append((query, evidence, fine_tuned_model_id))
         return self.answer

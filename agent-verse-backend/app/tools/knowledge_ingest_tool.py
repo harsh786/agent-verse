@@ -140,16 +140,15 @@ class KnowledgeIngestTool:
         # URL → fetch
         if content_or_url.startswith(("http://", "https://")):
             try:
-                import httpx
-
-                from app.net.ssrf_guard import request_public
+                from app.net.ssrf_guard import public_async_client, request_public
 
                 # The URL is agent/workflow-controlled (often straight from a
                 # trigger payload) and the response is indexed into the tenant's
                 # knowledge base. It used to be fetched with follow_redirects=True
                 # and no egress guard at all: request_public checks the URL and
-                # re-validates every redirect hop.
-                async with httpx.AsyncClient(timeout=30, follow_redirects=False) as c:
+                # re-validates every redirect hop; the pinned client connects
+                # only to the address checked (no DNS-rebinding window).
+                async with public_async_client(timeout=30) as c:
                     r = await request_public(
                         c, "GET", content_or_url, context="knowledge.ingest"
                     )

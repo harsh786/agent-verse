@@ -343,6 +343,57 @@ def public_async_client(*, allowed_domains: list[str] | None = None, **kwargs: A
     return httpx.AsyncClient(transport=transport, **kwargs)
 
 
+class PinnedSyncNetworkBackend:
+    """Synchronous twin of :class:`PinnedNetworkBackend` (for ``httpx.Client``)."""
+
+    def __init__(self, *, allowed_domains: list[str] | None = None) -> None:
+        import httpcore
+
+        self._inner = httpcore.SyncBackend()
+        self._allowed_domains = allowed_domains
+
+    def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        ips = resolve_and_check_host(host, allowed_domains=self._allowed_domains)
+        last_exc: Exception | None = None
+        for ip in ips:
+            try:
+                return self._inner.connect_tcp(
+                    ip,
+                    port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:  # try the next checked address
+                last_exc = exc
+        assert last_exc is not None
+        raise last_exc
+
+    def connect_unix_socket(self, *args: Any, **kwargs: Any) -> Any:
+        raise SSRFError("SSRF guard: unix sockets are not reachable from a public client")
+
+    def sleep(self, seconds: float) -> None:
+        self._inner.sleep(seconds)
+
+
+def public_client(*, allowed_domains: list[str] | None = None, **kwargs: Any) -> Any:
+    """Synchronous :func:`public_async_client`: an ``httpx.Client`` pinned to checked IPs."""
+    import httpx
+
+    kwargs["follow_redirects"] = False
+    kwargs.setdefault("trust_env", False)
+    transport = httpx.HTTPTransport()
+    transport._pool._network_backend = PinnedSyncNetworkBackend(allowed_domains=allowed_domains)
+    return httpx.Client(transport=transport, **kwargs)
+
+
 def is_public_url(url: str, *, allowed_domains: list[str] | None = None) -> bool:
     """Non-raising version of assert_public_url. Returns False if blocked."""
     try:

@@ -15,7 +15,7 @@ class _FakeScheduler:
     def __init__(self) -> None:
         self.parsed: list[str] = []
 
-    async def parse(self, command: str) -> list[Any]:
+    async def parse(self, command: str, *, tenant_ctx: Any = None) -> list[Any]:
         self.parsed.append(command)
         return [_FakeSpec(), _FakeSpec()]  # two schedules
 

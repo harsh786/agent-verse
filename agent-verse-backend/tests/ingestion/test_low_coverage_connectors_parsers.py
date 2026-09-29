@@ -558,7 +558,7 @@ class TestAzureBlobConnectorGetDelta:
             "data.csv", datetime(2026, 1, 2, tzinfo=UTC), content_type="text/csv"
         )
         cc.list_blobs.return_value = [blob_no_ct, blob_with_ct]
-        cc.download_blob.return_value.readall.return_value = b"data"
+        cc.download_blob.return_value.chunks.return_value = [b"da", b"ta"]
 
         config = _config(
             "azure_blob",
@@ -610,6 +610,54 @@ class TestAzureBlobConnectorGetDelta:
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
         assert docs == []
+
+    # Regression: every blob was downloaded whole with ``readall()`` — a
+    # multi-GB object was buffered in the worker's memory before the pipeline's
+    # 10 MB document cap could refuse it.
+
+    def _cc(self, blob_mod, blobs):
+        service = MagicMock()
+        blob_mod.BlobServiceClient.return_value = service
+        cc = MagicMock()
+        service.get_container_client.return_value = cc
+        cc.list_blobs.return_value = blobs
+        return cc
+
+    def test_oversized_blob_is_skipped_without_downloading(self):
+        from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
+
+        blob_mod = MagicMock()
+        huge = self._blob("huge.bin", datetime(2026, 1, 1, tzinfo=UTC), size=50_000_000)
+        cc = self._cc(blob_mod, [huge])
+        config = _config("azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"})
+        with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
+            docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
+        assert docs == []
+        cc.download_blob.assert_not_called()
+
+    def test_download_is_streamed_and_bounded_by_the_size_cap(self):
+        from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
+
+        blob_mod = MagicMock()
+        # Declared small, but the stream keeps going past the cap.
+        liar = self._blob("liar.bin", datetime(2026, 1, 1, tzinfo=UTC), size=10)
+        cc = self._cc(blob_mod, [liar])
+        pulled: list[int] = []
+
+        def _chunks():
+            for _ in range(100):
+                pulled.append(1)
+                yield b"x" * 1024
+
+        cc.download_blob.return_value.chunks.side_effect = _chunks
+        config = _config("azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"})
+        config.max_doc_size_bytes = 4096
+        with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
+            docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
+        assert docs == []
+        assert len(pulled) <= 5  # stopped as soon as the cap was exceeded
+        _args, kwargs = cc.download_blob.call_args
+        assert kwargs.get("length") == 4097  # never asks for more than cap + 1 bytes
 
 
 # ═══════════════════════════════════════════════════════════════════════════

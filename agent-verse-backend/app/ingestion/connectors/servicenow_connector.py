@@ -12,7 +12,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -46,7 +46,6 @@ class ServiceNowConnector(BaseConnector):
     async def validate_connection(self, config: SourceConfig) -> ConnectionHealth:
         import time
 
-        import httpx
 
         t0 = time.perf_counter()
         try:
@@ -55,7 +54,7 @@ class ServiceNowConnector(BaseConnector):
             instance_base = _instance_base_url(instance)
             assert_source_url(instance_base, context="servicenow.validate", config=config)
             auth = (cc.get("username", ""), cc.get("password", ""))
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with source_client(timeout=10) as client:
                 r = await client.get(
                     f"{instance_base}/api/now/table/sys_user_role",
                     params={"sysparm_limit": 1},
@@ -71,7 +70,6 @@ class ServiceNowConnector(BaseConnector):
     async def get_delta(
         self, config: SourceConfig, cursor: str | None
     ) -> AsyncIterator[tuple[RawDocument, str]]:
-        import httpx
 
         from app.ingestion.source_config import RawDocument
 
@@ -86,7 +84,7 @@ class ServiceNowConnector(BaseConnector):
         headers = {"Accept": "application/json"}
         new_cursor = cursor or ""
 
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with source_client(timeout=30) as client:
             for table in tables:
                 params: dict = {
                     "sysparm_limit": batch_size,

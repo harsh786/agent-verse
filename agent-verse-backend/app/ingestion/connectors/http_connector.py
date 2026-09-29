@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
 from app.ingestion.connector_registry import register
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import SSRFError, assert_public_url, public_async_client
 
 if TYPE_CHECKING:
     from app.ingestion.source_config import RawDocument, SourceConfig
@@ -155,9 +155,11 @@ class HttpApiConnector(BaseConnector):
             yield doc, new_cursor
 
     async def _fetch(self, config: SourceConfig, *, cursor: str | None) -> Any:
-        """Perform the HTTP request and return the parsed JSON payload."""
-        import httpx
+        """Perform the HTTP request and return the parsed JSON payload.
 
+        The URL was SSRF-checked by the caller; the pinned client re-checks at
+        connect time (a plain client re-resolved the name — DNS rebinding).
+        """
         cc = config.connection_config
         url = str(cc.get("url", "") or "")
         method = str(cc.get("method", "GET")).upper()
@@ -168,7 +170,7 @@ class HttpApiConnector(BaseConnector):
             params[cursor_param] = cursor
         timeout = float(cc.get("timeout_seconds", 15.0))
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with public_async_client(timeout=timeout) as client:
             resp = await client.request(method, url, headers=headers, params=params)
             resp.raise_for_status()
             return resp.json()

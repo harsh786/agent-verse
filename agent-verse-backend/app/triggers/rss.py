@@ -84,13 +84,12 @@ def fetch_rss_entries(url: str, *, timeout: float = 10.0) -> list[FeedEntry]:
     (public host only; loopback/private/link-local/metadata blocked, fail-closed)
     and redirects are disabled so a public URL cannot bounce to an internal one.
     """
-    import httpx
-
-    from app.net.ssrf_guard import assert_public_url
+    from app.net.ssrf_guard import assert_public_url, public_client
 
     assert_public_url(url, context="rss_feed")  # raises SSRFError if unsafe
     # Stream with a hard size cap so a malicious/huge feed cannot exhaust memory.
-    with httpx.stream("GET", url, timeout=timeout, follow_redirects=False) as resp:
+    # The pinned client (redirects off) re-checks the address at connect time.
+    with public_client(timeout=timeout) as client, client.stream("GET", url) as resp:
         resp.raise_for_status()
         body = bytearray()
         for chunk in resp.iter_bytes():

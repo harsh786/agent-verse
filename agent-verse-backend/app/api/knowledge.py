@@ -26,7 +26,10 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
 from app.ingestion.orchestrator import EmptyIndexedContentError
-from app.ingestion.pipeline import IngestionPolicyRejectedError
+from app.ingestion.pipeline import (
+    IngestionPolicyRejectedError,
+    IngestionScreeningUnavailableError,
+)
 from app.ingestion.repository_security import (
     RepositoryLimits,
     RepositorySecurityError,
@@ -36,7 +39,19 @@ from app.ingestion.repository_security import (
     validate_branch,
     validate_patterns,
 )
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.knowledge.ingestors.limits import (
+    MAX_CONFLUENCE_PAGES,
+    MAX_GITHUB_FILES,
+    MAX_JIRA_ISSUES,
+    MAX_RPA_CHARS,
+    MAX_SLACK_MESSAGES,
+)
+from app.net.ssrf_guard import (
+    SSRFError,
+    assert_public_url,
+    public_async_client,
+    request_public,
+)
 from app.rag.contracts import (
     RAGCitation,
     RAGExecutionResult,
@@ -84,6 +99,7 @@ class RepoIngestRequest(BaseModel):
     collection_id: str
     branch: str = "main"
     file_patterns: list[str] = ["**/*.py", "**/*.md", "**/*.ts", "**/*.js"]
+    # Bounded by RepositoryLimits in the handler (400 outside the allowed range).
     max_files: int = 200
 
 
@@ -107,7 +123,7 @@ class RpaUrlIngestRequest(BaseModel):
     selector: str = "body"  # CSS selector for text extraction
     screenshot: bool = False  # capture screenshot and store as metadata
     source_type: str = "rpa-web"  # stored in metadata for attribution
-    max_chars: int = 50_000  # per-URL char cap
+    max_chars: int = Field(default=50_000, ge=1, le=MAX_RPA_CHARS)  # per-URL char cap
     include_links: bool = False  # whether to extract link URLs from the page
 
 
@@ -116,7 +132,7 @@ class GitHubIngestRequest(BaseModel):
     owner: str
     repo: str
     branch: str = "HEAD"
-    max_files: int = 300
+    max_files: int = Field(default=300, ge=1, le=MAX_GITHUB_FILES)
     # The tenant's own token for private repos; public repos need none. Never
     # the platform's GITHUB_TOKEN (see GitHubIngestor).
     token: SecretStr | None = None
@@ -128,7 +144,7 @@ class ConfluenceIngestRequest(BaseModel):
     space_key: str
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
-    max_pages: int = 1000
+    max_pages: int = Field(default=1000, ge=1, le=MAX_CONFLUENCE_PAGES)
 
 
 class JiraIngestRequest(BaseModel):
@@ -138,7 +154,7 @@ class JiraIngestRequest(BaseModel):
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
     jql_extra: str = ""
-    max_issues: int = 500
+    max_issues: int = Field(default=500, ge=1, le=MAX_JIRA_ISSUES)
 
 
 class SlackIngestRequest(BaseModel):
@@ -146,7 +162,7 @@ class SlackIngestRequest(BaseModel):
     channel_id: str
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     channel_name: str = ""
-    max_messages: int = 500
+    max_messages: int = Field(default=500, ge=1, le=MAX_SLACK_MESSAGES)
 
 
 IndexingStrategy = Literal["raptor", "agentic_chunking"]
@@ -413,9 +429,16 @@ async def _screen_or_http(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
-    except Exception as exc:
+    except IngestionScreeningUnavailableError as exc:
         raise HTTPException(
-            status_code=503, detail="Ingestion PII screening is unavailable"
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
+    except Exception as exc:
+        # Fail closed (PII scan or RAG_INGEST guardrail could not run).
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
 
 
@@ -1480,12 +1503,19 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
             detail=f"URL blocked for security reasons: {exc}",
         ) from exc
 
+    # Fetches go through the pinned client (connect-time IP check — a plain
+    # client re-resolved the name: DNS rebinding) and request_public, which
+    # follows redirects re-validating every hop.
     try:
         if source_type == "web":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
+            async with public_async_client(timeout=30.0) as client:
+                resp = await request_public(
+                    client,
+                    "GET",
+                    url,
+                    context="/ingest/url",
+                    headers={"User-Agent": "AgentVerse/1.0"},
+                )
                 resp.raise_for_status()
                 raw = resp.text
                 import re
@@ -1499,15 +1529,15 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
             raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(
                 "/blob/", "/"
             )
-            import httpx
-
             # Anonymous fetch only. It used to attach the PLATFORM's GITHUB_TOKEN to
             # a tenant-chosen URL, letting any tenant read every private repo that
             # token can see (confused deputy). Private repos go through a
             # tenant-configured GitHub source instead.
             headers: dict[str, str] = {}
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(raw_url, headers=headers)
+            async with public_async_client(timeout=15.0) as client:
+                resp = await request_public(
+                    client, "GET", raw_url, context="/ingest/url", headers=headers
+                )
                 resp.raise_for_status()
                 content = resp.text[:100000]
             metadata["filename"] = url.split("/")[-1]
@@ -1521,6 +1551,13 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
 
     except HTTPException:
         raise
+    except SSRFError as exc:
+        # A redirect hop (or the connect-time re-check) hit a blocked address:
+        # same 400 as the up-front check.
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL blocked for security reasons: {exc}",
+        ) from exc
     except Exception as exc:
         import logging as _logging
 
@@ -2470,6 +2507,11 @@ async def ingest_document_into_collection(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
     except EmptyIndexedContentError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2489,8 +2531,16 @@ async def ingest_document_into_collection(
         # Never swallow the real error silently: log type+message with a traceback
         # so a genuine persistence failure is diagnosable, not a blank 503.
         from app.observability.logging import get_logger as _gl
+        from app.providers.guarded_completion import DecisionBudgetExceededError
         from app.rag.indexing import IndexingProviderError
 
+        if isinstance(exc, DecisionBudgetExceededError):
+            # RAPTOR / agentic-chunking indexing is charged to the tenant; a
+            # refused charge fails the ingest honestly (nothing was persisted).
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"LLM budget exhausted — cannot build the strategy index: {exc}",
+            ) from exc
         _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
         if isinstance(exc, IndexingProviderError):
             # The RAPTOR/agentic-chunking model returned unusable output: an
@@ -2846,6 +2896,11 @@ async def ingest_email(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2914,6 +2969,11 @@ async def ingest_notion(
         raise HTTPException(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

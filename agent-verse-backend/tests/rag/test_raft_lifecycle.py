@@ -113,6 +113,7 @@ class RecordingFineTuneProvider:
         query: str,
         evidence: tuple[str, ...],
         fine_tuned_model_id: str,
+        tenant_id: str | None = None,
     ) -> str:
         self.inference_calls.append((query, evidence, fine_tuned_model_id))
         return "Fine-tuned answer from persisted evidence."

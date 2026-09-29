@@ -846,7 +846,7 @@ class ChatService:
         """
         if not self.can_schedule:
             raise RuntimeError("chat scheduling requires nl_scheduler + schedule_store wired")
-        specs = await self._nl_scheduler.parse(message)
+        specs = await self._nl_scheduler.parse(message, tenant_ctx=tenant_ctx)
         ids: list[str] = []
         for spec in specs:
             schedule_id = await self._schedule_store.create_async(

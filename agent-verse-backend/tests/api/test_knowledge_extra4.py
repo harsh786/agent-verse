@@ -608,11 +608,12 @@ def test_ingest_url_web_success() -> None:
     mock_response = MagicMock()
     mock_response.text = "<html><title>Test Page</title><body><p>Great content here.</p></body></html>"
     mock_response.raise_for_status = MagicMock()
+    mock_response.is_redirect = False  # request_public follows redirects per hop
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
@@ -633,11 +634,12 @@ def test_ingest_url_github_success() -> None:
     mock_response = MagicMock()
     mock_response.text = "def main():\n    print('hello')\n"
     mock_response.raise_for_status = MagicMock()
+    mock_response.is_redirect = False  # request_public follows redirects per hop
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         with patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
@@ -674,7 +676,7 @@ def test_ingest_url_fetch_failure() -> None:
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(side_effect=Exception("Network error"))
+    mock_client.request = AsyncMock(side_effect=Exception("Network error"))
 
     with patch("httpx.AsyncClient", return_value=mock_client):
         resp = client.post(
@@ -695,13 +697,14 @@ def test_ingest_url_empty_content_raises_422() -> None:
     mock_response = MagicMock()
     mock_response.text = "   "  # whitespace only
     mock_response.raise_for_status = MagicMock()
+    mock_response.is_redirect = False  # request_public follows redirects per hop
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
-    with patch("app.api.knowledge.assert_public_url"), \
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
          patch("httpx.AsyncClient", return_value=mock_client):
         resp = client.post(
             "/knowledge/ingest/url",
@@ -720,13 +723,14 @@ def test_ingest_url_with_embedder_chunks_content() -> None:
     mock_response = MagicMock()
     mock_response.text = "Word " * 200  # enough to create chunks
     mock_response.raise_for_status = MagicMock()
+    mock_response.is_redirect = False  # request_public follows redirects per hop
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
-    with patch("app.api.knowledge.assert_public_url"), \
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
          patch("httpx.AsyncClient", return_value=mock_client), \
          patch("app.providers.base.embed_texts", side_effect=_make_embed_texts_mock()):
         resp = client.post(
@@ -745,13 +749,14 @@ def test_ingest_url_short_content_fallback_chunk() -> None:
     mock_response = MagicMock()
     mock_response.text = "Short content."
     mock_response.raise_for_status = MagicMock()
+    mock_response.is_redirect = False  # request_public follows redirects per hop
 
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_response)
+    mock_client.request = AsyncMock(return_value=mock_response)
 
-    with patch("app.api.knowledge.assert_public_url"), \
+    with patch("app.net.ssrf_guard._resolve_host", return_value=["93.184.216.34"]), \
          patch("httpx.AsyncClient", return_value=mock_client), \
          patch("app.knowledge.chunker_v2.chunk_by_tokens", return_value=[]), \
          patch("app.api.knowledge._embed_texts_or_http", new=_make_embed_texts_mock()):

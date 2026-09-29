@@ -2224,9 +2224,7 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
 
     import time
 
-    import httpx
-
-    from app.net.ssrf_guard import SSRFError, request_public
+    from app.net.ssrf_guard import SSRFError, public_async_client, request_public
 
     start = time.monotonic()
 
@@ -2235,7 +2233,8 @@ async def test_saml_connection(request: Request) -> dict[str, Any]:
             # Was client.get(sso_url, follow_redirects=True) on any caller URL: an
             # internal-network probe (status code + latency as the oracle), direct
             # or via redirect. Every hop is now SSRF-validated.
-            async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            # Pinned client: each hop's connection goes to the address checked.
+            async with public_async_client(timeout=5.0) as client:
                 try:
                     resp = await request_public(client, "GET", str(sso_url), context="saml test")
                 except SSRFError as exc:

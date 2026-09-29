@@ -301,8 +301,14 @@ class GoalClassifier:
         goal: str,
         provider: Any,
         fast_props: GoalProperties | None = None,
+        *,
+        tenant_id: str | None = None,
+        goal_id: str | None = None,
     ) -> GoalProperties:
-        """Tier 2: LLM-assisted for MEDIUM complexity + confidence <= 0.85."""
+        """Tier 2: LLM-assisted for MEDIUM complexity + confidence <= 0.85.
+
+        Charged to the tenant (when given) and circuit-broken; any failure
+        returns the heuristic result."""
         base = fast_props or self.classify_fast(goal)
         if provider is None:
             return base
@@ -312,8 +318,10 @@ class GoalClassifier:
             import json
 
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            resp = await provider.complete(
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=_CLASSIFIER_SYSTEM),
@@ -322,7 +330,10 @@ class GoalClassifier:
                     model="",
                     max_tokens=150,
                     temperature=0.0,
-                )
+                ),
+                role="goal_classifier",
+                tenant_id=tenant_id,
+                goal_id=goal_id,
             )
             data = json.loads(resp.content.strip())
             return GoalProperties(

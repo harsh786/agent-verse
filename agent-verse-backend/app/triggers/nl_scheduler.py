@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from app.providers.base import CompletionRequest, LLMProvider, Message
 from app.providers.model_defaults import configured_default_model as _configured_default_model
@@ -469,7 +470,18 @@ class NLScheduler:
     def __init__(self, provider: LLMProvider) -> None:
         self._provider = provider
 
-    async def parse(self, description: str) -> list[TriggerSpec]:
+    async def parse(
+        self,
+        description: str,
+        *,
+        tenant_ctx: Any = None,
+        tenant_id: str | None = None,
+    ) -> list[TriggerSpec]:
+        """Parse *description*. The LLM call is charged to the tenant (when given)
+        and circuit-broken; any failure, including a budget refusal, falls back
+        to keyword routing as before."""
+        from app.providers.guarded_completion import complete_decision
+
         # Primary path — LLM (preserves cron_expression, timezone, etc.)
         try:
             req = CompletionRequest(
@@ -479,7 +491,13 @@ class NLScheduler:
                 ],
                 model=_configured_default_model("claude-opus-4-8"),
             )
-            resp = await self._provider.complete(req)
+            resp = await complete_decision(
+                self._provider,
+                req,
+                role="nl_scheduler",
+                tenant_ctx=tenant_ctx,
+                tenant_id=tenant_id,
+            )
             text = re.sub(r"```(?:json)?\n?", "", resp.content).strip()
 
             try:

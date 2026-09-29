@@ -495,7 +495,13 @@ class OrgService:
             model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=600,
         )
-        resp = await llm_provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        # Charged to the org's tenant + circuit-broken; a failure (budget
+        # refusal included) makes the caller degrade to the template.
+        resp = await complete_decision(
+            llm_provider, req, role="org_compose_departments", tenant_id=self._tenant_id
+        )
         raw = (resp.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
@@ -2218,7 +2224,11 @@ class OrgService:
             model=getattr(llm_provider, "_default_model", "") or "claude-sonnet-4-5",
             max_tokens=600,
         )
-        resp = await llm_provider.complete(req)
+        from app.providers.guarded_completion import complete_decision
+
+        resp = await complete_decision(
+            llm_provider, req, role="org_decompose_mission", tenant_id=self._tenant_id
+        )
         raw = (resp.content or "").strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]

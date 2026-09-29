@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import assert_source_url
+from app.ingestion.connector_egress import assert_source_url, source_client
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -48,12 +48,11 @@ class PDFFileConnector(BaseConnector):
 
         for url in urls:
             try:
-                import httpx
 
                 assert_source_url(
                     str(url), context=f"{self.source_type}.get_delta", config=config
                 )
-                async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
+                async with source_client(timeout=60) as c:
                     r = await c.get(url)
                     r.raise_for_status()
                     content_bytes = r.content
@@ -99,12 +98,11 @@ class DOCXFileConnector(BaseConnector):
         urls = config.connection_config.get("urls", [])
         for url in urls:
             try:
-                import httpx
 
                 assert_source_url(
                     str(url), context=f"{self.source_type}.get_delta", config=config
                 )
-                async with httpx.AsyncClient(timeout=60, follow_redirects=False) as c:
+                async with source_client(timeout=60) as c:
                     r = await c.get(url)
                     r.raise_for_status()
                 raw = RawDocument(

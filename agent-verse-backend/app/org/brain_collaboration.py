@@ -115,7 +115,7 @@ class CollaborationModelGateway(Protocol):
     """
 
     async def complete_short(
-        self, prompt: str, *, max_tokens: int
+        self, prompt: str, *, max_tokens: int, tenant_id: str | None = None
     ) -> tuple[str, int, int, float]: ...
 
 
@@ -189,9 +189,10 @@ class LLMProviderCollaborationGateway:
         self._gateway = gateway
 
     async def complete_short(
-        self, prompt: str, *, max_tokens: int
+        self, prompt: str, *, max_tokens: int, tenant_id: str | None = None
     ) -> tuple[str, int, int, float]:
         from app.providers.base import CompletionRequest, Message
+        from app.providers.guarded_completion import complete_decision
 
         model = ""
         if self._gateway is not None:
@@ -216,7 +217,11 @@ class LLMProviderCollaborationGateway:
             temperature=0.7,
         )
         start = time.perf_counter()
-        resp = await self._llm.complete(req)
+        # Charged to the tenant + circuit-broken. Any failure (budget refusal
+        # included) raises, which stops the tick (fail-closed, as before).
+        resp = await complete_decision(
+            self._llm, req, role="org_collaboration", tenant_id=tenant_id
+        )
         latency_ms = int((time.perf_counter() - start) * 1000)
         text = (resp.content or "").strip()
 
@@ -341,7 +346,7 @@ class CollaborationTick:
                         tokens,
                         cost_usd,
                     ) = await self._model_gateway.complete_short(
-                        prompt, max_tokens=_MAX_TOKENS_PER_MESSAGE
+                        prompt, max_tokens=_MAX_TOKENS_PER_MESSAGE, tenant_id=tenant_id
                     )
                 except Exception as exc:
                     # Fail-closed: stop the tick entirely. Whatever was already
