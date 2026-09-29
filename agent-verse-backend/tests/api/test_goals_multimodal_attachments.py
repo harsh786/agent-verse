@@ -38,18 +38,28 @@ def _make_app(fake_service: Any, *, with_pipeline: bool = True) -> FastAPI:
     return app
 
 
+def _text_pdf(text: str) -> bytes:
+    """A minimal one-page PDF whose content stream draws ``text`` in Helvetica."""
+    content = f"BT /F1 24 Tf 72 720 Td ({text}) Tj ET".encode()
+    return (
+        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R"
+        b"/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj\n"
+        b"4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+        b"5 0 obj<</Length " + str(len(content)).encode() + b">>stream\n"
+        + content
+        + b"\nendstream endobj\n"
+        b"trailer<</Size 6/Root 1 0 R>>\nstartxref\n0\n%%EOF"
+    )
+
+
 def test_pdf_attachment_content_reaches_execution_context() -> None:
     svc = AsyncMock()
     svc.submit_goal.return_value = {"id": "gid-1", "status": "planning", "goal": "summarize"}
     client = TestClient(_make_app(svc), raise_server_exceptions=False)
 
-    minimal_pdf = (
-        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
-        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
-        b"trailer<</Size 4/Root 1 0 R>>"
-    )
-    pdf_b64 = base64.b64encode(minimal_pdf).decode()
+    pdf_b64 = base64.b64encode(_text_pdf("Quarterly revenue grew twelve percent")).decode()
 
     resp = client.post(
         "/goals",
@@ -64,10 +74,39 @@ def test_pdf_attachment_content_reaches_execution_context() -> None:
     _, kwargs = svc.submit_goal.call_args
     exec_ctx = kwargs["execution_context"]
     assert exec_ctx["attachments"] == [{"type": "pdf_base64", "data": pdf_b64}]
-    # Either real extracted text or the honest "no extractable text" marker --
-    # either way, something non-empty from the pipeline reached the context.
-    assert "multimodal_context" in exec_ctx
-    assert exec_ctx["multimodal_context"]
+    assert "Quarterly revenue grew twelve percent" in exec_ctx["multimodal_context"]
+
+
+def test_text_free_pdf_attachment_injects_no_placeholder_into_planner_context() -> None:
+    """A PDF with no extractable text used to inject the placeholder
+    "[PDF: no extractable text found]" into the planner context as if it were
+    the document's content. Its failed extraction must contribute nothing,
+    and must not block goal submission."""
+    svc = AsyncMock()
+    svc.submit_goal.return_value = {"id": "gid-1b", "status": "planning", "goal": "summarize"}
+    client = TestClient(_make_app(svc), raise_server_exceptions=False)
+
+    textless_pdf = (
+        b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        b"3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\n"
+        b"trailer<</Size 4/Root 1 0 R>>"
+    )
+    resp = client.post(
+        "/goals",
+        json={
+            "goal": "summarize the attached report",
+            "attachments": [
+                {"type": "pdf_base64", "data": base64.b64encode(textless_pdf).decode()}
+            ],
+        },
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 202
+
+    _, kwargs = svc.submit_goal.call_args
+    exec_ctx = kwargs["execution_context"]
+    assert "[PDF" not in exec_ctx.get("multimodal_context", "")
 
 
 def test_code_attachment_content_reaches_execution_context() -> None:

@@ -130,3 +130,37 @@ def test_ingest_oversized_image_attachment_fails_job_not_500() -> None:
     assert data["error"] is not None
     assert "25 MB" in data["error"]
     assert data["span_count"] == 0
+
+
+def test_ingest_text_free_pdf_reports_failed_job_not_completed_placeholder() -> None:
+    """Regression: a PDF with no extractable text came back ``completed`` with
+    a placeholder "[PDF: no extractable text found]" span as its content. It
+    must use the endpoint's failed-job contract instead (status ``failed``,
+    an error reason, zero spans) -- the same shape as the oversized case."""
+    import base64
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+
+    client = TestClient(_make_app())
+    resp = client.post(
+        "/multimodal/ingest",
+        json={
+            "modality": "pdf",
+            "base64_data": base64.b64encode(buf.getvalue()).decode(),
+            "filename": "scan.pdf",
+        },
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "failed"
+    assert data["span_count"] == 0
+    assert data["spans"] == []
+    assert "no extractable text" in data["error"]
+    assert data["embedding_strategy"] is None

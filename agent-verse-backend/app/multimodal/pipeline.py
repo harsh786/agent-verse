@@ -39,6 +39,10 @@ def _decoded_b64_size(data_b64: str) -> int:
     return max(0, (len(data_b64) * 3) // 4 - padding)
 
 
+class PdfExtractionError(Exception):
+    """A PDF yielded no usable text (unparseable, parser missing, or text-free)."""
+
+
 class MultimodalPipeline:
     """Universal multimodal ingestion and extraction pipeline."""
 
@@ -464,55 +468,48 @@ class MultimodalPipeline:
         return resp.content
 
     async def _extract_pdf(self, pdf_base64: str) -> list[ExtractedSpan]:
-        """Extract text from PDF using available tools."""
+        """Extract per-page text spans from a PDF.
+
+        Raises :class:`PdfExtractionError` when the PDF cannot be parsed, the
+        parser is unavailable, or no page yields text. It never returns a
+        placeholder span: those used to be stored as the asset's content and
+        the job reported ``completed`` even though nothing was extracted.
+        """
+        import base64
+        import binascii
+
         try:
-            import base64
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise PdfExtractionError("PDF extraction unavailable: pypdf is not installed") from exc
 
+        try:
             pdf_bytes = base64.b64decode(pdf_base64)
+        except (binascii.Error, ValueError) as exc:
+            raise PdfExtractionError(f"PDF payload is not valid base64: {exc}") from exc
 
-            # Try pypdf first
-            try:
-                from pypdf import PdfReader
-
-                reader = PdfReader(io.BytesIO(pdf_bytes))
-                spans = []
-                for i, page in enumerate(reader.pages):
-                    text = page.extract_text() or ""
-                    if text.strip():
-                        spans.append(
-                            ExtractedSpan(
-                                content=text.strip(),
-                                modality=Modality.PDF,
-                                source_page=i + 1,
-                                confidence=0.95,
-                            )
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            spans = []
+            for i, page in enumerate(reader.pages):
+                text = page.extract_text() or ""
+                if text.strip():
+                    spans.append(
+                        ExtractedSpan(
+                            content=text.strip(),
+                            modality=Modality.PDF,
+                            source_page=i + 1,
+                            confidence=0.95,
                         )
-                if spans:
-                    return spans
-                return [
-                    ExtractedSpan(
-                        content="[PDF: no extractable text found]",
-                        modality=Modality.PDF,
                     )
-                ]
-            except ImportError:
-                pass
-
-            return [
-                ExtractedSpan(
-                    content="[PDF content - pypdf not installed]",
-                    modality=Modality.PDF,
-                    confidence=0.1,
-                )
-            ]
         except Exception as exc:
-            return [
-                ExtractedSpan(
-                    content=f"[PDF extraction error: {exc}]",
-                    modality=Modality.PDF,
-                    confidence=0.0,
-                )
-            ]
+            raise PdfExtractionError(f"PDF could not be parsed: {exc}") from exc
+
+        if not spans:
+            raise PdfExtractionError(
+                "PDF has no extractable text (it may be a scanned/image-only document)"
+            )
+        return spans
 
     async def _transcribe_audio(self, audio_base64: str) -> str:
         """Transcribe audio to text via the real Whisper-backed AudioParser.

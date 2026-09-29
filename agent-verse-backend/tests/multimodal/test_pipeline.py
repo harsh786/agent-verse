@@ -323,6 +323,72 @@ async def test_ingest_pdf_over_limit_fails_job_with_clear_error() -> None:
     assert "25 MB" in job.error
 
 
+# ── PDF extraction failures are honest failures, never placeholder content ──
+
+
+def _blank_pdf_b64() -> str:
+    """A structurally valid one-page PDF with no text layer."""
+    import io
+
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buf = io.BytesIO()
+    writer.write(buf)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+async def test_ingest_pdf_without_extractable_text_fails_job_with_no_spans() -> None:
+    """Regression: a text-free PDF was marked "completed" with the placeholder
+    span "[PDF: no extractable text found]" stored as if it were content."""
+    pipeline = MultimodalPipeline()
+
+    job = await pipeline.ingest_pdf(_blank_pdf_b64(), "tenant-1")
+
+    assert job.status == "failed"
+    assert job.spans == []
+    assert job.error is not None
+    assert "no extractable text" in job.error
+    assert "embedding_strategy" not in job.metadata
+
+
+async def test_ingest_pdf_unparseable_bytes_fails_job_with_no_spans() -> None:
+    """Regression: an extraction exception was swallowed into a
+    "[PDF extraction error: ...]" span and the job reported "completed"."""
+    pipeline = MultimodalPipeline()
+
+    job = await pipeline.ingest_pdf(base64.b64encode(b"not a pdf at all").decode(), "tenant-1")
+
+    assert job.status == "failed"
+    assert job.spans == []
+    assert job.error
+
+
+async def test_ingest_pdf_without_pypdf_fails_job_instead_of_placeholder(monkeypatch) -> None:
+    """Regression: with pypdf missing the job "completed" with the span
+    "[PDF content - pypdf not installed]"."""
+    import builtins
+
+    real_import = builtins.__import__
+    blank = _blank_pdf_b64()
+
+    def _no_pypdf(name, *args, **kwargs):
+        if name == "pypdf" or name.startswith("pypdf."):
+            raise ImportError("No module named 'pypdf'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_pypdf)
+    pipeline = MultimodalPipeline()
+
+    job = await pipeline.ingest_pdf(blank, "tenant-1")
+
+    assert job.status == "failed"
+    assert job.spans == []
+    assert job.error is not None
+    assert "pypdf" in job.error
+
+
 async def test_ingest_audio_over_limit_is_rejected_before_transcription() -> None:
     from app.multimodal.pipeline import _MAX_ATTACHMENT_BYTES
 
