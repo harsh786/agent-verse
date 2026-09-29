@@ -1,0 +1,330 @@
+{
+ "group": "g01-agent-core",
+ "code": "287cb90f7",
+ "features": [
+  {
+   "area": "agent-core",
+   "feature": "Agent loop kernel (AgentGraph LangGraph state machine)",
+   "previous_status": "PARTIAL",
+   "status": "PASS",
+   "evidence": "The Celery worker now builds its graph through the same build_profiled_graph as GoalService, rehydrating the persisted runtime profile (GoalRuntimeProfile.from_dict) and agent pattern flags from goals.execution_context and recording strategy_execution incl. downgrades (tasks.py:2403-2430, 2956-2970; profiled_graph.py:26-120). Checkpoint fail-closed, cancel propagation, charging and a new fail-closed emergency-stop check at goal start (graph.py:818-829) are in place; 61 targeted tests pass incl. worker runtime-profile and run_goal claim tests. Only low-severity gaps remain.",
+   "verified_fixed": [
+    "Worker ignores runtime profile/GraphFactory → worker calls build_profiled_graph(_worker_profile, services, flags) with the profile rehydrated under the v2 rollout decision tasks.py:1713-1748, 2956-2970 (9e03570d5, f9337a862); tested tests/scaling/test_worker_runtime_profile.py (run_goal end to end)"
+   ],
+   "still_open": [
+    "Worker ensure-row writes execution_context={} when the row is missing → tasks.py:2099-2116 (low; a missing row has no profile to lose)",
+    "Goal-start latency stamp still `except Exception: pass` → graph.py:802-816 (low)"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:2408-2412 — if the execution_context read fails (transient DB error) the worker logs a warning and builds a plain AgentGraph with no pattern flags/profile, and the recorded strategy_execution carries no downgrade entry explaining that the v2 profile was skipped [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_checkpoint_resume.py tests/agent/test_remediation_and_stuck_events_reachable.py tests/agent/test_agent_graph.py tests/agent/test_durable_execution.py tests/providers/test_guarded_completion.py tests/scaling/test_worker_runtime_profile.py tests/scaling/test_run_goal_claim.py -q --no-cov -p no:cacheprovider -m 'not slow' → 61 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "HITL pause/resume and checkpoint resume",
+   "previous_status": "FAIL",
+   "status": "PARTIAL",
+   "evidence": "The high-severity bypass is closed: a BLPOP error now raises HITLWaitUnavailableError and the waiter falls back to the local event + DB status polling, never returning PENDING (hitl.py:1146-1159, 544-576, 595-617), and the supervised write_high tool gate requires an explicit APPROVED before call_tool (executor_mixin.py:2315-2337, 23e47c7d3). Every supervised gate now denies non-APPROVED. Non-supervised modes still file approval requests nobody waits on, and the approval row is persisted fire-and-forget.",
+   "verified_fixed": [
+    "Supervised write_high tool gate dispatched on any non-REJECTED/TIMED_OUT status → requires ApprovalStatus.APPROVED executor_mixin.py:2328-2335 (23e47c7d3)",
+    "wait_for_approval returned PENDING at once on Redis BLPOP error → _wait_for_result raises HITLWaitUnavailableError hitl.py:1154-1159; waiter polls DB/local event until deadline and converts PENDING to TIMED_OUT hitl.py:559-591 (23e47c7d3); tests/governance/test_hitl_wait_fail_closed.py"
+   ],
+   "still_open": [
+    "Non-supervised modes file approval requests nothing waits on: action-safety HITL_REQUIRED files and the step runs executor_mixin.py:969-1006; policy REQUIRE_APPROVAL files then denies executor_mixin.py:1151-1165; HITL gate 7 files and runs executor_mixin.py:1188-1215; tool gate files and returns a 'requires approval' text executor_mixin.py:2289-2375",
+    "wait_for_approval looks the request up only in the process-local dict (unknown id → REJECTED) hitl.py:518-520 (low; callers wait on requests they created)"
+   ],
+   "new_defects": [
+    "app/governance/hitl.py:254-264 — request_approval (the sync call every executor gate uses) persists the approval row with an unreferenced fire-and-forget task whose errors are swallowed; if that write fails the request exists only in this worker's memory, the approver's replica (DB-first aget_request) cannot see or approve it, and a supervised goal waits the full HITL timeout and then fails [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/services/test_hitl_resume.py tests/services/test_supervised_suspension_resume.py tests/agent/test_hitl_gate.py tests/governance/test_hitl_wait_fail_closed.py -q --no-cov -p no:cacheprovider -m 'not slow' → 20 passed",
+    "uv run pytest tests/agent/nodes/test_executor_mixin_failure_modes.py -k 'approv or pending or hitl' → 6 passed",
+    "DOCKER_HOST=... TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/integration/test_hitl_flow.py → 17 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Planner node",
+   "previous_status": "PARTIAL",
+   "status": "PASS",
+   "evidence": "planner_mixin.py is unchanged since the baseline. Reasoning outputs reach the planning prompt, the model falls back to the provider/configured default (planner_mixin.py:522-525), the call goes through complete_with_failover and is charged via charge_llm_call (planner_mixin.py:667-697). Only low-severity silent-exception gaps remain; 45 targeted tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "Recall/prompt-injection blocks `except Exception: pass` with no log → planner_mixin.py:295,354,365,380,395,413,450 (low)"
+   ],
+   "new_defects": [
+    "app/agent/nodes/planner_mixin.py:547-574 — cost auto-downgrade swallows get_cost_tier errors (`except Exception: pass`), so a cost-store outage silently keeps the expensive planning model without any log [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_planner_model_fallback.py tests/agent/test_reasoning_pattern_results.py tests/agent/test_llm_cost_charging.py -q --no-cov -p no:cacheprovider -m 'not slow' → 16 passed",
+    "uv run pytest tests/agent/test_planner_sees_only_granted_tools.py tests/agent/test_reflexion_recall_in_plan.py tests/agent/test_structured_plan.py tests/agent/test_tool_aware_planning.py → 29 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Executor node (governed per-step pipeline and tool dispatch)",
+   "previous_status": "PARTIAL",
+   "status": "PASS",
+   "evidence": "The defect that caused the downgrade is fixed: the supervised write_high tool branch now raises PermissionError for any status other than APPROVED before _mcp_client.call_tool (executor_mixin.py:2315-2343, 23e47c7d3), matching the step, policy and gate-7 waits (executor_mixin.py:984-1006, 1171-1185, 1205-1215). The governed pipeline, fail-closed guardrails for high-risk steps, dedup-after-governance and worker RPA wiring remain; 68 targeted tests pass.",
+   "verified_fixed": [
+    "Supervised tool approval: PENDING (Redis BLPOP error) fell through to call_tool → explicit APPROVED required executor_mixin.py:2328-2335; the wait itself no longer returns PENDING hitl.py:1154-1159 (23e47c7d3); regression in tests/agent/nodes/test_executor_mixin_failure_modes.py"
+   ],
+   "still_open": [
+    "Minor/by design (SAFE-4): Guardrails-2.0 engine error fails closed only for high-risk steps → executor_mixin.py:923-932 (low)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/nodes/test_executor_mixin_failure_modes.py tests/agent/test_executor_no_fake_success.py tests/agent/test_hitl_gate.py tests/agent/test_executor_stream_failover.py -q --no-cov -p no:cacheprovider -m 'not slow' → 68 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Verifier node, grounding, synthesis and evaluation",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "verifier_mixin.py is unchanged in the wave-7 range. The observed runtime profile now also reaches worker goals (tasks.py:2969 → initialize_mixin.py:197-200 → verifier_mixin.py:476-478). The high-risk grounding gate still fails closed only when tool/RAG evidence exists, so an ungrounded text-only answer to a high-risk goal completes with only a warning.",
+   "verified_fixed": [
+    "Scorecard observed profile on worker goals → worker sets graph._observed_runtime_profile tasks.py:2966-2969, copied into context initialize_mixin.py:197-200 (f9337a862)"
+   ],
+   "still_open": [
+    "Grounding gate fails closed only if _high_risk and _had_evidence → verifier_mixin.py:300 and 349 (medium: ungrounded high-risk text-only answers complete)",
+    "tests/e2e_full/test_hallucination_grounding_e2e.py:1-29 still documents the gap as xfail(strict=True)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/test_grounding.py tests/agent/test_grounding_gate.py tests/agent/test_grounding_normalization.py -q --no-cov -p no:cacheprovider -m 'not slow' → 34 passed",
+    "uv run pytest tests/agent/test_verifier_grounding_wiring.py → 7 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Optional reasoning nodes (CoT, ToT, self-refine, self-consistency, reflection, peer review)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The worker reachability defect is fixed: submission snapshots the agent's enable_* flags into execution_context.agent_pattern_flags (goal_service.py:4034-4048) and the worker passes them plus the v2 profile into build_profiled_graph (tasks.py:1703-1710, 2946-2962; f9337a862), tested by tests/scaling/test_worker_runtime_profile.py. Node logic remains correct and charged. But no API can set those agent flags (CreateAgentRequest/UpdateAgentRequest and the agents table have no enable_* fields), so outside the rollout-gated v2 profile the nodes stay unreachable for real agents.",
+   "verified_fixed": [
+    "Worker AgentGraph got no enable_* flags / runtime_profile → flags rehydrated from execution_context and profile compiled via GraphFactory on the worker tasks.py:2943-2962, 2956-2970 (9e03570d5, f9337a862)"
+   ],
+   "still_open": [
+    "Minor: self_consistency / ToT / peer_review / supervisor / debate exceptions only logged, no failed evidence recorded → reasoning_mixin.py:328-332, 357-361, 408-412, 488-492, 537-541 (low)"
+   ],
+   "new_defects": [
+    "app/api/agents.py:498-535 + app/db/models/agent.py:29-72 + app/api/agents.py:190-211 — enable_cot/enable_reflection/enable_self_refine/enable_self_consistency/enable_tree_of_thoughts/enable_peer_review/enable_supervisor/enable_debate cannot be set by the create/update agent API, are not columns and are dropped by _row_to_dict, so the agent_pattern_flags snapshot (goal_service.py:4036-4048) is always empty for real agents; on the legacy (non-v2) runtime path the optional reasoning nodes never run in production [medium]",
+    "app/services/goal_service.py:4036-4048 — the flag snapshot reads the process-local AgentStore cache (sync get) under suppress(Exception), so on a replica whose cache is stale the snapshot is silently omitted or outdated [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_reasoning_pattern_results.py tests/orchestration/test_pattern_unification.py tests/agent/test_llm_cost_charging.py tests/scaling/test_worker_runtime_profile.py -q --no-cov -p no:cacheprovider -m 'not slow' → 26 passed (worker tests seed agent_pattern_flags directly; no test creates an agent with flags through the API — missing real-world test)"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Multi-agent: supervisor and debate (API workflow modes and in-graph nodes)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "337e78e6f runs the budget preflight before debate/supervisor LLM work and wraps the provider in GuardedDecisionProvider so every call is circuit-broken, time-bounded and charged (goals.py:329-340, 348-352, 377-383; guarded_completion.py:171-208); the worker now compiles in-graph supervisor/debate from the profile/flags (f9337a862). Debate voting weaknesses, in-request execution, the empty supervisor id, str(exc) leakage and the platform-only provider remain.",
+   "verified_fixed": [
+    "API debate/supervisor LLM calls uncharged, not circuit-broken, before budget preflight → _check_budget_preflight first (429) goals.py:329-340; GuardedDecisionProvider → complete_decision goals.py:348-352, 377-383 (337e78e6f); tests/api/test_goals_pattern_modes_guarded.py",
+    "Worker never set enable_supervisor/enable_debate or a profile → flags/profile applied via build_profiled_graph tasks.py:2946-2962 (f9337a862)"
+   ],
+   "still_open": [
+    "Critiques never included in the vote prompt debate.py:137-155; unparseable vote → proposals[0] while winning_agent reports the raw string debate.py:163-167",
+    "rounds clamped to 3 debate.py:49 while the API accepts debate_rounds up to 10 goals.py:60",
+    "API supervisor awaits sub-goals inside the HTTP request and returns id ''/no parent goal record goals.py:386-432; str(exc) leaked in the 500 goals.py:387-388",
+    "Debate/supervisor API modes still use the platform provider app.state._app_provider, ignoring tenant BYOK goals.py:344, 375 (medium)",
+    "Worker: supervisor parent holds its Celery slot while it streams sub-goal events on the same queue (up to timeout_per_subtask=300 s each) supervisor.py:94, 192-218 — now more reachable since the worker enables the node (medium)"
+   ],
+   "new_defects": [
+    "app/api/agents.py:498-535 — enable_supervisor/enable_debate cannot be set through the agents API (no request field, no column), so on the legacy runtime path the in-graph supervisor/debate nodes are reachable only via the rollout-gated v2 profile [medium; same root cause as Optional reasoning nodes]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_debate.py tests/agent/test_supervisor_debate_nodes.py tests/api/test_goals_final.py tests/agent/test_supervisor_real_results.py tests/api/test_goals_pattern_modes_guarded.py -q --no-cov -p no:cacheprovider -m 'not slow' → 42 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Goal-tree decomposition",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "337e78e6f gives each sub-goal a child id derived from the parent and charges its LLM spend to the parent goal via context['_budget_goal_id'] (goal_tree.py:86-108, llm_cost.py:54-57), so the parent budget now bounds the subtree. But the child id is not a goals row and is longer than goals.id (String(32)), so children still have no DB rows/events and every child checkpoint write fails silently; the decomposition call itself is still uncharged.",
+   "verified_fixed": [
+    "Sub-goal spend charged under goal '' instead of the parent → charge_llm_call uses _budget_goal_id = parent goal id llm_cost.py:54-57, set in goal_tree.py:103-105 (337e78e6f); tests/agent/test_goal_tree_spend_attribution.py"
+   ],
+   "still_open": [
+    "Sub-goals have no goals row / events / durable checkpoints (child id is synthetic) goal_tree.py:94-108",
+    "Decomposition LLM call uses the raw planner (planner.complete), not charged or circuit-broken → goal_tree.py:53 (low)"
+   ],
+   "new_defects": [
+    "app/agent/goal_tree.py:94-98 + app/db/models/goal.py:165-167 — child_goal_id is '<32-hex parent>-<sub_goal_id>-<8 hex>' (>32 chars, no goals row) while the child graph keeps the parent's _db_session_factory (executor_mixin.py:388); every child _write_checkpoint violates goal_checkpoints.goal_id String(32)/FK and is swallowed as a warning (graph.py:1098-1101), so each child step pays a failing DB round-trip and children are never resumable after a worker crash [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_goal_tree.py tests/agent/test_goal_tree_comprehensive.py tests/agent/test_goal_tree_spend_attribution.py -q --no-cov -p no:cacheprovider -m 'not slow' → 33 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Agent auto-routing (AgentRouter)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "router.py is unchanged in the wave-7 range. Routing works and the LLM classifier call is charged/circuit-broken (64b262847). The per-agent history query inside the loop, the missing eval_store and silent LLM-scoring fallbacks remain, and the candidate list is the process-local agent cache.",
+   "verified_fixed": [],
+   "still_open": [
+    "Per-agent DB history query inside the loop (N+1) over an unbounded list_all() → router.py:376-383 with _score_by_history_db router.py:250-285 (db wired in lifespan main.py:1525-1527)",
+    "eval_store never passed: AgentRouter(agent_store, llm_provider) main.py:2710-2713 → non-DB history 0.0 router.py:241-248",
+    "LLM scoring errors swallowed; goal proceeds on keyword score → router.py:347-348, 421-422 (low)"
+   ],
+   "new_defects": [
+    "app/agent/router.py:371-372 + app/api/agents.py:336-337 — route() scores AgentStore.list_all(), a process-local dict filled at startup (sync_from_db) and by creates on THIS replica; an agent created or deleted on another replica is invisible to (or still routable by) this replica's auto-routing until restart [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_router.py tests/agent/test_router_comprehensive.py tests/agent/test_router_wiring.py -q --no-cov -p no:cacheprovider -m 'not slow' → 48 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Model routing, adaptive execution strategy and LLM failover",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "No changes to model_router.py / strategy_adaptivity.py in the wave-7 range. Per-role failover, model pinning, no re-run after partial stream output with token_reset (graph.py failover path, 61cb4615e/1451def5d) are intact; capability observations are shared across replicas/workers via RedisCapabilityTracker (strategy_adaptivity.py:128, wired on the worker tasks.py:2846-2853). 52 targeted tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "Unknown models always probe richer modes (_EXPLORE_RATE_UNKNOWN=1.0) → strategy_adaptivity.py:40, 89 (low, documented)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/test_model_router.py tests/agent/test_model_router_comprehensive.py tests/agent/test_strategy_adaptivity.py tests/agent/test_executor_stream_failover.py -q --no-cov -p no:cacheprovider -m 'not slow' → 52 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Tool governance helpers and event sanitization",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "sanitization.py and tool_risk.py are unchanged in the wave-7 range. A fresh probe (synthetic keys built at runtime) confirms bare Stripe sk_live_, Google AIza and GitLab glpat- keys pass redact_sensitive_text unredacted while sk-proj- is redacted; these reach SSE events and the persisted event log. Tool-risk classification tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "Bare Stripe (sk_live_/sk_test_), Google (AIza...) and GitLab (glpat-) keys not in BARE_SECRET_PATTERNS → sanitization.py:26-42 (medium; re-verified by probe /private/tmp/claude-501/g01/probe_sanit.py)",
+    "Minor: rpa_click/rpa_type stay write_low → tool_risk.py:258, 266 (low, documented design)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/test_tool_risk.py tests/agent/test_sanitization_bare_secrets.py tests/agent/test_tool_risk_unknown_default.py -q --no-cov -p no:cacheprovider -m 'not slow' → 56 passed",
+    "uv run python /private/tmp/claude-501/g01/probe_sanit.py → stripe LEAKED, google LEAKED, gitlab LEAKED, openai REDACTED"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Goal persistence engine (retry until success)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "persistence.py is unchanged in the wave-7 range; the worker still drives GoalPersistenceEngine with Redis operator controls between attempts (tasks.py:3334-3341, 886-944). ESCALATE still only emits an event, abort is honoured only between attempts, and a probe shows the engine swallows GoalCancelledError (the error wave 7's fleet-wide emergency-stop gate raises) and retries.",
+   "verified_fixed": [],
+   "still_open": [
+    "ESCALATE only emits persistence_escalating + break; nothing waits for a human → persistence.py:477-486",
+    "Abort only honoured between attempts/backoff, not mid-attempt → persistence.py:459-462, 501-507"
+   ],
+   "new_defects": [
+    "app/agent/persistence.py:664-683 — GoalCancelledError (an Exception subclass, goal_lifecycle.py:39) raised by the worker step gate on an emergency stop (tasks.py:573-576) is caught as an ordinary failed attempt and retried after backoff; on the worker the graph.run start-of-goal stop check is inert (worker _app_state has no _redis, tasks.py:3072-3077 → graph.py:555-568 returns None) and _run_with_signals polls only the cancel flag (tasks.py:635-640), so under an active emergency stop a persistence-mode goal keeps re-planning (an LLM call per attempt) for up to max_attempts=10 with 30-600 s backoff, holding its Celery slot, and ends 'failed after N attempts' instead of stopped (probe /private/tmp/claude-501/g01/probe_persist_cancel.py: 3 attempts, 3 runs) [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_worker_persistence_mode.py tests/agent/test_persistence_operator_controls.py -q --no-cov -p no:cacheprovider -m 'not slow' → 11 passed",
+    "uv run pytest tests/agent/test_persistence.py tests/agent/test_persistence_comprehensive.py tests/agent/test_graph_persistence_wiring.py → 55 passed",
+    "uv run python /private/tmp/claude-501/g01/probe_persist_cancel.py → returned False, 3 attempts, agent.run called 3 times on GoalCancelledError"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Agent WorkflowPlanner/WorkflowExecutor and the static multi_agent workflow",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Unchanged in the wave-7 range. The worker honours workflow_mode=multi_agent through the static WorkflowPlanner/WorkflowExecutor with the governed tool gate (tasks.py:955-1017, 3346-3352), and an empty static plan fails honestly (probe: status failed, reason empty_plan). DAG non-connector steps still complete from an unverified 'Execute this task' LLM reply, the UI never sends agent_ids, and the worker executor has no retrieval_gateway.",
+   "verified_fixed": [],
+   "still_open": [
+    "DAG non-connector steps completed by an unverified 'Execute this task' LLM reply → workflow_executor.py:399-424",
+    "UI Multi-Agent sends workflow_mode only, never agent_ids → agent-verse-frontend/src/features/goals/components/MissionGoalComposer.tsx:123-131 (API multi_agent fan-out requires body.agent_ids, goals.py:436)",
+    "Worker WorkflowExecutor built without retrieval_gateway → tasks.py:981-985 vs goal_service.py:3691-3699 (low)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_worker_workflow_mode.py tests/agent/test_workflow_executor_governance.py -q --no-cov -p no:cacheprovider -m 'not slow' → 14 passed",
+    "uv run python /private/tmp/claude-501/g01/probe_wf_empty.py → 0 steps, status failed (empty_plan) — no fake success"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Dynamic orchestration: classification, pattern selection, runtime profile and GraphFactory",
+   "previous_status": "PARTIAL",
+   "status": "PASS",
+   "evidence": "The last open gap is closed: the worker rehydrates the persisted profile (GoalRuntimeProfile.from_dict, runtime_profile.py:279-345) and applies it only when execution_context.strategy_runtime_path == 'v2' (tasks.py:1713-1748), compiles it through the shared build_profiled_graph/GraphFactory (tasks.py:2956-2962, profiled_graph.py:26-120), and persists strategy_execution including downgrades (DISTRIBUTED without a runner, unreadable snapshot) (tasks.py:2420-2430, 2963-2970; 9e03570d5, f9337a862). 95 targeted tests pass incl. run_goal-level worker profile tests. Only low-severity bookkeeping gaps remain.",
+   "verified_fixed": [
+    "Worker ignored the runtime profile (plain AgentGraph) → build_profiled_graph with rehydrated v2 profile tasks.py:2956-2962 (9e03570d5, f9337a862)",
+    "v2 goals recorded strategy_runtime_path='v2' with no strategy_execution on the worker → worker writes strategy_execution (driver, patterns, downgrades) tasks.py:2420-2430, 2970 (f9337a862); tests/scaling/test_worker_runtime_profile.py::test_v2_goal_runs_the_profiled_strategy_on_the_worker, ::test_distributed_strategy_records_an_honest_downgrade, ::test_unreadable_profile_is_recorded_not_claimed"
+   ],
+   "still_open": [
+    "patterns_used column written from the requested profile for every tenant, including legacy-path goals → goal_service.py:1975-1978 (low)",
+    "pattern_selection summary recorded for every goal regardless of what runs, errors swallowed → goal_service.py:4070-4083 (low)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/orchestration/test_runtime_profile.py tests/orchestration/test_runtime_profile_builder.py tests/services/test_runtime_profile_persistence.py tests/orchestration/test_execution_drivers.py tests/services/test_readiness_gate_wiring.py tests/services/test_distributed_tier_fallback.py tests/orchestration/test_strategy_id_consistency.py tests/scaling/test_worker_runtime_profile.py -q --no-cov -p no:cacheprovider -m 'not slow' → 95 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Strategy registry, readiness and certification catalogue",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "strategy_certification.py, strategy_evidence.py and api/strategies.py are unchanged in the wave-7 range. Readiness probes, evidence-derived certification and driver-aware availability remain in place (58 tests pass). The worker now persists strategy_execution on the goal, but still never calls StrategyEvidenceRecorder, so queued (production) goals contribute no certification evidence; the evidence table still has no purge and the catalogue read is a single LIMIT 5000.",
+   "verified_fixed": [],
+   "still_open": [
+    "Strategy evidence recorded only by GoalService._record_strategy_evidence for in-process goals → goal_service.py:2871-2917; the worker writes strategy_execution (tasks.py:2420-2430) but has no StrategyEvidenceRecorder call (no match for strategy_evidence/record_run in app/scaling/tasks.py), so production certification evidence stays structurally empty (medium)",
+    "Tenant catalogue read is one LIMIT 5000 over all strategies ordered by observed_at (a hot strategy starves others) → strategy_certification.py:167-173; index ix_strategy_evidence_tenant_strategy lacks observed_at/expires_at (0096_strategy_runtime_v2.py:58-62); no job deletes expired rows (no reference to strategy_certification_evidence outside orchestration/ and the model) — unbounded growth (medium)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/orchestration/test_strategy_probes.py tests/orchestration/test_strategy_evidence.py tests/api/test_strategies.py tests/orchestration/test_strategy_registry.py -q --no-cov -p no:cacheprovider -m 'not slow' → 58 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Distributed strategy tier (StrategyRunner and DistributedStrategyLoop)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "strategy_runner.py and strategy_executor.py are unchanged in the wave-7 range. On the Celery worker a DISTRIBUTED profile is now recorded honestly as a downgrade (strategy_runner_unavailable → local AgentGraph node, or react) instead of being silently claimed (profiled_graph.py:56-95, tasks.py:2958; tested), but the tier itself still runs only in-process, and the runner's unbounded per-process caches, missing cancel path and no-op budget reservation remain.",
+   "verified_fixed": [
+    "Worker silently ran a plain loop for DISTRIBUTED goals → build_profiled_graph records a strategy_runner_unavailable downgrade in strategy_execution profiled_graph.py:56-95 (f9337a862); tests/scaling/test_worker_runtime_profile.py::test_distributed_strategy_records_an_honest_downgrade"
+   ],
+   "still_open": [
+    "DISTRIBUTED tier never runs on the Celery worker (no distributed_loop_builder passed, tasks.py:2958-2962), so in production it is reachable only when task_queue is None (medium; now an honest downgrade)",
+    "Results (incl. failures) cached unbounded per process by (tenant, idempotency_key); _locks/_cancel_events never evicted → strategy_runner.py:81-83, 179-187",
+    "Goal cancel never calls StrategyRunner.cancel (no caller in app/) → strategy_runner.py:97-98",
+    "reserve_budget default lambda: True, not overridden → strategy_runner.py:73, main.py:2603-2614",
+    "Runner checkpoint ignored ('del checkpoint'); in-memory per-process checkpoint/answer stores → strategy_executor.py:104-107, 126"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/orchestration/test_strategy_runner.py tests/orchestration/test_strategy_executor.py tests/orchestration/test_strategy_adapters.py tests/services/test_distributed_tier_fallback.py -q --no-cov -p no:cacheprovider -m 'not slow' → 55 passed"
+   ]
+  },
+  {
+   "area": "agent-core",
+   "feature": "Pattern adapter library and dead or legacy modules",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "Re-verified by importer scan on 287cb90f7: every listed module still exists with zero importers in app/. The local ReWOO/LATS/CodeAct/LLMCompiler adapters still have no goal driver (not in AGENT_GRAPH_STRATEGY_FLAGS or STRATEGY_RUNNER_STRATEGIES, execution_drivers.py:36-60) but remain honestly catalogued as experimental and rejected by the profile builder (tests/orchestration/test_runtime_profile_builder.py passes), so nothing over-claims them.",
+   "verified_fixed": [],
+   "still_open": [
+    "Zero importers: app/agent/{pattern_assembler,goal_classifier,semantic_entropy,errors}.py, app/agent/patterns/dynamic_graph_assembler.py, app/orchestration/workflow_compatibility.py",
+    "Outbound A2A tool app/agent/tools/a2a_call.py has no importers (only log-event name matches in app/api/a2a.py)",
+    "Local reasoning/code adapters (rewoo/lats/llm_compiler/codeact) have no goal driver → execution_drivers.py:36-60"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "importer scan (grep -rn '<module>' app) → 0 importers for each of the 7 modules",
+    "tests/orchestration/test_runtime_profile_builder.py + test_execution_drivers.py included in the dynamic-orchestration run → passed (95 passed total)"
+   ]
+  }
+ ]
+}
