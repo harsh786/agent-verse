@@ -2956,14 +2956,19 @@ def run_goal(
                         "agentic_rag": _iso_flags.agentic_rag,
                     }
 
-                    # Resolve scoped LLM key (G-28)
-                    _iso_llm_key = ""
+                    # Resolve scoped LLM key (G-28). Fail CLOSED: this used to log
+                    # and continue with "", so a BYOK tenant whose key could not be
+                    # read ran on the platform key. '' (no BYOK configured) is fine.
                     try:
                         from app.services.llm_config_store import aget_llm_api_key_for_tenant
 
                         _iso_llm_key = _run_async(aget_llm_api_key_for_tenant(tenant_id))
                     except Exception as _key_exc:
-                        logger.warning("isolated_llm_key_resolve_failed: %s", _key_exc)
+                        logger.error("isolated_llm_key_resolve_failed: %s", _key_exc)
+                        raise RuntimeError(
+                            "tenant BYOK LLM key could not be resolved; refusing to run "
+                            "the goal on the platform key"
+                        ) from _key_exc
 
                     _iso_envelope = _build_env(
                         tenant_id=tenant_id,
