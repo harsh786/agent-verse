@@ -2014,9 +2014,11 @@ class RetrievalGateway:
             raft_model_fact = ReadinessFact(False, "raft_model_selection_required")
         else:
             try:
+                # Ready only when a completed model is deployed for this
+                # collection AND a configured inference provider can serve it.
                 has_raft_model = bool(
                     isinstance(service, RAFTService)
-                    and await service.has_completed_model(
+                    and await service.has_servable_model(
                         tenant_context,
                         collection_id=collection_id,
                     )

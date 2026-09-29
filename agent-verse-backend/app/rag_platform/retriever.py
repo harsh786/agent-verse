@@ -255,6 +255,10 @@ class RAGRetriever:
         budget_context = cast(_BudgetContext | None, result._budget_context)
         post_retrieval_cost_start = budget_context.event_count if budget_context is not None else 0
         answer = result.answer
+        if not answer and result.resolved_strategy_id is RAGStrategy.RAFT:
+            # RAFT answers come only from the deployed fine-tuned model; never
+            # let the base model synthesize an answer reported as RAFT.
+            raise RAGSynthesisError("RAFT result has no fine-tuned model answer")
         if not answer and result.citations:
             answer = await self.synthesize(
                 query=query,

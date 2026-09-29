@@ -31,8 +31,10 @@ from app.rag.raft import (
     FineTuneCost,
     FineTuneEvaluation,
     RAFTDatasetRecord,
+    RAFTDeploymentRecord,
     RAFTExample,
     RAFTJobRecord,
+    RAFTNotFoundError,
     _confirmation_binding_digest,
     _ConfirmationGrant,
     _job_confirmation_digest,
@@ -46,6 +48,7 @@ RAFT_TABLES = (
     "raft_datasets",
     "raft_fine_tune_jobs",
     "raft_confirmation_grants",
+    "raft_model_deployments",
 )
 OWNER_ROLE = "raft_application"
 
@@ -105,6 +108,10 @@ async def _prepare_owner(admin_url: str, password: str) -> None:
         await connection.execute(text(f"GRANT USAGE ON SCHEMA public TO {OWNER_ROLE}"))
         for table in RAFT_TABLES:
             await connection.execute(text(f"ALTER TABLE {table} OWNER TO {OWNER_ROLE}"))
+        # load_chunks reads the (RLS-protected) knowledge tables it does not own.
+        await connection.execute(
+            text(f"GRANT SELECT ON knowledge_collections, knowledge_chunks_768 TO {OWNER_ROLE}")
+        )
     await engine.dispose()
 
 
@@ -840,3 +847,201 @@ async def test_raft_tables_enable_and_force_rls(database: _Database) -> None:
         ).all()
 
     assert rows == [(table, True, True) for table in sorted(RAFT_TABLES)]
+
+
+def _completed_job(
+    tenant_id: str,
+    collection_id: str,
+    dataset_id: str,
+    *,
+    status: str = "completed",
+    updated_at: datetime | None = None,
+) -> RAFTJobRecord:
+    return replace(
+        _pending_job(tenant_id, collection_id, dataset_id),
+        status=status,  # type: ignore[arg-type]
+        provider_job_id=f"ftjob-{uuid.uuid4().hex[:8]}",
+        fine_tuned_model=f"ft:model:{uuid.uuid4().hex[:8]}" if status == "completed" else None,
+        confirmation_digest=secrets.token_hex(32),
+        updated_at=updated_at or datetime.now(UTC),
+    )
+
+
+async def test_deployment_round_trips_upserts_and_is_tenant_isolated(
+    database: _Database,
+    tenant_rows: _TenantRows,
+) -> None:
+    repository = SQLRAFTRepository(database.owner_factory)
+    tenant, collection = tenant_rows.tenant_a, tenant_rows.collection_a
+    dataset_id = uuid.uuid4().hex
+    await repository.save_dataset(tenant, _dataset(tenant, collection, dataset_id))
+    first = _completed_job(tenant, collection, dataset_id)
+    second = _completed_job(tenant, collection, dataset_id)
+    await repository.save_job(tenant, first)
+    await repository.save_job(tenant, second)
+
+    deployed_at = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    await repository.save_deployment(
+        tenant, RAFTDeploymentRecord(tenant, collection, first.job_id, deployed_at)
+    )
+    assert await repository.get_deployment(tenant, collection) == RAFTDeploymentRecord(
+        tenant, collection, first.job_id, deployed_at
+    )
+
+    await repository.save_deployment(
+        tenant, RAFTDeploymentRecord(tenant, collection, second.job_id, deployed_at)
+    )
+    current = await repository.get_deployment(tenant, collection)
+    assert current is not None
+    assert current.job_id == second.job_id
+
+    # Another tenant neither sees the deployment nor can point one at this job.
+    other = tenant_rows.tenant_b
+    assert await repository.get_deployment(other, collection) is None
+    with pytest.raises(RAFTNotFoundError):
+        await repository.save_deployment(
+            other,
+            RAFTDeploymentRecord(other, tenant_rows.collection_b, first.job_id, deployed_at),
+        )
+
+
+async def test_database_rejects_deploying_a_job_from_another_collection(
+    database: _Database,
+    tenant_rows: _TenantRows,
+) -> None:
+    repository = SQLRAFTRepository(database.owner_factory)
+    tenant = tenant_rows.tenant_a
+    other_collection = f"deploy-{uuid.uuid4().hex[:12]}"
+    async with database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO knowledge_collections (id, tenant_id, name) "
+                "VALUES (:id, :tenant_id, :id)"
+            ),
+            {"id": other_collection, "tenant_id": tenant},
+        )
+    dataset_id = uuid.uuid4().hex
+    await repository.save_dataset(tenant, _dataset(tenant, tenant_rows.collection_a, dataset_id))
+    job = _completed_job(tenant, tenant_rows.collection_a, dataset_id)
+    await repository.save_job(tenant, job)
+
+    with pytest.raises(IntegrityError):
+        async with database.owner_factory() as session, session.begin():
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": tenant},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO raft_model_deployments (tenant_id, collection_id, job_id) "
+                    "VALUES (:tenant_id, :collection_id, :job_id)"
+                ),
+                {"tenant_id": tenant, "collection_id": other_collection, "job_id": job.job_id},
+            )
+
+
+async def test_in_flight_scan_is_cross_tenant_bounded_and_oldest_first(
+    database: _Database,
+    tenant_rows: _TenantRows,
+) -> None:
+    base = datetime(2000, 1, 1, tzinfo=UTC)  # older than anything other tests write
+    expected: list[tuple[str, str]] = []
+    for offset, (tenant, collection) in enumerate(
+        (
+            (tenant_rows.tenant_b, tenant_rows.collection_b),
+            (tenant_rows.tenant_a, tenant_rows.collection_a),
+        )
+    ):
+        repository = SQLRAFTRepository(database.owner_factory)
+        dataset_id = uuid.uuid4().hex
+        await repository.save_dataset(tenant, _dataset(tenant, collection, dataset_id))
+        in_flight = _completed_job(
+            tenant,
+            collection,
+            dataset_id,
+            status="running" if offset else "submitted",
+            updated_at=base + timedelta(minutes=offset),
+        )
+        await repository.save_job(tenant, in_flight)
+        expected.append((tenant, in_flight.job_id))
+        # Terminal and never-submitted jobs are not polled.
+        await repository.save_job(
+            tenant, _completed_job(tenant, collection, dataset_id, updated_at=base)
+        )
+        await repository.save_job(
+            tenant,
+            replace(
+                _pending_job(tenant, collection, dataset_id),
+                confirmation_digest=secrets.token_hex(32),
+                updated_at=base,
+            ),
+        )
+
+    scanner = SQLRAFTRepository(
+        database.owner_factory,
+        system_session_factory=database.admin_factory,
+    )
+    assert await scanner.list_in_flight_jobs(limit=2) == expected
+    assert await scanner.list_in_flight_jobs(limit=1) == expected[:1]
+    with pytest.raises(Exception, match="maintenance session"):
+        await SQLRAFTRepository(database.owner_factory).list_in_flight_jobs(limit=1)
+
+
+async def test_load_chunks_keyset_pages_only_curated_chunks_up_to_the_limit(
+    database: _Database,
+    tenant_rows: _TenantRows,
+) -> None:
+    tenant = tenant_rows.tenant_a
+    collection = f"chunks-{uuid.uuid4().hex[:12]}"
+    zero_vector = "[" + ",".join(["0"] * 768) + "]"
+    async with database.admin_factory() as session, session.begin():
+        await session.execute(
+            text(
+                "INSERT INTO knowledge_collections (id, tenant_id, name, embedding_dim) "
+                "VALUES (:id, :tenant_id, :id, 768)"
+            ),
+            {"id": collection, "tenant_id": tenant},
+        )
+        for index in range(9):
+            curated = index % 3 != 2  # every third chunk has no Q/A metadata
+            metadata = (
+                f'{{"question": "Q{index}?", "answer": "A{index}"}}' if curated else "{}"
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO knowledge_chunks_768 (id, tenant_id, collection_id, "
+                    "document_id, chunk_index, content, content_hash, metadata, "
+                    "domain_metadata, hierarchy_level, is_proposition, strategy_metadata, "
+                    "embedding) VALUES (:id, :tenant_id, :collection_id, :document_id, "
+                    ":chunk_index, :content, :content_hash, CAST(:metadata AS jsonb), "
+                    "CAST('{}' AS jsonb), 0, false, CAST('{}' AS jsonb), "
+                    "CAST(:embedding AS vector))"
+                ),
+                {
+                    "id": f"c{index:02d}-{uuid.uuid4().hex[:8]}",
+                    "tenant_id": tenant,
+                    "collection_id": collection,
+                    "document_id": f"doc-{index // 3}",
+                    "chunk_index": index % 3,
+                    "content": f"content {index}",
+                    "content_hash": uuid.uuid4().hex,
+                    "metadata": metadata,
+                    "embedding": zero_vector,
+                },
+            )
+
+    repository = SQLRAFTRepository(database.owner_factory, chunk_page_size=2)
+
+    capped = await repository.load_chunks(tenant, collection, limit=4)
+    everything = await repository.load_chunks(tenant, collection, limit=100)
+
+    assert [chunk.content for chunk in capped] == [
+        "content 0",
+        "content 1",
+        "content 3",
+        "content 4",
+    ]
+    assert [chunk.content for chunk in everything] == [
+        f"content {i}" for i in range(9) if i % 3 != 2
+    ]
+    assert await repository.load_chunks(tenant_rows.tenant_b, collection, limit=100) == []
