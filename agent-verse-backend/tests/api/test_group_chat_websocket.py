@@ -62,15 +62,16 @@ def test_websocket_auth_origin_append_idempotency_and_replay() -> None:
 
 
 @pytest.mark.parametrize(
-    ("headers", "session_id"),
+    ("headers", "session_id", "code"),
     [
-        ({"X-API-Key": "invalid", "Origin": "https://app.example"}, "session"),
-        ({"X-API-Key": "valid", "Origin": "https://evil.example"}, "session"),
-        ({"X-API-Key": "valid", "Origin": "https://app.example"}, "other"),
+        # Authentication failures use the shared WebSocket authenticator's code.
+        ({"X-API-Key": "invalid", "Origin": "https://app.example"}, "session", 4401),
+        ({"X-API-Key": "valid", "Origin": "https://evil.example"}, "session", 1008),
+        ({"X-API-Key": "valid", "Origin": "https://app.example"}, "other", 1008),
     ],
 )
 def test_websocket_rejects_unauthorized_connections(
-    headers: dict[str, str], session_id: str
+    headers: dict[str, str], session_id: str, code: int
 ) -> None:
     client = TestClient(_app())
     with (
@@ -80,7 +81,7 @@ def test_websocket_rejects_unauthorized_connections(
         ),
     ):
         pass
-    assert exc.value.code == 1008
+    assert exc.value.code == code
 
 
 def test_websocket_rejects_privileged_messages() -> None:
