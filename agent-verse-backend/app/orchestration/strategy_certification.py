@@ -161,10 +161,39 @@ class StrategyEvidenceStore:
           AND state_schema_version = :state_schema_version
           AND expires_at > :now
         ORDER BY observed_at DESC
+        LIMIT 500
+    """
+
+    tenant_current_query = """
+        SELECT * FROM strategy_certification_evidence
+        WHERE tenant_id = :tenant_id
+          AND expires_at > :now
+        ORDER BY observed_at DESC
+        LIMIT 5000
     """
 
     def __init__(self, db_session_factory: Any) -> None:
         self._db = db_session_factory
+
+    async def list_current_for_tenant(
+        self, *, tenant_id: str, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """All of a tenant's unexpired evidence (bounded), newest first — one query."""
+        if self._db is None:
+            return []
+        from sqlalchemy import text
+
+        checked_at = now or datetime.now(UTC)
+        async with self._db() as session, session.begin():
+            await session.execute(
+                text("SELECT set_config('app.tenant_id', :tenant_id, true)"),
+                {"tenant_id": tenant_id},
+            )
+            result = await session.execute(
+                text(self.tenant_current_query),
+                {"tenant_id": tenant_id, "now": checked_at},
+            )
+            return [dict(row) for row in result.mappings().all()]
 
     @staticmethod
     def is_current(expires_at: datetime, now: datetime) -> bool:

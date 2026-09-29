@@ -2586,6 +2586,14 @@ def create_app(
     # Probes read app.state when evaluated, so the lifespan's DB/Redis swaps apply.
     register_strategy_readiness_probes(app.state.strategy_readiness, app.state)
     app.state.strategy_certification = CertificationEvaluator()
+    from app.orchestration.strategy_evidence import StrategyEvidenceRecorder
+
+    # Evidence is appended when goals finish (GoalService) and certification is derived
+    # from it; Postgres-backed once the lifespan wires db_session_factory.
+    app.state.strategy_evidence = StrategyEvidenceRecorder(
+        app.state.strategy_registry,
+        db_factory_getter=lambda: getattr(app.state, "db_session_factory", None),
+    )
     # D-1: StrategyRunner previously used the inert module-default executor (always raised
     # "strategy executor is not configured") and nothing ever called .run() on it. Wire a real
     # executor for the DISTRIBUTED strategies that have a genuine execution driver (see

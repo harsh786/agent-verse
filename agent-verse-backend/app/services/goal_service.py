@@ -2832,6 +2832,41 @@ class GoalService:
         )
         # Track per-tenant durations so get_metrics can compute avg_latency_ms.
         self._goal_durations.setdefault(record.tenant_id, []).append(duration_seconds)
+        self._record_strategy_evidence(record, status)
+
+    def _record_strategy_evidence(self, record: GoalRecord, status: str) -> None:
+        """Append certification evidence for the strategies this goal actually ran."""
+        if record.dry_run or status not in ("completed", "failed"):
+            return
+        execution = record.execution_context.get("strategy_execution")
+        if not isinstance(execution, dict):
+            return
+        patterns = [str(item) for item in execution.get("patterns") or ()]
+        if not patterns:
+            return
+        from app.orchestration.strategy_evidence import StrategyEvidenceRecorder
+
+        state: Any = self._app_state
+        state = getattr(state, "state", state)
+        recorder = getattr(state, "strategy_evidence", None) if state is not None else None
+        if not isinstance(recorder, StrategyEvidenceRecorder):
+            return
+        runtime_path = str(record.execution_context.get("strategy_runtime_path") or "legacy")
+
+        async def _record() -> None:
+            await recorder.record_run(
+                tenant_id=record.tenant_id,
+                goal_id=record.goal_id,
+                strategy_ids=patterns,
+                succeeded=status == "completed",
+                runtime_path=runtime_path,
+            )
+
+        coro = _record()
+        try:
+            self._track_db_task(coro)
+        except RuntimeError:  # no running loop
+            coro.close()
 
     async def _run_agent_loop_persistent(
         self,
