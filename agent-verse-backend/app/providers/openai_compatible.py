@@ -364,11 +364,12 @@ class OpenAICompatibleProvider:
 
             usage = getattr(response, "usage", None)
             if usage:
+                _label = self._metrics_label()
                 record_llm_tokens(
-                    "openai", response.model or "", "prompt", getattr(usage, "prompt_tokens", 0)
+                    _label, response.model or "", "prompt", getattr(usage, "prompt_tokens", 0)
                 )
                 record_llm_tokens(
-                    "openai",
+                    _label,
                     response.model or "",
                     "completion",
                     getattr(usage, "completion_tokens", 0),
@@ -717,6 +718,18 @@ class OpenAICompatibleProvider:
 
     def supports_tool_use(self) -> bool:
         return True
+
+    def _metrics_label(self) -> str:
+        """Provider label for token metrics: the configured provider name.
+
+        Every OpenAI-compatible backend (Groq, DeepSeek, vLLM, NVIDIA, ...) used to
+        be recorded as "openai", so per-provider token/cost dashboards merged them.
+        """
+        configured = getattr(self, "_agentverse_provider_type", None)
+        if isinstance(configured, str) and configured:
+            return configured
+        cls_name = getattr(type(self), "provider_name", None)
+        return cls_name if isinstance(cls_name, str) and cls_name else "openai"
 
     def supports_structured_output(self) -> bool:
         return True

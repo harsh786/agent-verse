@@ -62,14 +62,26 @@ def _detect_providers() -> list[ProviderConfig]:
 
     # Check LLM_PROVIDERS env var (ordered list override)
     raw = os.getenv("LLM_PROVIDERS", "")
-    if raw:
+    if raw.strip():
         try:
             configs = json.loads(raw)
+            if not isinstance(configs, list):
+                raise TypeError("must be a JSON array of provider objects")
             for cfg in configs:
+                if not isinstance(cfg, dict):
+                    raise TypeError("every entry must be a JSON object")
                 providers.append(ProviderConfig(**cfg))
             return providers
         except Exception as e:
-            logger.warning("llm_providers_parse_error", error=str(e)[:80])
+            # A typo here used to silently fall through to key auto-detection, so
+            # production ran a different provider/model than the operator
+            # configured. Refuse to start in production; stay usable in dev.
+            if os.getenv("ENVIRONMENT", "development").strip().lower() == "production":
+                raise ProviderConfigurationError(
+                    "LLM_PROVIDERS", f"malformed LLM_PROVIDERS value ({str(e)[:160]})"
+                ) from e
+            logger.error("llm_providers_parse_error", error=str(e)[:160])
+            providers = []
 
     # ── NVIDIA (build.nvidia.com / integrate.api.nvidia.com) ──────────────────
     # OpenAI-compatible cloud endpoint. Detected FIRST so, when configured, it is
@@ -229,6 +241,11 @@ def resolve_provider(
         try:
             provider = _instantiate_provider(cfg)
             if provider is not None:
+                # Label metrics / model-router profiles by the configured provider,
+                # not the implementation class (every OpenAI-compatible backend
+                # used to report as "openai").
+                if not getattr(provider, "_agentverse_provider_type", None):
+                    provider._agentverse_provider_type = cfg.provider_type
                 logger.info(
                     "provider_resolved",
                     type=cfg.provider_type,
@@ -403,10 +420,22 @@ def _instantiate_provider(cfg: ProviderConfig) -> Any | None:
             "sambanova": SambanovaProvider,
             "azure_openai": AzureOpenAIProvider,
         }
-        klass = _klass_map[ptype]
         if not cfg.api_key and ptype != "azure_openai":
             return None
-        return klass(api_key=cfg.api_key or None)
+        if ptype == "azure_openai":
+            # The configured model is the Azure deployment name.
+            return AzureOpenAIProvider(
+                api_key=cfg.api_key or None, deployment=configured_model or None
+            )
+        klass = _klass_map[ptype]
+        # Keep the operator's model and base URL (a proxy / regional endpoint);
+        # each class supplies its own defaults when they are not configured.
+        simple_kwargs: dict[str, Any] = {"api_key": cfg.api_key or None}
+        if configured_model:
+            simple_kwargs["default_model"] = configured_model
+        if cfg.base_url.strip():
+            simple_kwargs["base_url"] = cfg.base_url.strip()
+        return klass(**simple_kwargs)
 
     return None
 

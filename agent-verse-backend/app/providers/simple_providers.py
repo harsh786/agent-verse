@@ -22,10 +22,11 @@ class MistralProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "mistral-large-latest",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("MISTRAL_API_KEY", ""),
-            base_url="https://api.mistral.ai/v1",
+            base_url=base_url or "https://api.mistral.ai/v1",
             default_model=default_model,
         )
 
@@ -39,10 +40,11 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "deepseek-chat",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("DEEPSEEK_API_KEY", ""),
-            base_url="https://api.deepseek.com/v1",
+            base_url=base_url or "https://api.deepseek.com/v1",
             default_model=default_model,
         )
 
@@ -56,10 +58,11 @@ class PerplexityProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "llama-3.1-sonar-large-128k-online",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("PERPLEXITY_API_KEY", ""),
-            base_url="https://api.perplexity.ai",
+            base_url=base_url or "https://api.perplexity.ai",
             default_model=default_model,
         )
 
@@ -73,10 +76,11 @@ class FireworksProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "accounts/fireworks/models/llama-v3p1-70b-instruct",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("FIREWORKS_API_KEY", ""),
-            base_url="https://api.fireworks.ai/inference/v1",
+            base_url=base_url or "https://api.fireworks.ai/inference/v1",
             default_model=default_model,
         )
 
@@ -90,10 +94,11 @@ class XAIProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "grok-beta",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("XAI_API_KEY", ""),
-            base_url="https://api.x.ai/v1",
+            base_url=base_url or "https://api.x.ai/v1",
             default_model=default_model,
         )
 
@@ -107,10 +112,11 @@ class MoonshotProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "moonshot-v1-8k",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("MOONSHOT_API_KEY", ""),
-            base_url="https://api.moonshot.cn/v1",
+            base_url=base_url or "https://api.moonshot.cn/v1",
             default_model=default_model,
         )
 
@@ -124,10 +130,11 @@ class CerebrasProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "llama3.1-70b",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("CEREBRAS_API_KEY", ""),
-            base_url="https://api.cerebras.ai/v1",
+            base_url=base_url or "https://api.cerebras.ai/v1",
             default_model=default_model,
         )
 
@@ -141,10 +148,11 @@ class YiProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "yi-large",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("YI_API_KEY", ""),
-            base_url="https://api.01.ai/v1",
+            base_url=base_url or "https://api.01.ai/v1",
             default_model=default_model,
         )
 
@@ -158,10 +166,11 @@ class HuggingFaceProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "meta-llama/Llama-3.1-70B-Instruct",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("HF_API_KEY", ""),
-            base_url="https://api-inference.huggingface.co/v1",
+            base_url=base_url or "https://api-inference.huggingface.co/v1",
             default_model=default_model,
         )
 
@@ -175,10 +184,11 @@ class SambanovaProvider(OpenAICompatibleProvider):
         self,
         api_key: str | None = None,
         default_model: str = "Meta-Llama-3.1-70B-Instruct",
+        base_url: str | None = None,
     ) -> None:
         super().__init__(
             api_key=api_key or os.getenv("SAMBANOVA_API_KEY", ""),
-            base_url="https://api.sambanova.ai/v1",
+            base_url=base_url or "https://api.sambanova.ai/v1",
             default_model=default_model,
         )
 
