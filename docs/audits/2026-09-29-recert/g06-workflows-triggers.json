@@ -1,0 +1,1393 @@
+{
+ "group": "g06-workflows-triggers",
+ "code": "fe2eb5b15",
+ "features": [
+  {
+   "area": "workflows-triggers",
+   "feature": "Celery app, per-plan queue routing and worker topology",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The visibility_timeout defect is fixed: broker_transport_options now sets visibility_timeout to the longest plan goal timeout + 1h, on both the Redis and the Sentinel branch. Queue routing and worker queue coverage are enforced by tests. Two things still break under Sentinel: beat_guard cannot parse the sentinel:// URL, and the Sentinel result backend is never given a master_name.",
+   "verified_fixed": [
+    "celery_app.py task_acks_late with no visibility_timeout \u2192 fixed in 2d8ea71f7: scaling/celery_app.py:333-343 sets visibility_timeout = max(PLAN_LIMITS.goal_timeout_seconds)+3600 (86400+3600), and :363-367 merges it into the Sentinel options"
+   ],
+   "still_open": [
+    "beat_guard cannot parse a Sentinel URL \u2192 scaling/beat_guard.py:52-66: redis.from_url(celery_app.conf.broker_url) raises on sentinel:// (built at celery_app.py:27-32), and the except branch runs the task unguarded, so with Sentinel every guarded beat task can overlap across beat replicas"
+   ],
+   "new_defects": [
+    "scaling/celery_app.py:362-369 \u2014 with Sentinel on, result_backend is set to the sentinel:// broker URL but result_backend_transport_options is never set; Celery's SentinelBackend._get_pool (.venv celery/backends/redis.py:695-702) reads master_name only from there, so master_for(service_name=None) and task-result storage fail on Sentinel deployments [medium]",
+    "scaling/celery_app.py:333-343 \u2014 the fix applies a 25h visibility_timeout to EVERY task on the broker, so an unacked task on a crashed worker (maintenance, ingestion, workflow runs) is redelivered only after 25h; only goals have a separate stuck-goal sweep [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_worker_queue_coverage.py tests/scaling/test_celery_routing.py tests/scaling/test_beat_guard.py tests/scaling/test_celery_app.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 39 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Goal queue and Celery goal execution (run_goal / DLQ)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The high-severity redelivery defect is fixed. After taking the lock, run_goal claims the row with one conditional UPDATE (WHERE status NOT IN terminal RETURNING id) under RLS, skips goals that are already terminal, and fails closed when the claim errors. Worker status writes are conditional and visibility_timeout covers the longest goal. Still open: the start-of-goal emergency-stop check fails open, lock leaks on early returns, a stale docstring, and no e2e test through the real run_goal.",
+   "verified_fixed": [
+    "mark_worker_started had no terminal guard, so redelivery re-ran finished goals \u2192 2d8ea71f7: scaling/tasks.py:1825-1867 _claim_goal_for_execution, called at :2237-2272 (a terminal goal is skipped, a claim error retries then fails); update_submitted_goal_status defaults to only_if_active (:2008-2031)",
+    "A queued goal cancelled behind a >2h backlog ran anyway (2h Redis flag TTL) \u2192 GoalService.cancel_goal writes CANCELLED to Postgres conditionally with raise_on_error (services/goal_service.py:4861-4867), and the worker's claim excludes 'cancelled' (tasks.py:1795,1852), so the durable status now blocks the run whatever the flag TTL"
+   ],
+   "still_open": [
+    "run_goal docstring still says the status bridge is 'deferred until Phase 10' \u2192 scaling/tasks.py:1915-1916",
+    "Early returns before the main try never release the goal lock \u2192 scaling/tasks.py:2309-2319 (BYOK failure) and :3090-3105 (AgentGraph assembly failure); the lock stays held for plan timeout + 5 min [low]",
+    "No e2e test runs a goal through the real Celery run_goal against Postgres/Redis; tests/integration/test_agent_graph_full_run.py drives AgentGraph directly, and the test_run_goal_claim.py tests mock the claim"
+   ],
+   "new_defects": [
+    "scaling/tasks.py:1953-1987 \u2014 the start-of-goal emergency-stop check is wrapped in `except Exception: logger.warning`, so a Redis error on GET/SCAN (governance/emergency_stop.py:80-82) lets the goal start during an active tenant stop (fail open; the per-step check fails closed) [medium]",
+    "governance/emergency_stop.py:52-61 \u2014 every run_goal start does redis.scan_iter(match='emergency_stop:{tenant}:*', count=100), which walks the WHOLE Redis keyspace (schedule:*, goal_lock:*, dedup keys) in 100-key round trips; at millions of keys that is thousands of round trips per goal start [medium]",
+    "scaling/tasks.py:1847-1856 \u2014 the claim sets status='executing' for any non-terminal row, including 'waiting_human' (paused), so a redelivered message for a paused goal silently un-pauses it in the DB [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_run_goal_claim.py tests/scaling/test_lock_in_run_goal.py tests/scaling/test_run_goal_retry_bookkeeping.py tests/scaling/test_tasks_dlq_paths.py tests/scaling/test_worker_lock_fail_closed.py tests/scaling/test_worker_lifecycle_signals.py tests/scaling/test_worker_workflow_mode.py tests/scaling/test_celery_agentgraph.py tests/services/test_goal_restart_recovery.py tests/scaling/test_worker_runtime_profile.py tests/scaling/test_worker_uses_enqueued_plan.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 57 passed (120s)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Durable execution / LangGraph checkpointing",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Unchanged by wave 7. API-side DB checkpoint resume works (tests pass), but Celery workers, which run every queued production goal and workflow run, still use MemorySaver. Now that 2d8ea71f7 lets a crashed worker's 'executing' goal be reclaimed on redelivery, the redelivered run starts from step 0 and re-executes any side-effecting tools the dead run already completed.",
+   "verified_fixed": [],
+   "still_open": [
+    "Workers never get a durable checkpointer \u2192 scaling/tasks.py:91,94-111 _WORKER_CHECKPOINTER stays None (MemorySaver); passed at tasks.py:2939-2940 and workflow/celery_tasks.py:36,123",
+    "SIGTERM handler claims a durable checkpoint \u2192 scaling/tasks.py:29-43 logs 'LangGraph checkpoint written after last completed step', which is false for MemorySaver",
+    "A sync-only or unusable saver is silently swapped for MemorySaver \u2192 agent/graph.py:269-282 (no log or metric)",
+    "A crash-redelivered goal re-runs from scratch \u2192 tasks.py:1836-1838 lets a crashed worker's executing goal be reclaimed, with no checkpoint to resume from, so completed tool calls are replayed (no idempotency) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/test_checkpoint_resume.py tests/agent/test_durable_execution.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 14 passed (API/in-process only; no worker-durability test exists)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Trigger/schedule CRUD and ScheduleStore",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The high-severity multi-replica defect is fixed (5a6d78ecf). Every /schedules handler now reads and writes Postgres through the *_async store methods with strict=True, maps an outage to 503, pauses/resumes durably through set_paused_async, and resolves webhook tokens from the schedules.webhook_token column. test_schedules_cross_replica.py proves the two-replica cases. Still open: NL creation skips validation and LLM charging, there is no plan cron floor, list pagination happens in Python, and some other callers still read only the per-process cache.",
+   "verified_fixed": [
+    "list/get/pause/resume/fire/alert/webhook used the process-local cache \u2192 5a6d78ecf: api/schedules.py:67-92 _durable/_get_or_404 (get_async strict), :189 list_all_async strict, :366-377 set_paused_async, :493 alert webhook get_async strict, :531-534 get_by_webhook_token_async (triggers/store.py:773-800, a DB filter on webhook_token under RLS)",
+    "Process-local app.state._webhook_tokens map \u2192 removed (no match for _webhook_tokens under app/)"
+   ],
+   "still_open": [
+    "POST /nl/schedule stores nl.parse() specs without is_supported/validate_spec \u2192 api/schedules.py:446-462; nl_scheduler.py:522 last-resort ONCE spec has no fire_at_iso, so it is stored and never fires",
+    "validate_cron has no plan-tier minimum interval (the docstring claims one) and skips validation entirely without croniter \u2192 triggers/models.py:246-258",
+    "GET /schedules loads every tenant schedule and slices in Python \u2192 api/schedules.py:189-190 (limit/offset not pushed to SQL); triggers/store.py:726-743 has no LIMIT [low]",
+    "/triggers API reads non-strict: a DB outage silently falls back to the per-process cache instead of 503 \u2192 api/triggers.py:48-54,265-267 (get_async/list_all_async without strict), and :340 re-reads the created record from the sync cache [low]"
+   ],
+   "new_defects": [
+    "api/schedules.py:446 \u2014 nl_create_schedule calls nl.parse(body.command) without tenant_ctx, so complete_decision gets tenant=None and skips both the budget preflight and the charge (providers/guarded_completion.py:132-133,168-169); every NL schedule LLM call is unmetered despite the 7D fix to nl_scheduler.py [medium]",
+    "api/agents.py:925-931 \u2014 deleting an agent cleans up its schedules from schedule_store.list_all() (the per-process cache), so schedules for that agent created on another replica survive and keep firing goals for a deleted agent [medium]",
+    "triggers/store.py:747-749,806-811 \u2014 every DB read writes each row into the per-process self._data dict, which is never bounded or evicted, so each API replica eventually caches every schedule it has served (unbounded memory at million-schedule scale) [low]",
+    "chat/service.py:839-860 \u2014 the chat SCHEDULE intent persists LLM-parsed specs through create_async with no is_supported/validate_spec and no quota_plan, so a chat turn can create triggers of unsupported types (s3_event, mqtt, \u2026) that never fire, and can bypass PLAN_MAX_TRIGGERS [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_schedules_cross_replica.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_schedules_analytics_route.py tests/triggers/test_secret_rotation.py tests/api/test_schedules_api.py tests/api/test_schedules_extra.py tests/api/test_schedules_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 105 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerDispatcher governance pipeline",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 commit touches triggers/dispatcher.py. The pipeline is real: two-layer dedup that fails closed on Redis errors, fail-closed conditions, audited skip rows, and enqueue failure goes to the DLQ. The Docker-backed replay-dedup and governed-schedule e2e tests pass. Still true: the RBAC step is a no-op, circuit breakers are per process, and on the Celery beat path the breaker is rebuilt on every fire so it can never open. Rate limiting and the bulkhead fail open when Redis errors.",
+   "verified_fixed": [],
+   "still_open": [
+    "caller_role defaults to 'operator' and no caller passes it, so the RBAC step always passes \u2192 triggers/dispatcher.py:91,153,168 (no caller_role= argument anywhere in app/)",
+    "CircuitBreakerRegistry is an in-process dict (per replica) \u2192 triggers/circuit_breaker.py:76-84; the bulkhead is released right after enqueue \u2192 dispatcher.py:376-377, so it bounds concurrent dispatch calls, not in-flight goals",
+    "The Redis dedup key (SET NX, 60s) is claimed before the rate-limit, circuit and bulkhead checks, so a firing skipped as rate_limit/bulkhead_full/circuit_open burns the key and a legitimate redelivery within 60s is deduped \u2192 dispatcher.py:209-252,405-409 [low]"
+   ],
+   "new_defects": [
+    "scaling/tasks.py:3871-3891 + :3787-3793 \u2014 every run_scheduled_goal builds a fresh TriggerDispatcher (so a fresh CircuitBreakerRegistry, dispatcher.py:80), so the per-trigger circuit breaker can never trip for beat-fired triggers and a persistently failing schedule keeps dispatching every tick [medium]",
+    "triggers/rate_limiter.py:43-55 and triggers/bulkhead.py:28-43 \u2014 both return True (allow) on a Redis error or when redis is None, so during a Redis blip a free tenant's triggers bypass the 10/h cap and the 2-slot bulkhead (fail open), unlike the dedup gate, which fails closed [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers/test_condition_safe_eval.py tests/triggers/test_dispatcher.py tests/triggers/test_dispatcher_wiring.py tests/triggers/test_trigger_replay_dedup.py tests/scaling/test_scheduled_goal_governance.py tests/e2e_full/test_scheduled_trigger_is_governed.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 88 passed, 4 skipped (Docker env unset)",
+    "DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/triggers/test_trigger_replay_dedup.py tests/e2e_full/test_scheduled_trigger_is_governed.py -q --no-cov -p no:cacheprovider \u2192 4 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Beat schedule loop (time family A plus polling/data triggers)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Unchanged by wave 7 apart from 7D's SSRF pinning of the API-poll and RSS fetches (fdc81e6a5). Beat fires go through run_scheduled_goal \u2192 TriggerDispatcher, and interval, cron, missed-run and Family A logic is tested. Still true: the RRULE/SOLAR branches are dead, each tick does O(all schedules) work, and Postgres discovery is off by default. New finding: schedule payloads never carry the tenant's plan, so every beat-fired trigger is dispatched and run as FREE. Two more beat gaps: a CEL condition set via condition_cel is dropped, and three Family A configs pass validation but can never fire.",
+   "verified_fixed": [],
+   "still_open": [
+    "rrule/solar branches are unreachable because RRULE/SOLAR are not TriggerType members \u2192 scaling/tasks.py:4930-4960 (rrule) and :4165-4200 (_solar_due_run_utc); triggers/models.py:28-100",
+    "Each tick SCANs every schedule:* key (one GET each), and with DB discovery on, runs one query per active tenant with no due-time predicate \u2192 scaling/tasks.py:4789-4801, :4365-4398 [medium]",
+    "Postgres discovery is opt-in, so Redis is the de-facto source of truth and an evicted schedule:* key stops firing until an API restart re-syncs \u2192 scaling/tasks.py:4435-4443 (AGENTVERSE_DB_SCHEDULE_DISCOVERY defaults to 'false'), :4816-4819 [medium]"
+   ],
+   "new_defects": [
+    "triggers/store.py:216-237 + scaling/tasks.py:3665,3778-3782 \u2014 neither the Redis schedule payload nor the DB payload contains tenant_plan, so every beat fire runs with PlanTier.FREE. An enterprise tenant's schedules are rate-capped at 10 fires/hour (rate_limiter.py PLAN_CAPS), limited to 2 bulkhead slots and a 64 KB payload, and the resulting goals get free-tier queue and timeout [medium]",
+    "scaling/tasks.py:3722-3743 + :3662 \u2014 _build_scheduled_trigger_spec and _enqueue_governed_fire forward only sched['condition']. The API stores condition_cel as condition_expression (api/triggers.py:172), so a beat-fired trigger (cron/interval/rss/api_poll\u2026) with a CEL condition fires unconditionally: its condition gate is silently dropped (fail open) [medium]",
+    "triggers/validation.py:61-71 vs scaling/tasks.py:4205-4232 \u2014 validate_spec accepts relative_delay with only relative_to_field (or an offset with no fire_at_iso), deadline with only deadline_field, and business_calendar with only business_calendar_id. The beat needs fire_at_iso or cron_expression and never reads those fields, so these triggers are accepted and never fire [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by the beat loop, the dispatcher or any consumer (no other reader in app/), so an 'expired' trigger keeps firing [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_worker_goal_enqueue.py tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_cron_timezone.py tests/triggers/test_scheduled_dispatch.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 49 passed (no test asserts the plan a beat fire runs with)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Event-bus trigger consumers (TriggerConsumerSupervisor)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 change. Six core consumers (chain, hitl, memory, event, condition, conversational) start when Redis is available, publishers exist for goal chain, HITL, memory.created (API) and state_machine.transition (API), and the N-replica fan-out is deduped by the dispatcher. MQTT is still never wired, and the worker publishes no memory.created events. New finding: every consumer's pub/sub loop dies on the first Redis error and is never restarted.",
+   "verified_fixed": [],
+   "still_open": [
+    "MQTT consumer is always skipped \u2192 triggers/supervisor.py:205-216 (mqtt_client = None, 'not wired by default', and only built when the extended flag is on)",
+    "Worker-written memories never publish memory.created \u2192 scaling/tasks.py:2541 LongTermMemoryStore() with no set_event_redis (memory/long_term.py:94-97, so _event_redis stays None)",
+    "state_machine.transition is published only by POST .../transition \u2192 api/state_machines.py:171-199; transitions made through StateMachineStore elsewhere publish nothing",
+    "goal_score_below has no proven production publisher: the only publish is GoalService's in-process eval path (services/goal_service.py:2616-2631); the Celery worker publishes only goal.completed/goal.failed (scaling/tasks.py:2051-2080), and no test drives score_below for a worker-run goal (unverified whether it ever fires in production)"
+   ],
+   "new_defects": [
+    "triggers/store.py:181-182 + consumers/chain.py:180 + dispatcher.py:525-528 \u2014 bind_refs_to_spec copies the trigger's agent_id (the agent to RUN) into watch_agent_id, and ChainTriggerConsumer treats watch_agent_id as the SOURCE-goal filter. A goal_completed/goal_failed trigger meant as 'when any goal completes, run agent X' only fires on X's own goals, then re-fires itself on the goal it just created, up to MAX_CHAIN_DEPTH=10 times (a self-chaining loop; the helper reproduced it with a scratch script) [high]",
+    "triggers/consumers/event.py:36-38,118 (same at condition.py:137, conversational.py:256) \u2014 publish_trigger_event merges the client body before stamping tenant_id, so a client-supplied 'tenant_plan' survives, and the consumer uses it as the dispatch plan. A free tenant POSTing {'tenant_plan':'enterprise'} to /triggers/events/{ch} gets the enterprise rate cap, bulkhead, payload limit and goal queue [medium]",
+    "triggers/consumers/chain.py:96-107 (same pattern at condition.py:77-84, conversational.py:214-221, event.py:72-79, hitl.py:38-45, memory.py:38-45) + triggers/supervisor.py:136-142 \u2014 each consumer's `async for message in pubsub.listen()` sits inside one try/except that logs and returns, and _run_consumer never restarts it. A single Redis failover or connection reset permanently kills every event-driven trigger family on that replica, with no health signal, until the pod restarts [medium]",
+    "triggers/consumers/*.py \u2014 the event bus is Redis pub/sub (at-most-once), so events published while a replica's consumers are down or reconnecting (deploys, the failure above) are lost with no replay or DLQ; chain, HITL and memory triggers silently miss firings [low]",
+    "triggers/consumers/condition.py:63-66,173-174 \u2014 COUNTER_THRESHOLD/WINDOW_AGGREGATE/STATE_TRANSITION keep their counters, windows and last state in a per-process dict, and every replica receives every event, so each replica counts independently and state is lost on restart (counter thresholds fire N times or never) [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers/test_goal_chain_publisher.py tests/triggers/test_state_transition_publisher.py tests/memory/test_memory_created_publisher.py tests/governance/test_hitl_trigger_events.py tests/triggers/test_supervisor.py tests/triggers/test_chain_hitl_memory_duplicate_dispatch.py tests/triggers/test_event_consumer.py tests/triggers/test_consumer_hitl.py tests/triggers/test_consumer_memory.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 60 passed (no test covers consumer reconnect after a Redis error)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Inbound webhook and channel trigger ingress (triggers/schedules/channels)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The legacy /schedules/webhooks/{token} ingress now resolves the token from the durable schedules.webhook_token column, so it works across replicas (5a6d78ecf, proven by test_schedules_cross_replica). The typed path (/triggers/webhooks/{type}/{token}) still resolves the tenant pre-auth from the token, verifies GitHub and Stripe correctly, and answers 503 when every dispatch fails. Still open: the pre-auth O(N) cache scan, non-strict DB reads, and vendor signature schemes other than GitHub/Stripe are wrong.",
+   "verified_fixed": [
+    "POST /schedules/webhooks/{token} scanned the per-process store.list_all() \u2192 5a6d78ecf: api/schedules.py:531-534 get_by_webhook_token_async(strict=True), a DB lookup on webhook_token under RLS (triggers/store.py:773-800); cross-replica test test_webhook_on_b_resolves_token_created_on_a passes"
+   ],
+   "still_open": [
+    "Every pre-auth typed-webhook request linearly scans ALL tenants' cached schedules with compare_digest before the indexed DB lookup \u2192 triggers/store.py:856-860 (O(cached schedules) per delivery) [low]",
+    "The typed path reads triggers non-strict: on a DB error find_by_type_async falls back to this replica's cache \u2192 triggers/store.py:907-911; a trigger not cached here gives 404 (which senders treat as permanent) instead of 503 \u2192 api/triggers.py:871,925-926 [low]"
+   ],
+   "new_defects": [
+    "api/triggers.py:802-810 + triggers/webhooks/verifier.py:96-106,19-39 \u2014 slack (and teams) typed webhooks read the generic 'x-signature' header and check HMAC(body), but Slack signs 'v0:{X-Slack-Request-Timestamp}:{body}' in X-Slack-Signature. A SLACK_EVENT trigger with a signing secret therefore 401s every real Slack delivery; without a secret it has no auth beyond the token, and the url_verification challenge is never echoed, so Slack cannot enable the endpoint [medium]",
+    "api/triggers.py:70-83 \u2014 _webhook_tenant_ctx takes the plan from tenant_service._tenants (the per-process dict), falling back to FREE, so a tenant not cached on this replica has its webhook goals governed and run as free tier [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers/test_api_extended.py tests/api/test_ingestion_channels_endpoints.py tests/triggers/test_typed_webhook_honest_ack.py tests/triggers/test_typed_webhook_tenant_boundary.py tests/triggers/test_typed_webhook_token_lookup.py tests/api/test_schedule_webhook_fires.py tests/triggers/webhooks -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 68 passed",
+    "tests/api/test_schedules_cross_replica.py (run under feature 'Trigger/schedule CRUD') \u2192 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "External integrations: Slack, Zapier, Alertmanager/Datadog event bus, re-ingest webhooks, IMAP email",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Slack HITL buttons now decide in the tenant bound to the signature-verified workspace (team id \u2192 channel_tenant_mappings; unbound workspaces are ignored) and record the approver as slack:<uid> (28cb879d5). Signature, bearer and HMAC checks stay fail-closed. The remaining defects: the Slack slash command still submits into one env tenant for every workspace; every integration hard-codes PROFESSIONAL; Alertmanager/Datadog bypass the dispatcher and ack failures with 200; Slack approvals have no approver authorization; IMAP turns any inbound email into an autonomous goal.",
+   "verified_fixed": [
+    "Slack HITL tenant came from the SLACK_TENANT_ID env var \u2192 28cb879d5: api/integrations.py:33-46 _slack_bound_tenant resolves from the verified team id, and :163-171 ignores unbound workspaces (tests/api/test_integrations_api_comprehensive.py updated)"
+   ],
+   "still_open": [
+    "Slack/Zapier/Alertmanager/Datadog/IMAP build TenantContext(plan=PROFESSIONAL), so a free tenant's goals get professional limits \u2192 api/integrations.py:122,184,262,320,397,468,514; scaling/tasks.py:6029-6032 [medium]",
+    "Alertmanager goals are submitted directly with no TriggerDispatcher dedup or rate limit, so every repeat_interval re-send creates a duplicate autonomous goal \u2192 api/integrations.py:371-412 [medium]",
+    "Slack approve/reject buttons decide HITL requests for any user of the bound workspace, with no mapping to an AgentVerse principal and no approver-role check \u2192 api/integrations.py:176-196,249-270 [medium]",
+    "Datadog answers 200 'processed' with goal_id null, and Alertmanager 200 with goals_created=0, when goal creation fails (exceptions swallowed), so neither sender retries \u2192 api/integrations.py:476-489, :406-418 [low]"
+   ],
+   "new_defects": [
+    "api/integrations.py:108-126 \u2014 /slack/commands still uses the single SLACK_TENANT_ID env tenant (not the workspace binding the 28cb879d5 fix uses for buttons), so with more than one bound workspace, any user in workspace B can run /agentverse and submit autonomous goals (budget, connectors, tools) into tenant A [high]",
+    "scaling/tasks.py:5996-6035 + integrations/email/imap_listener.py:120-190 \u2014 with IMAP_ENABLED, every unseen email from ANY sender becomes a goal in IMAP_TENANT_ID (default 'email-default') at PROFESSIONAL plan; there is no sender allowlist or SPF/DKIM check, so an outsider can email the mailbox and trigger autonomous tool-using goals [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/integrations tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 145 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Messaging gateway (Telegram / WhatsApp / Slack / Teams / generic webhook, /v1/gateway)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Wave 7 only touched the gateway for SSRF-pinning file downloads (65805e8c5) and MCP approval attribution (f24fa00ee). Cross-tenant binding auth stays fail-closed, and channel sessions persist in Postgres. Bindings are still env-only (CHANNEL_TENANT_MAP), the config/status routes are honest 501s, and slack/teams bindings on /{channel}/chat always 401. Per-channel firing paths are in the channel entries below. Channel-level verification (with the helper) found that the direct Telegram/WhatsApp chat path only works in tests, and that Teams and channel mappings can route one tenant's messages to another.",
+   "verified_fixed": [],
+   "still_open": [
+    "Bindings come only from an in-memory registry seeded from the CHANNEL_TENANT_MAP env; there is no self-service binding management \u2192 gateway/channel_registry.py:33-80; gateway/router.py:945-979 answer 501",
+    "gateway/router.py:382 still reads state via `from app.main import app` rather than request.app",
+    "_verify_binding_secret handles only telegram/whatsapp/webhook, so slack/teams bindings on /{channel}/chat always 401 \u2192 gateway/router.py:85-106"
+   ],
+   "new_defects": [
+    "gateway/router.py:820 + channel_registry.py:57-77 \u2014 the /{channel}/chat binding is selected by a top-level addressee/bot_id/to field, which real Telegram updates and WhatsApp Cloud API payloads do not carry, and from_env never parses outbound_token (so the reply sender at router.py:884-890 never runs). Direct platform deliveries never resolve a binding, and replies are never sent; the e2e tests inject a synthetic 'addressee' [medium]",
+    "api/channels/ingestion.py:269-272 \u2014 Teams events resolve the tenant from body.serviceUrl, a regional Bot Framework endpoint shared by every Teams organization (e.g. smba.trafficmanager.net/<region>/), so the first tenant to map that URL receives every org's Teams messages and fires its CHAT_* triggers on them [high]",
+    "api/channels/ingestion.py:466-527 \u2014 POST /channels/mappings is first-come-first-served with no proof of ownership of the channel_id (Slack team id, Discord guild, Teams URL), so tenant A can pre-claim tenant B's workspace and receive B's inbound events. Since 28cb879d5, A's binding also decides where B's Slack HITL button clicks land [medium]",
+    "gateway/router.py:133-165,458,499,586,906 \u2014 the per-org /v1/gateway/{org}/{channel} webhooks only accept relay-authenticated requests (GATEWAY_INGRESS_SECRET + x-tenant-id), and submitted goals are hard-coded to the FREE plan [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway/test_channel_binding_secret.py tests/gateway/test_gateway_webhook_fail_closed.py tests/gateway/test_gateway_auth.py tests/gateway/test_channel_chat_e2e.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 55 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Workflow definitions: CRUD, publish, versions, templates, permissions (two APIs)",
+   "previous_status": "PASS",
+   "status": "PARTIAL",
+   "evidence": "CRUD, publish and versioning work, and the Docker-backed workflow trigger e2e and the tests/api/test_workflows.py tenant-isolation test pass. But the per-workflow permissions part of the feature does nothing: permissions can be added, listed and removed, yet nothing in the access path ever reads them. The two cosmetic items remain.",
+   "verified_fixed": [],
+   "still_open": [
+    "Duplicate GET /{workflow_id}/versions; the second is unreachable \u2192 workflow/router.py:485 and workflow/router_versions.py:61",
+    "tests/workflow/test_router.py still mocks wf_service with MagicMock"
+   ],
+   "new_defects": [
+    "workflow/router.py:518-541 + workflow/run_store.py:975-1060 \u2014 workflow_permissions rows are written, listed (the only reader is service.get_permissions \u2192 GET /{id}/permissions) and deleted, but no route (update/publish/trigger/delete, router.py:308-419) consults them. Granting a subject 'viewer' restricts nothing, and anyone with the tenant's workflows scope can edit, publish or run it (decorative authorization) [medium]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=unix:///Users/harsh/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/workflow/test_router_static_route_order.py tests/workflow/test_router.py tests/api/test_workflows.py tests/e2e_full/test_workflow_trigger_e2e.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 48 passed (e2e ran against testcontainers)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Workflow run execution (runner, compiler, steps, Celery, run control)",
+   "previous_status": "FAIL",
+   "status": "FAIL",
+   "evidence": "The in-process HITL gate bypass is fixed (c2f04e29f): approval steps route through one decision router, and a barrier guard stops join steps (the re-run probe now shows step_outputs=[] while waiting). But the production Celery path is still broken. resume_from_hitl dispatches execute_resume_fresh, which rebuilds the run from its inputs with empty step_outputs and re-runs the graph from the first step. A scratch probe (pre \u2192 gate1 \u2192 mid \u2192 gate2 \u2192 after) showed: resuming gate1 re-executed 'pre'; resuming gate2 re-executed 'pre' and 'gate1' and created a NEW gate1 approval. So pre-approval side effects replay on every approval, and any workflow with two approval steps never completes.",
+   "verified_fixed": [
+    "hitl step with no per-action next got plain edges, so downstream steps ran while approval was pending and reject proceeded \u2192 c2f04e29f: workflow/compiler.py:174-205 (hitl router holds at END while waiting; reject \u2192 branch or stop), :228-281 (_approval_barriers/_barrier_blocks), :296-298 (node guard); scratchpad probe_hitl.py: status waiting_hitl, step_outputs=[], 1 pending",
+    "_get_plan_tier used the wrong source \u2192 still correct from b20954cf8 (workflow/runner.py _get_plan_tier; resume dispatch at :693 uses it)"
+   ],
+   "still_open": [
+    "stream_run_events is a one-shot snapshot that emits 'run_failed' for any non-terminal run \u2192 workflow/service.py:478-497",
+    "Per-process unbounded compiled-graph cache \u2192 workflow/compiler.py:29 (self._cache dict, cleared only wholesale at :39)",
+    "Worker runs use MemorySaver, so there is no durable mid-run checkpoint (see 'Durable execution') \u2192 workflow/celery_tasks.py:36,123"
+   ],
+   "new_defects": [
+    "workflow/runner.py:470-546 (reached from resume_from_hitl :676-695 whenever Celery is wired) \u2014 execute_resume_fresh seeds only the ONE decided step into a fresh state (step_outputs={}, runner.py:326) and re-invokes the graph from the start. Every step before the approval re-executes (e.g. an http/tool step replays its side effect), and in a workflow with two approval steps, resuming gate2 re-suspends at gate1 with a new approval request, so the run loops and never completes (reproduced: scratchpad/g06wt/probe_resume.py) [high]",
+    "workflow/steps/hitl_step.py:120-122 \u2014 without hitl_workflow_gateway it silently enters 'test mode' (no approval record) and suspends forever [low]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=\u2026 TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/workflow/test_hitl_approval_barrier.py tests/workflow/test_steps/test_steps_act_or_fail.py tests/workflow/test_steps/test_wait_durable.py tests/workflow/test_plan_queue_routing.py tests/workflow/test_run_control.py tests/workflow/test_compiler.py tests/workflow/test_hitl_runner_integration.py tests/e2e_full/test_workflow_run_e2e.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 80 passed, 1 failed (test_workflow_run_executes_in_real_worker: run stayed 'pending' 45s)",
+    "same e2e file alone \u2192 1 passed; with test_hitl_runner_integration + test_compiler before it \u2192 fails again (order-dependent; reproduced twice)",
+    "uv run python scratchpad/g06wt/probe_hitl.py \u2192 status waiting_hitl, step_outputs [], pending 1 (gate bypass fixed)",
+    "uv run python scratchpad/g06wt/probe_resume.py \u2192 gate1 resume executed ['pre','gate1','mid','gate2']; gate2 resume executed ['pre','gate1'] and left a new gate1 approval pending"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Workflow triggers (webhook, schedule beat, NL preview, DLQ retry)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 change to workflow triggers. The signed-token webhook (/wf-hooks/{token}) and the cron beat scan work, and the Docker-backed schedule-scan scale e2e passes. All prior gaps remain: the webhook DLQ is inert, most DSL trigger types have no firing path, the NL resolver has no LLM, and tokens cannot be revoked. The webhook also has no dedup or rate limit.",
+   "verified_fixed": [],
+   "still_open": [
+    "Nothing INSERTs into workflow_webhook_events (only SELECTs at workflow/run_store.py:865,1126,1137), and retry_dead_letter_webhooks never updates attempts/status \u2192 workflow/celery_tasks.py:371-391, so any row would re-run every 5 min forever",
+    "DSL trigger types nl/event/file_drop/alertmanager/datadog/pagerduty have no firing path, and publish accepts them without checking \u2192 workflow/dsl.py:62-73; workflow/service.py:127-162",
+    "NLTriggerResolver() is built without llm_provider, so non-regex descriptions 422 \u2192 main.py:2875",
+    "Webhook tokens are stateless HMAC(tenant, workflow) and cannot be revoked or rotated per workflow \u2192 workflow/webhook_tokens.py; workflow/service.py:146-149"
+   ],
+   "new_defects": [
+    "workflow/webhook_router.py:23-70 \u2014 every POST /wf-hooks/{token} starts a new run, with no idempotency/delivery-id dedup, no per-workflow or plan rate limit, and no body-size cap. Sender retries create duplicate runs, and a leaked (unrevocable) token lets anyone launch unlimited runs billed to the tenant [medium]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=\u2026 TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/workflow/test_webhook_trigger_activation.py tests/workflow/test_nl_trigger.py tests/workflow/test_webhook_token_secret_guard.py tests/e2e_full/test_workflow_schedule_scan_scale_e2e.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 36 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Workflow HITL approvals (approval inbox)",
+   "previous_status": "FAIL",
+   "status": "FAIL",
+   "evidence": "The in-process fail-open gate is fixed (c2f04e29f): downstream steps no longer run while an approval is pending, and reject stops the run. The SLA escalation sweep and tenant-scoped delegate/escalate still hold, and the Docker-backed workflow HITL and cross-replica visibility e2e tests pass. But those e2e tests use a single-step HITL workflow. On the production Celery resume path, approving re-runs every pre-approval step, and a second approval step re-creates the first approval, so multi-approval workflows never finish. Decisions have no assignee/role authorization and are not atomic across replicas.",
+   "verified_fixed": [
+    "The HITL gate didn't block downstream steps when no action defined `next` \u2192 c2f04e29f: workflow/compiler.py:174-205,228-298 plus tests/workflow/test_hitl_approval_barrier.py (6 tests: pending blocks, approve releases, reject stops, unknown fails closed, reject branch, join waits)",
+    "SLA escalation and tenant-scoped delegate/escalate (b20954cf8) still in place \u2192 workflow/hitl_extension.py:287-330, celery_tasks.py:349-367"
+   ],
+   "still_open": [
+    "round_robin (the default strategy) and skill_based assignment return None \u2192 workflow/hitl_extension.py:637-639,653-655",
+    "least_busy counts only the process-local _store, so assignment differs per replica \u2192 workflow/hitl_extension.py:641-651 [low]",
+    "The Celery cross-process resume replays from scratch (see 'Workflow run execution'): runner.py:470-546 re-executes pre-approval steps and re-suspends at earlier approval steps [high]"
+   ],
+   "new_defects": [
+    "workflow/hitl_extension.py:240-270 + workflow/router_hitl.py:135-150 \u2014 decide() records any authenticated tenant principal as reviewer; it never checks req.assigned_to or assigned_role, so an approval assigned to a specific approver or role can be decided by any user or API key in the tenant [medium]",
+    "workflow/hitl_extension.py:258-275 + workflow/approval_store.py:104-121 \u2014 decide is a read (status=='pending'), then an unconditional upsert (ON CONFLICT DO UPDATE SET status=EXCLUDED.status), then resume. Two reviewers on different replicas can both pass the pending check, one approving and one rejecting; last write wins and BOTH resume callbacks dispatch execute_workflow_run [medium]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=\u2026 TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/workflow/test_hitl_sla_and_tenant_scope.py tests/workflow/test_hitl_extension.py tests/workflow/test_hitl_approval_barrier.py tests/e2e_full/test_workflow_hitl_e2e.py tests/e2e_full/test_hitl_cross_replica_visibility_e2e.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 42 passed (the e2e covers a single-step HITL workflow only)",
+    "scratchpad/g06wt/probe_resume.py (see 'Workflow run execution') \u2192 multi-approval resume loop reproduced"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "State machines (Family D STATE_TRANSITION backing store)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 change. Definitions and instances are DB-backed, and POST .../transition publishes to trigger:event:state_machine.transition. Still true: transitions are an unlocked read-modify-write, a failed DB write is swallowed while the API still reports transitioned=true and publishes the event, and instances are keyed without machine_id. The real-Postgres persistence tests are blocked because DATABASE_URL is not set.",
+   "verified_fixed": [],
+   "still_open": [
+    "The instance key (tenant_id, entity_id) omits machine_id, so a second machine on the same entity reuses the first machine's state \u2192 triggers/state_machine.py:411-416,494-499; db/models/state_machine.py:48",
+    "A failed DB write in transition_async is logged and swallowed, and the call still returns transitioned=True, so the API publishes a trigger event for a transition that was never persisted \u2192 triggers/state_machine.py:486-519; api/state_machines.py:162-166 [medium]",
+    "transition reads the instance, then re-selects and updates it with no SELECT \u2026 FOR UPDATE or version check, so concurrent transitions across replicas lose updates and history \u2192 triggers/state_machine.py:447-501 [medium]"
+   ],
+   "new_defects": [
+    "triggers/state_machine.py:432-434 \u2014 get_instance_async answers from the per-process cache on a DB read error, so transition_async can compute a transition from a stale local state [low]",
+    "triggers/state_machine.py:500-503 \u2014 when the instance row does not exist (e.g. create_instance_async's insert failed), the UPDATE is skipped silently and transitioned=True is still returned [low]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=\u2026 uv run pytest tests/triggers/test_state_machine_db_backed.py tests/triggers/test_state_machine.py tests/api/test_state_machines_persistence.py tests/triggers/test_state_transition_publisher.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 49 passed, 4 skipped",
+    "BLOCKED: tests/api/test_state_machines_persistence.py (4 tests) need a migrated Postgres DATABASE_URL, which is not set in this environment (not testcontainers-driven)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType cron: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:4917. Proven in two halves: tests/scaling/test_celery_tasks_coverage.py::test_fire_due_schedules_cron_due_dispatches_goal (beat\u2192enqueue, apply_async mocked) and tests/triggers/test_scheduled_dispatch.py (enqueue\u2192dispatcher, fake goal service); the Docker e2e tests/e2e_full/test_scheduled_trigger_is_governed.py passed with DOCKER_HOST set.",
+   "verified_fixed": [],
+   "still_open": [
+    "No plan-tier cron floor; validate_cron skips validation without croniter \u2192 triggers/models.py:246-258",
+    "Discovery SCANs all keys each tick; Postgres discovery is opt-in \u2192 scaling/tasks.py:4789,4435-4443"
+   ],
+   "new_defects": [
+    "scaling/tasks.py:3722-3743,3662 \u2014 beat forwards only sched['condition'], so a condition set as condition_cel (stored as condition_expression, api/triggers.py:172) is dropped and the trigger fires unconditionally [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed",
+    "e2e_full/test_scheduled_trigger_is_governed.py with Docker \u2192 passed (see the TriggerDispatcher feature)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType interval: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:4971. Tests: test_celery_tasks_coverage.py::test_fire_due_schedules_interval_due_dispatches_goal; test_interval_schedule_concurrent_fire.py (5).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "scaling/tasks.py:3722-3743,3662 \u2014 beat forwards only sched['condition'], so a condition set as condition_cel (stored as condition_expression, api/triggers.py:172) is dropped and the trigger fires unconditionally [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType once: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:4994; POST /schedules and /triggers require a valid fire_at_iso (validation.py:56-60). Test: test_celery_tasks_coverage.py::test_fire_due_schedules_once_schedule_due_fires.",
+   "verified_fixed": [],
+   "still_open": [
+    "POST /nl/schedule's last-resort ONCE spec has no fire_at_iso and is stored unvalidated \u2192 api/schedules.py:446-462, nl_scheduler.py:522 (never fires)"
+   ],
+   "new_defects": [
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType relative_delay: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5010. It fires only when fire_at_iso/cron is set. Tests: test_family_a_time.py (unit) and test_fire_due_schedules_triggers.py (helper mocked).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "validation.py:61-65 accepts relative_to_field alone (never read) or an offset with no fire_at_iso, but _relative_delay_due_utc needs fire_at_iso (tasks.py:4205-4217), so the trigger is accepted and never fires [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType deadline: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5027. It fires only when fire_at_iso/cron is set. Tests: test_family_a_time.py (unit) and test_fire_due_schedules_triggers.py (helper mocked).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "validation.py:66-68 accepts deadline_field alone, but _deadline_due_utc needs fire_at_iso (tasks.py:4220-4232), so the trigger is accepted and never fires [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType business_calendar: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5044. It fires only when fire_at_iso/cron is set. Tests: test_family_a_time.py (unit) and test_fire_due_schedules_triggers.py (helper mocked).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "validation.py:69-71 requires only business_calendar_id (read nowhere), but the beat branch needs a cron_expression, so the trigger is accepted and never fires [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "triggers/validation.py:45-46 \u2014 expires_at_iso is validated but never enforced by any firing path [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType file_drop: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5057, with a per-file claim key (SET NX). Tests: test_fire_due_schedules_triggers.py::TestFileDropTrigger::test_new_file_dispatches_goal and test_file_drop_dedup.py.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/validation.py:83-85 + scaling/tasks.py:5065-5080 \u2014 file_drop_path is tenant-supplied and listed with os.listdir on the WORKER's filesystem with no confinement, so a tenant can enumerate filenames in any worker directory (e.g. /etc, /app) into its goal text [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]",
+    "scaling/tasks.py:3722-3743,3662 \u2014 beat forwards only sched['condition'], so a condition set as condition_cel (stored as condition_expression, api/triggers.py:172) is dropped and the trigger fires unconditionally [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/scaling/test_celery_tasks_coverage.py tests/scaling/test_family_a_time.py tests/scaling/test_missed_runs.py tests/scaling/test_tasks_extra3.py tests/scaling/test_file_drop_dedup.py tests/scaling/test_cron_timezone.py tests/api/test_schedules_api.py tests/tenancy/test_public_webhook_bypass.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 201 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType rss_feed: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5197; the fetch is SSRF-pinned (fdc81e6a5, triggers/rss.py). Test: test_fire_due_schedules_triggers.py::TestRssFeedTrigger::test_new_entry_dispatches_goal; tests/triggers/test_pinned_fetch.py.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "scaling/tasks.py:3722-3743,3662 \u2014 beat forwards only sched['condition'], so a condition set as condition_cel (stored as condition_expression, api/triggers.py:172) is dropped and the trigger fires unconditionally [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType api_poll: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5286; the fetch is SSRF-pinned (fdc81e6a5, triggers/polling.py). Test: test_fire_due_schedules_triggers.py::TestApiPollTrigger::test_value_change_dispatches_goal.",
+   "verified_fixed": [],
+   "still_open": [
+    "poll_interval_seconds is required by validation but ignored, so every poll trigger runs at the 60s beat cadence [low]"
+   ],
+   "new_defects": [
+    "scaling/tasks.py:3722-3743,3662 \u2014 beat forwards only sched['condition'], so a condition set as condition_cel (stored as condition_expression, api/triggers.py:172) is dropped and the trigger fires unconditionally [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType db_row_change: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Beat chain: celery_app.py beat 'fire-due-schedules' (60s) \u2192 scaling/tasks.py:4768 fire_due_schedules (Redis schedule:* SCAN; Postgres discovery opt-in) \u2192 :3640 _enqueue_governed_fire \u2192 :3525 run_scheduled_goal \u2192 :3746 _dispatch_scheduled_via_dispatcher \u2192 triggers/dispatcher.py:84 dispatch \u2192 :506 _create_goal \u2192 GoalService.create_goal/submit_goal \u2192 run_goal. Branch at scaling/tasks.py:5374 polls the row count of an allowlisted table. Test: test_fire_due_schedules_triggers.py::test_row_count_growth_dispatches_goal; tests/scaling/test_db_row_change.py.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "core/config.py:46-50 \u2014 the table allowlist defaults to empty and create-time validation (validation.py:80-82) doesn't check it, so the trigger is accepted and never fires unless an operator configures the list [medium]",
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType goal_completed: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "FAIL",
+   "evidence": "Real path: yes, but misroutes. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Publishers: worker scaling/tasks.py:2051-2080 and in-process GoalService. Path test (fake dispatcher): test_goal_chain_publisher.py::test_published_event_drives_the_chain_consumer and test_chain_hitl_memory_duplicate_dispatch.py.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/store.py:181-182 + consumers/chain.py:180 + dispatcher.py:525-528 \u2014 the trigger's agent_id (the agent to run) is copied into watch_agent_id, which the chain consumer uses as the SOURCE filter. 'When any goal completes, run agent X' fires only on X's own goals and then re-fires on the goal it just created, up to MAX_CHAIN_DEPTH=10 (self-loop; reproduced by the helper's scratch script) [high]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType goal_failed: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "FAIL",
+   "evidence": "Same chain and publishers as goal_completed (channel goal.failed).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "Same agent_id\u2192watch_agent_id misrouting as goal_completed: triggers/store.py:181-182, consumers/chain.py:180 [high]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType goal_score_below: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: consumer exists (chain.py:75,144,186). Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. The only publisher found is GoalService's in-process eval path (services/goal_service.py:2616-2631); the Celery worker publishes only completed/failed.",
+   "verified_fixed": [],
+   "still_open": [
+    "No publisher\u2192consumer test, and no evidence that worker-run (production) goals ever publish goal.score_below (unverified: whether an API bridge calls this eval path for worker goals)"
+   ],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType hitl_approved: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Publisher: governance/hitl.py (wired in the lifespan by wire_hitl_runtime, main.py:2241-2253; the worker gateway gets async Redis at tasks.py:2537-2538). Path test: tests/governance/test_hitl_trigger_events.py::test_published_payload_drives_the_hitl_consumer.",
+   "verified_fixed": [],
+   "still_open": [
+    "governance/hitl.py:1185 always publishes hitl_queue_id='', so a trigger filtered by queue id never fires [low]"
+   ],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/governance/test_hitl_trigger_events.py tests/memory/test_memory_created_publisher.py -q --no-cov -p no:cacheprovider \u2192 5 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType hitl_rejected: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Publisher: governance/hitl.py (wired in the lifespan by wire_hitl_runtime, main.py:2241-2253; the worker gateway gets async Redis at tasks.py:2537-2538). Path test: tests/governance/test_hitl_trigger_events.py::test_published_payload_drives_the_hitl_consumer.",
+   "verified_fixed": [],
+   "still_open": [
+    "governance/hitl.py:1185 always publishes hitl_queue_id='', so a trigger filtered by queue id never fires [low]"
+   ],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/governance/test_hitl_trigger_events.py tests/memory/test_memory_created_publisher.py -q --no-cov -p no:cacheprovider \u2192 5 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType memory_created: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Publisher: the API LongTermMemoryStore only (event redis bound in the lifespan). Path test: tests/memory/test_memory_created_publisher.py::test_store_async_publishes_memory_created_and_drives_the_consumer.",
+   "verified_fixed": [],
+   "still_open": [
+    "The worker's LongTermMemoryStore() has no event redis, so memories written by Celery-run goals never publish \u2192 scaling/tasks.py:2541, memory/long_term.py:94-97 [medium]"
+   ],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/governance/test_hitl_trigger_events.py tests/memory/test_memory_created_publisher.py -q --no-cov -p no:cacheprovider \u2192 5 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType chat_command: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publisher: /channels/slack|teams|discord events (api/channels/ingestion.py \u2192 _emit_chat_event) \u2192 ConversationalTriggerConsumer. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Tested in two halves (not end-to-end): tests/triggers/test_conversational_consumer.py::test_consumer_dispatches_matching_chat_command and tests/api/test_channels_conversational_publish.py::test_emit_publishes_when_verified.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "api/channels/ingestion.py:269-272 \u2014 Teams tenant resolved from the shared regional serviceUrl, so every Teams org's messages reach one tenant [high]",
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType chat_keyword: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publisher: /channels/slack|teams|discord events (api/channels/ingestion.py \u2192 _emit_chat_event) \u2192 ConversationalTriggerConsumer. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Tested in two halves (not end-to-end): tests/triggers/test_conversational_consumer.py::test_consumer_dispatches_matching_chat_command and tests/api/test_channels_conversational_publish.py::test_emit_publishes_when_verified.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "api/channels/ingestion.py:269-272 \u2014 Teams tenant resolved from the shared regional serviceUrl, so every Teams org's messages reach one tenant [high]",
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType chat_mention: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publisher: /channels/slack|teams|discord events (api/channels/ingestion.py \u2192 _emit_chat_event) \u2192 ConversationalTriggerConsumer. Consumer chain: main.py lifespan starts TriggerConsumerSupervisor (triggers/supervisor.py:140-190, 6 Redis pub/sub consumers) \u2192 dispatcher.py:84 \u2192 goal. Tested in two halves (not end-to-end): tests/triggers/test_conversational_consumer.py::test_consumer_dispatches_matching_chat_command and tests/api/test_channels_conversational_publish.py::test_emit_publishes_when_verified.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "api/channels/ingestion.py:269-272 \u2014 Teams tenant resolved from the shared regional serviceUrl, so every Teams org's messages reach one tenant [high]",
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType email_intent: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/email/inbound (operator secret; tenant from the relay header or the 'to' mapping) \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_email_inbound_full_flow (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType email_arrival: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/email/inbound \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_email_inbound_full_flow; test_conversational_consumer.py::test_email_arrival_and_discord_event (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType sms_inbound: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/sms/inbound (Twilio signature; 'To' mapping) \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_sms_inbound_full_flow (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType voice_transcript: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/voice/transcript (relay secret + required X-Tenant-ID) \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_voice_transcript_calls_gateway_when_present (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType form_submission: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/forms/{id} (tenant from DB) \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_form_submission_resolves_tenant_from_db (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType meeting_ended: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/meeting/ended \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_meeting_ended_full_flow; test_conversational_consumer.py::test_meeting_ended_matcher (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [
+    "Docstring at triggers/consumers/conversational.py:17 still says meeting_ended is unsupported [low]"
+   ],
+   "new_defects": [
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType discord_event: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Ingress /channels/discord/events (Ed25519; guild mapping) \u2192 normalized event on the trigger EVENT bus \u2192 ConversationalTriggerConsumer \u2192 dispatcher. Tests: tests/api/test_ingestion_channels_endpoints.py::test_discord_interaction_with_resolvable_tenant_calls_gateway (ingress half) plus consumer unit tests; no single ingress\u2192goal test.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]",
+    "triggers/consumers/conversational.py:121-128 \u2014 tenant-supplied regexes run with re.search on the API event loop with no validation or timeout, so a catastrophic-backtracking pattern stalls the replica's loop [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType condition: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publishers: POST /triggers/events/{ch} (api/triggers.py:349), state-machine transitions, conversational events \u2192 ConditionTriggerConsumer (fail-closed CEL, dispatcher.py:257). Test: tests/triggers/test_condition_consumer.py::test_condition_consumer_dispatches_on_event.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType compound: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes (ConditionTriggerConsumer on the EVENT bus). Test: test_condition_consumer.py::test_compound_or_fires_when_any_subcondition_true (unit).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType counter_threshold: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes (ConditionTriggerConsumer on the EVENT bus). Test: test_condition_consumer.py::test_counter_fires_at_threshold_then_resets (unit).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/condition.py:63-66 \u2014 counters/windows live in a per-process evaluator and every replica receives every event, so each replica counts independently and state resets on restart; a threshold fires once per replica, or never after a restart [medium]",
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType window_aggregate: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes (ConditionTriggerConsumer on the EVENT bus). Test: test_condition_consumer.py::test_window_aggregate_fires_when_sum_exceeds (unit).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/condition.py:63-66 \u2014 counters/windows live in a per-process evaluator and every replica receives every event, so each replica counts independently and state resets on restart; a threshold fires once per replica, or never after a restart [medium]",
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType state_transition: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publisher: POST /state-machines/{id}/instances/{entity}/transition (api/state_machines.py:171-200) \u2192 trigger:event:state_machine.transition \u2192 ConditionTriggerConsumer. Path test (fake dispatcher): tests/triggers/test_state_transition_publisher.py::test_published_transition_fires_a_matching_trigger_only.",
+   "verified_fixed": [],
+   "still_open": [
+    "Only the API route publishes; a failed DB write is swallowed but the event is still published \u2192 triggers/state_machine.py:486-519 [medium]"
+   ],
+   "new_defects": [
+    "triggers/consumers/condition.py:66 \u2014 _last_state is per process [low]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType event: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Publisher: POST /triggers/events/{channel} (api/triggers.py:349; tenant stamped server-side) \u2192 EventTriggerConsumer (consumers/event.py) \u2192 dispatcher. Test: tests/triggers/test_event_consumer.py::test_event_fires_matching_trigger (consumer unit).",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [
+    "triggers/consumers/event.py:36-38,118 (condition.py:137, conversational.py:256) \u2014 a client-supplied 'tenant_plan' in the event body survives the merge and is used as the dispatch plan, so a free tenant can escalate to enterprise limits and queue [medium]",
+    "triggers/consumers/*.py start() + supervisor.py:136-142 \u2014 a pub/sub loop that hits a Redis error logs and returns and is never restarted, so a single failover permanently silences this trigger type on that replica [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PASS",
+   "evidence": "Real path: yes, two ingresses. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Also POST /schedules/webhooks/{token} (api/schedules.py:517-560, API key + DB token lookup). Path tests: tests/triggers/test_typed_webhook_token_lookup.py::test_third_party_delivery_without_api_key_fires_token_owner; tests/api/test_schedule_webhook_fires.py::test_webhook_token_dispatches_the_trigger; tests/api/test_schedules_cross_replica.py::test_webhook_on_b_resolves_token_created_on_a.",
+   "verified_fixed": [],
+   "still_open": [
+    "The pre-auth token lookup linearly scans the cache (triggers/store.py:856-860) and reads non-strict (store.py:907-911) [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType rest: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. It fires only through the authenticated manual POST /triggers/{id}/fire or /schedules/{id}/fire (api/triggers.py:598; api/schedules.py:390) \u2192 dispatcher; no token is minted and there is no external ingress. Test: tests/triggers/test_api_fire_simulate.py::test_fire_returns_real_goal_id.",
+   "verified_fixed": [],
+   "still_open": [
+    "No external REST ingress for this type [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType github_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PASS",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Vendor signature schemes are implemented (verifier.py:46-80,100-105: GitHub sha256=, Stripe t=/v1= with 300s tolerance), and the endpoint answers 503 when every dispatch fails. Path test: tests/triggers/test_typed_webhook_token_lookup.py::test_signature_still_required_for_signed_trigger.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType stripe_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PASS",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Vendor signature schemes are implemented (verifier.py:46-80,100-105: GitHub sha256=, Stripe t=/v1= with 300s tolerance), and the endpoint answers 503 when every dispatch fails. Path test: tests/triggers/test_typed_webhook_honest_ack.py::test_genuine_stripe_signature_is_accepted_and_fires.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType jira_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic hex HMAC over the body (verifier.py:19-39, which strips 'sha256='/'v1=' prefixes). No vendor-format path test exists (pagerduty only has the 503 test in tests/triggers/test_api_extended.py).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test proves a real vendor-signed delivery is accepted"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType linear_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic hex HMAC over the body (verifier.py:19-39, which strips 'sha256='/'v1=' prefixes). No vendor-format path test exists (pagerduty only has the 503 test in tests/triggers/test_api_extended.py).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test proves a real vendor-signed delivery is accepted"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType sentry_issue: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic hex HMAC over the body (verifier.py:19-39, which strips 'sha256='/'v1=' prefixes). No vendor-format path test exists (pagerduty only has the 503 test in tests/triggers/test_api_extended.py).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test proves a real vendor-signed delivery is accepted"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType pagerduty: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic hex HMAC over the body (verifier.py:19-39, which strips 'sha256='/'v1=' prefixes). PagerDuty also has the beat half: /schedules/webhooks/alerts/pagerduty caches the payload for fire_due_schedules. No vendor-format path test exists (pagerduty only has the 503 test in tests/triggers/test_api_extended.py).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test proves a real vendor-signed delivery is accepted"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType alertmanager: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes, three ingresses. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. POST /schedules/webhooks/alerts/alertmanager caches the payload in Redis (tenant-scoped) for the beat branch (scaling/tasks.py:5445); /integrations/events/alertmanager submits goals directly for one env tenant. Tests: test_fire_due_schedules_triggers.py::test_datadog_cached_payload_fires_once; tests/api/test_alert_webhook_tenant_scope.py; tests/integrations/test_alert_webhooks_create_goals.py.",
+   "verified_fixed": [],
+   "still_open": [
+    "/integrations/events/* bypass the dispatcher (no dedup or rate limit), hard-code PROFESSIONAL, and answer 200 on goal-creation failure \u2192 api/integrations.py:371-418,432-489 [medium]"
+   ],
+   "new_defects": [
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType datadog: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes, three ingresses. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. POST /schedules/webhooks/alerts/datadog caches the payload in Redis (tenant-scoped) for the beat branch (scaling/tasks.py:5445); /integrations/events/datadog submits goals directly for one env tenant. Tests: test_fire_due_schedules_triggers.py::test_datadog_cached_payload_fires_once; tests/api/test_alert_webhook_tenant_scope.py; tests/integrations/test_alert_webhooks_create_goals.py.",
+   "verified_fixed": [],
+   "still_open": [
+    "/integrations/events/* bypass the dispatcher (no dedup or rate limit), hard-code PROFESSIONAL, and answer 200 on goal-creation failure \u2192 api/integrations.py:371-418,432-489 [medium]"
+   ],
+   "new_defects": [
+    "triggers/store.py:216-237 + scaling/tasks.py:3778-3782 \u2014 schedule payloads never carry tenant_plan, so every beat fire runs as FREE (10 fires/h cap, 2 bulkhead slots, free queue and timeout) whatever the tenant's plan [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)",
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType grafana_alert: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes, token only. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic HMAC if a secret is set; no vendor parser.",
+   "verified_fixed": [],
+   "still_open": [
+    "No type-specific test"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType confluence_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: yes, token only. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Generic HMAC if a secret is set; no vendor parser.",
+   "verified_fixed": [],
+   "still_open": [
+    "No type-specific test"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType cloudwatch: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "FAIL",
+   "evidence": "Real path: nominal only. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. CloudWatch alarms reach HTTPS endpoints only through SNS, and nothing in app/ handles the SNS SubscriptionConfirmation (no 'SubscriptionConfirmation'/'SubscribeURL' anywhere), so the subscription never confirms and no alarm is ever delivered.",
+   "verified_fixed": [],
+   "still_open": [
+    "No test"
+   ],
+   "new_defects": [
+    "api/triggers.py:792-934 \u2014 no SNS SubscriptionConfirmation handling, so a cloudwatch trigger is accepted and can never receive an alarm [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType slack_event: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "FAIL",
+   "evidence": "Real path: no in practice. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. The typed endpoint never echoes Slack's url_verification challenge (Slack refuses to enable the URL). With a secret set, it reads 'x-signature' and checks HMAC(body) instead of X-Slack-Signature over 'v0:ts:body', so every real delivery 401s (api/triggers.py:802-810; verifier.py:96-106). Chat-style Slack triggers work through /channels/slack/events instead (see chat_*).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test of a real Slack-signed delivery"
+   ],
+   "new_defects": [
+    "api/triggers.py:802-810 \u2014 Slack challenge and signature scheme unsupported on the typed webhook [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType teams_webhook: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: token only. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Teams outgoing webhooks sign with 'Authorization: HMAC <base64>', but the endpoint reads 'x-signature' hex, so a trigger with a secret always 401s.",
+   "verified_fixed": [],
+   "still_open": [
+    "No test"
+   ],
+   "new_defects": [
+    "api/triggers.py:802-810 \u2014 Teams HMAC scheme unsupported [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType salesforce_event: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Real path: partial. Push chain: POST /triggers/webhooks/{type}/{token} (api/triggers.py:792; TenantMiddleware bypass) \u2192 tenant resolved pre-auth from the token (triggers/store.py:838) \u2192 find_by_type_async \u2192 signature checked only if the trigger has a secret \u2192 dispatcher.py:84 \u2192 goal. Salesforce outbound messages are SOAP/XML, and the JSON parse (api/triggers.py:796-799) falls back to an empty body, so the goal fires with no payload and Salesforce gets no SOAP ack (it retries).",
+   "verified_fixed": [],
+   "still_open": [
+    "No test"
+   ],
+   "new_defects": [
+    "api/triggers.py:796-799 \u2014 XML bodies are dropped [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType s3_event: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType google_sheets: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType sharepoint: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType log_pattern: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType graphql_subscription: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType websocket_message: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType price_threshold: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType mqtt: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType geofence: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "TriggerType sensor_threshold: firing path (event \u2192 dispatcher \u2192 goal)",
+   "previous_status": "n/a (new entry)",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "No runtime path: dispatch_map.py classifies it UNSUPPORTED, and POST /triggers and POST /schedules reject it with 422 (api/triggers.py:~300,692; api/schedules.py:238-242). Code exists under app/triggers/{data,iot,advanced,monitoring}, but only MQTT is ever built, and it is skipped because mqtt_client=None (supervisor.py:205-216). Test: tests/triggers/test_trigger_type_coverage.py (classification only).",
+   "verified_fixed": [],
+   "still_open": [
+    "The chat SCHEDULE intent can still persist this type with no support check (chat/service.py:839-860), and so can POST /nl/schedule (api/schedules.py:446-462) [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/triggers tests/scaling/test_fire_due_schedules_triggers.py tests/scaling/test_interval_schedule_concurrent_fire.py tests/scaling/test_scheduled_goal_governance.py tests/scaling/test_trigger_handlers.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 849 passed, 8 skipped (Docker-only: test_dlq_integration, test_trigger_persistence_integration, test_trigger_replay_dedup)"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Gateway channel Telegram: inbound message \u2192 agent/goal path",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Two paths. (1) POST /v1/gateway/{org}/telegram/webhook (gateway/router.py:447) \u2192 _process_command \u2192 submit_goal (router.py:340), but only for relay requests carrying GATEWAY_INGRESS_SECRET + x-tenant-id (router.py:133-155). (2) POST /v1/gateway/telegram/chat (router.py:791) \u2192 per-binding secret-token check (router.py:85-101) \u2192 chat_service.achannel_turn. Test: tests/gateway/test_channel_chat_e2e.py::test_telegram_inbound_routes_through_chatservice (injects a synthetic 'addressee').",
+   "verified_fixed": [],
+   "still_open": [
+    "Bindings come only from the per-process CHANNEL_TENANT_MAP env registry (gateway/channel_registry.py:57-77)"
+   ],
+   "new_defects": [
+    "gateway/router.py:820 \u2014 the binding is chosen from a top-level addressee/bot_id/to field that real Telegram updates don't have, and from_env never parses outbound_token (router.py:884-890), so direct Telegram deliveries never resolve a binding and replies are never sent [medium]",
+    "gateway/router.py:~165 \u2014 goals submitted by the relay path are hard-coded to the FREE plan [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Gateway channel WhatsApp: inbound message \u2192 agent/goal path",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "Same two paths as Telegram (router.py:547,558); auth is X-Hub-Signature-256 HMAC over the raw body. Test: tests/gateway/test_channel_chat_e2e.py::test_whatsapp_inbound_routes_through_chatservice (synthetic addressee).",
+   "verified_fixed": [],
+   "still_open": [
+    "Bindings come only from the per-process CHANNEL_TENANT_MAP env registry (gateway/channel_registry.py:57-77)"
+   ],
+   "new_defects": [
+    "gateway/router.py:820,884-890 \u2014 the same addressee/outbound_token defect as Telegram, so WhatsApp Cloud API payloads never resolve a binding and replies are never sent [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Gateway channel Slack: inbound message \u2192 agent/goal path",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "No chat path (slack is not in _CHAT_ADAPTERS, and _verify_binding_secret has no slack case, router.py:85-106). /v1/gateway/{org}/slack/events is relay-only (router.py:499). /channels/slack/events (signing secret, 5-min window; tenant from the DB channel_tenant_mappings) feeds CHAT_* triggers only; gateway.ingest is dead because app.state.channel_gateway is never assigned. /integrations/slack/commands submits goals into one env tenant. Tests: tests/api/test_ingestion_channels_endpoints.py::test_slack_event_with_resolvable_tenant_calls_gateway; tests/api/test_integrations_api_comprehensive.py.",
+   "verified_fixed": [],
+   "still_open": [
+    "slack bindings on /{channel}/chat always 401 \u2192 gateway/router.py:85-106"
+   ],
+   "new_defects": [
+    "api/integrations.py:108-126 \u2014 /slack/commands uses the single SLACK_TENANT_ID for every workspace, so a user of another bound workspace submits goals into that tenant [high]",
+    "api/channels/ingestion.py:466-527 \u2014 channel mappings are first-come with no ownership proof, so a tenant can squat another tenant's workspace/guild/number and receive its events [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Gateway channel Teams: inbound message \u2192 agent/goal path",
+   "previous_status": "n/a (new entry)",
+   "status": "FAIL",
+   "evidence": "/v1/gateway/{org}/teams/messages is relay-only (router.py:586). /channels/teams/events verifies the Bot Framework JWT, then resolves the tenant from body.serviceUrl (api/channels/ingestion.py:269-272) and feeds CHAT_* triggers only. There is no chat path: teams bindings always 401 (router.py:85-106). Test: tests/api/test_ingestion_channels_endpoints.py::test_teams_event_with_resolvable_tenant_calls_gateway (mapping mocked).",
+   "verified_fixed": [],
+   "still_open": [
+    "teams bindings on /{channel}/chat always 401 \u2192 gateway/router.py:85-106"
+   ],
+   "new_defects": [
+    "api/channels/ingestion.py:269-272 \u2014 serviceUrl is a regional Bot Framework endpoint shared by every Teams organization, so whichever tenant maps it first receives ALL orgs' Teams messages and fires its triggers on them (cross-tenant data exposure) [high]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  },
+  {
+   "area": "workflows-triggers",
+   "feature": "Gateway channel generic webhook: inbound message \u2192 agent/goal path",
+   "previous_status": "n/a (new entry)",
+   "status": "PARTIAL",
+   "evidence": "/v1/gateway/{org}/webhook (router.py:906) \u2192 relay tenant \u2192 submit_goal; /v1/gateway/webhook/chat \u2192 binding \u2192 X-Webhook-Signature HMAC over the raw body (router.py:103-106) \u2192 chat_service. Tests: tests/gateway/test_gateway_webhook_fail_closed.py (12), tests/gateway/test_channel_binding_secret.py (6).",
+   "verified_fixed": [],
+   "still_open": [
+    "Bindings come only from the per-process CHANNEL_TENANT_MAP env registry (gateway/channel_registry.py:57-77)",
+    "The generic chat path also needs the synthetic addressee field (router.py:820)"
+   ],
+   "new_defects": [
+    "gateway/router.py:~165 \u2014 relay-path goals are hard-coded to the FREE plan [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/gateway tests/api/test_alert_webhook_tenant_scope.py tests/api/test_channel_webhook_auth.py tests/api/test_channels_conversational_publish.py tests/api/test_ingestion_channels_endpoints.py tests/api/test_schedule_webhook_fires.py tests/api/test_trigger_dlq_retry_redispatch.py tests/api/test_integrations_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' \u2192 527 passed"
+   ]
+  }
+ ]
+}
