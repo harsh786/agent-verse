@@ -34,6 +34,7 @@ _logger = get_logger(__name__)
 _CRDT_TOKEN_TTL = 3600  # seconds (1 hour)
 # Map: token → { tenant_id, expires_at }
 _crdt_tokens: dict[str, dict[str, Any]] = {}
+_CRDT_TOKEN_PREFIX = "collab:crdt_token:"
 
 
 def _cleanup_expired_crdt_tokens() -> None:
@@ -721,10 +722,22 @@ async def generate_crdt_token(request: Request) -> dict[str, Any]:
     _cleanup_expired_crdt_tokens()
 
     token = secrets.token_urlsafe(32)
-    _crdt_tokens[token] = {
-        "tenant_id": ctx.tenant_id,
-        "expires_at": time.monotonic() + _CRDT_TOKEN_TTL,
-    }
+    redis = getattr(request.app.state, "_redis", None)
+    if redis is not None:
+        # Shared across replicas: a token held only in this process made the
+        # WebSocket 4401 whenever it landed on another replica.
+        try:
+            await redis.set(f"{_CRDT_TOKEN_PREFIX}{token}", ctx.tenant_id, ex=_CRDT_TOKEN_TTL)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="CRDT token could not be issued; retry",
+            ) from exc
+    else:
+        _crdt_tokens[token] = {
+            "tenant_id": ctx.tenant_id,
+            "expires_at": time.monotonic() + _CRDT_TOKEN_TTL,
+        }
 
     return {"token": token, "expires_in": _CRDT_TOKEN_TTL}
 
@@ -849,6 +862,24 @@ class CRDTRoomManager:
 _crdt_manager = CRDTRoomManager()
 
 
+async def _crdt_token_tenant(app_state: Any, token: str) -> str | None:
+    """Tenant for a valid CRDT token: Redis when wired, else this process."""
+    redis = getattr(app_state, "_redis", None)
+    if redis is not None:
+        try:
+            value = await redis.get(f"{_CRDT_TOKEN_PREFIX}{token}")
+        except Exception:
+            return None
+        if value is None:
+            return None
+        return value.decode() if isinstance(value, bytes) else str(value)
+    _cleanup_expired_crdt_tokens()
+    data = _crdt_tokens.get(token)
+    if data and data["expires_at"] > time.monotonic():
+        return str(data["tenant_id"])
+    return None
+
+
 @router.websocket("/crdt/{room_id}")
 async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
     """Yjs CRDT WebSocket — binary message fan-out with Redis pub/sub.
@@ -868,11 +899,10 @@ async def yjs_crdt_sync(websocket: WebSocket, room_id: str) -> None:
 
     # 1. Try short-lived CRDT token first (preferred path)
     if crdt_token:
-        _cleanup_expired_crdt_tokens()
-        token_data = _crdt_tokens.get(crdt_token)
-        if token_data and token_data["expires_at"] > time.monotonic():
-            tenant_id = token_data["tenant_id"]
-        else:
+        tenant_id = await _crdt_token_tenant(
+            websocket.app.state if hasattr(websocket, "app") else None, crdt_token
+        )
+        if tenant_id is None:
             await websocket.close(code=4401, reason="Invalid or expired CRDT token")
             return
     else:

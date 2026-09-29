@@ -775,3 +775,24 @@ def test_crdt_ws_api_key_fallback_resolver_exception_closes() -> None:
             raise AssertionError("resolver exception unexpectedly resulted in accepted connection")
     except Exception as exc:
         assert getattr(exc, "code", None) == 4401
+
+
+def test_crdt_token_minted_on_one_replica_is_valid_on_another() -> None:
+    """Regression: CRDT tokens lived in a process-local dict, so a WebSocket that
+    landed on a different replica than the one that minted the token got 4401."""
+    import app.api.collab as collab_mod
+
+    shared = _FakeRedis()
+    replica_a, replica_b = _make_app(), _make_app()
+    replica_a.state._redis = shared
+    replica_b.state._redis = shared
+    token = TestClient(replica_a).post(
+        "/collab/crdt-token", headers={"X-API-Key": KEY_A}
+    ).json()["token"]
+    collab_mod._crdt_tokens.clear()  # nothing process-local to fall back on
+    room = f"collab-{TENANT_A.tenant_id}-xreplica"
+    try:
+        with TestClient(replica_b).websocket_connect(f"/collab/crdt/{room}?token={token}"):
+            pass
+    finally:
+        collab_mod._crdt_manager.set_redis(None)
