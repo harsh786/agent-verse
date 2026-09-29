@@ -27,14 +27,10 @@ def _make_app() -> FastAPI:
     return app
 
 
-def test_estimate_returns_defaults_without_goal_service() -> None:
+def test_estimate_without_db_is_501_not_platform_defaults() -> None:
     client = TestClient(_make_app())
     resp = client.post("/insights/estimate", json={"goal": "Deploy my app"}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "estimated_cost_usd" in data
-    assert "success_probability" in data
-    assert "confidence" in data
+    assert resp.status_code == 501
 
 
 def test_estimate_requires_auth() -> None:
@@ -92,6 +88,7 @@ def test_analysis_returns_heuristic_suggestions() -> None:
 def test_nl_query_parses_today() -> None:
     app = _make_app()
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = []
     app.state.goal_service = mock_svc
     client = TestClient(app)
@@ -106,19 +103,13 @@ def test_nl_query_parses_today() -> None:
     assert data["query_parsed"]["status_filter"] == "failed"
 
 
-def test_agent_health_returns_defaults_without_db() -> None:
+def test_agent_health_without_db_is_501_not_defaults() -> None:
     client = TestClient(_make_app())
     resp = client.get("/insights/agent-health/agent-1", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "health" in data
-    assert "success_rate" in data["health"]
+    assert resp.status_code == 501
 
 
-def test_benchmarks_returns_platform_data() -> None:
+def test_benchmarks_without_db_is_501() -> None:
     client = TestClient(_make_app())
     resp = client.get("/insights/benchmarks", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "platform_avg_success_rate" in data
-    assert "percentile_bands" in data
+    assert resp.status_code == 501

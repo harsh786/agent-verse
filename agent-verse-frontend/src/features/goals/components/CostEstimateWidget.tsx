@@ -1,6 +1,10 @@
 /**
  * CostEstimateWidget — shows pre-run cost/time estimates before submitting.
  * Fetches from /insights/estimate and renders confidence-banded estimates.
+ *
+ * Every figure comes from the tenant's similar finished goals. With no similar
+ * history the backend returns nulls and this says so; a band with no data
+ * renders "—" — never a platform default dressed up as an estimate.
  */
 import { useQuery } from "@tanstack/react-query";
 import { insightsApi } from "@/lib/api/client";
@@ -15,10 +19,13 @@ interface CostEstimateWidgetProps {
 }
 
 const CONFIDENCE_COLOR = {
+  none: "text-muted-foreground",
   low: "text-muted-foreground",
   medium: "text-amber-600 dark:text-amber-400",
   high: "text-green-600 dark:text-green-400",
 };
+
+const DASH = "—";
 
 export function CostEstimateWidget({ goal, enabled = true, className = "" }: CostEstimateWidgetProps) {
   const { data, isLoading, isError } = useQuery({
@@ -42,12 +49,29 @@ export function CostEstimateWidget({ goal, enabled = true, className = "" }: Cos
   );
   if (isError || !data) return null;
 
-  const costStr = `$${data.estimated_cost_usd.mean.toFixed(3)}`;
-  const costRange = `$${data.estimated_cost_usd.min.toFixed(3)}–$${data.estimated_cost_usd.max.toFixed(3)}`;
-  const durationStr = data.estimated_duration_s.mean < 60
-    ? `~${data.estimated_duration_s.mean}s`
-    : `~${Math.round(data.estimated_duration_s.mean / 60)}m`;
-  const successPct = Math.round(data.success_probability * 100);
+  if (data.similar_goals_count === 0) {
+    return (
+      <div
+        data-testid="estimate-no-history"
+        className={`rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground ${className}`}
+      >
+        No similar past goals yet — no cost or time estimate is available.
+      </div>
+    );
+  }
+
+  const cost = data.estimated_cost_usd;
+  const duration = data.estimated_duration_s;
+  const iterations = data.estimated_iterations;
+  const costStr = cost ? `$${cost.mean.toFixed(3)}` : DASH;
+  const costRange = cost ? `$${cost.min.toFixed(3)}–$${cost.max.toFixed(3)}` : "no cost data";
+  const durationStr = !duration
+    ? DASH
+    : duration.mean < 60
+      ? `~${duration.mean}s`
+      : `~${Math.round(duration.mean / 60)}m`;
+  const successPct =
+    data.success_probability === null ? null : Math.round(data.success_probability * 100);
 
   return (
     <div className={`rounded-lg border border-border bg-muted/30 p-3 ${className}`}>
@@ -66,7 +90,9 @@ export function CostEstimateWidget({ goal, enabled = true, className = "" }: Cos
           <p className="text-xs text-muted-foreground flex items-center justify-center gap-1 mb-0.5">
             <TrendingUp className="h-3 w-3" aria-hidden="true" /> Cost
           </p>
-          <p className="text-sm font-semibold tabular-nums" title={costRange}>{costStr}</p>
+          <p data-testid="estimate-cost" className="text-sm font-semibold tabular-nums" title={costRange}>
+            {costStr}
+          </p>
           <p className="text-[10px] text-muted-foreground/70">{costRange}</p>
         </div>
         <div className="text-center">
@@ -75,15 +101,15 @@ export function CostEstimateWidget({ goal, enabled = true, className = "" }: Cos
           </p>
           <p className="text-sm font-semibold">{durationStr}</p>
           <p className="text-[10px] text-muted-foreground/70">
-            {data.estimated_iterations.min}–{data.estimated_iterations.max} steps
+            {iterations ? `${iterations.min}–${iterations.max} steps` : "no step data"}
           </p>
         </div>
         <div className="text-center">
           <p className="text-xs text-muted-foreground flex items-center justify-center gap-1 mb-0.5">
             <Info className="h-3 w-3" aria-hidden="true" /> Success
           </p>
-          <p className={`text-sm font-semibold ${successPct >= 80 ? "text-green-600 dark:text-green-400" : successPct >= 60 ? "text-amber-600 dark:text-amber-400" : "text-red-500 dark:text-red-400"}`}>
-            {successPct}%
+          <p className={`text-sm font-semibold ${successPct === null ? "text-muted-foreground" : successPct >= 80 ? "text-green-600 dark:text-green-400" : successPct >= 60 ? "text-amber-600 dark:text-amber-400" : "text-red-500 dark:text-red-400"}`}>
+            {successPct === null ? DASH : `${successPct}%`}
           </p>
           <p className="text-[10px] text-muted-foreground/70">probability</p>
         </div>

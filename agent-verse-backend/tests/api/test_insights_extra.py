@@ -34,19 +34,13 @@ def _make_app(**state_attrs: Any) -> FastAPI:
 # estimate_goal
 # ---------------------------------------------------------------------------
 
-def test_estimate_with_embedder_and_goal_service_no_db():
-    """estimate returns defaults when embedder exists but DB is None."""
-    mock_embedder = AsyncMock()
-    mock_embedder.embed.return_value = [0.1, 0.2]
+def test_estimate_without_db_is_501_not_platform_defaults():
+    """No database -> 501; the old path returned invented platform defaults."""
     mock_goal_svc = MagicMock()
     mock_goal_svc._db = None
-
-    app = _make_app(goal_service=mock_goal_svc, embedder=mock_embedder)
-    client = TestClient(app)
-    resp = client.post("/insights/estimate", json={"goal": "test goal"}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["based_on"] == "platform_defaults"
+    app = _make_app(goal_service=mock_goal_svc)
+    resp = TestClient(app).post("/insights/estimate", json={"goal": "test goal"}, headers=_HEADERS)
+    assert resp.status_code == 501
 
 
 def _make_db_factory_from_session(session: Any) -> Any:
@@ -60,69 +54,16 @@ def _make_db_factory_from_session(session: Any) -> Any:
     return _factory
 
 
-def test_estimate_with_embedder_and_db_rows():
-    """estimate uses historical data when DB returns rows."""
-    mock_embedder = AsyncMock()
-    mock_embedder.embed.return_value = [0.1, 0.2]
-
-    # Mock DB session that returns rows
-    mock_row = (0.05, 30, 2, "complete")
-    mock_row2 = (0.03, 20, 1, "failed")
-
+def test_estimate_db_exception_is_503():
+    """A failing query is a 503, never a silent fallback to defaults."""
     mock_session = AsyncMock()
-
-    async def _execute_side_effect(stmt, params=None):
-        mock_result = MagicMock()
-        if "SET LOCAL" in str(stmt):
-            return mock_result
-        mock_result.fetchall.return_value = [mock_row, mock_row2]
-        return mock_result
-
-    mock_session.execute = AsyncMock(side_effect=_execute_side_effect)
-
+    mock_session.begin = MagicMock(return_value=AsyncMock())
+    mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
     mock_goal_svc = MagicMock()
     mock_goal_svc._db = _make_db_factory_from_session(mock_session)
-
-    app = _make_app(goal_service=mock_goal_svc, embedder=mock_embedder)
-    client = TestClient(app)
-    resp = client.post("/insights/estimate", json={"goal": "deploy microservices"}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "estimated_cost_usd" in data
-
-
-def test_estimate_embedder_returns_none():
-    """estimate handles embedder returning empty/None embedding gracefully."""
-    mock_embedder = AsyncMock()
-    mock_embedder.embed.return_value = []
-
-    mock_session = AsyncMock()
-
-    mock_goal_svc = MagicMock()
-    mock_goal_svc._db = _make_db_factory_from_session(mock_session)
-
-    app = _make_app(goal_service=mock_goal_svc, embedder=mock_embedder)
-    client = TestClient(app)
-    resp = client.post("/insights/estimate", json={"goal": "test"}, headers=_HEADERS)
-    assert resp.status_code == 200
-
-
-def test_estimate_db_exception_falls_back():
-    """estimate falls back to defaults when embedder raises exception."""
-    mock_embedder = AsyncMock()
-    mock_embedder.embed.side_effect = RuntimeError("embed failed")
-
-    mock_session = AsyncMock()
-
-    mock_goal_svc = MagicMock()
-    mock_goal_svc._db = _make_db_factory_from_session(mock_session)
-
-    app = _make_app(goal_service=mock_goal_svc, embedder=mock_embedder)
-    client = TestClient(app)
-    resp = client.post("/insights/estimate", json={"goal": "test"}, headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["based_on"] == "platform_defaults"
+    app = _make_app(goal_service=mock_goal_svc)
+    resp = TestClient(app).post("/insights/estimate", json={"goal": "test"}, headers=_HEADERS)
+    assert resp.status_code == 503
 
 
 def test_estimate_requires_non_empty_goal():
@@ -436,6 +377,7 @@ def test_nl_query_no_goal_service():
 def test_nl_query_today_filter():
     """'today' in query sets days=1."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = {"goals": []}
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
@@ -451,6 +393,7 @@ def test_nl_query_today_filter():
 def test_nl_query_week_filter():
     """'week' in query sets days=7."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = {"goals": []}
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
@@ -466,6 +409,7 @@ def test_nl_query_week_filter():
 def test_nl_query_year_filter():
     """'year' in query sets days=365."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = {"goals": []}
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
@@ -481,6 +425,7 @@ def test_nl_query_year_filter():
 def test_nl_query_status_filter():
     """'failed' in query filters by status."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = {
         "goals": [
             {"goal_id": "g1", "status": "failed", "goal": "task1"},
@@ -502,6 +447,7 @@ def test_nl_query_status_filter():
 def test_nl_query_cost_filter():
     """'cost over $0.05' parses and filters by cost."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = {
         "goals": [
             {"goal_id": "g1", "status": "complete", "cost_usd": 0.10},
@@ -525,6 +471,7 @@ def test_nl_query_cost_filter():
 def test_nl_query_list_response():
     """goal_svc returns list directly (not dict)."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.return_value = [
         {"goal_id": "g1", "status": "complete"},
     ]
@@ -538,9 +485,10 @@ def test_nl_query_list_response():
     assert resp.status_code == 200
 
 
-def test_nl_query_exception_returns_empty():
-    """Exception in list_goals returns empty results."""
+def test_nl_query_exception_is_503():
+    """Exception in list_goals is a 503, not an empty result."""
     mock_svc = AsyncMock()
+    mock_svc._db = None  # in-memory mode
     mock_svc.list_goals.side_effect = RuntimeError("DB unavailable")
     app = _make_app(goal_service=mock_svc)
     client = TestClient(app)
@@ -549,8 +497,7 @@ def test_nl_query_exception_returns_empty():
         json={"query": "all goals", "entity": "goals"},
         headers=_HEADERS,
     )
-    assert resp.status_code == 200
-    assert resp.json()["total"] == 0
+    assert resp.status_code == 503
 
 
 def test_nl_query_invalid_entity():
@@ -569,111 +516,31 @@ def test_nl_query_invalid_entity():
 # get_agent_health
 # ---------------------------------------------------------------------------
 
-def test_agent_health_no_goal_service():
-    """Returns default health values when no goal_service."""
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/insights/agent-health/agent-1", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["sample_size"] == 0
-    assert "health" in data
-    assert all(v == 0.7 for v in data["health"].values())
+def test_agent_health_no_db_is_501():
+    """No database -> 501; the old path returned every axis as 0.7."""
+    resp = TestClient(_make_app()).get("/insights/agent-health/agent-1", headers=_HEADERS)
+    assert resp.status_code == 501
 
 
-def _make_db_factory(session: Any) -> Any:
-    """Return a callable that acts as an async context manager factory."""
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _factory():
-        yield session
-
-    return _factory
-
-
-def test_agent_health_with_db_no_rows():
-    """Returns default health when DB returns no rows."""
+def test_agent_health_db_exception_is_503():
+    """A failing query is a 503, not default health values."""
     mock_session = AsyncMock()
-
-    async def _execute_se(stmt, params=None):
-        mock_result = MagicMock()
-        if "SET LOCAL" in str(stmt):
-            return mock_result
-        mock_result.fetchone.return_value = None
-        return mock_result
-
-    mock_session.execute = AsyncMock(side_effect=_execute_se)
-
-    mock_svc = MagicMock()
-    mock_svc._db = _make_db_factory(mock_session)
-
-    app = _make_app(goal_service=mock_svc)
-    client = TestClient(app)
-    resp = client.get("/insights/agent-health/agent-2", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["sample_size"] == 0
-
-
-def test_agent_health_with_db_rows():
-    """Returns computed health when DB returns rows."""
-    mock_session = AsyncMock()
-
-    # Row: total, accuracy, speed, coherence, safety, success_rate
-    fake_row = (10, 0.85, 0.75, 0.90, 0.80, 0.88)
-
-    async def _execute_se(stmt, params=None):
-        mock_result = MagicMock()
-        if "SET LOCAL" in str(stmt):
-            return mock_result
-        mock_result.fetchone.return_value = fake_row
-        return mock_result
-
-    mock_session.execute = AsyncMock(side_effect=_execute_se)
-
-    mock_svc = MagicMock()
-    mock_svc._db = _make_db_factory(mock_session)
-
-    app = _make_app(goal_service=mock_svc)
-    client = TestClient(app)
-    resp = client.get("/insights/agent-health/agent-3", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["sample_size"] == 10
-    assert data["health"]["accuracy"] == 0.85
-
-
-def test_agent_health_db_exception():
-    """Returns default health when DB raises."""
-    mock_session = AsyncMock()
+    mock_session.begin = MagicMock(return_value=AsyncMock())
     mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
-
     mock_svc = MagicMock()
-    mock_svc._db = _make_db_factory(mock_session)
-
+    mock_svc._db = _make_db_factory_from_session(mock_session)
     app = _make_app(goal_service=mock_svc)
-    client = TestClient(app)
-    resp = client.get("/insights/agent-health/agent-4", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["sample_size"] == 0
+    resp = TestClient(app).get("/insights/agent-health/agent-4", headers=_HEADERS)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
 # benchmarks
 # ---------------------------------------------------------------------------
 
-def test_benchmarks_returns_data():
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/insights/benchmarks", headers=_HEADERS)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "platform_avg_success_rate" in data
-    assert "percentile_bands" in data
-    # Without DB, percentile_bands may be empty (insufficient_data path)
-    assert isinstance(data["percentile_bands"], dict)
+def test_benchmarks_without_db_is_501():
+    resp = TestClient(_make_app()).get("/insights/benchmarks", headers=_HEADERS)
+    assert resp.status_code == 501
 
 
 def test_benchmarks_requires_auth():
