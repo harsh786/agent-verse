@@ -72,11 +72,11 @@ class TestDimensionCompatible:
 
 
 class TestSupportedDimension:
-    @pytest.mark.parametrize("dim", [768, 1024, 1536, 3072])
+    @pytest.mark.parametrize("dim", [768, 1024, 1536, 2048, 3072])
     def test_supported_dimensions_accepted(self, policy: VectorIndexPolicy, dim: int) -> None:
         assert policy.is_supported_dimension(dim) is True
 
-    @pytest.mark.parametrize("dim", [0, -1, -1536, 1, 512, 100, 2048, 4096, 999_999])
+    @pytest.mark.parametrize("dim", [0, -1, -1536, 1, 512, 100, 4096, 999_999])
     def test_unsupported_dimensions_rejected(self, policy: VectorIndexPolicy, dim: int) -> None:
         assert policy.is_supported_dimension(dim) is False
 

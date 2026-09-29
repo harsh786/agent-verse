@@ -304,3 +304,19 @@ def _reset_no_db_store_fallbacks(request: pytest.FixtureRequest):
         runtime_store._MEM_COMMANDS,
     ):
         store.clear()
+
+
+@pytest.fixture(autouse=True)
+def _restore_environment_variable():
+    """Restore ENVIRONMENT after every test.
+
+    Several tests set or pop it directly on os.environ; one left it unset,
+    which made every later test that needs a dev environment (e.g. workflow
+    webhook tokens) fail only in full-suite order.
+    """
+    saved = os.environ.get("ENVIRONMENT")
+    yield
+    if saved is None:
+        os.environ.pop("ENVIRONMENT", None)
+    else:
+        os.environ["ENVIRONMENT"] = saved

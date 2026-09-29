@@ -73,6 +73,8 @@ def _mock_httpx_client(html: str):
     mock_ctx.__aenter__ = AsyncMock(return_value=mock_ctx)
     mock_ctx.__aexit__ = AsyncMock(return_value=False)
     mock_ctx.get = AsyncMock(return_value=mock_response)
+    # The RPA fetch goes through ssrf_guard.request_public → client.request().
+    mock_ctx.request = AsyncMock(return_value=mock_response)
     return patch("httpx.AsyncClient", MagicMock(return_value=mock_ctx))
 
 

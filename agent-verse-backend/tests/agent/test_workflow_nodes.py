@@ -80,11 +80,11 @@ class TestDelayNode:
         assert result["delayed_seconds"] == 0.01
 
     @pytest.mark.asyncio
-    async def test_delay_capped_at_300_non_prod(self):
-        import os
-
+    async def test_delay_capped_at_300_non_prod(self, monkeypatch: pytest.MonkeyPatch):
         from app.agent.workflow_nodes import execute_delay_node
-        os.environ.pop("ENVIRONMENT", None)  # non-production
+        # monkeypatch restores it: a bare os.environ.pop leaked an unset
+        # ENVIRONMENT into every later test in the session.
+        monkeypatch.delenv("ENVIRONMENT", raising=False)  # non-production
         result = await execute_delay_node({"seconds": 0.001}, {})
         assert result["delayed_seconds"] <= 300
 
