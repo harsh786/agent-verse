@@ -184,8 +184,12 @@ class OrgMCPServer:
         # NEW: inject app.state so tool handlers access live services
         app_state: Any | None = None,
         tenant_id: str | None = None,
+        # The verified caller (from app.tenancy.ws_auth). Decisions such as
+        # approve are attributed to it and gated on its roles.
+        tenant_ctx: Any | None = None,
     ) -> None:
         self.org_id = org_id
+        self._tenant_ctx = tenant_ctx
         self._api_key = api_key
         self._tools = {t.name: t for t in ORG_MCP_TOOLS}
         # ── Live service references ───────────────────────────────────────
@@ -588,22 +592,36 @@ class OrgMCPServer:
         with _tracer.start_as_current_span("mcp.approve") as span:
             span.set_attribute("approval_id", approval_id)
 
-            # Route to HITL gateway if available
-            try:
-                from app.main import app as _app  # type: ignore[attr-defined]
+            # It called hitl.approve(approval_id=, approved_by=, comment=) — a
+            # signature the gateway does not have, so every call raised and the
+            # tool could never work; and it would have decided as a synthetic
+            # "mcp_client" principal with no role check. Now: the verified
+            # caller must hold the approver role, the decision is attributed to
+            # its key, and it goes through the DB-first approve_async.
+            from app.tenancy.rbac import has_any_role
 
-                hitl = getattr(getattr(_app, "state", None), "hitl_gateway", None)
-                if hitl is not None and hasattr(hitl, "approve"):
-                    result = await hitl.approve(
-                        approval_id=approval_id,
-                        approved_by="mcp_client",
-                        comment=comment,
-                    )
-                    return {"approved": True, "result": str(result)}
+            ctx_t = self._tenant_ctx
+            key_id = str(getattr(ctx_t, "api_key_id", "") or "")
+            if ctx_t is None or not key_id:
+                return {"approved": False, "error": "unauthenticated"}
+            if str(getattr(ctx_t, "tenant_id", "")) != self._tenant_id:
+                return {"approved": False, "error": "tenant_mismatch"}
+            if not has_any_role(ctx_t, ["approver"]):
+                return {"approved": False, "error": "forbidden: approver role required"}
+
+            hitl = getattr(self._app_state, "hitl_gateway", None)
+            if hitl is None:
+                return {"approved": False, "error": "hitl_gateway_unavailable"}
+            try:
+                ok = await hitl.approve_async(
+                    approval_id, approver=key_id, note=comment, tenant_ctx=ctx_t
+                )
             except Exception as exc:
                 _log.warning("mcp.approve.hitl_failed", error=str(exc)[:80])
-
-            return {"approved": False, "error": "hitl_gateway_unavailable"}
+                return {"approved": False, "error": "approval_not_recorded"}
+            if not ok:
+                return {"approved": False, "error": "not_found_or_not_pending"}
+            return {"approved": True, "approver": key_id}
 
     async def _tool_search_knowledge(self, args: dict, ctx: dict) -> dict:
         """Search the org's knowledge base via the KnowledgeStore."""

@@ -873,8 +873,24 @@ async def update_task_status(
     return TaskResponse.model_validate(task)
 
 
+def _decision_actor(request: Request) -> str:
+    """The approver is the authenticated key, never a request-body field.
+
+    The ``approver`` body field let one caller record decisions as anyone ("alice", "cto",
+    ...) and satisfy multi-approver gates alone (same fix as
+    ``app.api.governance._approver_identity``).
+    """
+    tenant = getattr(request.state, "tenant", None)
+    key_id = str(getattr(tenant, "api_key_id", "") or "")
+    if not key_id:
+        raise HTTPException(status_code=403, detail="Approver identity unavailable")
+    return key_id
+
+
 class _TaskApprovalDecision(BaseModel):
-    approver: str = Field(default="user", description="Approver identity (user ID or role)")
+    approver: str = Field(
+        default="", description="Ignored: the approver is the authenticated caller"
+    )
     note: str = Field(default="", description="Optional reason / note")
 
 
@@ -901,6 +917,7 @@ async def approve_task(
     - Publishes org.approval.granted event via OrgEventPublisher
     - Returns updated TaskResponse
     """
+    approver = _decision_actor(request)
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
@@ -912,12 +929,14 @@ async def approve_task(
     # any agent blocked on this gate is released via the ONE shared gateway (no
     # parallel approval mechanism). The request id was recorded on the task's
     # outputs when the approval gate was created (create_mission_and_execute).
-    await _resolve_task_hitl_request(request, service._tenant_id, task, "approve", body)
+    await _resolve_task_hitl_request(
+        request, service._tenant_id, task, "approve", body, approver=approver
+    )
 
     updated = await service.update_task_status(
         task_id,
         "running",
-        outputs=[{"approved_by": body.approver, "approval_note": body.note}],
+        outputs=[{"approved_by": approver, "approval_note": body.note}],
     )
     if not updated:
         raise _not_found("Task", task_id, x_request_id)
@@ -932,7 +951,7 @@ async def approve_task(
                 event_type="org.approval.granted",
                 org_id=org_id,
                 tenant_id=service._tenant_id,
-                payload={"task_id": task_id, "approver": body.approver, "note": body.note},
+                payload={"task_id": task_id, "approver": approver, "note": body.note},
             )
     except Exception:
         pass  # Non-critical
@@ -952,7 +971,7 @@ def _extract_hitl_request_id(task: Any) -> str | None:
 
 
 async def _resolve_task_hitl_request(
-    request: Request, tenant_id: str, task: Any, action: str, body: Any
+    request: Request, tenant_id: str, task: Any, action: str, body: Any, *, approver: str
 ) -> None:
     """Resolve the HITLGateway request paired with an org task (best-effort).
 
@@ -974,7 +993,6 @@ async def _resolve_task_hitl_request(
             plan=PlanTier.PROFESSIONAL,
             api_key_id="org_task_approval",
         )
-        approver = getattr(body, "approver", "user")
         note = getattr(body, "note", "")
         if action == "approve":
             # DB-first (approve_async): finds a request raised on any replica and
@@ -1015,6 +1033,7 @@ async def reject_task(
     - Publishes org.approval.rejected event via OrgEventPublisher
     - Returns updated TaskResponse
     """
+    approver = _decision_actor(request)
     task = await service.get_task(task_id)
     if not task:
         raise _not_found("Task", task_id, x_request_id)
@@ -1024,12 +1043,14 @@ async def reject_task(
 
     # WS-3b: resolve the paired HITLGateway request (reject) so a blocked agent
     # is released via the ONE shared gateway.
-    await _resolve_task_hitl_request(request, service._tenant_id, task, "reject", body)
+    await _resolve_task_hitl_request(
+        request, service._tenant_id, task, "reject", body, approver=approver
+    )
 
     updated = await service.update_task_status(
         task_id,
         "failed",
-        outputs=[{"rejected_by": body.approver, "rejection_reason": body.note}],
+        outputs=[{"rejected_by": approver, "rejection_reason": body.note}],
     )
     if not updated:
         raise _not_found("Task", task_id, x_request_id)
@@ -1044,7 +1065,7 @@ async def reject_task(
                 event_type="org.approval.rejected",
                 org_id=org_id,
                 tenant_id=service._tenant_id,
-                payload={"task_id": task_id, "approver": body.approver, "reason": body.note},
+                payload={"task_id": task_id, "approver": approver, "reason": body.note},
             )
     except Exception:
         pass  # Non-critical
@@ -1339,7 +1360,9 @@ async def list_org_approvals(
 
 
 class _OrgApprovalDecision(BaseModel):
-    approver: str = Field(default="user", description="Approver identity (user ID or name)")
+    approver: str = Field(
+        default="", description="Ignored: the approver is the authenticated caller"
+    )
     note: str = Field(default="", description="Optional note or reason")
     # The org ApprovalCenter UI posts the reason as `notes`; accept both.
     notes: str = Field(default="", description="Alias for note (frontend field name)")
@@ -1376,6 +1399,7 @@ async def approve_org_request(
     """
     from datetime import UTC, datetime
 
+    approver = _decision_actor(request)
     task = await service.get_task(approval_id)
     # Scope to THIS org, not just the tenant: get_task is tenant-scoped, and the
     # RBAC gate above authorises the URL's org — without this a team-lead of org A
@@ -1389,14 +1413,16 @@ async def approve_org_request(
 
     # gateway is ephemeral/best-effort — the DB task is the source of truth
     with contextlib.suppress(Exception):
-        await _resolve_task_hitl_request(request, service._tenant_id, task, "approve", body)
+        await _resolve_task_hitl_request(
+            request, service._tenant_id, task, "approve", body, approver=approver
+        )
 
     updated = await service.update_task_status(
         approval_id,
         "running",
         outputs=[
             {
-                "approved_by": body.approver,
+                "approved_by": approver,
                 "approval_note": body.reason,
                 "decided_at": datetime.now(UTC).isoformat(),
             }
@@ -1432,14 +1458,14 @@ async def approve_org_request(
                 event_type="org.approval.granted",
                 org_id=org_id,
                 tenant_id=service._tenant_id,
-                payload={"task_id": approval_id, "approver": body.approver, "note": body.reason},
+                payload={"task_id": approval_id, "approver": approver, "note": body.reason},
             )
 
     return {
         "status": "approved",
         "approval_id": approval_id,
         "task_id": approval_id,
-        "approver": body.approver,
+        "approver": approver,
         "mission_dispatched": bool(dispatched.get("dispatched")),
         "goal_id": dispatched.get("goal_id"),
     }
@@ -1470,6 +1496,7 @@ async def reject_org_request(
     """
     from datetime import UTC, datetime
 
+    approver = _decision_actor(request)
     task = await service.get_task(approval_id)
     if (
         task is None
@@ -1479,14 +1506,16 @@ async def reject_org_request(
         raise _not_found("Approval", approval_id, x_request_id)
 
     with contextlib.suppress(Exception):
-        await _resolve_task_hitl_request(request, service._tenant_id, task, "reject", body)
+        await _resolve_task_hitl_request(
+            request, service._tenant_id, task, "reject", body, approver=approver
+        )
 
     updated = await service.update_task_status(
         approval_id,
         "cancelled",
         outputs=[
             {
-                "rejected_by": body.approver,
+                "rejected_by": approver,
                 "rejection_note": body.reason or "Rejected via org approval center",
                 "decided_at": datetime.now(UTC).isoformat(),
             }
@@ -1518,7 +1547,7 @@ async def reject_org_request(
                 event_type="org.approval.rejected",
                 org_id=org_id,
                 tenant_id=service._tenant_id,
-                payload={"task_id": approval_id, "approver": body.approver, "note": body.note},
+                payload={"task_id": approval_id, "approver": approver, "note": body.note},
             )
     except Exception:
         pass
@@ -1527,7 +1556,7 @@ async def reject_org_request(
         "status": "rejected",
         "approval_id": approval_id,
         "task_id": approval_id,
-        "approver": body.approver,
+        "approver": approver,
     }
 
 
@@ -3168,6 +3197,7 @@ async def org_mcp_websocket(
         api_key=api_key,
         app_state=_app_state,
         tenant_id=tenant_id,
+        tenant_ctx=tenant_ctx,
     )
 
     _log = structlog.get_logger(__name__)

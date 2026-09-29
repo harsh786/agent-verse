@@ -1710,7 +1710,9 @@ async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
 class BatchApproveRequest(BaseModel):
     action: str  # "approve" | "reject"
     request_ids: list[str]
-    approver: str
+    # Ignored: the approver is the authenticated key (see _approver_identity).
+    # Kept optional so existing clients that still send it are not rejected.
+    approver: str = ""
     note: str = ""
 
 
@@ -1728,6 +1730,9 @@ async def batch_approve(
         )
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
+    # The approver used to be body.approver: one key could approve as anyone and
+    # satisfy a multi-approver gate alone.
+    approver = _approver_identity(tenant_ctx)
 
     approved = 0
     rejected_count = 0
@@ -1743,21 +1748,18 @@ async def batch_approve(
             # replica would otherwise report not_found.
             try:
                 ok = await gateway.approve_async(
-                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                    req_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
                 )
             except HITLResolutionUnavailableError:
                 unavailable += 1
                 results.append({"request_id": req_id, "result": "unavailable"})
                 continue
             if ok:
+                # approve_async already delivered the resolution to cross-replica
+                # waiters ("approved"). The extra publish here sent "approve" —
+                # a value no waiter recognises — and could consume the waiter's
+                # BLPOP instead of the real decision.
                 approved += 1
-                # Also publish via Redis BLPOP path if available
-                await gateway.publish_resolution(
-                    request_id=req_id,
-                    action="approve",
-                    approver=body.approver,
-                    note=body.note,
-                )
                 results.append({"request_id": req_id, "result": "approved"})
             else:
                 not_found += 1
@@ -1765,20 +1767,15 @@ async def batch_approve(
         elif body.action == "reject":
             try:
                 ok = await gateway.reject(
-                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                    req_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
                 )
             except HITLResolutionUnavailableError:
                 unavailable += 1
                 results.append({"request_id": req_id, "result": "unavailable"})
                 continue
             if ok:
+                # reject() already published "rejected" to cross-replica waiters.
                 rejected_count += 1
-                await gateway.publish_resolution(
-                    request_id=req_id,
-                    action="reject",
-                    approver=body.approver,
-                    note=body.note,
-                )
                 results.append({"request_id": req_id, "result": "rejected"})
             else:
                 not_found += 1

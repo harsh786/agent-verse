@@ -195,6 +195,6 @@ async def test_org_task_approval_goes_through_the_db_first_path() -> None:
     task = MagicMock()
     with patch.object(org_router, "_extract_hitl_request_id", lambda t: "req-org"):
         await org_router._resolve_task_hitl_request(
-            request, "t-org", task, "approve", types.SimpleNamespace(approver="u", note="")
+            request, "t-org", task, "approve", types.SimpleNamespace(note=""), approver="u"
         )
     gw.approve_async.assert_awaited_once()
