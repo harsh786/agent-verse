@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import types
 import uuid
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -489,25 +490,67 @@ class TestToolApprove:
         result = await server._tool_approve({}, {})
         assert "error" in result
 
+    @staticmethod
+    def _ctx(roles: tuple[str, ...] = ("approver",), tenant_id: str = "t-mcp") -> Any:
+        from app.tenancy.context import PlanTier, TenantContext
+
+        return TenantContext(
+            tenant_id=tenant_id, plan=PlanTier.ENTERPRISE, api_key_id="kid-mcp", roles=roles
+        )
+
     @pytest.mark.asyncio
-    async def test_hitl_available_approves(self) -> None:
-        server = OrgMCPServer(org_id=ORG_ID)
+    async def test_hitl_available_approves_as_the_authenticated_caller(self) -> None:
+        """Regression: it called hitl.approve(approval_id=..., approved_by=...,
+        comment=...), which HITLGateway does not accept -- the tool always failed."""
+        from app.governance.hitl import HITLGateway
+
+        gw = HITLGateway()
+        ctx = self._ctx()
+        rid = str(gw.request_approval(goal_id="g", action="deploy", tenant_ctx=ctx))
+        server = OrgMCPServer(
+            org_id=ORG_ID,
+            tenant_id="t-mcp",
+            tenant_ctx=ctx,
+            app_state=types.SimpleNamespace(hitl_gateway=gw),
+        )
+        result = await server._tool_approve({"approval_id": rid}, {})
+        assert result == {"approved": True, "approver": "kid-mcp"}
+        req = gw.get_request(rid, tenant_ctx=ctx)
+        assert req is not None and req.status.value == "approved"
+        assert req.approver == "kid-mcp"
+
+    @pytest.mark.asyncio
+    async def test_approve_requires_approver_role(self) -> None:
         fake_hitl = AsyncMock()
-        fake_hitl.approve = AsyncMock(return_value="approved-ok")
-        fake_state = types.SimpleNamespace(hitl_gateway=fake_hitl)
-        fake_app = types.SimpleNamespace(state=fake_state)
-        with patch("app.main.app", fake_app):
-            result = await server._tool_approve({"approval_id": "a1"}, {})
-        assert result["approved"] is True
-        assert "approved-ok" in result["result"]
+        server = OrgMCPServer(
+            org_id=ORG_ID,
+            tenant_id="t-mcp",
+            tenant_ctx=self._ctx(roles=("viewer",)),
+            app_state=types.SimpleNamespace(hitl_gateway=fake_hitl),
+        )
+        result = await server._tool_approve({"approval_id": "a1"}, {})
+        assert result["approved"] is False
+        fake_hitl.approve_async.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_approve_without_verified_caller_is_refused(self) -> None:
+        fake_hitl = AsyncMock()
+        server = OrgMCPServer(
+            org_id=ORG_ID, app_state=types.SimpleNamespace(hitl_gateway=fake_hitl)
+        )
+        result = await server._tool_approve({"approval_id": "a1"}, {})
+        assert result["approved"] is False
+        fake_hitl.approve_async.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_hitl_unavailable(self) -> None:
-        server = OrgMCPServer(org_id=ORG_ID)
-        fake_state = types.SimpleNamespace(hitl_gateway=None)
-        fake_app = types.SimpleNamespace(state=fake_state)
-        with patch("app.main.app", fake_app):
-            result = await server._tool_approve({"approval_id": "a1"}, {})
+        server = OrgMCPServer(
+            org_id=ORG_ID,
+            tenant_id="t-mcp",
+            tenant_ctx=self._ctx(),
+            app_state=types.SimpleNamespace(hitl_gateway=None),
+        )
+        result = await server._tool_approve({"approval_id": "a1"}, {})
         assert result["approved"] is False
 
 

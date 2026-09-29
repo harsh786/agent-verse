@@ -1085,9 +1085,9 @@ class TestEmergencyStop:
         redis.set.assert_awaited()
 
     async def test_emergency_resume_no_redis(self, client: AsyncClient) -> None:
+        # Without Redis the stop state cannot be cleared: never answer "resumed".
         r = await client.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
-        assert r.status_code == 200
-        assert r.json()["status"] == "resumed"
+        assert r.status_code == 503
 
     async def test_emergency_resume_with_redis(self, client: AsyncClient, test_app: FastAPI) -> None:
         redis = MagicMock()

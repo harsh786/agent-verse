@@ -1064,6 +1064,11 @@ export const governanceApi = {
       "/governance/emergency-stop",
       { method: "DELETE" }
     ),
+  // Server-side stop state — the source of truth for the emergency banner.
+  getEmergencyStop: () =>
+    request<{ active?: boolean; activated_at?: string | null; tenant_id?: string }>(
+      "/governance/emergency-stop"
+    ),
 };
 
 // ── Settings ──────────────────────────────────────────────────────────────────

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import email as email_lib
 import os
+import re
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -503,46 +506,71 @@ class TestCheckAndProcessEmails:
 
 # ── approval_sender: signing/verification ────────────────────────────────────
 
+_TENANT = "t-email-cov"
+
+
+def _future_exp() -> int:
+    return int(time.time()) + 3600
+
+
 class TestApprovalSenderSigning:
-    def test_sign_produces_32_char_hex(self):
+    def test_sign_produces_full_64_char_hex(self):
+        """Full HMAC-SHA256 digest -- no longer truncated to 32 chars."""
         from app.integrations.email.approval_sender import _sign
-        sig = _sign("req-123", "approve")
-        assert len(sig) == 32
+        sig = _sign("req-123", "approve", tenant_id=_TENANT, exp=_future_exp())
+        assert len(sig) == 64
         assert all(c in "0123456789abcdef" for c in sig)
 
     def test_verify_correct_signature(self):
         from app.integrations.email.approval_sender import _sign, _verify
-        sig = _sign("req-abc", "reject")
-        assert _verify("req-abc", "reject", sig) is True
+        exp = _future_exp()
+        sig = _sign("req-abc", "reject", tenant_id=_TENANT, exp=exp)
+        assert _verify("req-abc", "reject", sig, tenant_id=_TENANT, exp=exp) is True
 
     def test_verify_wrong_signature(self):
         from app.integrations.email.approval_sender import _verify
-        assert _verify("req-abc", "approve", "aaaa" * 8) is False
+        assert (
+            _verify("req-abc", "approve", "aaaa" * 16, tenant_id=_TENANT, exp=_future_exp())
+            is False
+        )
 
     def test_verify_tampered_action(self):
         from app.integrations.email.approval_sender import _sign, _verify
-        sig = _sign("req-abc", "approve")
-        assert _verify("req-abc", "reject", sig) is False
+        exp = _future_exp()
+        sig = _sign("req-abc", "approve", tenant_id=_TENANT, exp=exp)
+        assert _verify("req-abc", "reject", sig, tenant_id=_TENANT, exp=exp) is False
 
     def test_verify_tampered_request_id(self):
         from app.integrations.email.approval_sender import _sign, _verify
-        sig = _sign("req-original", "approve")
-        assert _verify("req-tampered", "approve", sig) is False
+        exp = _future_exp()
+        sig = _sign("req-original", "approve", tenant_id=_TENANT, exp=exp)
+        assert _verify("req-tampered", "approve", sig, tenant_id=_TENANT, exp=exp) is False
 
     def test_sign_uses_env_secret(self):
         from app.integrations.email.approval_sender import _sign
+        exp = _future_exp()
         with patch.dict(os.environ, {"HITL_EMAIL_SECRET": "secret-A"}):
-            sig_a = _sign("req-1", "approve")
+            sig_a = _sign("req-1", "approve", tenant_id=_TENANT, exp=exp)
         with patch.dict(os.environ, {"HITL_EMAIL_SECRET": "secret-B"}):
-            sig_b = _sign("req-1", "approve")
+            sig_b = _sign("req-1", "approve", tenant_id=_TENANT, exp=exp)
         assert sig_a != sig_b
 
-    def test_sign_default_secret_when_env_not_set(self):
-        from app.integrations.email.approval_sender import _sign
-        env = {k: v for k, v in os.environ.items() if k != "HITL_EMAIL_SECRET"}
+    def test_dev_secret_when_env_not_set_and_never_the_old_public_default(self):
+        """Outside production with no secret configured, the dev-only key is
+        used -- the old public default "changeme-please-set-HITL_EMAIL_SECRET"
+        is gone -- and production refuses to sign at all."""
+        from app.integrations.email import approval_sender as mod
+
+        drop = {"HITL_EMAIL_SECRET", "VAULT_MASTER_KEY", "ENVIRONMENT"}
+        env = {k: v for k, v in os.environ.items() if k not in drop}
         with patch.dict(os.environ, env, clear=True):
-            sig = _sign("req-1", "approve")
-        assert len(sig) == 32
+            assert mod._signing_secret() == mod._DEV_SECRET
+            assert "changeme" not in mod._signing_secret()
+            sig = mod._sign("req-1", "approve", tenant_id=_TENANT, exp=_future_exp())
+            assert len(sig) == 64
+        with patch.dict(os.environ, {**env, "ENVIRONMENT": "production"}, clear=True):
+            with pytest.raises(RuntimeError, match="HITL_EMAIL_SECRET"):
+                mod._sign("req-1", "approve", tenant_id=_TENANT, exp=_future_exp())
 
 
 class TestSendApprovalEmail:
@@ -564,6 +592,7 @@ class TestSendApprovalEmail:
                 goal_description="Deploy to production",
                 step_description="Run DB migration",
                 request_id="req-success",
+                tenant_id=_TENANT,
                 frontend_url="http://app.test",
                 smtp_host="localhost",
                 smtp_port=1025,
@@ -592,6 +621,7 @@ class TestSendApprovalEmail:
                 goal_description="Do task",
                 step_description="Delete everything",
                 request_id="req-no-lib",
+                tenant_id=_TENANT,
                 frontend_url="http://fe.test",
             )
         finally:
@@ -620,6 +650,7 @@ class TestSendApprovalEmail:
                 goal_description="Do task",
                 step_description="Delete prod DB",
                 request_id="req-smtp-err",
+                tenant_id=_TENANT,
                 frontend_url="http://fe.test",
             )
         finally:
@@ -653,6 +684,7 @@ class TestSendApprovalEmail:
                 goal_description="Scale up cluster",
                 step_description="Terminate 50% of VMs",
                 request_id="req-html-check",
+                tenant_id=_TENANT,
                 frontend_url="http://myapp.local",
             )
         finally:
@@ -678,6 +710,16 @@ class TestSendApprovalEmail:
         assert "approve" in html_body.lower()
         assert "reject" in html_body.lower()
 
+        # Both links carry a signature + expiry that verify for this tenant/action.
+        for action in ("approve", "reject"):
+            m = re.search(rf'href="([^"]*/hitl/req-html-check/{action}\?[^"]*)"', html_body)
+            assert m, f"no {action} link in email"
+            qs = parse_qs(urlparse(m.group(1).replace("&amp;", "&")).query)
+            assert "token" not in qs
+            assert mod._verify(
+                "req-html-check", action, qs["sig"][0], tenant_id=_TENANT, exp=int(qs["exp"][0])
+            )
+
     @pytest.mark.asyncio
     async def test_email_subject_contains_step_description(self):
         """Email subject truncates and includes step description."""
@@ -701,6 +743,7 @@ class TestSendApprovalEmail:
                 goal_description="Goal",
                 step_description="Deploy hotfix to prod",
                 request_id="req-subj",
+                tenant_id=_TENANT,
                 frontend_url="http://app.test",
             )
         finally:

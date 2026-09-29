@@ -1290,40 +1290,102 @@ def _get_db(request: Request) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _stop_redis(request: Request) -> Any:
+    """The runtime Redis every enforcement point reads (API gates, AgentGraph, worker)."""
+    st = request.app.state
+    return getattr(st, "_redis", None) or getattr(st, "_policy_pubsub_redis", None)
+
+
+def _stop_unenforceable(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Emergency stop cannot be enforced: the shared control store is unavailable "
+            f"({type(exc).__name__}). Nothing was stopped; retry or stop goals individually."
+        ),
+        headers={"Retry-After": "5"},
+    )
+
+
+@router.get("/emergency-stop")
+async def get_emergency_stop(request: Request) -> dict[str, Any]:
+    """Current tenant emergency-stop state — the source of truth for the UI banner."""
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        read_stop,
+        tenant_stop_key,
+    )
+
+    ctx = _require_tenant(request)
+    try:
+        record = await read_stop(_stop_redis(request), tenant_stop_key(ctx.tenant_id))
+    except EmergencyStopUnavailableError as exc:
+        raise _stop_unenforceable(exc) from exc
+    if record is None:
+        return {"active": False, "tenant_id": ctx.tenant_id}
+    return {
+        "active": True,
+        "tenant_id": ctx.tenant_id,
+        "activated_at": record.get("activated_at"),
+        "activated_by": record.get("activated_by"),
+        "reason": record.get("reason", ""),
+    }
+
+
 @router.post("/emergency-stop")
 async def emergency_stop(
     request: Request,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Immediately cancel all running and queued goals for this tenant.
+    """Stop all autonomous work for this tenant until an admin lifts the stop.
 
     Use for: security incidents, runaway agents, cost overruns.
-    This is irreversible — cancelled goals must be resubmitted.
 
-    Admin-only (RBAC docs: "admin — emergency stop"). Every per-goal cancel and
-    per-approval reject failure is reported in the response (``failed_*`` lists,
-    ``partial``) instead of being swallowed, so an operator can see that the stop
-    did not fully take effect.
+    1. Persists ``emergency_stop:{tenant}`` in Redis with NO expiry (it used to
+       expire after 300 s). Every enforcement point reads it: goal submission,
+       goal start (worker + in-process) and every step boundary on every
+       replica and worker. If it cannot be written the call fails 503 — it
+       used to answer "All running goals cancelled" with nothing persisted.
+    2. Cancels every non-terminal goal of the tenant through the cross-replica
+       cancel path (DB-backed listing; it used to see only this replica's
+       in-memory goals).
+    3. Rejects every pending approval.
+
+    Admin-only. Every per-goal cancel and per-approval reject failure is
+    reported (``failed_*``, ``partial``); the stop flag itself still blocks
+    those goals at their next step boundary.
     """
     import logging
+
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        activate_stop,
+        tenant_stop_key,
+    )
 
     _log = logging.getLogger(__name__)
     ctx = _require_tenant(request)
     errors: list[str] = []
 
-    # 1. Cancel all running in-memory goals via GoalService
+    # 1. Persist the stop first: from here on nothing new starts and every
+    #    running goal halts at its next step boundary, wherever it runs.
+    try:
+        record = await activate_stop(
+            _stop_redis(request),
+            tenant_stop_key(ctx.tenant_id),
+            activated_by=str(getattr(ctx, "api_key_id", "") or ""),
+        )
+    except EmergencyStopUnavailableError as exc:
+        _log.error("emergency_stop_not_persisted: %s", exc)
+        raise _stop_unenforceable(exc) from exc
+
+    # 2. Cancel every non-terminal goal of the tenant, on any replica/worker.
     goal_service = getattr(request.app.state, "goal_service", None)
     cancelled_goals: list[str] = []
     failed_goals: list[dict[str, str]] = []
     if goal_service is not None:
         try:
-            running = [
-                gid
-                for gid, record in goal_service._goals.items()
-                if getattr(record, "tenant_id", "") == ctx.tenant_id
-                and str(getattr(record, "status", "")).lower()
-                not in ("complete", "completed", "failed", "cancelled")
-            ]
+            running = await goal_service.active_goal_ids(ctx)
         except Exception as exc:
             _log.warning("emergency_stop_enumerate_failed: %s", exc)
             running = []
@@ -1335,28 +1397,6 @@ async def emergency_stop(
             except Exception as exc:
                 _log.warning("emergency_stop_cancel_failed goal_id=%s: %s", goal_id, exc)
                 failed_goals.append({"goal_id": goal_id, "error": type(exc).__name__})
-
-    # 2. Publish emergency stop signal to Redis so Celery workers abort
-    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    celery_signal_sent = False
-    if redis is not None:
-        try:
-            from datetime import datetime
-
-            await redis.publish(
-                "emergency_stop",
-                _json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()}),
-            )
-            # Also set a flag that Celery workers can poll
-            await redis.set(
-                f"emergency_stop:{ctx.tenant_id}",
-                "1",
-                ex=300,  # 5 minute window
-            )
-            celery_signal_sent = True
-        except Exception as exc:
-            _log.warning("emergency_stop_redis_failed: %s", exc)
-            errors.append(f"celery_signal_failed: {type(exc).__name__}")
 
     # 3. Reject all pending HITL approvals (DB-backed listing: approvals raised on
     #    other replicas must be rejected too, not just this replica's cache).
@@ -1378,6 +1418,7 @@ async def emergency_stop(
                 ok = await hitl.reject(
                     approval.request_id,
                     tenant_ctx=ctx,
+                    approver=str(getattr(ctx, "api_key_id", "") or "emergency-stop"),
                     note="Emergency stop activated by operator",
                 )
                 if ok is False:
@@ -1432,21 +1473,26 @@ async def emergency_stop(
     partial = bool(failed_goals or failed_approvals or errors)
     return {
         "status": "emergency_stop_partial" if partial else "emergency_stop_activated",
+        "active": True,
         "partial": partial,
         "tenant_id": ctx.tenant_id,
+        "activated_at": record.get("activated_at"),
         "cancelled_goals": len(cancelled_goals),
         "cancelled_goal_ids": cancelled_goals[:20],
         "failed_goals": failed_goals,
         "rejected_approvals": len(rejected_approvals),
         "failed_approvals": failed_approvals,
-        "celery_signal_sent": celery_signal_sent,
+        # Kept for API compatibility: the persisted flag is what workers read.
+        "celery_signal_sent": True,
         "audit_recorded": audit_recorded,
         "errors": errors,
         "message": (
-            "Emergency stop only partially applied — see failed_goals / failed_approvals / "
-            "errors."
+            "Emergency stop is active and persisted, but some goals/approvals could not be "
+            "cancelled directly — they are halted at their next step boundary. See "
+            "failed_goals / failed_approvals / errors."
             if partial
-            else "All running goals cancelled. Celery workers will abort in-progress tasks."
+            else "Emergency stop is active until cleared: running goals were cancelled and "
+            "no goal will start or take another step."
         ),
     }
 
@@ -1456,19 +1502,22 @@ async def clear_emergency_stop(
     request: Request,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Clear the emergency stop signal to allow new goals to be submitted (admin only)."""
+    """Lift the tenant emergency stop so goals may be submitted again (admin only)."""
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        clear_stop,
+        tenant_stop_key,
+    )
+
     ctx = _require_tenant(request)
-    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    if redis is None:
-        return {"status": "cleared", "tenant_id": ctx.tenant_id}
     try:
-        await redis.delete(f"emergency_stop:{ctx.tenant_id}")
-    except Exception as exc:
-        # The stop flag is still set — do not report "cleared".
+        await clear_stop(_stop_redis(request), tenant_stop_key(ctx.tenant_id))
+    except EmergencyStopUnavailableError as exc:
+        # The stop may still be set — never report "cleared".
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Failed to clear emergency stop flag"
         ) from exc
-    return {"status": "cleared", "tenant_id": ctx.tenant_id}
+    return {"status": "cleared", "active": False, "tenant_id": ctx.tenant_id}
 
 
 # ---------------------------------------------------------------------------
@@ -1476,62 +1525,47 @@ async def clear_emergency_stop(
 # ---------------------------------------------------------------------------
 
 
-async def _email_link_tenant_ctx(request: Request, gateway: Any, request_id: str) -> Any:
-    """TenantContext for a signed email-link decision on *request_id*.
+async def _email_link_decision(
+    request: Request, request_id: str, action: str, sig: str, exp: int
+) -> tuple[HITLGateway, TenantContext, str]:
+    """Verify a signed approve/reject link for the AUTHENTICATED approver.
 
-    The owning tenant is resolved from the local cache or, when the approval was
-    raised on another replica, from Postgres (it used to scan this process's
-    cache only, so a link opened on a different replica answered 404).
-    """
-    try:
-        tenant_id = await gateway.aresolve_request_tenant(
-            request_id, getattr(request.app.state, "system_db_session_factory", None)
-        )
-    except HITLResolutionUnavailableError as exc:
-        raise _resolution_unavailable(exc) from exc
-    if not tenant_id:
-        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
-
-    from app.tenancy.context import PlanTier, TenantContext
-
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    actual_plan = PlanTier.FREE  # safe default
-    if tenant_svc is not None:
-        try:
-            real_tenant = await tenant_svc.get_tenant(tenant_id)
-            if real_tenant and real_tenant.get("plan"):
-                actual_plan = PlanTier(real_tenant["plan"])
-        except Exception:
-            pass  # fall through to FREE
-    return TenantContext(
-        tenant_id=tenant_id,
-        plan=actual_plan,
-        api_key_id="email-link-approver",
-    )
-
-
-@router.get("/hitl/{request_id}/approve")
-async def email_approve_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
-    """Handle one-click approve link from HITL approval email.
-
-    Validates HMAC signature and approves the request on behalf of the email recipient.
+    The link used to be verified against ``request_id:action`` only, under a
+    public default secret with no expiry, and the decision ran as a synthetic
+    ``email-link`` principal in whatever tenant owned the request -- so any
+    caller could forge a permanent approve link for any tenant's request. Now
+    the caller must hold the ``approver`` role (route dependency), the
+    signature must be unexpired and bound to this request, action AND the
+    caller's own tenant, and the decision is attributed to the caller.
     """
     from app.integrations.email.approval_sender import _verify
 
-    if not sig or not _verify(request_id, "approve", sig):
+    tenant_ctx: TenantContext = _require_tenant(request)
+    if not _verify(request_id, action, sig, tenant_id=tenant_ctx.tenant_id, exp=exp):
         raise HTTPException(status_code=403, detail="Invalid or expired approval link")
-
     gateway = getattr(request.app.state, "hitl_gateway", None)
     if gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
+    return gateway, tenant_ctx, _approver_identity(tenant_ctx)
 
-    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
 
+@router.get("/hitl/{request_id}/approve")
+async def email_approve_link(
+    request: Request,
+    request_id: str,
+    sig: str = "",
+    exp: int = 0,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
+    """Handle one-click approve link from HITL approval email."""
+    gateway, tenant_ctx, approver = await _email_link_decision(
+        request, request_id, "approve", sig, exp
+    )
     # DB-first: the request may have been raised on another replica, and the
-    # waiting agent must only be released once the decision is committed (the
-    # sync approve() saw local requests only and released it before the write).
+    # waiting agent must only be released once the decision is committed.
+    # approve_async answers False unless the request is still PENDING.
     try:
-        ok = await gateway.approve_async(request_id, approver="email-link", tenant_ctx=fake_ctx)
+        ok = await gateway.approve_async(request_id, approver=approver, tenant_ctx=tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
     if not ok:
@@ -1540,31 +1574,26 @@ async def email_approve_link(request: Request, request_id: str, sig: str = "") -
     return {
         "request_id": request_id,
         "status": "approved",
-        "approver": "email-link",
+        "approver": approver,
         "message": "Action approved via email link.",
     }
 
 
 @router.get("/hitl/{request_id}/reject")
-async def email_reject_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
-    """Handle one-click reject link from HITL approval email.
-
-    Validates HMAC signature and rejects the request.
-    """
-    from app.integrations.email.approval_sender import _verify
-
-    if not sig or not _verify(request_id, "reject", sig):
-        raise HTTPException(status_code=403, detail="Invalid or expired rejection link")
-
-    gateway = getattr(request.app.state, "hitl_gateway", None)
-    if gateway is None:
-        raise HTTPException(status_code=503, detail="HITL gateway not available")
-
-    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
-
+async def email_reject_link(
+    request: Request,
+    request_id: str,
+    sig: str = "",
+    exp: int = 0,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
+    """Handle one-click reject link from HITL approval email."""
+    gateway, tenant_ctx, approver = await _email_link_decision(
+        request, request_id, "reject", sig, exp
+    )
     try:
         ok = await gateway.reject(
-            request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx
+            request_id, approver=approver, note="Rejected via email link", tenant_ctx=tenant_ctx
         )
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
@@ -1574,7 +1603,7 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
     return {
         "request_id": request_id,
         "status": "rejected",
-        "approver": "email-link",
+        "approver": approver,
         "message": "Action rejected via email link.",
     }
 
@@ -1681,7 +1710,9 @@ async def list_legal_holds(request: Request) -> list[dict[str, Any]]:
 class BatchApproveRequest(BaseModel):
     action: str  # "approve" | "reject"
     request_ids: list[str]
-    approver: str
+    # Ignored: the approver is the authenticated key (see _approver_identity).
+    # Kept optional so existing clients that still send it are not rejected.
+    approver: str = ""
     note: str = ""
 
 
@@ -1699,6 +1730,9 @@ async def batch_approve(
         )
     tenant_ctx: TenantContext = _require_tenant(request)
     gateway = _hitl(request)
+    # The approver used to be body.approver: one key could approve as anyone and
+    # satisfy a multi-approver gate alone.
+    approver = _approver_identity(tenant_ctx)
 
     approved = 0
     rejected_count = 0
@@ -1714,21 +1748,18 @@ async def batch_approve(
             # replica would otherwise report not_found.
             try:
                 ok = await gateway.approve_async(
-                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                    req_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
                 )
             except HITLResolutionUnavailableError:
                 unavailable += 1
                 results.append({"request_id": req_id, "result": "unavailable"})
                 continue
             if ok:
+                # approve_async already delivered the resolution to cross-replica
+                # waiters ("approved"). The extra publish here sent "approve" —
+                # a value no waiter recognises — and could consume the waiter's
+                # BLPOP instead of the real decision.
                 approved += 1
-                # Also publish via Redis BLPOP path if available
-                await gateway.publish_resolution(
-                    request_id=req_id,
-                    action="approve",
-                    approver=body.approver,
-                    note=body.note,
-                )
                 results.append({"request_id": req_id, "result": "approved"})
             else:
                 not_found += 1
@@ -1736,20 +1767,15 @@ async def batch_approve(
         elif body.action == "reject":
             try:
                 ok = await gateway.reject(
-                    req_id, approver=body.approver, note=body.note, tenant_ctx=tenant_ctx
+                    req_id, approver=approver, note=body.note, tenant_ctx=tenant_ctx
                 )
             except HITLResolutionUnavailableError:
                 unavailable += 1
                 results.append({"request_id": req_id, "result": "unavailable"})
                 continue
             if ok:
+                # reject() already published "rejected" to cross-replica waiters.
                 rejected_count += 1
-                await gateway.publish_resolution(
-                    request_id=req_id,
-                    action="reject",
-                    approver=body.approver,
-                    note=body.note,
-                )
                 results.append({"request_id": req_id, "result": "rejected"})
             else:
                 not_found += 1

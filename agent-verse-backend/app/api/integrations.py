@@ -24,6 +24,34 @@ def _get_zapier_tenant_id() -> str:
 # ── Slack ──────────────────────────────────────────────────────────────────────
 
 
+def _slack_team_id(payload: dict[str, Any]) -> str:
+    team = payload.get("team") if isinstance(payload.get("team"), dict) else {}
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    return str(team.get("id") or user.get("team_id") or payload.get("team_id") or "")
+
+
+async def _slack_bound_tenant(request: Request, payload: dict[str, Any]) -> str | None:
+    """Tenant bound to the (signature-verified) Slack workspace, or None.
+
+    HITL button clicks used to decide in the tenant named by the
+    ``SLACK_TENANT_ID`` env var (or a literal "slack-events"): one global
+    tenant for every workspace, whatever workspace actually clicked. The tenant
+    now comes from the workspace's ``channel_tenant_mappings`` binding — the
+    same verified mapping inbound Slack events use.
+    """
+    from app.api.channels.ingestion import _lookup_db, _resolve_tenant_from_channel
+
+    return await _resolve_tenant_from_channel(
+        "slack", _slack_team_id(payload), _lookup_db(request)
+    )
+
+
+def _slack_approver(payload: dict[str, Any]) -> str:
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    uid = str(user.get("id") or user.get("name") or "unknown")
+    return f"slack:{uid}"
+
+
 def _require_slack_signature(
     body: bytes, timestamp: str, signature: str, *, bad_status: int = 403
 ) -> None:
@@ -133,6 +161,14 @@ async def slack_events(
 
     # Handle interactive button presses (HITL approve/reject)
     if data.get("type") == "block_actions":
+        bound_tenant = await _slack_bound_tenant(request, data)
+        if not bound_tenant:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "slack_hitl_unbound_workspace team_id=%s", _slack_team_id(data)
+            )
+            return {"ok": True}
         for action in data.get("actions", []):
             action_id = action.get("action_id")
             request_id = action.get("value", "")
@@ -144,11 +180,11 @@ async def slack_events(
                 from app.tenancy.context import PlanTier, TenantContext
 
                 ctx = TenantContext(
-                    tenant_id=_get_slack_tenant_id() or "slack-events",
+                    tenant_id=bound_tenant,
                     plan=PlanTier.PROFESSIONAL,
                     api_key_id="slack-button",
                 )
-                approver = data.get("user", {}).get("name", "slack-user")
+                approver = _slack_approver(data)
 
                 if action_id == "approve_hitl":
                     # DB-first: resolves requests raised on any replica and only
@@ -196,6 +232,14 @@ async def slack_interactive_callback(request: Request) -> dict:
 
     # Process each action
     goal_service = getattr(request.app.state, "goal_service", None)
+    bound_tenant = await _slack_bound_tenant(request, payload)
+    if not bound_tenant:
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "slack_hitl_unbound_workspace team_id=%s", _slack_team_id(payload)
+        )
+        return {"ok": True}
 
     for action in payload.get("actions", []):
         action_id = action.get("action_id", "")
@@ -211,7 +255,7 @@ async def slack_interactive_callback(request: Request) -> dict:
                 try:
                     from app.tenancy.context import PlanTier, TenantContext
 
-                    tenant_id = os.getenv("SLACK_TENANT_ID", "")
+                    tenant_id = bound_tenant
                     if tenant_id:
                         tenant_ctx = TenantContext(
                             tenant_id=tenant_id,

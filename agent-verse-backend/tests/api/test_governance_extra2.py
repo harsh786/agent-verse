@@ -1,6 +1,8 @@
 """Extra coverage for governance.py — HITL email links, legal holds, batch approve, SLA stats, policy versioning."""
 from __future__ import annotations
 
+import time
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -9,7 +11,7 @@ from app.governance.audit import AuditLog
 from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.policies import PolicyEngine
-from app.integrations.email.approval_sender import _sign
+from app.integrations.email.approval_sender import signed_link_query
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
@@ -44,34 +46,57 @@ def _make_app(
 _H = {"X-API-Key": _VALID_KEY}
 
 
+def _exp() -> int:
+    return int(time.time()) + 3600
+
+
+def _link(request_id: str, action: str) -> str:
+    """``sig=...&exp=...`` signed for the authenticated caller's tenant."""
+    return signed_link_query(request_id, action, tenant_id=_CTX.tenant_id)
+
+
 # ── HITL email-link approve endpoint ─────────────────────────────────────────
 
 class TestHitlEmailLinks:
     def test_approve_link_invalid_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get("/governance/hitl/req123/approve", params={"sig": "bad_sig"})
-        assert resp.status_code in (403, 401)
+        resp = client.get(
+            "/governance/hitl/req123/approve", params={"sig": "bad_sig", "exp": _exp()}, headers=_H
+        )
+        assert resp.status_code == 403
 
     def test_approve_link_missing_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get("/governance/hitl/req123/approve")
-        assert resp.status_code in (403, 401)
+        resp = client.get("/governance/hitl/req123/approve", headers=_H)
+        assert resp.status_code == 403
 
     def test_reject_link_invalid_sig_returns_403(self):
         client = TestClient(_make_app(), raise_server_exceptions=False)
-        resp = client.get("/governance/hitl/req456/reject", params={"sig": "wrong"})
-        assert resp.status_code in (403, 401)
+        resp = client.get(
+            "/governance/hitl/req456/reject", params={"sig": "wrong", "exp": _exp()}, headers=_H
+        )
+        assert resp.status_code == 403
+
+    def test_approve_link_unauthenticated_returns_401(self):
+        """A valid signature alone is not enough: the caller must authenticate."""
+        client = TestClient(_make_app(), raise_server_exceptions=False)
+        request_id = "req-unauth"
+        resp = client.get(
+            f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}"
+        )
+        assert resp.status_code == 401
 
     def test_approve_link_valid_sig_but_no_request(self):
-        """Valid sig but no matching HITL request → 404."""
+        """Valid sig but no matching pending HITL request for the tenant → 409."""
         client = TestClient(_make_app(), raise_server_exceptions=False)
         request_id = "nonexistent-req-id"
-        sig = _sign(request_id, "approve")
-        resp = client.get(f"/governance/hitl/{request_id}/approve", params={"sig": sig})
-        assert resp.status_code in (404, 401)
+        resp = client.get(
+            f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_H
+        )
+        assert resp.status_code == 409
 
     def test_approve_link_with_valid_request(self):
-        """Valid sig and matching HITL request → 200 approved."""
+        """Valid sig and matching HITL request → 200 approved, attributed to the caller."""
         gateway = HITLGateway()
         request_id = gateway.request_approval(
             goal_id="g1",
@@ -79,16 +104,19 @@ class TestHitlEmailLinks:
             risk_level="critical",
             tenant_ctx=_CTX,
         )
-        sig = _sign(request_id, "approve")
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(f"/governance/hitl/{request_id}/approve", params={"sig": sig})
-        assert resp.status_code in (200, 401)
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "approved"
+        resp = client.get(
+            f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_H
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "approved"
+        assert body["approver"] == _CTX.api_key_id
+        assert gateway.get_request(request_id, tenant_ctx=_CTX).status.value == "approved"
 
     def test_reject_link_with_valid_request(self):
-        """Valid sig and matching HITL request → 200 rejected."""
+        """Valid sig and matching HITL request → 200 rejected, attributed to the caller."""
         gateway = HITLGateway()
         request_id = gateway.request_approval(
             goal_id="g2",
@@ -96,13 +124,16 @@ class TestHitlEmailLinks:
             risk_level="high",
             tenant_ctx=_CTX,
         )
-        sig = _sign(request_id, "reject")
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-        resp = client.get(f"/governance/hitl/{request_id}/reject", params={"sig": sig})
-        assert resp.status_code in (200, 401)
-        if resp.status_code == 200:
-            assert resp.json()["status"] == "rejected"
+        resp = client.get(
+            f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_H
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "rejected"
+        assert body["approver"] == _CTX.api_key_id
+        assert gateway.get_request(request_id, tenant_ctx=_CTX).status.value == "rejected"
 
 
 # ── Legal holds ───────────────────────────────────────────────────────────────

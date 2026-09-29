@@ -78,12 +78,17 @@ def test_approval_email_sender_importable():
 
 def test_approval_email_signs_links():
     from app.integrations.email.approval_sender import _sign
-    sig1 = _sign("req-1", "approve")
-    sig2 = _sign("req-1", "reject")
-    sig3 = _sign("req-2", "approve")
+    exp = 4_102_444_800  # fixed future expiry so signatures are comparable
+    sig1 = _sign("req-1", "approve", tenant_id=T.tenant_id, exp=exp)
+    sig2 = _sign("req-1", "reject", tenant_id=T.tenant_id, exp=exp)
+    sig3 = _sign("req-2", "approve", tenant_id=T.tenant_id, exp=exp)
+    sig4 = _sign("req-1", "approve", tenant_id="other-tenant", exp=exp)
+    sig5 = _sign("req-1", "approve", tenant_id=T.tenant_id, exp=exp + 1)
     assert sig1 != sig2  # different actions
     assert sig1 != sig3  # different request IDs
-    assert len(sig1) == 32  # correct length
+    assert sig1 != sig4  # different tenants
+    assert sig1 != sig5  # different expiries
+    assert len(sig1) == 64  # full, untruncated HMAC-SHA256
 
 
 def test_rejection_note_injector_importable():

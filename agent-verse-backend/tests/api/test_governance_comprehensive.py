@@ -399,9 +399,19 @@ def test_list_notifications_with_service() -> None:
 # Emergency stop
 # ---------------------------------------------------------------------------
 
-def test_emergency_stop_no_services() -> None:
-    """Emergency stop should succeed even without optional services."""
+def test_emergency_stop_without_redis_is_503() -> None:
     client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/governance/emergency-stop", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503
+
+
+def test_emergency_stop_no_services() -> None:
+    """Emergency stop succeeds without optional services -- given its Redis store."""
+    import fakeredis.aioredis
+
+    app = _make_app()
+    app.state._redis = fakeredis.aioredis.FakeRedis()
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/governance/emergency-stop", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     body = resp.json()
@@ -410,7 +420,11 @@ def test_emergency_stop_no_services() -> None:
 
 
 def test_clear_emergency_stop() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    import fakeredis.aioredis
+
+    app = _make_app()
+    app.state._redis = fakeredis.aioredis.FakeRedis()
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.delete("/governance/emergency-stop", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     assert resp.json()["status"] == "cleared"

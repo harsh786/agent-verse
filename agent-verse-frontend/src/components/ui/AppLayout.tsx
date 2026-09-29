@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { CommandPalette } from "@/components/command-palette/CommandPalette";
@@ -11,9 +11,30 @@ import { useEmergencyStore } from "@/stores/emergency";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh";
 import { useAppHotkeys } from "@/hooks/useAppHotkeys";
 import { clsx } from "clsx";
-import { API_BASE, errorMessageFromBody } from "@/lib/api/client";
+import { API_BASE, errorMessageFromBody, governanceApi } from "@/lib/api/client";
+
+/**
+ * Keep the banner in step with the SERVER's stop state. It used to live only in
+ * this browser's localStorage, so another operator's stop (or one lifted
+ * elsewhere) was never shown, and a stale local flag outlived the real one.
+ */
+function useEmergencyStopSync() {
+  const syncFromServer = useEmergencyStore((s) => s.syncFromServer);
+  const { data } = useQuery({
+    queryKey: ["governance", "emergency-stop"],
+    queryFn: () => governanceApi.getEmergencyStop(),
+    refetchInterval: 30_000,
+    retry: false,
+  });
+  useEffect(() => {
+    if (typeof data?.active === "boolean") {
+      syncFromServer({ active: data.active, activatedAt: data.activated_at ?? null });
+    }
+  }, [data, syncFromServer]);
+}
 
 function EmergencyBanner() {
+  useEmergencyStopSync();
   const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
   const qc = useQueryClient();
   const [clearError, setClearError] = useState<string | null>(null);

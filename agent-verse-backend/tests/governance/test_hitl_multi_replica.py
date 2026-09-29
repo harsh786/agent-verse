@@ -166,18 +166,24 @@ async def test_slack_button_approval_goes_through_the_db_first_path() -> None:
     app.state.hitl_gateway = gw
     body = {
         "type": "block_actions",
-        "user": {"name": "sam"},
+        "user": {"id": "U9", "name": "sam"},
+        "team": {"id": "T1"},
         "actions": [{"action_id": "approve_hitl", "value": "req-9"}],
     }
+
+    async def _bound(request: object, payload: dict) -> str:
+        return "t-slack"
+
     with (
         patch.object(integrations, "_require_slack_signature", lambda *a, **k: None),
-        patch.object(integrations, "_get_slack_tenant_id", lambda: "t-slack"),
+        patch.object(integrations, "_slack_bound_tenant", _bound),
     ):
         client = TestClient(app, raise_server_exceptions=True)
         resp = client.post("/integrations/slack/events", json=body)
     assert resp.status_code == 200
     gw.approve_async.assert_awaited_once()
-    assert gw.approve_async.await_args.kwargs["approver"] == "sam"
+    assert gw.approve_async.await_args.kwargs["approver"] == "slack:U9"
+    assert gw.approve_async.await_args.kwargs["tenant_ctx"].tenant_id == "t-slack"
 
 
 @pytest.mark.asyncio
@@ -195,6 +201,6 @@ async def test_org_task_approval_goes_through_the_db_first_path() -> None:
     task = MagicMock()
     with patch.object(org_router, "_extract_hitl_request_id", lambda t: "req-org"):
         await org_router._resolve_task_hitl_request(
-            request, "t-org", task, "approve", types.SimpleNamespace(approver="u", note="")
+            request, "t-org", task, "approve", types.SimpleNamespace(note=""), approver="u"
         )
     gw.approve_async.assert_awaited_once()

@@ -59,7 +59,10 @@ class _MockService:
 
 def _request() -> SimpleNamespace:
     state = SimpleNamespace(hitl_gateway=None, goal_service=None)
-    return SimpleNamespace(app=SimpleNamespace(state=state))
+    # The approver is the authenticated caller (request.state.tenant), never
+    # the body's ``approver`` field.
+    caller = SimpleNamespace(tenant=SimpleNamespace(api_key_id="kid-lead"))
+    return SimpleNamespace(app=SimpleNamespace(state=state), state=caller)
 
 
 @pytest.mark.asyncio

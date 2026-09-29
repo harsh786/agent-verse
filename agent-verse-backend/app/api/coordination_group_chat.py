@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Any
+from typing import cast
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, ConfigDict
 
 from app.coordination.contracts import Classification
+from app.tenancy.context import TenantContext
 
 router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-group-chat"])
 
@@ -41,26 +42,45 @@ async def describe_group_chat_websocket(session_id: str) -> GroupChatWebSocketHa
         detail={
             "websocket_path": "/api/v1/coordination/sessions/{session_id}/group-chat/ws",
             "subprotocol": "agentverse.coordination.v1",
-            "authentication": "Bearer or X-API-Key before upgrade",
+            "authentication": (
+                "X-API-Key, Bearer, or an av.v1.<base64url(key)> subprotocol before upgrade"
+            ),
             "replay_cursor": "after_sequence query parameter",
         },
         headers={"Upgrade": "websocket"},
     )
 
 
-def _api_key(websocket: WebSocket) -> str | None:
-    authorization = websocket.headers.get("authorization", "")
-    if authorization.startswith("Bearer "):
-        return authorization[7:].strip() or None
-    return websocket.headers.get("x-api-key")
+_SUBPROTOCOL = "agentverse.coordination.v1"
 
 
-async def _authenticate(websocket: WebSocket) -> Any | None:
-    resolver = getattr(websocket.app.state, "_tenant_key_resolver", None)
-    key = _api_key(websocket)
-    if resolver is None or key is None:
-        return None
-    return await resolver(key)
+async def _authenticate(websocket: WebSocket) -> TenantContext | None:
+    """Delegate to the shared WebSocket authenticator.
+
+    This socket used to resolve the API key itself, which skipped the tenant IP
+    allowlist, the key's explicit scopes / roles and MFA that
+    ``app.tenancy.ws_auth`` enforces (HTTP middleware never runs for WebSocket
+    scopes). Coordination endpoints have no registered scope, and the socket
+    appends messages, so it is authorised like an unregistered write endpoint.
+    """
+    from app.tenancy.ws_auth import resolve_ws_tenant
+
+    return cast(
+        TenantContext | None,
+        await resolve_ws_tenant(websocket, required_scope=None, write=True),
+    )
+
+
+def _selected_subprotocol(websocket: WebSocket) -> str | None:
+    """Echo an offered subprotocol — a browser aborts the handshake otherwise."""
+    offered = [
+        p.strip()
+        for p in websocket.headers.get("sec-websocket-protocol", "").split(",")
+        if p.strip()
+    ]
+    if _SUBPROTOCOL in offered:
+        return _SUBPROTOCOL
+    return next((p for p in offered if p.startswith("av.v1.")), None)
 
 
 def _origin_allowed(websocket: WebSocket) -> bool:
@@ -79,7 +99,10 @@ def _origin_allowed(websocket: WebSocket) -> bool:
 @router.websocket("/{session_id}/group-chat/ws", name="coordination_group_chat_websocket")
 async def group_chat_websocket(websocket: WebSocket, session_id: str) -> None:
     tenant = await _authenticate(websocket)
-    if tenant is None or not _origin_allowed(websocket):
+    if tenant is None:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+    if not _origin_allowed(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
     authorizer = getattr(websocket.app.state, "coordination_session_authorizer", None)
@@ -90,7 +113,7 @@ async def group_chat_websocket(websocket: WebSocket, session_id: str) -> None:
     if service is None:
         await websocket.close(code=status.WS_1013_TRY_AGAIN_LATER)
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=_selected_subprotocol(websocket))
     try:
         after_sequence = max(0, int(websocket.query_params.get("after_sequence", "0")))
     except ValueError:

@@ -555,23 +555,17 @@ class AgentGraph(
     async def _emergency_stop_reason(self, tenant_id: str, org_id: str | None) -> str | None:
         """Tenant/org emergency-stop check against the API's runtime Redis.
 
-        A Redis error is logged and treated as "not stopped" (same as the
-        worker's tenant check); with no app/Redis wired there is nothing to read.
+        Fails closed: a Redis error blocks the run ("could not be verified")
+        instead of being read as "not stopped". With no app/Redis wired no stop
+        can have been activated (activation refuses without Redis).
         """
         aps: Any = self._app_state
         if aps is None:
             return None
         state = getattr(aps, "state", aps)  # FastAPI app -> app.state
-        redis = getattr(state, "_redis", None)
-        if redis is None:
-            return None
-        try:
-            from app.governance.emergency_stop import emergency_stop_reason
+        from app.governance.emergency_stop import enforce_emergency_stop
 
-            return await emergency_stop_reason(redis, tenant_id, org_id)
-        except Exception as exc:
-            self._logger.warning("emergency_stop_check_failed", error=str(exc))
-            return None
+        return await enforce_emergency_stop(getattr(state, "_redis", None), tenant_id, org_id)
 
     async def run(
         self,

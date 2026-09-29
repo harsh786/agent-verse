@@ -18,7 +18,9 @@ Covers, among other things:
     that occurs *after* the gate was found re-raises as a 500 instead of a
     silent False.
   - Cross-tenant / terminal-goal approval hiding.
-  - The email one-click approve/reject links, including a regression test
+  - The email one-click approve/reject links (approver role required, link
+    bound to the caller's tenant and the action, decision attributed to the
+    caller's api key), including a regression test
     for a fixed bug where a locally-shadowed ``HTTPException`` import meant
     any non-403 error path in those two endpoints crashed with an unhandled
     UnboundLocalError (-> 500) instead of returning the intended status code.
@@ -39,7 +41,7 @@ from app.governance.audit import AuditLog
 from app.governance.cost import CostController
 from app.governance.hitl import HITLGateway
 from app.governance.policies import PolicyEngine
-from app.integrations.email.approval_sender import _sign
+from app.integrations.email.approval_sender import signed_link_query
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
@@ -940,104 +942,134 @@ def test_list_approvals_org_id_filter_swallows_lookup_exception() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_email_approve_link_success_flow_with_tenant_plan_lookup() -> None:
-    gateway = HITLGateway()
-    request_id = str(
+def _link(request_id: str, action: str, tenant_id: str = _TENANT_ID) -> str:
+    """``sig=...&exp=...`` for an email link, signed for ``tenant_id``."""
+    return signed_link_query(request_id, action, tenant_id=tenant_id)
+
+
+def _pending_email_request(gateway: HITLGateway, goal_id: str) -> str:
+    return str(
         gateway.request_approval(
-            goal_id="g-email", action="restart_service", risk_level="medium",
+            goal_id=goal_id, action="restart_service", risk_level="medium",
             tenant_ctx=_APPROVER_CTX,
         )
     )
-    tenant_svc = MagicMock()
-    tenant_svc.get_tenant = AsyncMock(return_value={"plan": "professional"})
 
-    sig = _sign(request_id, "approve")
-    client = TestClient(
-        _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
+
+def test_email_approve_link_success_flow_attributes_authenticated_caller() -> None:
+    """The decision is attributed to the caller's api_key_id, never a
+    synthetic "email-link" principal."""
+    gateway = HITLGateway()
+    request_id = _pending_email_request(gateway, "g-email")
+
+    client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
+    resp = client.get(
+        f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_h()
     )
-    resp = client.get(f"/governance/hitl/{request_id}/approve?sig={sig}", headers=_h())
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "approved"
-    assert body["approver"] == "email-link"
+    assert body["approver"] == _APPROVER_CTX.api_key_id
+    assert body["approver"] != "email-link"
 
     # And it is reflected in the gateway's own state.
-    assert gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX).status.value == "approved"
+    record = gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX)
+    assert record.status.value == "approved"
+    assert record.approver == _APPROVER_CTX.api_key_id
 
 
-def test_email_approve_link_tenant_lookup_exception_falls_back_to_free_plan() -> None:
+def test_email_approve_link_uses_caller_context_not_tenant_service() -> None:
+    """The endpoint decides with the caller's own TenantContext: it no longer
+    looks the owning tenant's plan up, so a broken tenant_service is irrelevant."""
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-email2", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
+    request_id = _pending_email_request(gateway, "g-email2")
     tenant_svc = MagicMock()
     tenant_svc.get_tenant = AsyncMock(side_effect=RuntimeError("tenant lookup down"))
 
-    sig = _sign(request_id, "approve")
     client = TestClient(
         _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
     )
-    resp = client.get(f"/governance/hitl/{request_id}/approve?sig={sig}", headers=_h())
-    assert resp.status_code == 200
+    resp = client.get(
+        f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}", headers=_h()
+    )
+    assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "approved"
+    tenant_svc.get_tenant.assert_not_called()
+
+
+def test_email_approve_link_requires_approver_role() -> None:
+    """A validly signed link is not enough: a viewer key is forbidden."""
+    gateway = HITLGateway()
+    request_id = _pending_email_request(gateway, "g-email-viewer")
+
+    client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
+    resp = client.get(
+        f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve')}",
+        headers=_h(_VIEWER_KEY),
+    )
+    assert resp.status_code == 403
+    assert gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX).status.value == "pending"
 
 
 def test_email_reject_link_success_flow() -> None:
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-email3", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
-    sig = _sign(request_id, "reject")
+    request_id = _pending_email_request(gateway, "g-email3")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
-    assert resp.status_code == 200
+    resp = client.get(
+        f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_h()
+    )
+    assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["status"] == "rejected"
+    assert body["approver"] == _APPROVER_CTX.api_key_id
     assert gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX).status.value == "rejected"
 
 
-def test_email_reject_link_tenant_lookup_success_uses_real_plan() -> None:
+def test_email_reject_link_uses_caller_context_not_tenant_service() -> None:
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-email4", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
+    request_id = _pending_email_request(gateway, "g-email5")
     tenant_svc = MagicMock()
-    tenant_svc.get_tenant = AsyncMock(return_value={"plan": "enterprise"})
+    tenant_svc.get_tenant = AsyncMock(side_effect=RuntimeError("tenant lookup down"))
 
-    sig = _sign(request_id, "reject")
     client = TestClient(
         _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
     )
-    resp = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
-    assert resp.status_code == 200
+    resp = client.get(
+        f"/governance/hitl/{request_id}/reject?{_link(request_id, 'reject')}", headers=_h()
+    )
+    assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "rejected"
+    tenant_svc.get_tenant.assert_not_called()
 
 
 def test_email_approve_link_cross_action_signature_is_rejected() -> None:
     """A signature minted for 'approve' must not authorize the 'reject' link
     (or vice versa) — the action is bound into the HMAC."""
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-cross", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
-    approve_sig = _sign(request_id, "approve")
+    request_id = _pending_email_request(gateway, "g-cross")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
-    resp = client.get(f"/governance/hitl/{request_id}/reject?sig={approve_sig}", headers=_h())
+    resp = client.get(
+        f"/governance/hitl/{request_id}/reject?{_link(request_id, 'approve')}", headers=_h()
+    )
     assert resp.status_code == 403
 
     # The request must remain untouched — still pending.
+    assert (
+        gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX).status.value == "pending"
+    )
+
+
+def test_email_approve_link_signed_for_other_tenant_is_rejected() -> None:
+    """The tenant is bound into the HMAC and checked against the caller's
+    tenant: a link minted for another tenant does not verify here."""
+    gateway = HITLGateway()
+    request_id = _pending_email_request(gateway, "g-cross-tenant")
+    client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
+    resp = client.get(
+        f"/governance/hitl/{request_id}/approve?{_link(request_id, 'approve', 'tid-other')}",
+        headers=_h(),
+    )
+    assert resp.status_code == 403
     assert (
         gateway.get_request(request_id, tenant_ctx=_APPROVER_CTX).status.value == "pending"
     )
@@ -1053,59 +1085,29 @@ def test_email_approve_link_already_resolved_returns_409() -> None:
     instead of returning the intended status code. The shadowing import has
     been removed; this locks in the correct 409 Conflict on double-resolve."""
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-already", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
-    sig = _sign(request_id, "approve")
+    request_id = _pending_email_request(gateway, "g-already")
+    query = _link(request_id, "approve")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
 
-    first = client.get(f"/governance/hitl/{request_id}/approve?sig={sig}", headers=_h())
-    assert first.status_code == 200
+    first = client.get(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
+    assert first.status_code == 200, first.text
 
-    second = client.get(f"/governance/hitl/{request_id}/approve?sig={sig}", headers=_h())
+    second = client.get(f"/governance/hitl/{request_id}/approve?{query}", headers=_h())
     assert second.status_code == 409
 
 
 def test_email_reject_link_already_resolved_returns_409() -> None:
     """Same regression as above, mirrored on the reject link."""
     gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-already2", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
-    sig = _sign(request_id, "reject")
+    request_id = _pending_email_request(gateway, "g-already2")
+    query = _link(request_id, "reject")
     client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
 
-    first = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
-    assert first.status_code == 200
+    first = client.get(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
+    assert first.status_code == 200, first.text
 
-    second = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
+    second = client.get(f"/governance/hitl/{request_id}/reject?{query}", headers=_h())
     assert second.status_code == 409
-
-
-def test_email_reject_link_tenant_lookup_exception_falls_back_to_free_plan() -> None:
-    gateway = HITLGateway()
-    request_id = str(
-        gateway.request_approval(
-            goal_id="g-email5", action="restart_service", risk_level="medium",
-            tenant_ctx=_APPROVER_CTX,
-        )
-    )
-    tenant_svc = MagicMock()
-    tenant_svc.get_tenant = AsyncMock(side_effect=RuntimeError("tenant lookup down"))
-
-    sig = _sign(request_id, "reject")
-    client = TestClient(
-        _make_app(hitl=gateway, tenant_service=tenant_svc), raise_server_exceptions=False
-    )
-    resp = client.get(f"/governance/hitl/{request_id}/reject?sig={sig}", headers=_h())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "rejected"
 
 
 # ---------------------------------------------------------------------------
@@ -1277,51 +1279,52 @@ def test_emergency_stop_goal_cancel_exception_is_swallowed() -> None:
     goal_record.tenant_id = _TENANT_ID
     goal_record.status = "running"
     goal_service._goals = {"goal-1": goal_record}
+    goal_service.active_goal_ids = AsyncMock(return_value=["goal-1"])
     goal_service.cancel_goal = AsyncMock(side_effect=RuntimeError("cancel exploded"))
 
     client = TestClient(
-        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
+    assert resp.json()["failed_goals"] == [{"goal_id": "goal-1", "error": "RuntimeError"}]
 
 
-class _ExplodingGoals:
-    """dict-like stand-in whose `.items()` raises, simulating an internal
-    store failure while merely *enumerating* running goals (distinct from a
-    failure cancelling one, which is a separate, inner try/except)."""
+def _fake_redis() -> Any:
+    import fakeredis.aioredis
 
-    def items(self) -> Any:
-        raise RuntimeError("store corrupted")
+    return fakeredis.aioredis.FakeRedis()
 
 
-def test_emergency_stop_goal_enumeration_exception_is_swallowed() -> None:
+def test_emergency_stop_goal_enumeration_exception_is_reported() -> None:
+    """A failure *enumerating* running goals (distinct from cancelling one) is
+    reported as partial; the persisted stop still halts them at the next step."""
     goal_service = MagicMock()
-    goal_service._goals = _ExplodingGoals()
+    goal_service.active_goal_ids = AsyncMock(side_effect=RuntimeError("store corrupted"))
 
     client = TestClient(
-        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
+    assert resp.json()["partial"] is True
+    assert any("goal_enumeration_failed" in e for e in resp.json()["errors"])
 
 
-def test_emergency_stop_redis_publish_exception_is_swallowed() -> None:
+def test_emergency_stop_flag_write_failure_is_503() -> None:
     redis = MagicMock()
-    redis.publish = AsyncMock(side_effect=RuntimeError("redis down"))
-    redis.set = AsyncMock()
+    redis.set = AsyncMock(side_effect=RuntimeError("redis down"))
 
     client = TestClient(
         _make_app(redis=redis, ctx=_ADMIN_CTX), raise_server_exceptions=False
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
-    assert resp.status_code == 200
-    # A failed publish is reported, not claimed as sent (no fake success).
-    assert resp.json()["celery_signal_sent"] is False
-    assert resp.json()["partial"] is True
-    assert any("celery_signal_failed" in e for e in resp.json()["errors"])
+    # The stop could not be persisted, so nothing could enforce it: no fake success.
+    assert resp.status_code == 503
 
 
 def test_emergency_stop_reject_pending_exception_is_swallowed() -> None:
@@ -1332,7 +1335,8 @@ def test_emergency_stop_reject_pending_exception_is_swallowed() -> None:
     gateway.reject = AsyncMock(side_effect=RuntimeError("reject exploded"))
 
     client = TestClient(
-        _make_app(hitl=gateway, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(hitl=gateway, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
@@ -1346,7 +1350,8 @@ def test_emergency_stop_pending_approvals_enumeration_exception_is_swallowed() -
     gateway.list_pending = MagicMock(side_effect=RuntimeError("gateway store corrupted"))
 
     client = TestClient(
-        _make_app(hitl=gateway, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(hitl=gateway, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
@@ -1358,7 +1363,8 @@ def test_emergency_stop_audit_log_exception_is_swallowed() -> None:
     audit.record = MagicMock(side_effect=RuntimeError("audit sink down"))
 
     client = TestClient(
-        _make_app(audit=audit, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(audit=audit, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
