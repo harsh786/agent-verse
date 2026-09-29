@@ -53,12 +53,39 @@ const BUILT_IN_ROLES: OrgRole[] = [
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
+/** The wire shape of GET /v1/org/{id}/roles (app/org/router.py _OrgRoleResponse). */
+interface OrgRoleWire {
+  id:            string;
+  name:          string;
+  description?:  string;
+  is_built_in?:  boolean;
+  member_count?: number;
+  permissions?:  Permission[];
+}
+
+/** Custom roles only: the endpoint returns the built-ins too (snake_case
+ *  ``is_built_in``), which the page renders from BUILT_IN_ROLES. Reading a
+ *  camelCase ``isBuiltIn`` that never arrives listed every built-in twice. */
+export function customRolesFromWire(rows: OrgRoleWire[]): OrgRole[] {
+  const builtInIds = new Set(BUILT_IN_ROLES.map((r) => r.id));
+  return rows
+    .filter((r) => !r.is_built_in && !builtInIds.has(r.id))
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description ?? '',
+      isBuiltIn: false,
+      permissions: r.permissions ?? [],
+      memberCount: r.member_count,
+    }));
+}
+
 function useOrgRoles(orgId: string) {
   return useQuery<OrgRole[]>({
     queryKey: ['org-roles', orgId],
     // A failed load used to be swallowed into [] — custom roles silently
     // vanished. The error now surfaces (built-in roles are still shown).
-    queryFn: () => apiClient.get<OrgRole[]>(`/v1/org/${orgId}/roles`),
+    queryFn: async () => customRolesFromWire(await apiClient.get<OrgRoleWire[]>(`/v1/org/${orgId}/roles`)),
     enabled: !!orgId,
     staleTime: 60_000,
   });
