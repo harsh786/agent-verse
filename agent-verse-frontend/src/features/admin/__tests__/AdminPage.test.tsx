@@ -348,4 +348,31 @@ describe('AdminPage', () => {
     expect(screen.getByTestId('quick-link-governance').getAttribute('href')).toBe('/governance');
     expect(screen.getByTestId('quick-link-observability').getAttribute('href')).toBe('/observability');
   });
+
+  it('shows "—" rather than zeros when platform usage is unavailable', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/admin/usage')) {
+        return new Response(JSON.stringify({ detail: 'database query failed' }), { status: 503 });
+      }
+      if (url.includes('/admin/tenants')) {
+        return new Response(JSON.stringify({ tenants: [{ tenant_id: 't-1', plan: 'free' }], total: 1 }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+    });
+    renderAdminPage();
+    await waitFor(() => expect(screen.getAllByTestId('tenant-row').length).toBe(1));
+    await waitFor(() => expect(screen.getByTestId('metric-active-goals').textContent).toContain('—'));
+    expect(screen.getByTestId('metric-tenants').textContent).toContain('—');
+    expect(screen.getByTestId('metric-active-goals').textContent).not.toMatch(/\b0\b/);
+  });
+
+  it('renders the real counts the backend computed', async () => {
+    mockFetch({ tenants: [], usage: { active_goals: 3, total_tenants: 5, goals_today: 7, avg_latency_ms: null } });
+    renderAdminPage();
+    await waitFor(() => expect(screen.getByTestId('metric-active-goals').textContent).toContain('3'));
+    expect(screen.getByTestId('metric-tenants').textContent).toContain('5');
+    expect(screen.getByTestId('metric-goals-today').textContent).toContain('7');
+    expect(screen.getByTestId('metric-latency').textContent).toContain('—');
+  });
 });

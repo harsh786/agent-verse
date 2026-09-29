@@ -3066,7 +3066,11 @@ export interface PlatformUsage {
   active_goals: number;
   total_tenants: number;
   goals_today?: number;
-  avg_latency_ms?: number;
+  /** Mean duration of goals completed today (UTC); null when none has. */
+  avg_latency_ms?: number | null;
+  total_goals?: number;
+  completed_today?: number;
+  goals_by_status?: Record<string, number>;
 }
 
 export const adminApi = {
