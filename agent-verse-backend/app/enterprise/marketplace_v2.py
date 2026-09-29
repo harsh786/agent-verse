@@ -1270,23 +1270,31 @@ def _normalize_domain_filter(domain: str) -> str:
 
 
 # A template is visible to its owner in any state, and to everyone else only
-# when shared (public/community) AND it passed security review.
+# when shared (public/community) AND it passed security review. The system
+# tenant's built-in catalogue counts as reviewed: it ships with the product and
+# never goes through the tenant review pipeline. (Built-ins used to be seeded
+# 'unreviewed', so no tenant but ``system`` could see them in DB mode.) Tenants
+# cannot claim ``is_builtin`` — ``publish_template`` forces it off for them.
 from app.observability.logging import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 
 _VISIBLE_SQL = (
-    "((visibility IN ('public','community') AND review_status = 'approved') "
+    "((visibility IN ('public','community') AND (review_status = 'approved' "
+    f"OR (tenant_id = '{_SYSTEM_TENANT_ID}' AND is_builtin))) "
     "OR tenant_id = :vis_tid)"
 )
+
+
+def _is_system_builtin(template: dict[str, Any]) -> bool:
+    return template.get("tenant_id") == _SYSTEM_TENANT_ID and bool(template.get("is_builtin"))
 
 
 def _visible_to(template: dict[str, Any], tenant_id: str | None) -> bool:
     if tenant_id and template.get("tenant_id") == tenant_id:
         return True
-    return (
-        template.get("visibility") in ("public", "community")
-        and template.get("review_status") == "approved"
+    return template.get("visibility") in ("public", "community") and (
+        template.get("review_status") == "approved" or _is_system_builtin(template)
     )
 
 
@@ -1554,11 +1562,22 @@ class MarketplaceV2:
         tenant_ctx: TenantContext,
         run_security_review: bool = True,
     ) -> dict[str, Any]:
-        """Create or update a template; optionally run security review."""
+        """Create or update a template; optionally run security review.
+
+        ``is_builtin`` / ``is_verified`` are honoured only for the system
+        tenant (``seed_builtins``): a tenant cannot badge its own template as a
+        built-in or verified. System built-ins are stored ``approved`` — they
+        are the product's own catalogue, not tenant submissions awaiting review.
+        """
         template_id = data.get("template_id") or str(uuid.uuid4().hex[:32])
         slug = data.get("slug", "").strip() or f"tpl-{template_id[:8]}"
+        is_system = tenant_ctx.tenant_id == _SYSTEM_TENANT_ID
+        is_builtin = is_system and bool(data.get("is_builtin", False))
+        is_verified = is_system and bool(data.get("is_verified", False))
 
-        if run_security_review:
+        if is_builtin:
+            review_status = "approved"
+        elif run_security_review:
             review = await self._reviewer.review(data)
             review_status = "approved" if review["approved"] else "pending"
         else:
@@ -1583,8 +1602,8 @@ class MarketplaceV2:
             "icon_url": data.get("icon_url"),
             "visibility": data.get("visibility", "private"),
             "review_status": review_status,
-            "is_builtin": data.get("is_builtin", False),
-            "is_verified": data.get("is_verified", False),
+            "is_builtin": is_builtin,
+            "is_verified": is_verified,
             "version": data.get("version", "1.0.0"),
         }
 
