@@ -44,7 +44,7 @@ class HTMLParser:
                 tag.decompose()
             text = soup.get_text(separator="\n", strip=True)
             if text:
-                return text[:50000]
+                return text
         except ImportError:
             pass
         except Exception as exc:
@@ -56,4 +56,4 @@ class HTMLParser:
         text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", content, flags=re.I | re.S)
         text = re.sub(r"<[^>]+>", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
-        return text[:50000]
+        return text

@@ -37,13 +37,13 @@ class YAMLParser:
             data = yaml.safe_load(content)
         except Exception as exc:
             _log.warning("YAML parse failed for '%s': %s — returning raw", filename, exc)
-            return content[:8000]
+            return content
 
         if data is None:
             return ""
         lines = _flatten(data)
         header = f"Config: {filename}\n" if filename else ""
-        return header + "\n".join(lines[:2000])
+        return header + "\n".join(lines)
 
 
 class TOMLParser:
@@ -63,11 +63,11 @@ class TOMLParser:
                 data = tomli.loads(content)
             except ImportError:
                 _log.warning("tomllib/tomli not available — returning raw TOML")
-                return content[:8000]
+                return content
         except Exception as exc:
             _log.warning("TOML parse failed for '%s': %s", filename, exc)
-            return content[:8000]
+            return content
 
         lines = _flatten(data)
         header = f"Config: {filename}\n" if filename else ""
-        return header + "\n".join(lines[:2000])
+        return header + "\n".join(lines)

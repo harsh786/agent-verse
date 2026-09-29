@@ -21,7 +21,7 @@ class NotebookParser:
             nb = json.loads(content)
         except json.JSONDecodeError as exc:
             _log.warning("notebook_parse_error filename=%s: %s", filename, exc)
-            return content[:5000]
+            return content
 
         cells = nb.get("cells", [])
         kernel = nb.get("metadata", {}).get("kernelspec", {}).get("language", "python")

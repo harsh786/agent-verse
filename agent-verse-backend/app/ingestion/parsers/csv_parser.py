@@ -51,7 +51,7 @@ class CSVParser:
             return "\n".join(lines)
         except Exception as exc:
             _log.warning("csv_parse_error: %s", exc)
-            return content[:5000]
+            return content
 
 
 class ExcelParser:

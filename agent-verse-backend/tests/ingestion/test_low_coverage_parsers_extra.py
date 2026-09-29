@@ -447,11 +447,13 @@ class TestHTMLParser:
             result = HTMLParser().parse(html)
         assert result == "Fallback text"
 
-    def test_result_truncated_to_50000_chars_in_bs4_path(self) -> None:
+    def test_large_page_is_not_silently_truncated_in_bs4_path(self) -> None:
+        # The parser used to cut every page at 50,000 chars, silently dropping the
+        # rest of a large uploaded document; size is bounded by the upload cap.
         html = "<p>" + ("z" * 60000) + "</p>"
         with patch.dict("sys.modules", {"trafilatura": None}):
             result = HTMLParser().parse(html)
-        assert len(result) <= 50000
+        assert len(result) == 60000
 
     def test_trafilatura_exception_falls_back(self) -> None:
         fake_trafilatura = MagicMock()
