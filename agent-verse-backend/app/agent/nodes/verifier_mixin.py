@@ -473,7 +473,9 @@ class VerifierMixin:
                 from app.evals.runtime_scorecard import RuntimeScorecard
 
                 _nv_flags = _nv_rtf()
-                _profile = agent_state.context.get("_runtime_profile")
+                _profile = agent_state.context.get(
+                    "_runtime_profile"
+                ) or agent_state.context.get("_observed_runtime_profile")
                 if (
                     _nv_flags.dynamic_orchestration or _nv_flags.enable_runtime_scorecard
                 ) and _profile is not None:

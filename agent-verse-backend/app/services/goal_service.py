@@ -145,6 +145,9 @@ class GoalRecord:
     workflow_mode: str = "single_agent"
     execution_context: dict[str, Any] = field(default_factory=dict)
     runtime_profile: Any | None = field(default=None, repr=False)
+    # The profile as built, for OBSERVATION only (scorecards/evals), even when the
+    # rollout does not let it drive execution (``runtime_profile`` is then None).
+    observed_runtime_profile: Any | None = field(default=None, repr=False)
     events: list[dict[str, Any]] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     subscribers: list[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=list)
@@ -1997,6 +2000,10 @@ class GoalService:
         return {
             # The rollout decides: only an admitted v2 tenant executes the profile.
             "profile_object": profile if rollout.path == "v2" else None,
+            # Always available for scoring: eval scorecards used to depend on
+            # profile_object, so every non-v2 tenant (the default) stopped
+            # getting a persisted scorecard once the rollout gate became real.
+            "observed_profile": profile,
             "context": context,
             "columns": columns,
         }
@@ -2980,6 +2987,8 @@ class GoalService:
                 **_persist_profile_kwargs,
                 **_tenant_llm_kwargs(_persist_llm_config),
             )
+            if _persist_record is not None:
+                loop._observed_runtime_profile = _persist_record.observed_runtime_profile
             self._persist_strategy_execution(goal_id, tenant_ctx.tenant_id, _persist_record)
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
@@ -3194,6 +3203,8 @@ class GoalService:
                     **_profile_kwargs,
                     **_tenant_llm_kwargs(await self._resolve_tenant_llm_config(tenant_ctx)),
                 )
+                if record is not None:
+                    loop._observed_runtime_profile = record.observed_runtime_profile
             except TenantProviderError as _byok_exc:
                 # BYOK configured but unusable: an explicit goal failure, not an
                 # escaped exception (goal stuck "executing") or platform spend.
@@ -3987,6 +3998,7 @@ class GoalService:
             )
             if _profile_data:
                 record.runtime_profile = _profile_data.get("profile_object")
+                record.observed_runtime_profile = _profile_data.get("observed_profile")
                 record.execution_context.update(_profile_data.get("context") or {})
                 _profile_columns = _profile_data.get("columns")
 

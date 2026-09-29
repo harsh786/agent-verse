@@ -178,7 +178,7 @@ class EvalRunner:
         tool_relevance = self._score_tool_relevance(state.steps, state.iterations)
 
         context = state.context if isinstance(state.context, dict) else {}
-        profile = context.get("_runtime_profile")
+        profile = context.get("_runtime_profile") or context.get("_observed_runtime_profile")
         profile_tenant = getattr(profile, "tenant_id", tenant_ctx.tenant_id)
         if profile_tenant != tenant_ctx.tenant_id:
             raise PermissionError("runtime profile tenant does not match goal tenant")

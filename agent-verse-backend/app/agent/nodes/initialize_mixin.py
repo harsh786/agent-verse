@@ -194,6 +194,10 @@ class InitializeMixin:
 
         if self._runtime_profile is not None:
             agent_state.context["_runtime_profile"] = self._runtime_profile
+        _observed = getattr(self, "_observed_runtime_profile", None) or self._runtime_profile
+        if _observed is not None:
+            # Scoring only; execution reads ``_runtime_profile`` (rollout-gated).
+            agent_state.context["_observed_runtime_profile"] = _observed
 
         # H23-H26: Security profiles — compute per-goal identity + action safety context
         try:

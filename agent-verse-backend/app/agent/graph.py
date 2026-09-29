@@ -212,6 +212,9 @@ class AgentGraph(
         self._llm_response_cache: Any = llm_response_cache
         self._embedder: Any = embedder
         self._runtime_profile = runtime_profile
+        # Built profile for scoring only (set by GoalService even when the rollout
+        # keeps it from driving execution); see initialize_mixin.
+        self._observed_runtime_profile: Any = None
         selected_strategy_ids = set()
         if runtime_profile is not None:
             selected_strategy_ids = {
