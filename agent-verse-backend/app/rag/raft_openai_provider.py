@@ -8,13 +8,16 @@ raised ``RAFTModelUnavailableError`` even when a real OpenAI key was configured.
 This module provides:
 
 * :class:`OpenAIFineTuneProvider` — a real ``FineTuneProvider`` backed by the
-  OpenAI fine-tuning REST API (files → job create → job retrieve).
+  OpenAI fine-tuning REST API (files → job create → job retrieve). RAFT records
+  are uploaded in OpenAI's chat fine-tuning format (``{"messages": [...]}``)
+  built by :func:`app.rag.raft.raft_chat_jsonl` — the same prompt shape
+  :mod:`app.rag.raft_inference` sends when serving the resulting model.
 * :func:`build_raft_providers` — returns ``{"openai": OpenAIFineTuneProvider}``
   when an OpenAI key is configured, else ``{}`` (RAFT is then legitimately
   unavailable — a *configuration* state, not a structural bug).
 
 Cost estimation and status mapping are deterministic and network-free so they
-are safe to unit-test; only ``submit``/``status``/``evaluate`` touch the network
+are safe to unit-test; only ``submit``/``status`` touch the network
 and only when actually driving a fine-tune.
 """
 
@@ -27,10 +30,10 @@ from typing import TYPE_CHECKING, Any
 from app.observability.logging import get_logger
 from app.rag.raft import (
     FineTuneCost,
-    FineTuneEvaluation,
     FineTuneJobState,
     FineTuneProvider,
     RAFTJobStatus,
+    raft_chat_jsonl,
 )
 
 if TYPE_CHECKING:
@@ -114,10 +117,14 @@ class OpenAIFineTuneProvider:
         base_model: str,
         idempotency_key: str,
     ) -> str:
-        """Upload datasets and create a fine-tuning job; return the job id."""
+        """Upload chat-format datasets and create a fine-tuning job; return the job id."""
+        training_chat = raft_chat_jsonl(training_jsonl)
+        validation_chat = raft_chat_jsonl(validation_jsonl)
+        if not training_chat.strip():
+            raise ValueError("RAFT training split is empty")
         client = self._client()
         training_file = await client.files.create(
-            file=("raft_train.jsonl", io.BytesIO(training_jsonl.encode("utf-8"))),
+            file=("raft_train.jsonl", io.BytesIO(training_chat.encode("utf-8"))),
             purpose="fine-tune",
         )
         create_kwargs: dict[str, Any] = {
@@ -125,9 +132,9 @@ class OpenAIFineTuneProvider:
             "training_file": training_file.id,
             "metadata": {"raft_idempotency_key": idempotency_key},
         }
-        if validation_jsonl.strip():
+        if validation_chat.strip():
             validation_file = await client.files.create(
-                file=("raft_val.jsonl", io.BytesIO(validation_jsonl.encode("utf-8"))),
+                file=("raft_val.jsonl", io.BytesIO(validation_chat.encode("utf-8"))),
                 purpose="fine-tune",
             )
             create_kwargs["validation_file"] = validation_file.id
@@ -147,23 +154,6 @@ class OpenAIFineTuneProvider:
             fine_tuned_model=getattr(job, "fine_tuned_model", None),
             error=self._extract_error(job),
         )
-
-    async def evaluate(
-        self,
-        *,
-        model: str,
-        test_jsonl: str,
-    ) -> FineTuneEvaluation:
-        """Return evaluation metrics for a fine-tuned model.
-
-        OpenAI exposes training/validation metrics via the job's result files
-        rather than an ad-hoc scoring endpoint, so we surface the example count
-        as a minimal, honest signal here. Richer eval (running ``test_jsonl``
-        through the fine-tuned model and scoring) is a deliberate follow-up; we
-        never fabricate accuracy numbers.
-        """
-        example_count = sum(1 for line in test_jsonl.splitlines() if line.strip())
-        return FineTuneEvaluation(metrics={"test_examples": float(example_count)})
 
     @staticmethod
     def _extract_error(job: Any) -> str | None:

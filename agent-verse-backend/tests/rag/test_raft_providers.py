@@ -44,9 +44,13 @@ def test_build_raft_providers_registers_openai_with_key() -> None:
 def test_adapter_satisfies_finetune_provider_protocol() -> None:
     provider: FineTuneProvider = OpenAIFineTuneProvider(api_key="sk-test-123")
     assert provider.provider_id == "openai"
-    # structural: the protocol methods exist and are coroutines
-    for name in ("preview_cost", "submit", "status", "evaluate"):
+    # The protocol is runtime-checkable: the explicit contract is enforced.
+    assert isinstance(provider, FineTuneProvider)
+    for name in ("preview_cost", "submit", "status"):
         assert callable(getattr(provider, name))
+    # Evaluation is real inference through the serving provider (RAFTService),
+    # not a provider method that returned only an example count.
+    assert not hasattr(provider, "evaluate")
 
 
 @pytest.mark.asyncio

@@ -361,6 +361,15 @@ class Settings(BaseSettings):
     enable_agentic_chunking: bool = True
     colbert_checkpoint: str = "colbert-ir/colbertv2.0"
 
+    # --- RAFT (retrieval-augmented fine-tuning) ---
+    # Cap on curated chunks read into one training dataset (keyset-paged).
+    raft_max_training_chunks: int = Field(default=2000, ge=1, le=100_000)
+    raft_chunk_page_size: int = Field(default=500, ge=1, le=10_000)
+    # Held-out examples scored (one inference call each) by POST .../evaluate.
+    raft_max_eval_examples: int = Field(default=50, ge=1, le=1000)
+    # In-flight jobs advanced per beat tick by the status poller.
+    raft_poll_batch_size: int = Field(default=50, ge=1, le=1000)
+
     # --- Agent Civilization ---
     civilization_max_agents_per_tenant: int = 50
     civilization_max_spawn_depth: int = 5
