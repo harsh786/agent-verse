@@ -1111,37 +1111,87 @@ async def revoke_tenant_session(session_id: str, request: Request) -> None:
 # ── Data export ───────────────────────────────────────────────────────────────
 
 
+_EXPORT_PAGE_SIZE = 200
+
+
+async def _collect_all_pages(
+    fetch_page: Any, *, id_keys: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Page through ``fetch_page(limit, offset)`` until it returns an empty page.
+
+    Stops on an empty page rather than a short one, so a backend that clamps
+    ``limit`` below the requested size is still read to the end. Rows are
+    de-duplicated by the first present key in ``id_keys`` (offset paging over a
+    live table can repeat a row when new rows are inserted mid-export), and a
+    page that adds nothing new ends the loop so a backend that ignores
+    ``offset`` cannot spin forever.
+    """
+    rows: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    offset = 0
+    while True:
+        page = await fetch_page(_EXPORT_PAGE_SIZE, offset)
+        if not page:
+            return rows
+        added = 0
+        for row in page:
+            key = next((row[k] for k in id_keys if isinstance(row, dict) and k in row), None)
+            if key is not None and key in seen:
+                continue
+            if key is not None:
+                seen.add(key)
+            rows.append(row)
+            added += 1
+        if added == 0:
+            return rows
+        offset += len(page)
+
+
 @router.post("/me/export")
 async def export_tenant_data(request: Request) -> dict:
-    """Export all tenant data as JSON."""
+    """Export all of the tenant's goals and agents as JSON (GDPR data export).
+
+    The export is complete or it fails: every goal and agent is read by paging
+    through the tenant-scoped (RLS) service reads -- not just their first page
+    -- and a missing service or read failure answers **503** instead of an
+    export that silently omits data.
+    """
     tenant = _require_tenant(request)
     goal_svc = getattr(request.app.state, "goal_service", None)
+    agent_store = getattr(request.app.state, "agent_store", None)
+    if goal_svc is None or agent_store is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Data export unavailable: goal service or agent store is not configured",
+        )
 
-    export_data: dict = {
+    async def _goal_page(limit: int, offset: int) -> list[dict[str, Any]]:
+        resp = await goal_svc.list_goals(tenant_ctx=tenant, limit=limit, offset=offset)
+        return list(resp.get("goals", [])) if isinstance(resp, dict) else []
+
+    async def _agent_page(limit: int, offset: int) -> list[dict[str, Any]]:
+        return list(await agent_store.list_async(tenant_ctx=tenant, limit=limit, offset=offset))
+
+    try:
+        goals = await _collect_all_pages(_goal_page, id_keys=("id", "goal_id"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Data export failed: goals could not be read"
+        ) from exc
+    try:
+        agents = await _collect_all_pages(_agent_page, id_keys=("agent_id", "id"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503, detail="Data export failed: agents could not be read"
+        ) from exc
+
+    return {
         "tenant_id": tenant.tenant_id,
         "exported_at": datetime.now(UTC).isoformat(),
-        "goals": [],
-        "agents": [],
+        "goals": goals,
+        "agents": agents,
+        "counts": {"goals": len(goals), "agents": len(agents)},
     }
-
-    if goal_svc:
-        try:
-            resp = await goal_svc.list_goals(tenant_ctx=tenant)
-            export_data["goals"] = resp.get("goals", []) if isinstance(resp, dict) else []
-        except Exception:
-            pass
-
-    agent_store = getattr(request.app.state, "agent_store", None)
-    if agent_store:
-        try:
-            agents = agent_store.list(tenant_ctx=tenant)
-            if hasattr(agents, "__await__"):
-                agents = await agents
-            export_data["agents"] = agents if isinstance(agents, list) else []
-        except Exception:
-            pass
-
-    return export_data
 
 
 # ── Account deletion ──────────────────────────────────────────────────────────
