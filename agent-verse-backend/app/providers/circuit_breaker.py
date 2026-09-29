@@ -103,8 +103,11 @@ async def call_with_circuit_breaker(
         raise TimeoutError(
             f"LLM provider call timed out for {provider_name} after {timeout}s"
         ) from exc
-    except Exception:
-        _provider_cb.record_failure(provider_name)
+    except Exception as exc:
+        # A caller-side refusal (a budget denial raised by a metering wrapper) is
+        # not a provider failure and must not open the circuit for everyone.
+        if getattr(exc, "provider_failure", True):
+            _provider_cb.record_failure(provider_name)
         raise
 
 

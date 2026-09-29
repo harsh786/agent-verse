@@ -2310,6 +2310,12 @@ def run_goal(
             # Workers enforce the tenant's configured budget_configs row too.
             if db_factory is not None:
                 _cost.set_budget_db(db_factory)
+            # Decision calls outside the goal scope (e.g. post-run eval scoring)
+            # charge this worker's controller, like the API's lifespan wiring.
+            from app.providers.guarded_completion import set_platform_cost_services
+
+            _decision_cost = _cost
+            set_platform_cost_services(lambda: (_decision_cost, None))
 
             # Build a model router matched to the provider type so the graph
             # uses the correct model names (e.g. gpt-4-turbo not claude-opus-4-8).

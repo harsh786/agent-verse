@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from app.providers.base import CompletionRequest, Message
+from app.providers.guarded_completion import complete_decision
 from app.rag.agentic.patterns.base import RAGPattern, RAGPatternState
 from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
 
@@ -61,7 +62,11 @@ async def grade_evidence(
         response_schema=schema,
     )
     try:
-        response = await provider.complete(request)
+        # Breaker + timeout only: the strategy LLM is already a _BudgetedProvider
+        # (RAG cost guard), so charging here would bill the call twice.
+        response = await complete_decision(
+            provider, request, role="rag_corrective", charge=False
+        )
         payload = json.loads(
             re.sub(r"<think>.*?</think>", "", str(response.content), flags=re.DOTALL).strip()
         )
@@ -98,7 +103,11 @@ async def reformulate_query(
         max_tokens=120,
     )
     try:
-        response = await provider.complete(request)
+        # Breaker + timeout only: the strategy LLM is already a _BudgetedProvider
+        # (RAG cost guard), so charging here would bill the call twice.
+        response = await complete_decision(
+            provider, request, role="rag_corrective", charge=False
+        )
         reformulated = str(response.content).strip()
     except Exception as exc:
         if isinstance(exc, RetrievalStrategyExecutionError):

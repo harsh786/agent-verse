@@ -224,6 +224,10 @@ class RetrievalLegExecutionError(RetrievalExecutionError):
 class RetrievalStrategyExecutionError(RetrievalExecutionError):
     """The requested strategy cannot complete without substitution."""
 
+    # Raised by the RAG cost guard (budget) and strategy logic, never by a
+    # provider transport: it must not count toward the provider circuit.
+    provider_failure = False
+
     def __init__(self, strategy: str, reason: str) -> None:
         super().__init__(f"RAG strategy execution failed: {strategy} ({reason})")
         self.strategy = strategy

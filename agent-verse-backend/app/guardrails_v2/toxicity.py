@@ -84,6 +84,8 @@ class ToxicityClassifier:
         self,
         text: str,
         provider: LLMProvider | None = None,
+        *,
+        tenant_id: str | None = None,
     ) -> ToxicityResult:
         """Full two-pass classification."""
         pattern_result = self._pattern_check(text)
@@ -93,7 +95,7 @@ class ToxicityClassifier:
 
         # LLM second pass only for ambiguous cases
         if _AMBIGUOUS_SCORE_MIN <= pattern_result.score <= _AMBIGUOUS_SCORE_MAX:
-            llm_result = await self._llm_check(text, provider)
+            llm_result = await self._llm_check(text, provider, tenant_id=tenant_id)
             combined_score = (pattern_result.score + llm_result.score) / 2.0
             combined_cats = list(set(pattern_result.categories + llm_result.categories))
             return ToxicityResult(
@@ -129,6 +131,8 @@ class ToxicityClassifier:
         self,
         text: str,
         provider: LLMProvider,
+        *,
+        tenant_id: str | None = None,
     ) -> ToxicityResult:
         try:
             from app.providers.base import CompletionRequest, Message
@@ -149,7 +153,12 @@ class ToxicityClassifier:
                 max_tokens=80,
                 temperature=0.0,
             )
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            # Charged and circuit-broken; failures take the existing default.
+            resp = await complete_decision(
+                provider, req, role="guardrail_toxicity", tenant_id=tenant_id
+            )
             import json as _json
 
             data = _json.loads((resp.content or "{}").strip())

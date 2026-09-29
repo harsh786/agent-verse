@@ -229,6 +229,7 @@ class IntentRouter:
         history: list[dict[str, str]] | None = None,
         clarify_round: int = 0,
         llm: Any = None,
+        tenant_ctx: Any = None,
     ) -> Intent:
         """Regex-first classification with a fast-LLM fallback for ambiguous input.
 
@@ -240,7 +241,7 @@ class IntentRouter:
         regex_intent = self.classify(message, history, clarify_round)
         if llm is None or not self._is_ambiguous(message, history or [], clarify_round):
             return regex_intent
-        llm_intent = await self._llm_disambiguate(message, llm)
+        llm_intent = await self._llm_disambiguate(message, llm, tenant_ctx=tenant_ctx)
         return llm_intent or regex_intent
 
     def _is_ambiguous(
@@ -254,7 +255,9 @@ class IntentRouter:
             return False
         return not (len(msg.split()) <= 4 and self._previous_was_goal(history))
 
-    async def _llm_disambiguate(self, message: str, llm: Any) -> Intent | None:
+    async def _llm_disambiguate(
+        self, message: str, llm: Any, *, tenant_ctx: Any = None
+    ) -> Intent | None:
         import json
         import re
 
@@ -266,8 +269,13 @@ class IntentRouter:
             "qa = answer a question or chat; goal = perform a task using tools; "
             "schedule = set up a recurring or future action. No other text."
         )
+        from app.providers.guarded_completion import complete_decision
+
         try:
-            resp = await llm.complete(
+            # Charged to the tenant and circuit-broken; any failure keeps the
+            # regex intent (the caller's fallback).
+            resp = await complete_decision(
+                llm,
                 CompletionRequest(
                     messages=[
                         Message(role="system", content=system),
@@ -276,7 +284,9 @@ class IntentRouter:
                     model="",
                     max_tokens=20,
                     temperature=0.0,
-                )
+                ),
+                role="chat_intent",
+                tenant_ctx=tenant_ctx,
             )
             content = getattr(resp, "content", "") or ""
             match = re.search(r"\{[\s\S]*\}", content)
