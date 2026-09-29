@@ -42,6 +42,8 @@ def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
 _SUSPENDED_KEY = "_suspended_for_approval"
 # execution_context: fingerprint of the goal's dedup scope (see services/dedup.py)
 _DEDUP_SCOPE_KEY = "_dedup_scope"
+# Events that produce usage records (see app/services/usage_metering.py).
+_METERED_EVENT_TYPES = {"tool_call_complete", "goal_complete", "goal_failed", "goal_cancelled"}
 from app.agent.sanitization import sanitize_event
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
@@ -119,6 +121,8 @@ class GoalRecord:
     # Phase 12: rejection note from HITL operator — passed to planner for replanning
     hitl_rejection_note: str = ""
     error_message: str = ""
+    # The goal's completion has been metered (UsageService) — once per goal.
+    usage_recorded: bool = False
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -2128,6 +2132,10 @@ class GoalService:
                     )
             except Exception:
                 pass
+        # Usage metering (in-process runs; worker-run goals meter in the worker).
+        # Dry runs execute nothing and are not metered.
+        if not record.dry_run and etype in _METERED_EVENT_TYPES:
+            await self._meter_usage(record, sanitized_event)
         # Publish ALL non-ephemeral events to a goal-specific Redis channel so that
         # replica B can receive events for goals executing on replica A (P1-2 fix).
         if not _is_ephemeral and self._redis is not None and tenant_ctx is not None:
@@ -2183,6 +2191,46 @@ class GoalService:
             for q in list(record.subscribers):
                 with suppress(Exception):
                     q.put_nowait(_SENTINEL)
+
+    def _usage_service(self) -> Any:
+        """The app's UsageService (``app.state.usage_service``), or None."""
+        aps: Any = self._app_state
+        if aps is None:
+            return None
+        try:
+            from starlette.applications import Starlette as _Starlette
+
+            if isinstance(aps, _Starlette):
+                aps = aps.state
+        except Exception:
+            pass
+        return getattr(aps, "usage_service", None)
+
+    async def _meter_usage(self, record: GoalRecord, event: dict[str, Any]) -> None:
+        """Record usage for a tool call / the goal's terminal event (never raises)."""
+        from app.services.usage_metering import (
+            TERMINAL_EVENT_STATUS,
+            TOOL_CALL_EVENT,
+            meter_goal_completion,
+            meter_tool_call,
+        )
+
+        usage = self._usage_service()
+        if usage is None:
+            return
+        etype = str(event.get("type", ""))
+        if etype == TOOL_CALL_EVENT:
+            await meter_tool_call(
+                usage, tenant_id=record.tenant_id, goal_id=record.goal_id, event=event
+            )
+        elif etype in TERMINAL_EVENT_STATUS and not record.usage_recorded:
+            record.usage_recorded = True
+            await meter_goal_completion(
+                usage,
+                tenant_id=record.tenant_id,
+                goal_id=record.goal_id,
+                status=TERMINAL_EVENT_STATUS[etype],
+            )
 
     async def _publish_chain_event(
         self,

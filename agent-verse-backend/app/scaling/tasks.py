@@ -433,6 +433,23 @@ def _bind_worker_cost_breakdown_db() -> None:
         logger.warning("worker_cost_breakdown_db_bind_failed: %s", exc)
 
 
+def _worker_usage_service() -> Any:
+    """A DB-backed UsageService for metering worker-run goals (or None).
+
+    Resolves the CURRENT session factory each call (the worker disposes the
+    engine after every task). Metering calls flush immediately, so nothing is
+    left in this process's buffer when the task ends.
+    """
+    try:
+        from app.db.session import get_session_factory
+        from app.services.usage_service import UsageService
+
+        return UsageService(db_factory=get_session_factory())
+    except Exception as exc:
+        logger.warning("worker_usage_service_unavailable: %s", exc)
+        return None
+
+
 def _record_goal_duration_metric(status: str, *, started_monotonic: float, priority: str) -> None:
     try:
         from app.observability.metrics import record_goal_duration
@@ -1665,6 +1682,14 @@ def run_goal(
             except Exception as _chain_exc:
                 logger.warning("goal_chain_event_publish_failed: %s", _chain_exc)
 
+        # ── Usage metering: one tool_calls record per completed tool call ─────
+        if not dry_run and event.get("type") == "tool_call_complete":
+            from app.services.usage_metering import meter_tool_call
+
+            await meter_tool_call(
+                _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, event=event
+            )
+
         # ── Also persist to event store (DB) for the historical Dev Log ───────
         if event_store is None:
             return
@@ -1699,6 +1724,16 @@ def run_goal(
             {"type": "worker_started", "goal": effective_goal, "worker": "celery"}
         )
 
+    async def meter_worker_goal(status: str) -> None:
+        # Usage metering for the goal itself (once per goal: deterministic ids).
+        if dry_run or status not in {"complete", "failed", "cancelled"}:
+            return
+        from app.services.usage_metering import meter_goal_completion
+
+        await meter_goal_completion(
+            _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, status=status
+        )
+
     async def mark_worker_complete(status: str, iterations: int) -> None:
         await update_submitted_goal_status(status, iterations=iterations)
         await append_submitted_goal_event(
@@ -1708,6 +1743,7 @@ def run_goal(
                 "iterations": iterations,
             }
         )
+        await meter_worker_goal(status)
         # Close the org loop: if a mission dispatched this goal, reconcile it now
         # (mark subtasks done, aggregate the deliverable, complete the mission).
         # Skipped for dry runs — they must not finalize a real mission.
@@ -1717,6 +1753,7 @@ def run_goal(
     async def mark_worker_failed(exc: Exception) -> None:
         await update_submitted_goal_status("failed", error_message=str(exc))
         await append_submitted_goal_event({"type": "worker_failed", "reason": str(exc)})
+        await meter_worker_goal("failed")
         if not dry_run:
             await _finalize_owning_mission(goal_id, tenant_id)
 
