@@ -1476,62 +1476,47 @@ async def clear_emergency_stop(
 # ---------------------------------------------------------------------------
 
 
-async def _email_link_tenant_ctx(request: Request, gateway: Any, request_id: str) -> Any:
-    """TenantContext for a signed email-link decision on *request_id*.
+async def _email_link_decision(
+    request: Request, request_id: str, action: str, sig: str, exp: int
+) -> tuple[HITLGateway, TenantContext, str]:
+    """Verify a signed approve/reject link for the AUTHENTICATED approver.
 
-    The owning tenant is resolved from the local cache or, when the approval was
-    raised on another replica, from Postgres (it used to scan this process's
-    cache only, so a link opened on a different replica answered 404).
-    """
-    try:
-        tenant_id = await gateway.aresolve_request_tenant(
-            request_id, getattr(request.app.state, "system_db_session_factory", None)
-        )
-    except HITLResolutionUnavailableError as exc:
-        raise _resolution_unavailable(exc) from exc
-    if not tenant_id:
-        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
-
-    from app.tenancy.context import PlanTier, TenantContext
-
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    actual_plan = PlanTier.FREE  # safe default
-    if tenant_svc is not None:
-        try:
-            real_tenant = await tenant_svc.get_tenant(tenant_id)
-            if real_tenant and real_tenant.get("plan"):
-                actual_plan = PlanTier(real_tenant["plan"])
-        except Exception:
-            pass  # fall through to FREE
-    return TenantContext(
-        tenant_id=tenant_id,
-        plan=actual_plan,
-        api_key_id="email-link-approver",
-    )
-
-
-@router.get("/hitl/{request_id}/approve")
-async def email_approve_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
-    """Handle one-click approve link from HITL approval email.
-
-    Validates HMAC signature and approves the request on behalf of the email recipient.
+    The link used to be verified against ``request_id:action`` only, under a
+    public default secret with no expiry, and the decision ran as a synthetic
+    ``email-link`` principal in whatever tenant owned the request -- so any
+    caller could forge a permanent approve link for any tenant's request. Now
+    the caller must hold the ``approver`` role (route dependency), the
+    signature must be unexpired and bound to this request, action AND the
+    caller's own tenant, and the decision is attributed to the caller.
     """
     from app.integrations.email.approval_sender import _verify
 
-    if not sig or not _verify(request_id, "approve", sig):
+    tenant_ctx: TenantContext = _require_tenant(request)
+    if not _verify(request_id, action, sig, tenant_id=tenant_ctx.tenant_id, exp=exp):
         raise HTTPException(status_code=403, detail="Invalid or expired approval link")
-
     gateway = getattr(request.app.state, "hitl_gateway", None)
     if gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
+    return gateway, tenant_ctx, _approver_identity(tenant_ctx)
 
-    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
 
+@router.get("/hitl/{request_id}/approve")
+async def email_approve_link(
+    request: Request,
+    request_id: str,
+    sig: str = "",
+    exp: int = 0,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
+    """Handle one-click approve link from HITL approval email."""
+    gateway, tenant_ctx, approver = await _email_link_decision(
+        request, request_id, "approve", sig, exp
+    )
     # DB-first: the request may have been raised on another replica, and the
-    # waiting agent must only be released once the decision is committed (the
-    # sync approve() saw local requests only and released it before the write).
+    # waiting agent must only be released once the decision is committed.
+    # approve_async answers False unless the request is still PENDING.
     try:
-        ok = await gateway.approve_async(request_id, approver="email-link", tenant_ctx=fake_ctx)
+        ok = await gateway.approve_async(request_id, approver=approver, tenant_ctx=tenant_ctx)
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
     if not ok:
@@ -1540,31 +1525,26 @@ async def email_approve_link(request: Request, request_id: str, sig: str = "") -
     return {
         "request_id": request_id,
         "status": "approved",
-        "approver": "email-link",
+        "approver": approver,
         "message": "Action approved via email link.",
     }
 
 
 @router.get("/hitl/{request_id}/reject")
-async def email_reject_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
-    """Handle one-click reject link from HITL approval email.
-
-    Validates HMAC signature and rejects the request.
-    """
-    from app.integrations.email.approval_sender import _verify
-
-    if not sig or not _verify(request_id, "reject", sig):
-        raise HTTPException(status_code=403, detail="Invalid or expired rejection link")
-
-    gateway = getattr(request.app.state, "hitl_gateway", None)
-    if gateway is None:
-        raise HTTPException(status_code=503, detail="HITL gateway not available")
-
-    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
-
+async def email_reject_link(
+    request: Request,
+    request_id: str,
+    sig: str = "",
+    exp: int = 0,
+    _rbac: None = Depends(require_role("approver")),
+) -> dict[str, Any]:
+    """Handle one-click reject link from HITL approval email."""
+    gateway, tenant_ctx, approver = await _email_link_decision(
+        request, request_id, "reject", sig, exp
+    )
     try:
         ok = await gateway.reject(
-            request_id, approver="email-link", note="Rejected via email link", tenant_ctx=fake_ctx
+            request_id, approver=approver, note="Rejected via email link", tenant_ctx=tenant_ctx
         )
     except HITLResolutionUnavailableError as exc:
         raise _resolution_unavailable(exc) from exc
@@ -1574,7 +1554,7 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
     return {
         "request_id": request_id,
         "status": "rejected",
-        "approver": "email-link",
+        "approver": approver,
         "message": "Action rejected via email link.",
     }
 

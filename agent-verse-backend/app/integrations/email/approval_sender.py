@@ -1,6 +1,13 @@
 """Send HITL approval emails with signed approve/reject links.
 
 P1.3: Generates HTML email with clickable Approve/Reject buttons and HMAC-signed URLs.
+
+The signature binds ``request_id``, the owning ``tenant_id``, the action and an
+expiry. It used to cover only ``request_id:action`` under the public default
+secret ``changeme-please-set-HITL_EMAIL_SECRET`` in every environment, with no
+expiry -- anyone could forge a never-expiring approve link for any request.
+Production now refuses to sign or verify without ``HITL_EMAIL_SECRET`` or a key
+derived from ``VAULT_MASTER_KEY`` (same scheme as ``app.auth.stream_tokens``).
 """
 
 from __future__ import annotations
@@ -8,24 +15,67 @@ from __future__ import annotations
 import hashlib
 import hmac as _hmac
 import os
+import time
+from urllib.parse import urlencode
 
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 _SECRET_ENV = "HITL_EMAIL_SECRET"
+_DEV_SECRET = "agentverse-dev-only-hitl-email-secret"
+
+# Matches the "Links expire in 24 hours" promise in the email body.
+EMAIL_LINK_TTL_S = 24 * 3600
 
 
-def _sign(request_id: str, action: str) -> str:
-    """Return a 32-char HMAC-SHA256 hex digest for the (request_id, action) pair."""
-    secret = os.getenv(_SECRET_ENV, "changeme-please-set-HITL_EMAIL_SECRET")
-    payload = f"{request_id}:{action}".encode()
-    return _hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()[:32]
+def _signing_secret() -> str:
+    """HMAC key for approval links; refuses the public default in production."""
+    explicit = os.getenv(_SECRET_ENV)
+    if explicit:
+        return explicit
+    master = os.getenv("VAULT_MASTER_KEY")
+    if master:
+        return hashlib.sha256(b"agentverse-hitl-email-link:" + master.encode()).hexdigest()
+    if os.getenv("ENVIRONMENT", "development") == "production":
+        raise RuntimeError("HITL_EMAIL_SECRET (or VAULT_MASTER_KEY) must be set in production")
+    return _DEV_SECRET
 
 
-def _verify(request_id: str, action: str, sig: str) -> bool:
-    """Return True if sig is the correct signature for (request_id, action)."""
-    expected = _sign(request_id, action)
+def _sign(request_id: str, action: str, *, tenant_id: str, exp: int) -> str:
+    """HMAC-SHA256 hex digest over (request_id, tenant_id, action, exp)."""
+    payload = f"hitl-email:{request_id}:{tenant_id}:{action}:{int(exp)}".encode()
+    return _hmac.new(_signing_secret().encode(), payload, hashlib.sha256).hexdigest()
+
+
+def _verify(request_id: str, action: str, sig: str, *, tenant_id: str, exp: int) -> bool:
+    """True only for an unexpired link signed for exactly this request, tenant and action."""
+    if not sig or not tenant_id or int(exp) < int(time.time()):
+        return False
+    try:
+        expected = _sign(request_id, action, tenant_id=tenant_id, exp=exp)
+    except RuntimeError:
+        logger.error("hitl_email_secret_missing")
+        return False
     return _hmac.compare_digest(expected, sig)
+
+
+def signed_link_query(
+    request_id: str, action: str, *, tenant_id: str, ttl_s: int = EMAIL_LINK_TTL_S
+) -> str:
+    """``sig=...&exp=...`` query string for an approve/reject link."""
+    exp = int(time.time()) + int(ttl_s)
+    return urlencode({"sig": _sign(request_id, action, tenant_id=tenant_id, exp=exp), "exp": exp})
+
+
+def build_decision_urls(base_url: str, request_id: str, *, tenant_id: str) -> tuple[str, str]:
+    """(approve_url, reject_url) — the one link format every notifier uses."""
+    base = base_url.rstrip("/")
+    return (
+        f"{base}/hitl/{request_id}/approve?"
+        + signed_link_query(request_id, "approve", tenant_id=tenant_id),
+        f"{base}/hitl/{request_id}/reject?"
+        + signed_link_query(request_id, "reject", tenant_id=tenant_id),
+    )
 
 
 async def send_approval_email(
@@ -34,6 +84,7 @@ async def send_approval_email(
     goal_description: str,
     step_description: str,
     request_id: str,
+    tenant_id: str,
     frontend_url: str,
     smtp_host: str = "localhost",
     smtp_port: int = 1025,
@@ -48,10 +99,9 @@ async def send_approval_email(
 
         import aiosmtplib
 
-        approve_sig = _sign(request_id, "approve")
-        reject_sig = _sign(request_id, "reject")
-        approve_url = f"{frontend_url}/hitl/{request_id}/approve?sig={approve_sig}"
-        reject_url = f"{frontend_url}/hitl/{request_id}/reject?sig={reject_sig}"
+        approve_url, reject_url = build_decision_urls(
+            frontend_url, request_id, tenant_id=tenant_id
+        )
 
         html = f"""<!DOCTYPE html>
 <html><body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;">

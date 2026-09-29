@@ -426,17 +426,23 @@ def test_email_approve_link_no_gateway() -> None:
 
 
 def test_email_approve_link_not_found() -> None:
-    """Lines 849-852: gateway present but request not found -> 404."""
-    with patch("app.integrations.email.approval_sender._verify", return_value=True):
+    """Gateway present but no pending request for the caller's tenant -> 409."""
+    with patch(
+        "app.integrations.email.approval_sender._verify", return_value=True
+    ) as verify:
         gateway = HITLGateway()
         # Empty gateway has no requests
 
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
         resp = client.get(
-            "/governance/hitl/req-notexist/approve?sig=valid-sig",
+            "/governance/hitl/req-notexist/approve?sig=valid-sig&exp=123",
             headers=_headers(),
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 409
+        # The link is verified against the AUTHENTICATED caller's tenant.
+        verify.assert_called_once_with(
+            "req-notexist", "approve", "valid-sig", tenant_id=_CTX.tenant_id, exp=123
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -476,15 +482,20 @@ def test_email_reject_link_no_gateway() -> None:
 
 
 def test_email_reject_link_not_found() -> None:
-    """Lines 886-887: request not in gateway -> 404."""
-    with patch("app.integrations.email.approval_sender._verify", return_value=True):
+    """Request not in gateway for the caller's tenant -> 409."""
+    with patch(
+        "app.integrations.email.approval_sender._verify", return_value=True
+    ) as verify:
         gateway = HITLGateway()
         client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
         resp = client.get(
-            "/governance/hitl/req-missing/reject?sig=valid",
+            "/governance/hitl/req-missing/reject?sig=valid&exp=456",
             headers=_headers(),
         )
-        assert resp.status_code == 404
+        assert resp.status_code == 409
+        verify.assert_called_once_with(
+            "req-missing", "reject", "valid", tenant_id=_CTX.tenant_id, exp=456
+        )
 
 
 # ---------------------------------------------------------------------------

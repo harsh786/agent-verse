@@ -214,13 +214,42 @@ async def test_notify_approval_timeout_method_exists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notify_approval_required_has_token_param() -> None:
-    """G-17: notify_approval_required accepts approval_token."""
+async def test_notify_approval_required_builds_signed_links_not_token() -> None:
+    """G-17: magic links are signed ``?sig=&exp=`` links bound to the request,
+    tenant and action -- no caller-supplied ``approval_token`` (the endpoint
+    never read ``?token=``, so every such click answered 403)."""
     import inspect
+    from urllib.parse import parse_qs, urlparse
 
+    from app.integrations.email.approval_sender import _verify
     from app.services.notification_service import NotificationService
+
     sig = inspect.signature(NotificationService.notify_approval_required)
-    assert "approval_token" in sig.parameters
+    assert "approval_token" not in sig.parameters
+
+    svc = NotificationService()
+    sent: list[dict[str, Any]] = []
+    svc.ensure_tenant_loaded = AsyncMock()  # type: ignore[method-assign]
+    svc.get_channels = lambda tenant_id: [types.SimpleNamespace(channel_id="c1")]  # type: ignore[method-assign]
+
+    async def _send(channel: Any, message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    svc._send = _send  # type: ignore[method-assign]
+    await svc.notify_approval_required(
+        request_id="req-g17", goal_id="g", action="deploy", risk_level="high",
+        tenant_id=TENANT_ID,
+    )
+
+    assert sent
+    for key, action in (("approve_url", "approve"), ("reject_url", "reject")):
+        url = urlparse(sent[0][key])
+        assert url.path.endswith(f"/hitl/req-g17/{action}")
+        qs = parse_qs(url.query)
+        assert "token" not in qs
+        assert _verify(
+            "req-g17", action, qs["sig"][0], tenant_id=TENANT_ID, exp=int(qs["exp"][0])
+        )
 
 
 # ── G-19: OrgEventPublisher configure ────────────────────────────────────────

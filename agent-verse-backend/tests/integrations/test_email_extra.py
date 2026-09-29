@@ -14,55 +14,79 @@ import pytest
 
 # ── approval_sender._sign and _verify ─────────────────────────────────────────
 
+_TENANT = "t-email-extra"
+_EXP = 4_102_444_800  # 2100-01-01: fixed so signatures are comparable across calls
+
+
 class TestApprovalSenderSign:
-    def test_sign_returns_32_char_hex(self):
+    def test_sign_returns_full_64_char_hex(self):
         from app.integrations.email.approval_sender import _sign
-        sig = _sign("req123", "approve")
+        sig = _sign("req123", "approve", tenant_id=_TENANT, exp=_EXP)
         assert isinstance(sig, str)
-        assert len(sig) == 32
+        assert len(sig) == 64
         assert all(c in "0123456789abcdef" for c in sig)
 
     def test_sign_different_actions_differ(self):
         from app.integrations.email.approval_sender import _sign
-        approve_sig = _sign("req123", "approve")
-        reject_sig = _sign("req123", "reject")
+        approve_sig = _sign("req123", "approve", tenant_id=_TENANT, exp=_EXP)
+        reject_sig = _sign("req123", "reject", tenant_id=_TENANT, exp=_EXP)
         assert approve_sig != reject_sig
 
     def test_sign_different_request_ids_differ(self):
         from app.integrations.email.approval_sender import _sign
-        sig1 = _sign("req1", "approve")
-        sig2 = _sign("req2", "approve")
+        sig1 = _sign("req1", "approve", tenant_id=_TENANT, exp=_EXP)
+        sig2 = _sign("req2", "approve", tenant_id=_TENANT, exp=_EXP)
         assert sig1 != sig2
+
+    def test_sign_different_tenants_and_expiries_differ(self):
+        from app.integrations.email.approval_sender import _sign
+        base = _sign("req1", "approve", tenant_id=_TENANT, exp=_EXP)
+        assert base != _sign("req1", "approve", tenant_id="t-other", exp=_EXP)
+        assert base != _sign("req1", "approve", tenant_id=_TENANT, exp=_EXP + 1)
 
     def test_sign_deterministic(self):
         from app.integrations.email.approval_sender import _sign
-        sig1 = _sign("req123", "approve")
-        sig2 = _sign("req123", "approve")
+        sig1 = _sign("req123", "approve", tenant_id=_TENANT, exp=_EXP)
+        sig2 = _sign("req123", "approve", tenant_id=_TENANT, exp=_EXP)
         assert sig1 == sig2
 
     def test_sign_uses_env_secret(self):
         from app.integrations.email.approval_sender import _sign
         with patch.dict(os.environ, {"HITL_EMAIL_SECRET": "mysecret"}):
-            sig1 = _sign("req", "approve")
+            sig1 = _sign("req", "approve", tenant_id=_TENANT, exp=_EXP)
         with patch.dict(os.environ, {"HITL_EMAIL_SECRET": "othersecret"}):
-            sig2 = _sign("req", "approve")
+            sig2 = _sign("req", "approve", tenant_id=_TENANT, exp=_EXP)
         assert sig1 != sig2
 
 
 class TestApprovalSenderVerify:
     def test_verify_correct_signature(self):
         from app.integrations.email.approval_sender import _sign, _verify
-        sig = _sign("req42", "approve")
-        assert _verify("req42", "approve", sig) is True
+        sig = _sign("req42", "approve", tenant_id=_TENANT, exp=_EXP)
+        assert _verify("req42", "approve", sig, tenant_id=_TENANT, exp=_EXP) is True
 
     def test_verify_wrong_signature(self):
         from app.integrations.email.approval_sender import _verify
-        assert _verify("req42", "approve", "wrongsig12345678901234567890123") is False
+        assert (
+            _verify("req42", "approve", "wrongsig" * 8, tenant_id=_TENANT, exp=_EXP) is False
+        )
 
     def test_verify_wrong_action(self):
         from app.integrations.email.approval_sender import _sign, _verify
-        sig = _sign("req42", "approve")
-        assert _verify("req42", "reject", sig) is False
+        sig = _sign("req42", "approve", tenant_id=_TENANT, exp=_EXP)
+        assert _verify("req42", "reject", sig, tenant_id=_TENANT, exp=_EXP) is False
+
+    def test_verify_wrong_tenant(self):
+        from app.integrations.email.approval_sender import _sign, _verify
+        sig = _sign("req42", "approve", tenant_id=_TENANT, exp=_EXP)
+        assert _verify("req42", "approve", sig, tenant_id="t-other", exp=_EXP) is False
+
+    def test_verify_empty_sig_and_expired(self):
+        from app.integrations.email.approval_sender import _sign, _verify
+        assert _verify("req42", "approve", "", tenant_id=_TENANT, exp=_EXP) is False
+        past = 1_000_000_000  # 2001
+        sig = _sign("req42", "approve", tenant_id=_TENANT, exp=past)
+        assert _verify("req42", "approve", sig, tenant_id=_TENANT, exp=past) is False
 
 
 class TestSendApprovalEmailImportError:
@@ -75,6 +99,7 @@ class TestSendApprovalEmailImportError:
                 goal_description="Fix bug",
                 step_description="Deploy fix",
                 request_id="req1",
+                tenant_id=_TENANT,
                 frontend_url="http://localhost:5173",
             )
         assert result is False
@@ -92,6 +117,7 @@ class TestSendApprovalEmailSmtpError:
                 goal_description="Test goal",
                 step_description="Test step",
                 request_id="req2",
+                tenant_id=_TENANT,
                 frontend_url="http://localhost:5173",
                 smtp_host="localhost",
                 smtp_port=1025,
@@ -100,30 +126,24 @@ class TestSendApprovalEmailSmtpError:
 
     @pytest.mark.asyncio
     async def test_returns_true_on_success(self):
+        from app.integrations.email.approval_sender import send_approval_email
         mock_aiosmtp = MagicMock()
         mock_aiosmtp.send = AsyncMock(return_value=None)
-
-        # Mock email.mime modules to avoid any issues
-        mock_mime_multipart = MagicMock()
-        mock_mime_text = MagicMock()
-
-        with patch.dict(sys.modules, {
-            "aiosmtplib": mock_aiosmtp,
-        }):
-            # We need real email.mime modules, so just mock aiosmtplib.send
-
-            with patch("aiosmtplib.send", mock_aiosmtp.send):
-
-                import app.integrations.email.approval_sender as mod
-                # Directly patch aiosmtplib in the module
-                with patch.object(mod, "__builtins__", mod.__builtins__):
-                    # Try calling with proper mock setup
-                    pass
-
-        # Simpler: verify the sign functions produce valid URLs
-        from app.integrations.email.approval_sender import _sign
-        sig = _sign("test_req", "approve")
-        assert len(sig) == 32
+        with patch.dict(sys.modules, {"aiosmtplib": mock_aiosmtp}):
+            result = await send_approval_email(
+                to_email="test@example.com",
+                goal_description="Test goal",
+                step_description="Test step",
+                request_id="test_req",
+                tenant_id=_TENANT,
+                frontend_url="http://localhost:5173",
+                smtp_host="localhost",
+                smtp_port=1025,
+            )
+        assert result is True
+        mock_aiosmtp.send.assert_awaited_once()
+        assert mock_aiosmtp.send.await_args.kwargs["hostname"] == "localhost"
+        assert mock_aiosmtp.send.await_args.kwargs["port"] == 1025
 
 
 # ── imap_listener ─────────────────────────────────────────────────────────────

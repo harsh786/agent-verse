@@ -224,7 +224,6 @@ class NotificationService:
         action: str,
         risk_level: str,
         tenant_id: str,
-        approval_token: str = "",
     ) -> dict[str, Any]:
         """Send notification to all tenant channels."""
         await self.ensure_tenant_loaded(tenant_id)
@@ -239,9 +238,20 @@ class NotificationService:
             _base = _get_settings().public_base_url
         except Exception:
             _base = "http://localhost:5173"
-        _token = approval_token if approval_token else ""
-        approve_url = f"{_base}/hitl/{request_id}/approve?token={_token}"
-        reject_url = f"{_base}/hitl/{request_id}/reject?token={_token}"
+        # Same signed format as the approval email (``?sig=&exp=``, bound to the
+        # request, tenant and action). These links used to carry ``?token=`` —
+        # which the endpoint never reads, so every click answered 403.
+        from app.integrations.email.approval_sender import build_decision_urls
+
+        try:
+            approve_url, reject_url = build_decision_urls(
+                _base, request_id, tenant_id=tenant_id
+            )
+        except RuntimeError:
+            # No link-signing secret in production: send the notice without
+            # one-click links rather than unsigned ones.
+            logger.error("hitl_email_secret_missing", request_id=request_id)
+            approve_url = reject_url = f"{_base.rstrip('/')}/approvals"
 
         message = {
             "type": "approval_required",
