@@ -150,10 +150,9 @@ async def test_purchase_free_template_skips_stripe():
 
 
 @pytest.mark.asyncio
-async def test_purchase_paid_template_without_stripe_package_returns_503():
-    """`stripe` is not installed in this environment — the real ImportError
-    branch of `_stripe()` must surface as a clean 503, not an unhandled
-    ModuleNotFoundError."""
+async def test_paid_purchase_is_501_even_without_stripe():
+    """Paid purchases are refused before any Stripe call, so the answer does not
+    depend on Stripe being installed or configured."""
     session = _fake_session(lambda *a, **k: _FakeResult((29.99,)))
 
     def db():
@@ -161,8 +160,8 @@ async def test_purchase_paid_template_without_stripe_package_returns_503():
 
     with pytest.raises(HTTPException) as exc:
         await purchase_template("paid-tpl", _request(tenant=_tenant(), db=db))
-    assert exc.value.status_code == 503
-    assert "stripe" in exc.value.detail.lower()
+    assert exc.value.status_code == 501
+    assert "no charge" in exc.value.detail.lower()
 
 
 # ── onboard author ───────────────────────────────────────────────────────
@@ -269,36 +268,22 @@ async def test_onboard_author_stripe_error_returns_502(fake_stripe):
 
 
 @pytest.mark.asyncio
-async def test_purchase_paid_template_success_returns_client_secret(fake_stripe):
-    fake_stripe.PaymentIntent.create.return_value = SimpleNamespace(client_secret="secret_abc")
+async def test_paid_purchase_never_charges_the_buyer(fake_stripe):
+    """Regression: purchase created a real PaymentIntent, but nothing ever marked
+    the purchase paid, installs were not gated on it and the author was never
+    paid — a buyer could be charged for nothing. Until purchase completion
+    exists the endpoint is an honest 501 and never touches Stripe."""
     session = _fake_session(lambda *a, **k: _FakeResult((29.99,)))
 
     def db():
         return session
 
-    result = await purchase_template("paid-tpl", _request(tenant=_tenant("t1"), db=db))
-
-    assert result["client_secret"] == "secret_abc" and result["amount_usd"] == 29.99
-    # A pending purchase row is recorded (it used to write nothing).
-    assert result["status"] == "pending" and result["purchase_id"]
-    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
-    assert any("INSERT INTO marketplace_purchases" in q for q in sqls)
-    # Column is `id` (not the non-existent `template_id`).
-    assert any("FROM marketplace_templates WHERE id = :tid" in q for q in sqls)
-    kwargs = fake_stripe.PaymentIntent.create.call_args.kwargs
-    assert kwargs["amount"] == 2999
-    assert kwargs["metadata"]["template_id"] == "paid-tpl"
-    assert kwargs["metadata"]["buyer_tenant_id"] == "t1"
-
-
-@pytest.mark.asyncio
-async def test_purchase_paid_template_stripe_error_returns_500(fake_stripe):
-    fake_stripe.PaymentIntent.create.side_effect = RuntimeError("card declined")
-    session = _fake_session(lambda *a, **k: _FakeResult((10.0,)))
-
-    def db():
-        return session
-
     with pytest.raises(HTTPException) as exc:
-        await purchase_template("paid-tpl", _request(tenant=_tenant(), db=db))
-    assert exc.value.status_code == 502
+        await purchase_template("paid-tpl", _request(tenant=_tenant("t1"), db=db))
+
+    assert exc.value.status_code == 501
+    fake_stripe.PaymentIntent.create.assert_not_called()
+    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
+    assert not any("INSERT INTO marketplace_purchases" in q for q in sqls)
+    # The price lookup still uses the real column (`id`, not `template_id`).
+    assert any("FROM marketplace_templates WHERE id = :tid" in q for q in sqls)
