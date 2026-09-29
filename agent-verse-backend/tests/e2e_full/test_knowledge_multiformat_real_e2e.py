@@ -541,3 +541,47 @@ async def test_every_rag_strategy_on_real_models(
         assert not bad, json.dumps(bad, indent=1)
         for core in ("naive", "hybrid"):
             assert table[core] == {"search": "ok", "chat": "ok"}, table[core]
+
+
+async def test_raptor_and_agentic_chunking_after_indexed_ingestion(
+    app: Any, client: Any, _backends: tuple[str, str]
+) -> None:
+    """RAPTOR (summary tree) and agentic chunking (propositions) need their own
+    indexing at ingest time; with it, both strategies answer on real models."""
+    tc, _ = await _signup(client, app)
+    async with tc:
+        r = await tc.post("/knowledge/collections", json={"name": "Indexed handbook"})
+        col = r.json()["collection_id"]
+        text = "\n\n".join(f"{title}\n{body}" for title, body in _HANDBOOK)
+        r = await tc.post(
+            f"/knowledge/collections/{col}/documents",
+            json={
+                "content": text,
+                "source_identity": "handbook-2026",
+                "indexing_strategies": ["raptor", "agentic_chunking"],
+                "raptor_cluster_size": 2,
+            },
+        )
+        assert r.status_code == 201, r.text[:600]
+        for strategy in ("raptor", "agentic_chunking"):
+            resp = await tc.get(
+                "/knowledge/search",
+                params={
+                    "q": "how much paid time off do staff get each year",
+                    "collection_id": col,
+                    "top_k": 5,
+                    "strategy": strategy,
+                },
+            )
+            assert resp.status_code == 200, (strategy, resp.status_code, resp.text[:400])
+            assert any("22 days" in h["content"] for h in resp.json()), (strategy, resp.json())
+            resp = await tc.post(
+                "/knowledge/chat",
+                json={
+                    "question": "How many days of paid annual leave does an employee get?",
+                    "collection_ids": [col],
+                    "strategy": strategy,
+                },
+            )
+            assert resp.status_code == 200, (strategy, resp.status_code, resp.text[:600])
+            assert "22" in resp.json()["answer"], (strategy, resp.json()["answer"])

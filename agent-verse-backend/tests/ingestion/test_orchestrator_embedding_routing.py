@@ -252,8 +252,10 @@ async def test_indexed_ingestion_routes_to_selected_models_resolved_provider() -
 
 
 async def test_indexed_ingestion_falls_back_to_default_when_provider_unresolved() -> None:
-    """Selection present, but its provider isn't configured → default embedder,
-    with the effective model honestly recorded in metadata."""
+    """Selection present, but its provider isn't configured → the default
+    embedder with its OWN model (the selected id used to be sent to it, e.g.
+    "text-embedding-3-small" to an on-prem Qwen endpoint → 404), and metadata
+    records the default as the model actually used."""
     from app.embedding.orchestrator import build_provider_resolver
 
     store = RecordingIndexStore()
@@ -279,8 +281,8 @@ async def test_indexed_ingestion_falls_back_to_default_when_provider_unresolved(
     assert result.persisted
     assert store.records
     assert default.requested_models
-    assert set(default.requested_models) == {"voyage-code-3"}
-    assert store.records[0].metadata["embedding_model_effective"] == "voyage-code-3"
+    assert set(default.requested_models) == {""}
+    assert store.records[0].metadata["embedding_model_effective"] == "default"
 
 
 async def test_indexed_ingestion_falls_back_to_default_on_dimension_mismatch() -> None:

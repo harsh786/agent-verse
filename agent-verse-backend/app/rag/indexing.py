@@ -380,7 +380,10 @@ class RAGIndexingPipeline:
             batch = payload[start : start + batch_size]
             parsed = await self._complete_json_batch(strategy, system, batch)
             if len(parsed) != len(batch):
-                raise RuntimeError(f"{strategy.value} provider returned an incomplete batch")
+                raise IndexingProviderError(
+                    f"{strategy.value} provider returned {len(parsed)} results for "
+                    f"{len(batch)} inputs"
+                )
             completed.extend(parsed)
         return completed
 
@@ -390,24 +393,60 @@ class RAGIndexingPipeline:
         system: str,
         payload: list[Any],
     ) -> list[Any]:
+        """One structured completion returning exactly ``len(payload)`` results.
+
+        It used to ask for a bare top-level JSON array with no schema and
+        ``json.loads`` the raw reply. JSON mode on vLLM/NVIDIA can only return an
+        object, and models wrap arrays in code fences or prose, so RAPTOR and
+        agentic-chunking ingestion failed on the on-prem models ("Indexing
+        provider returned invalid JSON") — reported to the caller as "Knowledge
+        persistence is unavailable". Results now come back as ``{"items": [...]}``
+        under a schema with the exact count.
+        """
+        item_schema: dict[str, Any] = (
+            {"type": "string"}
+            if strategy is RAGStrategy.RAPTOR
+            else {"type": "array", "items": {"type": "string"}}
+        )
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": item_schema,
+                    "minItems": len(payload),
+                    "maxItems": len(payload),
+                }
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        }
         dependency = self._dependencies[strategy]
         response = await dependency.provider.complete(
             CompletionRequest(
                 messages=[
-                    Message(role="system", content=system),
+                    Message(
+                        role="system",
+                        content=(
+                            f"{system} Return a JSON object {{\"items\": [...]}} with exactly "
+                            f"{len(payload)} items, one per input, in input order."
+                        ),
+                    ),
                     Message(role="user", content=f"Batch:\n{json.dumps(payload)}"),
                 ],
                 model=dependency.model,
-                max_tokens=2_000,
+                max_tokens=max(2_000, 400 * len(payload)),
                 temperature=0.0,
+                response_schema=schema,
             )
         )
-        try:
-            parsed = json.loads(response.content)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError("Indexing provider returned invalid JSON") from exc
+        parsed = _parse_json_reply(str(response.content))
+        if isinstance(parsed, dict):
+            parsed = parsed.get("items")
         if not isinstance(parsed, list):
-            raise RuntimeError("Indexing provider batch response must be a JSON array")
+            raise IndexingProviderError(
+                f"{strategy.value} indexing provider did not return a list of results"
+            )
         return parsed
 
     async def _embed_records(
@@ -435,3 +474,21 @@ class RAGIndexingPipeline:
             replace(record, embedding=list(embedding))
             for record, embedding in zip(records, embeddings, strict=True)
         ]
+
+
+class IndexingProviderError(RuntimeError):
+    """The LLM used for RAPTOR / agentic-chunking indexing returned unusable output."""
+
+
+def _parse_json_reply(text: str) -> Any:
+    """JSON from a model reply, tolerating <think> blocks and ``` fences."""
+    import re
+
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, flags=re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise IndexingProviderError("indexing provider returned invalid JSON") from exc

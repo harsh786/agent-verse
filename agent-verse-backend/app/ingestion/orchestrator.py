@@ -326,9 +326,14 @@ class IngestionOrchestrator:
                             resolved = self._embed_provider_resolver(_emb_selection.provider)
                         except Exception:
                             resolved = None
-                    effective_embedder = resolved if resolved is not None else self._embedder
-                    effective_model = _emb_selection.model_id
-                    embedding_model_effective = _emb_selection.model_id
+                    if resolved is not None:
+                        effective_embedder = resolved
+                        effective_model = _emb_selection.model_id
+                        embedding_model_effective = _emb_selection.model_id
+                    # else: keep the default embedder AND its own model. The
+                    # selected model id used to be sent to the default embedder
+                    # anyway (e.g. "text-embedding-3-small" to the on-prem Qwen
+                    # endpoint → 404), failing every RAPTOR/agentic-chunking ingest.
 
             if metadata is None:
                 metadata = {}

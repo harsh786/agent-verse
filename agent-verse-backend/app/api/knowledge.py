@@ -2488,8 +2488,14 @@ async def ingest_document_into_collection(
         # Never swallow the real error silently: log type+message with a traceback
         # so a genuine persistence failure is diagnosable, not a blank 503.
         from app.observability.logging import get_logger as _gl
+        from app.rag.indexing import IndexingProviderError
 
         _gl(__name__).exception("ingest_document_failed: %s: %s", type(exc).__name__, exc)
+        if isinstance(exc, IndexingProviderError):
+            # The RAPTOR/agentic-chunking model returned unusable output: an
+            # upstream model failure, not a storage outage (it used to be
+            # reported as "Knowledge persistence is unavailable").
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
         raise HTTPException(
             status_code=503,
             detail="Knowledge persistence is unavailable",
