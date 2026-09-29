@@ -215,4 +215,19 @@ describe('AIOpsDashboard', () => {
     expect(screen.getByText('Critical drift')).toBeInTheDocument();
     expect(screen.getByText('Minor drift')).toBeInTheDocument();
   });
+
+  test('failed requests are shown as unavailable, not as zero goals / no alerts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ detail: 'down' }), { status: 503, headers: { 'Content-Type': 'application/json' } }));
+    renderDashboard();
+    expect(await screen.findByText('Goals could not be loaded')).toBeInTheDocument();
+    expect(await screen.findByText('Provider health could not be loaded')).toBeInTheDocument();
+    expect(await screen.findByText(/Alerts could not be loaded/)).toBeInTheDocument();
+    expect(await screen.findByText('Status unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('No active goals')).not.toBeInTheDocument();
+    expect(screen.queryByText('No providers tested yet')).not.toBeInTheDocument();
+    expect(screen.queryByText('0/0')).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 critical/)).not.toBeInTheDocument();
+    expect(screen.getAllByText('—').length).toBe(4);
+  });
 });
