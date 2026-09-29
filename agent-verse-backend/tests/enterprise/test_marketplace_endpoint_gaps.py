@@ -77,61 +77,39 @@ def test_get_domain_counts_requires_auth() -> None:
     assert resp.status_code == 401
 
 
+def _v2_app(v2: Any, template_store: Any = None, agent_store: Any = None) -> FastAPI:
+    app = _make_app(template_store=template_store, agent_store=agent_store)
+    app.state.marketplace_v2 = v2
+    return app
+
+
 def test_get_domain_counts_with_empty_marketplace() -> None:
-    """Endpoint returns {"counts": {}} when marketplace.list_templates returns []."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(return_value=[])
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
+    """Endpoint returns {"counts": {}} when no template is visible."""
+    v2 = MagicMock()
+    v2.count_by_domain = AsyncMock(return_value={})
+    client = TestClient(_v2_app(v2), raise_server_exceptions=False)
     resp = client.get("/marketplace/domains/counts", headers=_HDR)
     assert resp.status_code == 200
-    body = resp.json()
-    assert body == {"counts": {}}
+    assert resp.json() == {"counts": {}}
 
 
-def test_get_domain_counts_with_marketplace_list() -> None:
-    """Endpoint counts agents per domain from marketplace.list_templates."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(
-        return_value=[
-            {"template_id": "t1", "domain": "sales"},
-            {"template_id": "t2", "domain": "sales"},
-            {"template_id": "t3", "domain": "support"},
-            {"template_id": "t4"},  # no domain → "general"
-        ]
-    )
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
+def test_get_domain_counts_with_marketplace_counts() -> None:
+    """Endpoint reports the v2 service's per-domain template counts as "agents"."""
+    v2 = MagicMock()
+    v2.count_by_domain = AsyncMock(return_value={"sales": 2, "support": 1, "general": 1})
+    client = TestClient(_v2_app(v2), raise_server_exceptions=False)
     resp = client.get("/marketplace/domains/counts", headers=_HDR)
     assert resp.status_code == 200
-    body = resp.json()
-    counts = body["counts"]
+    counts = resp.json()["counts"]
     assert counts["sales"]["agents"] == 2
     assert counts["support"]["agents"] == 1
     assert counts["general"]["agents"] == 1
 
 
-def test_get_domain_counts_with_dict_response() -> None:
-    """Endpoint handles marketplace.list_templates returning a dict with 'items' key."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(
-        return_value={"items": [{"template_id": "t1", "domain": "marketing"}]}
-    )
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
-    resp = client.get("/marketplace/domains/counts", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["counts"]["marketing"]["agents"] == 1
-
-
 def test_get_domain_counts_with_template_store_goal_templates() -> None:
     """Endpoint covers goal templates via app.state.template_store.list()."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(return_value=[])
+    v2 = MagicMock()
+    v2.count_by_domain = AsyncMock(return_value={})
     mock_template_store = MagicMock()
     mock_template_store.list = AsyncMock(
         return_value=[
@@ -141,44 +119,35 @@ def test_get_domain_counts_with_template_store_goal_templates() -> None:
         ]
     )
     client = TestClient(
-        _make_app(marketplace=mock_marketplace, template_store=mock_template_store),
-        raise_server_exceptions=False,
+        _v2_app(v2, template_store=mock_template_store), raise_server_exceptions=False
     )
     resp = client.get("/marketplace/domains/counts", headers=_HDR)
     assert resp.status_code == 200
-    body = resp.json()
-    counts = body["counts"]
+    counts = resp.json()["counts"]
     assert counts["ops"]["templates"] == 2
     assert counts["hr"]["templates"] == 1
 
 
-def test_get_domain_counts_marketplace_exception_swallowed() -> None:
-    """If marketplace.list_templates raises, the exception is swallowed (counts returns {})."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(side_effect=RuntimeError("DB unavailable"))
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
+def test_get_domain_counts_marketplace_exception_is_503() -> None:
+    """A marketplace failure is reported (503), not turned into empty counts."""
+    v2 = MagicMock()
+    v2.count_by_domain = AsyncMock(side_effect=RuntimeError("DB unavailable"))
+    client = TestClient(_v2_app(v2), raise_server_exceptions=False)
     resp = client.get("/marketplace/domains/counts", headers=_HDR)
-    assert resp.status_code == 200
-    assert resp.json() == {"counts": {}}
+    assert resp.status_code == 503
 
 
-def test_get_domain_counts_template_store_exception_swallowed() -> None:
-    """If template_store.list raises, the exception is swallowed."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_templates = AsyncMock(return_value=[])
+def test_get_domain_counts_template_store_exception_is_503() -> None:
+    """A goal-template store failure is reported (503), not swallowed."""
+    v2 = MagicMock()
+    v2.count_by_domain = AsyncMock(return_value={})
     mock_template_store = MagicMock()
     mock_template_store.list = AsyncMock(side_effect=RuntimeError("store unavailable"))
     client = TestClient(
-        _make_app(marketplace=mock_marketplace, template_store=mock_template_store),
-        raise_server_exceptions=False,
+        _v2_app(v2, template_store=mock_template_store), raise_server_exceptions=False
     )
     resp = client.get("/marketplace/domains/counts", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    # Only marketplace counts (0 templates listed) → counts remains empty
-    assert body == {"counts": {}}
+    assert resp.status_code == 503
 
 
 # ── GET /marketplace/installs ────────────────────────────────────────────────
@@ -191,83 +160,39 @@ def test_list_installs_requires_auth() -> None:
     assert resp.status_code == 401
 
 
-def test_list_installs_with_no_marketplace_returns_empty() -> None:
-    """When marketplace is None (state.marketplace unset via fixture), returns []."""
-    # Marketplace is always set in _make_app but its methods may not exist.
+def test_list_installs_with_no_installs_returns_empty() -> None:
+    """A tenant with no installs gets an empty list (in-memory v2 service)."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.get("/marketplace/installs", headers=_HDR)
     assert resp.status_code == 200
-    body = resp.json()
-    assert "installed_ids" in body
-    assert isinstance(body["installed_ids"], list)
+    assert resp.json() == {"installed_ids": [], "installs": []}
 
 
-def test_list_installs_with_list_installs_method() -> None:
-    """Endpoint uses marketplace.list_installs when present."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_installs = AsyncMock(return_value=["tpl-A", "tpl-B"])
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
-    resp = client.get("/marketplace/installs", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert set(body["installed_ids"]) == {"tpl-A", "tpl-B"}
-
-
-def test_list_installs_with_list_deployments_method() -> None:
-    """Endpoint falls back to marketplace.list_deployments when list_installs missing."""
-    mock_marketplace = MagicMock()
-    del mock_marketplace.list_installs  # ensure hasattr returns False
-    mock_marketplace.list_deployments = AsyncMock(
+def test_list_installs_uses_v2_list_installs() -> None:
+    """Endpoint returns the v2 service's installs for the calling tenant."""
+    v2 = MagicMock()
+    v2.list_installs = AsyncMock(
         return_value=[
-            {"template_id": "tpl-X"},
-            {"template_id": "tpl-Y"},
-            {},  # entry with no template_id should be skipped
+            {"install_id": "i1", "template_id": "tpl-A", "agent_id": "a1"},
+            {"install_id": "i2", "template_id": "tpl-B", "agent_id": "a2"},
         ]
     )
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
+    client = TestClient(_v2_app(v2), raise_server_exceptions=False)
     resp = client.get("/marketplace/installs", headers=_HDR)
     assert resp.status_code == 200
     body = resp.json()
-    assert set(body["installed_ids"]) == {"tpl-X", "tpl-Y"}
+    assert body["installed_ids"] == ["tpl-A", "tpl-B"]
+    assert [i["agent_id"] for i in body["installs"]] == ["a1", "a2"]
+    v2.list_installs.assert_awaited_once_with(tenant_id=_CTX.tenant_id)
 
 
-def test_list_installs_marketplace_exception_returns_empty() -> None:
-    """If marketplace.list_installs raises, endpoint returns empty list."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_installs = AsyncMock(side_effect=RuntimeError("mcp error"))
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace), raise_server_exceptions=False
-    )
+def test_list_installs_marketplace_exception_is_503() -> None:
+    """If list_installs raises, the endpoint reports it instead of answering []."""
+    v2 = MagicMock()
+    v2.list_installs = AsyncMock(side_effect=RuntimeError("db error"))
+    client = TestClient(_v2_app(v2), raise_server_exceptions=False)
     resp = client.get("/marketplace/installs", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["installed_ids"] == []
-
-
-def test_list_installs_falls_back_to_agent_store() -> None:
-    """When marketplace has no installs but agent_store has agents with
-    marketplace_template_id, those IDs are returned."""
-    mock_marketplace = MagicMock()
-    mock_marketplace.list_installs = AsyncMock(return_value=[])
-    mock_agent_store = MagicMock()
-    mock_agent_store.list = MagicMock(
-        return_value=[
-            {"marketplace_template_id": "tpl-from-agent"},
-            {"other_field": "value"},  # no marketplace_template_id → skipped
-        ]
-    )
-    client = TestClient(
-        _make_app(marketplace=mock_marketplace, agent_store=mock_agent_store),
-        raise_server_exceptions=False,
-    )
-    resp = client.get("/marketplace/installs", headers=_HDR)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "tpl-from-agent" in body["installed_ids"]
+    assert resp.status_code == 503
 
 
 # ── GET /marketplace/{template_id}/versions ──────────────────────────────────

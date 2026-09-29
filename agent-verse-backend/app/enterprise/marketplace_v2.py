@@ -2094,6 +2094,69 @@ class MarketplaceV2:
         return result.get("templates", [])
 
     # ------------------------------------------------------------------
+    # Installs / domain counts
+    # ------------------------------------------------------------------
+
+    async def list_installs(self, *, tenant_id: str) -> list[dict[str, Any]]:
+        """The tenant's active installs (newest first). DB errors propagate."""
+        if not tenant_id:
+            raise ValueError("tenant_id is required")
+        if self._db is None:
+            return [
+                {
+                    "install_id": i["install_id"],
+                    "template_id": i["template_id"],
+                    "agent_id": i["agent_id"],
+                    "installed_at": None,
+                }
+                for i in reversed(self._installs)
+                if i.get("tenant_id") == tenant_id
+            ]
+        async with self._db() as session:
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            rows = (
+                await session.execute(
+                    _t(
+                        "SELECT id AS install_id, template_id, agent_id, installed_at "
+                        "FROM marketplace_installs "
+                        "WHERE installer_tenant_id = :tid AND uninstalled_at IS NULL "
+                        "AND install_status = 'success' "
+                        "ORDER BY installed_at DESC"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchall()
+        return [dict(r._mapping) for r in rows]
+
+    async def count_by_domain(self, *, tenant_id: str) -> dict[str, int]:
+        """Number of templates visible to the tenant, per domain. DB errors propagate."""
+        if self._db is None:
+            if not self._builtin_cache_populated:
+                self._ensure_builtin_cache()
+            counts: dict[str, int] = {}
+            for t in self._cache.values():
+                if _visible_to(t, tenant_id):
+                    domain = t.get("domain") or "general"
+                    counts[domain] = counts.get(domain, 0) + 1
+            return counts
+        async with self._db() as session:
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id or ""}
+            )
+            rows = (
+                await session.execute(
+                    _t(
+                        "SELECT domain, count(*) FROM marketplace_templates "
+                        f"WHERE {_VISIBLE_SQL} GROUP BY domain"
+                    ),
+                    {"vis_tid": tenant_id or ""},
+                )
+            ).fetchall()
+        return {str(r[0] or "general"): int(r[1]) for r in rows}
+
+    # ------------------------------------------------------------------
     # Seed built-ins
     # ------------------------------------------------------------------
 

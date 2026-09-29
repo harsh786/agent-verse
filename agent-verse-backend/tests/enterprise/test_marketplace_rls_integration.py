@@ -169,6 +169,14 @@ async def test_builtin_visible_and_install_counted_for_other_tenant(
     assert row.review_status == "approved"
     assert row.install_count == before + 1
 
+    installs_b = await svc.list_installs(tenant_id=tenant_b)
+    assert [(i["template_id"], i["agent_id"]) for i in installs_b] == [
+        ("tpl-bug-fix", result["agent_id"])
+    ]
+    assert await svc.list_installs(tenant_id=_tenant_a) == []
+    counts_b = await svc.count_by_domain(tenant_id=tenant_b)
+    assert counts_b.get("software", 0) >= 1
+
 
 @pytest.mark.asyncio
 async def test_review_of_foreign_template_updates_rating(

@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 
 from app.auth.saml_provider import SAMLNotInstalledError, SAMLReplayCheckUnavailableError
 from app.db.rls import sqlalchemy_rls_context
+from app.observability.logging import get_logger
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 marketplace_router = APIRouter(prefix="/marketplace", tags=["marketplace"])
@@ -65,6 +66,9 @@ def _red_team(request: Request) -> Any:
     from app.api._deps import get_red_team_runner as _grtr
 
     return _grtr(request)
+
+
+_mkt_logger = get_logger(__name__)
 
 
 def _marketplace(request: Request) -> Any:
@@ -656,73 +660,62 @@ async def search_templates_v2(request: Request, body: SearchRequest) -> dict[str
 
 @marketplace_router.get("/domains/counts")
 async def get_domain_counts(request: Request) -> dict[str, Any]:
-    """Return counts of marketplace templates and goal templates per domain."""
+    """Counts per domain: marketplace templates the caller can see ("agents") and
+    the caller's goal templates ("templates").
+
+    This used to call ``list_templates`` on the deprecated v1 gallery (which has
+    no such method) and swallow the error, so marketplace templates were never
+    counted. Errors now surface as 503 instead of silently empty counts.
+    """
     tenant = _require_tenant(request)
 
     counts: dict[str, dict[str, int]] = {}
 
-    # Count marketplace templates by domain
-    marketplace = getattr(request.app.state, "marketplace", None)
-    if marketplace is not None:
-        try:
-            templates = await marketplace.list_templates(tenant_id=tenant.tenant_id)
-            items = templates if isinstance(templates, list) else templates.get("items", [])
-            for t in items:
-                domain = t.get("domain", "general")
-                if domain not in counts:
-                    counts[domain] = {"agents": 0, "templates": 0}
-                counts[domain]["agents"] += 1
-        except Exception:
-            pass
+    def _bucket(domain: str) -> dict[str, int]:
+        return counts.setdefault(domain or "general", {"agents": 0, "templates": 0})
 
-    # Count goal templates by domain
+    try:
+        by_domain = await _marketplace_v2(request).count_by_domain(tenant_id=tenant.tenant_id)
+    except Exception as exc:
+        _mkt_logger.error("marketplace_domain_counts_failed", error=str(exc))
+        raise HTTPException(
+            status_code=503, detail="Marketplace template counts are unavailable"
+        ) from exc
+    for domain, n in by_domain.items():
+        _bucket(domain)["agents"] += int(n)
+
     template_store = getattr(request.app.state, "template_store", None)
     if template_store is not None:
         try:
             goal_templates = await template_store.list(tenant.tenant_id)
-            for t in goal_templates:
-                domain = t.get("domain", "general")
-                if domain not in counts:
-                    counts[domain] = {"agents": 0, "templates": 0}
-                counts[domain]["templates"] += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            _mkt_logger.error("goal_template_domain_counts_failed", error=str(exc))
+            raise HTTPException(
+                status_code=503, detail="Goal template counts are unavailable"
+            ) from exc
+        for t in goal_templates:
+            _bucket(t.get("domain", "general"))["templates"] += 1
 
     return {"counts": counts}
 
 
 @marketplace_router.get("/installs")
 async def list_installs(request: Request) -> dict[str, Any]:
-    """Return list of template IDs this tenant has deployed."""
+    """The caller's marketplace installs (from marketplace_installs in DB mode).
+
+    This used to probe the deprecated v1 gallery for methods it does not have
+    and swallow every error, so it always answered an empty list.
+    """
     tenant = _require_tenant(request)
-
-    marketplace = getattr(request.app.state, "marketplace", None)
-    installed_ids: list[str] = []
-
-    if marketplace is not None:
-        try:
-            if hasattr(marketplace, "list_installs"):
-                installed_ids = await marketplace.list_installs(tenant.tenant_id)
-            elif hasattr(marketplace, "list_deployments"):
-                deployments = await marketplace.list_deployments(tenant.tenant_id)
-                installed_ids = [d.get("template_id") for d in deployments if d.get("template_id")]
-        except Exception:
-            pass
-
-    # Fallback: scan agent store for marketplace_template_id attribute
-    agent_store = getattr(request.app.state, "agent_store", None)
-    if agent_store is not None and not installed_ids:
-        try:
-            agents = agent_store.list(tenant_ctx=tenant)
-            if hasattr(agents, "__await__"):
-                agents = await agents
-            for agent in agents if isinstance(agents, list) else []:
-                if agent.get("marketplace_template_id"):
-                    installed_ids.append(agent["marketplace_template_id"])
-        except Exception:
-            pass
-
-    return {"installed_ids": list(set(installed_ids))}
+    try:
+        installs = await _marketplace_v2(request).list_installs(tenant_id=tenant.tenant_id)
+    except Exception as exc:
+        _mkt_logger.error("marketplace_list_installs_failed", error=str(exc))
+        raise HTTPException(
+            status_code=503, detail="Marketplace installs are unavailable"
+        ) from exc
+    installed_ids = list(dict.fromkeys(str(i["template_id"]) for i in installs))
+    return {"installed_ids": installed_ids, "installs": installs}
 
 
 @marketplace_router.get("/{template_id}/versions")
