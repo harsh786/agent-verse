@@ -29,6 +29,26 @@ def _session_store(request: Request) -> Any:
     return getattr(request.app.state, "rpa_session_store", None)
 
 
+async def _refuse_if_on_another_replica(request: Request, session_id: str, tenant_id: str) -> None:
+    """409 when the session's live browser is held by a different API replica.
+
+    Browser pages are per-process; the shared registry says where one lives.
+    Pretending it exists here (a fresh blank browser, or a vague 404) is worse.
+    """
+    manager = getattr(request.app.state, "rpa_session_manager", None)
+    live_elsewhere = getattr(manager, "live_elsewhere", None)
+    if live_elsewhere is None:
+        return
+    owner = await live_elsewhere(session_id, tenant_id)
+    if owner:
+        from app.rpa.session_manager import SessionOnAnotherReplicaError
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(SessionOnAnotherReplicaError(session_id, owner)),
+        )
+
+
 @router.get("/tools")
 async def list_rpa_tools(request: Request) -> list[dict[str, Any]]:
     """Return built-in RPA tool metadata for agent clients.
@@ -58,6 +78,9 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown RPA tool: {body.tool_name}. Valid: {sorted(valid_tools)}",
         )
+
+    if body.session_id:
+        await _refuse_if_on_another_replica(request, body.session_id, tenant.tenant_id)
 
     executor = _executor(request)
     if executor is None:
@@ -226,6 +249,7 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
         else None
     )
     if page is None:
+        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
@@ -252,6 +276,7 @@ async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
         else None
     )
     if page is None:
+        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
