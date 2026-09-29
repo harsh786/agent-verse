@@ -453,6 +453,20 @@ class TestGitHubConnectorGetDelta:
 # AzureBlobConnector
 # ═══════════════════════════════════════════════════════════════════════════
 
+# The connector now egress-checks its endpoint (tests/ingestion/
+# test_azure_blob_egress.py), so these use a real-shaped connection string and
+# stub DNS to a public address instead of opaque placeholders.
+_AZ_CS = "DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=k"
+
+
+@pytest.fixture
+def _azure_public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.net.ssrf_guard as sg
+
+    monkeypatch.setattr(sg, "_resolve_host", lambda host: ["20.60.1.1"])
+
+
+@pytest.mark.usefixtures("_azure_public_dns")
 class TestAzureBlobConnectorValidateConnection:
     def test_connection_string_success(self):
         from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
@@ -464,7 +478,7 @@ class TestAzureBlobConnectorValidateConnection:
         client.get_container_client.return_value = cc
         cc.get_container_properties.return_value = {"lease": {"state": "available"}}
 
-        config = _config("azure_blob", {"connection_string": "DefaultEndpoints...", "container": "c1"})
+        config = _config("azure_blob", {"connection_string": _AZ_CS, "container": "c1"})
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             result = _run(AzureBlobConnector().validate_connection(config))
         assert result.ok is True
@@ -491,7 +505,7 @@ class TestAzureBlobConnectorValidateConnection:
     def test_import_error(self):
         from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
 
-        config = _config("azure_blob", {"container": "c1"})
+        config = _config("azure_blob", {"account_name": "acct", "container": "c1"})
         with patch.dict("sys.modules", {"azure.storage.blob": None}):
             result = _run(AzureBlobConnector().validate_connection(config))
         assert result.ok is False
@@ -503,13 +517,14 @@ class TestAzureBlobConnectorValidateConnection:
         blob_mod = MagicMock()
         blob_mod.BlobServiceClient.from_connection_string.side_effect = RuntimeError("auth failed")
 
-        config = _config("azure_blob", {"connection_string": "x", "container": "c1"})
+        config = _config("azure_blob", {"connection_string": _AZ_CS, "container": "c1"})
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             result = _run(AzureBlobConnector().validate_connection(config))
         assert result.ok is False
         assert "auth failed" in result.error
 
 
+@pytest.mark.usefixtures("_azure_public_dns")
 class TestAzureBlobConnectorGetDelta:
     def _blob(self, name, last_modified, content_type=None, size=5):
         blob = MagicMock()
@@ -525,7 +540,7 @@ class TestAzureBlobConnectorGetDelta:
     def test_import_error_yields_nothing(self):
         from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
 
-        config = _config("azure_blob", {"container": "c1"})
+        config = _config("azure_blob", {"account_name": "acct", "container": "c1"})
         with patch.dict("sys.modules", {"azure.storage.blob": None}):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
         assert docs == []
@@ -547,7 +562,7 @@ class TestAzureBlobConnectorGetDelta:
 
         config = _config(
             "azure_blob",
-            {"connection_string": "cs", "account_name": "acct", "container": "c1"},
+            {"connection_string": _AZ_CS, "account_name": "acct", "container": "c1"},
         )
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
@@ -570,7 +585,7 @@ class TestAzureBlobConnectorGetDelta:
         cc.list_blobs.return_value = [old_blob, excluded_blob]
 
         config = _config(
-            "azure_blob", {"account_name": "a", "account_key": "k", "container": "c1"}
+            "azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"}
         )
         config.exclude_patterns = ["*.tmp"]
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
@@ -591,7 +606,7 @@ class TestAzureBlobConnectorGetDelta:
         cc.list_blobs.return_value = [bad]
         cc.download_blob.side_effect = RuntimeError("timeout")
 
-        config = _config("azure_blob", {"account_name": "a", "account_key": "k", "container": "c1"})
+        config = _config("azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"})
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
         assert docs == []
