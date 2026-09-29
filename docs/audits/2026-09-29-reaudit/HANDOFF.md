@@ -111,7 +111,12 @@ For each wave: if its branch has the commits for every item below, merge it
 `ruff`/`mypy` and the wave's test directories. If the branch is missing or incomplete,
 **redo the missing items** — each item below is a complete task statement.
 
-**All four wave-7 branches are merged to `main` (2026-09-29).** Next: full unit suite + least-privilege e2e on `main`, then re-certify the wave-7 features (section 7) and fix the follow-ups listed per wave below.
+**All four wave-7 branches are merged to `main` (2026-09-29).** Validation on the merged
+`main`: unit suite 28,358 passed / 30 failed and e2e 148 passed / 1 failed; all 31 were
+tests asserting pre-wave-7 behaviour or depending on real DNS, fixed in the commit after
+the merge (`test: align three suites with wave 7 behaviour`). **Next:** re-run the full unit
+suite + least-privilege e2e once to confirm green, then re-certify the wave-7 features
+(section 7) and work through the follow-ups listed per wave below.
 
 ### Progress snapshot — 2026-09-29 ~11:10 UTC (weekly usage at 93%)
 
