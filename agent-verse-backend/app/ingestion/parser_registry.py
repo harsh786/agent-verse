@@ -230,6 +230,14 @@ class ParserRegistry:
                     content.decode("utf-8", errors="replace"), filename=name
                 )
                 return text, meta
+            if ct == ContentType.EXCEL:
+                from app.ingestion.parsers.excel_parser import ExcelParser
+
+                # A truncated workbook is recorded in the ingestion metadata
+                # instead of being indexed in part without a trace.
+                text, report = ExcelParser().parse_with_report(content, filename=name)
+                meta.update(report)
+                return text, meta
             if ct == ContentType.IMAGE:
                 return await self._parse_image(content, name, meta, ocr_engine, vision_provider)
             if ct == ContentType.AUDIO:
