@@ -1946,12 +1946,16 @@ class GoalService:
             await self._deliver_completion_to_chat(record, sanitized_event)
             # Agent Runtime: mark trace success
             try:
-                from app.api.agent_runtime import _traces
+                from app.agent_runtime.store import agent_runtime_store
 
                 _t_id = record.execution_context.get("agent_runtime_trace_id")
-                if _t_id and _t_id in _traces:
-                    _traces[_t_id].success = True
-                    _traces[_t_id].duration_ms = (_monotonic() - record.started_monotonic) * 1000
+                if _t_id:
+                    await agent_runtime_store.update_trace(
+                        record.tenant_id,
+                        str(_t_id),
+                        success=True,
+                        duration_ms=(_monotonic() - record.started_monotonic) * 1000,
+                    )
             except Exception:
                 pass
             # Persist status update to PostgreSQL in the background.
@@ -2064,13 +2068,17 @@ class GoalService:
             self._record_terminal_goal_metrics(record, "failed")
             # Agent Runtime: mark trace failed
             try:
-                from app.api.agent_runtime import _traces
+                from app.agent_runtime.store import agent_runtime_store
 
                 _t_id = record.execution_context.get("agent_runtime_trace_id")
-                if _t_id and _t_id in _traces:
-                    _traces[_t_id].success = False
-                    _traces[_t_id].error = sanitized_event.get("reason", "goal_failed")
-                    _traces[_t_id].duration_ms = (_monotonic() - record.started_monotonic) * 1000
+                if _t_id:
+                    await agent_runtime_store.update_trace(
+                        record.tenant_id,
+                        str(_t_id),
+                        success=False,
+                        error=sanitized_event.get("reason", "goal_failed"),
+                        duration_ms=(_monotonic() - record.started_monotonic) * 1000,
+                    )
             except Exception:
                 pass
             if self._db is not None:
@@ -3239,7 +3247,7 @@ class GoalService:
             # Agent Runtime 2.0: auto-create AgentExecutionPlan + AgentRunTrace per goal
             try:
                 from app.agent_runtime.models import AgentExecutionPlan, AgentRunTrace
-                from app.api.agent_runtime import _plans, _traces
+                from app.agent_runtime.store import agent_runtime_store
 
                 _ar_now = datetime.now(UTC).isoformat()
                 _plan_id = uuid.uuid4().hex
@@ -3259,8 +3267,9 @@ class GoalService:
                     tenant_id=tenant_ctx.tenant_id,
                     plan=_ar_plan,
                 )
-                _plans[_plan_id] = _ar_plan
-                _traces[_trace_id] = _ar_trace
+                # Bounded + Redis-shared (other replicas / worker-run goals).
+                await agent_runtime_store.put_plan(_ar_plan)
+                await agent_runtime_store.put_trace(_ar_trace)
                 record.execution_context["agent_runtime_plan_id"] = _plan_id
                 record.execution_context["agent_runtime_trace_id"] = _trace_id
                 _svc_logger.debug(

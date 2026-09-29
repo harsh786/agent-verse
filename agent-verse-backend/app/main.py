@@ -1962,6 +1962,10 @@ def create_app(
                         logger.info("tool_result_cache_wired")
                     except Exception as _tce:
                         logger.warning("tool_result_cache_wire_failed", error=str(_tce))
+                # Agent Runtime 2.0 plans/traces: shared across replicas.
+                from app.agent_runtime.store import agent_runtime_store
+
+                agent_runtime_store.set_redis(redis_for_runtime)
                 # Pending OAuth PKCE flows must be visible to every replica.
                 _oauth_mgr = getattr(app.state, "oauth_manager", None)
                 if _oauth_mgr is not None and hasattr(_oauth_mgr, "set_redis"):
