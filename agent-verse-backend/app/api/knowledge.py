@@ -25,7 +25,10 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 
 from app.core.config import get_settings
 from app.ingestion.orchestrator import EmptyIndexedContentError
-from app.ingestion.pipeline import IngestionPolicyRejectedError
+from app.ingestion.pipeline import (
+    IngestionPolicyRejectedError,
+    IngestionScreeningUnavailableError,
+)
 from app.ingestion.repository_security import (
     RepositoryLimits,
     RepositorySecurityError,
@@ -412,9 +415,16 @@ async def _screen_or_http(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
-    except Exception as exc:
+    except IngestionScreeningUnavailableError as exc:
         raise HTTPException(
-            status_code=503, detail="Ingestion PII screening is unavailable"
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
+    except Exception as exc:
+        # Fail closed (PII scan or RAG_INGEST guardrail could not run).
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
 
 
@@ -2469,6 +2479,11 @@ async def ingest_document_into_collection(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
     except EmptyIndexedContentError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2845,6 +2860,11 @@ async def ingest_email(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
         ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2913,6 +2933,11 @@ async def ingest_notion(
         raise HTTPException(
             status_code=422,
             detail=f"Document rejected by ingestion policy: {exc.reason}",
+        ) from exc
+    except IngestionScreeningUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Ingestion screening (PII / RAG_INGEST guardrail) is unavailable",
         ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

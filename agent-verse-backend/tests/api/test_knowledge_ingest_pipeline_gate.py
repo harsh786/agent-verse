@@ -137,6 +137,24 @@ def test_ingest_rag_ingest_guardrail_blocks_document() -> None:
     assert embedder.seen == [] and not store._data[(_TENANT, cid)].chunks
 
 
+def test_ingest_fails_closed_503_when_guardrail_rules_unavailable(monkeypatch: Any) -> None:
+    """RAG_INGEST used to fail OPEN: an engine error (e.g. the tenant's rules
+    could not be loaded) was logged and the document indexed unscreened."""
+    from app.guardrails_v2.engine import GuardrailRulesUnavailableError
+
+    async def _evaluate(*_a: Any, **_k: Any) -> Any:
+        raise GuardrailRulesUnavailableError("rules could not be loaded")
+
+    monkeypatch.setattr(guardrails_engine, "evaluate", _evaluate)
+    client, store, embedder, cid = _app()
+    resp = client.post(
+        "/knowledge/ingest", json={"collection_id": cid, "content": _BODY}, headers=_HDRS
+    )
+    assert resp.status_code == 503, resp.text
+    assert "guardrail" in resp.json()["detail"].lower()
+    assert embedder.seen == [] and not store._data[(_TENANT, cid)].chunks
+
+
 def test_ingest_file_redacts_pii() -> None:
     client, store, embedder, cid = _app()
     resp = client.post(

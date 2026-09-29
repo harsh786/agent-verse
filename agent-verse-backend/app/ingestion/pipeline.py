@@ -476,7 +476,9 @@ class IngestionPipeline:
 
         Returns the (possibly redacted) text, whether PII was found, and a
         ``blocked_reason`` (``pii_rejected`` / ``guardrail_blocked``) when the
-        document must not be indexed at all.
+        document must not be indexed at all. Raises
+        :class:`IngestionScreeningUnavailableError` when the RAG_INGEST guardrail
+        cannot run (engine error, tenant rules not loadable) — fail closed.
         """
         # ── Stage 6: PII DETECTION + REDACTION (LAW-06) ──────────────────────
         original = text
@@ -524,11 +526,22 @@ class IngestionPipeline:
                 if _g2_ingest_redacted and _g2_ingest_redacted != text:
                     text = _g2_ingest_redacted
             except Exception as _g2_ingest_exc:
+                # Fail CLOSED. This used to log and return the text as clean,
+                # so an engine error — including GuardrailRulesUnavailableError
+                # when the tenant's persisted rules could not be loaded — indexed
+                # the document unscreened.
                 _log.warning(
                     "pipeline_stage=guardrail_rag_ingest error doc=%s: %s",
                     doc_id,
                     _g2_ingest_exc,
                 )
+                raise IngestionScreeningUnavailableError(
+                    f"RAG_INGEST guardrail unavailable: {_g2_ingest_exc}"
+                ) from _g2_ingest_exc
+        else:
+            raise IngestionScreeningUnavailableError(
+                "RAG_INGEST guardrail unavailable: guardrails engine not installed"
+            )
         return ScreenResult(text=text, pii_detected=pii_detected)
 
     def _run_pii(self, text: str, pii_action: str) -> tuple[str | None, bool]:
@@ -873,6 +886,14 @@ class RedisKnowledgeEventBus:
         await self._redis.publish(channel, json.dumps(payload))
 
 
+class IngestionScreeningUnavailableError(RuntimeError):
+    """The ingestion screen (RAG_INGEST guardrail) could not run.
+
+    Fail closed: the document is not indexed. Connector ingestion reports it as
+    ``failed`` (DLQ, retried); the direct ingest routes answer 503.
+    """
+
+
 class IngestionPolicyRejectedError(ValueError):
     """A document was refused by the ingestion PII / RAG_INGEST guardrail gate."""
 
@@ -910,7 +931,8 @@ async def screen_ingest_text(
     Uses the app's wired pipeline when it has a PII analyzer, else a store-less
     default. Returns the screened (possibly redacted) text; raises
     ``IngestionPolicyRejectedError`` when the document must not be indexed. A
-    PII-scan failure propagates (fail closed).
+    PII-scan failure propagates, and a guardrail that cannot run raises
+    ``IngestionScreeningUnavailableError`` (fail closed).
     """
     screener = pipeline if isinstance(pipeline, IngestionPipeline) else None
     if screener is None or screener._pii is None:
