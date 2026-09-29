@@ -108,6 +108,46 @@ def test_unknown_override_is_sanitized_422_and_existing_body_remains_valid() -> 
     assert existing.status_code == 202
 
 
+def test_catalogue_marks_non_admitted_strategies_experimental() -> None:
+    """Many strategies are registered DISTRIBUTED/IMPLEMENTED but the executor admits only
+    supervisor / goal_tree / debate — the catalogue must not present the rest as runnable."""
+    from app.orchestration.strategy_executor import default_distributed_admission
+    from app.orchestration.strategy_readiness import DependencyProbeResult
+
+    api = client()
+    # Even with every dependency probe green, a strategy with no driver is not ready.
+    evaluator = api.app.state.strategy_readiness  # type: ignore[attr-defined]
+    for capability in build_default_registry().list_all():
+        for dependency in capability.readiness_requirements:
+            if dependency not in evaluator._probes and dependency != "registry_contract":
+                evaluator.register(dependency, DependencyProbeResult.ready)
+    catalogue = api.get("/strategies", headers={"X-API-Key": "valid"}).json()["strategies"]
+    by_id = {item["strategy_id"]: item for item in catalogue}
+
+    for item in catalogue:
+        if item["execution_tier"] != "distributed":
+            continue
+        request = type("R", (), {"strategy_id": item["strategy_id"]})()
+        admitted, _ = default_distributed_admission(request)  # type: ignore[arg-type]
+        expected = "available" if admitted else "experimental"
+        assert item["availability"] == expected, item["strategy_id"]
+        if not admitted:
+            assert item["ready"] is False
+            assert "strategy_execution_not_implemented" in item["readiness_reasons"]
+
+    assert by_id["supervisor"]["execution_driver"] == "strategy_runner"
+    assert by_id["react"]["availability"] == "available"
+    assert by_id["react"]["ready"] is True
+    assert by_id["rewoo"]["availability"] == "experimental"
+    assert by_id["rewoo"]["ready"] is False
+    assert by_id["guardrails"]["availability"] == "cross_cutting"
+    assert by_id["prospective_memory"]["availability"] == "not_available"
+
+    readiness = api.get("/strategies/magentic/readiness", headers={"X-API-Key": "valid"})
+    assert readiness.json()["ready"] is False
+    assert readiness.json()["availability"] == "experimental"
+
+
 def test_override_without_goal_execution_driver_is_422() -> None:
     """ReWOO / CodeAct / magentic have adapter logic but no goal driver: accepting them
     would run a plain ReAct loop under their name."""

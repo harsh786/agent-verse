@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Request, status
 
+from app.orchestration.execution_drivers import strategy_availability
 from app.orchestration.strategy_certification import CertificationEvaluator, RuntimeEvidence
 from app.orchestration.strategy_evidence import StrategyEvidenceRecorder, StrategyRunEvidence
 from app.orchestration.strategy_readiness import ReadinessEvaluator
@@ -60,6 +61,13 @@ def _catalogue_item(
 ) -> dict[str, Any]:
     # Derived from recorded evidence only — never "certified" without it.
     derived = certification.derive_state(capability, _certifying(rows))
+    # Registered adapter logic is not "runnable": only a strategy a driver actually runs
+    # is available (and can be ready); the rest is experimental / cross-cutting / n.a.
+    availability = strategy_availability(capability)
+    runnable = availability.availability == "available"
+    reasons = list(readiness_reasons)
+    if not runnable and availability.reason:
+        reasons.append(availability.reason)
     return {
         "strategy_id": capability.strategy_id,
         "family": capability.spec.family.value,
@@ -67,8 +75,10 @@ def _catalogue_item(
         "adapter_version": capability.adapter_version,
         "state_schema_version": capability.state_schema_version,
         "derived_state": derived.state.value,
-        "ready": ready,
-        "readiness_reasons": list(readiness_reasons),
+        "availability": availability.availability,
+        "execution_driver": availability.execution_driver,
+        "ready": ready and runnable,
+        "readiness_reasons": reasons,
         "certified": derived.certified,
         "runtime_evidence": StrategyEvidenceRecorder.summarize(rows),
         "required_dependencies": list(capability.readiness_requirements),
@@ -127,12 +137,18 @@ async def get_strategy_readiness(request: Request, strategy_id: str) -> dict[str
     capability = _capability(request, strategy_id)
     evaluator: ReadinessEvaluator = request.app.state.strategy_readiness
     decision = await evaluator.evaluate(capability, production=True)
+    availability = strategy_availability(capability)
+    runnable = availability.availability == "available"
+    reason_codes = [*decision.blocking_reasons, *decision.degraded_reasons]
+    if not runnable and availability.reason:
+        reason_codes.append(availability.reason)
     return {
         "strategy_id": capability.strategy_id,
         "adapter_version": capability.adapter_version,
-        "ready": decision.ready,
+        "availability": availability.availability,
+        "ready": decision.ready and runnable,
         "degraded": bool(decision.degraded_reasons),
-        "reason_codes": [*decision.blocking_reasons, *decision.degraded_reasons],
+        "reason_codes": reason_codes,
         "checked_at": decision.checked_at,
     }
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
@@ -84,6 +85,40 @@ def goal_execution_driver(capability: StrategyCapability) -> ExecutionDriver | N
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class StrategyAvailability:
+    """What the catalogue may truthfully say about running a strategy."""
+
+    availability: str  # available | experimental | cross_cutting | not_available
+    execution_driver: str | None
+    reason: str | None
+
+
+def strategy_availability(capability: StrategyCapability) -> StrategyAvailability:
+    """Catalogue truth: registered adapter logic is not the same as runnable.
+
+    * ``available`` — a driver runs it (AgentGraph, the StrategyRunner, or — for RAG
+      strategies — the RAG runtime adapter);
+    * ``experimental`` — adapter logic exists but nothing turns a goal into a run of it
+      (e.g. DISTRIBUTED strategies the StrategyRunner denies at admission);
+    * ``cross_cutting`` — an always-on platform capability, not a selectable strategy;
+    * ``not_available`` — planned or disabled.
+    """
+    if capability.state in (StrategyState.PLANNED, StrategyState.DISABLED):
+        return StrategyAvailability("not_available", None, capability.state.value)
+    driver = goal_execution_driver(capability)
+    if driver is not None:
+        return StrategyAvailability("available", driver.value, None)
+    tier = capability.execution_tier
+    if tier is ExecutionTier.RAG and capability.runtime_adapter is not None:
+        return StrategyAvailability("available", "rag_runtime", None)
+    if tier is ExecutionTier.CROSS_CUTTING:
+        return StrategyAvailability("cross_cutting", None, "platform_capability")
+    if tier is ExecutionTier.DISTRIBUTED:
+        return StrategyAvailability("experimental", None, "strategy_execution_not_implemented")
+    return StrategyAvailability("experimental", None, NO_EXECUTION_DRIVER)
+
+
 def is_goal_executable(registry: StrategyRegistry, strategy_id: str) -> bool:
     try:
         capability = registry.resolve(strategy_id).capability
@@ -124,8 +159,10 @@ __all__ = [
     "SINGLE_AGENT",
     "STRATEGY_RUNNER_STRATEGIES",
     "ExecutionDriver",
+    "StrategyAvailability",
     "describe_agent_graph_execution",
     "goal_execution_driver",
     "has_agent_graph_node",
     "is_goal_executable",
+    "strategy_availability",
 ]
