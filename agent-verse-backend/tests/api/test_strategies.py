@@ -108,6 +108,28 @@ def test_unknown_override_is_sanitized_422_and_existing_body_remains_valid() -> 
     assert existing.status_code == 202
 
 
+def test_override_without_goal_execution_driver_is_422() -> None:
+    """ReWOO / CodeAct / magentic have adapter logic but no goal driver: accepting them
+    would run a plain ReAct loop under their name."""
+    service = AsyncMock()
+    service.submit_goal.return_value = {"id": "goal-1", "status": "planning"}
+    api = client(service)
+    for strategy_id in ("rewoo", "codeact", "magentic"):
+        response = api.post(
+            "/goals",
+            headers={"X-API-Key": "valid"},
+            json={"goal": "goal", "strategy_override": strategy_id},
+        )
+        assert response.status_code == 422, strategy_id
+    service.submit_goal.assert_not_called()
+    accepted = api.post(
+        "/goals",
+        headers={"X-API-Key": "valid"},
+        json={"goal": "goal", "strategy_override": "supervisor"},
+    )
+    assert accepted.status_code == 202
+
+
 def test_goal_explain_is_tenant_authorized_and_excludes_private_reasoning() -> None:
     service = AsyncMock()
     service.get_goal.return_value = {

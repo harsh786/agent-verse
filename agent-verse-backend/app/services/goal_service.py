@@ -12,6 +12,7 @@ Responsible for:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 import uuid
@@ -1110,6 +1111,49 @@ class GoalService:
                 {"key": _RUNNER_KEY, "runner": json.dumps(runner), "g": goal_id, "t": tenant_id},
             )
 
+    async def _db_merge_context_key(
+        self, goal_id: str, tenant_id: str, key: str, value: Any
+    ) -> None:
+        """Merge ``{key: value}`` into goals.execution_context under the tenant's RLS."""
+        if self._db is None:
+            return
+        from sqlalchemy import text as _sql
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    _sql(
+                        "UPDATE goals SET execution_context = ("
+                        "COALESCE(execution_context::jsonb, '{}'::jsonb) "
+                        "|| jsonb_build_object(CAST(:key AS text), CAST(:value AS jsonb))"
+                        ")::json WHERE id = :g AND tenant_id = :t"
+                    ),
+                    {"key": key, "value": json.dumps(value), "g": goal_id, "t": tenant_id},
+                )
+        except Exception as exc:
+            _svc_logger.warning(
+                "goal_context_merge_failed", goal_id=goal_id, key=key, error=str(exc)
+            )
+
+    def _persist_strategy_execution(self, goal_id: str, tenant_id: str, record: Any) -> None:
+        """Persist which strategy the goal's runtime actually runs (see strategy_execution)."""
+        if self._db is None or record is None:
+            return
+        execution = record.execution_context.get("strategy_execution")
+        if not isinstance(execution, dict):
+            return
+        coro = self._db_merge_context_key(goal_id, tenant_id, "strategy_execution", execution)
+        try:
+            self._track_db_task(coro)
+        except RuntimeError:  # no running loop (sync caller) — nothing to schedule on
+            coro.close()
+
     async def _tenant_plan(self, tenant_id: str) -> str | None:
         """The tenant's real plan tier (for the per-plan Celery queue), or None."""
         aps: Any = self._app_state
@@ -1593,9 +1637,20 @@ class GoalService:
             "procedural_memory": getattr(app_state, "procedural_memory", None),
             "reflexion_service": getattr(app_state, "reflexion_service", None),
         }
+        # What actually runs is recorded on the goal (execution_context
+        # ["strategy_execution"]) from the constructed runtime — never inferred from what the
+        # profile asked for — so a downgrade is visible instead of silent.
+        from app.orchestration.execution_drivers import describe_agent_graph_execution
+
+        _strategy_execution: dict[str, Any] = {"driver": "agent_graph"}
+        _downgrades: list[dict[str, str]] = []
         if runtime_profile is not None:
+            from app.orchestration.graph_factory import GraphFactory
             from app.orchestration.strategy_adapters import ExecutionTier
 
+            _requested_primary = runtime_profile.primary_strategy.strategy_id
+            _strategy_execution["requested_primary"] = _requested_primary
+            _strategy_execution["profile_id"] = runtime_profile.profile_id
             if runtime_profile.execution_tier is ExecutionTier.DISTRIBUTED:
                 _distributed_loop = self._try_build_distributed_strategy_loop(
                     runtime_profile,
@@ -1606,16 +1661,44 @@ class GoalService:
                 )
                 if _distributed_loop is not None:
                     graph = _distributed_loop
+                    _strategy_execution["driver"] = "strategy_runner"
+                    _strategy_execution["patterns"] = [_requested_primary]
                 else:
                     _svc_logger.warning(
                         "distributed_strategy_runner_unavailable_local_fallback",
-                        strategy_id=runtime_profile.primary_strategy.strategy_id,
+                        strategy_id=_requested_primary,
                         goal_id=runtime_profile.goal_id,
                     )
-                    graph = AgentGraph(**graph_services)
+                    # supervisor / debate / goal_tree also exist as local AgentGraph
+                    # nodes: compile the same profile on the local tier so the requested
+                    # pattern still runs, rather than a bare ReAct loop claiming it.
+                    try:
+                        graph = GraphFactory().create(
+                            dataclasses.replace(
+                                runtime_profile, execution_tier=ExecutionTier.LOCAL
+                            ),
+                            graph_services,
+                            agent_config=_agent_config,
+                        )
+                        _downgrades.append(
+                            {
+                                "strategy_id": _requested_primary,
+                                "from": "strategy_runner",
+                                "to": "agent_graph",
+                                "reason": "strategy_runner_unavailable",
+                            }
+                        )
+                    except ValueError:
+                        graph = AgentGraph(**graph_services)
+                        _downgrades.append(
+                            {
+                                "strategy_id": _requested_primary,
+                                "from": "strategy_runner",
+                                "to": "react",
+                                "reason": "strategy_runner_unavailable_no_local_node",
+                            }
+                        )
             else:
-                from app.orchestration.graph_factory import GraphFactory
-
                 try:
                     graph = GraphFactory().create(
                         runtime_profile,
@@ -1623,14 +1706,28 @@ class GoalService:
                         agent_config=_agent_config,
                     )
                 except ValueError as _graph_factory_exc:
-                    _svc_logger.warning(
+                    _svc_logger.error(
                         "graph_factory_compile_failed_local_fallback",
                         error=str(_graph_factory_exc),
                         goal_id=runtime_profile.goal_id,
                     )
                     graph = AgentGraph(**graph_services)
+                    _downgrades.append(
+                        {
+                            "strategy_id": _requested_primary,
+                            "from": "agent_graph",
+                            "to": "react",
+                            "reason": "graph_compile_failed",
+                        }
+                    )
         else:
             graph = AgentGraph(**graph_services)
+        if "patterns" not in _strategy_execution:
+            _strategy_execution["patterns"] = describe_agent_graph_execution(graph)
+        if _downgrades:
+            _strategy_execution["downgrades"] = _downgrades
+        if execution_context is not None:
+            execution_context["strategy_execution"] = _strategy_execution
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
         # Survives role/trace/circuit-breaker wrapping, unlike a type check on
@@ -1672,6 +1769,17 @@ class GoalService:
             pass
 
         return graph
+
+    def _coordination_ready(self) -> bool:
+        """True when the app wires a StrategyRunner that can really run DISTRIBUTED goals."""
+        app_state: Any = self._app_state
+        app_state = getattr(app_state, "state", app_state)
+        runner = getattr(app_state, "strategy_runner", None) if app_state is not None else None
+        return bool(
+            runner is not None
+            and getattr(runner, "has_real_executor", False) is True
+            and getattr(app_state, "strategy_goal_context_store", None) is not None
+        )
 
     def _try_build_distributed_strategy_loop(
         self,
@@ -1746,11 +1854,15 @@ class GoalService:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 
             builder = RuntimeProfileBuilder()
+            _builder_config = dict(agent_config or {})
+            # DISTRIBUTED strategies are admitted only when a StrategyRunner with a real
+            # executor is wired to run them (see _try_build_distributed_strategy_loop).
+            _builder_config.setdefault("coordination_ready", self._coordination_ready())
             profile, trace = await builder.build_with_trace(
                 goal,
                 tenant_id=tenant_ctx.tenant_id,
                 goal_id=goal_id,
-                agent_config=agent_config,
+                agent_config=_builder_config,
             )
             from app.orchestration.strategy_certification import RolloutController
 
@@ -2748,6 +2860,7 @@ class GoalService:
                 **_persist_profile_kwargs,
                 **_tenant_llm_kwargs(_persist_llm_config),
             )
+            self._persist_strategy_execution(goal_id, tenant_ctx.tenant_id, _persist_record)
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
                 _persist_agent_store = self._get_agent_store()
@@ -2976,6 +3089,7 @@ class GoalService:
                     tenant_ctx=tenant_ctx,
                 )
                 return
+            self._persist_strategy_execution(goal_id, tenant_ctx.tenant_id, record)
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
             _agent_collection_ids: list[str] = []

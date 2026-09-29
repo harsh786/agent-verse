@@ -74,7 +74,10 @@ def test_expert_analytical_selects_goal_tree_supervisor_and_debate(
     assert "debate" in cfg.multi_agent
 
 
-def test_critical_risk_selects_consensus(selector: PatternSelector) -> None:
+def test_critical_risk_consensus_is_an_honest_downgrade(selector: PatternSelector) -> None:
+    """Critical risk calls for multi-agent consensus, but no goal driver runs it (the
+    AgentGraph has no consensus node; the StrategyRunner denies it) — so it is recorded as
+    a downgrade instead of being listed as a topology that ran."""
     props = _props(
         complexity=Complexity.EXPERT,
         domain=Domain.OPERATIONAL,
@@ -82,7 +85,10 @@ def test_critical_risk_selects_consensus(selector: PatternSelector) -> None:
         multi_step=True,
     )
     cfg = selector.select_agent_patterns(props)
-    assert "consensus" in cfg.multi_agent
+    assert "consensus" not in cfg.multi_agent
+    assert cfg.downgraded["consensus"] == "no_execution_driver"
+    # Critical risk still gets consensus verification as a safety layer.
+    assert "consensus_verification" in cfg.safety
 
 
 def test_nothing_hardcoded_registry_gate_removes_unavailable_pattern() -> None:

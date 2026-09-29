@@ -80,3 +80,57 @@ def test_local_tier_profile_still_uses_graph_factory() -> None:
     assert graph is not None
     assert graph.runtime_profile is not None
     assert graph.runtime_profile.goal_id == "goal-d1"
+
+
+def test_distributed_supervisor_falls_back_to_the_local_supervisor_node() -> None:
+    """Without a StrategyRunner the local kernel still runs the requested supervisor
+    node (it has one) and the goal records the tier downgrade — not a bare ReAct loop
+    under the supervisor's name."""
+    context: dict[str, Any] = {}
+    distributed = replace(_profile("supervisor"), execution_tier=ExecutionTier.DISTRIBUTED)
+    graph = _svc()._make_agent_loop_for_tenant(
+        _CTX, None, runtime_profile=distributed, execution_context=context
+    )
+    assert graph._enable_supervisor is True
+    execution = context["strategy_execution"]
+    assert execution["driver"] == "agent_graph"
+    assert "supervisor" in execution["patterns"]
+    assert execution["downgrades"] == [
+        {
+            "strategy_id": "supervisor",
+            "from": "strategy_runner",
+            "to": "agent_graph",
+            "reason": "strategy_runner_unavailable",
+        }
+    ]
+
+
+def test_distributed_primary_without_local_node_records_react_downgrade() -> None:
+    context: dict[str, Any] = {}
+    distributed = replace(_profile("rewoo"), execution_tier=ExecutionTier.DISTRIBUTED)
+    _svc()._make_agent_loop_for_tenant(
+        _CTX, None, runtime_profile=distributed, execution_context=context
+    )
+    execution = context["strategy_execution"]
+    assert execution["patterns"] == ["react"]
+    assert execution["downgrades"][0]["reason"] == "strategy_runner_unavailable_no_local_node"
+
+
+def test_legacy_graph_records_the_patterns_it_runs() -> None:
+    context: dict[str, Any] = {}
+    _svc()._make_agent_loop_for_tenant(_CTX, None, execution_context=context)
+    assert context["strategy_execution"] == {"driver": "agent_graph", "patterns": ["react"]}
+
+
+def test_profile_graph_records_profile_patterns() -> None:
+    context: dict[str, Any] = {}
+    _svc()._make_agent_loop_for_tenant(
+        _CTX,
+        None,
+        runtime_profile=_profile("react", "reflection"),
+        execution_context=context,
+    )
+    execution = context["strategy_execution"]
+    assert execution["patterns"] == ["react", "reflection"]
+    assert execution["requested_primary"] == "react"
+    assert "downgrades" not in execution

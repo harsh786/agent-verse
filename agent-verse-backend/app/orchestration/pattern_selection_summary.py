@@ -19,6 +19,7 @@ from __future__ import annotations
 from contextlib import suppress
 from typing import Any
 
+from app.orchestration.execution_drivers import goal_execution_driver
 from app.orchestration.goal_classifier import GoalClassifier
 from app.orchestration.pattern_selector import PatternSelector
 from app.orchestration.runtime_profile import KnowledgeState
@@ -59,13 +60,17 @@ def _available_agent_patterns(registry: StrategyRegistry) -> list[dict[str, Any]
         registry.list_by_category(StrategyCategory.AGENT),
         key=lambda c: c.strategy_id,
     ):
+        driver = goal_execution_driver(cap)
         catalog.append(
             {
                 "id": cap.strategy_id,
                 "name": humanize(cap.strategy_id),
                 "description": cap.description,
                 "state": cap.state.value,
-                "available": registry.is_available(cap.strategy_id),
+                # Selectable only when a goal can actually run it — a registered adapter
+                # with no goal execution driver is not an option to offer.
+                "available": registry.is_available(cap.strategy_id) and driver is not None,
+                "execution_driver": driver.value if driver is not None else None,
                 "cost_class": cap.cost_class,
                 "latency_class": cap.latency_class,
             }

@@ -11,15 +11,25 @@ from typing import Any
 
 from app.orchestration.compatibility import CompatibilityEvaluator
 from app.orchestration.decision_trace import DecisionTrace
+from app.orchestration.execution_drivers import (
+    NO_EXECUTION_DRIVER,
+    goal_execution_driver,
+    has_agent_graph_node,
+)
 from app.orchestration.goal_classifier import GoalClassifier
 from app.orchestration.pattern_selector import PatternSelector
 from app.orchestration.runtime_profile import (
     GoalRuntimeProfile,
     StrategyRejection,
+    StrategySelection,
     default_pattern_limits,
 )
+from app.orchestration.strategy_adapters import ExecutionTier
 from app.orchestration.strategy_contracts import PatternLimits
 from app.orchestration.strategy_registry import StrategyRegistry, build_default_registry
+
+# The AgentGraph kernel's base loop — always runnable, so the honest fallback primary.
+_FALLBACK_PRIMARY = "react"
 
 
 class InvalidStrategyOverrideError(ValueError):
@@ -199,6 +209,12 @@ class RuntimeProfileBuilder:
             raise InvalidStrategyOverrideError(
                 f"primary strategy is not executable: {requested_primary}"
             )
+        if explicit_primary and goal_execution_driver(resolution.capability) is None:
+            # Registered with adapter logic, but nothing turns a goal into a run of it:
+            # refuse instead of compiling a plain AgentGraph that claims this pattern.
+            raise InvalidStrategyOverrideError(
+                f"primary strategy has no goal execution driver: {requested_primary}"
+            )
         trace.add(
             "StrategyRegistry",
             "primary_strategy_resolution",
@@ -247,15 +263,47 @@ class RuntimeProfileBuilder:
             sandbox_ready=bool(config.get("sandbox_ready", False)),
             coordination_ready=bool(config.get("coordination_ready", False)),
         )
-        rejections = [*pre_rejections, *compatibility.rejected]
-        if not explicit_primary and compatibility.primary_rejection is not None:
-            rejections.insert(
-                0,
-                StrategyRejection(
-                    compatibility.primary.strategy_id,
-                    f"{compatibility.primary_rejection}_fallback",
-                ),
+        primary_fallback: StrategyRejection | None = None
+        if compatibility.primary_rejection is not None:
+            if explicit_primary:
+                raise InvalidStrategyOverrideError(
+                    f"primary strategy cannot be admitted: {requested_primary} "
+                    f"({compatibility.primary_rejection})"
+                )
+            primary_fallback = StrategyRejection(
+                compatibility.primary.strategy_id,
+                f"{compatibility.primary_rejection}_fallback",
             )
+            if compatibility.primary.strategy_id != _FALLBACK_PRIMARY:
+                # Actually run the fallback (the kernel's base loop), not the rejected
+                # primary the profile would otherwise still name.
+                compatibility = self._compatibility.compose(
+                    primary_id=_FALLBACK_PRIMARY,
+                    candidate_auxiliary_ids=auxiliary_ids,
+                    ready_ids=ready_ids | {_FALLBACK_PRIMARY},
+                    sandbox_ready=bool(config.get("sandbox_ready", False)),
+                    coordination_ready=bool(config.get("coordination_ready", False)),
+                )
+        rejections = [*pre_rejections, *compatibility.rejected]
+        if primary_fallback is not None:
+            rejections.insert(0, primary_fallback)
+        # Only keep auxiliaries the selected driver can actually run.
+        driven_auxiliaries: list[StrategySelection] = []
+        for item in compatibility.accepted:
+            aux_tier = self._registry.resolve(item.strategy_id).capability.execution_tier
+            if aux_tier is ExecutionTier.CROSS_CUTTING or (
+                compatibility.execution_tier is ExecutionTier.LOCAL
+                and has_agent_graph_node(item.strategy_id)
+            ):
+                driven_auxiliaries.append(item)
+            else:
+                rejections.append(StrategyRejection(item.strategy_id, NO_EXECUTION_DRIVER))
+        accepted_auxiliaries = tuple(driven_auxiliaries)
+        # Multi-agent patterns the goal called for that nothing can run (e.g. consensus).
+        rejections.extend(
+            StrategyRejection(strategy_id, reason)
+            for strategy_id, reason in agent_cfg.downgraded.items()
+        )
         effective_limits, tenant_ceiling = self._effective_limits(config)
         profile_identity = "|".join(
             (
@@ -263,7 +311,7 @@ class RuntimeProfileBuilder:
                 goal_id,
                 self._registry_revision,
                 compatibility.primary.strategy_id,
-                *(item.strategy_id for item in compatibility.accepted),
+                *(item.strategy_id for item in accepted_auxiliaries),
             )
         )
         profile_id = uuid.uuid5(uuid.NAMESPACE_URL, profile_identity).hex
@@ -283,14 +331,14 @@ class RuntimeProfileBuilder:
             assembly_latency_ms=total_ms,
             registry_revision=self._registry_revision,
             primary_strategy=compatibility.primary,
-            auxiliary_strategies=compatibility.accepted,
+            auxiliary_strategies=accepted_auxiliaries,
             execution_tier=compatibility.execution_tier,
             effective_limits=effective_limits,
             tenant_limit_ceiling=tenant_ceiling,
             readiness_snapshot_ref=f"sha256:{readiness_digest}",
             policy_snapshot_ref=str(config.get("policy_snapshot_ref", "policy:default")),
             budget_snapshot_ref=str(config.get("budget_snapshot_ref", "budget:default")),
-            selected_alternatives=(compatibility.primary, *compatibility.accepted),
+            selected_alternatives=(compatibility.primary, *accepted_auxiliaries),
             rejected_alternatives=tuple(rejections),
             model_role_assignments=tuple(
                 (
