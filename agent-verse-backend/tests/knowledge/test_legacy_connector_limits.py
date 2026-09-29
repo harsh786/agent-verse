@@ -30,7 +30,7 @@ _SECRET = SecretStr("t")
 @pytest.mark.parametrize(
     ("model", "field", "cap", "extra"),
     [
-        (api.RepoIngestRequest, "max_files", MAX_GITHUB_FILES, {"repo_url": "u", "collection_id": "c"}),
+        # RepoIngestRequest is bounded by RepositoryLimits in its handler (400).
         (
             api.GitHubIngestRequest,
             "max_files",

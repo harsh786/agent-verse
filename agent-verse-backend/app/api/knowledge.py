@@ -98,9 +98,8 @@ class RepoIngestRequest(BaseModel):
     collection_id: str
     branch: str = "main"
     file_patterns: list[str] = ["**/*.py", "**/*.md", "**/*.ts", "**/*.js"]
-    # Bounded (app.knowledge.ingestors.limits): these limits used to accept any
-    # int, so one request could crawl a whole estate into the collection.
-    max_files: int = Field(default=200, ge=1, le=MAX_GITHUB_FILES)
+    # Bounded by RepositoryLimits in the handler (400 outside the allowed range).
+    max_files: int = 200
 
 
 class OpenAPIIngestRequest(BaseModel):
