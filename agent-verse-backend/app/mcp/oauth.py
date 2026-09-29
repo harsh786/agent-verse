@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -49,6 +50,11 @@ class OAuthToken:
 
 
 _OAUTH_STATE_TTL = 600  # 10 minutes
+# How long a token read from the durable store is served from process memory
+# before it is re-read (another replica/worker may have refreshed or revoked it).
+_TOKEN_CACHE_TTL_SECONDS = 30.0
+
+_log = logging.getLogger(__name__)
 
 
 class OAuthFlowManager:
@@ -59,8 +65,13 @@ class OAuthFlowManager:
         self._vault = vault
         # state_token → OAuthState
         self._pending_flows: dict[str, OAuthState] = {}
-        # (tenant_id, server_id) → OAuthToken
+        # (tenant_id, server_id) → OAuthToken. With a DB factory this is only a
+        # short-lived read-through cache of the oauth_tokens table (the durable,
+        # RLS-scoped, vault-encrypted source of truth shared by every API replica
+        # and the Celery worker); without one (dev/tests) it is the store.
         self._tokens: dict[tuple[str, str], OAuthToken] = {}
+        # (tenant_id, server_id) → monotonic time the cached token was read/written.
+        self._token_cached_at: dict[tuple[str, str], float] = {}
         # Set externally to enable DB persistence
         self._db_session_factory: Any = None
         # (tenant_id, server_id) → lock serialising concurrent refresh_token()
@@ -290,7 +301,7 @@ class OAuthFlowManager:
         if not token.access_token:
             return None
 
-        self._tokens[(tenant_ctx.tenant_id, flow.server_id)] = token
+        self._cache_token((tenant_ctx.tenant_id, flow.server_id), token)
         # Persist to DB if factory is configured
         await self._persist_token_to_db(tenant_ctx.tenant_id, flow.server_id, token)
         return token
@@ -312,6 +323,97 @@ class OAuthFlowManager:
             server_id = kwargs.get("server_id", "")
             tenant_id = getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else ""
         return self._tokens.get((tenant_id, server_id))
+
+    def _cache_token(self, key: tuple[str, str], token: OAuthToken) -> None:
+        self._tokens[key] = token
+        self._token_cached_at[key] = time.monotonic()
+
+    def _drop_cached(self, key: tuple[str, str]) -> None:
+        self._tokens.pop(key, None)
+        self._token_cached_at.pop(key, None)
+
+    def _token_from_row(
+        self,
+        access_enc: str,
+        refresh_enc: str | None,
+        expires_at: Any,
+        token_type: str | None,
+        scope: str | None,
+    ) -> OAuthToken:
+        """Build an OAuthToken from a stored oauth_tokens row (decrypting it)."""
+        from datetime import UTC, datetime
+
+        if expires_at is None:
+            expires_in = 3600
+        else:
+            if getattr(expires_at, "tzinfo", None) is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            expires_in = int((expires_at - datetime.now(UTC)).total_seconds())
+        return OAuthToken(
+            access_token=self._decrypt_token(access_enc),
+            token_type=token_type or "Bearer",
+            refresh_token=self._decrypt_token(refresh_enc) if refresh_enc else "",
+            # An access token that expired while we were down keeps expires_in=0
+            # (is_expired) so the first use refreshes it with the refresh token.
+            expires_in=max(0, expires_in),
+            scope=scope or "",
+        )
+
+    async def _fetch_token_row(self, tenant_id: str, server_id: str) -> tuple[Any, ...] | None:
+        """Read one connector's stored token under the tenant's RLS context."""
+        from sqlalchemy import text
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db_session_factory() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT access_token, refresh_token, expires_at, token_type, scope "
+                        "FROM oauth_tokens WHERE tenant_id = :tid AND server_id = :sid"
+                    ),
+                    {"tid": tenant_id, "sid": server_id},
+                )
+            ).first()
+        return tuple(row) if row is not None else None
+
+    async def aget_token(self, tenant_id: str, server_id: str) -> OAuthToken | None:
+        """Token for a connector, read through the durable store.
+
+        Serves the in-process copy while it is fresh (< _TOKEN_CACHE_TTL_SECONDS
+        old and not expired); otherwise re-reads oauth_tokens so a token obtained
+        or refreshed by another API replica — or needed by the Celery worker,
+        which never ran the OAuth flow — is found. A row that no longer exists
+        (connector disconnected / token revoked) is not served from stale memory.
+        If the store cannot be read, the in-process copy is used.
+        """
+        key = (tenant_id, server_id)
+        cached = self._tokens.get(key)
+        if self._db_session_factory is None:
+            return cached
+        cached_at = self._token_cached_at.get(key)
+        if (
+            cached is not None
+            and cached_at is not None
+            and time.monotonic() - cached_at < _TOKEN_CACHE_TTL_SECONDS
+            and not cached.is_expired()
+        ):
+            return cached
+        try:
+            row = await self._fetch_token_row(tenant_id, server_id)
+        except Exception as exc:
+            _log.warning("oauth_token_read_failed server_id=%s error=%s", server_id, exc)
+            return cached
+        if row is None:
+            self._drop_cached(key)
+            return None
+        token = self._token_from_row(*row[:5])
+        self._cache_token(key, token)
+        return token
 
     def _get_refresh_lock(self, tenant_id: str, server_id: str) -> asyncio.Lock:
         key = (tenant_id, server_id)
@@ -347,22 +449,31 @@ class OAuthFlowManager:
         # Resolve tenant_id from either tenant_ctx or the explicit keyword
         resolved_tenant_id = getattr(tenant_ctx, "tenant_id", "") if tenant_ctx else tenant_id
         # Use the provided token, or look it up from internal store
-        existing = token or self._tokens.get((resolved_tenant_id, server_id))
+        key = (resolved_tenant_id, server_id)
+        existing = token or await self.aget_token(resolved_tenant_id, server_id)
         if existing is None or not existing.refresh_token:
             return None
 
         async with self._get_refresh_lock(resolved_tenant_id, server_id):
-            # Another concurrent caller may have already refreshed this same
-            # token while we were waiting for the lock. Reuse it instead of
-            # sending a second refresh request with our (possibly now
-            # superseded) refresh_token.
-            current = self._tokens.get((resolved_tenant_id, server_id))
-            if (
-                current is not None
-                and current.access_token != existing.access_token
-                and not current.is_expired()
-            ):
-                return current
+            # Another concurrent caller — in this process, another replica or the
+            # worker — may have already refreshed this token. Reuse it instead of
+            # sending a second refresh request with our (possibly now superseded)
+            # refresh_token; rotating providers reject that with invalid_grant.
+            current = self._tokens.get(key)
+            if self._db_session_factory is not None:
+                try:
+                    row = await self._fetch_token_row(resolved_tenant_id, server_id)
+                    if row is not None:
+                        current = self._token_from_row(*row[:5])
+                except Exception as exc:
+                    _log.warning("oauth_token_read_failed server_id=%s error=%s", server_id, exc)
+            if current is not None and current.access_token != existing.access_token:
+                if not current.is_expired():
+                    self._cache_token(key, current)
+                    return current
+                if current.refresh_token:
+                    # Newer (rotated) refresh token written elsewhere.
+                    existing = current
 
             # Resolve token_url / client_id from auth_config if not given directly
             cfg = auth_config or {}
@@ -372,10 +483,19 @@ class OAuthFlowManager:
             if not resolved_token_url:
                 return None
 
+            # token_url comes from the tenant's connector config: the refresh
+            # token (and client id) must never be POSTed to an internal host.
+            # Every hop is re-validated and the socket is pinned to the checked
+            # address (no DNS-rebinding window).
+            from app.net.ssrf_guard import public_async_client, request_public
+
             try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(
+                async with public_async_client(timeout=15.0) as client:
+                    resp = await request_public(
+                        client,
+                        "POST",
                         resolved_token_url,
+                        context="oauth_token_url",
                         data={
                             "grant_type": "refresh_token",
                             "refresh_token": existing.refresh_token,
@@ -385,9 +505,7 @@ class OAuthFlowManager:
                     resp.raise_for_status()
                     data = resp.json()
             except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).error("Token refresh failed: %s", exc)
+                _log.error("Token refresh failed: %s", exc)
                 return None  # Don't silently return stale token
 
             new_token = OAuthToken(
@@ -395,8 +513,12 @@ class OAuthFlowManager:
                 token_type=data.get("token_type", "Bearer"),
                 refresh_token=data.get("refresh_token", existing.refresh_token),
                 expires_in=int(data.get("expires_in", 3600)),
+                scope=data.get("scope", existing.scope),
             )
-            self._tokens[(resolved_tenant_id, server_id)] = new_token
+            self._cache_token(key, new_token)
+            # Durable, so other replicas and the worker use the refreshed token
+            # (and a rotated refresh token is not lost on restart).
+            await self._persist_token_to_db(resolved_tenant_id, server_id, new_token)
             return new_token
 
     async def _persist_token_to_db(self, tenant_id: str, server_id: str, token: OAuthToken) -> None:
@@ -450,55 +572,71 @@ class OAuthFlowManager:
 
             get_logger(__name__).warning("oauth_token_persist_failed", error=str(exc))
 
-    async def load_tokens_from_db(self) -> int:
-        """Restore OAuth token state on process startup.
+    async def _fetch_all_token_rows(self) -> list[tuple[Any, ...]]:
+        """Every tenant's stored tokens that are still usable (startup warm-up)."""
+        from sqlalchemy import text
 
-        Returns the number of tokens loaded.
+        from app.db.rls import system_session
+        from app.db.session import get_system_session_factory
+
+        # Cross-tenant startup restore: the maintenance role (under the
+        # NOBYPASSRLS app role a GUC-less read sees nothing).
+        factory = getattr(self, "_system_session_factory", None) or get_system_session_factory()
+        async with factory() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                text(
+                    "SELECT tenant_id, server_id, access_token, refresh_token, "
+                    "expires_at, token_type, scope FROM oauth_tokens "
+                    "WHERE expires_at IS NULL OR expires_at > NOW() "
+                    "OR (refresh_token IS NOT NULL AND refresh_token <> '')"
+                )
+            )
+            return [tuple(r) for r in result.fetchall()]
+
+    async def load_tokens_from_db(self) -> int:
+        """Warm the token cache on process startup.
+
+        A token whose access token expired while the service was down is kept
+        when it has a refresh token (it is refreshed on first use); it used to be
+        dropped, disconnecting the connector. Returns the number of tokens loaded.
         """
         if self._db_session_factory is None:
             return 0
         try:
-            from datetime import UTC, datetime
-
-            from sqlalchemy import text
-
-            from app.db.rls import system_session
-            from app.db.session import get_system_session_factory
-
-            # Cross-tenant startup restore: the maintenance role (under the
-            # NOBYPASSRLS app role a GUC-less read sees nothing). obtained_at is
-            # "now" with the remaining lifetime as expires_in (it was 0, so every
-            # restored token counted as expired).
-            factory = getattr(self, "_system_session_factory", None) or get_system_session_factory()
-            async with factory() as session, session.begin(), system_session(session):
-                result = await session.execute(
-                    text(
-                        "SELECT tenant_id, server_id, access_token, refresh_token, "
-                        "expires_at, token_type, scope "
-                        "FROM oauth_tokens WHERE expires_at IS NULL OR expires_at > NOW()"
-                    )
-                )
-                rows = result.fetchall()
-            for row in rows:
-                access = self._decrypt_token(row[2])
-                refresh = self._decrypt_token(row[3]) if row[3] else ""
-                if row[4] is None:
-                    expires_in = 3600
-                else:
-                    expires_in = int(
-                        (row[4].replace(tzinfo=UTC) - datetime.now(UTC)).total_seconds()
-                    )
-                token = OAuthToken(
-                    access_token=access,
-                    token_type=(row[5] if len(row) > 5 else None) or "Bearer",
-                    refresh_token=refresh or "",
-                    expires_in=max(0, expires_in),
-                    scope=(row[6] if len(row) > 6 else None) or "",
-                )
-                self._tokens[(row[0], row[1])] = token
-            return len(rows)
+            rows = await self._fetch_all_token_rows()
         except Exception as exc:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("oauth_load_from_db_failed", error=str(exc))
             return 0
+        loaded = 0
+        for row in rows:
+            try:
+                token = self._token_from_row(
+                    row[2], row[3], row[4], row[5] if len(row) > 5 else None,
+                    row[6] if len(row) > 6 else None,
+                )
+            except Exception as exc:
+                _log.warning("oauth_token_restore_failed server_id=%s error=%s", row[1], exc)
+                continue
+            if token.is_expired() and not token.refresh_token:
+                continue
+            self._cache_token((row[0], row[1]), token)
+            loaded += 1
+        return loaded
+
+
+def build_worker_oauth_manager(db_session_factory: Any) -> OAuthFlowManager | None:
+    """An OAuth manager for a process that never ran the OAuth flow (Celery worker).
+
+    Reads connector tokens through the durable oauth_tokens store (RLS-scoped,
+    vault-decrypted) and persists refreshes back, so worker-run goals send the
+    same Bearer token the API obtained. ``None`` without a DB (nothing to read).
+    """
+    if db_session_factory is None:
+        return None
+    from app.providers.vault import get_vault
+
+    mgr = OAuthFlowManager(vault=get_vault())
+    mgr._db_session_factory = db_session_factory
+    return mgr

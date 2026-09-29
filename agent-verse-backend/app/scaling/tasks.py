@@ -1941,6 +1941,14 @@ def run_goal(
             redis=redis_client,
             llm_provider=real_provider,  # type: ignore[name-defined]
         )
+        # OAuth connectors: the worker never ran the OAuth flow, so without a
+        # manager reading the durable oauth_tokens store it sent no Bearer token.
+        try:
+            from app.mcp.oauth import build_worker_oauth_manager
+
+            mcp_client._oauth_manager = build_worker_oauth_manager(db_factory)
+        except Exception as _oauth_exc:
+            logger.warning("worker_oauth_manager_wire_failed: %s", _oauth_exc)
         worker_connector_ids = [str(item) for item in (connector_ids or [])]
 
         # When no connector_ids are specified (e.g. goal submitted without an agent),
