@@ -1,0 +1,323 @@
+{
+  "group": "g03-tools",
+  "code": "6b55e89c4",
+  "features": [
+    {
+      "area": "tools-connectors",
+      "feature": "MCP connector registry and management API",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Wave 7 pinned every connector test probe (GitHub/Jira/Slack/Stripe/GitLab/generic) to validated IPs via _probe_client -> public_async_client (c623ab44e; app/api/connectors.py:702-710). The registry itself is unchanged: Redis-only, never written to mcp_servers, and the health/usage endpoints still swallow errors into []/zeros.",
+      "verified_fixed": [
+        "Direct probes validate-then-connect on plain httpx.AsyncClient -> all probes now use _probe_client()=public_async_client (connect-time IP pinning, no redirects) (c623ab44e; app/api/connectors.py:629,702-710; test tests/api/test_pinned_outbound_connections.py::test_connector_test_probe_connects_via_pinned_client)"
+      ],
+      "still_open": [
+        "No Postgres durability: MCPRegistry is Redis-only (app/mcp/registry.py:86-193); mcp_servers (app/db/models/mcp.py:15) is still never written by app code, so a Redis flush/eviction loses every tenant's connectors",
+        "GET /{id}/health returns [] on any DB error (app/api/connectors.py:1119-1120) and [] when db_session_factory is None (1092-1093)",
+        "GET /{id}/usage: unindexed LIKE '%id%' on execution_context->>'connector_ids' plus `except Exception: pass` returning zeros (app/api/connectors.py:1531-1591) [medium, previously new_defect]",
+        "Generic reachability path still calls synchronous assert_public_url (blocking getaddrinfo on the event loop) at app/api/connectors.py:1039 (the earlier async guard at 966-975 already checked the URL, so this is redundant blocking) [low]"
+      ],
+      "new_defects": [
+        "app/api/connectors.py:458-476 + app/mcp/registry.py:127-129 — registering a connector whose name matches a builtin adopts the canonical server_id and MCPRegistry.register does an unconditional SET, so a tenant's second 'GitHub'/'Jira' connector (e.g. another org/PAT) silently overwrites the first, including its secret refs; no 409 [low]",
+        "app/api/connectors.py:1603-1612 + app/providers/vault.py:98-135 — DELETE /connectors/{id} removes only the Redis config; RedisConnectorSecretStore has no delete method, so encrypted credentials of deleted connectors stay in mcp:connector_secrets:* forever (credential remanence / erasure gap) [low]",
+        "app/mcp/registry.py:161-171 — list_server_records does one Redis GET per connector sequentially (N+1 round-trips) on every list and every tool-context build [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_connectors.py tests/mcp/test_registry.py tests/mcp/test_connector_health_history.py tests/api/test_connector_detail_routes.py tests/api/test_connector_test_endpoint.py tests/mcp/test_pinned_connections.py tests/api/test_connectors_cross_tenant_extra.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 59 passed",
+        "uv run pytest tests/security/test_ssrf_connectors_saml_health.py tests/api/test_pinned_outbound_connections.py tests/net/test_no_unpinned_public_fetch.py ... -> 19 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Connector secret storage and credential resolution",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Unchanged by wave 7. Secrets are vault-encrypted and tenant-scoped in Redis (RedisConnectorSecretStore, app/providers/vault.py:98-135). Production refuses the process-local store (app/api/connectors.py:139-158), and the API, the worker (app/scaling/tasks.py:2462-2474) and publish_mission (1519-1529) all resolve through the tenant-aware resolver. The only durable copy is still in Redis, and the minor gaps remain.",
+      "verified_fixed": [],
+      "still_open": [
+        "Connector secrets persisted only in Redis mcp:connector_secrets:{tenant}:{server}:{key}; no Postgres copy or backup, so an eviction or flush loses every tenant's credentials (app/providers/vault.py:98-135) [medium]",
+        "OAuth GET callback still writes vault-encrypted _encrypted_access_token/_encrypted_refresh_token into the Redis auth_config, which nothing reads (app/api/connectors.py:1480-1500)",
+        "Dev-insecure master key is used for any ENVIRONMENT other than exactly 'production' (e.g. staging), with a warning only (app/providers/vault.py:29-51, 393-400)",
+        "OAuthFlowManager._decrypt_token swallows decrypt errors and returns the ciphertext as the token (app/mcp/oauth.py:109-116)",
+        "A resolver that returns None becomes '' and the request goes out with no auth (app/mcp/client.py:271-281)"
+      ],
+      "new_defects": [
+        "app/providers/vault.py:377-400 + app/api/connectors.py:1481 — get_vault() is uncached and runs PBKDF2-HMAC 480k iterations (about 0.3 s CPU) on each call. The OAuth callback runs it synchronously on the event loop, and the worker runs it once per goal tool-context build (app/scaling/tasks.py:2462) [low]",
+        "app/providers/vault.py:207-306 — rotate_key swaps the Fernet only in the calling process and skips secrets it cannot decrypt. Other replicas and workers keep the old key and fail to decrypt re-encrypted secrets until they restart with the new env key. Nothing in app/ calls it, so it is dormant [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/providers/test_vault.py tests/mcp/test_credential_injection.py tests/mcp/test_builtin_secret_resolution.py tests/api/test_connectors_openapi_import.py tests/mcp/test_builtin_tenant_credentials.py tests/mcp/test_oauth_vault_wiring.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 44 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Connector OAuth (popup flow, PKCE flow, token manager)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "f537bbeee pins the authorization-code exchange to validated IPs (app/mcp/oauth.py:246-269). PKCE flows are shared via Redis, tokens are durable in oauth_tokens under RLS, and the worker reads them through build_worker_oauth_manager (app/scaling/tasks.py:2481-2483). A failed token persist is still swallowed while the callback answers 'connected', refresh failures still send no bearer, and the popup flow is an honest 501.",
+      "verified_fixed": [
+        "exchange_code POSTed code+verifier on a plain httpx.AsyncClient -> now public_async_client after assert_public_url_async (f537bbeee; app/mcp/oauth.py:246-269; tests/mcp/test_pinned_connections.py::test_oauth_code_exchange_connects_via_pinned_client passed)"
+      ],
+      "still_open": [
+        "_persist_token_to_db swallows errors with a warning only (app/mcp/oauth.py:577-580). exchange_code still returns the token (303-308) and the callback answers status 'connected' (app/api/connectors.py:1502-1509) even when the durable token that the worker and other replicas need was never written [medium]",
+        "MCPClient suppresses refresh errors (contextlib.suppress) and any lookup error (except: pass), then silently sends the request with no bearer (app/mcp/client.py:1568-1593)",
+        "Popup flow: process-local _oauth_states (app/api/connectors.py:1129-1138); POST /oauth/callback is an honest 501 (1270-1300)",
+        "Refresh lock is a process-local asyncio.Lock (app/mcp/oauth.py:420-426); two replicas or workers can both POST a rotating refresh token. The DB re-read at 463-478 only narrows the window",
+        "Code-exchange exceptions are returned as HTTP 200 {status:'error', message:str(exc)} (app/api/connectors.py:1467-1469). Any unexpected exchange error comes back as None (oauth.py:286-290) and is reported as 'Invalid OAuth state parameter' (connectors.py:1471-1476) [low]"
+      ],
+      "new_defects": [
+        "app/mcp/oauth.py:585-629 + app/main.py:1940 — load_tokens_from_db runs at every replica start. With the maintenance role it reads every tenant's OAuth rows and holds all decrypted access and refresh tokens in an unbounded per-process dict (_tokens, oauth.py:72,329-331). aget_token already re-reads the DB after its 30 s TTL, so this is O(all tenants) startup memory plus a plaintext blast radius in every replica, with no need for it [medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/mcp/test_oauth_durable_tokens.py tests/mcp/test_oauth.py tests/api/test_oauth_flow.py tests/mcp/test_oauth_security.py tests/mcp/test_pinned_connections.py::test_oauth_code_exchange_connects_via_pinned_client -q --no-cov -p no:cacheprovider -m 'not slow' -> 44 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "MCP client tool discovery and dispatch",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "f537bbeee closes the DNS-rebinding gap: every HTTP discover and dispatch path (MCP JSON-RPC, OpenAPI, Jira REST) now connects through _http_client() = public_async_client (app/mcp/client.py:236-244,489,796,877,1069). SSRF and exfiltration guards still fail closed. Tool stats remain a no-op, the circuit breaker still fails open and serves stale cache as success, and the WebSocket transport is broken outright and silently falls back to HTTP.",
+      "verified_fixed": [
+        "Validate-then-connect on plain httpx.AsyncClient for tenant MCP/OpenAPI/Jira endpoints -> pinned public_async_client (f537bbeee; app/mcp/client.py:236-244; tests/mcp/test_pinned_connections.py 4 dispatch tests passed)"
+      ],
+      "still_open": [
+        "MCPClient._db is never assigned anywhere in app/ (only getattr(self,'_db',None) at app/mcp/client.py:1403,1423,1441), so _update_tool_stats returns immediately (1499-1500) and tool_capabilities success_rate/latency never update",
+        "WebSocket failure is logged and falls through to HTTP dispatch (app/mcp/client.py:1042-1048)",
+        "Circuit-breaker check error fails open (app/mcp/client.py:1214-1215)",
+        "Open circuit serves the stale read cache as success=True (app/mcp/client.py:1183-1209)",
+        "_dispatch_jira_rest_tool supports only jira_search_issues (app/mcp/client.py:849-855)",
+        "The URL is still checked with synchronous assert_public_url (blocking getaddrinfo on the event loop) at app/mcp/client.py:481,654,753,1012 before the pinned client resolves it again [low]",
+        "MCP WebSocket transport still resolves DNS itself after validation (app/mcp/ws_client.py:66), per HANDOFF 7D follow-up [low]"
+      ],
+      "new_defects": [
+        "app/mcp/ws_client.py:66 — websockets.connect(..., extra_headers=...) fails on the installed websockets 15.0.1 with 'TypeError: BaseEventLoop.create_connection() got an unexpected keyword argument extra_headers' (reproduced directly). Every ws/websocket connector call therefore fails and is masked by the silent HTTP fallback (client.py:1042-1048). client.py:1030 also never passes auth_token, so WS calls would be unauthenticated even if the connect worked [medium]",
+        "app/mcp/client.py:1218-1238 — when server_id is not in the registry (deleted connector, or a stale or hallucinated id), call_tool dispatches any other tenant connector's OpenAPI tool with the same name and returns before the exfiltration guard (1316-1343), the tool cache and circuit-breaker accounting. That makes it an exfil-guard bypass for write tools [medium]",
+        "app/mcp/client.py:1397-1400 — the circuit breaker records success after every non-raising dispatch, including ToolCallResult(success=False). OpenAPI, builtin and Jira paths return failures instead of raising (e.g. 833-839), so a consistently failing connector never trips its breaker [low]",
+        "app/mcp/client.py:247-270,1270-1276 — _circuit_breakers and _schema_cache are unbounded per-process dicts keyed by tenant x server, so a long-lived API process grows with every tenant connector it touches [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/mcp/test_mcp_client.py tests/mcp/test_client_ssrf.py tests/mcp/test_mcp_circuit_breaker.py tests/mcp/test_pinned_connections.py tests/mcp/test_ws_client_comprehensive.py tests/mcp/test_openapi_dispatch_auth.py tests/mcp/test_circuit_breaker_tenant.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 75 passed (WS tests mock websockets, so they miss the TypeError)",
+        "direct probe: uv run python -c 'await websockets.connect(\"ws://127.0.0.1:9\", extra_headers={})' -> TypeError unexpected keyword argument 'extra_headers'"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Built-in MCP servers (registry_wiring)",
+      "previous_status": "PARTIAL",
+      "status": "FAIL",
+      "evidence": "The earlier claim that builtin handlers resolve per-tenant credentials holds only for 7 of 324 built-ins (GitHub, Slack, Utility Tools, Jira, Todoist, Telegram, Tavily). The other 317 handlers take no `credentials` parameter and read platform env vars (e.g. hubspot_server.py:188-199). _dispatch_builtin_tool checks that the tenant supplied its own credentials and then calls handler(tool_name, arguments) without them (app/mcp/client.py:666-690). A direct probe confirmed a tenant's HubSpot connector sends the PLATFORM key. f537bbeee pinned the Jira and GitHub servers. The lifespan-only registration gap is unchanged.",
+      "verified_fixed": [
+        "Jira/GitHub builtin servers now dial tenant URLs via pinned public_async_client (f537bbeee; app/mcp/servers/jira_server.py, github_server.py; tests/mcp/test_pinned_connections.py::test_jira_server_*/test_github_server_* passed)"
+      ],
+      "still_open": [
+        "register_builtin_servers runs only in lifespan, over tenants in memory at boot (app/main.py:1418-1445). Tenants created later get no credential-free builtin connectors until a restart, and one exception aborts the loop for all remaining tenants (a single try around the whole loop, 1423-1445)",
+        "app/mcp/certification.py and certification_manifest.py are still referenced only by tests (tests/mcp/test_connector_certification*.py), not by app code",
+        "Every replica start loops every tenant x every builtin with sequential Redis round-trips (app/main.py:1428-1442; registry_wiring.py:3413-3460) [low]",
+        "Only 7 handlers take credentials, so the SSRF endpoint check (client.py:649-669) protects just those. For the rest, a tenant-supplied url/base_url is ignored in favour of platform env URLs"
+      ],
+      "new_defects": [
+        "app/mcp/client.py:666-690 + app/mcp/servers/*_server.py (317 of 324 handlers, e.g. hubspot_server.py:188-199, confluence_server.py:145-179, gitlab_server.py) — confused deputy / cross-tenant exposure. The guard requires the tenant to supply credentials, then dispatches handler(tool_name, arguments) without them because the handler has no `credentials` parameter, and the handler uses os.getenv('HUBSPOT_API_KEY') etc. Probe: tenant auth_config api_key='TENANT-A-KEY' with platform HUBSPOT_API_KEY set -> outgoing 'Authorization: Bearer PLATFORM-KEY-xyz', success=True. With platform env set, every tenant reads and writes the platform's vendor account. Without it, every tenant's connector fails 'not configured' (the tenant credentials are never used) [high]",
+        "tests/mcp/test_builtin_tenant_credentials.py covers only GitHub, so no test asserts tenant-credential use for the 317 env-only handlers (missing test for the main real-world use case) [medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/mcp/test_registry_wiring_extra.py tests/tools/test_http_tool_ssrf.py tests/mcp/test_builtin_handler.py tests/mcp/test_builtin_ssrf_guard.py tests/mcp/test_builtin_tenant_credentials.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 29 passed",
+        "direct probe (scratch probe_deputy.py: MCPClient._dispatch_builtin_tool on builtin-hubspot with tenant api_key, platform HUBSPOT_API_KEY env, httpx send captured) -> success=True, Authorization: Bearer PLATFORM-KEY-xyz",
+        "introspection: 324 builtin configs; only 7 handlers accept a `credentials` parameter"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "OpenAPI import and tool capability registry",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No change to this feature in wave 7 apart from dispatch pinning (f537bbeee: imported OpenAPI tools now connect via the pinned client, app/mcp/client.py:796). Imported operations become dispatchable tool_definitions with credentials as secret refs, GET /capabilities fails with 503, and tool_capabilities RLS re-verified on real Postgres. The heuristics, swallowed discovery errors and inflated tools_saved remain.",
+      "verified_fixed": [
+        "OpenAPI tool dispatch now connects through public_async_client (f537bbeee; app/mcp/client.py:796; tests/mcp/test_pinned_connections.py::test_openapi_tool_connects_via_pinned_client passed)"
+      ],
+      "still_open": [
+        "/capabilities/missing matches catalog names as substrings of the goal against tool names, and can_proceed is true whenever any tool exists (app/api/connectors.py:1916-1940)",
+        "/capabilities/search and /capabilities/missing wrap discover_all_tools in contextlib.suppress, so a failure looks like 'no tools' (app/api/connectors.py:1807-1808, 1912-1913)",
+        "POST /{id}/discover counts tools_saved inside a transaction that rolls back on a swallowed error, then returns 200 with the inflated count (app/api/connectors.py:1843-1901)",
+        "CapabilitySearch re-embeds every tool on every query with no embedding cache (app/mcp/capability_search.py:188-190)",
+        "GET /capabilities has no LIMIT or pagination and returns every tool row for the tenant (app/api/connectors.py:1765-1776) [low]"
+      ],
+      "new_defects": [
+        "app/mcp/client.py:540-551 — discover_all_tools wraps the whole per-connector loop in one try, so the first connector whose discovery raises aborts discovery of every later connector. The partial list comes back as the complete tool set (feeds /capabilities/search and /missing) [low]",
+        "app/api/connectors.py:1807-1814 + app/mcp/capability_search.py:181-190 — every /capabilities/search runs live discovery against every tenant connector serially, then embeds all tool descriptors, with no budget charge for the embedding calls (unbounded per-request fan-out and cost) [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_connectors_openapi_import.py tests/mcp/test_openapi_importer_comprehensive.py tests/mcp/test_capability_search.py tests/mcp/test_capability_search_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 71 passed",
+        "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/mcp/test_tool_capabilities_rls.py tests/mcp/test_tool_capabilities_write_paths_rls.py ... -> 4 passed (real Postgres)"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Tool context and tool registry for the planner",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Wave 7 did not change this. The web path (GoalService._build_tool_context, app/services/goal_service.py:2254-2338) and the worker path (_build_worker_mcp_context, app/scaling/tasks.py:2437-2517) still build different tool sets for the same goal: different auto_approve, agent_id=None handling, RPA tools, tolerance of connector failures and tiered ToolSelector use.",
+      "verified_fixed": [],
+      "still_open": [
+        "Web ToolRef never sets auto_approve (app/services/goal_service.py:2260-2268, 2300-2308), unlike the worker (app/scaling/tasks.py:2505-2514)",
+        "With agent_id=None the web path offers RPA-only tools (goal_service.py:2271-2272); the worker offers every tenant connector (tasks.py:2489-2496)",
+        "The web path always injects RPA tools even without Playwright (goal_service.py:2258-2269)",
+        "ToolTrustStore is process-local and keyed by tool_name only (app/tool_runtime/tool_trust_store.py:7-15)",
+        "Worker ToolContext never includes RPA_TOOLS (tasks.py:2498-2517), so queued goals' planner is never offered rpa_* tools although the worker has an RPA executor (tasks.py:3076,3086) [medium]",
+        "Worker discover_tools per connector is not wrapped (tasks.py:2504-2506). One unreachable connector raises out of _WorkerMCPAgentRunner.run (tasks.py:736) and fails the whole goal, where the web path records connector_errors and continues (goal_service.py:2285-2291) [medium]"
+      ],
+      "new_defects": [
+        "app/scaling/tasks.py:2498-2517 vs app/services/goal_service.py:2318-2336 — the worker never applies the tiered ToolSelector, so a queued goal for a tenant with many connectors gets every discovered tool in the planner prompt (unbounded prompt size and cost), while the same goal run in-process gets a selected subset [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/agent/test_tool_context.py tests/scaling/test_worker_rpa_executor.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 13 passed (no test compares web vs worker tool sets)"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Connector health monitoring",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Wave 7 did not change this (HANDOFF 7D lists check_mcp_health as still unpinned, and tests/net/test_no_unpinned_public_fetch.py allowlists it). check_mcp_health classifies status and writes one snapshot per check under tenant RLS (app/scaling/tasks.py:4519-4561), and GET /{id}/health reads them. The probe design, the missing builtin coverage and the scaling problems remain.",
+      "verified_fixed": [],
+      "still_open": [
+        "The probe is always GET {base}/health (app/scaling/tasks.py:4616-4629); standard MCP servers 404 and get recorded as degraded",
+        "Builtin connectors are never health-checked (tasks.py:4617-4618)",
+        "_fallback still caps at 50 keys and writes no snapshots (tasks.py:4679-4683)",
+        "The history endpoint returns [] on any DB error (app/api/connectors.py:1119-1120)",
+        "The beat runs every 30 s (app/scaling/celery_app.py:148-151) but probes up to 5000 connectors serially with 5 s timeouts (tasks.py:4507,4593-4629). Runs overlap, and scan_iter restarts at cursor 0 each run, so connectors past the first 5000 keys are never checked [medium]",
+        "One snapshot row per connector every 30 s with no retention, pruning or partitioning of connector_health_snapshots (no delete path in app/) [medium]",
+        "request_public on a plain httpx.AsyncClient re-validates each hop but does not pin the connect IP (tasks.py:4624-4627, 4712-4719; allowlisted in tests/net/test_no_unpinned_public_fetch.py:52-57) [low]"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/scaling/test_mcp_health_status.py tests/mcp/test_connector_health_history.py tests/security/test_ssrf_connectors_saml_health.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 14 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Code interpreter and sandbox execution",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Not changed by wave 7. The Docker sandbox re-verified for real on colima (network_mode=none, read_only, uid 1000, pids_limit, cap_drop=ALL, no-new-privileges, deadline kill, always removed; app/tools/code_interpreter.py:193-247). The unsandboxed fallback is blocked in production and off by default elsewhere (271-300). The output cap is still applied after the full log read, audit failures are swallowed, and there is no concurrency bound.",
+      "verified_fixed": [],
+      "still_open": [
+        "The output cap is applied after container.logs() has read the whole stream into API memory (app/tools/code_interpreter.py:238-243)",
+        "Audit failures on /tools/execute-code are swallowed with a warning only, and nothing is recorded when app.state.audit_log is None (app/api/tools.py:67-99)"
+      ],
+      "new_defects": [
+        "app/api/tools.py:28-64 + app/tools/code_interpreter.py:258 — no per-tenant or global concurrency cap on /tools/execute-code. Each call holds a default-executor thread for up to 60 s (run_in_executor(None, ...)), so one tenant with a tools:write key can fill the replica's default thread pool. That pool is also what assert_public_url_async / PinnedNetworkBackend use via asyncio.to_thread, so every tenant's outbound SSRF-checked calls on that replica stall, and there is no host-level cap on concurrent containers [medium]",
+        "app/tools/code_interpreter.py:284 — the production block compares ENVIRONMENT == 'production' case-sensitively (other checks lower() it, e.g. app/api/connectors.py:118), so ENVIRONMENT=Production plus AGENTVERSE_ALLOW_SUBPROCESS_EXEC=true would run unsandboxed code [low]"
+      ],
+      "tests_run": [
+        "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/tools/test_code_interpreter_docker_sandbox.py tests/tools/test_code_interpreter.py tests/tools/test_code_interpreter_hardening.py tests/api/test_sandbox_api.py tests/api/test_tools_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 45 passed (Docker sandbox real)"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Native tool endpoints (tenant file workspace, email)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Not changed by wave 7. File ops stay confined to the tenant path via resolve()+relative_to (app/tools/file_ops.py:26-38), and email always sends from the platform sender with CR/LF header checks (app/tools/email_tool.py:257-267). The workspace is still pod-local /tmp, and neither endpoint has a quota.",
+      "verified_fixed": [],
+      "still_open": [
+        "The workspace is pod-local /tmp/agentverse-workspace/{tenant}: not shared across replicas or with the worker, and lost on restart (app/tools/file_ops.py:12,22-24)",
+        "No per-tenant recipient allowlist, send quota or approval on /tools/email/send; any tools:write key can relay mail from the platform sender (app/api/tools.py:176-203; app/auth/scope_enforcement.py:130)"
+      ],
+      "new_defects": [
+        "app/tools/file_ops.py:53-66 + app/api/tools.py (PUT/POST /tools/files) — no per-file size limit or per-tenant disk quota on the shared pod /tmp, so one tenant can fill the node's /tmp and break every tenant's workspace (and anything else on that tmpfs) on that pod [low]",
+        "app/tools/email_tool.py:257-267 — the recipient list is unbounded (to may be any-length list), so one API call can fan out to thousands of addresses from the platform sender (reputation/abuse amplification on top of the missing quota) [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/tools/test_file_ops.py tests/tools/test_email_extra.py tests/api/test_tools_api_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 57 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "RPA browser automation",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Nothing in app/rpa, app/api/rpa.py or app/net/browser_guard.py changed in wave 7 (git log a4d172588..HEAD is empty for them). The earlier fixes still hold: the worker RPA executor is wired (app/scaling/tasks.py:3076,3086; per-run secret store 736-743), takeover raises a persisted HITL approval, the route guard fetches via the pinned client, and cross-replica access returns 409. Playwright is still absent from the venv and the worker planner still gets no rpa_* tools.",
+      "verified_fixed": [],
+      "still_open": [
+        "BLOCKED: Playwright is not installed in the backend venv (`uv run python -c 'import playwright'` -> ModuleNotFoundError; optional extra 'browser'), so the real Chromium path is mock-tested only",
+        "Browser pages are per-process; cross-replica access is an honest 409, not shared (app/rpa/session_manager.py:128-129,310-333)",
+        "Worker ToolContext omits RPA_TOOLS (app/scaling/tasks.py:2498-2517), so queued goals never plan rpa_* calls although the executor is wired [medium]",
+        "The per-tenant browser cap (5) is counted per process (app/rpa/session_manager.py:132-138), so a tenant can hold 5 x (replicas + workers) Chromium instances with no global cap [medium]",
+        "The WebSocket guard validates the URL, then Playwright connect_to_server resolves DNS itself (app/net/browser_guard.py:318-343; rebinding window for ws/wss only) [low]",
+        "The guarded fetch buffers the whole response body (response.content) in memory with no size cap (app/net/browser_guard.py:297) [low]",
+        "replica_id is a random uuid per process (session_manager.py:108), so a crashed owner's registry record keeps other replicas answering 409 until the 1 h TTL expires; a restarted pod never reclaims it [low]"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/net/test_browser_guard.py tests/rpa/test_rpa_browser_ssrf.py tests/api/test_rpa_takeover.py tests/rpa/test_session_replica_affinity.py tests/scaling/test_worker_rpa_executor.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 63 passed",
+        "uv run python -c 'import playwright' -> ModuleNotFoundError (real-browser path BLOCKED)"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Perception (headless browser plus vision)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "8a195cb7b fixes the fake batch analysis. PageAnalyzer now gates on BrowserAgent.has_vision, calls analyze_screenshot(raise_errors=True) and records a vision failure as success=false with an error (app/perception/page_analyzer.py:83-114). /batch-analyze passes require_vision=True and returns 501 without a vision provider (app/api/perception.py:204-212). What remains: vision calls are neither charged nor circuit-broken, there is no global Chromium cap, and the real browser is unverified.",
+      "verified_fixed": [
+        "batch-analyze returned 'No vision provider configured.' / 'Vision analysis failed: …' as success=true -> 501 when no vision provider; per-URL vision failure is success=false with error and empty analysis (8a195cb7b; app/perception/page_analyzer.py:95-114, app/api/perception.py:204-228; tests/perception/test_page_analyzer_vision_honesty.py and tests/api/test_perception_comprehensive.py passed)"
+      ],
+      "still_open": [
+        "batch-analyze gathers up to 10 URLs concurrently per request, each with two separate page loads (screenshot + extract_text), and there is no global Chromium cap (app/perception/page_analyzer.py:119-138, 86-107)",
+        "BLOCKED: the Playwright optional extra 'browser' is not installed in the venv (ModuleNotFoundError), so the real path is unverified",
+        "Vision LLM calls go straight to provider.complete, uncharged against the tenant budget and not circuit-broken (app/perception/browser_agent.py:261). They are explicitly allowlisted as debt in tests/providers/test_no_direct_llm_complete.py:117 [low]"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/perception/ tests/api/test_perception_comprehensive.py tests/providers/test_no_direct_llm_complete.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 170 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "Agent identity and credentials (scoped keys, RS256 service accounts, manifests)",
+      "previous_status": "FAIL",
+      "status": "FAIL",
+      "evidence": "Unchanged by wave 7, consistent with g04's FAIL for agent-scoped keys. RS256 service accounts work: the private key is vault-sealed, exchange is bound to the owned agent (agent_identity.py:398-427 joins on agent_id), and TenantMiddleware verifies agent JWTs. But POST /agents/{id}/keys still mints av_agent_* keys that no auth path accepts (fake success), and the credentials page still reads fields the API does not return.",
+      "verified_fixed": [],
+      "still_open": [
+        "Agent-scoped keys (AgentCredentialStore) authenticate nothing: is_agent_key/resolve have no caller outside app/auth/agent_credentials.py (38,105,247), yet app/api/agent_credentials_api.py:28-55 issues them with a 200 [medium, fake success]",
+        "Frontend/backend mismatch: agent-verse-frontend/src/features/agents/AgentCredentialsPage.tsx:10,42-48,146,185 expects credential_id/api_key, but the backend returns key_id/private_key_pem and revokes by key_id (app/api/agents.py:1338-1406). The UI shows an undefined key and revoke 404s",
+        "Exchange needs only key_id plus a tenant key that owns the agent, not proof of possession of the private key (app/api/agents.py:1409-1437). key_id is not secret (it is the JWT 'kid')"
+      ],
+      "new_defects": [
+        "app/api/agents.py:1392-1406 + app/auth/agent_identity.py:367-388 — revoke_credential filters by key_id and tenant_id only, not agent_id. A caller who owns agent A can revoke agent B's service-account key (another owner in the same tenant) via DELETE /agents/A/credentials/{B_key_id}, bypassing require_owned_agent for B [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/auth/test_agent_identity_vault_and_auth.py tests/api/test_agent_credentials_api.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 30 passed"
+      ]
+    },
+    {
+      "area": "tools-connectors",
+      "feature": "A2A protocol and agent directory",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched app/api/a2a.py, agent_directory.py or the a2a_tasks migration since the baseline (a4d172588..HEAD). The honest parts hold: tasks run as the authenticated caller, signatures are timestamped and single-use (Redis SET NX, fail-closed 503), inbound is refused in production without a secret, and callbacks are re-validated and IP-pinned. But execution is still a fire-and-forget task on the API replica, callbacks are unsigned, context is dropped, and a hard 300s watcher timeout permanently records long goals as 'timeout'.",
+      "verified_fixed": [],
+      "still_open": [
+        "Fire-and-forget execution: execute_and_callback (submit_goal + outcome watch) is asyncio.create_task on the API replica; a restart or deploy leaves the a2a_tasks row 'accepted' forever with no callback, and nothing reconciles it (app/api/a2a.py:396-414)",
+        "Per-agent directory is still an honest 501 (app/api/agent_directory.py:26-37)",
+        "Callback POST is unsigned (no HMAC/timestamp header), so the receiver cannot authenticate it (app/api/a2a.py:290-299)",
+        "Agent card advertises only X-A2A-Signature, not X-A2A-Timestamp or the '{ts}.'+body signing base, so a spec-following client gets 401 (app/api/a2a.py:322-326 vs 142-151)",
+        "A2ATaskRequest.context is accepted but never passed to submit_goal (execution_context not set) (app/api/a2a.py:307, 398-403)",
+        "If app.state.goal_service is None the task is persisted and answered 202 'accepted' but never executed (app/api/a2a.py:390-420) [low]",
+        "Synchronous assert_public_url (blocking DNS) called inside async handlers stalls the event loop on slow resolvers (app/api/a2a.py:285, 369) [low]",
+        "No test covers restart/lost-task recovery, long-running (>300s) goals, or a signed callback. The Postgres tenant-boundary e2e (tests/e2e_full/test_a2a_tenant_boundary_e2e.py) is BLOCKED because Docker/colima must not be started in this run"
+      ],
+      "new_defects": [
+        "app/api/a2a.py:25,69-77,404-411 — the outcome watcher has a hard 300s timeout and then writes a terminal 'timeout' status and fires the callback. The goal keeps running: any HITL-gated or long research goal later completes, but the A2A task is never updated. No goal_id is stored (task_data at 380-388 has none, and the 0023 schema has no column), so the calling agent cannot reconcile. Result: false-negative outcomes for every goal longer than 5 minutes [medium]",
+        "app/api/a2a.py:305-310 — A2ATaskRequest has no length bounds. goal is unbounded, whereas POST /goals caps it at 10_000 (app/api/goals.py:54), so A2A bypasses the input cap. Oversized callback_url or requester_agent_id overflow String(500)/String(255) (0023_a2a_tasks.py:18-19), and the INSERT in _persist_task (a2a.py:198-212) fails with a 500 instead of a 422 [low]",
+        "app/api/a2a.py:128,164-169 — when app.state._redis is absent, the replay cache is a per-process dict. On multi-replica deployments without Redis, a captured signed request can be replayed once per replica within the 10-minute TTL [low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/api/test_a2a.py tests/api/test_a2a_extra.py tests/api/test_a2a_extra2.py tests/api/test_a2a_comprehensive.py tests/api/test_a2a_outcome.py tests/api/test_agent_directory_api.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 74 passed",
+        "tests/e2e_full/test_a2a_tenant_boundary_e2e.py -> BLOCKED (needs Docker/testcontainers Postgres; colima must not be started in this run)"
+      ]
+    }
+  ]
+}
