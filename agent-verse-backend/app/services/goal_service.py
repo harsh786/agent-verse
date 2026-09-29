@@ -2017,28 +2017,61 @@ class GoalService:
             return None
         return provider
 
-    async def _check_readiness(self, runtime_profile: Any) -> tuple[bool, str]:
-        """Check the exact runtime profile selected for this goal.
+    async def _dependency_health(self, tenant_ctx: TenantContext | None) -> Any:
+        """Live dependency health for the ReadinessGate (see runtime_readiness.health_probe)."""
+        from app.runtime_readiness.dependency_health import DepStatus
+        from app.runtime_readiness.health_probe import collect_dependency_health
 
-        A readiness implementation error is itself a blocking readiness failure. This keeps
-        production from executing a strategy whose dependencies were not verified.
+        health = await collect_dependency_health(self._app_state)
+        if health.llm_provider is not DepStatus.HEALTHY and tenant_ctx is not None:
+            # No platform provider — a tenant BYOK config still makes the goal runnable.
+            try:
+                tenant_cfg = await self._resolve_tenant_llm_config(tenant_ctx)
+            except Exception:
+                tenant_cfg = None
+            if tenant_cfg:
+                health.llm_provider = DepStatus.HEALTHY
+        return health
+
+    async def _check_readiness(
+        self,
+        runtime_profile: Any = None,
+        *,
+        tenant_ctx: TenantContext | None = None,
+    ) -> tuple[bool, str]:
+        """Gate a goal on the platform's real dependency health (READINESS_GATE, default on).
+
+        Blocks when a required dependency (Postgres, the LLM provider) is configured but
+        down. A readiness implementation error is itself a blocking readiness failure, so
+        production never executes a goal whose dependencies were not verified.
         """
         from app.core.runtime_flags import get_runtime_flags
 
         if not getattr(get_runtime_flags(), "readiness_gate", False):
             return True, ""
         try:
-            from app.runtime_readiness.dependency_health import DependencyHealth
             from app.runtime_readiness.readiness_gate import ReadinessGate
 
-            health = DependencyHealth.all_healthy()
-            gate = ReadinessGate(health)
-            result = gate.check(runtime_profile)
+            result = ReadinessGate(await self._dependency_health(tenant_ctx)).check(
+                runtime_profile
+            )
             if not result.ready:
-                return False, f"Platform not ready: {result.blocking_deps}"
+                return False, (
+                    "Platform not ready: required dependency unavailable: "
+                    + ", ".join(result.blocking_deps)
+                )
             return True, ""
         except Exception as exc:
             return False, f"Readiness check failed: {type(exc).__name__}"
+
+    async def _readiness_preflight(self, tenant_ctx: TenantContext) -> None:
+        """Refuse a goal up-front (503) instead of accepting one that cannot run."""
+        ready, reason = await self._check_readiness(None, tenant_ctx=tenant_ctx)
+        if not ready:
+            _svc_logger.warning(
+                "goal_blocked_by_readiness_gate", tenant_id=tenant_ctx.tenant_id, reason=reason
+            )
+            raise ServiceUnavailableError(reason, code="PLATFORM_NOT_READY")
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -3675,6 +3708,11 @@ class GoalService:
             # reason instead of being accepted and then having every step silently
             # skipped ("Step skipped: budget exceeded.") mid-run.
             await self._check_budget_preflight(tenant_ctx)
+
+            # Readiness pre-flight (READINESS_GATE): a goal whose required dependencies
+            # are down is refused before any slot, record or queue entry is taken.
+            if not dry_run:
+                await self._readiness_preflight(tenant_ctx)
 
             # ── Goal-level deduplication ────────────────────────────────────────
             # If an identical goal is already in-flight for this tenant, return
