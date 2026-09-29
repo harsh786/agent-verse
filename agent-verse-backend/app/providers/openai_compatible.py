@@ -572,6 +572,11 @@ class OpenAICompatibleProvider:
                     )
                     served_model = getattr(chunk, "model", None) or served_model
         except Exception as exc:
+            if full_text:
+                # Tokens already reached the caller: re-running complete() would
+                # emit a second, different answer after the partial one. Propagate
+                # so the executor can send token_reset and fail over.
+                raise
             _logging.getLogger(__name__).warning(
                 "openai_stream_tokens_failed error=%s fallback=True", str(exc)
             )

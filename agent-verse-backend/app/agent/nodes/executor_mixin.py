@@ -1521,6 +1521,24 @@ class ExecutorMixin:
             tool_choice=_step_tool_choice,
         )
 
+        # Tool steps need a provider that can actually send tool definitions.
+        # A tool-less provider (e.g. Gemini's text adapter) used to raise mid-run
+        # from inside the LLM call; fail the step clearly before spending on it.
+        if req.tools:
+            _supports_tools = getattr(self._executor, "supports_tool_use", None)
+            _tool_capable: object = True
+            if callable(_supports_tools):
+                try:
+                    _tool_capable = _supports_tools()
+                except Exception:
+                    _tool_capable = True
+            if _tool_capable is False:
+                raise StepNotExecutedError(
+                    "The executor provider does not support tool calling, but this step "
+                    f"has {len(req.tools)} tool(s) available; configure a tool-capable "
+                    "executor model (e.g. Anthropic or an OpenAI-compatible provider)."
+                )
+
         # 0. Cost pre-flight: the only budget check on this path previously ran
         # AFTER the LLM call completed (below, using the actual token cost) —
         # meaning an already-over-budget goal would still pay for, and make,
