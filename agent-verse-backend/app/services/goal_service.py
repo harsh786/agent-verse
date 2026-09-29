@@ -341,6 +341,18 @@ def _fake_provider() -> Any:
     )
 
 
+def _failed_goal_state(
+    goal_id: str, goal_text: str, tenant_ctx: TenantContext, reason: str
+) -> AgentState:
+    """A FAILED AgentState for a run that ended without returning one (timeout,
+    crash, exhausted persistence) — so the outcome is still learned from."""
+    state = AgentState(goal=goal_text, tenant_ctx=tenant_ctx)
+    state.goal_id = goal_id
+    state.status = GoalStatus.FAILED
+    state.error_message = reason[:1000]
+    return state
+
+
 def _populate_guardrail_allowlist(
     checker: Any,
     tool_context: Any,
@@ -2788,14 +2800,60 @@ class GoalService:
                 return _WrappedAgent()
             return loop
 
+        # The last attempt's final AgentState, for outcome learning.
+        _last_attempt: dict[str, Any] = {}
+
+        def capturing_agent_factory() -> Any:
+            from app.agent.persistence import _attempt_kwargs
+
+            inner = agent_factory()
+
+            class _CapturingAgent:
+                async def run(
+                    self: _CapturingAgent,
+                    goal: str,
+                    tenant_ctx: TenantContext,
+                    event_callback: Any = None,
+                    **attempt_kwargs: Any,
+                ) -> Any:
+                    state = await inner.run(
+                        goal=goal,
+                        tenant_ctx=tenant_ctx,
+                        event_callback=event_callback,
+                        **_attempt_kwargs(
+                            inner,
+                            str(attempt_kwargs.get("goal_id") or ""),
+                            int(attempt_kwargs.get("attempt") or 1),
+                        ),
+                    )
+                    _last_attempt["state"] = state
+                    return state
+
+            return _CapturingAgent()
+
         try:
             success, attempts = await engine.run(
                 goal=goal_text,
-                agent_factory=agent_factory,
+                agent_factory=capturing_agent_factory,
                 tenant_ctx=tenant_ctx,
                 event_callback=callback,
                 goal_id=goal_id,
             )
+            _final_attempt_state = _last_attempt.get("state")
+            if not success and (
+                _final_attempt_state is None
+                or getattr(_final_attempt_state, "status", None) != GoalStatus.FAILED
+            ):
+                _exhausted = _failed_goal_state(
+                    goal_id,
+                    goal_text,
+                    tenant_ctx,
+                    f"Goal could not be achieved after {len(attempts)} attempts",
+                )
+                if _final_attempt_state is not None:
+                    _exhausted.context = dict(getattr(_final_attempt_state, "context", {}) or {})
+                    _exhausted.steps = list(getattr(_final_attempt_state, "steps", []) or [])
+                _final_attempt_state = _exhausted
             if not success:
                 # All attempts exhausted
                 reason = (
@@ -2808,6 +2866,9 @@ class GoalService:
                     {"type": "goal_failed", "reason": reason, "attempts": len(attempts)},
                     tenant_ctx=tenant_ctx,
                 )
+            # After the terminal event: learning never delays completion.
+            if _final_attempt_state is not None:
+                await self._learn_from_goal_outcome(goal_id, tenant_ctx, _final_attempt_state)
         except asyncio.CancelledError:
             if record is not None and record.status != GoalStatus.CANCELLED:
                 record.status = GoalStatus.CANCELLED
@@ -3011,6 +3072,9 @@ class GoalService:
                 )
                 if getattr(final_state, "status", None) == GoalStatus.WAITING_HUMAN:
                     await self._suspend_for_approval(goal_id, tenant_ctx)
+                else:
+                    # Terminal: learn from the outcome (bounded; never raises).
+                    await self._learn_from_goal_outcome(goal_id, tenant_ctx, final_state)
             except TimeoutError:
                 if record is not None:
                     record.status = GoalStatus.FAILED
@@ -3020,6 +3084,13 @@ class GoalService:
                         "reason": f"timeout after {_goal_timeout_s}s",
                     }
                     await self._dispatch_event(goal_id, timeout_event, tenant_ctx=tenant_ctx)
+                await self._learn_from_goal_outcome(
+                    goal_id,
+                    tenant_ctx,
+                    _failed_goal_state(
+                        goal_id, goal_text, tenant_ctx, f"timeout after {_goal_timeout_s}s"
+                    ),
+                )
             except asyncio.CancelledError:
                 # A terminal status was already set by whoever cancelled the task
                 # (cancel_goal / a HITL rejection) along with its terminal event.
@@ -3044,6 +3115,44 @@ class GoalService:
                 if record is not None:
                     failed_event: dict[str, Any] = {"type": "goal_failed", "reason": str(exc)}
                     await self._dispatch_event(goal_id, failed_event, tenant_ctx=tenant_ctx)
+                await self._learn_from_goal_outcome(
+                    goal_id,
+                    tenant_ctx,
+                    _failed_goal_state(goal_id, goal_text, tenant_ctx, str(exc)),
+                )
+
+    async def _learn_from_goal_outcome(
+        self, goal_id: str, tenant_ctx: TenantContext, final_state: Any
+    ) -> None:
+        """Reflexion learning for a terminal goal (API in-process path).
+
+        Bounded and never raises (see app.memory.goal_learning). Fails closed on
+        an unknown goal record: without it the dry-run flag cannot be checked,
+        so nothing is written.
+        """
+        record = self._goals.get(goal_id)
+        if record is None:
+            _svc_logger.info("goal_learning_skipped_unknown_goal", goal_id=goal_id)
+            return
+        from starlette.applications import Starlette
+
+        from app.memory.goal_learning import learn_from_goal_outcome
+
+        # self._app_state is the FastAPI app in production (services live on
+        # app.state) and a plain namespace in tests.
+        state_obj: Any = (
+            self._app_state.state
+            if isinstance(self._app_state, Starlette)
+            else self._app_state
+        )
+        await learn_from_goal_outcome(
+            getattr(state_obj, "reflexion_service", None),
+            final_state,
+            tenant_id=tenant_ctx.tenant_id,
+            goal_id=goal_id,
+            dry_run=record.dry_run,
+            agent_id=record.agent_id,
+        )
 
     async def _run_agent_loop_isolated(
         self,

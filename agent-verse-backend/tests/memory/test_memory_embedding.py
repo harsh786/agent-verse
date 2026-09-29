@@ -74,4 +74,7 @@ def test_api_and_worker_repositories_are_built_with_the_app_embedder() -> None:
         main_src
     )
     worker_src = inspect.getsource(tasks.run_goal)
-    assert "embedder=memory_embedder_from_provider(_embedder_for_graph)" in worker_src
+    assert "_worker_reflexion_service(\n" in worker_src
+    assert "db_factory, _embedder_for_graph" in worker_src
+    helper_src = inspect.getsource(tasks._worker_reflexion_service)
+    assert "embedder=memory_embedder_from_provider(embedder_provider)" in helper_src

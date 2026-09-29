@@ -424,8 +424,17 @@ class PlannerMixin:
                     ),
                     top_k=5,
                     token_budget=800,
+                    agent_id=getattr(self, "_agent_id", None) or None,
                 )
                 if _reflexion_records:
+                    # Remember which memories shaped this plan so the goal's
+                    # outcome is fed back as their effectiveness (goal_learning).
+                    from app.memory.goal_learning import RECALLED_MEMORY_IDS_KEY
+
+                    _used_ids = agent_state.context.setdefault(RECALLED_MEMORY_IDS_KEY, [])
+                    for _rec in _reflexion_records:
+                        if _rec.memory_id not in _used_ids:
+                            _used_ids.append(_rec.memory_id)
                     _reflexion_lines: list[str] = []
                     for _rec in _reflexion_records:
                         _conf = _rec.confidence
