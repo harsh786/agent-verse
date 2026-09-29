@@ -832,7 +832,14 @@ class AgentGraph(
                     return stop_state
 
                 try:
-                    result: dict[str, Any] = await self._graph.ainvoke(input_state, config=config)
+                    from app.providers.guarded_completion import goal_charge_scope
+
+                    # Narrow-decision LLM calls made inside this run (guardrail
+                    # judges, RAG graders, routers) are charged to this goal.
+                    with goal_charge_scope(self, input_state.get("agent_state"), tenant_ctx):
+                        result: dict[str, Any] = await self._graph.ainvoke(
+                            input_state, config=config
+                        )
                     final: AgentState = result.get("agent_state") or AgentState(
                         goal=goal, tenant_ctx=tenant_ctx
                     )

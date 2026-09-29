@@ -290,6 +290,7 @@ class AgentRouter:
         goal: str,
         agents: list[dict[str, Any]],
         provider: Any,
+        tenant_ctx: TenantContext | None = None,
     ) -> list[AgentScore]:
         """Use LLM to classify goal and score agents by domain match."""
         if provider is None:
@@ -317,7 +318,13 @@ class AgentRouter:
                 ],
                 model="",
             )
-            resp = await provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            # Charged and circuit-broken; any failure (incl. a budget refusal)
+            # falls back to keyword scoring.
+            resp = await complete_decision(
+                provider, req, role="agent_router", tenant_ctx=tenant_ctx
+            )
             import json
 
             m = re.search(r"\{[\s\S]*\}", resp.content)
@@ -401,7 +408,9 @@ class AgentRouter:
         # LLM scoring (optional, when provider available)
         if self._llm_provider and len(agents) > 1:
             try:
-                llm_scores = await self._score_by_llm(goal, agents, self._llm_provider)
+                llm_scores = await self._score_by_llm(
+                    goal, agents, self._llm_provider, tenant_ctx=tenant_ctx
+                )
                 if llm_scores:
                     # Blend: 60% LLM + 40% keyword
                     llm_by_id = {s.agent_id: s for s in llm_scores}

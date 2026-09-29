@@ -557,7 +557,7 @@ class GuardrailsEngine:
         elif rule.rule_type == "regex_match":
             return self._check_regex(content, rule.config)
         elif rule.rule_type == "toxicity":
-            return await self._check_toxicity_llm(content)
+            return await self._check_toxicity_llm(content, tenant_id=rule.tenant_id)
         return {"triggered": False, "matches": [], "category": ""}
 
     def _check_pii(self, content: str, categories: list) -> dict[str, Any]:
@@ -624,7 +624,9 @@ class GuardrailsEngine:
             return {"triggered": True, "matches": ["invalid_pattern"], "category": "regex"}
         return {"triggered": bool(found), "matches": found[:50], "category": "regex"}
 
-    async def _check_toxicity_llm(self, content: str) -> dict[str, Any]:
+    async def _check_toxicity_llm(
+        self, content: str, *, tenant_id: str | None = None
+    ) -> dict[str, Any]:
         """LLM toxicity judge, with the pattern classifier as the floor.
 
         Without a provider, or on a provider error, the rule used to answer
@@ -635,14 +637,20 @@ class GuardrailsEngine:
             return self._check_toxicity_patterns(content)
         try:
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
             prompt = f"Is this text toxic? Answer only yes or no.\n\nText: {content[:200]}"
-            resp = await self._provider.complete(
+            # Charged and circuit-broken; any failure (open circuit, timeout,
+            # budget refusal) falls back to the pattern classifier below.
+            resp = await complete_decision(
+                self._provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=5,
-                )
+                ),
+                role="guardrail_toxicity",
+                tenant_id=tenant_id,
             )
             is_toxic = "yes" in resp.content.lower()
             if not is_toxic:

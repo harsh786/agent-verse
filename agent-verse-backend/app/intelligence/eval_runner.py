@@ -226,7 +226,15 @@ class EvalRunner:
             causation_id=str(context.get("causation_id", "")),
         )
 
-    async def _score_coherence(self, goal: str, steps: list[Any], provider: Any) -> float:
+    async def _score_coherence(
+        self,
+        goal: str,
+        steps: list[Any],
+        provider: Any,
+        *,
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
+    ) -> float:
         """Use LLM to rate how logically coherent the steps are relative to the goal.
 
         Returns a float in [0.0, 1.0].  Conservative default 0.7 on any error.
@@ -242,13 +250,20 @@ class EvalRunner:
                 "Reply with ONLY a decimal number."
             )
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            resp = await provider.complete(
+            # Charged to the evaluated goal's tenant and circuit-broken; any
+            # failure returns the conservative default below.
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=10,
-                )
+                ),
+                role="eval_coherence",
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
             )
             return min(1.0, max(0.0, float(resp.content.strip())))
         except Exception:
@@ -261,6 +276,9 @@ class EvalRunner:
         verification_feedback: str,
         verification_success: bool,
         provider: Any,
+        *,
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
     ) -> float:
         """Use LLM to rate how accurately the agent achieved the goal.
 
@@ -291,13 +309,20 @@ class EvalRunner:
                 "Reply with ONLY a decimal number."
             )
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            resp = await provider.complete(
+            # Charged to the evaluated goal's tenant and circuit-broken; any
+            # failure returns the conservative default below.
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=10,
-                )
+                ),
+                role="eval_accuracy",
+                tenant_ctx=tenant_ctx,
+                goal_id=goal_id,
             )
             return min(1.0, max(0.0, float(resp.content.strip())))
         except Exception:
@@ -314,7 +339,10 @@ class EvalRunner:
         scorecard = self.score(state=state, tenant_ctx=tenant_ctx)
         # Replace heuristic coherence with LLM-based coherence
         step_descriptions = [s.description for s in state.steps if s.description]
-        coherence = await self._score_coherence(state.goal, step_descriptions, provider)
+        _goal_id = str(getattr(state, "goal_id", "") or "") or None
+        coherence = await self._score_coherence(
+            state.goal, step_descriptions, provider, tenant_ctx=tenant_ctx, goal_id=_goal_id
+        )
         scorecard.scores["coherence"] = coherence
         # Replace heuristic accuracy with LLM-based accuracy (Task 1)
         accuracy = await self._score_accuracy(
@@ -323,6 +351,8 @@ class EvalRunner:
             verification_feedback=state.verification_feedback,
             verification_success=state.verification_success,
             provider=provider,
+            tenant_ctx=tenant_ctx,
+            goal_id=_goal_id,
         )
         scorecard.scores["accuracy"] = accuracy
         return scorecard

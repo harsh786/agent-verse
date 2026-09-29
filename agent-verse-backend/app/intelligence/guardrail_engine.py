@@ -379,14 +379,22 @@ class LLMJudge:
         self._model = model or configured_default_model("gpt-4o-mini")
         self._threshold = threshold
 
-    async def evaluate(self, text: str) -> GuardrailViolation | None:
+    async def evaluate(
+        self, text: str, *, tenant_id: str | None = None
+    ) -> GuardrailViolation | None:
         if not text or len(text) < 20:
             return None
         try:
             provider = await self._provider_factory()
             from app.providers.base import CompletionRequest, Message
+            from app.providers.guarded_completion import complete_decision
 
-            response = await provider.complete(
+            # Charged to the goal/tenant budget and bounded by the provider
+            # circuit + timeout: a hung judge used to stall the request, and its
+            # spend never reached any budget. Any failure (open circuit, timeout,
+            # budget refusal) takes the fail-closed branch below.
+            response = await complete_decision(
+                provider,
                 CompletionRequest(
                     model=self._model,
                     messages=[
@@ -395,7 +403,9 @@ class LLMJudge:
                     ],
                     max_tokens=100,
                     temperature=0.0,
-                )
+                ),
+                role="guardrail_judge",
+                tenant_id=tenant_id,
             )
             result = json.loads(response.content.strip())
             score = float(result.get("risk_score", 0.0))
@@ -620,7 +630,10 @@ class GuardrailEngine:
         violations.extend(self._cloud.scan(goal))
         # Layer 5 (LLM judge — async, only when enabled)
         if self._judge:
-            judge_v = await self._judge.evaluate(goal)
+            judge_v = await self._judge.evaluate(
+                goal,
+                tenant_id=(context or {}).get("tenant_id") if isinstance(context, dict) else None,
+            )
             if judge_v:
                 violations.append(judge_v)
 

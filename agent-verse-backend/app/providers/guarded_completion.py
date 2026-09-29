@@ -1,0 +1,204 @@
+"""Narrow-decision LLM calls, charged and circuit-broken like the agent roles.
+
+Guardrail judges, intent/agent routers, eval scorers and RAG graders used to call
+``provider.complete(...)`` directly. That skipped both protections the planner
+and verifier get (``verifier_mixin`` / ``planner_mixin``):
+
+* **cost** — nothing reached the per-goal / per-tenant budget, the token ledger
+  or the per-role breakdown, so these calls were free to the budget;
+* **circuit breaker + timeout** — a hung provider could stall the call (and the
+  request or goal waiting on it) indefinitely, and failures never opened the
+  per-model circuit.
+
+:func:`complete_decision` routes such a call through
+:func:`app.providers.circuit_breaker.complete_with_failover` (per-model circuit,
+bounded timeout) and charges it:
+
+* inside a running goal (``goal_charge_scope``, entered by ``AgentGraph.run``) —
+  through :func:`app.agent.nodes.llm_cost.charge_llm_call`, exactly like the
+  planner/verifier: goal + tenant budget, ledger, grant spend, role breakdown,
+  and a denial latches the goal's ``_budget_exhausted``;
+* outside a goal (API guardrails, chat, routing before submission, evals) —
+  against the tenant's daily budget and ledger via the platform cost services
+  (``set_platform_cost_services``). Each call is charged under its own
+  execution id, as the RAG cost guard does, so the per-goal cap cannot pool
+  unrelated calls. A tenant already over budget is refused before the call, and
+  a denied charge raises :class:`DecisionBudgetExceededError`, which callers
+  treat like any other failure (their existing fail-closed / fallback path).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import contextvars
+import os
+import uuid
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
+
+from app.providers.circuit_breaker import complete_with_failover
+
+_DEFAULT_TIMEOUT_S = 20.0
+
+
+class DecisionBudgetExceededError(RuntimeError):
+    """The tenant (or goal) budget does not allow this LLM decision call."""
+
+    # A budget refusal is not a provider failure: it must not open the circuit.
+    provider_failure = False
+
+
+@dataclass(frozen=True)
+class _ChargeScope:
+    graph: Any
+    agent_state: Any
+    tenant_ctx: Any
+
+
+_scope: contextvars.ContextVar[_ChargeScope | None] = contextvars.ContextVar(
+    "agentverse_decision_charge_scope", default=None
+)
+_platform_services: Callable[[], tuple[Any, Any]] | None = None
+
+
+def set_platform_cost_services(resolver: Callable[[], tuple[Any, Any]] | None) -> None:
+    """Register ``() -> (cost_controller, cost_tracker)`` for calls outside a goal.
+
+    A resolver (not the objects) so the lifespan's swap to the Redis-backed
+    controller is picked up without re-registering.
+    """
+    global _platform_services
+    _platform_services = resolver
+
+
+@contextlib.contextmanager
+def goal_charge_scope(graph: Any, agent_state: Any, tenant_ctx: Any) -> Iterator[None]:
+    """Charge decision calls made while a goal runs to that goal (and its tenant)."""
+    token = _scope.set(_ChargeScope(graph, agent_state, tenant_ctx))
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
+def _timeout(explicit: float | None) -> float:
+    if explicit is not None:
+        return explicit
+    try:
+        return float(os.getenv("AGENTVERSE_DECISION_CALL_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_S))
+    except ValueError:
+        return _DEFAULT_TIMEOUT_S
+
+
+def _tenant(tenant_ctx: Any, tenant_id: str | None) -> Any:
+    if tenant_ctx is not None:
+        return tenant_ctx
+    if tenant_id:
+        return SimpleNamespace(tenant_id=str(tenant_id))
+    return None
+
+
+def _platform() -> tuple[Any, Any]:
+    if _platform_services is None:
+        return None, None
+    try:
+        return _platform_services()
+    except Exception:
+        return None, None
+
+
+async def _preflight(scope: _ChargeScope | None, tenant: Any) -> None:
+    if scope is not None:
+        context = getattr(scope.agent_state, "context", None)
+        if isinstance(context, dict) and context.get("_budget_exhausted"):
+            raise DecisionBudgetExceededError("goal budget exhausted")
+        return
+    if tenant is None:
+        return
+    controller, _ = _platform()
+    check = getattr(controller, "ahas_remaining_budget", None)
+    if check is None:
+        return  # the post-call charge still enforces the daily budget
+    try:
+        ok = await check(tenant_ctx=tenant)
+    except Exception as exc:
+        # Fail closed: an unknown budget must not let spend through.
+        raise DecisionBudgetExceededError(f"budget check unavailable: {exc}") from exc
+    if not ok:
+        raise DecisionBudgetExceededError("tenant daily LLM budget exhausted")
+
+
+async def _charge(
+    scope: _ChargeScope | None,
+    tenant: Any,
+    *,
+    resp: Any,
+    role: str,
+    model: str,
+    goal_id: str | None,
+) -> None:
+    from app.agent.nodes.llm_cost import charge_llm_call
+
+    if scope is not None:
+        await charge_llm_call(
+            scope.graph,
+            resp=resp,
+            role=role,
+            model=model,
+            agent_state=scope.agent_state,
+            tenant_ctx=scope.tenant_ctx if scope.tenant_ctx is not None else tenant,
+        )
+        return
+    if tenant is None:
+        return
+    controller, tracker = _platform()
+    if controller is None and tracker is None:
+        return
+    shim = SimpleNamespace(_cost_controller=controller, _cost_tracker=tracker, _state_lock=None)
+    state = SimpleNamespace(
+        goal_id=goal_id or f"decision:{role}:{uuid.uuid4().hex}",
+        context={},
+    )
+    await charge_llm_call(
+        shim, resp=resp, role=role, model=model, agent_state=state, tenant_ctx=tenant
+    )
+    if state.context.get("_budget_exhausted"):
+        raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
+
+
+async def complete_decision(
+    provider: Any,
+    request: Any,
+    *,
+    role: str,
+    tenant_ctx: Any = None,
+    tenant_id: str | None = None,
+    goal_id: str | None = None,
+    timeout_seconds: float | None = None,
+    charge: bool = True,
+) -> Any:
+    """``provider.complete(request)`` with circuit breaker, timeout and cost charging.
+
+    ``charge=False`` is for providers already metered by an outer budget guard
+    (the RAG strategy LLM is a ``_BudgetedProvider``), so a call is not charged
+    twice; the circuit breaker and timeout still apply.
+    """
+    scope = _scope.get()
+    tenant = _tenant(tenant_ctx, tenant_id)
+    if charge:
+        await _preflight(scope, tenant)
+    resp = await complete_with_failover(
+        provider, request, timeout_seconds=_timeout(timeout_seconds)
+    )
+    if charge:
+        await _charge(
+            scope,
+            tenant,
+            resp=resp,
+            role=role,
+            model=str(getattr(request, "model", "") or ""),
+            goal_id=goal_id,
+        )
+    return resp

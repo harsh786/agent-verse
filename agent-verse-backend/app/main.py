@@ -2785,6 +2785,19 @@ def create_app(
     app.state.exec_memory = _exec_memory
     # Cost Tracker
     app.state.cost_tracker = _cost_tracker
+    # Narrow-decision LLM calls outside a goal (guardrail judges, routers, evals)
+    # charge the tenant through the same controller the graph uses — resolved
+    # lazily so the lifespan's Redis-backed controller wins once it is wired.
+    from app.providers.guarded_completion import set_platform_cost_services
+
+    def _decision_cost_services() -> tuple[Any, Any]:
+        return (
+            getattr(app.state, "redis_cost_controller", None)
+            or getattr(app.state, "cost_controller", None),
+            getattr(app.state, "cost_tracker", None),
+        )
+
+    set_platform_cost_services(_decision_cost_services)
     # Agent Identity Service (JWT service-account credentials)
     app.state.agent_identity_service = _agent_identity_svc
     # GuardrailEngine v2 (six-layer input/output guardrails)
