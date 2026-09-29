@@ -382,8 +382,24 @@ class RAGRetriever:
                         Message(
                             role="system",
                             content=(
-                                "Answer using only the supplied evidence. Cite supporting "
-                                "evidence with [N]. If the evidence is insufficient, say so.\n\n"
+                                # The citation verifier checks every sentence
+                                # against the evidence its marker names, so the
+                                # format is a contract, not a style hint: the
+                                # vaguer "cite with [N]" produced markers placed
+                                # before quotes and uncited "Supporting evidence"
+                                # sections, and correct answers were rejected.
+                                "Answer using only the supplied evidence.\n"
+                                "Citation rules:\n"
+                                "- Write short sentences. End EVERY sentence that states a "
+                                "fact with the number of the evidence that supports it, "
+                                "e.g. 'Refunds take 7 business days [2].' Use [1][3] when a "
+                                "sentence needs two pieces of evidence.\n"
+                                "- Put the marker at the end of the sentence, before the "
+                                "full stop's line break; never before a quote.\n"
+                                "- Do not add a separate 'Sources' or 'Supporting evidence' "
+                                "section and do not quote the evidence.\n"
+                                "- If the evidence does not answer the question, say that the "
+                                "information is not available, without a marker.\n\n"
                                 f"Evidence:\n{context}"
                             ),
                         ),

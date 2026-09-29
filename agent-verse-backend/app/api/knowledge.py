@@ -2043,6 +2043,16 @@ async def rag_chat(request: Request, body: RagChatRequest) -> dict[str, Any]:
             tenant_ctx=tenant_ctx,
         )
         if not verified.grounded:
+            from app.observability.logging import get_logger as _get_logger
+
+            _last = verified.strategy_trace[-1].detail if verified.strategy_trace else {}
+            _get_logger(__name__).warning(
+                "knowledge_chat_answer_ungrounded",
+                reason=_last.get("reason"),
+                unsupported_claims=[str(c)[:200] for c in _last.get("unsupported_claims", [])][:5],
+                citations=len(canonical_citations),
+                answer_preview=str(answer)[:400],
+            )
             raise HTTPException(
                 status_code=422,
                 detail={
