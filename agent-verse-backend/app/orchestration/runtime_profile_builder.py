@@ -110,12 +110,20 @@ class RuntimeProfileBuilder:
 
         t_cls = time.perf_counter()
         props = self._classifier.classify_fast(goal)
+        method = "fast"
+        if self._provider is not None:
+            # Tier 2 (opt-in: the caller passes a provider only when the setting is on).
+            # classify_with_llm only consults the LLM for unsure MEDIUM goals and returns
+            # the heuristic result unchanged when the call fails or cannot be parsed.
+            refined = await self._classifier.classify_with_llm(goal, self._provider, props)
+            if refined is not props:
+                props, method = refined, "llm"
         cls_ms = (time.perf_counter() - t_cls) * 1000
         trace.add(
             "GoalClassifier",
             "properties",
             props.complexity.value,
-            f"fast classification: confidence={props.classifier_confidence:.2f}",
+            f"{method} classification: confidence={props.classifier_confidence:.2f}",
             latency_ms=cls_ms,
         )
 

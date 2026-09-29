@@ -43,7 +43,8 @@ class SharedGoalsTable:
                            priority: str, dry_run: bool, agent_id: str | None = None,
                            workflow_mode: str = "single_agent",
                            execution_context: dict[str, Any] | None = None,
-                           raise_on_error: bool = False) -> None:
+                           raise_on_error: bool = False,
+                           runtime_profile_columns: dict[str, Any] | None = None) -> None:
             table.rows[goal_id] = {
                 "id": goal_id, "tenant_id": tenant_id, "goal_text": goal_text,
                 "status": status, "priority": priority, "dry_run": dry_run,

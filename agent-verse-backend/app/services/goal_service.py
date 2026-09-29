@@ -38,6 +38,27 @@ def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
     """``tenant_llm_config=`` only when one was resolved (keeps subclass
     overrides of ``_make_agent_loop_for_tenant`` without the kwarg working)."""
     return {"tenant_llm_config": cfg} if cfg is not None else {}
+
+
+# goals columns filled from the runtime profile (see GoalService._build_runtime_profile).
+_RUNTIME_PROFILE_COLUMNS = frozenset(
+    {
+        "runtime_profile_id",
+        "runtime_profile_version",
+        "strategy_registry_revision",
+        "runtime_profile_snapshot",
+        "rejected_strategies",
+        "patterns_used",
+        "rag_strategy_used",
+    }
+)
+
+
+def _profile_column_kwargs(columns: dict[str, Any] | None) -> dict[str, Any]:
+    """``runtime_profile_columns=`` only when a profile was built (same reason as above)."""
+    return {"runtime_profile_columns": columns} if columns else {}
+
+
 # execution_context flag: the goal's graph ended waiting for approvals (see
 # GoalService._suspend_for_approval); resume must relaunch it.
 _SUSPENDED_KEY = "_suspended_for_approval"
@@ -1841,19 +1862,33 @@ class GoalService:
         *,
         goal_id: str,
         tenant_ctx: Any,
-        db_session: Any = None,
         agent_config: dict[str, Any] | None = None,
-    ) -> dict:
-        """Build GoalRuntimeProfile and persist to goals.execution_context."""
+    ) -> dict[str, Any]:
+        """Build the goal's GoalRuntimeProfile and decide whether it drives execution.
+
+        Returns ``{}`` when dynamic orchestration is off, else a dict with:
+
+        * ``profile_object`` — the profile the runtime compiles/dispatches, set ONLY when
+          the strategy-runtime-v2 rollout admits this tenant (allowlist, no shadow, no kill
+          switch). On the ``legacy`` / ``rejected`` paths it is ``None`` and the goal runs
+          the legacy agent-config graph; the profile is still recorded for comparison.
+        * ``context`` — JSON-safe entries for ``goals.execution_context``.
+        * ``columns`` — JSON-safe values for the goals runtime-profile columns, written
+          with the goal row (``_db_persist_goal``) under the tenant's RLS context.
+
+        A build failure is never silent: it is logged and returned as an explicit
+        ``runtime_profile_fallback`` record on the goal (the legacy path then runs).
+        """
         from app.core.runtime_flags import get_runtime_flags
 
         flags = get_runtime_flags()
         if not flags.dynamic_orchestration:
             return {}
+        requested_primary = (agent_config or {}).get("primary_strategy")
         try:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 
-            builder = RuntimeProfileBuilder()
+            builder = RuntimeProfileBuilder(llm_provider=self._classifier_provider())
             _builder_config = dict(agent_config or {})
             # DISTRIBUTED strategies are admitted only when a StrategyRunner with a real
             # executor is wired to run them (see _try_build_distributed_strategy_loop).
@@ -1890,80 +1925,97 @@ class GoalService:
                     "latency": profile.effective_limits.duration_seconds,
                 },
             )
-            profile_data = {
-                "profile_object": profile,
-                "runtime_profile": profile.to_dict(),
-                "decision_trace": trace.to_dict(),
-                "profile_id": profile.profile_id,
-                "assembly_latency_ms": profile.assembly_latency_ms,
-                "strategy_runtime_path": rollout.path,
-                "strategy_runtime_shadow_comparison": rollout.shadow_comparison,
-            }
-            # Persist to goal.execution_context in Postgres
-            if db_session is not None:
-                try:
-                    import json
-
-                    from sqlalchemy import text
-
-                    await db_session.execute(
-                        text("""
-                            UPDATE goals
-                            SET execution_context = COALESCE(execution_context, '{}'::jsonb)
-                                || CAST(:profile_data AS jsonb),
-                                runtime_profile_id = :profile_id,
-                                runtime_profile_version = :profile_version,
-                                strategy_registry_revision = :registry_revision,
-                                runtime_profile_snapshot = CAST(:profile_snapshot AS jsonb),
-                                rejected_strategies = CAST(:rejected_strategies AS jsonb),
-                                patterns_used = CAST(:patterns_used AS jsonb),
-                                rag_strategy_used = :rag_strategy
-                            WHERE id = :goal_id AND tenant_id = :tenant_id
-                        """),
-                        {
-                            "profile_data": json.dumps(profile_data),
-                            "profile_id": profile.profile_id,
-                            "profile_version": profile.profile_version,
-                            "registry_revision": profile.registry_revision,
-                            "profile_snapshot": json.dumps(profile.to_dict()),
-                            "rejected_strategies": json.dumps(
-                                [
-                                    {
-                                        "strategy_id": item.strategy_id,
-                                        "reason_code": item.reason_code,
-                                    }
-                                    for item in profile.rejected_alternatives
-                                ]
-                            ),
-                            "patterns_used": json.dumps(
-                                [
-                                    profile.primary_strategy.strategy_id,
-                                    *(item.strategy_id for item in profile.auxiliary_strategies),
-                                ]
-                            ),
-                            "rag_strategy": profile.rag_strategy.strategy,
-                            "goal_id": goal_id,
-                            "tenant_id": tenant_ctx.tenant_id,
-                        },
-                    )
-                except Exception as db_exc:
-                    from app.observability.logging import get_logger
-
-                    get_logger(__name__).warning(
-                        "runtime_profile_persist_failed",
-                        error=str(db_exc),
-                        goal_id=goal_id,
-                    )
-            if rollout.path == "v2":
-                profile_data["profile_object"] = profile
-            return profile_data
         except Exception as exc:
-            from app.observability.logging import get_logger
+            from app.orchestration.runtime_profile_builder import InvalidStrategyOverrideError
 
-            get_logger(__name__).warning(
-                "runtime_profile_build_failed", error=str(exc), goal_id=goal_id
+            reason = (
+                "invalid_strategy_override"
+                if isinstance(exc, InvalidStrategyOverrideError)
+                else "profile_build_failed"
             )
-            return {}
+            _svc_logger.warning(
+                "runtime_profile_build_failed_legacy_fallback",
+                goal_id=goal_id,
+                reason=reason,
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
+            fallback: dict[str, Any] = {
+                "reason": reason,
+                "error_type": type(exc).__name__,
+                "detail": str(exc)[:300],
+                "fallback": "legacy",
+            }
+            if requested_primary:
+                fallback["requested_primary"] = str(requested_primary)
+            return {
+                "profile_object": None,
+                "context": {
+                    "runtime_profile_fallback": fallback,
+                    "strategy_runtime_path": "legacy",
+                },
+                "columns": None,
+            }
+
+        # Every value below is plain JSON (the dataclass profile goes through to_dict()),
+        # so execution_context and the snapshot columns can be persisted as-is.
+        snapshot = profile.to_dict()
+        context: dict[str, Any] = {
+            "runtime_profile": snapshot,
+            "decision_trace": trace.to_dict(),
+            "profile_id": profile.profile_id,
+            "assembly_latency_ms": profile.assembly_latency_ms,
+            "strategy_runtime_path": rollout.path,
+            "strategy_runtime_shadow_comparison": rollout.shadow_comparison,
+        }
+        if rollout.path != "v2" and requested_primary:
+            # An explicit strategy request only runs on the v2 runtime; say so on the goal.
+            context["runtime_profile_fallback"] = {
+                "reason": (
+                    "strategy_runtime_v2_kill_switch"
+                    if rollout.path == "rejected"
+                    else "strategy_runtime_v2_not_enabled"
+                ),
+                "requested_primary": str(requested_primary),
+                "fallback": "legacy",
+            }
+        columns = {
+            "runtime_profile_id": profile.profile_id,
+            "runtime_profile_version": profile.profile_version,
+            "strategy_registry_revision": profile.registry_revision,
+            "runtime_profile_snapshot": snapshot,
+            "rejected_strategies": [
+                {"strategy_id": item.strategy_id, "reason_code": item.reason_code}
+                for item in profile.rejected_alternatives
+            ],
+            "patterns_used": [
+                profile.primary_strategy.strategy_id,
+                *(item.strategy_id for item in profile.auxiliary_strategies),
+            ],
+            "rag_strategy_used": profile.rag_strategy.strategy,
+        }
+        return {
+            # The rollout decides: only an admitted v2 tenant executes the profile.
+            "profile_object": profile if rollout.path == "v2" else None,
+            "context": context,
+            "columns": columns,
+        }
+
+    def _classifier_provider(self) -> Any:
+        """The platform LLM for tier-2 goal classification, when enabled (else None)."""
+        try:
+            from app.core.config import get_settings
+
+            if not get_settings().orchestration_llm_classifier_enabled:
+                return None
+        except Exception:
+            return None
+        app_state: Any = self._app_state
+        app_state = getattr(app_state, "state", app_state)
+        provider = getattr(app_state, "_app_provider", None) if app_state is not None else None
+        if provider is None or isinstance(provider, FakeProvider):
+            return None
+        return provider
 
     async def _check_readiness(self, runtime_profile: Any) -> tuple[bool, str]:
         """Check the exact runtime profile selected for this goal.
@@ -3850,28 +3902,20 @@ class GoalService:
             except Exception:
                 pass
 
-            # Dynamic orchestration: build runtime profile and embed in execution_context
-            try:
-                _profile_data = await self._build_runtime_profile(
-                    goal,
-                    goal_id=goal_id,
-                    tenant_ctx=tenant_ctx,
-                    agent_config=record.execution_context.get("strategy_runtime"),
-                )
-                if _profile_data:
-                    record.runtime_profile = _profile_data.get("profile_object")
-                    record.execution_context["runtime_profile"] = _profile_data.get(
-                        "runtime_profile", {}
-                    )
-                    record.execution_context["decision_trace"] = _profile_data.get(
-                        "decision_trace", {}
-                    )
-                    record.execution_context["profile_id"] = _profile_data.get("profile_id", "")
-                    record.execution_context["assembly_latency_ms"] = _profile_data.get(
-                        "assembly_latency_ms", 0.0
-                    )
-            except Exception:
-                pass
+            # Dynamic orchestration: build the runtime profile, record it on the goal, and
+            # let the v2 rollout decide whether it drives execution. The profile columns
+            # are written with the goal row below (same RLS'd transaction).
+            _profile_columns: dict[str, Any] | None = None
+            _profile_data = await self._build_runtime_profile(
+                goal,
+                goal_id=goal_id,
+                tenant_ctx=tenant_ctx,
+                agent_config=record.execution_context.get("strategy_runtime"),
+            )
+            if _profile_data:
+                record.runtime_profile = _profile_data.get("profile_object")
+                record.execution_context.update(_profile_data.get("context") or {})
+                _profile_columns = _profile_data.get("columns")
 
             # Always-on pattern selection record: which agent pattern this goal was
             # routed to (+ why), in plain language — independent of the heavy
@@ -3960,6 +4004,7 @@ class GoalService:
                         workflow_mode=workflow_mode,
                         execution_context=record.execution_context,
                         raise_on_error=True,
+                        **_profile_column_kwargs(_profile_columns),
                     )
                 except Exception:
                     # The concurrent-goal counter was already incremented; since no
@@ -3989,6 +4034,7 @@ class GoalService:
                         agent_id=agent_id,
                         workflow_mode=workflow_mode,
                         execution_context=record.execution_context,
+                        **_profile_column_kwargs(_profile_columns),
                     )
                 )
 
@@ -5136,8 +5182,13 @@ class GoalService:
         workflow_mode: str = "single_agent",
         execution_context: dict[str, Any] | None = None,
         raise_on_error: bool = False,
+        runtime_profile_columns: dict[str, Any] | None = None,
     ) -> None:
-        """Persist goal record to PostgreSQL."""
+        """Persist goal record to PostgreSQL.
+
+        ``runtime_profile_columns`` (JSON-safe, from ``_build_runtime_profile``) fill the
+        goals runtime-profile columns in the same RLS'd insert as the row itself.
+        """
         if self._db is None:
             return
         try:
@@ -5159,6 +5210,11 @@ class GoalService:
                     agent_id=agent_id,
                     workflow_mode=workflow_mode,
                     execution_context=execution_context or {},
+                    **{
+                        key: value
+                        for key, value in (runtime_profile_columns or {}).items()
+                        if key in _RUNTIME_PROFILE_COLUMNS
+                    },
                 )
                 session.add(g)
         except Exception as exc:

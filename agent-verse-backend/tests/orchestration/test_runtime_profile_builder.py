@@ -175,3 +175,58 @@ async def test_persistence_controls_are_captured_in_admitted_profile() -> None:
     assert profile.agent_patterns.persistence_mode is True
     assert profile.agent_patterns.max_persistence_attempts == 4
     assert profile.agent_patterns.max_iterations == 7
+
+
+_MEDIUM_GOAL = "list the open tickets and summarize them for me"
+
+
+async def test_llm_classifier_refines_unsure_medium_goals_when_a_provider_is_given() -> None:
+    """classify_with_llm had no callers: tier-2 classification now runs when the caller
+    passes a provider (GoalService does so only behind a setting)."""
+    from app.providers.fake import FakeProvider
+
+    provider = FakeProvider(
+        responses=[
+            '{"complexity":"complex","domain":"analytical","risk":"low",'
+            '"requires_web":false,"requires_code":false,"estimated_steps":4,'
+            '"confidence":0.9}'
+        ]
+    )
+    heuristic = await RuntimeProfileBuilder().build(_MEDIUM_GOAL, tenant_id="t1", goal_id="g")
+    refined, trace = await RuntimeProfileBuilder(llm_provider=provider).build_with_trace(
+        _MEDIUM_GOAL, tenant_id="t1", goal_id="g"
+    )
+
+    assert heuristic.properties.complexity.value == "medium"
+    assert refined.properties.complexity.value == "complex"
+    assert "llm classification" in trace.to_dict()["decisions"][0]["reason"]
+
+
+async def test_llm_classifier_falls_back_to_heuristic_on_garbage() -> None:
+    from app.providers.fake import FakeProvider
+
+    profile = await RuntimeProfileBuilder(llm_provider=FakeProvider(responses=["not json"])).build(
+        _MEDIUM_GOAL, tenant_id="t1", goal_id="g"
+    )
+    assert profile.properties.complexity.value == "medium"
+
+
+def test_goal_service_passes_a_classifier_provider_only_behind_the_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.core.config import get_settings
+    from app.providers.fake import FakeProvider
+    from app.services.goal_service import GoalService
+
+    real = object()
+    svc = GoalService()
+    svc._app_state = SimpleNamespace(state=SimpleNamespace(_app_provider=real))
+    assert get_settings().orchestration_llm_classifier_enabled is False
+    assert svc._classifier_provider() is None
+
+    monkeypatch.setattr(get_settings(), "orchestration_llm_classifier_enabled", True)
+    assert svc._classifier_provider() is real
+    svc._app_state = SimpleNamespace(state=SimpleNamespace(_app_provider=FakeProvider()))
+    assert svc._classifier_provider() is None

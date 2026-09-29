@@ -274,6 +274,11 @@ class Settings(BaseSettings):
     # goals stay single-agent — and per-goal/tenant cost budgets bound the spend.
     # The distributed autonomous tier stays governed by ``coordination_ready``.
     agent_auto_multi_agent_enabled: bool = True
+    # Tier-2 goal classification: for MEDIUM-complexity goals the fast keyword
+    # classifier is unsure about (confidence <= 0.85), ask the platform LLM to
+    # classify. Off by default (adds ~200ms + one LLM call per such goal); the
+    # heuristic stays the fallback whenever the LLM call fails or is unparseable.
+    orchestration_llm_classifier_enabled: bool = False
 
     # --- default model names per task type (override via env vars) ---
     # Empty = use the resolved provider's configured model (no hardcoded slug).
