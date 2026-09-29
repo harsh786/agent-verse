@@ -102,9 +102,21 @@ class MultiEndpointLLMProvider:
 
     async def stream_tokens(self, request: CompletionRequest, on_token: Any) -> Any:
         primary = self._for(request.model)
+        emitted = False
+
+        async def _tracking(chunk: str) -> None:
+            nonlocal emitted
+            emitted = True
+            await on_token(chunk)
+
         try:
-            return await primary.stream_tokens(request, on_token)
+            return await primary.stream_tokens(request, _tracking)
         except Exception:
+            if emitted:
+                # Partial output already reached the caller: re-running on the
+                # fallback would stream a second answer after it. Propagate so
+                # the executor sends token_reset and handles failover itself.
+                raise
             fb = self._fallback(primary)
             if fb is None:
                 raise

@@ -191,3 +191,60 @@ async def test_no_failover_reraises_when_no_fallback() -> None:
     )
     with _pytest.raises(ConnectionError):
         await prov.complete(_Req("qwen"))
+
+
+async def test_stream_tokens_does_not_fail_over_after_partial_output() -> None:
+    """Providers now propagate a mid-stream failure; the cluster must not then
+    re-run the call on the fallback (a second answer after the partial one)."""
+    import pytest as _pytest
+
+    from app.providers.onprem import MultiEndpointLLMProvider
+
+    class _Partial:
+        async def stream_tokens(self, r, on_token):  # type: ignore[no-untyped-def]
+            await on_token("half")
+            raise ConnectionError("dropped")
+
+    class _Up:
+        calls = 0
+
+        async def stream_tokens(self, r, on_token):  # type: ignore[no-untyped-def]
+            _Up.calls += 1
+            await on_token("cloud")
+            return "ok"
+
+    prov = MultiEndpointLLMProvider(
+        endpoints={"qwen": _Partial(), "nvidia": _Up()},  # type: ignore[dict-item]
+        default_model="qwen", fallback_model="nvidia",
+    )
+    seen: list[str] = []
+
+    async def on_token(t: str) -> None:
+        seen.append(t)
+
+    with _pytest.raises(ConnectionError):
+        await prov.stream_tokens(_Req("qwen"), on_token)
+    assert _Up.calls == 0 and seen == ["half"]
+
+
+async def test_stream_tokens_fails_over_before_any_output() -> None:
+    from app.providers.onprem import MultiEndpointLLMProvider
+
+    class _Down:
+        async def stream_tokens(self, r, on_token):  # type: ignore[no-untyped-def]
+            raise ConnectionError("down")
+
+    class _Up:
+        async def stream_tokens(self, r, on_token):  # type: ignore[no-untyped-def]
+            await on_token("cloud")
+            return "ok"
+
+    prov = MultiEndpointLLMProvider(
+        endpoints={"qwen": _Down(), "nvidia": _Up()},  # type: ignore[dict-item]
+        default_model="qwen", fallback_model="nvidia",
+    )
+
+    async def on_token(_t: str) -> None:
+        return None
+
+    assert await prov.stream_tokens(_Req("qwen"), on_token) == "ok"
