@@ -3,7 +3,7 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } from 'lucide-react';
 import { useAuthStore, getAuthHeader } from '../../stores/auth';
-import { API_BASE } from '@/lib/api/client';
+import { API_BASE, errorMessageFromBody } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 
 interface Skill {
@@ -16,8 +16,13 @@ interface Skill {
   token_estimate: number;
   visibility: string;
   is_platform: boolean;
-  enabled?: boolean;
   use_count?: number;
+}
+
+/** The server's reason for a failed request (FastAPI ``detail``), not just the status. */
+async function failure(res: Response): Promise<Error> {
+  const body = await res.json().catch(() => undefined);
+  return new Error(errorMessageFromBody(body) ?? `HTTP ${res.status}`);
 }
 
 interface FormState {
@@ -62,8 +67,6 @@ interface SkillCardProps {
   skill: Skill;
   isCustom: boolean;
   isDeleting: boolean;
-  isToggling: boolean;
-  onToggle: () => void;
   onEdit: () => void;
   onTest: () => void;
   onDelete: () => void;
@@ -73,34 +76,18 @@ function SkillCard({
   skill,
   isCustom,
   isDeleting,
-  isToggling,
-  onToggle,
   onEdit,
   onTest,
   onDelete,
 }: SkillCardProps) {
-  const isEnabled = skill.enabled !== false;
 
   return (
-    <div
-      className={`rounded-lg border bg-card p-4 flex flex-col gap-3 transition-opacity ${
-        !isEnabled ? 'opacity-60' : ''
-      }`}
-    >
+    <div className="rounded-lg border bg-card p-4 flex flex-col gap-3">
       {/* Header */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 flex-wrap">
             <p className="font-medium text-sm text-foreground">{skill.name}</p>
-            <span
-              className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                isEnabled
-                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                  : 'bg-muted text-muted-foreground'
-              }`}
-            >
-              {isEnabled ? 'Active' : 'Inactive'}
-            </span>
             {skill.is_platform && (
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">
                 Platform
@@ -146,20 +133,6 @@ function SkillCard({
 
       {/* Action buttons */}
       <div className="flex items-center gap-2 pt-1 border-t border-border">
-        {isCustom && (
-          <button
-            onClick={onToggle}
-            disabled={isToggling}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-            title={isEnabled ? 'Disable skill' : 'Enable skill'}
-          >
-            {isEnabled ? (
-              <span className="text-green-600">● On</span>
-            ) : (
-              <span>○ Off</span>
-            )}
-          </button>
-        )}
         <div className="ml-auto flex items-center gap-1">
           <button
             onClick={onTest}
@@ -223,7 +196,6 @@ export default function SkillsPage() {
 
   // Tracking per-skill pending states
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   // Import file ref
   const importRef = useRef<HTMLInputElement>(null);
@@ -232,11 +204,11 @@ export default function SkillsPage() {
 
   // ── Queries & mutations ──────────────────────────────────────────────────────
 
-  const { data, isLoading } = useQuery<{ skills: Skill[] }>({
+  const { data, isLoading, error: listError } = useQuery<{ skills: Skill[] }>({
     queryKey: ['skills'],
     queryFn: async () => {
       const res = await fetch(`${API_BASE}/skills`, { headers });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw await failure(res);
       return res.json();
     },
     enabled: !!apiKey,
@@ -249,7 +221,7 @@ export default function SkillsPage() {
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify(formToBody(form)),
       });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw await failure(res);
       return res.json();
     },
     onSuccess: () => {
@@ -266,9 +238,9 @@ export default function SkillsPage() {
       const res = await fetch(`${API_BASE}/skills/${skill.id}`, {
         method: 'PUT',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...skill, ...formToBody(editForm) }),
+        body: JSON.stringify(formToBody(editForm)),
       });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw await failure(res);
       return res.json();
     },
     onSuccess: () => {
@@ -283,7 +255,7 @@ export default function SkillsPage() {
     mutationFn: async (skillId: string) => {
       setDeletingId(skillId);
       const res = await fetch(`${API_BASE}/skills/${skillId}`, { method: 'DELETE', headers });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw await failure(res);
     },
     onSuccess: () => {
       setDeletingId(null);
@@ -296,27 +268,6 @@ export default function SkillsPage() {
     },
   });
 
-  const toggleMutation = useMutation({
-    mutationFn: async ({ id, enabled }: { id: string; enabled: boolean }) => {
-      setTogglingId(id);
-      const res = await fetch(`${API_BASE}/skills/${id}`, {
-        method: 'PATCH',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled }),
-      });
-      if (!res.ok) throw new Error(`${res.status}`);
-      return res.json();
-    },
-    onSuccess: () => {
-      setTogglingId(null);
-      qc.invalidateQueries({ queryKey: ['skills'] });
-    },
-    onError: (e) => {
-      setTogglingId(null);
-      toast({ kind: 'error', message: `Toggle failed: ${String(e)}` });
-    },
-  });
-
   const testMutation = useMutation({
     mutationFn: async ({ id, input }: { id: string; input: string }) => {
       const res = await fetch(`${API_BASE}/skills/${id}/test`, {
@@ -324,7 +275,7 @@ export default function SkillsPage() {
         headers: { ...headers, 'Content-Type': 'application/json' },
         body: JSON.stringify({ input }),
       });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) throw await failure(res);
       return res.json();
     },
     onSuccess: (data) => setTestResult(JSON.stringify(data, null, 2)),
@@ -365,14 +316,25 @@ export default function SkillsPage() {
       try {
         const imported = JSON.parse(ev.target?.result as string) as Skill[];
         const toImport = Array.isArray(imported) ? imported.filter(s => !s.is_platform) : [];
+        let imported_ok = 0;
+        const failures: string[] = [];
         for (const skill of toImport) {
-          await fetch(`${API_BASE}/skills`, {
+          const res = await fetch(`${API_BASE}/skills`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify(formToBody(skillToForm(skill))),
           });
+          if (res.ok) imported_ok += 1;
+          else failures.push(`${skill.name}: ${(await failure(res)).message}`);
         }
-        toast({ kind: 'success', message: `Imported ${toImport.length} skill(s)` });
+        if (failures.length) {
+          toast({
+            kind: 'error',
+            message: `Imported ${imported_ok} of ${toImport.length} skill(s); failed: ${failures.join('; ')}`,
+          });
+        } else {
+          toast({ kind: 'success', message: `Imported ${imported_ok} skill(s)` });
+        }
         qc.invalidateQueries({ queryKey: ['skills'] });
       } catch (err) {
         toast({ kind: 'error', message: `Import failed: ${String(err)}` });
@@ -584,6 +546,10 @@ export default function SkillsPage() {
       {/* Skills content */}
       {isLoading ? (
         <div className="text-sm text-muted-foreground">Loading skills…</div>
+      ) : listError ? (
+        <div role="alert" className="text-sm text-red-500">
+          Skills could not be loaded: {listError.message}
+        </div>
       ) : (
         <div className="space-y-8">
           {/* Platform skills */}
@@ -608,8 +574,6 @@ export default function SkillsPage() {
                     skill={skill}
                     isCustom={false}
                     isDeleting={false}
-                    isToggling={false}
-                    onToggle={() => {}}
                     onEdit={() => openEdit(skill)}
                     onTest={() => openTest(skill)}
                     onDelete={() => {}}
@@ -643,8 +607,6 @@ export default function SkillsPage() {
                     skill={skill}
                     isCustom={true}
                     isDeleting={deletingId === skill.id}
-                    isToggling={togglingId === skill.id}
-                    onToggle={() => toggleMutation.mutate({ id: skill.id, enabled: skill.enabled === false })}
                     onEdit={() => openEdit(skill)}
                     onTest={() => openTest(skill)}
                     onDelete={() => deleteMutation.mutate(skill.id)}
