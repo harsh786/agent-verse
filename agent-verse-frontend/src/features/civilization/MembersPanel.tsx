@@ -438,7 +438,7 @@ export function MembersPanel({ civId }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const qc = useQueryClient();
 
-  const { data: members = [], isLoading } = useQuery({
+  const { data: members = [], isLoading, error } = useQuery({
     queryKey: ['civ-members', civId],
     queryFn: () => civilizationApi.listMembers(civId),
     refetchInterval: 6000,
@@ -454,7 +454,9 @@ export function MembersPanel({ civId }: Props) {
             Society Members
           </h3>
           <p className="text-[10px] text-[#5A7494] mt-0.5">
-            {members.length} member{members.length !== 1 ? 's' : ''} in this civilization
+            {error
+              ? 'Members unavailable'
+              : `${members.length} member${members.length !== 1 ? 's' : ''} in this civilization`}
           </p>
         </div>
         <button
@@ -476,6 +478,17 @@ export function MembersPanel({ civId }: Props) {
         <div className="flex items-center justify-center py-8 gap-2 text-[#5A7494]">
           <Loader2 className="h-4 w-4 animate-spin" />
           <span className="text-sm">Loading members…</span>
+        </div>
+      ) : error ? (
+        // A failed read is not "no members": say so instead of the empty state.
+        <div
+          role="alert"
+          className="rounded-xl border py-6 px-4 text-center space-y-1"
+          style={{ borderColor: 'rgba(239,68,68,0.25)', background: 'rgba(239,68,68,0.06)' }}
+        >
+          <AlertTriangle className="h-6 w-6 text-red-400 mx-auto" />
+          <p className="text-sm font-medium text-red-300">Failed to load members</p>
+          <p className="text-xs text-red-400">{error.message}</p>
         </div>
       ) : members.length === 0 ? (
         <div className="rounded-xl border-2 border-dashed py-10 text-center space-y-3"
@@ -508,7 +521,7 @@ export function MembersPanel({ civId }: Props) {
       )}
 
       {/* Quick stats */}
-      {members.length > 0 && (
+      {!error && members.length > 0 && (
         <div className="grid grid-cols-3 gap-2 pt-1">
           {[
             { label: 'Active', value: members.filter(m => m.status === 'active').length, color: '#3b82f6' },
@@ -528,7 +541,7 @@ export function MembersPanel({ civId }: Props) {
       )}
 
       {/* Role legend */}
-      {members.length > 0 && (
+      {!error && members.length > 0 && (
         <div className="flex flex-wrap gap-2 text-[10px] text-slate-600 pt-1">
           {[...new Set(members.map(m => m.role))].map(r => (
             <span key={r} className="flex items-center gap-1">

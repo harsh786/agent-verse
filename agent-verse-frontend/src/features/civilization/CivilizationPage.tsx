@@ -59,6 +59,8 @@ function CivilizationList() {
   });
 
   const civs = (civilizations as Civilization[] | undefined) ?? [];
+  const featureGated =
+    error instanceof ApiError && error.status === 503 && /not enabled/i.test(error.message);
 
   const [showNewCivModal, setShowNewCivModal] = useState(false);
   const [newCivForm, setNewCivForm] = useState({ name: '', description: '', max_agents: 5, autonomy_level: 'bounded-autonomous' });
@@ -103,10 +105,11 @@ function CivilizationList() {
           </div>
         )}
 
-        {/* 503 == the Civilization subsystem is an experimental, opt-in feature that
-            the backend has gated off (CIVILIZATION_ENABLED=false). The backend is
-            healthy — show an informational "disabled" state, not a scary error. */}
-        {error && error instanceof ApiError && error.status === 503 && (
+        {/* A "not enabled" 503 == the Civilization subsystem is an experimental, opt-in
+            feature that the backend has gated off (CIVILIZATION_ENABLED=false). The
+            backend is healthy — show an informational "disabled" state, not a scary
+            error. Any other 503 (e.g. the civilization store is down) is a real error. */}
+        {featureGated && (
           <div className="flex items-center justify-center h-64">
             <div
               className="rounded-2xl p-8 text-center max-w-md"
@@ -126,7 +129,7 @@ function CivilizationList() {
           </div>
         )}
 
-        {error && !(error instanceof ApiError && error.status === 503) && (
+        {error && !featureGated && (
           <div className="flex items-center justify-center h-64">
             <div
               className="rounded-2xl p-6 text-center max-w-sm"
@@ -134,7 +137,11 @@ function CivilizationList() {
             >
               <AlertTriangle className="h-8 w-8 text-red-400 mx-auto mb-3" />
               <p className="text-sm font-medium text-red-300">Failed to load civilizations</p>
-              <p className="text-xs text-red-500 mt-1">Is the backend running?</p>
+              <p className="text-xs text-red-500 mt-1">
+                {error instanceof ApiError && error.status === 503
+                  ? error.message
+                  : 'Is the backend running?'}
+              </p>
             </div>
           </div>
         )}

@@ -74,6 +74,23 @@ describe('MembersPanel', () => {
     expect(screen.getByText('40% rep')).toBeInTheDocument();
   });
 
+  test('a failed members read shows an error, not the "No members yet" empty state', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.endsWith('/members'))
+        return json(
+          { detail: 'Could not load civilization members: the civilization store is unavailable' },
+          503,
+        );
+      if (url.endsWith('/agents')) return json(AGENTS);
+      return json({});
+    });
+    renderPanel();
+    expect(await screen.findByText(/civilization store is unavailable/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No members yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0 members/i)).not.toBeInTheDocument();
+  });
+
   test('shows a loading state while the members request is in flight', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise(() => {}));
     renderPanel();
