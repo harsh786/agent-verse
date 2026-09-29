@@ -151,6 +151,21 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+async def _owned_org_or_404(service: OrgService, org_id: str, request_id: str | None = None) -> Any:
+    """The caller's org, or 404 (also for a malformed id / another tenant's org).
+
+    ``get_organization`` is tenant-scoped (explicit filter + RLS), so an org id
+    belonging to another tenant looks exactly like a missing one.
+    """
+    try:
+        org = await service.get_organization(org_id)
+    except ValueError:  # not a UUID
+        org = None
+    if org is None:
+        raise _not_found("Organization", org_id, request_id)
+    return org
+
+
 def _not_found(resource: str, rid: str, request_id: str | None = None) -> HTTPException:
     return HTTPException(
         status_code=404,
@@ -2928,6 +2943,7 @@ async def org_graph_snapshot(
         ctx = _require_tenant(request)
         tenant_id: str = getattr(ctx, "tenant_id", str(ctx))
         span.set_attribute("org_id", org_id)
+        await _owned_org_or_404(service, org_id, x_request_id)
 
         from app.knowledge_graph.store import kg_store
 
@@ -2938,25 +2954,23 @@ async def org_graph_snapshot(
         sample_ids = [n.node_id for n in page["nodes"]]
         node_total = await kg_store.acount_nodes(tenant_id)
 
-        from app.org.decision_intelligence import get_version_store
-
-        vs = get_version_store()
-        rec = vs.save(
-            entity_type="knowledge_graph",
-            entity_id=org_id,
-            tenant_id=tenant_id,
+        # Persisted, tenant-scoped (RLS) history — was a process-global
+        # in-memory store keyed by org id alone, readable by any tenant.
+        rec = await service.save_graph_version(
+            org_id,
             snapshot={"node_ids": sample_ids, "node_count": node_total},
             changed_by="api",
             change_reason="manual snapshot",
         )
-        span.set_attribute("version_num", rec.version_num)
+        span.set_attribute("version_num", int(rec.version_num))
+        created_at = getattr(rec, "created_at", None)
         return {
             "org_id": org_id,
-            "version_id": rec.version_id,
+            "version_id": str(rec.id),
             "version_num": rec.version_num,
             "node_count": node_total,
             "content_hash": rec.content_hash,
-            "created_at": rec.created_at,
+            "created_at": created_at.isoformat() if created_at is not None else None,
         }
 
 
@@ -2972,14 +2986,12 @@ async def org_graph_version_history(
     limit: int = Query(default=10, ge=1, le=50),
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
-    """Return the version history of the org's knowledge graph."""
+    """Return the version history of the org's knowledge graph (caller's tenant only)."""
     _require_tenant(request)
-    from app.org.decision_intelligence import get_version_store
-
-    vs = get_version_store()
+    await _owned_org_or_404(service, org_id)
     return {
         "org_id": org_id,
-        "versions": vs.history("knowledge_graph", org_id, limit=limit),
+        "versions": await service.list_graph_versions(org_id, limit=limit),
     }
 
 

@@ -31,6 +31,7 @@ from app.org.models import (
     OrgDecision,
     OrgDepartment,
     OrgEvent,
+    OrgGraphVersion,
     OrgMission,
     OrgMissionSchedule,
     OrgTask,
@@ -277,6 +278,77 @@ class OrgService:
             span.set_attribute("org.id", str(org.id))
             _log.info("org_created tenant=%s org_id=%s name=%s", self._tenant_id, org.id, name)
             return org
+
+    # ── U8: knowledge-graph version history (tenant + org scoped, persisted) ──
+
+    async def save_graph_version(
+        self,
+        org_id: str,
+        *,
+        snapshot: dict[str, Any],
+        changed_by: str = "system",
+        change_reason: str = "",
+    ) -> OrgGraphVersion:
+        """Append a graph snapshot to this tenant's history for ``org_id``.
+
+        Callers must first check the org belongs to the tenant
+        (:meth:`get_organization`); RLS and the explicit tenant filter keep the
+        numbering and rows per tenant either way.
+        """
+        import hashlib
+        import json
+
+        tenant_uuid, org_uuid = uuid.UUID(self._tenant_id), uuid.UUID(org_id)
+        current = await self._session.execute(
+            select(func.max(OrgGraphVersion.version_num)).where(
+                and_(
+                    OrgGraphVersion.tenant_id == tenant_uuid,
+                    OrgGraphVersion.org_id == org_uuid,
+                )
+            )
+        )
+        version_num = int(current.scalar() or 0) + 1
+        content_hash = hashlib.sha256(
+            json.dumps(snapshot, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        rec = OrgGraphVersion(
+            tenant_id=tenant_uuid,
+            org_id=org_uuid,
+            version_num=version_num,
+            content_hash=content_hash,
+            snapshot=snapshot,
+            changed_by=changed_by,
+            change_reason=change_reason,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(rec)
+        await self._session.flush()
+        return rec
+
+    async def list_graph_versions(self, org_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """This tenant's graph version history for ``org_id``, newest first."""
+        result = await self._session.execute(
+            select(OrgGraphVersion)
+            .where(
+                and_(
+                    OrgGraphVersion.tenant_id == uuid.UUID(self._tenant_id),
+                    OrgGraphVersion.org_id == uuid.UUID(org_id),
+                )
+            )
+            .order_by(OrgGraphVersion.version_num.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "version_id": str(r.id),
+                "version_num": r.version_num,
+                "content_hash": r.content_hash,
+                "changed_by": r.changed_by,
+                "change_reason": r.change_reason,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in result.scalars().all()
+        ]
 
     async def get_organization(self, org_id: str) -> Organization | None:
         result = await self._session.execute(

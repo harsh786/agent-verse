@@ -493,11 +493,18 @@ async def test_batch_missions_rejects_over_20(client: AsyncClient) -> None:
 # ── U8: KG Versioning ────────────────────────────────────────────────────────
 
 @pytest.mark.anyio
-async def test_graph_snapshot_creates_version(client: AsyncClient) -> None:
+async def test_graph_snapshot_creates_version(client: AsyncClient, mock_svc: MagicMock) -> None:
     """POST /v1/org/{id}/graph/version creates a versioned snapshot."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
+    # History is persisted through the tenant-scoped OrgService now (it was a
+    # process-global in-memory store readable by any tenant).
+    mock_svc.save_graph_version = AsyncMock(
+        return_value=SimpleNamespace(
+            id=uuid.uuid4(), version_num=1, content_hash="0123456789abcdef", created_at=None
+        )
+    )
     # The snapshot reads through the store's API (it used to reach into the
     # private _tenant_nodes dict, which a DB-backed store never populates).
     with patch("app.knowledge_graph.store.kg_store") as mock_kg:
@@ -515,8 +522,9 @@ async def test_graph_snapshot_creates_version(client: AsyncClient) -> None:
 
 
 @pytest.mark.anyio
-async def test_graph_version_history_empty(client: AsyncClient) -> None:
+async def test_graph_version_history_empty(client: AsyncClient, mock_svc: MagicMock) -> None:
     """GET /v1/org/{id}/graph/versions returns empty history initially."""
+    mock_svc.list_graph_versions = AsyncMock(return_value=[])
     resp = await client.get(f"/v1/org/{ORG_ID}/graph/versions")
     assert resp.status_code == 200
     data = resp.json()

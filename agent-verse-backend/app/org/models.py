@@ -18,6 +18,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -575,3 +576,31 @@ class OrgCommand(Base):
     error = Column(Text, nullable=True)
     result = Column(JSONB, nullable=True)
     submitted_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ── Knowledge-graph version history (U8) ─────────────────────────────────────
+# Replaced a process-global in-memory VersionStore keyed by org id alone, which
+# let any tenant read/append another tenant's org graph history and was lost on
+# restart. Written/read by OrgService.save_graph_version / list_graph_versions.
+
+
+class OrgGraphVersion(Base):
+    __tablename__ = "org_graph_versions"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "org_id", "version_num", name="uq_org_graph_versions_tenant_org_num"
+        ),
+        {"schema": None},
+    )
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=_uuid7)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    org_id = Column(
+        PG_UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    version_num = Column(Integer, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    snapshot = Column(JSONB, nullable=False, server_default="{}")
+    changed_by = Column(String(200), nullable=False, server_default="system")
+    change_reason = Column(Text, nullable=False, server_default="")
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
