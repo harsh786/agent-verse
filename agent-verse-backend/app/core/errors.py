@@ -133,6 +133,19 @@ class CircuitOpenError(PlatformError):
     default_severity = Severity.HIGH
 
 
+class ServiceUnavailableError(PlatformError):
+    """A dependency needed to perform the operation safely is unavailable.
+
+    Raised instead of half-applying an operation (fail closed) — e.g. a goal
+    cancel whose signal cannot reach the replica/worker running the goal.
+    """
+
+    code = "SERVICE_UNAVAILABLE"
+    http_status = 503
+    retryable = True
+    default_severity = Severity.HIGH
+
+
 class InternalError(PlatformError):
     code = "INTERNAL_ERROR"
     http_status = 500

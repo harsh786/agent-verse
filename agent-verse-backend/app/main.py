@@ -1932,6 +1932,16 @@ def create_app(
                 # (a single shared Redis client cannot serve multiple blocking subscribers).
                 if settings.redis_url:
                     _goal_svc_with_db._redis_url_for_pubsub = str(settings.redis_url)
+                # Restart recovery needs Redis (runner heartbeats + worker locks)
+                # to tell an orphaned in-process goal from a live/worker one; it
+                # used to run inside sync_from_db before Redis was wired and
+                # re-enqueue every unfinished goal on every replica start.
+                try:
+                    _recovered = await _goal_svc_with_db.recover_interrupted_goals()
+                    if _recovered:
+                        logger.info("interrupted_goals_recovered", count=_recovered)
+                except Exception as _rec_exc:
+                    logger.warning("interrupted_goal_recovery_failed", error=str(_rec_exc))
 
                 # CostController: Redis for cross-replica budget accuracy.
                 _cost_ctrl = getattr(app.state, "cost_controller", None)
@@ -2240,6 +2250,23 @@ def create_app(
 
             # Wire db_session_factory so new runtime approval requests are persisted
             _hitl._db_session_factory = db_factory
+            # ...and the shared Redis: hitl.approved/hitl.rejected triggers,
+            # cross-replica BLPOP delivery to waiters on other replicas/workers,
+            # and hitl_rejected:* notes (with the goal service's subscriber)
+            # were all dead without it.
+            if redis_for_runtime is not None:
+                try:
+                    from app.governance.hitl import wire_hitl_runtime
+
+                    wire_hitl_runtime(
+                        _hitl,
+                        redis=redis_for_runtime,
+                        goal_service=getattr(app.state, "goal_service", None),
+                        redis_url=str(settings.redis_url or ""),
+                    )
+                    logger.info("hitl_gateway_redis_wired")
+                except Exception as _hitl_redis_exc:
+                    logger.warning("hitl_gateway_redis_wire_failed", error=str(_hitl_redis_exc))
 
             # ── C-1: Start Celery→SSE event bridge when Redis is available ────────
             if redis_for_runtime is not None and settings.redis_url:

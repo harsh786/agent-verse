@@ -233,7 +233,8 @@ def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
     monkeypatch.setenv("SLACK_TENANT_ID", "evt-tenant")
 
     mock_hitl = MagicMock()
-    mock_hitl.approve = MagicMock()
+    mock_hitl.approve = MagicMock(side_effect=AssertionError("sync approve() must not be used"))
+    mock_hitl.approve_async = AsyncMock(return_value=True)
     mock_hitl.reject = AsyncMock()
 
     body_data = {
@@ -250,7 +251,7 @@ def test_slack_events_block_actions_approve_hitl(monkeypatch) -> None:
         headers={"Content-Type": "application/json"},
     )
     assert resp.status_code == 200
-    mock_hitl.approve.assert_called_once()
+    mock_hitl.approve_async.assert_awaited_once()
 
 
 def test_slack_events_block_actions_reject_hitl(monkeypatch) -> None:

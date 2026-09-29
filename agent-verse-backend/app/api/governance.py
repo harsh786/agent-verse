@@ -1476,6 +1476,40 @@ async def clear_emergency_stop(
 # ---------------------------------------------------------------------------
 
 
+async def _email_link_tenant_ctx(request: Request, gateway: Any, request_id: str) -> Any:
+    """TenantContext for a signed email-link decision on *request_id*.
+
+    The owning tenant is resolved from the local cache or, when the approval was
+    raised on another replica, from Postgres (it used to scan this process's
+    cache only, so a link opened on a different replica answered 404).
+    """
+    try:
+        tenant_id = await gateway.aresolve_request_tenant(
+            request_id, getattr(request.app.state, "system_db_session_factory", None)
+        )
+    except HITLResolutionUnavailableError as exc:
+        raise _resolution_unavailable(exc) from exc
+    if not tenant_id:
+        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
+
+    from app.tenancy.context import PlanTier, TenantContext
+
+    tenant_svc = getattr(request.app.state, "tenant_service", None)
+    actual_plan = PlanTier.FREE  # safe default
+    if tenant_svc is not None:
+        try:
+            real_tenant = await tenant_svc.get_tenant(tenant_id)
+            if real_tenant and real_tenant.get("plan"):
+                actual_plan = PlanTier(real_tenant["plan"])
+        except Exception:
+            pass  # fall through to FREE
+    return TenantContext(
+        tenant_id=tenant_id,
+        plan=actual_plan,
+        api_key_id="email-link-approver",
+    )
+
+
 @router.get("/hitl/{request_id}/approve")
 async def email_approve_link(request: Request, request_id: str, sig: str = "") -> dict[str, Any]:
     """Handle one-click approve link from HITL approval email.
@@ -1491,35 +1525,15 @@ async def email_approve_link(request: Request, request_id: str, sig: str = "") -
     if gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    # Find the request across all tenants (email links are tenant-scoped via the signature)
-    matching_req = None
-    for (tid, rid), req in gateway._requests.items():
-        if rid == request_id:
-            matching_req = (tid, req)
-            break
+    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
 
-    if matching_req is None:
-        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
-
-    tenant_id, _req_obj = matching_req
-    from app.tenancy.context import PlanTier, TenantContext
-
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    actual_plan = PlanTier.FREE  # safe default
-    if tenant_svc is not None:
-        try:
-            real_tenant = await tenant_svc.get_tenant(tenant_id)
-            if real_tenant and real_tenant.get("plan"):
-                actual_plan = PlanTier(real_tenant["plan"])
-        except Exception:
-            pass  # fall through to FREE
-    fake_ctx = TenantContext(
-        tenant_id=tenant_id,
-        plan=actual_plan,
-        api_key_id="email-link-approver",
-    )
-
-    ok = gateway.approve(request_id, approver="email-link", tenant_ctx=fake_ctx)
+    # DB-first: the request may have been raised on another replica, and the
+    # waiting agent must only be released once the decision is committed (the
+    # sync approve() saw local requests only and released it before the write).
+    try:
+        ok = await gateway.approve_async(request_id, approver="email-link", tenant_ctx=fake_ctx)
+    except HITLResolutionUnavailableError as exc:
+        raise _resolution_unavailable(exc) from exc
     if not ok:
         raise HTTPException(status_code=409, detail="Approval request is no longer pending")
 
@@ -1546,33 +1560,7 @@ async def email_reject_link(request: Request, request_id: str, sig: str = "") ->
     if gateway is None:
         raise HTTPException(status_code=503, detail="HITL gateway not available")
 
-    # Find the request across all tenants
-    matching_req = None
-    for (tid, rid), req in gateway._requests.items():
-        if rid == request_id:
-            matching_req = (tid, req)
-            break
-
-    if matching_req is None:
-        raise HTTPException(status_code=404, detail=f"Approval request {request_id} not found")
-
-    tenant_id, _req_obj = matching_req
-    from app.tenancy.context import PlanTier, TenantContext
-
-    tenant_svc = getattr(request.app.state, "tenant_service", None)
-    actual_plan = PlanTier.FREE  # safe default
-    if tenant_svc is not None:
-        try:
-            real_tenant = await tenant_svc.get_tenant(tenant_id)
-            if real_tenant and real_tenant.get("plan"):
-                actual_plan = PlanTier(real_tenant["plan"])
-        except Exception:
-            pass  # fall through to FREE
-    fake_ctx = TenantContext(
-        tenant_id=tenant_id,
-        plan=actual_plan,
-        api_key_id="email-link-approver",
-    )
+    fake_ctx = await _email_link_tenant_ctx(request, gateway, request_id)
 
     try:
         ok = await gateway.reject(

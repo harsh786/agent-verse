@@ -62,6 +62,24 @@ class ApprovalRequest(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Set once when a pending request breaches its response SLA (e4b7c1d9a2f3).
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Distinct approvals needed to release the gate (b4e6c8a0d2f1).
+    required_approvers: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
+
+class ApprovalVote(Base):
+    """One distinct approver's vote on a multi-approver HITL request (b4e6c8a0d2f1)."""
+
+    __tablename__ = "approval_votes"
+
+    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    approver: Mapped[str] = mapped_column(String(200), primary_key=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class PolicyVersion(Base):

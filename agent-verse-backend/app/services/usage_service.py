@@ -13,6 +13,7 @@ Designed to be fire-and-forget (async tasks) so it never blocks the hot path.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from collections import defaultdict
@@ -53,11 +54,19 @@ class UsageService:
         unit_cost_usd: float = 0.0,
         goal_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        record_id: str | None = None,
     ) -> None:
-        """Record a usage event. Non-blocking — buffers and flushes async."""
+        """Record a usage event. Non-blocking — buffers and flushes async.
+
+        *record_id* makes the record idempotent: the DB insert is ``ON CONFLICT
+        (id) DO NOTHING``, so a deterministic id (e.g. one per goal completion)
+        is written once even if a redelivered task records it again.
+        """
+        if record_id is not None and any(r["id"] == record_id for r in self._buffer):
+            return
         now = datetime.now(UTC)
         record = {
-            "id": uuid.uuid4().hex,
+            "id": record_id or uuid.uuid4().hex,
             "tenant_id": tenant_id,
             "goal_id": goal_id,
             "metric": metric,
@@ -83,23 +92,33 @@ class UsageService:
         input_tokens: int,
         output_tokens: int,
         cost_usd: float,
+        status: str | None = None,
     ) -> None:
-        """Record metrics at goal completion — goals + llm_tokens."""
+        """Record metrics at goal completion — goals + llm_tokens.
+
+        Idempotent per goal (deterministic record ids), and the goal's LLM cost
+        is carried once: by ``llm_tokens`` when tokens were used, otherwise by
+        ``goals`` (it used to be on both, doubling ``total_cost_usd``).
+        """
+        total_tokens = input_tokens + output_tokens
         await self.record(
             tenant_id=tenant_id,
             metric="goals",
             quantity=1,
-            unit_cost_usd=cost_usd,
+            unit_cost_usd=0.0 if total_tokens > 0 else cost_usd,
             goal_id=goal_id,
+            metadata={"status": status} if status else None,
+            record_id=_goal_record_id(goal_id, "goals"),
         )
-        if input_tokens + output_tokens > 0:
+        if total_tokens > 0:
             await self.record(
                 tenant_id=tenant_id,
                 metric="llm_tokens",
-                quantity=float(input_tokens + output_tokens),
-                unit_cost_usd=cost_usd / max(input_tokens + output_tokens, 1),
+                quantity=float(total_tokens),
+                unit_cost_usd=cost_usd / max(total_tokens, 1),
                 goal_id=goal_id,
                 metadata={"input": input_tokens, "output": output_tokens},
+                record_id=_goal_record_id(goal_id, "llm_tokens"),
             )
 
     async def record_tool_call(
@@ -109,15 +128,32 @@ class UsageService:
         tool_name: str,
         server_id: str,
         goal_id: str | None = None,
+        success: bool | None = None,
     ) -> None:
         """Record a single tool call."""
+        metadata: dict[str, Any] = {"tool": tool_name, "server": server_id}
+        if success is not None:
+            metadata["success"] = success
         await self.record(
             tenant_id=tenant_id,
             metric="tool_calls",
             quantity=1.0,
             goal_id=goal_id,
-            metadata={"tool": tool_name, "server": server_id},
+            metadata=metadata,
         )
+
+    async def flush(self) -> None:
+        """Write everything buffered now (failures are logged and re-buffered).
+
+        Metering callers flush eagerly: the buffer is per process, so records
+        left in it were invisible to /billing/usage on every other replica and
+        lost when a short-lived worker process exited.
+        """
+        while self._buffer and self._db is not None:
+            before = len(self._buffer)
+            await self._flush()
+            if len(self._buffer) >= before:
+                break  # nothing written (tenant failures re-buffered) — stop, retry later
 
     async def get_usage_summary(
         self,
@@ -238,6 +274,11 @@ class UsageService:
         if failed:
             # Re-add to buffer for retry
             self._buffer = failed + self._buffer
+
+
+def _goal_record_id(goal_id: str, metric: str) -> str:
+    """Deterministic usage_records id for a per-goal metric (written at most once)."""
+    return hashlib.sha256(f"goal-usage:{goal_id}:{metric}".encode()).hexdigest()[:32]
 
 
 def _insert_params(record: dict[str, Any]) -> dict[str, Any]:

@@ -19,6 +19,7 @@ from celery.signals import worker_init as _worker_init
 
 from app.observability.logging import get_logger
 from app.org.feature_flags import is_feature_enabled
+from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
 from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
 
@@ -433,6 +434,23 @@ def _bind_worker_cost_breakdown_db() -> None:
         logger.warning("worker_cost_breakdown_db_bind_failed: %s", exc)
 
 
+def _worker_usage_service() -> Any:
+    """A DB-backed UsageService for metering worker-run goals (or None).
+
+    Resolves the CURRENT session factory each call (the worker disposes the
+    engine after every task). Metering calls flush immediately, so nothing is
+    left in this process's buffer when the task ends.
+    """
+    try:
+        from app.db.session import get_session_factory
+        from app.services.usage_service import UsageService
+
+        return UsageService(db_factory=get_session_factory())
+    except Exception as exc:
+        logger.warning("worker_usage_service_unavailable: %s", exc)
+        return None
+
+
 def _record_goal_duration_metric(status: str, *, started_monotonic: float, priority: str) -> None:
     try:
         from app.observability.metrics import record_goal_duration
@@ -505,6 +523,48 @@ def _get_llm_provider(tenant_id: str) -> Any:
     )
 
 
+_WORKER_SIGNAL_POLL_SECONDS = 5.0
+
+
+def _pause_gate_host(runner: Any) -> Any:
+    """The object in the runner wrapper chain that honours ``_pause_gate``, or None."""
+    seen: set[int] = set()
+    current = runner
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        attrs = getattr(current, "__dict__", {})
+        if "_pause_gate" in attrs:
+            return current
+        current = attrs.get("_runner") or attrs.get("_inner")
+    return None
+
+
+def _make_worker_pause_gate(goal_id: str, sync_r: Any, event_callback: Any) -> Any:
+    """Step-boundary gate for worker runs, driven by the cross-replica Redis flags."""
+    from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
+
+    async def _emit(event: dict[str, Any]) -> None:
+        if event_callback is not None:
+            with contextlib.suppress(Exception):
+                await event_callback(event)
+
+    async def _gate() -> None:
+        if is_cancelled_sync(goal_id, sync_r):
+            raise GoalCancelledError(f"Goal {goal_id} cancelled")
+        if not is_paused_sync(goal_id, sync_r):
+            return
+        logger.info("goal_paused_in_worker goal_id=%s", goal_id)
+        await _emit({"type": "goal_paused_at_step_boundary"})
+        while is_paused_sync(goal_id, sync_r):
+            await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
+            if is_cancelled_sync(goal_id, sync_r):
+                raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
+        logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
+        await _emit({"type": "goal_execution_resumed"})
+
+    return _gate
+
+
 async def _run_with_signals(
     agent_runner: Any,
     goal: str,
@@ -513,14 +573,25 @@ async def _run_with_signals(
     goal_id: str,
     initial_context: dict[str, Any] | None = None,
 ) -> Any:
-    """Run agent_runner.run() while periodically polling pause/cancel signals.
+    """Run agent_runner.run() while observing cross-replica pause/cancel signals.
 
-    Polls every 5 seconds. On cancel → raises GoalCancelledError.
-    On pause → cancels the current run task and waits until resumed, then restarts.
+    The signals are the Redis flags any API replica sets (``pause_goal`` /
+    ``cancel_goal`` / ``resume_goal``, app/reliability/goal_lifecycle.py).
+
+    * Cancel → the run is cancelled and ``GoalCancelledError`` raised (polled
+      every ``_WORKER_SIGNAL_POLL_SECONDS``; the pause gate also raises it at
+      the next step boundary).
+    * Pause → when the runner exposes a step-boundary pause gate (AgentGraph's
+      ``_pause_gate``) the worker installs one that blocks between steps until
+      the flag is cleared — never mid tool call, and the run continues where it
+      stopped. Legacy runners without a gate fall back to cancel-and-rerun.
     """
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
 
     sync_r = _get_sync_redis()
+    gate_host = _pause_gate_host(agent_runner)
+    if gate_host is not None and sync_r is not None:
+        gate_host._pause_gate = _make_worker_pause_gate(goal_id, sync_r, event_callback)
 
     run_task = asyncio.create_task(
         agent_runner.run(
@@ -533,7 +604,7 @@ async def _run_with_signals(
     )
 
     while not run_task.done():
-        await asyncio.sleep(5)
+        await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
         # Re-check: task may have completed during the sleep
         if run_task.done():
             break
@@ -544,14 +615,14 @@ async def _run_with_signals(
                     await run_task
                 raise GoalCancelledError(f"Goal {goal_id} cancelled during execution")
 
-            if is_paused_sync(goal_id, sync_r):
+            if gate_host is None and is_paused_sync(goal_id, sync_r):
                 # Pause: cancel current run and wait for resume signal
                 run_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
                 logger.info("goal_paused_in_worker goal_id=%s", goal_id)
                 while is_paused_sync(goal_id, sync_r):
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(_WORKER_SIGNAL_POLL_SECONDS)
                     if is_cancelled_sync(goal_id, sync_r):
                         raise GoalCancelledError(f"Goal {goal_id} cancelled while paused")
                 logger.info("goal_resumed_in_worker goal_id=%s", goal_id)
@@ -774,6 +845,89 @@ class _PersistentWorkerRunner:
             + (f": {last_reason}" if last_reason else "")
         )[:1000]
         return failed
+
+
+class _WorkerWorkflowRunner:
+    """Runs a ``multi_agent`` goal through the static WorkflowPlanner/Executor.
+
+    Parity with the API's in-process path (``GoalService._run_workflow``): with
+    a task queue every goal is handed to this worker, which used to ignore
+    ``workflow_mode`` and silently run a multi_agent request as a single
+    AgentGraph goal. Same ``run`` contract as the graph runner (returns an
+    AgentState), so the worker's signals / timeout / terminal bookkeeping apply.
+    """
+
+    def __init__(self, context_factory: Any, *, tool_gate: Any, goal_id: str) -> None:
+        self._context_factory = context_factory
+        self._tool_gate = tool_gate
+        self._goal_id = goal_id
+
+    async def run(
+        self,
+        *,
+        goal: str,
+        tenant_ctx: Any,
+        initial_context: dict[str, Any] | None = None,
+        event_callback: Any = None,
+        goal_id: str | None = None,
+    ) -> Any:
+        from app.agent.state import AgentState, GoalStatus
+        from app.agent.workflow_executor import WorkflowExecutor
+        from app.agent.workflow_planner import build_static_workflow
+
+        async def _emit(event: dict[str, Any]) -> None:
+            if event_callback is not None:
+                await event_callback(event)
+
+        redis_client, mcp_client, tool_context = await self._context_factory()
+        try:
+            await _emit({"type": "goal_started", "goal": goal, "workflow_mode": "multi_agent"})
+            plan = build_static_workflow(goal)
+            executor = WorkflowExecutor(
+                mcp_client=mcp_client,
+                tool_gate=self._tool_gate,
+                goal_id=goal_id or self._goal_id,
+            )
+            wf_result = await executor.execute(
+                plan,
+                tenant_ctx,
+                tool_context=tool_context,
+                event_callback=event_callback,
+                goal=goal,
+            )
+        finally:
+            if redis_client is not None:
+                with contextlib.suppress(Exception):
+                    await redis_client.aclose()
+        state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
+        state.goal_id = goal_id or self._goal_id
+        state.iterations = len(getattr(plan, "steps", []) or [])
+        wf_status = str((wf_result or {}).get("status", "complete"))
+        if wf_status == "complete":
+            state.status = GoalStatus.COMPLETE
+            await _emit({"type": "goal_complete"})
+        else:
+            reason = str(
+                (wf_result or {}).get("reason")
+                or (wf_result or {}).get("error")
+                or f"workflow ended with status {wf_status}"
+            )
+            state.status = GoalStatus.FAILED
+            state.error_message = reason[:1000]
+            await _emit({"type": "goal_failed", "reason": reason})
+        return state
+
+
+def _worker_tool_gate(policy: Any, hitl: Any, cost: Any, agent_id: str) -> Any:
+    """The governed tool gate for worker workflow runs (same services as the graph)."""
+    import types as _types
+
+    from app.agent.tool_gate import gate_from_app_state
+
+    return gate_from_app_state(
+        _types.SimpleNamespace(policy_engine=policy, hitl_gateway=hitl, cost_controller=cost),
+        agent_id=agent_id or None,
+    )
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -1599,7 +1753,11 @@ def run_goal(
         logger.warning("Goal %s status bridge unavailable: %s", goal_id, exc)
 
     async def update_submitted_goal_status(
-        status: str, *, error_message: str = "", iterations: int = 0
+        status: str,
+        *,
+        error_message: str = "",
+        iterations: int = 0,
+        only_if_active: bool = False,
     ) -> None:
         if goal_bridge is None:
             return
@@ -1611,6 +1769,7 @@ def run_goal(
                 status,
                 error_message=error_message,
                 iterations=iterations,
+                **({"only_if_active": True} if only_if_active else {}),
             )
         except Exception as db_exc:
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
@@ -1665,6 +1824,14 @@ def run_goal(
             except Exception as _chain_exc:
                 logger.warning("goal_chain_event_publish_failed: %s", _chain_exc)
 
+        # ── Usage metering: one tool_calls record per completed tool call ─────
+        if not dry_run and event.get("type") == "tool_call_complete":
+            from app.services.usage_metering import meter_tool_call
+
+            await meter_tool_call(
+                _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, event=event
+            )
+
         # ── Also persist to event store (DB) for the historical Dev Log ───────
         if event_store is None:
             return
@@ -1699,6 +1866,16 @@ def run_goal(
             {"type": "worker_started", "goal": effective_goal, "worker": "celery"}
         )
 
+    async def meter_worker_goal(status: str) -> None:
+        # Usage metering for the goal itself (once per goal: deterministic ids).
+        if dry_run or status not in {"complete", "failed", "cancelled"}:
+            return
+        from app.services.usage_metering import meter_goal_completion
+
+        await meter_goal_completion(
+            _worker_usage_service(), tenant_id=tenant_id, goal_id=goal_id, status=status
+        )
+
     async def mark_worker_complete(status: str, iterations: int) -> None:
         await update_submitted_goal_status(status, iterations=iterations)
         await append_submitted_goal_event(
@@ -1708,6 +1885,7 @@ def run_goal(
                 "iterations": iterations,
             }
         )
+        await meter_worker_goal(status)
         # Close the org loop: if a mission dispatched this goal, reconcile it now
         # (mark subtasks done, aggregate the deliverable, complete the mission).
         # Skipped for dry runs — they must not finalize a real mission.
@@ -1717,6 +1895,7 @@ def run_goal(
     async def mark_worker_failed(exc: Exception) -> None:
         await update_submitted_goal_status("failed", error_message=str(exc))
         await append_submitted_goal_event({"type": "worker_failed", "reason": str(exc)})
+        await meter_worker_goal("failed")
         if not dry_run:
             await _finalize_owning_mission(goal_id, tenant_id)
 
@@ -1727,7 +1906,14 @@ def run_goal(
     # used during release(), silently breaking the release.
     _lock: _SyncGoalLock | None = None
     try:
-        _redis_url = celery_app.conf.broker_url or ""
+        _broker_url = str(celery_app.conf.broker_url or "")
+        # The lock lives in Redis: the broker when it is Redis, else REDIS_URL.
+        # Neither configured (eager/test mode) is the only lock-less path.
+        _redis_url = (
+            _broker_url
+            if _broker_url.startswith(("redis://", "rediss://", "unix://"))
+            else (os.getenv("REDIS_URL", "") if _broker_url else "")
+        )
         if _redis_url:
             import uuid as _uuid
 
@@ -1760,8 +1946,27 @@ def run_goal(
                     "reason": "already_executing",
                 }
     except Exception as _lock_exc:
-        logger.warning("Lock acquire failed (continuing without lock): %s", _lock_exc)
-        _lock = None
+        # Fail closed: running without the lock let a redelivered/duplicated
+        # task execute the same goal concurrently. Retry; after the last retry
+        # record the goal as failed (and release its slot) instead.
+        logger.error("goal_execution_lock_unavailable goal_id=%s: %s", goal_id, _lock_exc)
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=_lock_exc, countdown=2**self.request.retries) from _lock_exc
+        _lock_reason = "Goal execution lock unavailable (Redis); not run to avoid duplicates"
+        with contextlib.suppress(Exception):
+            _run_async(update_submitted_goal_status("failed", error_message=_lock_reason))
+        with contextlib.suppress(Exception):
+            _run_async(append_submitted_goal_event({"type": "worker_failed",
+                                                    "reason": _lock_reason}))
+        if not dry_run:
+            with contextlib.suppress(Exception):
+                _run_async(_finalize_owning_mission(goal_id, tenant_id))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {
+            "status": "failed",
+            "goal_id": goal_id,
+            "reason": "execution_lock_unavailable",
+        }
 
     try:
         _run_async(ensure_submitted_goal_row())
@@ -1997,7 +2202,12 @@ def run_goal(
             from app.reliability.rollback import RollbackEngine
 
             _audit = AuditLog(db_session_factory=db_factory)
-            _hitl = HITLGateway()
+            # Durable + cross-process: gates raised here are persisted (so the
+            # API can find and resolve them) and the waiter also listens on the
+            # Redis BLPOP result key the API publishes to. A bare HITLGateway()
+            # kept the gate in worker memory, where no approval could reach it.
+            _hitl = HITLGateway(db_session_factory=db_factory)
+            _hitl._redis = _worker_async_redis()
             _cost = CostController()
             _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
             _ltm = LongTermMemoryStore()
@@ -2594,6 +2804,26 @@ def run_goal(
             except Exception as _iso_flag_exc:
                 logger.warning("isolation_flag_check_failed: %s", _iso_flag_exc)
 
+            if _use_isolation and workflow_mode == "multi_agent":
+                # The isolated runner executes a single agent; routing a
+                # multi_agent workflow there would silently downgrade it. Like
+                # the in-process path, the workflow runs on the worker — unless
+                # isolation is REQUIRED, in which case it fails explicitly.
+                if _iso_required:
+                    _wf_iso_reason = (
+                        "multi_agent workflows cannot run in the isolated execution "
+                        "environment, which is required"
+                    )
+                    _run_async(mark_worker_failed(RuntimeError(_wf_iso_reason)))
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                    return {
+                        "status": "failed",
+                        "goal_id": goal_id,
+                        "reason": "workflow_mode_unsupported_in_isolation",
+                        "message": _wf_iso_reason,
+                    }
+                _use_isolation = False
+
             if _use_isolation:
                 # Build and dispatch an ExecutionEnvelope instead of running in-process
                 _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
@@ -2728,6 +2958,17 @@ def run_goal(
                     db=db_factory,
                     redis=_worker_async_redis(),
                 )
+            # Honour workflow_mode like the in-process path: a multi_agent goal
+            # runs the static workflow, never a silent single-agent downgrade.
+            # (supervisor / debate are resolved by the API before submission
+            # and run as single goals carrying their results — same as in-process.)
+            if workflow_mode == "multi_agent":
+                logger.info("Goal %s runs the multi_agent workflow on the worker", goal_id)
+                _agent_runner = _WorkerWorkflowRunner(
+                    _build_worker_mcp_context,
+                    tool_gate=_worker_tool_gate(_policy, _hitl, _cost, agent_id),
+                    goal_id=goal_id,
+                )
 
             state = _run_async(
                 _asyncio.wait_for(
@@ -2791,6 +3032,27 @@ def run_goal(
                 "execution, but submitted goal status/events were bridged when DB was available."
             )
         return result
+    except GoalCancelledError as exc:
+        # An operator cancel from any replica (Redis flag). It used to fall into
+        # the generic handler below, which scheduled a Celery RETRY of the
+        # cancelled goal (and on the last attempt marked it failed/DLQ'd).
+        logger.info("goal_cancelled_in_worker goal_id=%s: %s", goal_id, exc)
+        _record_goal_duration_metric(
+            "cancelled", started_monotonic=started_monotonic, priority=priority
+        )
+        with contextlib.suppress(Exception):
+            # Conditional: a HITL rejection already recorded FAILED — keep it.
+            _run_async(
+                update_submitted_goal_status(
+                    "cancelled", error_message=str(exc), only_if_active=True
+                )
+            )
+        with contextlib.suppress(Exception):
+            _run_async(append_submitted_goal_event({"type": "goal_cancelled"}))
+        with contextlib.suppress(Exception):
+            _run_async(meter_worker_goal("cancelled"))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {"status": "cancelled", "goal_id": goal_id, "reason": "cancelled_by_operator"}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
         _record_goal_duration_metric(

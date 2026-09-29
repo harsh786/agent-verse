@@ -302,10 +302,21 @@ class TestCheckDailyGoalLimitRedis:
 # ── _recover_interrupted_goals ────────────────────────────────────────────────
 
 class TestRecoverInterruptedGoals:
-    """Lines 544-565."""
+    """Recovery of in-process goals whose runner replica is provably gone."""
+
+    @staticmethod
+    def _ready(svc: GoalService) -> GoalService:
+        import fakeredis.aioredis
+
+        svc._redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        svc._db_claim_goal_runner = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        svc._tenant_plan = AsyncMock(return_value="professional")  # type: ignore[method-assign]
+        return svc
+
+    _DEAD_RUNNER = {"runner": {"kind": "in_process", "replica": "gone"}}
 
     async def test_with_task_queue_re_enqueues_interrupted_goals(self):
-        svc = _svc()
+        svc = self._ready(_svc())
         mock_queue = MagicMock()
         mock_queue.enqueue_goal = MagicMock()
         svc._task_queue = mock_queue
@@ -317,17 +328,19 @@ class TestRecoverInterruptedGoals:
             priority="normal",
             dry_run=False,
             created_at=datetime.now(UTC).isoformat(),
+            execution_context=dict(self._DEAD_RUNNER),
         )
         svc._goals["interrupted-g1"] = record
 
         recovered = await svc._recover_interrupted_goals()
         assert recovered == 1
         mock_queue.enqueue_goal.assert_called_once()
+        assert mock_queue.enqueue_goal.call_args.kwargs["plan"] == "professional"
         assert record.status == GoalStatus.PLANNING
 
     async def test_without_task_queue_marks_failed(self):
-        """Lines 562-567: no task_queue → marks FAILED."""
-        svc = _svc()
+        """No task_queue → the claimed orphan is marked FAILED (resubmit)."""
+        svc = self._ready(_svc())
         record = GoalRecord(
             goal_id="orphaned-g1",
             goal_text="test",
@@ -336,6 +349,7 @@ class TestRecoverInterruptedGoals:
             priority="normal",
             dry_run=False,
             created_at=datetime.now(UTC).isoformat(),
+            execution_context=dict(self._DEAD_RUNNER),
         )
         svc._goals["orphaned-g1"] = record
 
@@ -635,7 +649,8 @@ class TestPauseGoal:
         svc._redis = mock_redis
         with patch("app.reliability.goal_lifecycle.signal_pause", AsyncMock()) as mock_sig:
             await svc.pause_goal("g1", _ctx())
-        mock_sig.assert_called_once_with("g1", mock_redis)
+        # Not running on this replica -> the flag is the only route: strict.
+        mock_sig.assert_called_once_with("g1", mock_redis, strict=True)
 
     async def test_pause_not_found_raises(self):
         svc = _svc()

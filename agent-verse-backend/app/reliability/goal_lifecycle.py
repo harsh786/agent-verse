@@ -40,40 +40,74 @@ class GoalCancelledError(Exception):
     """Raised when a goal is cancelled by an operator signal."""
 
 
-async def signal_pause(goal_id: str, redis: Any) -> None:
+async def _signal(
+    goal_id: str,
+    redis: Any,
+    *,
+    what: str,
+    write: Any,
+    channel: str,
+    message: str,
+    strict: bool,
+) -> None:
+    """Write the durable flag (what runners poll), then publish best-effort.
+
+    With *strict* a failed flag write raises: the caller is about to report
+    the action as done and must not when no runner can observe it (fail
+    closed). The pub/sub message is only a wake-up hint — runners poll the
+    flag — so a publish failure is logged, never raised.
+    """
+    try:
+        await write()
+    except Exception as exc:
+        logger.warning(f"goal_{what}_signal_failed", goal_id=goal_id, error=str(exc))
+        if strict:
+            raise
+        return
+    try:
+        await redis.publish(channel, message)
+    except Exception as exc:
+        logger.warning(f"goal_{what}_publish_failed", goal_id=goal_id, error=str(exc))
+    logger.info(f"goal_{what}_signalled", goal_id=goal_id)
+
+
+async def signal_pause(goal_id: str, redis: Any, *, strict: bool = False) -> None:
     """Signal a running goal to pause. Works across process boundaries via Redis."""
-    try:
-        key = _PAUSE_FLAG.format(goal_id=goal_id)
-        channel = _PAUSE_CHANNEL.format(goal_id=goal_id)
+    key = _PAUSE_FLAG.format(goal_id=goal_id)
+
+    async def _write() -> None:
         await redis.set(key, "1", ex=_PAUSE_TTL)
-        await redis.publish(channel, "pause")
-        logger.info("goal_pause_signalled", goal_id=goal_id)
-    except Exception as exc:
-        logger.warning("goal_pause_signal_failed", goal_id=goal_id, error=str(exc))
+
+    await _signal(
+        goal_id, redis, what="pause", write=_write,
+        channel=_PAUSE_CHANNEL.format(goal_id=goal_id), message="pause", strict=strict,
+    )
 
 
-async def signal_resume(goal_id: str, redis: Any) -> None:
+async def signal_resume(goal_id: str, redis: Any, *, strict: bool = False) -> None:
     """Signal a paused goal to resume."""
-    try:
-        key = _PAUSE_FLAG.format(goal_id=goal_id)
-        channel = _PAUSE_CHANNEL.format(goal_id=goal_id)
+    key = _PAUSE_FLAG.format(goal_id=goal_id)
+
+    async def _write() -> None:
         await redis.delete(key)
-        await redis.publish(channel, "resume")
-        logger.info("goal_resume_signalled", goal_id=goal_id)
-    except Exception as exc:
-        logger.warning("goal_resume_signal_failed", goal_id=goal_id, error=str(exc))
+
+    await _signal(
+        goal_id, redis, what="resume", write=_write,
+        channel=_PAUSE_CHANNEL.format(goal_id=goal_id), message="resume", strict=strict,
+    )
 
 
-async def signal_cancel(goal_id: str, redis: Any) -> None:
+async def signal_cancel(goal_id: str, redis: Any, *, strict: bool = False) -> None:
     """Signal a running goal to cancel immediately."""
-    try:
-        key = _CANCEL_FLAG.format(goal_id=goal_id)
-        channel = _CANCEL_CHANNEL.format(goal_id=goal_id)
+    key = _CANCEL_FLAG.format(goal_id=goal_id)
+
+    async def _write() -> None:
         await redis.set(key, "1", ex=_FLAG_TTL)
-        await redis.publish(channel, "cancel")
-        logger.info("goal_cancel_signalled", goal_id=goal_id)
-    except Exception as exc:
-        logger.warning("goal_cancel_signal_failed", goal_id=goal_id, error=str(exc))
+
+    await _signal(
+        goal_id, redis, what="cancel", write=_write,
+        channel=_CANCEL_CHANNEL.format(goal_id=goal_id), message="cancel", strict=strict,
+    )
 
 
 async def clear_signals(goal_id: str, redis: Any) -> None:
