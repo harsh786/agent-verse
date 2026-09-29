@@ -223,14 +223,13 @@ class TestFeatureFlagGuard:
 # ── Enabled + No DB → graceful degradation ───────────────────────────────────
 
 class TestNoDbDegradation:
-    def test_list_returns_empty_when_no_db(self):
+    def test_list_is_503_not_empty_when_no_db(self):
         app = _make_app(civilization_enabled=True)
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/civilizations", headers=_AUTH)
-        # No DB → returns empty list or 503
-        assert resp.status_code in (200, 503)
-        if resp.status_code == 200:
-            assert resp.json() == []
+        with patch("app.db.session.get_session_factory", side_effect=Exception("No DB")):
+            resp = client.get("/civilizations", headers=_AUTH)
+        # No usable DB → 503, never an empty list posing as "no civilizations"
+        assert resp.status_code == 503
 
     def test_create_returns_503_when_no_db(self):
         app = _make_app(civilization_enabled=True)
@@ -248,13 +247,12 @@ class TestNoDbDegradation:
         resp = client.get("/civilizations/civ1", headers=_AUTH)
         assert resp.status_code in (503, 500, 404)
 
-    def test_spawns_returns_empty_when_no_db(self):
+    def test_spawns_is_503_not_empty_when_no_db(self):
         app = _make_app(civilization_enabled=True)
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get("/civilizations/civ1/spawns", headers=_AUTH)
-        assert resp.status_code in (200, 503)
-        if resp.status_code == 200:
-            assert resp.json() == []
+        with patch("app.db.session.get_session_factory", side_effect=Exception("No DB")):
+            resp = client.get("/civilizations/civ1/spawns", headers=_AUTH)
+        assert resp.status_code == 503
 
 
 # ── Mocked DB endpoints ────────────────────────────────────────────────────────

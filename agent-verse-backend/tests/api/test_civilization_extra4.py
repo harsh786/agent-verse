@@ -185,13 +185,13 @@ def test_create_civilization_db_exception() -> None:
 # list_civilizations (lines 235-271)
 # ---------------------------------------------------------------------------
 
-def test_list_civilizations_no_db_returns_empty() -> None:
-    """Line 242: list_civilizations returns [] when no DB."""
+def test_list_civilizations_no_db_is_503() -> None:
+    """No DB is a 503, not an empty list claiming the tenant has none."""
     # Force db_session_factory to None explicitly
     client = TestClient(_make_app(db=None), raise_server_exceptions=False)
     with patch("app.db.session.get_session_factory", side_effect=Exception("No DB")):
         resp = client.get("/civilizations", headers=H)
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503
 
 
 def test_list_civilizations_with_db_empty() -> None:
@@ -219,12 +219,12 @@ def test_list_civilizations_with_db_rows() -> None:
     assert resp.status_code in (200, 500)
 
 
-def test_list_civilizations_db_exception_returns_empty() -> None:
-    """Lines 269-271: DB exception returns []."""
+def test_list_civilizations_db_exception_is_503() -> None:
+    """A DB exception is a 503, not a 200 []."""
     db = _make_db_mock(raise_on_execute=Exception("DB down"))
     client = TestClient(_make_app(db=db), raise_server_exceptions=False)
     resp = client.get("/civilizations", headers=H)
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -545,12 +545,12 @@ def test_get_learnings_with_status_filter() -> None:
 # get_spawn_audit (lines 576-616)
 # ---------------------------------------------------------------------------
 
-def test_get_spawn_audit_no_db() -> None:
-    """Line 583: get_spawn_audit with no DB returns []."""
+def test_get_spawn_audit_no_db_is_503() -> None:
+    """get_spawn_audit with no DB is a 503, not an empty timeline."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     with patch("app.db.session.get_session_factory", side_effect=Exception("No DB")):
         resp = client.get("/civilizations/civ-1/spawns", headers=H)
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503
 
 
 def test_get_spawn_audit_with_db() -> None:
@@ -573,12 +573,12 @@ def test_get_spawn_audit_with_db() -> None:
     assert resp.status_code in (200, 500)
 
 
-def test_get_spawn_audit_db_exception_returns_empty() -> None:
-    """Line 600: DB exception for spawns returns [] gracefully."""
+def test_get_spawn_audit_db_exception_is_503() -> None:
+    """A DB exception for spawns is a 503, not a 200 []."""
     db = _make_db_mock(raise_on_execute=Exception("DB down"))
     client = TestClient(_make_app(db=db), raise_server_exceptions=False)
     resp = client.get("/civilizations/civ-1/spawns", headers=H)
-    assert resp.status_code in (200, 500)
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
