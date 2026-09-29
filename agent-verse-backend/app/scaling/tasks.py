@@ -6950,7 +6950,12 @@ def org_brain_loop() -> dict[str, int]:
                 span.set_attribute("blocked", blocked_total)
                 _log.info("org_brain.loop_done", processed=processed, triggered=triggered)
             except Exception as exc:
+                # Re-raise: a failed org scan (e.g. the maintenance role lacks
+                # BYPASSRLS) must fail the run, not report all-zero totals that
+                # are indistinguishable from "no active orgs". Per-org errors
+                # are caught above and never reach here.
                 logger.error("org_brain.loop_failed", error=str(exc))
+                raise
         return {
             "processed": processed,
             "triggered": triggered,
@@ -7143,7 +7148,10 @@ def org_collaboration_loop() -> dict[str, int]:
                     messages_emitted=messages_emitted,
                 )
             except Exception as exc:
+                # Re-raise (see org_brain_loop): never report a failed scan as
+                # "no orgs had chatter".
                 logger.error("org_collaboration.loop_failed", error=str(exc))
+                raise
         return {
             "processed": processed,
             "orgs_with_chatter": orgs_with_chatter,
