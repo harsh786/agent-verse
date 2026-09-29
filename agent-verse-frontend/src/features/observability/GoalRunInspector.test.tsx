@@ -66,4 +66,17 @@ describe('GoalRunInspector', () => {
       expect(screen.getByText(/no trace captured yet/i)).toBeInTheDocument()
     );
   });
+
+  it('a 501 is shown as "not available" (with the reason), not as a load failure', async () => {
+    vi.mocked(globalThis.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Goals run on workers; traces are replica-local.' }), {
+        status: 501,
+        headers: { 'Content-Type': 'application/json' },
+      }) as unknown as Response
+    );
+    renderInspector();
+    expect(await screen.findByRole('status')).toHaveTextContent(/not available.*replica-local/i);
+    expect(screen.queryByText(/Failed to load run trace/i)).not.toBeInTheDocument();
+    expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1); // no retry / polling of a 501
+  });
 });
