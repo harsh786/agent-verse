@@ -1579,52 +1579,117 @@ class ChatService:
         When an IdentityService is wired, the (channel, channel_user_id) is resolved
         to a *principal* and the principal's existing open thread is preferred — so a
         conversation started on the web continues on WhatsApp (or months later on any
-        channel) as the SAME session once identities are linked (R8). Falls back to
-        the per-(tenant,channel,user) map when no identity service is present.
+        channel) as the SAME session once identities are linked (R8). Otherwise the
+        per-(tenant, channel, channel_user_id) mapping decides.
+
+        Persistence: when the service is DB-backed (``repository`` wired) both
+        mappings live in the repository (``chat_channel_sessions`` /
+        ``chat_principal_sessions``), so every replica — and the process after a
+        restart — resolves the SAME session. The repository creates the session and
+        claims the mapping in one transaction with ``INSERT ... ON CONFLICT DO
+        NOTHING``, so replicas racing on a user's first message converge on one
+        session. The in-memory dicts are only the no-DB fallback.
+
+        Fails closed: identity / store errors propagate. Swallowing them would fall
+        through to creating a fresh session and silently fork the conversation.
         """
         principal_id: str | None = None
         if self._identity is not None:
-            with contextlib.suppress(Exception):
-                principal = await self._identity.resolve_principal(
-                    tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
-                )
-                principal_id = principal.id
-                existing_id = self._principal_sessions.get(principal_id)
-                if existing_id is not None:
-                    existing = await self.aget_session(existing_id, tenant_id)
-                    if existing is not None:
-                        return existing
-
-        key = (tenant_id, channel, channel_user_id)
-        existing_id = self._channel_sessions.get(key)
-        if existing_id is not None:
-            existing = await self.aget_session(existing_id, tenant_id)
-            if existing is not None:
-                return existing
-
-        # Serialize session creation per (tenant, channel, channel_user_id). Without
-        # this lock, two inbound messages from the same external chat arriving
-        # concurrently (e.g. a user double-sending on Telegram, or two overlapping
-        # webhook deliveries) would both miss the ``_channel_sessions`` cache above
-        # and each create a NEW session; the second create's write to the dict would
-        # silently clobber the first, forking the conversation into two divergent
-        # sessions — one of them orphaned from all future messages. ``setdefault``
-        # on a plain dict is safe here since it has no ``await`` point.
-        lock = self._channel_session_locks.setdefault(key, asyncio.Lock())
-        async with lock:
-            existing_id = self._channel_sessions.get(key)
+            principal = await self._identity.resolve_principal(
+                tenant_id=tenant_id, channel=channel, channel_user_id=channel_user_id
+            )
+            principal_id = str(principal.id)
+            existing_id = await self._get_principal_session_id(tenant_id, principal_id)
             if existing_id is not None:
                 existing = await self.aget_session(existing_id, tenant_id)
                 if existing is not None:
                     return existing
 
-            session = await self.acreate_session(
-                tenant_id, title=title or f"{channel}:{channel_user_id}"
-            )
-            self._channel_sessions[key] = session.id
+        key = (tenant_id, channel, channel_user_id)
+        # Serialize resolution per (tenant, channel, channel_user_id) within this
+        # process. Without it, two inbound messages from the same external chat
+        # arriving concurrently (a user double-sending, overlapping webhook
+        # deliveries) could both miss the mapping and each create a session,
+        # forking the conversation. Across replicas the DB unique key does the same
+        # job. ``setdefault`` on a plain dict has no ``await`` point.
+        lock = self._channel_session_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if self._repository is not None:
+                session = await self._resolve_durable_channel_session(
+                    tenant_id=tenant_id,
+                    channel=channel,
+                    channel_user_id=channel_user_id,
+                    title=title,
+                )
+            else:
+                session = await self._resolve_memory_channel_session(
+                    key, tenant_id=tenant_id, title=title
+                )
             if principal_id is not None:
-                self._principal_sessions[principal_id] = session.id
+                await self._claim_principal_session(tenant_id, principal_id, session.id)
             return session
+
+    async def _resolve_durable_channel_session(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        title: str | None,
+    ) -> _Session:
+        session_id = await self._repository.resolve_channel_session(
+            tenant_id=tenant_id,
+            channel=channel,
+            channel_user_id=channel_user_id,
+            new_session_id=_hex(),
+            title=title or f"{channel}:{channel_user_id}",
+        )
+        session = await self.aget_session(str(session_id), tenant_id)
+        if session is None:
+            # The mapping row cascades away with its session, so this means the
+            # store is inconsistent. Never paper over it with a fresh session.
+            raise RuntimeError(
+                f"channel mapping for {channel!r} resolved to missing chat session "
+                f"{session_id!r}"
+            )
+        return session
+
+    async def _resolve_memory_channel_session(
+        self, key: tuple[str, str, str], *, tenant_id: str, title: str | None
+    ) -> _Session:
+        _, channel, channel_user_id = key
+        existing_id = self._channel_sessions.get(key)
+        if existing_id is not None:
+            existing = await self.aget_session(existing_id, tenant_id)
+            if existing is not None:
+                return existing
+        session = await self.acreate_session(
+            tenant_id, title=title or f"{channel}:{channel_user_id}"
+        )
+        self._channel_sessions[key] = session.id
+        return session
+
+    async def _get_principal_session_id(self, tenant_id: str, principal_id: str) -> str | None:
+        if self._repository is not None:
+            found = await self._repository.get_principal_session(tenant_id, principal_id)
+            return None if found is None else str(found)
+        return self._principal_sessions.get(principal_id)
+
+    async def _claim_principal_session(
+        self, tenant_id: str, principal_id: str, session_id: str
+    ) -> None:
+        """Bind the principal to ``session_id`` unless it already has a live thread.
+
+        Only reached when the principal had no (live) thread, so the in-memory
+        fallback may overwrite a stale entry; the DB path keeps the first claim
+        (``ON CONFLICT DO NOTHING``) — a deleted session cascades its row away.
+        """
+        if self._repository is not None:
+            await self._repository.claim_principal_session(
+                tenant_id=tenant_id, principal_id=principal_id, session_id=session_id
+            )
+            return
+        self._principal_sessions[principal_id] = session_id
 
     async def ahandle_channel_message(
         self,
