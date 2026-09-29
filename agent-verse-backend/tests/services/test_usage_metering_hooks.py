@@ -117,6 +117,11 @@ def test_worker_path_records_tool_calls_and_goal_completion(
     monkeypatch.setattr(tasks, "_get_sync_redis", lambda: None)
     monkeypatch.setenv("ENVIRONMENT", "development")
 
+    async def _claimed(goal_id: str, tenant_id: str) -> str:
+        return "claimed"  # no goals table here; the worker's atomic claim is granted
+
+    monkeypatch.setattr(tasks, "_claim_goal_for_execution", _claimed)
+
     class _Graph:
         def __init__(self, **kwargs: Any) -> None:
             pass
