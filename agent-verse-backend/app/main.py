@@ -2240,6 +2240,23 @@ def create_app(
 
             # Wire db_session_factory so new runtime approval requests are persisted
             _hitl._db_session_factory = db_factory
+            # ...and the shared Redis: hitl.approved/hitl.rejected triggers,
+            # cross-replica BLPOP delivery to waiters on other replicas/workers,
+            # and hitl_rejected:* notes (with the goal service's subscriber)
+            # were all dead without it.
+            if redis_for_runtime is not None:
+                try:
+                    from app.governance.hitl import wire_hitl_runtime
+
+                    wire_hitl_runtime(
+                        _hitl,
+                        redis=redis_for_runtime,
+                        goal_service=getattr(app.state, "goal_service", None),
+                        redis_url=str(settings.redis_url or ""),
+                    )
+                    logger.info("hitl_gateway_redis_wired")
+                except Exception as _hitl_redis_exc:
+                    logger.warning("hitl_gateway_redis_wire_failed", error=str(_hitl_redis_exc))
 
             # ── C-1: Start Celery→SSE event bridge when Redis is available ────────
             if redis_for_runtime is not None and settings.redis_url:

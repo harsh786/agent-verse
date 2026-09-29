@@ -151,7 +151,11 @@ async def slack_events(
                 approver = data.get("user", {}).get("name", "slack-user")
 
                 if action_id == "approve_hitl":
-                    hitl.approve(request_id, approver=approver, tenant_ctx=ctx)
+                    # DB-first: resolves requests raised on any replica and only
+                    # releases the waiting agent once the decision is committed
+                    # (the sync approve() saw local requests only and released
+                    # the agent before the DB write).
+                    await hitl.approve_async(request_id, approver=approver, tenant_ctx=ctx)
                 elif action_id == "reject_hitl":
                     await hitl.reject(request_id, approver=approver, tenant_ctx=ctx)
 

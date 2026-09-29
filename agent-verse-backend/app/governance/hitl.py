@@ -444,9 +444,9 @@ class HITLGateway:
                     text(
                         """INSERT INTO approval_requests
                             (id, tenant_id, goal_id, action, risk_level, status,
-                             created_at, expires_at)
+                             created_at, expires_at, required_approvers)
                             VALUES (:id, :tid, :gid, :action, :risk, 'pending',
-                                    NOW(), :expires_at)
+                                    NOW(), :expires_at, :required)
                             ON CONFLICT (id) DO NOTHING"""
                     ),
                     {
@@ -455,6 +455,9 @@ class HITLGateway:
                         "gid": req.goal_id,
                         "action": req.action,
                         "risk": req.risk_level,
+                        # Persisted so every replica applies the same threshold
+                        # (it used to exist only in the raising process's memory).
+                        "required": max(1, int(req.required_approvers or 1)),
                         # The beat expiry (expire_hitl_approvals) matches
                         # ``expires_at < NOW()``; without it no row ever expired.
                         "expires_at": req._expires_at_dt,
@@ -661,11 +664,25 @@ class HITLGateway:
         req = await self.aget_request(request_id, tenant_ctx=tenant_ctx)
         if req is None or req.status != ApprovalStatus.PENDING:
             return False
-        votes = req.approvals_received + (0 if approver in req.approvers_list else 1)
-        if self._db_session_factory is None or votes < req.required_approvers:
+        if self._db_session_factory is None:
             return bool(
                 self.approve(request_id, approver=approver, note=note, tenant_ctx=tenant_ctx)
             )
+        required = max(1, int(req.required_approvers or 1))
+        if required > 1:
+            # Multi-approver gate: the vote is recorded in Postgres (one row per
+            # distinct approver) and counted there, so votes cast on different
+            # replicas — or before a restart — add up. They used to be counted
+            # in this process's memory only. A DB error raises
+            # HITLResolutionUnavailableError (fail closed).
+            votes = await self._db_cast_vote(request_id, tenant_ctx.tenant_id, approver, note)
+            if approver not in req.approvers_list:
+                req.approvers_list.append(approver)
+            req.approvals_received = max(req.approvals_received, votes)
+            req.approver = approver
+            req.note = note
+            if votes < required:
+                return True  # vote recorded; the gate stays closed
         # This vote resolves the gate: win the DB compare-and-swap FIRST, then
         # unblock the waiting agent. Approving locally first let the agent run
         # the gated action even when the decision was never recorded (DB error
@@ -676,11 +693,94 @@ class HITLGateway:
         if not won:
             await self._heal_from_db(request_id, tenant_ctx.tenant_id, "approved")
             return False
+        if required > 1:
+            # Threshold reached across replicas: mark every counted vote locally
+            # so _apply_approval releases the gate.
+            req.approvals_received = max(req.approvals_received, required - 1)
+            if approver in req.approvers_list:
+                req.approvers_list.remove(approver)
         return bool(
             self._apply_approval(
                 req, approver=approver, note=note, tenant_ctx=tenant_ctx, persist=False
             )
         )
+
+    async def _db_cast_vote(
+        self, request_id: str, tenant_id: str, approver: str, note: str
+    ) -> int:
+        """Record *approver*'s vote (idempotent) and return the distinct vote count.
+
+        Insert + count run in one transaction under the tenant's RLS context;
+        the primary key (tenant_id, request_id, approver) makes a repeated vote
+        a no-op, so the count is the number of DISTINCT approvers fleet-wide.
+
+        Raises:
+            HITLResolutionUnavailableError: the vote could not be recorded.
+        """
+        try:
+            from sqlalchemy import text
+
+            from app.db.rls import sqlalchemy_rls_context
+
+            async with (
+                self._db_session_factory() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    text(
+                        "INSERT INTO approval_votes (tenant_id, request_id, approver, note) "
+                        "VALUES (:tid, :rid, :a, :n) "
+                        "ON CONFLICT (tenant_id, request_id, approver) DO NOTHING"
+                    ),
+                    {"tid": tenant_id, "rid": request_id, "a": approver or "", "n": note or ""},
+                )
+                count = (
+                    await session.execute(
+                        text(
+                            "SELECT COUNT(*) FROM approval_votes "
+                            "WHERE tenant_id = :tid AND request_id = :rid"
+                        ),
+                        {"tid": tenant_id, "rid": request_id},
+                    )
+                ).scalar()
+            return int(count or 0)
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_db_vote_failed", error=str(exc))
+            raise HITLResolutionUnavailableError(str(exc)) from exc
+
+    async def aresolve_request_tenant(self, request_id: str, system_db: Any) -> str | None:
+        """The tenant owning *request_id*: local cache first, then Postgres.
+
+        For signed links (email approve/reject) that carry no tenant: the
+        request may have been raised on another replica, so the process-local
+        cache is not enough. The lookup is by primary key on the maintenance
+        (RLS-bypassing) session; the caller has already verified the link's
+        HMAC for this exact request id.
+        """
+        for (tid, rid) in self._requests:
+            if rid == request_id:
+                return tid
+        if system_db is None:
+            return None
+        try:
+            from sqlalchemy import text
+
+            async with system_db() as session:
+                row = (
+                    await session.execute(
+                        text("SELECT tenant_id FROM approval_requests WHERE id = :id"),
+                        {"id": request_id},
+                    )
+                ).first()
+            return str(row[0]) if row else None
+        except Exception as exc:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning("hitl_resolve_tenant_failed", error=str(exc))
+            raise HITLResolutionUnavailableError(str(exc)) from exc
 
     async def request_approval_async(
         self,
@@ -727,7 +827,8 @@ class HITLGateway:
                     (
                         await session.execute(
                             text(
-                                "SELECT id, tenant_id, goal_id, action, risk_level, status "
+                                "SELECT id, tenant_id, goal_id, action, risk_level, status, "
+                                "required_approvers "
                                 "FROM approval_requests WHERE id = :id AND tenant_id = :tid"
                             ),
                             {"id": request_id, "tid": tenant_id},
@@ -751,7 +852,13 @@ class HITLGateway:
         holds a reference to it and is waiting on its ``_event``.
         """
         status = _STATUS_BY_DB_VALUE.get(str(row["status"] or ""), ApprovalStatus.PENDING)
+        try:
+            required = max(1, int(row.get("required_approvers") or 1))
+        except (TypeError, ValueError, AttributeError):
+            required = 1
         if cached is not None:
+            # The DB threshold is authoritative (never lower a local one).
+            cached.required_approvers = max(cached.required_approvers, required)
             if cached.status != status:
                 cached.status = status
                 cached._event.set()
@@ -762,6 +869,7 @@ class HITLGateway:
             risk_level=row["risk_level"] or "unknown",
             request_id=row["id"],
             status=status,
+            required_approvers=required,
         )
         self._requests[(tenant_id, row["id"])] = req
         return req
@@ -1176,3 +1284,24 @@ class HITLGateway:
 
             get_logger(__name__).warning("hitl_startup_restore_failed", error=str(exc))
             return 0
+
+
+def wire_hitl_runtime(
+    gateway: HITLGateway,
+    *,
+    redis: Any,
+    goal_service: Any = None,
+    redis_url: str = "",
+) -> None:
+    """Bind the shared Redis into *gateway* and start the rejection-note subscriber.
+
+    ``HITLGateway._redis`` was never set in production: ``hitl.approved`` /
+    ``hitl.rejected`` trigger events, cross-replica BLPOP delivery to a waiter
+    on another replica/worker, and ``hitl_rejected:*`` notes were all no-ops,
+    and GoalService's rejection subscriber was never started.
+    """
+    gateway._redis = redis
+    if goal_service is not None and redis_url:
+        starter = getattr(goal_service, "start_hitl_rejection_subscriber", None)
+        if callable(starter):
+            starter(redis_url)

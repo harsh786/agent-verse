@@ -2034,7 +2034,12 @@ def run_goal(
             from app.reliability.rollback import RollbackEngine
 
             _audit = AuditLog(db_session_factory=db_factory)
-            _hitl = HITLGateway()
+            # Durable + cross-process: gates raised here are persisted (so the
+            # API can find and resolve them) and the waiter also listens on the
+            # Redis BLPOP result key the API publishes to. A bare HITLGateway()
+            # kept the gate in worker memory, where no approval could reach it.
+            _hitl = HITLGateway(db_session_factory=db_factory)
+            _hitl._redis = _worker_async_redis()
             _cost = CostController()
             _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
             _ltm = LongTermMemoryStore()

@@ -977,13 +977,13 @@ async def _resolve_task_hitl_request(
         approver = getattr(body, "approver", "user")
         note = getattr(body, "note", "")
         if action == "approve":
-            # approve() is synchronous (mutates gateway state immediately) and
-            # returns an awaitable-or-bool; awaiting it is safe and a no-op.
-            result = gateway.approve(
+            # DB-first (approve_async): finds a request raised on any replica and
+            # releases the blocked agent only after the decision is committed.
+            # The sync approve() saw this process's requests only and unblocked
+            # the agent before the DB write.
+            await gateway.approve_async(
                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
             )
-            if hasattr(result, "__await__"):
-                await result
         else:
             await gateway.reject(
                 request_id, approver=approver, note=note, tenant_ctx=tenant_ctx
