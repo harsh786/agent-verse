@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.api.observability import get_goal_trace
@@ -13,6 +15,8 @@ from app.tenancy.context import PlanTier, TenantContext
 class _Req:
     def __init__(self, tenant: TenantContext | None) -> None:
         self.state = type("S", (), {"tenant": tenant})()
+        # In-memory (single-process) mode: no DB, goals run in this process.
+        self.app = SimpleNamespace(state=SimpleNamespace())
 
 
 @pytest.fixture
