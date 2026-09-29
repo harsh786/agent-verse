@@ -113,6 +113,11 @@ For each wave: if its branch has the commits for every item below, merge it
 
 ### Progress snapshot — 2026-09-29 ~11:10 UTC (weekly usage at 93%)
 
+**Latest state: see `wave7-status.md`** in this folder — refreshed automatically every
+10 minutes (commits per wave branch + uncommitted file counts per worktree). Refresh it by
+hand with `sh docs/audits/2026-09-29-reaudit/update_wave7_status.sh`. The table below is
+the manual snapshot taken when the limit hit 93%.
+
 Branches (in `.claude/worktrees/agent-*`, NOT yet merged to `main`). Commits listed are
 done; "uncommitted" means work was in progress in that worktree when this was written —
 inspect it with `git -C <worktree> status` / `diff` and finish or discard it.
