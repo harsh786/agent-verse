@@ -272,8 +272,14 @@ async def _submit_goal_unguarded(
         try:
             primary = body.strategy_override or "react"
             if registry is not None:
+                from app.orchestration.execution_drivers import goal_execution_driver
+
                 primary_resolution = registry.resolve(primary)
                 if primary_resolution.capability.adapter_descriptor is None:
+                    raise LookupError(primary)
+                # Registered but nothing can run it as a goal (ReWOO, CodeAct, …): refuse
+                # rather than accept a strategy the goal would silently not run.
+                if goal_execution_driver(primary_resolution.capability) is None:
                     raise LookupError(primary)
                 for auxiliary in body.auxiliary_strategies:
                     registry.resolve(auxiliary)

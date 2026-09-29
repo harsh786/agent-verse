@@ -39,6 +39,7 @@ from typing import Any
 
 from app.coordination.patterns.common import InMemoryPatternCheckpointStore
 from app.intelligence.cost_tracker import calculate_cost
+from app.orchestration.execution_drivers import STRATEGY_RUNNER_STRATEGIES
 from app.orchestration.strategy_context_store import StrategyGoalContextStore
 from app.orchestration.strategy_contracts import StrategyCheckpoint, StrategyExecutionRequest
 from app.orchestration.strategy_runner import ExecutionMetrics, StrategyRunOutput
@@ -48,7 +49,7 @@ from app.providers.base import CompletionRequest, Message
 # DISTRIBUTED strategy registered in strategy_adapters.py has real adapter logic but requires
 # runtime dependencies (sandboxes, policy runtimes, coordination outboxes, memory repositories)
 # that are out of scope here — those are denied at admission, not faked.
-SUPPORTED_DISTRIBUTED_STRATEGIES: frozenset[str] = frozenset({"supervisor", "goal_tree", "debate"})
+SUPPORTED_DISTRIBUTED_STRATEGIES: frozenset[str] = STRATEGY_RUNNER_STRATEGIES
 
 _DECOMPOSE_MAX_STEPS = 4
 

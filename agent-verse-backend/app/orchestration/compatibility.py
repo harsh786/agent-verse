@@ -8,9 +8,30 @@ from app.orchestration.runtime_profile import StrategyRejection, StrategySelecti
 from app.orchestration.strategy_adapters import ExecutionTier
 from app.orchestration.strategy_registry import StrategyRegistry, StrategyState
 
-GENERATED_CODE_STRATEGIES = frozenset({"codeact", "program_of_thoughts"})
+# Registry ids (see strategy_registry.build_default_registry). The admission gates in
+# ``compose`` key off the capability's execution tier, so a newly registered sandbox /
+# distributed strategy is gated automatically; these tables document the current set and a
+# test pins them to the registry so an id can never drift (``program_of_thoughts`` /
+# ``magentic_one`` / ``swarm`` once did, silently skipping their gates).
+GENERATED_CODE_STRATEGIES = frozenset({"codeact", "program_of_thought"})
 DISTRIBUTED_STRATEGIES = frozenset(
-    {"debate", "supervisor", "magentic_one", "mixture_of_agents", "swarm"}
+    {
+        "autogpt",
+        "babyagi",
+        "camel",
+        "consensus",
+        "consensus_verification",
+        "debate",
+        "decentralized_swarm",
+        "generative_agents",
+        "goal_tree",
+        "group_chat",
+        "magentic",
+        "market_auction",
+        "mixture_of_agents",
+        "supervisor",
+        "voyager",
+    }
 )
 
 
@@ -45,9 +66,10 @@ class CompatibilityEvaluator:
         primary_rejection: str | None = None
         if primary.strategy_id not in ready_ids:
             primary_rejection = "not_ready"
-        if primary.strategy_id in GENERATED_CODE_STRATEGIES and not sandbox_ready:
+        tier = primary_capability.execution_tier
+        if tier is ExecutionTier.SANDBOX and not sandbox_ready:
             primary_rejection = "sandbox_not_ready"
-        if primary.strategy_id in DISTRIBUTED_STRATEGIES and not coordination_ready:
+        if tier is ExecutionTier.DISTRIBUTED and not coordination_ready:
             primary_rejection = "coordination_not_ready"
 
         accepted: list[StrategySelection] = []

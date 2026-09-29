@@ -247,7 +247,13 @@ class AgentGraph(
             or "debate" in auto_multi_agent
         )
         self._autonomy_mode = autonomy_mode
-        self._enable_goal_tree = enable_goal_tree
+        # The selector's multi-agent pick may be goal_tree (expert goals); honour it like
+        # supervisor/debate instead of recording a topology that never compiles in.
+        self._enable_goal_tree = (
+            enable_goal_tree
+            or "goal_tree" in selected_strategy_ids
+            or "goal_tree" in auto_multi_agent
+        )
         self._goal_tree_threshold = goal_tree_threshold
         # Adaptive execution strategy (A/B/C). Resolved once from the wired
         # per-role model ids; adaptivity (P5) refines it per goal at plan time.

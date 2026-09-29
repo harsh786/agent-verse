@@ -12,6 +12,7 @@ Responsible for:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import time
 import uuid
@@ -37,6 +38,27 @@ def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
     """``tenant_llm_config=`` only when one was resolved (keeps subclass
     overrides of ``_make_agent_loop_for_tenant`` without the kwarg working)."""
     return {"tenant_llm_config": cfg} if cfg is not None else {}
+
+
+# goals columns filled from the runtime profile (see GoalService._build_runtime_profile).
+_RUNTIME_PROFILE_COLUMNS = frozenset(
+    {
+        "runtime_profile_id",
+        "runtime_profile_version",
+        "strategy_registry_revision",
+        "runtime_profile_snapshot",
+        "rejected_strategies",
+        "patterns_used",
+        "rag_strategy_used",
+    }
+)
+
+
+def _profile_column_kwargs(columns: dict[str, Any] | None) -> dict[str, Any]:
+    """``runtime_profile_columns=`` only when a profile was built (same reason as above)."""
+    return {"runtime_profile_columns": columns} if columns else {}
+
+
 # execution_context flag: the goal's graph ended waiting for approvals (see
 # GoalService._suspend_for_approval); resume must relaunch it.
 _SUSPENDED_KEY = "_suspended_for_approval"
@@ -1110,6 +1132,49 @@ class GoalService:
                 {"key": _RUNNER_KEY, "runner": json.dumps(runner), "g": goal_id, "t": tenant_id},
             )
 
+    async def _db_merge_context_key(
+        self, goal_id: str, tenant_id: str, key: str, value: Any
+    ) -> None:
+        """Merge ``{key: value}`` into goals.execution_context under the tenant's RLS."""
+        if self._db is None:
+            return
+        from sqlalchemy import text as _sql
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                await session.execute(
+                    _sql(
+                        "UPDATE goals SET execution_context = ("
+                        "COALESCE(execution_context::jsonb, '{}'::jsonb) "
+                        "|| jsonb_build_object(CAST(:key AS text), CAST(:value AS jsonb))"
+                        ")::json WHERE id = :g AND tenant_id = :t"
+                    ),
+                    {"key": key, "value": json.dumps(value), "g": goal_id, "t": tenant_id},
+                )
+        except Exception as exc:
+            _svc_logger.warning(
+                "goal_context_merge_failed", goal_id=goal_id, key=key, error=str(exc)
+            )
+
+    def _persist_strategy_execution(self, goal_id: str, tenant_id: str, record: Any) -> None:
+        """Persist which strategy the goal's runtime actually runs (see strategy_execution)."""
+        if self._db is None or record is None:
+            return
+        execution = record.execution_context.get("strategy_execution")
+        if not isinstance(execution, dict):
+            return
+        coro = self._db_merge_context_key(goal_id, tenant_id, "strategy_execution", execution)
+        try:
+            self._track_db_task(coro)
+        except RuntimeError:  # no running loop (sync caller) — nothing to schedule on
+            coro.close()
+
     async def _tenant_plan(self, tenant_id: str) -> str | None:
         """The tenant's real plan tier (for the per-plan Celery queue), or None."""
         aps: Any = self._app_state
@@ -1593,9 +1658,20 @@ class GoalService:
             "procedural_memory": getattr(app_state, "procedural_memory", None),
             "reflexion_service": getattr(app_state, "reflexion_service", None),
         }
+        # What actually runs is recorded on the goal (execution_context
+        # ["strategy_execution"]) from the constructed runtime — never inferred from what the
+        # profile asked for — so a downgrade is visible instead of silent.
+        from app.orchestration.execution_drivers import describe_agent_graph_execution
+
+        _strategy_execution: dict[str, Any] = {"driver": "agent_graph"}
+        _downgrades: list[dict[str, str]] = []
         if runtime_profile is not None:
+            from app.orchestration.graph_factory import GraphFactory
             from app.orchestration.strategy_adapters import ExecutionTier
 
+            _requested_primary = runtime_profile.primary_strategy.strategy_id
+            _strategy_execution["requested_primary"] = _requested_primary
+            _strategy_execution["profile_id"] = runtime_profile.profile_id
             if runtime_profile.execution_tier is ExecutionTier.DISTRIBUTED:
                 _distributed_loop = self._try_build_distributed_strategy_loop(
                     runtime_profile,
@@ -1606,16 +1682,44 @@ class GoalService:
                 )
                 if _distributed_loop is not None:
                     graph = _distributed_loop
+                    _strategy_execution["driver"] = "strategy_runner"
+                    _strategy_execution["patterns"] = [_requested_primary]
                 else:
                     _svc_logger.warning(
                         "distributed_strategy_runner_unavailable_local_fallback",
-                        strategy_id=runtime_profile.primary_strategy.strategy_id,
+                        strategy_id=_requested_primary,
                         goal_id=runtime_profile.goal_id,
                     )
-                    graph = AgentGraph(**graph_services)
+                    # supervisor / debate / goal_tree also exist as local AgentGraph
+                    # nodes: compile the same profile on the local tier so the requested
+                    # pattern still runs, rather than a bare ReAct loop claiming it.
+                    try:
+                        graph = GraphFactory().create(
+                            dataclasses.replace(
+                                runtime_profile, execution_tier=ExecutionTier.LOCAL
+                            ),
+                            graph_services,
+                            agent_config=_agent_config,
+                        )
+                        _downgrades.append(
+                            {
+                                "strategy_id": _requested_primary,
+                                "from": "strategy_runner",
+                                "to": "agent_graph",
+                                "reason": "strategy_runner_unavailable",
+                            }
+                        )
+                    except ValueError:
+                        graph = AgentGraph(**graph_services)
+                        _downgrades.append(
+                            {
+                                "strategy_id": _requested_primary,
+                                "from": "strategy_runner",
+                                "to": "react",
+                                "reason": "strategy_runner_unavailable_no_local_node",
+                            }
+                        )
             else:
-                from app.orchestration.graph_factory import GraphFactory
-
                 try:
                     graph = GraphFactory().create(
                         runtime_profile,
@@ -1623,14 +1727,28 @@ class GoalService:
                         agent_config=_agent_config,
                     )
                 except ValueError as _graph_factory_exc:
-                    _svc_logger.warning(
+                    _svc_logger.error(
                         "graph_factory_compile_failed_local_fallback",
                         error=str(_graph_factory_exc),
                         goal_id=runtime_profile.goal_id,
                     )
                     graph = AgentGraph(**graph_services)
+                    _downgrades.append(
+                        {
+                            "strategy_id": _requested_primary,
+                            "from": "agent_graph",
+                            "to": "react",
+                            "reason": "graph_compile_failed",
+                        }
+                    )
         else:
             graph = AgentGraph(**graph_services)
+        if "patterns" not in _strategy_execution:
+            _strategy_execution["patterns"] = describe_agent_graph_execution(graph)
+        if _downgrades:
+            _strategy_execution["downgrades"] = _downgrades
+        if execution_context is not None:
+            execution_context["strategy_execution"] = _strategy_execution
         # Wire attributes that are set externally (not constructor params)
         graph._db_session_factory = self._db
         # Survives role/trace/circuit-breaker wrapping, unlike a type check on
@@ -1672,6 +1790,17 @@ class GoalService:
             pass
 
         return graph
+
+    def _coordination_ready(self) -> bool:
+        """True when the app wires a StrategyRunner that can really run DISTRIBUTED goals."""
+        app_state: Any = self._app_state
+        app_state = getattr(app_state, "state", app_state)
+        runner = getattr(app_state, "strategy_runner", None) if app_state is not None else None
+        return bool(
+            runner is not None
+            and getattr(runner, "has_real_executor", False) is True
+            and getattr(app_state, "strategy_goal_context_store", None) is not None
+        )
 
     def _try_build_distributed_strategy_loop(
         self,
@@ -1733,24 +1862,42 @@ class GoalService:
         *,
         goal_id: str,
         tenant_ctx: Any,
-        db_session: Any = None,
         agent_config: dict[str, Any] | None = None,
-    ) -> dict:
-        """Build GoalRuntimeProfile and persist to goals.execution_context."""
+    ) -> dict[str, Any]:
+        """Build the goal's GoalRuntimeProfile and decide whether it drives execution.
+
+        Returns ``{}`` when dynamic orchestration is off, else a dict with:
+
+        * ``profile_object`` — the profile the runtime compiles/dispatches, set ONLY when
+          the strategy-runtime-v2 rollout admits this tenant (allowlist, no shadow, no kill
+          switch). On the ``legacy`` / ``rejected`` paths it is ``None`` and the goal runs
+          the legacy agent-config graph; the profile is still recorded for comparison.
+        * ``context`` — JSON-safe entries for ``goals.execution_context``.
+        * ``columns`` — JSON-safe values for the goals runtime-profile columns, written
+          with the goal row (``_db_persist_goal``) under the tenant's RLS context.
+
+        A build failure is never silent: it is logged and returned as an explicit
+        ``runtime_profile_fallback`` record on the goal (the legacy path then runs).
+        """
         from app.core.runtime_flags import get_runtime_flags
 
         flags = get_runtime_flags()
         if not flags.dynamic_orchestration:
             return {}
+        requested_primary = (agent_config or {}).get("primary_strategy")
         try:
             from app.orchestration.runtime_profile_builder import RuntimeProfileBuilder
 
-            builder = RuntimeProfileBuilder()
+            builder = RuntimeProfileBuilder(llm_provider=self._classifier_provider())
+            _builder_config = dict(agent_config or {})
+            # DISTRIBUTED strategies are admitted only when a StrategyRunner with a real
+            # executor is wired to run them (see _try_build_distributed_strategy_loop).
+            _builder_config.setdefault("coordination_ready", self._coordination_ready())
             profile, trace = await builder.build_with_trace(
                 goal,
                 tenant_id=tenant_ctx.tenant_id,
                 goal_id=goal_id,
-                agent_config=agent_config,
+                agent_config=_builder_config,
             )
             from app.orchestration.strategy_certification import RolloutController
 
@@ -1778,103 +1925,153 @@ class GoalService:
                     "latency": profile.effective_limits.duration_seconds,
                 },
             )
-            profile_data = {
-                "profile_object": profile,
-                "runtime_profile": profile.to_dict(),
-                "decision_trace": trace.to_dict(),
-                "profile_id": profile.profile_id,
-                "assembly_latency_ms": profile.assembly_latency_ms,
-                "strategy_runtime_path": rollout.path,
-                "strategy_runtime_shadow_comparison": rollout.shadow_comparison,
-            }
-            # Persist to goal.execution_context in Postgres
-            if db_session is not None:
-                try:
-                    import json
-
-                    from sqlalchemy import text
-
-                    await db_session.execute(
-                        text("""
-                            UPDATE goals
-                            SET execution_context = COALESCE(execution_context, '{}'::jsonb)
-                                || CAST(:profile_data AS jsonb),
-                                runtime_profile_id = :profile_id,
-                                runtime_profile_version = :profile_version,
-                                strategy_registry_revision = :registry_revision,
-                                runtime_profile_snapshot = CAST(:profile_snapshot AS jsonb),
-                                rejected_strategies = CAST(:rejected_strategies AS jsonb),
-                                patterns_used = CAST(:patterns_used AS jsonb),
-                                rag_strategy_used = :rag_strategy
-                            WHERE id = :goal_id AND tenant_id = :tenant_id
-                        """),
-                        {
-                            "profile_data": json.dumps(profile_data),
-                            "profile_id": profile.profile_id,
-                            "profile_version": profile.profile_version,
-                            "registry_revision": profile.registry_revision,
-                            "profile_snapshot": json.dumps(profile.to_dict()),
-                            "rejected_strategies": json.dumps(
-                                [
-                                    {
-                                        "strategy_id": item.strategy_id,
-                                        "reason_code": item.reason_code,
-                                    }
-                                    for item in profile.rejected_alternatives
-                                ]
-                            ),
-                            "patterns_used": json.dumps(
-                                [
-                                    profile.primary_strategy.strategy_id,
-                                    *(item.strategy_id for item in profile.auxiliary_strategies),
-                                ]
-                            ),
-                            "rag_strategy": profile.rag_strategy.strategy,
-                            "goal_id": goal_id,
-                            "tenant_id": tenant_ctx.tenant_id,
-                        },
-                    )
-                except Exception as db_exc:
-                    from app.observability.logging import get_logger
-
-                    get_logger(__name__).warning(
-                        "runtime_profile_persist_failed",
-                        error=str(db_exc),
-                        goal_id=goal_id,
-                    )
-            if rollout.path == "v2":
-                profile_data["profile_object"] = profile
-            return profile_data
         except Exception as exc:
-            from app.observability.logging import get_logger
+            from app.orchestration.runtime_profile_builder import InvalidStrategyOverrideError
 
-            get_logger(__name__).warning(
-                "runtime_profile_build_failed", error=str(exc), goal_id=goal_id
+            reason = (
+                "invalid_strategy_override"
+                if isinstance(exc, InvalidStrategyOverrideError)
+                else "profile_build_failed"
             )
-            return {}
+            _svc_logger.warning(
+                "runtime_profile_build_failed_legacy_fallback",
+                goal_id=goal_id,
+                reason=reason,
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
+            fallback: dict[str, Any] = {
+                "reason": reason,
+                "error_type": type(exc).__name__,
+                "detail": str(exc)[:300],
+                "fallback": "legacy",
+            }
+            if requested_primary:
+                fallback["requested_primary"] = str(requested_primary)
+            return {
+                "profile_object": None,
+                "context": {
+                    "runtime_profile_fallback": fallback,
+                    "strategy_runtime_path": "legacy",
+                },
+                "columns": None,
+            }
 
-    async def _check_readiness(self, runtime_profile: Any) -> tuple[bool, str]:
-        """Check the exact runtime profile selected for this goal.
+        # Every value below is plain JSON (the dataclass profile goes through to_dict()),
+        # so execution_context and the snapshot columns can be persisted as-is.
+        snapshot = profile.to_dict()
+        context: dict[str, Any] = {
+            "runtime_profile": snapshot,
+            "decision_trace": trace.to_dict(),
+            "profile_id": profile.profile_id,
+            "assembly_latency_ms": profile.assembly_latency_ms,
+            "strategy_runtime_path": rollout.path,
+            "strategy_runtime_shadow_comparison": rollout.shadow_comparison,
+        }
+        if rollout.path != "v2" and requested_primary:
+            # An explicit strategy request only runs on the v2 runtime; say so on the goal.
+            context["runtime_profile_fallback"] = {
+                "reason": (
+                    "strategy_runtime_v2_kill_switch"
+                    if rollout.path == "rejected"
+                    else "strategy_runtime_v2_not_enabled"
+                ),
+                "requested_primary": str(requested_primary),
+                "fallback": "legacy",
+            }
+        columns = {
+            "runtime_profile_id": profile.profile_id,
+            "runtime_profile_version": profile.profile_version,
+            "strategy_registry_revision": profile.registry_revision,
+            "runtime_profile_snapshot": snapshot,
+            "rejected_strategies": [
+                {"strategy_id": item.strategy_id, "reason_code": item.reason_code}
+                for item in profile.rejected_alternatives
+            ],
+            "patterns_used": [
+                profile.primary_strategy.strategy_id,
+                *(item.strategy_id for item in profile.auxiliary_strategies),
+            ],
+            "rag_strategy_used": profile.rag_strategy.strategy,
+        }
+        return {
+            # The rollout decides: only an admitted v2 tenant executes the profile.
+            "profile_object": profile if rollout.path == "v2" else None,
+            "context": context,
+            "columns": columns,
+        }
 
-        A readiness implementation error is itself a blocking readiness failure. This keeps
-        production from executing a strategy whose dependencies were not verified.
+    def _classifier_provider(self) -> Any:
+        """The platform LLM for tier-2 goal classification, when enabled (else None)."""
+        try:
+            from app.core.config import get_settings
+
+            if not get_settings().orchestration_llm_classifier_enabled:
+                return None
+        except Exception:
+            return None
+        app_state: Any = self._app_state
+        app_state = getattr(app_state, "state", app_state)
+        provider = getattr(app_state, "_app_provider", None) if app_state is not None else None
+        if provider is None or isinstance(provider, FakeProvider):
+            return None
+        return provider
+
+    async def _dependency_health(self, tenant_ctx: TenantContext | None) -> Any:
+        """Live dependency health for the ReadinessGate (see runtime_readiness.health_probe)."""
+        from app.runtime_readiness.dependency_health import DepStatus
+        from app.runtime_readiness.health_probe import collect_dependency_health
+
+        health = await collect_dependency_health(self._app_state)
+        if health.llm_provider is not DepStatus.HEALTHY and tenant_ctx is not None:
+            # No platform provider — a tenant BYOK config still makes the goal runnable.
+            try:
+                tenant_cfg = await self._resolve_tenant_llm_config(tenant_ctx)
+            except Exception:
+                tenant_cfg = None
+            if tenant_cfg:
+                health.llm_provider = DepStatus.HEALTHY
+        return health
+
+    async def _check_readiness(
+        self,
+        runtime_profile: Any = None,
+        *,
+        tenant_ctx: TenantContext | None = None,
+    ) -> tuple[bool, str]:
+        """Gate a goal on the platform's real dependency health (READINESS_GATE, default on).
+
+        Blocks when a required dependency (Postgres, the LLM provider) is configured but
+        down. A readiness implementation error is itself a blocking readiness failure, so
+        production never executes a goal whose dependencies were not verified.
         """
         from app.core.runtime_flags import get_runtime_flags
 
         if not getattr(get_runtime_flags(), "readiness_gate", False):
             return True, ""
         try:
-            from app.runtime_readiness.dependency_health import DependencyHealth
             from app.runtime_readiness.readiness_gate import ReadinessGate
 
-            health = DependencyHealth.all_healthy()
-            gate = ReadinessGate(health)
-            result = gate.check(runtime_profile)
+            result = ReadinessGate(await self._dependency_health(tenant_ctx)).check(
+                runtime_profile
+            )
             if not result.ready:
-                return False, f"Platform not ready: {result.blocking_deps}"
+                return False, (
+                    "Platform not ready: required dependency unavailable: "
+                    + ", ".join(result.blocking_deps)
+                )
             return True, ""
         except Exception as exc:
             return False, f"Readiness check failed: {type(exc).__name__}"
+
+    async def _readiness_preflight(self, tenant_ctx: TenantContext) -> None:
+        """Refuse a goal up-front (503) instead of accepting one that cannot run."""
+        ready, reason = await self._check_readiness(None, tenant_ctx=tenant_ctx)
+        if not ready:
+            _svc_logger.warning(
+                "goal_blocked_by_readiness_gate", tenant_id=tenant_ctx.tenant_id, reason=reason
+            )
+            raise ServiceUnavailableError(reason, code="PLATFORM_NOT_READY")
 
     # ── private helpers ───────────────────────────────────────────────────────
 
@@ -2635,6 +2832,41 @@ class GoalService:
         )
         # Track per-tenant durations so get_metrics can compute avg_latency_ms.
         self._goal_durations.setdefault(record.tenant_id, []).append(duration_seconds)
+        self._record_strategy_evidence(record, status)
+
+    def _record_strategy_evidence(self, record: GoalRecord, status: str) -> None:
+        """Append certification evidence for the strategies this goal actually ran."""
+        if record.dry_run or status not in ("completed", "failed"):
+            return
+        execution = record.execution_context.get("strategy_execution")
+        if not isinstance(execution, dict):
+            return
+        patterns = [str(item) for item in execution.get("patterns") or ()]
+        if not patterns:
+            return
+        from app.orchestration.strategy_evidence import StrategyEvidenceRecorder
+
+        state: Any = self._app_state
+        state = getattr(state, "state", state)
+        recorder = getattr(state, "strategy_evidence", None) if state is not None else None
+        if not isinstance(recorder, StrategyEvidenceRecorder):
+            return
+        runtime_path = str(record.execution_context.get("strategy_runtime_path") or "legacy")
+
+        async def _record() -> None:
+            await recorder.record_run(
+                tenant_id=record.tenant_id,
+                goal_id=record.goal_id,
+                strategy_ids=patterns,
+                succeeded=status == "completed",
+                runtime_path=runtime_path,
+            )
+
+        coro = _record()
+        try:
+            self._track_db_task(coro)
+        except RuntimeError:  # no running loop
+            coro.close()
 
     async def _run_agent_loop_persistent(
         self,
@@ -2748,6 +2980,7 @@ class GoalService:
                 **_persist_profile_kwargs,
                 **_tenant_llm_kwargs(_persist_llm_config),
             )
+            self._persist_strategy_execution(goal_id, tenant_ctx.tenant_id, _persist_record)
             _persist_collection_ids: list[str] = []
             if _persist_record is not None and _persist_record.agent_id:
                 _persist_agent_store = self._get_agent_store()
@@ -2976,6 +3209,7 @@ class GoalService:
                     tenant_ctx=tenant_ctx,
                 )
                 return
+            self._persist_strategy_execution(goal_id, tenant_ctx.tenant_id, record)
             loop._pause_gate = self._make_pause_gate(goal_id, tenant_ctx)
             # Set agent knowledge collection IDs for graph RAG
             _agent_collection_ids: list[str] = []
@@ -3510,6 +3744,11 @@ class GoalService:
             # skipped ("Step skipped: budget exceeded.") mid-run.
             await self._check_budget_preflight(tenant_ctx)
 
+            # Readiness pre-flight (READINESS_GATE): a goal whose required dependencies
+            # are down is refused before any slot, record or queue entry is taken.
+            if not dry_run:
+                await self._readiness_preflight(tenant_ctx)
+
             # ── Goal-level deduplication ────────────────────────────────────────
             # If an identical goal is already in-flight for this tenant, return
             # the existing goal_id rather than spawning a duplicate Celery task.
@@ -3736,28 +3975,20 @@ class GoalService:
             except Exception:
                 pass
 
-            # Dynamic orchestration: build runtime profile and embed in execution_context
-            try:
-                _profile_data = await self._build_runtime_profile(
-                    goal,
-                    goal_id=goal_id,
-                    tenant_ctx=tenant_ctx,
-                    agent_config=record.execution_context.get("strategy_runtime"),
-                )
-                if _profile_data:
-                    record.runtime_profile = _profile_data.get("profile_object")
-                    record.execution_context["runtime_profile"] = _profile_data.get(
-                        "runtime_profile", {}
-                    )
-                    record.execution_context["decision_trace"] = _profile_data.get(
-                        "decision_trace", {}
-                    )
-                    record.execution_context["profile_id"] = _profile_data.get("profile_id", "")
-                    record.execution_context["assembly_latency_ms"] = _profile_data.get(
-                        "assembly_latency_ms", 0.0
-                    )
-            except Exception:
-                pass
+            # Dynamic orchestration: build the runtime profile, record it on the goal, and
+            # let the v2 rollout decide whether it drives execution. The profile columns
+            # are written with the goal row below (same RLS'd transaction).
+            _profile_columns: dict[str, Any] | None = None
+            _profile_data = await self._build_runtime_profile(
+                goal,
+                goal_id=goal_id,
+                tenant_ctx=tenant_ctx,
+                agent_config=record.execution_context.get("strategy_runtime"),
+            )
+            if _profile_data:
+                record.runtime_profile = _profile_data.get("profile_object")
+                record.execution_context.update(_profile_data.get("context") or {})
+                _profile_columns = _profile_data.get("columns")
 
             # Always-on pattern selection record: which agent pattern this goal was
             # routed to (+ why), in plain language — independent of the heavy
@@ -3846,6 +4077,7 @@ class GoalService:
                         workflow_mode=workflow_mode,
                         execution_context=record.execution_context,
                         raise_on_error=True,
+                        **_profile_column_kwargs(_profile_columns),
                     )
                 except Exception:
                     # The concurrent-goal counter was already incremented; since no
@@ -3875,6 +4107,7 @@ class GoalService:
                         agent_id=agent_id,
                         workflow_mode=workflow_mode,
                         execution_context=record.execution_context,
+                        **_profile_column_kwargs(_profile_columns),
                     )
                 )
 
@@ -5022,8 +5255,13 @@ class GoalService:
         workflow_mode: str = "single_agent",
         execution_context: dict[str, Any] | None = None,
         raise_on_error: bool = False,
+        runtime_profile_columns: dict[str, Any] | None = None,
     ) -> None:
-        """Persist goal record to PostgreSQL."""
+        """Persist goal record to PostgreSQL.
+
+        ``runtime_profile_columns`` (JSON-safe, from ``_build_runtime_profile``) fill the
+        goals runtime-profile columns in the same RLS'd insert as the row itself.
+        """
         if self._db is None:
             return
         try:
@@ -5045,6 +5283,11 @@ class GoalService:
                     agent_id=agent_id,
                     workflow_mode=workflow_mode,
                     execution_context=execution_context or {},
+                    **{
+                        key: value
+                        for key, value in (runtime_profile_columns or {}).items()
+                        if key in _RUNTIME_PROFILE_COLUMNS
+                    },
                 )
                 session.add(g)
         except Exception as exc:

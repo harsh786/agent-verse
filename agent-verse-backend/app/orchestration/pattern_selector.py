@@ -6,6 +6,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.orchestration.execution_drivers import (
+    NO_EXECUTION_DRIVER,
+    SINGLE_AGENT,
+    has_agent_graph_node,
+)
 from app.orchestration.runtime_profile import (
     AgentPatternConfig,
     Complexity,
@@ -62,6 +67,19 @@ class PatternSelector:
         Returns ``(patterns, reasons)``; ``patterns`` falls back to
         ``["single_agent"]`` when the goal warrants no advanced coordination.
         """
+        patterns, reasons, _ = self.select_multi_agent_with_downgrades(props)
+        return patterns, reasons
+
+    def select_multi_agent_with_downgrades(
+        self, props: GoalProperties
+    ) -> tuple[list[str], dict[str, str], dict[str, str]]:
+        """``select_multi_agent`` plus the patterns it had to drop, with a reason code.
+
+        A pattern is only selected when the registry has it available AND the AgentGraph
+        kernel (which consumes this decision) has a node for it. One the goal calls for
+        but nothing can run — e.g. ``consensus`` — is returned as a downgrade instead of
+        being listed as if it ran.
+        """
         from app.agent.multi_agent_selector import select_multi_agent_patterns
 
         selection = select_multi_agent_patterns(
@@ -71,19 +89,29 @@ class PatternSelector:
             risk=props.risk.value,
         )
         reasons = dict(selection.reasons)
-        patterns: list[str] = []
+        downgraded: dict[str, str] = {}
+        candidates: list[str] = []
         # Expert goals decompose into parallel sub-goals first (registry-gated).
-        if props.complexity == Complexity.EXPERT and self._registry.is_available("goal_tree"):
-            patterns.append("goal_tree")
+        if props.complexity == Complexity.EXPERT:
+            candidates.append("goal_tree")
             reasons["goal_tree"] = "expert complexity → parallel sub-goals"
-        for pattern_id in ("supervisor", "debate", "consensus"):
-            if pattern_id in selection.patterns and self._registry.is_available(pattern_id):
-                patterns.append(pattern_id)
-        patterns = list(dict.fromkeys(patterns))
+        candidates.extend(
+            p for p in ("supervisor", "debate", "consensus") if p in selection.patterns
+        )
+        patterns: list[str] = []
+        for pattern_id in dict.fromkeys(candidates):
+            if not self._registry.is_available(pattern_id):
+                reasons.pop(pattern_id, None)
+                continue
+            if not has_agent_graph_node(pattern_id):
+                downgraded[pattern_id] = NO_EXECUTION_DRIVER
+                reasons.pop(pattern_id, None)
+                continue
+            patterns.append(pattern_id)
         if not patterns:
-            patterns = ["single_agent"]
-            reasons.setdefault("single_agent", "one agent handles the whole goal")
-        return patterns, reasons
+            patterns = [SINGLE_AGENT]
+            reasons.setdefault(SINGLE_AGENT, "one agent handles the whole goal")
+        return patterns, reasons, downgraded
 
     def select_agent_patterns(self, props: GoalProperties) -> AgentPatternConfig:
         reasoning: list[str] = ["react"]
@@ -94,7 +122,9 @@ class PatternSelector:
         autonomy = "bounded-autonomous"
         # ONE selector owns the multi-agent dimension too (no hardcoded topology):
         # characteristic-driven + registry-gated, shared with the AgentGraph seam.
-        multi_agent, multi_agent_reasons = self.select_multi_agent(props)
+        multi_agent, multi_agent_reasons, downgraded = self.select_multi_agent_with_downgrades(
+            props
+        )
         reasons.update(multi_agent_reasons)
 
         # CRITICAL: High/critical risk always adds HITL + rollback
@@ -166,6 +196,7 @@ class PatternSelector:
             max_persistence_attempts=3,
             autonomy_mode=autonomy,
             selection_reasons=reasons,
+            downgraded=downgraded,
         )
 
     def select_rag_strategy(self, props: GoalProperties) -> RAGStrategyConfig:

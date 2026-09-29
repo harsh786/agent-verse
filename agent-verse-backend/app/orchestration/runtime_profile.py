@@ -91,6 +91,10 @@ class AgentPatternConfig:
     max_persistence_attempts: int = 3
     autonomy_mode: str = "bounded-autonomous"
     selection_reasons: dict[str, str] = field(default_factory=dict)
+    # Patterns the goal's characteristics called for but that have no execution driver:
+    # strategy id -> reason code. Recorded (and surfaced as rejected alternatives) instead
+    # of being listed as if they ran.
+    downgraded: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
