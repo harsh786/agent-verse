@@ -5,7 +5,7 @@
 query that reached them saw every tenant's Stripe accounts and purchases.
 
 Revision ID: a9c4e2f7b1d3
-Revises: f1a2b3c4d5e7
+Revises: a9d3e5f7b1c2
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "a9c4e2f7b1d3"
-down_revision = "f1a2b3c4d5e7"
+down_revision = "a9d3e5f7b1c2"
 branch_labels = None
 depends_on = None
 
