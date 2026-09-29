@@ -1,0 +1,311 @@
+{
+ "group": "g05-knowledge",
+ "code": "287cb90f7",
+ "features": [
+  {
+   "area": "knowledge",
+   "feature": "Knowledge collections + direct (synchronous) text/file ingestion API",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Upload cap (50MiB, 413) and fail-closed multi-format extraction still hold; 41 tests pass. No wave-7 change touched the delete path or the synchronous parse/embed in /ingest/file; Excel truncation is now marked in the text but not in the API response.",
+   "verified_fixed": [
+    "XLSX silent truncation at 5,000 rows/20 sheets -> caps raised to 100,000 rows/200 sheets and every truncation is marked in the extracted text (2d6883bc1; app/ingestion/parsers/excel_parser.py:25-26,67-69,84-86). Partially: /ingest/file (app/ingestion/document_text.py:145 calls parse(), not parse_with_report) returns 201 with no truncation flag in the JSON."
+   ],
+   "still_open": [
+    "collection/document deletes do not purge knowledge_nodes/edges (no FK to collections, app/db/models/knowledge_graph.py:15-53) or semantic-cache entries -> app/rag/store.py:561-592 delete_collection_async, 1465 delete_document_async; routes app/api/knowledge.py:556, 2705",
+    "_extract_upload_segments (pypdf/openpyxl/docx parse of up to 50MiB, now up to 100k rows x 200 sheets) runs synchronously on the event loop -> app/api/knowledge.py:838 (no to_thread)",
+    "all chunks of an upload embedded in one call with no batching, quota or budget charge -> app/api/knowledge.py:871 -> app/providers/base.py:172 (single EmbedRequest(texts=all))",
+    "collection delete is one cascading DELETE of all chunk rows in one transaction -> app/rag/store.py:580-586",
+    "no test for delete purging KG/semantic cache or for upload event-loop offload"
+   ],
+   "new_defects": [
+    "app/api/knowledge.py:2696-2708 - DELETE /collections/{id}/documents/{doc} has no legal-hold check, while collection delete fails closed on legal hold (app/api/knowledge.py:533-553); a held document can be deleted chunk by chunk [severity medium]",
+    "app/ingestion/document_text.py:145-149 via app/ingestion/parsers/excel_parser.py:38-40 - openpyxl missing returns '' and the upload is refused 422 'not a readable workbook' instead of the documented 503 ParserUnavailableError [severity low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/ingestion/test_document_text_fail_closed.py tests/api/test_knowledge_api.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 41 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Repository (git clone) ingestion + durable knowledge ingestion jobs",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "SSRF/limit guards, lease+heartbeat and stale-job reconciliation are intact (35 tests pass); f3fececb2 keeps max_files bounded (400 below 1, clamped to repo_ingest_max_files<=1000). Execution is still an in-process asyncio task on the API replica and repository DLQ rows still cannot be replayed.",
+   "verified_fixed": [],
+   "still_open": [
+    "repository DLQ rows (kind='repository') have no consumer; retry job marks them permanent_failure -> app/api/knowledge.py:1111-1121 (raw_doc kind=repository), app/ingestion/scheduler.py:376-382",
+    "repo ingestion runs as asyncio.create_task on the API replica, not a Celery task; a pod restart loses it (only lease reconciliation marks it stale; shutdown just cancels app/main.py:2483) -> app/api/knowledge.py:1000-1025",
+    "no test covers a replica restart mid-ingest or DLQ replay of a repository job"
+   ],
+   "new_defects": [
+    "app/api/knowledge.py:1000-1025 - no per-tenant or per-replica cap on concurrent repository clones: each POST /ingest/repo spawns another clone of up to repo_ingest_max_repository_bytes (100MiB) into the API pod's temp dir, so a burst of requests can exhaust the API replica's disk/CPU (no semaphore/bulkhead in _ingest_repo_background) [severity medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/ingestion/test_repository_security.py tests/api/test_repo_ingest_dlq_wiring.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 35 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Legacy per-source ingest endpoints (PDF, DOCX, GitHub, Confluence, Jira, Slack, OpenAPI, URL, RPA-URL, Email, Notion, GDrive)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Wave 7D bounded the github/confluence/jira/slack max_* limits (Field(le=...) plus ingestor clamps) and made gdrive-folder honest (200/207/502 with per-file failures); 126 tests pass. These routes still declare 202 but fetch, screen and embed synchronously in the request, and the Notion-database and Drive-folder paths have no count bound at all.",
+   "verified_fixed": [
+    "max_files/max_pages/max_issues/max_messages unbounded -> Field(ge=1, le=MAX_*) on the request models (app/api/knowledge.py:130-165) plus clamp_limit in each ingestor (4af820248; app/knowledge/ingestors/limits.py:9-19); tests/knowledge/test_legacy_connector_limits.py 7 passed",
+    "gdrive-folder returned 'ingested' when every file failed -> 200 ingested / 207 partial / 502 failed with per-file failed[] (6a21f532d; app/api/knowledge.py:3062-3083); tests/api/test_knowledge_gdrive_folder_honest.py passes"
+   ],
+   "still_open": [
+    "github/confluence/jira/slack declare status_code=202 but fetch+screen+embed synchronously in the request (up to 5,000 pages / 10,000 messages) -> app/api/knowledge.py:1816-1934",
+    "gdrive connector list_files/download_file are synchronous Google API calls on the event loop and the service-account key is written to a local temp file -> app/api/knowledge.py:3024-3043; app/ingestion/connectors/gdrive_connector.py:90-136"
+   ],
+   "new_defects": [
+    "app/api/knowledge.py:2947-2962 + app/ingestion/connectors/notion_connector.py:71-79 - /ingest/notion with database_id pages through the whole database (while has_more) and ingests every page synchronously with no max_pages bound, unlike the bounded legacy connectors [severity medium]",
+    "app/api/knowledge.py:3035-3060 + app/ingestion/connectors/gdrive_connector.py:100-113 - /ingest/gdrive-folder lists and ingests every file in the folder with no count or byte bound, and download_file buffers each file fully in memory [severity medium]",
+    "app/ingestion/connectors/gdrive_connector.py:126-127 via app/api/knowledge.py:3044-3046 - unsupported mime types return '' and are reported as skipped reason 'empty', not 'unsupported' [severity low]",
+    "app/api/knowledge.py:2977-2978, 3086-3087 - notion/gdrive catch-all returns HTTP 500 with detail=str(exc), leaking raw upstream/driver exception text to the client [severity low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/knowledge/test_ingestors_coverage.py tests/api/test_knowledge_legacy_ingest_embedder.py tests/api/test_knowledge_rpa.py tests/api/test_knowledge_gdrive_folder_honest.py tests/api/test_knowledge_coverage_boost.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 119 passed",
+    "uv run pytest tests/knowledge/test_legacy_connector_limits.py -q --no-cov -p no:cacheprovider -> 7 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Collection-scoped orchestrated ingestion + ingestion-time indexing strategies + collection sync",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 routes every RAPTOR/agentic-chunking batch through complete_decision (tenant preflight + charge, breaker, 60s timeout) and a refused charge returns 429; the resolver returns the raw provider, so there is no double charge. Only two strategies can be requested, the advanced chunkers still alias SemanticChunker, and the stale integration test still fails (45 passed / 1 failed).",
+   "verified_fixed": [
+    "indexing LLM unmetered / no timeout / no breaker -> _complete_json_batch calls complete_decision(role=rag_indexing_<strategy>, tenant_ctx, timeout=generation_timeout_seconds()) (340f40776; app/rag/indexing.py:441-470; app/providers/guarded_completion.py:225-258); DecisionBudgetExceededError -> 429 (app/api/knowledge.py:2536-2543)"
+   ],
+   "still_open": [
+    "IndexingStrategy = Literal['raptor','agentic_chunking'] -> app/api/knowledge.py:168",
+    "pipeline parent_child/sentence_window/fixed/agentic/agentic_chunking map to SemanticChunker -> app/ingestion/chunkers/__init__.py:33-38",
+    "stale integration test: tests/rag/test_ingestion_time_strategies.py:330 still expects 'incomplete batch' but app/rag/indexing.py:395 raises '... returned 0 results for 1 inputs' -> test FAILS on main"
+   ],
+   "new_defects": [
+    "app/api/knowledge.py:2530-2553 - a circuit-open or timeout from the now-guarded indexing LLM call (complete_with_failover) is neither IndexingProviderError nor DecisionBudgetExceededError, so it falls to the catch-all and is reported as 503 'Knowledge persistence is unavailable' (misdiagnosed upstream model outage) [severity low]"
+   ],
+   "tests_run": [
+    "DOCKER_HOST=... TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/rag/test_ingestion_time_strategies.py tests/ingestion/test_ingestion_orchestrator.py tests/ingestion/test_orchestrator_embedding_routing.py tests/api/test_knowledge_ingest_pipeline_gate.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 45 passed, 1 failed (test_pipeline_rejects_incomplete_individual_completion_batch, stale regex)"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Ingestion framework: Sources CRUD/sync, 13-stage IngestionPipeline, job tracker, DLQ, Celery scheduler",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "2d2a0c461 makes the RAG_INGEST stage fail closed: an engine exception, tenant rules that cannot be loaded, or a missing engine raise IngestionScreeningUnavailableError, and direct routes answer 503 (75 tests pass). But the Celery worker never binds the guardrail rule repository, so scheduled/DLQ syncs are screened only against in-process default rules, never the tenant's persisted GDPR/PCI rules. kg_hook is still missing in the worker and there are still no history/DLQ-retry routes.",
+   "verified_fixed": [
+    "RAG_INGEST guardrail evaluation exception fails open -> now raises IngestionScreeningUnavailableError (engine error, GuardrailRulesUnavailableError, engine absent) (2d2a0c461; app/ingestion/pipeline.py:529-543); tests/ingestion/test_rag_ingest_guardrail_fail_closed.py passes"
+   ],
+   "still_open": [
+    "worker pipeline built without kg_hook, so scheduled/DLQ syncs never populate the KG -> app/ingestion/scheduler.py:104-109",
+    "no sync history, cancel, reindex, validate or DLQ-retry routes; module docstring still advertises /sync/cancel, /reindex, /validate (38 endpoints) -> app/api/ingestion.py:1-18 vs routes 132-373",
+    "manual sync runs via FastAPI BackgroundTasks in the API process, not a durable Celery task -> app/api/ingestion.py:283,302",
+    "RegexPIIAnalyzer.redact rebuilds the string per finding (O(N*F)) and _find overlap-checks all prior findings (O(F^2)) -> app/ingestion/pii.py:200-222",
+    "PHONE rule redacts any 10-15 digit run starting 6-9 (order/part numbers) -> app/ingestion/pii.py:172-180"
+   ],
+   "new_defects": [
+    "app/ingestion/scheduler.py:95-113 (+ no bind_repository anywhere in app/scaling/) - the Celery worker's module-global guardrails_engine is never bound to PostgresGuardrailRuleRepository (only app/main.py:1233 binds it), so ensure_tenant_loaded is a no-op (app/guardrails_v2/engine.py:378-379) and scheduled/DLQ connector syncs are screened only against in-process default rules; a tenant's persisted RAG_INGEST block rules (GDPR/PCI bundles) never apply to worker-ingested documents (compliance fail-open on the worker path, untested) [severity high]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_ingestion_api.py tests/ingestion/test_pii_identifiers_only.py tests/ingestion/test_rag_ingest_guardrail_fail_closed.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 75 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Ingestion connectors (app/ingestion/connectors: 42 modules, 48 registered source_type keys)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "6418541c2 moves every tenant-URL HTTP connector (confluence, elasticsearch, gitlab, jira, pdf_file, rss, salesforce, sentry, servicenow, sharepoint download, web_crawl, http) onto the pinned source_client/guarded_request, which closes their DNS-rebinding window. a235a0c58 streams Azure blobs under max_doc_size_bytes. 121 tests pass. Driver-level connectors still check the host and then let the driver resolve it again, and DuckDB is still only mock-tested.",
+   "verified_fixed": [
+    "Azure Blob readall() with no size check -> skips blobs whose declared size exceeds max_doc_size_bytes and streams at most cap+1 bytes via _download_capped (a235a0c58; app/ingestion/connectors/azure_blob_connector.py:195-213)",
+    "HTTP connectors validate-then-connect with plain httpx -> source_client() = public_async_client pinned to checked IPs, redirects re-checked hop by hop with credentials dropped off-host (6418541c2; app/ingestion/connector_egress.py:85-95, 230-279); tests/ingestion/test_pinned_connections.py passes"
+   ],
+   "still_open": [
+    "driver-level connectors (mysql/clickhouse/imap/mqtt via check_source_host; postgresql/mongodb/neo4j via check_source_dsn; kafka assert_source_host; influxdb/s3/azure SDK via assert_source_url) check the host and then the driver/SDK resolves it again (validate-then-connect DNS-rebinding window) -> app/ingestion/connector_egress.py:126-153, 281-295; e.g. azure_blob_connector.py:166-183",
+    "DuckDB confinement verified only against a mocked duckdb module (duckdb still not installed: ModuleNotFoundError) -> app/ingestion/connectors/duckdb_connector.py",
+    "two parallel ingestor stacks remain (app/knowledge/ingestors/* used by app/api/knowledge.py:1816-1934 vs app/ingestion/connectors/*)",
+    "Azure get_delta returns silently (zero docs, sync reported successful) when azure-storage-blob is missing -> app/ingestion/connectors/azure_blob_connector.py:167-171",
+    "Azure SDK list_blobs/download calls are still synchronous inside the async generator (event-loop blocking) -> app/ingestion/connectors/azure_blob_connector.py:185-208"
+   ],
+   "new_defects": [
+    "app/ingestion/connectors/azure_blob_connector.py:199-213,225-226 - oversized blobs and per-blob download errors are only logged (info/warning) and skipped: the sync completes as successful with no DLQ row or skipped count, and because the cursor advances past them (new_cursor = blob_ts of later blobs) a failed blob is never retried [severity low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/ingestion/test_azure_blob_egress.py tests/ingestion/test_connector_ssrf_egress_round3.py tests/ingestion/test_connector_feature_flags.py tests/ingestion/test_pinned_connections.py tests/ingestion/test_low_coverage_connectors_parsers.py tests/rag/test_hosted_reranker_pinned.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 121 passed",
+    "duckdb real-library confinement test -> BLOCKED: duckdb not installed in the uv env"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Parsers and chunkers",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "2d6883bc1 raises the Excel caps to 100k rows / 200 sheets, marks every truncation in the text and records it in connector ingestion metadata; 85 tests pass. A direct probe shows the connector pipeline's Parquet (and, by the same code, Avro) path indexes raw binary container bytes. The notebook-to-TextParser mapping, the SemanticChunker aliases, the binary quality score and the dead modules are unchanged.",
+   "verified_fixed": [
+    "ExcelParser silent truncation at 5,000 rows/20 sheets -> caps 100,000/200, '[truncated ...]' markers, parse_with_report metadata (excel_truncated, sheets total/parsed) merged into pipeline result metadata (2d6883bc1; app/ingestion/parsers/excel_parser.py:25-26,67-99; app/ingestion/parser_registry.py:233-240); tests/ingestion/test_excel_truncation_reported.py passes"
+   ],
+   "still_open": [
+    "NOTEBOOK mapped to TextParser in the pipeline registry (raw .ipynb JSON indexed on the connector path) -> app/ingestion/parser_registry.py:165",
+    "dom/paragraph/fixed/parent_child/sentence_window/agentic/agentic_chunking -> SemanticChunker -> app/ingestion/chunkers/__init__.py:33-38",
+    "_quality_score binary 1.0/0.1 and 1.0 on exception -> app/ingestion/pipeline.py:589-599",
+    "late_chunker, contextual_enricher, context_manager still have zero importers in app/",
+    "JSONL lines that fail to parse are skipped with no count or warning -> app/ingestion/parsers/json_parser.py:64-67"
+   ],
+   "new_defects": [
+    "app/ingestion/parser_registry.py:184-190 + 110-124 - on the connector pipeline, PARQUET/AVRO bytes are decoded as UTF-8 with errors='replace', then the bridge re-encodes them as latin-1, which raises on U+FFFD, and the 'ultimate fallback' returns the raw decoded bytes. Probe: a real pyarrow Parquet file came back from parse_bytes_async as 515 chars starting 'PAR1\\x15\\x04...' with empty metadata, so binary garbage is chunked, embedded and reported as indexed (fake success) [severity medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/ingestion/test_low_coverage_parsers_extra.py tests/ingestion/test_chunkers.py tests/ingestion/test_excel_truncation_reported.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 85 passed",
+    "probe: ParserRegistry().parse_bytes_async(<pyarrow parquet bytes>, ContentType.PARQUET) -> raw 'PAR1...' binary text, meta {}"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Retrieval gateway + 20 canonical RAG strategies (search, federated search, RAG chat, /rag/query)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 routes every gateway strategy LLM call (_BudgetedProvider) through complete_decision(charge=False) with a 60s timeout and a circuit breaker; 278 targeted tests pass. But /knowledge/chat synthesizes and verifies citations with no budget context, so those LLM calls are unmetered and have no timeout. Federated fan-out is still uncapped. ColBERT cannot run in this env (ragatouille not installed). End-to-end strategy sweep: PENDING helper probe.",
+   "verified_fixed": [
+    "_BudgetedProvider charged the budget but had no timeout/breaker -> complete_decision(role='rag_strategy', charge=False, timeout_seconds=generation_timeout_seconds()) (340f40776; app/rag/gateway.py:298-316); covers flare/self_rag/speculative/modular/agentic adapters (allowlisted as _RAG in tests/providers/test_no_direct_llm_complete.py:44-54)"
+   ],
+   "still_open": [
+    "federated search passes uncapped collection_ids to the asyncio.gather fan-out (route is POST /knowledge/search/federated) -> app/api/knowledge.py:1950,1976 -> app/knowledge/federated_search.py:153 (/knowledge/chat caps at 10, app/api/knowledge.py:2037)",
+    "engine metadata failure/NULL assumes embedding_dim=1536 in non-strict mode -> app/rag/engine.py:390,394",
+    "app/rag/evaluation.py, app/rag/certification.py still have zero importers in app/",
+    "speculative draft concatenates its whole evidence subset with no context-length bound -> app/rag/agentic/patterns/speculative.py:113-115"
+   ],
+   "new_defects": [
+    "app/api/knowledge.py:2067-2089 - POST /knowledge/chat calls RAGRetriever.synthesize() without budget_context and verify_result() on a freshly built RAGExecutionResult (no _budget_context), so answer synthesis (app/rag_platform/retriever.py:395) and per-claim citation entailment (app/rag_platform/retriever.py:111, one call per atomic claim, 167-182) use the raw tenant provider: not charged to the tenant budget, no timeout, no circuit breaker. /rag/query (retriever.query) is metered; the main KB chat endpoint is not [severity high]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/rag/test_reasoning_retrieval_strategies.py tests/rag/test_grounding_strategies.py tests/rag/test_agentic/test_corrective_guarded.py tests/rag/test_retrieval_gateway.py tests/rag/test_colbert_runtime.py tests/rag/test_gateway_entrypoints.py tests/rag/test_canonical_contracts.py tests/rag/test_registry_complete_rag.py tests/providers/test_no_direct_llm_complete.py tests/providers/test_decision_call_sites.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 278 passed",
+    "tests/e2e_full/test_knowledge_multiformat_real_e2e.py::test_every_rag_strategy_on_real_models -> BLOCKED: real-provider test (-m slow, REAL_PROVIDERS=1 + provider keys), not run under the 'not slow' rule",
+    "uv run python -c 'import ragatouille' -> ModuleNotFoundError (optional extra colbert = ragatouille==0.0.9.post2 not installed)"
+   ],
+   "strategy_sweep": "PENDING"
+  },
+  {
+   "area": "knowledge",
+   "feature": "Rerankers",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The only change in range pins the hosted reranker's HTTP fetch to validated IPs (6418541c2). The 'llm' strategy still aliases the cross-encoder, and a default-path rerank failure still passes through, logged only at debug. sentence-transformers is installed, so cross-encoder reranking is real here; the ColBERT reranker tests skip because ragatouille is not installed. 35 passed, 2 skipped.",
+   "verified_fixed": [
+    "hosted reranker fetch DNS-rebinding window -> pinned client (6418541c2; app/rag_platform/hosted_reranker.py); tests/rag/test_hosted_reranker_pinned.py passes"
+   ],
+   "still_open": [
+    "_llm_rerank_sync just calls _cross_encoder_rerank ('llm' strategy is not LLM reranking) -> app/context/rerank_policy.py:513-515",
+    "default-path rerank failure passes the un-reranked results through, logged at debug only (no metric, no trace flag) -> app/rag/rerank_stage.py:113-115",
+    "without sentence-transformers auto/cross_encoder degrade to TF-IDF, recorded only in metadata (app/context/rerank_policy.py)",
+    "ColBERT late-interaction reranker never exercised: tests/rag/test_real_reranking.py:81,103 skip 'configured ColBERT model is unavailable'"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/rag/test_default_path_rerank.py tests/rag/test_hosted_reranker_pinned.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 8 passed",
+    "uv run pytest tests/rag/test_gateway_rerank_calibration.py tests/rag/test_hosted_reranker.py tests/rag/test_legacy_reranker_resilience.py tests/rag/test_real_reranking.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 27 passed, 2 skipped (ColBERT BLOCKED: ragatouille not installed)"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Embeddings platform (embedder wiring, content-routed model selection, health/drift, re-embedding)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "9cb62bb9c scopes GET /embeddings/usage to the caller's tenant, which removes the cross-tenant disclosure; 174 embedding tests pass. The counters are still in-process and per replica, and they count only POST /embeddings calls, not ingestion or query embeds. re_embed_collection still has no caller and no worker provider, the router still ignores the requested model, and there is still a non-production fake-embedding fallback.",
+   "verified_fixed": [
+    "GET /embeddings/usage returned process-global cross-tenant counters -> per-tenant _tenant_usage/_tenant_errors returned by get_usage_stats(tenant_id=...) (9cb62bb9c; app/embedding/router.py:69-73,146-155,181-186; app/api/embeddings.py:117-122); tests/embedding/test_usage_tenant_scoped.py passes"
+   ],
+   "still_open": [
+    "re_embed_collection has no API/beat caller (only defined at app/scaling/tasks.py:7247) and uses the process-global embedding_router whose _provider is never set in the worker (no set_provider call anywhere in app/) -> app/scaling/tasks.py:7126,7191",
+    "embed_texts_report ignores the requested model (EmbedRequest(texts=texts)) -> app/embedding/router.py:138",
+    "non-production fallback still selects 'fake-embedding' dim 10 -> app/embedding/orchestrator.py:190-197",
+    "/embeddings/usage counters are replica-local and reset on restart; they differ per pod (docstring now admits 'this replica') -> app/embedding/router.py:67-73"
+   ],
+   "new_defects": [
+    "app/embedding/router.py:101,118-155 - usage/error counters are only fed by EmbeddingRouter.embed_texts(_report), whose only callers are POST /embeddings (app/api/embeddings.py:47) and the dead re-embed task; ingestion and query embeds go through app/providers/base.embed_texts and are never counted, so /embeddings/usage under-reports a tenant's real embedding volume (misleading usage data) [severity low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/embedding -q --no-cov -p no:cacheprovider -m 'not slow' -> 174 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Semantic cache, embedding cache, LLM response cache",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No commit in range touched the caches. SemanticCache writes through to pgvector with a TTL and the executor filters out empty/error hits, but nothing consumes 'knowledge.updated', so cached step results served by the agent executor survive ingest, delete, retention and re-embed. The per-replica L1 is never invalidated across pods. 6 tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "no subscriber to 'knowledge.updated' (publisher only: app/ingestion/pipeline.py:824-839, bus wired app/main.py:1984); cached step answers served at app/agent/nodes/executor_mixin.py:3112-3129 and 490 survive ingest/delete/re-embed/retention",
+    "warm path stores response='' placeholder entries (filtered on read by _is_uncacheable_output, but they still occupy the cache and pgvector) -> app/rag/semantic_cache.py:506",
+    "per-tenant in-process L1 LRU is replica-local with no cross-replica invalidation (DELETE /knowledge/cache clears only the serving pod's L1) -> app/rag/semantic_cache.py:98-150; app/api/knowledge.py:761-773",
+    "no test proves a KB change invalidates a cached answer"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/rag/test_semantic_cache.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 6 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Tenant knowledge graph + GraphRAG + ingestion auto-population",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 routes KG entity/relationship LLM extraction through complete_decision, which charges the tenant and applies the breaker and the default decision timeout, for both /knowledge-graph/extract and KGIngestionHook. The SQL-backed KG and its retention cascade still work (67 tests pass). The seed mismatch, the missing delete/worker cascade, /extract ignoring use_llm for relationships, and the global extractor provider race are unchanged.",
+   "verified_fixed": [
+    "KG LLM extraction unmetered/no timeout/no breaker -> complete_decision(role='kg_entity_extraction'|'kg_relationship_extraction', tenant_id=...) (340f40776; app/knowledge_graph/extractor.py:92-104, 161-171)"
+   ],
+   "still_open": [
+    "auto nodes source_id='{doc}:{idx}' never match GraphRAG seeds -> app/knowledge_graph/ingestion_hook.py:221",
+    "collection/document deletes do not cascade to KG (knowledge_nodes has no collection FK, app/db/models/knowledge_graph.py:15-22; app/rag/store.py:561,1465); worker syncs have no kg_hook (app/ingestion/scheduler.py:104-109)",
+    "/extract always calls extract_relationships_llm even when use_llm=false (now charged, but still spends LLM budget the caller opted out of) -> app/api/knowledge_graph.py:66-68",
+    "per-request set_provider() mutates the module-global entity_extractor / shared hook extractor; concurrent requests race on which provider is used -> app/api/knowledge_graph.py:52-54; app/knowledge_graph/ingestion_hook.py:226",
+    "GraphAccessControl role matrix used only by tests (app/knowledge_graph/access_control.py has no importer in app/); stale TODO app/knowledge_graph/ingestion_hook.py:18"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/knowledge_graph tests/api/test_phase5_knowledge_graph.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 67 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "RAFT (retrieval-augmented fine-tuning) lifecycle",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 routes RAFT inference (serving and evaluate_job) through complete_decision with tenant_id=job.tenant_id and a 60s timeout, so it is charged and circuit-broken; the gateway's RAFT adapter does not use _BudgetedProvider, so there is no double charge. Wiring on all three paths, fail-closed serving, the poller and bounded chunk loading still hold (88 tests incl. testcontainers integration pass). Still OpenAI-only, and it has never been exercised against a real fine-tune provider here.",
+   "verified_fixed": [
+    "RAFT inference unmetered/no timeout/no breaker -> complete_decision(role='rag_raft_inference', tenant_id=..., timeout_seconds=generation_timeout_seconds()) (340f40776; app/rag/raft_inference.py:69-91); tenant passed from job (app/rag/raft.py:1104-1109), covering evaluate_job's up to raft_max_eval_examples calls (app/rag/raft.py:925-940)"
+   ],
+   "still_open": [
+    "OpenAI is the only fine-tune/serving provider -> app/rag/raft_inference.py:33 (_SERVING_PROVIDER_TYPES={'openai':'openai'}); app/rag/raft_wiring.py builds only raft_openai_provider",
+    "paid fine-tune submit/deploy/evaluate have no per-route role check; only the unregistered-write fallback (admin/operator) guards them -> app/api/rag_platform.py:279-345; app/auth/scope_enforcement.py:319-331",
+    "no real-provider RAFT run (dataset -> OpenAI fine-tune -> deploy -> serve) exists outside fakes; BLOCKED here (needs a paid OpenAI key)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "DOCKER_HOST=... TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/rag/test_raft_end_to_end.py tests/rag/test_raft_wiring.py tests/rag/test_raft_lifecycle.py tests/scaling/test_raft_poller_task.py tests/rag/test_raft_repository_integration.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 88 passed"
+   ]
+  },
+  {
+   "area": "knowledge",
+   "feature": "Knowledge maintenance and delta re-ingest tasks",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No change in range to app/rag/retention.py. Chunk TTL expiry is still bounded (scan_batch x max_batches), scans on the maintenance role and deletes under RLS on the app role, with a KG cascade; delta re-ingest is honest (5 tests pass). re_embed_collection is still dead code, expiry still does not invalidate the semantic cache, and the chunk expiry sweep ignores legal holds, which the other retention sweeps honour.",
+   "verified_fixed": [],
+   "still_open": [
+    "re_embed_collection has no production caller and no worker provider -> app/scaling/tasks.py:7095-7260 (see Embeddings)",
+    "chunk expiry does not invalidate semantic-cache answers built from expired chunks -> app/rag/retention.py:42-100 (see Semantic cache)"
+   ],
+   "new_defects": [
+    "app/rag/retention.py:62-68 (called from app/scaling/tasks.py:6775-6777) - the knowledge chunk TTL sweep selects every expired chunk fleet-wide with no legal-hold exemption, whereas the other retention sweeps append _TENANT_HOLD_EXEMPT (app/scaling/tasks.py:5635-5643). A tenant under an active tenant-wide legal hold still has its expired knowledge chunks, documents and derived KG nodes/edges deleted [severity medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/knowledge/test_knowledge_chunk_retention.py tests/ingestion/test_delta_reingest_honest.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 5 passed"
+   ]
+  }
+ ]
+}
