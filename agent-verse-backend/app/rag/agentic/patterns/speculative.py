@@ -30,8 +30,8 @@ from app.rag.contracts import (
 )
 from app.rag.engine import RetrievalStrategyExecutionError, first_task_group_exception
 
-_CANDIDATE_SYSTEM = """Generate a concise, direct candidate answer to this question.
-Be specific and factual."""
+_CANDIDATE_SYSTEM = """Answer the question using only the evidence provided.
+Be concise, direct and specific. If the evidence does not contain the answer, say so."""
 
 _VERIFY_SYSTEM = (
     "Given a question, a candidate answer, and supporting context,\n"
@@ -81,25 +81,6 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
         model = context.llm.model
         evidence: list[dict[str, Any]] = []
 
-        async def generate_draft() -> Candidate:
-            response = await provider.complete(
-                CompletionRequest(
-                    messages=[
-                        Message(role="system", content=_CANDIDATE_SYSTEM),
-                        Message(role="user", content=request.query),
-                    ],
-                    model=model,
-                    max_tokens=500,
-                    temperature=0.7,
-                )
-            )
-            text = response.content.strip()
-            if not text:
-                raise RetrievalStrategyExecutionError(
-                    self.strategy.value, "draft generation returned empty content"
-                )
-            return Candidate(text=text)
-
         async def retrieve() -> list[Any]:
             embedding = await _embed_text(context, request.query, self.strategy)
             return await _search_persisted(
@@ -111,16 +92,51 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                 evidence=evidence,
             )
 
+        # Retrieve FIRST, then draft each candidate from a different subset of
+        # the retrieved documents (Speculative RAG: specialist drafts over
+        # evidence subsets, verified against the whole set). Drafts used to be
+        # written with no context at all — from the model's general knowledge —
+        # so no private-knowledge question could ever be "supported" and the
+        # strategy failed for exactly the questions a knowledge base exists for.
+        results = await retrieve()
+        if not results:
+            raise RetrievalStrategyExecutionError(
+                self.strategy.value, "no persisted evidence to draft from"
+            )
+        subset_count = max(1, min(self._candidate_count, len(results)))
+        subsets = [results[i::subset_count] for i in range(subset_count)]
+
+        async def generate_draft(subset: list[Any]) -> Candidate:
+            evidence_text = "\n\n".join(item.content for item in subset)
+            response = await provider.complete(
+                CompletionRequest(
+                    messages=[
+                        Message(role="system", content=_CANDIDATE_SYSTEM),
+                        Message(
+                            role="user",
+                            content=f"Question: {request.query}\nEvidence:\n{evidence_text}",
+                        ),
+                    ],
+                    model=model,
+                    max_tokens=500,
+                    temperature=0.7,
+                )
+            )
+            text = response.content.strip()
+            if not text:
+                raise RetrievalStrategyExecutionError(
+                    self.strategy.value, "draft generation returned empty content"
+                )
+            return Candidate(text=text, context_used=evidence_text)
+
         try:
             async with asyncio.TaskGroup() as task_group:
-                retrieval_task = task_group.create_task(retrieve())
                 draft_tasks = [
-                    task_group.create_task(generate_draft()) for _ in range(self._candidate_count)
+                    task_group.create_task(generate_draft(subset)) for subset in subsets
                 ]
         except BaseExceptionGroup as exc:
             raise first_task_group_exception(exc) from None
 
-        results = retrieval_task.result()
         candidates = [task.result() for task in draft_tasks]
         context_text = "\n\n".join(result.content for result in results)
 
@@ -212,7 +228,7 @@ class SpeculativeRAGRuntimeAdapter(SpeculativeRAGRuntimeContract):
                     detail={
                         "candidate_count": len(verified),
                         "supported_count": len(supported),
-                        "overlapped_retrieval": True,
+                        "drafted_from_evidence_subsets": len(subsets),
                         "verified_claims": verified_claims,
                         "scores": [candidate.score for candidate in verified],
                     },

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -114,14 +113,18 @@ def evidence(chunk_id: str, content: str, score: float = 0.9) -> RetrievalResult
     )
 
 
-async def test_speculative_generation_overlaps_retrieval_and_verifies_claims() -> None:
-    retrieval_started = asyncio.Event()
-    draft_started = asyncio.Event()
+async def test_speculative_drafts_from_retrieved_evidence_and_verifies_claims() -> None:
+    """Drafts are written FROM retrieved evidence subsets, then verified.
+
+    They used to be drafted in parallel with retrieval and without any context
+    (the model's general knowledge), so a private-knowledge question could never
+    produce a supported candidate and the strategy always failed.
+    """
+    draft_prompts: list[str] = []
 
     async def route(request: CompletionRequest) -> str:
         if request.response_schema is None:
-            draft_started.set()
-            await asyncio.wait_for(retrieval_started.wait(), timeout=0.5)
+            draft_prompts.append(str(request.messages[-1].content))
             return "Records are retained for seven years."
         return json.dumps(
             {
@@ -132,12 +135,13 @@ async def test_speculative_generation_overlaps_retrieval_and_verifies_claims() -
         )
 
     async def search(*args: object, **kwargs: object) -> list[RetrievalResult]:
-        retrieval_started.set()
-        await asyncio.wait_for(draft_started.wait(), timeout=0.5)
         kwargs["evidence"].append(
-            {"component": "hybrid", "result_count": 1, "component_scores": {"c1": 0.9}}
+            {"component": "hybrid", "result_count": 2, "component_scores": {"c1": 0.9}}
         )
-        return [evidence("c1", "The retention period is seven years.")]
+        return [
+            evidence("c1", "The retention period is seven years."),
+            evidence("c2", "Archived records move to cold storage after one year."),
+        ]
 
     adapter = SpeculativeRAGRuntimeAdapter(candidate_count=2)
     with patch("app.rag.gateway._search_persisted", side_effect=search):
@@ -149,8 +153,10 @@ async def test_speculative_generation_overlaps_retrieval_and_verifies_claims() -
     verification = next(
         item for item in result.strategy_trace if item.action == "speculative_verification"
     )
-    assert retrieval_started.is_set() and draft_started.is_set()
-    assert verification.detail["overlapped_retrieval"] is True
+    # Two drafts, each grounded in its own subset of the retrieved evidence.
+    assert len(draft_prompts) == 2
+    assert "seven years" in draft_prompts[0] and "cold storage" in draft_prompts[1]
+    assert verification.detail["drafted_from_evidence_subsets"] == 2
     assert verification.detail["verified_claims"] == [
         "Records are retained for seven years."
     ]

@@ -88,8 +88,10 @@ class _MixedCorrectiveProvider:
     def __init__(self) -> None:
         self.grades = iter(
             [
-                '{"relevance": [0.9, 0.2]}',
-                '{"relevance": [0.85, 0.8]}',
+                # 0.7: relevant but not confident, so one passage is not enough
+                # and the strategy retries (0.85+ alone would stop, CRAG "Correct").
+                '{"relevance": [0.7, 0.2]}',
+                '{"relevance": [0.8, 0.8]}',
             ]
         )
 
@@ -1413,3 +1415,54 @@ async def test_web_retrieval_reserves_cost_and_traces_bounded_usage() -> None:
         for trace in result.strategy_trace
         if trace.action == "rag_cost"
     ] == ["embedding", "web_retrieval"]
+
+
+class _ConfidentCorrectiveProvider:
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        return CompletionResponse(content='{"relevance": [0.95, 0.1]}', model=request.model)
+
+
+async def test_corrective_one_confident_passage_is_sufficient_without_retry_or_web() -> None:
+    """A single passage graded clearly relevant answers the question: no query
+    reformulation and no web fallback (it used to need two relevant passages,
+    so every single-fact question retried twice and then hit the web)."""
+    searched: list[str] = []
+
+    async def runner(operation: Callable[[Any], Awaitable[Any]]) -> Any:
+        return await operation(_AuthorizedSession())
+
+    async def persisted_search(_session: object, **kwargs: Any) -> list[RetrievalResult]:
+        searched.append(kwargs["query"])
+        return [
+            RetrievalResult("answer", "22 days of paid annual leave", 0.8, {}, ["vector"]),
+            RetrievalResult("noise", "canteen menu", 0.4, {}, ["vector"]),
+        ]
+
+    adapter = core_strategy_capabilities()[RAGStrategy.CORRECTIVE].adapter
+    with patch("app.rag.engine.hybrid_search", side_effect=persisted_search):
+        result = await adapter.execute(
+            _request(RAGStrategy.CORRECTIVE, top_k=3),
+            _context(
+                RAGStrategy.CORRECTIVE,
+                embedder=_Embedder(),
+                provider=_ConfidentCorrectiveProvider(),
+                runner=runner,
+            ),
+        )
+    assert len(searched) == 1
+    assert [c.chunk_id for c in result.citations] == ["answer"]
+    assert result.strategy_trace[-1].detail["stop_reason"] == "persisted_evidence_sufficient"
+
+
+def test_web_augmented_merges_by_rank_so_kb_evidence_is_not_crowded_out() -> None:
+    """Web results carry synthetic scores near 1.0, KB results RRF scores near
+    0.02: a score sort always ranked every web page above the tenant's own
+    answer. The merge is by rank, knowledge base first."""
+    from app.rag.gateway import _interleave_by_rank
+
+    kb = [RetrievalResult(f"kb{i}", f"kb {i}", 0.02 - i * 0.001, {}, ["vector"]) for i in range(3)]
+    web = [RetrievalResult(f"w{i}", f"web {i}", 1.0 - i * 0.05, {}, ["web"]) for i in range(3)]
+    merged = _interleave_by_rank(kb, web, top_k=4)
+    assert [r.chunk_id for r in merged] == ["kb0", "w0", "kb1", "w1"]
+    dup = RetrievalResult("kb0", "kb 0", 0.9, {}, ["web"])
+    assert [r.chunk_id for r in _interleave_by_rank(kb, [dup], top_k=5)] == ["kb0", "kb1", "kb2"]

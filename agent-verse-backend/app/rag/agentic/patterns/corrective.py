@@ -12,6 +12,8 @@ from app.rag.engine import RetrievalResult, RetrievalStrategyExecutionError
 
 MAX_CORRECTIVE_RETRIES = 2
 CORRECTIVE_RELEVANCE_THRESHOLD = 0.6
+# One passage graded at or above this is sufficient on its own (CRAG "Correct").
+CORRECTIVE_CONFIDENT_THRESHOLD = 0.85
 
 
 async def grade_evidence(

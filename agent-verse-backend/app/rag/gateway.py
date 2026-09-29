@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeGuard, TypeVar
 
@@ -989,10 +990,7 @@ async def execute_core_strategy(
         except WebSearchCapabilityError as exc:
             raise RetrievalStrategyExecutionError(strategy.value, exc.reason) from exc
         evidence.append(web_evidence)
-        results = rag_engine.merge_grounding_results(
-            [persisted, web_results],
-            top_k=request.top_k,
-        )
+        results = _interleave_by_rank(persisted, web_results, top_k=request.top_k)
         result = _canonical_result(request, strategy, results, evidence)
         return _append_trace(
             result,
@@ -1203,6 +1201,7 @@ async def execute_core_strategy(
 
     if strategy is RAGStrategy.CORRECTIVE:
         from app.rag.agentic.patterns.corrective import (
+            CORRECTIVE_CONFIDENT_THRESHOLD,
             CORRECTIVE_RELEVANCE_THRESHOLD,
             MAX_CORRECTIVE_RETRIES,
             grade_evidence,
@@ -1249,7 +1248,11 @@ async def execute_core_strategy(
                 top_k=request.top_k,
             )
             required_relevant = min(2, request.top_k)
-            sufficient = len(retained) >= required_relevant
+            # CRAG's "Correct" action: one passage graded clearly relevant is
+            # enough. Requiring two made every single-fact question reformulate
+            # twice and fall back to the web even with a perfect local answer.
+            confident = any(score >= CORRECTIVE_CONFIDENT_THRESHOLD for score in scores)
+            sufficient = len(retained) >= required_relevant or (confident and bool(retained))
             trace.append(
                 RAGStrategyTrace(
                     strategy=strategy,
@@ -1318,13 +1321,21 @@ async def execute_core_strategy(
                         policy=policy,
                     )
                 except WebSearchCapabilityError as exc:
-                    raise RetrievalStrategyExecutionError(strategy.value, exc.reason) from exc
-                corrective_evidence.append(web_evidence)
-                retained = rag_engine.merge_grounding_results(
-                    [retained, web_results],
-                    top_k=request.top_k,
-                )
-                stop_reason = "web_fallback_empty" if not web_results else "web_fallback_complete"
+                    # The web is a fallback: when it is down, answer from the
+                    # graded knowledge-base evidence already retained (recorded
+                    # in the trace). Only fail when there is nothing to answer from.
+                    if not retained:
+                        raise RetrievalStrategyExecutionError(strategy.value, exc.reason) from exc
+                    stop_reason = f"web_fallback_failed:{exc.reason}"
+                else:
+                    corrective_evidence.append(web_evidence)
+                    retained = rag_engine.merge_grounding_results(
+                        [retained, web_results],
+                        top_k=request.top_k,
+                    )
+                    stop_reason = (
+                        "web_fallback_empty" if not web_results else "web_fallback_complete"
+                    )
         trace.append(
             RAGStrategyTrace(
                 strategy=strategy,
@@ -1338,6 +1349,8 @@ async def execute_core_strategy(
                         if stop_reason == "web_fallback_empty"
                         else "complete"
                         if stop_reason == "web_fallback_complete"
+                        else "failed"
+                        if stop_reason.startswith("web_fallback_failed")
                         else "not_attempted"
                     ),
                 },
@@ -1705,6 +1718,33 @@ async def _maybe_low_confidence_fallback(
         },
     )
     return final, trace
+
+
+def _interleave_by_rank(
+    primary: list[EngineRetrievalResult],
+    secondary: list[EngineRetrievalResult],
+    *,
+    top_k: int,
+) -> list[EngineRetrievalResult]:
+    """Merge two ranked lists by RANK, primary first: p1, s1, p2, s2, ….
+
+    Web results carry synthetic rank scores (1.0, 0.95, …) while knowledge-base
+    results carry RRF scores (~0.02); sorting the union by score always put the
+    web first and pushed the tenant's own evidence out of top_k, even for
+    questions only the knowledge base can answer. Scores are not comparable
+    across the two sources, ranks are.
+    """
+    merged: list[EngineRetrievalResult] = []
+    seen: set[str] = set()
+    for pair in zip_longest(primary, secondary):
+        for result in pair:
+            if result is None or result.chunk_id in seen:
+                continue
+            seen.add(result.chunk_id)
+            merged.append(result)
+            if len(merged) >= top_k:
+                return merged
+    return merged
 
 
 def _mark_source_type(results: list[EngineRetrievalResult], source_type: str) -> None:

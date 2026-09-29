@@ -363,14 +363,26 @@ class RAGRetriever:
             raise RAGSynthesisError("Tenant LLM provider is unavailable")
         if budget_context is not None:
             provider = budget_context.wrap_provider(provider, "synthesis")
+        # Every citation gets a fair share of the budget and an oversized one is
+        # trimmed. The loop used to stop at the first citation that overflowed,
+        # so a long first hit (a web page, a big table chunk) left NO evidence and
+        # synthesis failed with "No retrieved evidence fits the synthesis context".
+        # Numbering stays aligned with ``citations``, which the verifier checks
+        # against the full stored text.
         context_parts: list[str] = []
         context_length = 0
+        share = max(600, max_context_chars // max(1, len(citations)))
         for index, citation in enumerate(citations, start=1):
-            part = f"[{index}] {citation.content}"
-            if context_length + len(part) > max_context_chars:
+            remaining = max_context_chars - context_length
+            if remaining <= 80:
                 break
+            content = citation.content
+            limit = min(share, remaining) - len(f"[{index}] ")
+            if len(content) > limit:
+                content = content[: max(0, limit - 1)].rstrip() + "…"
+            part = f"[{index}] {content}"
             context_parts.append(part)
-            context_length += len(part)
+            context_length += len(part) + 2
         if not context_parts:
             raise RAGSynthesisError("No retrieved evidence fits the synthesis context")
         context = "\n\n".join(context_parts)

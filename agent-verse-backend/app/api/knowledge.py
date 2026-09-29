@@ -305,6 +305,13 @@ def _raise_retrieval_http_error(exc: Exception) -> None:
     )
     if isinstance(exc, RAGSynthesisError):
         raise HTTPException(status_code=503, detail="Answer synthesis is unavailable") from exc
+    from app.rag.engine import RetrievalStrategyExecutionError
+
+    if isinstance(exc, RetrievalStrategyExecutionError):
+        # The strategy's own reason ("web_augmented (backend_outage)") tells the
+        # caller what to fix; it carries no internal detail. It used to collapse
+        # into a bare "Retrieval service is unavailable".
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     raise HTTPException(status_code=503, detail="Retrieval service is unavailable") from exc
 
 
