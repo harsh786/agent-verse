@@ -29,6 +29,9 @@ class JiraIngestor:
     async def ingest_project(
         self, project_key: str, jql_extra: str = "", max_issues: int = 500
     ) -> list[dict[str, Any]]:
+        from app.knowledge.ingestors.limits import MAX_JIRA_ISSUES, clamp_limit
+
+        max_issues = clamp_limit(max_issues, MAX_JIRA_ISSUES)
         jql = f"project = {project_key}"
         if jql_extra:
             jql += f" AND {jql_extra}"

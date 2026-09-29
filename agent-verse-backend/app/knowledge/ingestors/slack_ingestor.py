@@ -22,6 +22,9 @@ class SlackIngestor:
     async def ingest_channel(
         self, channel_id: str, *, channel_name: str = "", max_messages: int = 500
     ) -> list[dict[str, Any]]:
+        from app.knowledge.ingestors.limits import MAX_SLACK_MESSAGES, clamp_limit
+
+        max_messages = clamp_limit(max_messages, MAX_SLACK_MESSAGES)
         chunks: list[dict[str, Any]] = []
         cursor: str | None = None
         message_count = 0

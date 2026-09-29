@@ -38,6 +38,13 @@ from app.ingestion.repository_security import (
     validate_branch,
     validate_patterns,
 )
+from app.knowledge.ingestors.limits import (
+    MAX_CONFLUENCE_PAGES,
+    MAX_GITHUB_FILES,
+    MAX_JIRA_ISSUES,
+    MAX_RPA_CHARS,
+    MAX_SLACK_MESSAGES,
+)
 from app.net.ssrf_guard import (
     SSRFError,
     assert_public_url,
@@ -91,7 +98,9 @@ class RepoIngestRequest(BaseModel):
     collection_id: str
     branch: str = "main"
     file_patterns: list[str] = ["**/*.py", "**/*.md", "**/*.ts", "**/*.js"]
-    max_files: int = 200
+    # Bounded (app.knowledge.ingestors.limits): these limits used to accept any
+    # int, so one request could crawl a whole estate into the collection.
+    max_files: int = Field(default=200, ge=1, le=MAX_GITHUB_FILES)
 
 
 class OpenAPIIngestRequest(BaseModel):
@@ -114,7 +123,7 @@ class RpaUrlIngestRequest(BaseModel):
     selector: str = "body"  # CSS selector for text extraction
     screenshot: bool = False  # capture screenshot and store as metadata
     source_type: str = "rpa-web"  # stored in metadata for attribution
-    max_chars: int = 50_000  # per-URL char cap
+    max_chars: int = Field(default=50_000, ge=1, le=MAX_RPA_CHARS)  # per-URL char cap
     include_links: bool = False  # whether to extract link URLs from the page
 
 
@@ -123,7 +132,7 @@ class GitHubIngestRequest(BaseModel):
     owner: str
     repo: str
     branch: str = "HEAD"
-    max_files: int = 300
+    max_files: int = Field(default=300, ge=1, le=MAX_GITHUB_FILES)
     # The tenant's own token for private repos; public repos need none. Never
     # the platform's GITHUB_TOKEN (see GitHubIngestor).
     token: SecretStr | None = None
@@ -135,7 +144,7 @@ class ConfluenceIngestRequest(BaseModel):
     space_key: str
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
-    max_pages: int = 1000
+    max_pages: int = Field(default=1000, ge=1, le=MAX_CONFLUENCE_PAGES)
 
 
 class JiraIngestRequest(BaseModel):
@@ -145,7 +154,7 @@ class JiraIngestRequest(BaseModel):
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     user: str
     jql_extra: str = ""
-    max_issues: int = 500
+    max_issues: int = Field(default=500, ge=1, le=MAX_JIRA_ISSUES)
 
 
 class SlackIngestRequest(BaseModel):
@@ -153,7 +162,7 @@ class SlackIngestRequest(BaseModel):
     channel_id: str
     token: SecretStr  # SecretStr prevents token from appearing in logs or tracebacks
     channel_name: str = ""
-    max_messages: int = 500
+    max_messages: int = Field(default=500, ge=1, le=MAX_SLACK_MESSAGES)
 
 
 IndexingStrategy = Literal["raptor", "agentic_chunking"]

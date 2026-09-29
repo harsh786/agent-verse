@@ -49,6 +49,9 @@ class ConfluenceIngestor:
             return cast(list[dict[str, Any]], data.get("results", []))
 
     async def ingest_space(self, space_key: str, max_pages: int = 1000) -> list[dict[str, Any]]:
+        from app.knowledge.ingestors.limits import MAX_CONFLUENCE_PAGES, clamp_limit
+
+        max_pages = clamp_limit(max_pages, MAX_CONFLUENCE_PAGES)
         chunks: list[dict[str, Any]] = []
         start = 0
         pages_processed = 0

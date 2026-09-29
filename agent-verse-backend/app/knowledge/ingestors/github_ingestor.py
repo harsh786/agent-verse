@@ -153,6 +153,9 @@ class GitHubIngestor:
         max_files: int = 300,
         file_patterns: list[str] | None = None,
     ) -> list[dict[str, Any]]:
+        from app.knowledge.ingestors.limits import MAX_GITHUB_FILES, clamp_limit
+
+        max_files = clamp_limit(max_files, MAX_GITHUB_FILES)
         tree = await self._get_tree(owner, repo)
         chunks: list[dict[str, Any]] = []
         file_count = 0
