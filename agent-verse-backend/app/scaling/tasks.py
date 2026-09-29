@@ -847,6 +847,89 @@ class _PersistentWorkerRunner:
         return failed
 
 
+class _WorkerWorkflowRunner:
+    """Runs a ``multi_agent`` goal through the static WorkflowPlanner/Executor.
+
+    Parity with the API's in-process path (``GoalService._run_workflow``): with
+    a task queue every goal is handed to this worker, which used to ignore
+    ``workflow_mode`` and silently run a multi_agent request as a single
+    AgentGraph goal. Same ``run`` contract as the graph runner (returns an
+    AgentState), so the worker's signals / timeout / terminal bookkeeping apply.
+    """
+
+    def __init__(self, context_factory: Any, *, tool_gate: Any, goal_id: str) -> None:
+        self._context_factory = context_factory
+        self._tool_gate = tool_gate
+        self._goal_id = goal_id
+
+    async def run(
+        self,
+        *,
+        goal: str,
+        tenant_ctx: Any,
+        initial_context: dict[str, Any] | None = None,
+        event_callback: Any = None,
+        goal_id: str | None = None,
+    ) -> Any:
+        from app.agent.state import AgentState, GoalStatus
+        from app.agent.workflow_executor import WorkflowExecutor
+        from app.agent.workflow_planner import build_static_workflow
+
+        async def _emit(event: dict[str, Any]) -> None:
+            if event_callback is not None:
+                await event_callback(event)
+
+        redis_client, mcp_client, tool_context = await self._context_factory()
+        try:
+            await _emit({"type": "goal_started", "goal": goal, "workflow_mode": "multi_agent"})
+            plan = build_static_workflow(goal)
+            executor = WorkflowExecutor(
+                mcp_client=mcp_client,
+                tool_gate=self._tool_gate,
+                goal_id=goal_id or self._goal_id,
+            )
+            wf_result = await executor.execute(
+                plan,
+                tenant_ctx,
+                tool_context=tool_context,
+                event_callback=event_callback,
+                goal=goal,
+            )
+        finally:
+            if redis_client is not None:
+                with contextlib.suppress(Exception):
+                    await redis_client.aclose()
+        state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
+        state.goal_id = goal_id or self._goal_id
+        state.iterations = len(getattr(plan, "steps", []) or [])
+        wf_status = str((wf_result or {}).get("status", "complete"))
+        if wf_status == "complete":
+            state.status = GoalStatus.COMPLETE
+            await _emit({"type": "goal_complete"})
+        else:
+            reason = str(
+                (wf_result or {}).get("reason")
+                or (wf_result or {}).get("error")
+                or f"workflow ended with status {wf_status}"
+            )
+            state.status = GoalStatus.FAILED
+            state.error_message = reason[:1000]
+            await _emit({"type": "goal_failed", "reason": reason})
+        return state
+
+
+def _worker_tool_gate(policy: Any, hitl: Any, cost: Any, agent_id: str) -> Any:
+    """The governed tool gate for worker workflow runs (same services as the graph)."""
+    import types as _types
+
+    from app.agent.tool_gate import gate_from_app_state
+
+    return gate_from_app_state(
+        _types.SimpleNamespace(policy_engine=policy, hitl_gateway=hitl, cost_controller=cost),
+        agent_id=agent_id or None,
+    )
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     name="app.scaling.tasks.execute_org_mission",
     bind=True,
@@ -2721,6 +2804,26 @@ def run_goal(
             except Exception as _iso_flag_exc:
                 logger.warning("isolation_flag_check_failed: %s", _iso_flag_exc)
 
+            if _use_isolation and workflow_mode == "multi_agent":
+                # The isolated runner executes a single agent; routing a
+                # multi_agent workflow there would silently downgrade it. Like
+                # the in-process path, the workflow runs on the worker — unless
+                # isolation is REQUIRED, in which case it fails explicitly.
+                if _iso_required:
+                    _wf_iso_reason = (
+                        "multi_agent workflows cannot run in the isolated execution "
+                        "environment, which is required"
+                    )
+                    _run_async(mark_worker_failed(RuntimeError(_wf_iso_reason)))
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                    return {
+                        "status": "failed",
+                        "goal_id": goal_id,
+                        "reason": "workflow_mode_unsupported_in_isolation",
+                        "message": _wf_iso_reason,
+                    }
+                _use_isolation = False
+
             if _use_isolation:
                 # Build and dispatch an ExecutionEnvelope instead of running in-process
                 _RunnerUnavail: type | None = None  # noqa: N806  # holds a class (exception type) for isinstance checks below
@@ -2854,6 +2957,17 @@ def run_goal(
                     config=_worker_persistence_config(_persist_cfg, float(goal_timeout_s)),
                     db=db_factory,
                     redis=_worker_async_redis(),
+                )
+            # Honour workflow_mode like the in-process path: a multi_agent goal
+            # runs the static workflow, never a silent single-agent downgrade.
+            # (supervisor / debate are resolved by the API before submission
+            # and run as single goals carrying their results — same as in-process.)
+            if workflow_mode == "multi_agent":
+                logger.info("Goal %s runs the multi_agent workflow on the worker", goal_id)
+                _agent_runner = _WorkerWorkflowRunner(
+                    _build_worker_mcp_context,
+                    tool_gate=_worker_tool_gate(_policy, _hitl, _cost, agent_id),
+                    goal_id=goal_id,
                 )
 
             state = _run_async(
