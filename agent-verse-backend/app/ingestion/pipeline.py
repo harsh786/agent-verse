@@ -479,6 +479,7 @@ class IngestionPipeline:
         document must not be indexed at all.
         """
         # ── Stage 6: PII DETECTION + REDACTION (LAW-06) ──────────────────────
+        original = text
         screened, pii_detected = self._run_pii(text, pii_action)
         if screened is None:
             return ScreenResult(text="", pii_detected=True, blocked_reason="pii_rejected")
@@ -497,14 +498,27 @@ class IngestionPipeline:
         if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
             try:
                 guardrails_engine.ensure_default_rules(tenant_id)
+                # The guardrail sees the ORIGINAL text: evaluated after
+                # redaction, a "block PII / secrets in RAG ingest" rule (the
+                # GDPR and PCI bundles) could never fire, because Stage 6 had
+                # already replaced what it looks for. Only an allowed document
+                # continues, and it continues redacted.
                 _g2_ingest_result = await guardrails_engine.evaluate(
-                    content=text,
+                    content=original,
                     layer=GuardrailLayer.RAG_INGEST,
                     tenant_id=tenant_id,
                 )
                 if _g2_ingest_result.get("blocked"):
                     return ScreenResult(
                         text="", pii_detected=pii_detected, blocked_reason="guardrail_blocked"
+                    )
+                if _g2_ingest_result.get("redacted_content") and text != original:
+                    # A redacting rule: apply it to the PII-redacted text, not to
+                    # the original — its output would otherwise undo Stage 6.
+                    _g2_ingest_result = await guardrails_engine.evaluate(
+                        content=text,
+                        layer=GuardrailLayer.RAG_INGEST,
+                        tenant_id=tenant_id,
                     )
                 _g2_ingest_redacted = _g2_ingest_result.get("redacted_content")
                 if _g2_ingest_redacted and _g2_ingest_redacted != text:
