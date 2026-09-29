@@ -693,6 +693,8 @@ async def search_knowledge(
             "source_url": citation.metadata.get("source_url", ""),
             "char_offset": citation.metadata.get("char_offset"),
             "line_start": citation.metadata.get("line_start"),
+            "page": citation.metadata.get("page"),
+            "document_id": citation.metadata.get("document_id"),
             "requested_strategy_id": result.requested_strategy_id,
             "resolved_strategy_id": result.resolved_strategy_id.value,
         }
@@ -758,30 +760,24 @@ async def warm_cache(request: Request) -> dict[str, Any]:
 
 
 def _extract_upload_text(content_bytes: bytes, *, ext: str, filename: str) -> str:
-    """Text of an uploaded file; 422 when unparseable, 503 when the parser is missing."""
+    """Text of an uploaded file: 415 unsupported type, 422 unreadable/empty/textless,
+    503 parser missing. Binary formats are parsed or refused, never decoded as text
+    (that indexed raw "%PDF-1.3 … endobj" and reported success)."""
     from app.ingestion.document_text import (
         DocumentParseError,
         ParserUnavailableError,
-        extract_docx_text,
-        extract_pdf_pages,
+        UnsupportedDocumentError,
+        extract_upload_text,
     )
 
     try:
-        if ext == "pdf":
-            return "\n".join(extract_pdf_pages(content_bytes, filename=filename))
-        if ext == "docx":
-            return extract_docx_text(content_bytes, filename=filename)
+        return extract_upload_text(content_bytes, ext=ext, filename=filename)
+    except UnsupportedDocumentError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
     except DocumentParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ParserUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if ext == "doc" or b"\x00" in content_bytes[:8192]:
-        # Legacy .doc and other binaries have no text decoder here.
-        raise HTTPException(
-            status_code=415,
-            detail=f"{filename}: unsupported binary file type; upload PDF, DOCX or text",
-        )
-    return content_bytes.decode("utf-8", errors="replace")
 
 
 @router.post("/ingest/file", status_code=201)
@@ -792,8 +788,10 @@ async def ingest_file(
 ) -> dict[str, Any]:
     """Ingest a file into a knowledge collection.
 
-    Supports: .txt, .md, .py, .ts, .js, .json, .pdf, .docx
-    Open source parsing only (pypdf, python-docx if installed).
+    PDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,
+    CSV/TSV, HTML, JSON/JSONL, YAML, Jupyter notebooks, e-mail (.eml), Markdown,
+    plain text and source code. Unsupported or unreadable files are refused
+    (415/422) instead of being indexed as garbage.
     """
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
@@ -802,14 +800,11 @@ async def ingest_file(
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
-    source_type = "code" if ext in {"py", "ts", "js", "jsx", "tsx"} else "text"
+    source_type = _upload_source_type(ext)
 
-    # Parse content. A binary format is parsed or refused — never decoded as
-    # UTF-8 (that indexed raw "%PDF-1.3 … endobj" and reported success).
-    text = _extract_upload_text(content_bytes, ext=ext, filename=filename)
-
-    if not text.strip():
-        raise HTTPException(422, "File is empty or could not be parsed")
+    # (label, page_number, text) segments: a PDF keeps its pages so results can
+    # cite them; everything else is one segment.
+    segments, total_pages = _extract_upload_segments(content_bytes, ext=ext, filename=filename)
 
     doc_hash = hashlib.sha256(content_bytes).hexdigest()
     if await _already_indexed_or_http(
@@ -821,49 +816,49 @@ async def ingest_file(
             "collection_id": collection_id,
             "file_size_bytes": len(content_bytes),
             "deduplicated": True,
+            "document_id": None,
         }
-    text = await _screen_or_http(request, tenant.tenant_id, text, doc_id=filename)
 
-    # Chunk using token-aware chunker
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
 
-    _raw_file_chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64)
-    chunks = [
-        type("_C", (), {"content": chunk, "start_char": 0, "end_char": len(chunk)})()
-        for chunk in _raw_file_chunks
-    ]
-
-    # Fallback for very short content
-    if not chunks and text.strip():
-        chunks = [
-            type(
-                "_C",
-                (),
-                {"content": text.strip(), "start_char": 0, "end_char": len(text)},
-            )()
-        ]
+    pieces: list[tuple[str, int | None, int]] = []  # (content, page, char_offset)
+    for page, raw_text in segments:
+        text = await _screen_or_http(request, tenant.tenant_id, raw_text, doc_id=filename)
+        chunks = _chunk_by_tokens_file(text, max_tokens=512, overlap_tokens=64) or [text]
+        cursor = 0
+        for chunk in chunks:
+            if not chunk.strip():
+                continue
+            found = text.find(chunk[:200], cursor)
+            offset = found if found >= 0 else cursor
+            cursor = max(cursor, offset)
+            pieces.append((chunk, page, offset))
+    if not pieces:
+        raise HTTPException(422, "File is empty or could not be parsed")
 
     document_id = _uuid.uuid4().hex
+    embeddings = await _embed_texts_or_http([c for c, _, _ in pieces], embedder)
     rag_chunks: list[Chunk] = []
-    non_empty_chunks = [chunk for chunk in chunks if chunk.content.strip()]
-    embeddings = await _embed_texts_or_http(
-        [chunk.content for chunk in non_empty_chunks],
-        embedder,
-    )
-    for idx, (chunk, embedding) in enumerate(zip(non_empty_chunks, embeddings, strict=True)):
+    for idx, ((content, page, offset), embedding) in enumerate(
+        zip(pieces, embeddings, strict=True)
+    ):
+        metadata = {
+            "source_file": filename,
+            "ext": ext,
+            "char_offset": str(offset),
+            "source_type": source_type,
+            "doc_content_hash": doc_hash,
+        }
+        if page is not None:
+            metadata["page"] = str(page)
+            metadata["total_pages"] = str(total_pages)
         rag_chunks.append(
             Chunk(
                 document_id=document_id,
-                content=chunk.content,
+                content=content,
                 embedding=embedding,
                 chunk_index=idx,
-                metadata={
-                    "source_file": filename,
-                    "ext": ext,
-                    "char_offset": str(chunk.start_char),
-                    "source_type": source_type,
-                    "doc_content_hash": doc_hash,
-                },
+                metadata=metadata,
             )
         )
     stored = await _persist_chunks_or_http(
@@ -879,7 +874,41 @@ async def ingest_file(
         "collection_id": collection_id,
         "file_size_bytes": len(content_bytes),
         "deduplicated": bool(rag_chunks) and not stored,
+        "document_id": document_id if stored else None,
+        "pages": total_pages,
     }
+
+
+def _upload_source_type(ext: str) -> str:
+    if ext in {"py", "ts", "js", "jsx", "tsx", "go", "java", "rs", "rb", "c", "cpp", "cs"}:
+        return "code"
+    if ext in {"csv", "tsv", "xlsx", "xlsm"}:
+        return "table"
+    if ext in {"json", "jsonl", "ndjson", "yaml", "yml"}:
+        return "structured"
+    return "text"
+
+
+def _extract_upload_segments(
+    content_bytes: bytes, *, ext: str, filename: str
+) -> tuple[list[tuple[int | None, str]], int | None]:
+    """``(page, text)`` segments of an upload plus the PDF page count (None for
+    other types); see _extract_upload_text for the error mapping."""
+    if ext == "pdf":
+        from app.ingestion.document_text import (
+            DocumentParseError,
+            ParserUnavailableError,
+            extract_pdf_pages,
+        )
+
+        try:
+            pages = extract_pdf_pages(content_bytes, filename=filename)
+        except DocumentParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ParserUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return [(i + 1, t) for i, t in enumerate(pages) if t.strip()], len(pages)
+    return [(None, _extract_upload_text(content_bytes, ext=ext, filename=filename))], None
 
 
 # ---------------------------------------------------------------------------
