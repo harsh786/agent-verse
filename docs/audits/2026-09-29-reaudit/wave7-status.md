@@ -1,6 +1,6 @@
 # Wave 7 status (auto-refreshed)
 
-Last refresh: 2026-09-29 11:48 UTC. See HANDOFF.md section 4 for what each item means.
+Last refresh: 2026-09-29 11:49 UTC. See HANDOFF.md section 4 for what each item means.
 
 ## fix/hitl-estop-security — 0 commit(s) not yet on main
 
@@ -9,14 +9,14 @@ Worktree `/Users/harsh/Documents/Learning/agent-verse/.claude/worktrees/agent-a9
 
 ## fix/audit-correctness-defects — 8 commit(s) not yet on main
 
-- `f9337a862` fix(worker): run the goal's persisted runtime profile and pattern flags (6 minutes ago)
-- `9e03570d5` wip: worker builds its graph from the persisted runtime profile (27 minutes ago)
-- `c15c1276d` test(worker): grant the goal claim in the worker usage-metering test (31 minutes ago)
-- `337e78e6f` fix(llm): charge debate/supervisor submission calls; attribute goal-tree spend (34 minutes ago)
-- `2d8ea71f7` fix(worker): never re-run a finished goal on Celery redelivery (40 minutes ago)
-- `5a6d78ecf` fix(schedules): read and write schedules through the durable store on every request (53 minutes ago)
-- `3960746c1` fix(goals): cancel/pause never overwrite a finished goal or report a lost write (60 minutes ago)
-- `c2f04e29f` fix(workflow): make approval steps a hard barrier; reject stops the run (68 minutes ago)
+- `f9337a862` fix(worker): run the goal's persisted runtime profile and pattern flags (7 minutes ago)
+- `9e03570d5` wip: worker builds its graph from the persisted runtime profile (28 minutes ago)
+- `c15c1276d` test(worker): grant the goal claim in the worker usage-metering test (32 minutes ago)
+- `337e78e6f` fix(llm): charge debate/supervisor submission calls; attribute goal-tree spend (35 minutes ago)
+- `2d8ea71f7` fix(worker): never re-run a finished goal on Celery redelivery (41 minutes ago)
+- `5a6d78ecf` fix(schedules): read and write schedules through the durable store on every request (54 minutes ago)
+- `3960746c1` fix(goals): cancel/pause never overwrite a finished goal or report a lost write (61 minutes ago)
+- `c2f04e29f` fix(workflow): make approval steps a hard barrier; reject stops the run (69 minutes ago)
 
 Worktree `/Users/harsh/Documents/Learning/agent-verse/.claude/worktrees/agent-adef96f10a67bfa4a`: 0 tracked file(s) with uncommitted changes.
 
