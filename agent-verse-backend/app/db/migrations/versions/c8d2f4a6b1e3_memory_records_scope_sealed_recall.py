@@ -20,7 +20,7 @@ canonical memory backfill (per tenant and source table). Tenant-isolated by
 FORCE'd RLS like every other tenant table.
 
 Revision ID: c8d2f4a6b1e3
-Revises: b4e6c8a0d2f1
+Revises: c7d1e9f3a5b2
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "c8d2f4a6b1e3"
-down_revision = "b4e6c8a0d2f1"
+down_revision = "c7d1e9f3a5b2"
 branch_labels = None
 depends_on = None
 
