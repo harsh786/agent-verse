@@ -1,0 +1,92 @@
+"""Adapter from the app's embedding provider to the canonical memory embedder.
+
+``memory_records.embedding`` is a fixed ``vector(1536)`` column (the
+``memory-embedding-v1`` profile). Deployments embed with whatever provider is
+configured — 1024-d Voyage/Qwen, 1536-d OpenAI small, 3072-d OpenAI large — so
+the adapter fits vectors the same way long-term memory does:
+
+* exactly 1536-d → stored as is;
+* narrower → zero-padded (padding changes neither dot products nor norms, so
+  cosine similarity ranks exactly as in a column of the native width);
+* wider → cannot be shrunk without changing its geometry, so no vector is
+  produced and the record is recalled lexically.
+
+The adapter carries a ``model_id`` that the repository stores with each vector
+and filters on at recall time, so vectors from different models are never
+compared. Provider failures degrade to lexical-only memory and are logged.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.observability.logging import get_logger
+
+MEMORY_EMBEDDING_DIM = 1536
+
+_log = get_logger(__name__)
+
+
+def fit_memory_vector(vec: list[float] | tuple[float, ...]) -> tuple[float, ...] | None:
+    n = len(vec)
+    if n == MEMORY_EMBEDDING_DIM:
+        return tuple(float(v) for v in vec)
+    if 0 < n < MEMORY_EMBEDDING_DIM:
+        return (*(float(v) for v in vec), *([0.0] * (MEMORY_EMBEDDING_DIM - n)))
+    return None
+
+
+def _provider_model_id(provider: Any) -> str:
+    model = (
+        getattr(provider, "embed_model", None)
+        or getattr(provider, "embedding_model", None)
+        or getattr(provider, "default_model", None)
+        or ""
+    )
+    return f"{type(provider).__name__}:{model}"[:128]
+
+
+class ProviderMemoryEmbedder:
+    """Callable ``(text) -> 1536-d tuple | None`` over an ``LLMProvider.embed``."""
+
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+        self.model_id = _provider_model_id(provider)
+
+    async def __call__(self, text: str) -> tuple[float, ...] | None:
+        from app.providers.base import EmbedRequest
+
+        try:
+            response = await self._provider.embed(EmbedRequest(texts=[text]))
+        except Exception as exc:
+            _log.warning(
+                "memory_embedding_failed", model=self.model_id, error=str(exc)[:200]
+            )
+            return None
+        embeddings = getattr(response, "embeddings", None) or []
+        if not embeddings:
+            _log.warning("memory_embedding_empty", model=self.model_id)
+            return None
+        fitted = fit_memory_vector(embeddings[0])
+        if fitted is None:
+            _log.info(
+                "memory_embedding_too_wide",
+                model=self.model_id,
+                dimension=len(embeddings[0]),
+            )
+        return fitted
+
+
+def memory_embedder_from_provider(provider: Any) -> ProviderMemoryEmbedder | None:
+    """Wrap the app embedder, or None when there is no usable embedding provider."""
+    if provider is None or not callable(getattr(provider, "embed", None)):
+        return None
+    return ProviderMemoryEmbedder(provider)
+
+
+__all__ = [
+    "MEMORY_EMBEDDING_DIM",
+    "ProviderMemoryEmbedder",
+    "fit_memory_vector",
+    "memory_embedder_from_provider",
+]

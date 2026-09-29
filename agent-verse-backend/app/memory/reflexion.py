@@ -29,6 +29,8 @@ class ReflexionService:
         classification: Classification,
         confidence: int,
         idempotency_key: str,
+        agent_id: str | None = None,
+        source: str | None = None,
     ) -> MemoryRecord:
         return cast(
             MemoryRecord,
@@ -44,6 +46,8 @@ class ReflexionService:
                     confidence=confidence,
                     idempotency_key=idempotency_key,
                     retention_policy_id="reflexion-standard",
+                    agent_id=agent_id,
+                    source=source,
                 )
             ),
         )
@@ -56,6 +60,7 @@ class ReflexionService:
         allowed_data_classes: frozenset[Classification],
         top_k: int = 5,
         token_budget: int = 1_000,
+        agent_id: str | None = None,
     ) -> tuple[MemoryRecord, ...]:
         hits = await self._repository.recall(
             MemoryRecallRequest(
@@ -67,6 +72,7 @@ class ReflexionService:
                 allowed_data_classes=allowed_data_classes,
                 as_of=datetime.now(UTC),
                 token_budget=token_budget,
+                agent_id=agent_id,
             )
         )
         return tuple(hit.record for hit in hits)

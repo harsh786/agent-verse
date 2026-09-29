@@ -217,3 +217,21 @@ async def test_reflexion_recall_scoped_to_tenant() -> None:
 
     call_kwargs = mock_service.recall.call_args.kwargs
     assert call_kwargs["tenant_id"] == "other-tenant-42"
+
+
+@pytest.mark.asyncio
+async def test_recalled_memory_ids_are_recorded_for_effectiveness_feedback() -> None:
+    """The ids injected into the plan are kept on the state so the goal's
+    outcome can be fed back via record_effectiveness; recall is agent-scoped."""
+    from app.memory.goal_learning import RECALLED_MEMORY_IDS_KEY
+
+    mock_service = AsyncMock(spec=ReflexionService)
+    mock_service.recall.return_value = (_make_memory_record(),)
+    graph = _make_graph(reflexion_service=mock_service)
+    graph._agent_id = "agent-42"
+    graph._event_callback = AsyncMock()
+
+    result = await graph._node_plan(_make_state("Deploy to staging"))
+
+    assert mock_service.recall.call_args.kwargs["agent_id"] == "agent-42"
+    assert result["agent_state"].context[RECALLED_MEMORY_IDS_KEY] == ["mem-d17-001"]

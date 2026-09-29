@@ -803,6 +803,54 @@ def _worker_persistence_config(cfg: dict[str, Any], goal_timeout_s: float) -> An
     )
 
 
+def _worker_reflexion_service(db_factory: Any, embedder_provider: Any) -> Any:
+    """DB-backed canonical Reflexion memory for a worker goal (None without a DB)."""
+    if db_factory is None:
+        return None
+    from app.memory.embedding import memory_embedder_from_provider
+    from app.memory.postgres_repository import PostgresMemoryRepository
+    from app.memory.reflexion import ReflexionService
+
+    return ReflexionService(
+        repository=PostgresMemoryRepository(
+            db_factory,
+            embedder=memory_embedder_from_provider(embedder_provider),
+        )
+    )
+
+
+def _timed_out_goal_state(goal: str, tenant_ctx: Any, goal_id: str, timeout_s: Any) -> Any:
+    from app.agent.state import AgentState, GoalStatus
+
+    state = AgentState(goal=goal, tenant_ctx=tenant_ctx)
+    state.goal_id = goal_id
+    state.status = GoalStatus.FAILED
+    state.error_message = f"Goal timed out after {timeout_s}s"
+    return state
+
+
+async def _learn_from_worker_goal(
+    reflexion_service: Any,
+    state: Any,
+    *,
+    tenant_id: str,
+    goal_id: str,
+    dry_run: bool,
+    agent_id: str | None,
+) -> Any:
+    """Reflexion learning for a terminal worker goal (bounded; never raises)."""
+    from app.memory.goal_learning import learn_from_goal_outcome
+
+    return await learn_from_goal_outcome(
+        reflexion_service,
+        state,
+        tenant_id=tenant_id,
+        goal_id=goal_id,
+        dry_run=dry_run,
+        agent_id=agent_id,
+    )
+
+
 class _PersistentWorkerRunner:
     """Runs a worker goal through GoalPersistenceEngine (retry until success).
 
@@ -2131,6 +2179,8 @@ def run_goal(
 
     _agent_runner: Any = None
     _use_agent_graph = False
+    # Canonical Reflexion memory (recall in the planner, learning after the goal).
+    _reflexion_service: Any = None
 
     async def _build_worker_mcp_context() -> tuple[Any, Any, Any]:
         import redis.asyncio as aioredis
@@ -2707,7 +2757,6 @@ def run_goal(
 
                 from app.core.runtime_flags import get_runtime_flags as _get_rt_flags
                 from app.intelligence.self_optimizer_v2 import SelfOptimizerV2
-                from app.memory.reflexion import ReflexionService
 
                 # DB-backed SelfOptimizerV2 (Bayesian A/B + auto-apply). Uses a
                 # dedicated string-decoded async Redis for its per-tenant experiment
@@ -2728,16 +2777,13 @@ def run_goal(
                 )
 
                 # DB-backed reflexion recall (evidence-backed lessons in the planner).
-                _reflexion_service: Any = None
-                if db_factory is not None:
-                    try:
-                        from app.memory.postgres_repository import PostgresMemoryRepository
-
-                        _reflexion_service = ReflexionService(
-                            repository=PostgresMemoryRepository(db_factory)
-                        )
-                    except Exception as _refl_exc:  # pragma: no cover - defensive
-                        logger.warning("worker_reflexion_wire_failed: %s", _refl_exc)
+                _reflexion_service = None
+                try:
+                    _reflexion_service = _worker_reflexion_service(
+                        db_factory, _embedder_for_graph
+                    )
+                except Exception as _refl_exc:  # pragma: no cover - defensive
+                    logger.warning("worker_reflexion_wire_failed: %s", _refl_exc)
 
                 # The mixins reach the self-optimizer + prompt-optimizer through
                 # ``_app_state``. The worker has no FastAPI app, so expose a minimal
@@ -3034,6 +3080,16 @@ def run_goal(
             )
         except TimeoutError:
             _run_async(mark_worker_failed(TimeoutError(f"Goal timed out after {goal_timeout_s}s")))
+            _run_async(
+                _learn_from_worker_goal(
+                    _reflexion_service,
+                    _timed_out_goal_state(effective_goal, tenant_ctx, goal_id, goal_timeout_s),
+                    tenant_id=tenant_id,
+                    goal_id=goal_id,
+                    dry_run=dry_run,
+                    agent_id=agent_id or None,
+                )
+            )
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {
                 "status": "failed",
@@ -3042,6 +3098,17 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        # After the terminal status is recorded: learning never delays completion.
+        _run_async(
+            _learn_from_worker_goal(
+                _reflexion_service,
+                state,
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                dry_run=dry_run,
+                agent_id=agent_id or None,
+            )
+        )
         if state.status.value == "waiting_human" and goal_bridge is not None:
             # Supervised mode: the graph ENDED waiting for approvals. Mark the
             # goal suspended so resume_goal relaunches it (from its step
@@ -5747,6 +5814,38 @@ try:
     )
 except Exception as _sched_exc:
     logger.warning("Failed to register consolidate_memories beat schedule: %s", _sched_exc)
+
+
+@celery_app.task(name="agentverse.maintenance.backfill_canonical_memory")
+def backfill_canonical_memory(
+    tenant_id: str, batch_size: int = 100, max_rows: int = 1_000, reset: bool = False
+) -> dict[str, Any]:
+    """Backfill one tenant's legacy Reflexion lessons into canonical memory.
+
+    Bounded (``max_rows`` per run, clamped) and resumable (keyset checkpoint in
+    ``memory_backfill_checkpoints``); re-enqueue until ``completed`` is true.
+    Runs under the tenant's RLS; see app.memory.backfill_runner.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from app.db.session import get_session_factory as _get_fresh_db
+        from app.memory.backfill_runner import run_reflexion_lessons_backfill
+        from app.memory.postgres_repository import PostgresMemoryRepository
+
+        db = _get_fresh_db()
+        result = await run_reflexion_lessons_backfill(
+            db,
+            PostgresMemoryRepository(db),
+            tenant_id=tenant_id,
+            batch_size=batch_size,
+            max_rows=max_rows,
+            reset=reset,
+        )
+        return asdict(result)
+
+    return cast(dict[str, Any], _run_async(_run()))
 
 
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")

@@ -35,12 +35,17 @@ def _row(**overrides):
         source_execution_id="execution",
         evidence_refs=["evidence://1"],
         classification="internal",
+        agent_id=None,
+        collection_id=None,
+        source=None,
+        sealed_content=None,
         confidence=9000,
         lifecycle_state="active",
         version=1,
         embedding_model="memory-embedding-v1",
         embedding_dimension=1536,
         embedding=None,
+        embedding_source_model=None,
         outcome_score=0,
         effectiveness_score=0,
         recall_count=0,
@@ -107,8 +112,42 @@ class _FakeSession:
         return None
 
 
-def _repo(session: _FakeSession, embedder=None) -> PostgresMemoryRepository:
-    return PostgresMemoryRepository(lambda: session, embedder=embedder)
+class _FakeCipher:
+    """Reversible stand-in for the credential vault (never echoes plaintext)."""
+
+    def encrypt(self, plaintext: str) -> str:
+        return plaintext.encode().hex()
+
+    def decrypt(self, ciphertext: str) -> str:
+        return bytes.fromhex(ciphertext).decode()
+
+
+class _BrokenCipher:
+    def encrypt(self, plaintext: str) -> str:
+        raise RuntimeError("no vault key")
+
+    def decrypt(self, ciphertext: str) -> str:
+        raise RuntimeError("no vault key")
+
+
+def _repo(session: _FakeSession, embedder=None, cipher=None) -> PostgresMemoryRepository:
+    return PostgresMemoryRepository(
+        lambda: session, embedder=embedder, cipher=cipher or _FakeCipher()
+    )
+
+
+def _insert_params(session: _FakeSession) -> dict:
+    inserts = [stmt for stmt in session.executed if "insert" in str(stmt).lower()]
+    assert len(inserts) == 1
+    return inserts[0].compile().params
+
+
+def _data_statements(session: _FakeSession) -> list:
+    return [
+        stmt
+        for stmt in session.executed
+        if "set_config" not in str(stmt) and "row_security" not in str(stmt)
+    ]
 
 
 def _write_request(**overrides) -> MemoryWriteRequest:
@@ -177,6 +216,99 @@ class TestWrite:
         record = await repo.write(_write_request(classification="restricted"))
         assert record.safe_summary == "[REDACTED]"
         assert "encrypted" in record.content_ref
+
+    async def test_sensitive_payload_is_stored_sealed_never_dangling(self):
+        session = _FakeSession(results=[_FakeResult(scalar=None)])
+        repo = _repo(session)
+        record = await repo.write(
+            _write_request(classification="confidential", content="card ends 4242")
+        )
+        params = _insert_params(session)
+        sealed = params["sealed_content"]
+        assert sealed and sealed.startswith("enc:v1:")
+        assert "4242" not in sealed
+        assert "4242" not in params["safe_summary"]
+        # Never embedded: a vector of the payload would leak it.
+        assert params["embedding"] is None
+        assert record.content_ref == f"memory://encrypted/{record.memory_id}"
+
+    async def test_sensitive_payload_round_trips_through_the_cipher(self):
+        write_session = _FakeSession(results=[_FakeResult(scalar=None)])
+        cipher = _FakeCipher()
+        record = await _repo(write_session, cipher=cipher).write(
+            _write_request(classification="restricted", content="the secret lesson")
+        )
+        sealed = _insert_params(write_session)["sealed_content"]
+        row = _row(id=record.memory_id, classification="restricted", sealed_content=sealed)
+        read_session = _FakeSession(results=[_FakeResult(scalar=row)])
+        plaintext = await _repo(read_session, cipher=cipher).read_sensitive_content(
+            "tenant", record.memory_id
+        )
+        assert plaintext == "the secret lesson"
+
+    async def test_sealed_payload_bound_to_its_record(self):
+        write_session = _FakeSession(results=[_FakeResult(scalar=None)])
+        record = await _repo(write_session).write(
+            _write_request(classification="restricted", content="bound")
+        )
+        sealed = _insert_params(write_session)["sealed_content"]
+        # The same ciphertext copied onto another row must not open.
+        row = _row(id="other-memory", classification="restricted", sealed_content=sealed)
+        read_session = _FakeSession(results=[_FakeResult(scalar=row)])
+        from app.memory.sealing import SensitiveMemoryUnavailableError
+
+        with pytest.raises(SensitiveMemoryUnavailableError):
+            await _repo(read_session).read_sensitive_content("tenant", "other-memory")
+        assert record.memory_id != "other-memory"
+
+    async def test_sensitive_write_refused_when_vault_unavailable(self):
+        from app.memory.sealing import SensitiveMemoryUnavailableError
+
+        session = _FakeSession(results=[_FakeResult(scalar=None)])
+        repo = _repo(session, cipher=_BrokenCipher())
+        with pytest.raises(SensitiveMemoryUnavailableError):
+            await repo.write(_write_request(classification="restricted"))
+        assert session.executed == []  # nothing stored, no dangling reference
+
+    async def test_scope_fields_are_persisted(self):
+        session = _FakeSession(results=[_FakeResult(scalar=None)])
+        repo = _repo(session)
+        record = await repo.write(
+            _write_request(agent_id="agent-7", collection_id="coll-3", source="goal_outcome")
+        )
+        params = _insert_params(session)
+        assert params["agent_id"] == "agent-7"
+        assert params["collection_id"] == "coll-3"
+        assert params["source"] == "goal_outcome"
+        assert (record.agent_id, record.collection_id, record.source) == (
+            "agent-7",
+            "coll-3",
+            "goal_outcome",
+        )
+
+    async def test_embedder_model_is_stored_with_the_vector(self):
+        class _Embedder:
+            model_id = "VoyageProvider:voyage-3"
+
+            async def __call__(self, _content):
+                return tuple([0.25] * 1536)
+
+        session = _FakeSession(results=[_FakeResult(scalar=None)])
+        await _repo(session, embedder=_Embedder()).write(_write_request())
+        params = _insert_params(session)
+        assert params["embedding_source_model"] == "VoyageProvider:voyage-3"
+        assert params["embedding"] is not None
+
+    async def test_embedder_without_vector_stores_lexical_only(self):
+        async def no_vector(_content):
+            return None
+
+        session = _FakeSession(results=[_FakeResult(scalar=None)])
+        record = await _repo(session, embedder=no_vector).write(_write_request())
+        params = _insert_params(session)
+        assert params["embedding"] is None
+        assert params["embedding_source_model"] is None
+        assert record.embedding is None
 
     async def test_embedding_is_stored_when_embedder_configured(self):
         async def embedder(_content):
@@ -272,6 +404,121 @@ class TestRecall:
         hits = await repo.recall(self._request())
         assert len(hits) == 1
         assert hits[0].semantic_score == 10_000
+
+    async def test_vectors_of_another_model_are_not_compared(self):
+        class _Embedder:
+            model_id = "model-a"
+
+            async def __call__(self, _query):
+                return tuple([1.0] * 1536)
+
+        row = _row(
+            embedding=[1.0] * 1536,
+            embedding_source_model="model-b",
+            safe_summary="unrelated words",
+        )
+        session = _FakeSession(results=[_FakeResult(scalars_seq=[row])])
+        hits = await _repo(session, embedder=_Embedder()).recall(self._request())
+        # Lexical fallback: no word overlap → 0, not a bogus cosine of 1.0.
+        assert hits[0].semantic_score == 0
+
+    async def test_recall_runs_bounded_relevance_and_recency_queries(self):
+        session = _FakeSession()
+        await _repo(session).recall(self._request(agent_id="agent-7"))
+        statements = _data_statements(session)
+        assert len(statements) == 2
+        for stmt in statements:
+            sql = str(stmt.compile(compile_kwargs={"literal_binds": False}))
+            assert "LIMIT" in sql
+            assert "memory_records.agent_id" in sql
+            assert "memory_records.lifecycle_state IN" in sql
+            assert "memory_records.expires_at IS NULL" in sql
+
+    async def test_duplicate_candidates_are_merged(self):
+        row = _row(safe_summary="retry evidence")
+        session = _FakeSession(
+            results=[_FakeResult(scalars_seq=[row]), _FakeResult(scalars_seq=[row])]
+        )
+        hits = await _repo(session).recall(self._request())
+        assert [h.record.memory_id for h in hits] == ["mem-1"]
+
+
+class TestRecallCandidateQueries:
+    def _request(self, **overrides):
+        values = dict(
+            tenant_id="tenant",
+            query="retry evidence",
+            memory_kinds=frozenset({"reflexion"}),
+            top_k=5,
+            min_confidence=10,
+            allowed_data_classes=frozenset({"internal", "public"}),
+            as_of=_NOW,
+            token_budget=1000,
+        )
+        values.update(overrides)
+        return MemoryRecallRequest(**values)
+
+    def _sql(self, stmt) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        return str(stmt.compile(dialect=postgresql.dialect()))
+
+    def test_vector_relevance_orders_by_cosine_distance_same_model(self):
+        from app.memory.postgres_repository import recall_candidate_queries
+
+        relevance, recency = recall_candidate_queries(
+            self._request(), query_embedding=tuple([0.1] * 1536), embedding_model="m1"
+        )
+        sql = self._sql(relevance)
+        order = sql.split("ORDER BY", 1)[1]
+        assert order.strip().startswith("(memory_records.embedding <=>")
+        assert "memory_records.embedding IS NOT NULL" in sql
+        assert "memory_records.embedding_source_model =" in sql
+        assert "LIMIT" in sql
+        recency_order = self._sql(recency).split("ORDER BY", 1)[1]
+        assert recency_order.strip().startswith("memory_records.updated_at DESC")
+        assert "memory_records.id" in recency_order
+
+    def test_lexical_relevance_uses_trigram_similarity(self):
+        from app.memory.postgres_repository import recall_candidate_queries
+
+        relevance, _ = recall_candidate_queries(
+            self._request(), query_embedding=None, embedding_model=None
+        )
+        order = self._sql(relevance).split("ORDER BY", 1)[1]
+        assert order.strip().startswith("similarity(memory_records.safe_summary")
+
+    def test_eligibility_is_filtered_in_sql(self):
+        from app.memory.postgres_repository import recall_candidate_queries
+
+        for stmt in recall_candidate_queries(
+            self._request(agent_id="a1", collection_id="c1", source="s1"),
+            query_embedding=None,
+            embedding_model=None,
+        ):
+            where = self._sql(stmt).split("WHERE", 1)[1]
+            for column in (
+                "tenant_id",
+                "memory_kind",
+                "classification",
+                "confidence",
+                "lifecycle_state",
+                "expires_at",
+                "agent_id",
+                "collection_id",
+                "source",
+            ):
+                assert f"memory_records.{column}" in where
+
+    def test_candidate_set_is_bounded(self):
+        from app.memory.postgres_repository import (
+            _MAX_CANDIDATES,
+            _MIN_CANDIDATES,
+            _candidate_limit,
+        )
+
+        assert _candidate_limit(self._request(top_k=1)) == _MIN_CANDIDATES
+        assert _candidate_limit(self._request(top_k=100)) == _MAX_CANDIDATES
 
 
 class TestFeedback:

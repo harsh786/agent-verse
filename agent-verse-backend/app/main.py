@@ -1299,9 +1299,15 @@ def create_app(
             app.state.canonical_embedding_router = CanonicalEmbeddingRouter(
                 decision_store=app.state.routing_decision_store
             )
+            from app.memory.embedding import memory_embedder_from_provider
             from app.memory.postgres_repository import PostgresMemoryRepository
 
-            app.state.memory_repository = PostgresMemoryRepository(db_factory)
+            # The app's embedder (dimension-fitted to the 1536-d memory column)
+            # gives canonical memory vector recall; without one it is lexical.
+            app.state.memory_repository = PostgresMemoryRepository(
+                db_factory,
+                embedder=memory_embedder_from_provider(getattr(app.state, "embedder", None)),
+            )
             from app.memory.reflexion import ReflexionService
 
             app.state.reflexion_service = ReflexionService(repository=app.state.memory_repository)
