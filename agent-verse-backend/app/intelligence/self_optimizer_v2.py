@@ -33,6 +33,30 @@ logger = get_logger(__name__)
 # ── Fix 4: min_goals lowered from 50 → 5 ──────────────────────────────────────
 DEFAULT_MIN_GOALS: int = 5
 
+# The agent's optimisable configuration IS these columns of the ``agents`` table
+# (there is no ``agents.config`` column: reading/writing one failed on every
+# call, and the swallowed error meant no experiment ever started on Postgres).
+AGENT_CONFIG_COLUMNS: tuple[str, ...] = (
+    "system_prompt",
+    "goal_template",
+    "model_override",
+    "autonomy_mode",
+    "max_iterations",
+    "timeout_seconds",
+)
+_INT_CONFIG_COLUMNS = frozenset({"max_iterations", "timeout_seconds"})
+
+# Config keys an experiment arm can change that the agent graph applies PER GOAL
+# (InitializeMixin._EXPERIMENT_APPLICABLE_KEYS must match). A suggestion that
+# changes anything else cannot be A/B-measured, so no experiment is started.
+EXPERIMENT_APPLICABLE_KEYS: frozenset[str] = frozenset({"system_prompt"})
+
+_STATE_TTL_SECONDS = 86400 * 90
+
+
+class AgentConfigUnavailableError(RuntimeError):
+    """The agent's configuration could not be read from the database."""
+
 # Domain-specific success metric defaults
 DOMAIN_METRICS: dict[str, str] = {
     "legal": "citation_accuracy",
@@ -73,35 +97,55 @@ class TenantOptimizationState:
     def _key(self, tenant_id: str, agent_id: str) -> str:
         return f"{self.PREFIX}{tenant_id}:{agent_id}"
 
+    def _count_key(self, tenant_id: str, agent_id: str) -> str:
+        return f"{self.PREFIX}{tenant_id}:{agent_id}:goals_completed"
+
     async def get(self, tenant_id: str, agent_id: str) -> dict[str, Any]:
         raw = await self._redis.get(self._key(tenant_id, agent_id))
-        if raw is None:
-            return {
+        state: dict[str, Any] = (
+            json.loads(raw)
+            if raw is not None
+            else {
                 "goals_completed": 0,
                 "last_optimized_at": None,
                 "current_experiment_id": None,
             }
-        return json.loads(raw)
+        )
+        # The counter lives in its own key (atomic INCR); it is authoritative.
+        count = await self._redis.get(self._count_key(tenant_id, agent_id))
+        if count is not None:
+            state["goals_completed"] = int(float(count))
+        return state
 
     async def update(self, tenant_id: str, agent_id: str, updates: dict[str, Any]) -> None:
+        updates = dict(updates)
+        if "goals_completed" in updates:
+            await self._redis.set(
+                self._count_key(tenant_id, agent_id),
+                int(updates.pop("goals_completed") or 0),
+                ex=_STATE_TTL_SECONDS,
+            )
+        if not updates:
+            return
         state = await self.get(tenant_id, agent_id)
         state.update(updates)
         await self._redis.setex(
             self._key(tenant_id, agent_id),
-            86400 * 90,  # 90-day TTL
+            _STATE_TTL_SECONDS,
             json.dumps(state),
         )
 
     async def increment_goals(self, tenant_id: str, agent_id: str) -> int:
-        """Atomically increment the goal completion counter. Returns new count."""
-        state = await self.get(tenant_id, agent_id)
-        state["goals_completed"] = state.get("goals_completed", 0) + 1
-        await self._redis.setex(
-            self._key(tenant_id, agent_id),
-            86400 * 90,
-            json.dumps(state),
-        )
-        return int(state["goals_completed"])
+        """Atomically increment the goal completion counter. Returns new count.
+
+        This was a read-modify-write of the JSON state blob, so concurrent goal
+        completions (several replicas / workers) lost increments. Redis INCR on
+        a dedicated key is atomic.
+        """
+        key = self._count_key(tenant_id, agent_id)
+        count = await self._redis.incr(key)
+        await self._redis.expire(key, _STATE_TTL_SECONDS)
+        return int(count)
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +370,17 @@ Respond with ONLY valid JSON:
 
         min_goals = await self._get_min_goals(tenant_id)
         if count >= min_goals and not exp_id:
-            await self._maybe_start_experiment(tenant_id, agent_id, domain)
+            try:
+                await self._maybe_start_experiment(tenant_id, agent_id, domain)
+            except AgentConfigUnavailableError as exc:
+                # Loud, not silent: this is the failure that hid the missing
+                # agents.config column (no experiment ever started).
+                logger.error(
+                    "optimization_experiment_start_failed",
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
 
     async def apply_suggestion(
         self,
@@ -336,10 +390,8 @@ Respond with ONLY valid JSON:
         candidate_config: dict[str, Any],
     ) -> bool:
         """
-        Fix 1: Apply candidate_config to the agent via a direct DB UPDATE.
-
-        Was: called API endpoint with no agent_config → every optimization silently failed.
-        Now: UPDATE agents SET config = :candidate_config.
+        Apply candidate_config to the agent's real config columns
+        (``AGENT_CONFIG_COLUMNS``) via a direct DB UPDATE.
         """
         from sqlalchemy import text as _t
 
@@ -354,18 +406,9 @@ Respond with ONLY valid JSON:
                 current_config = await self._read_current_agent_config_with_session(
                     db, tenant_id, agent_id
                 )
-                await db.execute(
-                    _t("""
-                        UPDATE agents
-                        SET config = :config, updated_at = NOW()
-                        WHERE id = :agent_id AND tenant_id = :tenant_id
-                    """),
-                    {
-                        "config": json.dumps(candidate_config),
-                        "agent_id": agent_id,
-                        "tenant_id": tenant_id,
-                    },
-                )
+                if current_config is None:
+                    raise AgentConfigUnavailableError(f"agent {agent_id} not found")
+                await self._write_agent_config(db, tenant_id, agent_id, candidate_config)
                 await db.commit()
         except Exception as exc:
             logger.error(
@@ -521,18 +564,7 @@ Respond with ONLY valid JSON:
                 if isinstance(control_config, str):
                     control_config = json.loads(control_config)
 
-                await db.execute(
-                    _t("""
-                        UPDATE agents
-                        SET config = :config, updated_at = NOW()
-                        WHERE id = :agent_id AND tenant_id = :tenant_id
-                    """),
-                    {
-                        "config": json.dumps(control_config),
-                        "agent_id": agent_id,
-                        "tenant_id": tenant_id,
-                    },
-                )
+                await self._write_agent_config(db, tenant_id, agent_id, control_config or {})
                 await db.execute(
                     _t("""
                         UPDATE improvement_experiments
@@ -651,15 +683,13 @@ Respond with ONLY valid JSON:
     async def _read_current_agent_config(
         self, tenant_id: str, agent_id: str
     ) -> dict[str, Any] | None:
-        """
-        Fix 2: Read actual agent config from DB.
-        Was: before_prompt = "before" — literal string placeholder.
-        """
+        """The agent's current config (``AGENT_CONFIG_COLUMNS``) from the agents table.
 
-        # The inner helper already returns None on a DB error; establishing the
-        # session and its RLS context has to be covered by the same contract, or
-        # an unreachable database turns an optional optimisation read into a
-        # crash.
+        ``None`` when the agent does not exist. A database failure raises
+        :class:`AgentConfigUnavailableError` — it used to be swallowed into
+        ``None``, which is how a query against a nonexistent column silently
+        stopped every experiment from starting.
+        """
         try:
             async with (
                 self._db() as db,
@@ -668,30 +698,104 @@ Respond with ONLY valid JSON:
                 return await self._read_current_agent_config_with_session(
                     db, tenant_id, agent_id
                 )
-        except Exception:
-            return None
+        except AgentConfigUnavailableError:
+            raise
+        except Exception as exc:
+            raise AgentConfigUnavailableError(
+                f"could not read agent {agent_id} config: {exc}"
+            ) from exc
 
     async def _read_current_agent_config_with_session(
         self, db: Any, tenant_id: str, agent_id: str
     ) -> dict[str, Any] | None:
         from sqlalchemy import text as _t
 
+        columns = ", ".join(AGENT_CONFIG_COLUMNS)
         try:
             row = (
                 await db.execute(
-                    _t("""
-                        SELECT config FROM agents
-                        WHERE id = :agent_id AND tenant_id = :tenant_id
-                    """),
+                    _t(
+                        f"SELECT {columns} FROM agents "  # fixed, whitelisted columns
+                        "WHERE id = :agent_id AND tenant_id = :tenant_id"
+                    ),
                     {"agent_id": agent_id, "tenant_id": tenant_id},
                 )
             ).fetchone()
-            if row and row[0]:
-                cfg = row[0]
-                return cfg if isinstance(cfg, dict) else json.loads(cfg)
         except Exception as exc:
-            logger.warning("read_agent_config_failed", error=str(exc))
-        return None
+            raise AgentConfigUnavailableError(
+                f"could not read agent {agent_id} config: {exc}"
+            ) from exc
+        if row is None:
+            return None
+        return {col: row[i] for i, col in enumerate(AGENT_CONFIG_COLUMNS)}
+
+    @staticmethod
+    async def _write_agent_config(
+        db: Any, tenant_id: str, agent_id: str, config: dict[str, Any]
+    ) -> None:
+        """UPDATE the agent's config columns present in *config* (whitelisted)."""
+        from sqlalchemy import text as _t
+
+        values: dict[str, Any] = {}
+        for col in AGENT_CONFIG_COLUMNS:
+            if col not in config or config[col] is None:
+                continue
+            values[col] = int(config[col]) if col in _INT_CONFIG_COLUMNS else str(config[col])
+        if not values:
+            raise AgentConfigUnavailableError("config has no agent config columns to write")
+        assignments = ", ".join(f"{col} = :{col}" for col in values)
+        result = await db.execute(
+            _t(
+                f"UPDATE agents SET {assignments}, updated_at = NOW() "  # whitelisted columns
+                "WHERE id = :agent_id AND tenant_id = :tenant_id"
+            ),
+            {**values, "agent_id": agent_id, "tenant_id": tenant_id},
+        )
+        if getattr(result, "rowcount", 1) == 0:
+            raise AgentConfigUnavailableError(f"agent {agent_id} not found")
+
+    async def conclude_unrealizable(
+        self,
+        tenant_id: str,
+        agent_id: str,
+        experiment_id: str,
+        *,
+        keys: list[str] | None = None,
+    ) -> None:
+        """Stop an experiment the runtime cannot apply per goal.
+
+        The agent graph excludes such goals (no arm recorded), so the experiment
+        would never collect samples, never conclude, and — as the agent's
+        ``current_experiment_id`` — block every future experiment forever.
+        Mark it failed/inconclusive and release the agent.
+        """
+        from sqlalchemy import text as _t
+
+        note = f" [stopped: arm changes keys the runtime cannot apply: {sorted(keys or [])}]"
+        async with (
+            self._db() as db,
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            await db.execute(
+                _t("""
+                    UPDATE improvement_experiments
+                    SET status = 'failed', winner = 'inconclusive', completed_at = NOW(),
+                        suggestion_rationale = suggestion_rationale || :note
+                    WHERE id = :exp_id AND tenant_id = :tenant_id AND status = 'running'
+                """),
+                {"note": note, "exp_id": experiment_id, "tenant_id": tenant_id},
+            )
+            await db.commit()
+        state = await self._state.get(tenant_id, agent_id)
+        if state.get("current_experiment_id") == experiment_id:
+            await self._state.update(tenant_id, agent_id, {"current_experiment_id": None})
+        logger.info(
+            "optimization_experiment_unrealizable",
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+            experiment_id=experiment_id,
+            keys=sorted(keys or []),
+        )
 
     async def _maybe_start_experiment(
         self, tenant_id: str, agent_id: str, domain: str | None
@@ -709,6 +813,21 @@ Respond with ONLY valid JSON:
 
         candidate_config = self._apply_suggestion_to_config(current_config, suggestion)
         if candidate_config == current_config:
+            return None
+        changed = {
+            k
+            for k in set(current_config) | set(candidate_config)
+            if current_config.get(k) != candidate_config.get(k)
+        }
+        if not changed <= EXPERIMENT_APPLICABLE_KEYS:
+            # The graph can only apply these keys per goal; an experiment on
+            # anything else would be excluded on every goal and never conclude.
+            logger.info(
+                "optimization_suggestion_not_experimentable",
+                tenant_id=tenant_id,
+                agent_id=agent_id,
+                keys=sorted(changed - EXPERIMENT_APPLICABLE_KEYS),
+            )
             return None
 
         experiment_id = await self._create_experiment(

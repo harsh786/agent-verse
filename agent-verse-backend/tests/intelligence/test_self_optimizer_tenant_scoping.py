@@ -44,6 +44,8 @@ async def test_rollback_is_tenant_scoped() -> None:
     def rows_for(sql: str, _p: dict[str, Any]) -> list[Any]:
         if "SELECT control_config FROM improvement_experiments" in sql:
             return [({"system_prompt": "old"},)]
+        if "UPDATE agents" in sql:
+            return [(1,)]  # one agent row updated
         return []
 
     db = RlsRecordingDb(rows_for=rows_for)
@@ -54,8 +56,17 @@ async def test_rollback_is_tenant_scoped() -> None:
     assert_tenant_scoped(db, "UPDATE agents", TENANT)
 
 
+def _agent_rows(sql: str, _p: dict[str, Any]) -> list[Any]:
+    # The agents table's real config columns (there is no agents.config).
+    if "FROM agents" in sql:
+        return [("old", "", "", "bounded-autonomous", 15, 300)]
+    if "UPDATE agents" in sql:
+        return [(1,)]
+    return []
+
+
 async def test_apply_suggestion_bookkeeping_is_tenant_scoped() -> None:
-    db = RlsRecordingDb()
+    db = RlsRecordingDb(rows_for=_agent_rows)
     ok = await _optimizer(db).apply_suggestion(TENANT, AGENT, EXP, {"system_prompt": "new"})
 
     assert ok is True

@@ -397,6 +397,19 @@ class _FakeRedis:
         self._ttl[key] = float(timestamp) - time.time() + time.monotonic()
         return key in self._d or key in self._z
 
+    async def incr(self, key: str) -> int:
+        """Atomically increment an integer counter and return the new value."""
+        async with self._get_lock():
+            if self._is_expired(key):
+                self._d.pop(key, None)
+                self._ttl.pop(key, None)
+            new_val = int(float(self._d.get(key, 0))) + 1
+            self._d[key] = str(new_val)
+            return new_val
+
+    async def setex(self, key: str, seconds: int, value: str) -> None:
+        await self.set(key, value, ex=seconds)
+
     async def incrbyfloat(self, key: str, amount: float) -> float:
         """Increment a float counter and return the new value."""
         async with self._get_lock():

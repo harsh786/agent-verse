@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.intelligence._opt_redis import add_counter_ops
 from app.intelligence.self_optimizer_v2 import (
     DEFAULT_MIN_GOALS,
     DOMAIN_METRICS,
@@ -66,6 +67,7 @@ async def test_increment_goals_returns_incremented_count() -> None:
 
     mock_redis.get = fake_get
     mock_redis.setex = fake_setex
+    add_counter_ops(mock_redis, store)
 
     state = TenantOptimizationState(mock_redis)
     c1 = await state.increment_goals("tenant-1", "agent-1")
@@ -258,6 +260,7 @@ def _make_optimizer() -> tuple[SelfOptimizerV2, dict[str, str]]:
 
     mock_redis.get = fake_get
     mock_redis.setex = fake_setex
+    add_counter_ops(mock_redis, redis_store)
 
     return mock_redis, redis_store
 
@@ -267,8 +270,9 @@ async def test_apply_suggestion_success_updates_db() -> None:
     mock_redis, _ = _make_optimizer()
 
     mock_session = AsyncMock()
+    # The agents table's real config columns (there is no agents.config).
     mock_session.execute = AsyncMock(return_value=MagicMock(fetchone=MagicMock(return_value=(
-        json.dumps({"system_prompt": "old prompt"}),
+        "old prompt", "", "", "bounded-autonomous", 15, 300,
     ))))
     mock_session.commit = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -557,6 +561,7 @@ async def test_get_arm_config_returns_empty_when_no_experiment() -> None:
 
     mock_redis.get = fake_get
     mock_redis.setex = fake_setex
+    add_counter_ops(mock_redis, redis_store)
 
     # No current_experiment_id stored
     mock_session = AsyncMock()
@@ -606,13 +611,15 @@ async def test_read_agent_config_returns_none_when_no_row() -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_agent_config_parses_json_string() -> None:
+async def test_read_agent_config_maps_columns() -> None:
     mock_redis, _ = _make_optimizer()
     config = {"system_prompt": "expert assistant"}
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=MagicMock(
-        fetchone=MagicMock(return_value=(json.dumps(config),))
+        fetchone=MagicMock(return_value=(
+            config["system_prompt"], "", "", "bounded-autonomous", 15, 300
+        ))
     ))
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -626,17 +633,20 @@ async def test_read_agent_config_parses_json_string() -> None:
     result = await optimizer._read_current_agent_config_with_session(
         mock_session, "t1", "a1"
     )
-    assert result == config
+    assert result is not None
+    assert result["system_prompt"] == config["system_prompt"]
 
 
 @pytest.mark.asyncio
-async def test_read_agent_config_returns_dict_directly() -> None:
+async def test_read_agent_config_includes_prompt_column() -> None:
     mock_redis, _ = _make_optimizer()
     config = {"system_prompt": "expert"}
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=MagicMock(
-        fetchone=MagicMock(return_value=(config,))  # Already a dict (some DB drivers)
+        fetchone=MagicMock(return_value=(
+            config["system_prompt"], "", "", "bounded-autonomous", 15, 300
+        ))
     ))
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -650,4 +660,5 @@ async def test_read_agent_config_returns_dict_directly() -> None:
     result = await optimizer._read_current_agent_config_with_session(
         mock_session, "t1", "a1"
     )
-    assert result == config
+    assert result is not None
+    assert result["system_prompt"] == config["system_prompt"]
