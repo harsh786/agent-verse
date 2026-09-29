@@ -2326,6 +2326,14 @@ class ExecutorMixin:
                                     raise PermissionError(
                                         f"Tool '{tool_ref.name}' approval timed out."
                                     )
+                                elif final_status != ApprovalStatus.APPROVED:
+                                    # Fail closed: only an explicit APPROVED runs the
+                                    # tool. A still-PENDING result (e.g. the wait was
+                                    # cut short by a Redis error) used to fall through.
+                                    raise PermissionError(
+                                        f"Tool '{tool_ref.name}' was not approved "
+                                        f"({final_status})."
+                                    )
                                 # APPROVED: now actually dispatch the tool call
                                 await self._emit({"type": "approval_granted", "request_id": req_id})
                                 _approved_result = await self._mcp_client.call_tool(

@@ -270,6 +270,30 @@ async def test_write_high_tool_supervised_timeout_raises_permission_error() -> N
     assert mcp.calls == []
 
 
+async def test_write_high_tool_supervised_pending_fails_closed() -> None:
+    """A wait that comes back still PENDING (e.g. a Redis error) must not dispatch.
+
+    The gate used to block only on REJECTED/TIMED_OUT, so anything else --
+    including PENDING -- fell through and ran the high-risk tool unapproved.
+    """
+    executor = FakeProvider(
+        responses=['{"tool": "jira_update_issue", "arguments": {"issue_key": "BAU-1"}}']
+    )
+    mcp = _RecordingMCPClient()
+    tc = _tool_context(("jira_update_issue", "Jira", {}))
+    hitl = HITLGateway()
+    hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.PENDING)
+    graph = _make_graph(
+        executor=executor, mcp_client=mcp, hitl_gateway=hitl, autonomy_mode="supervised"
+    )
+    state = _make_state(step_desc="update Jira issue")
+    state.context["tool_context"] = tc
+
+    with pytest.raises(PermissionError, match="not approved"):
+        await graph._execute_step("update Jira issue", state, T)
+    assert mcp.calls == []
+
+
 # ---------------------------------------------------------------------------
 # Malformed / unsafe tool-call arguments
 # ---------------------------------------------------------------------------

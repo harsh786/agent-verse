@@ -570,10 +570,11 @@ class TestHITLExtra:
         assert result["action"] == "approved"
         assert result["approver"] == "alice"
 
-    # lines 347–351 — _wait_for_result breaks on blpop exception
+    # _wait_for_result fails closed on a blpop exception (it used to return None,
+    # which wait_for_approval read as "resolved" and returned PENDING).
     @pytest.mark.asyncio
-    async def test_wait_for_result_blpop_exception_breaks(self) -> None:
-        from app.governance.hitl import HITLGateway
+    async def test_wait_for_result_blpop_exception_raises(self) -> None:
+        from app.governance.hitl import HITLGateway, HITLWaitUnavailableError
 
         mock_redis = AsyncMock()
         mock_redis.blpop = AsyncMock(side_effect=RuntimeError("redis error"))
@@ -581,8 +582,8 @@ class TestHITLExtra:
         gw = HITLGateway()
         gw._redis = mock_redis
 
-        result = await gw._wait_for_result("req-456", timeout=1.0)
-        assert result is None  # broken out of loop
+        with pytest.raises(HITLWaitUnavailableError):
+            await gw._wait_for_result("req-456", timeout=1.0)
 
     # lines 404, 409–419 — load_pending_from_db with DB rows
     @pytest.mark.asyncio

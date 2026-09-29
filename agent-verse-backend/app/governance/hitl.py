@@ -175,6 +175,16 @@ class HITLResolutionUnavailableError(Exception):
     """
 
 
+class HITLWaitUnavailableError(Exception):
+    """The cross-replica result channel (Redis BLPOP) failed mid-wait.
+
+    ``_wait_for_result`` used to swallow the error and return ``None``, which
+    ``wait_for_approval`` read as "resolved" and returned the still-PENDING
+    status immediately -- callers that only blocked on REJECTED/TIMED_OUT then
+    ran the gated action unapproved.
+    """
+
+
 class HITLDeliveryError(Exception):
     """A new approval request could not be made durable (``approval_requests``).
 
@@ -500,13 +510,19 @@ class HITLGateway:
         request is still PENDING, preventing it from overwriting a concurrent
         APPROVED (H17).
 
-        Returns the final ApprovalStatus (APPROVED, REJECTED, or TIMED_OUT).
+        Returns the final ApprovalStatus (APPROVED, REJECTED, or TIMED_OUT) --
+        never PENDING. Fails closed: when the Redis channel errors mid-wait the
+        waiter keeps listening on the in-process event and polls the
+        DB-authoritative status until the deadline; it returns APPROVED only
+        when an approval was actually observed.
         """
         req = self._requests.get((tenant_ctx.tenant_id, request_id))
         if req is None:
             return ApprovalStatus.REJECTED
 
         timeout_s = timeout if timeout is not None else self._timeout
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_s
 
         # Task 1: in-process event (local replica or same-process approve/reject)
         local_task: asyncio.Task[Any] = asyncio.create_task(req._event.wait())
@@ -521,46 +537,81 @@ class HITLGateway:
             tasks.append(redis_task)
 
         try:
-            done, pending = await asyncio.wait(
+            done, _pending = await asyncio.wait(
                 tasks,
                 timeout=timeout_s,
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # Cancel whichever task(s) didn't win
-            for t in pending:
-                t.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await t
+            # If Redis BLPOP resolved first, update local status from the payload (C6.2)
+            redis_failed = False
+            if redis_task is not None and redis_task in done and not local_task.done():
+                try:
+                    redis_result = redis_task.result()
+                except Exception as exc:
+                    from app.observability.logging import get_logger
 
-            if not done:
-                # Timeout expired — CAS guard: only set TIMED_OUT if still PENDING (H17)
-                if req.status == ApprovalStatus.PENDING:
-                    req.status = ApprovalStatus.TIMED_OUT
-                req._event.set()  # Unblock any other waiters on this request
-            else:
-                # If Redis BLPOP resolved first, update local status from the payload (C6.2)
-                if redis_task is not None and redis_task in done:
-                    try:
-                        redis_result = redis_task.result()
-                        if redis_result and isinstance(redis_result, dict):
-                            action = redis_result.get("action", "")
-                            if action == "approved" and req.status == ApprovalStatus.PENDING:
-                                req.status = ApprovalStatus.APPROVED
-                                req._event.set()
-                            elif action == "rejected" and req.status == ApprovalStatus.PENDING:
-                                req.status = ApprovalStatus.REJECTED
-                                req._event.set()
-                    except Exception:
-                        pass
-
+                    get_logger(__name__).warning(
+                        "hitl_wait_redis_unavailable", request_id=request_id, error=str(exc)
+                    )
+                    redis_failed = True
+                    redis_result = None
+                if redis_result and isinstance(redis_result, dict):
+                    action = redis_result.get("action", "")
+                    if action == "approved" and req.status == ApprovalStatus.PENDING:
+                        req.status = ApprovalStatus.APPROVED
+                        req._event.set()
+                    elif action == "rejected" and req.status == ApprovalStatus.PENDING:
+                        req.status = ApprovalStatus.REJECTED
+                        req._event.set()
+                elif redis_failed and req.status == ApprovalStatus.PENDING:
+                    # Redis is down: keep waiting for a local decision and poll the
+                    # DB so a resolution on another replica is still observed.
+                    await self._wait_local_or_db(req, request_id, tenant_ctx, local_task, deadline)
         except asyncio.CancelledError:
             local_task.cancel()
             if redis_task is not None:
                 redis_task.cancel()
             raise
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await t
 
+        if req.status == ApprovalStatus.PENDING:
+            # Timeout (or an undecided wait) -- CAS guard: only PENDING becomes
+            # TIMED_OUT, so a concurrent APPROVED is never overwritten (H17).
+            req.status = ApprovalStatus.TIMED_OUT
+            req._event.set()  # Unblock any other waiters on this request
         return req.status
+
+    _DB_POLL_INTERVAL_S = 2.0
+
+    async def _wait_local_or_db(
+        self,
+        req: ApprovalRequest,
+        request_id: str,
+        tenant_ctx: TenantContext,
+        local_task: asyncio.Task[Any],
+        deadline: float,
+    ) -> None:
+        """Fallback wait when Redis failed: local event + DB status polling."""
+        loop = asyncio.get_running_loop()
+        while req.status == ApprovalStatus.PENDING:
+            if self._db_session_factory is not None:
+                db_status = _STATUS_BY_DB_VALUE.get(
+                    await self._db_read_status(request_id, tenant_ctx.tenant_id) or ""
+                )
+                if db_status is not None and db_status != ApprovalStatus.PENDING:
+                    req.status = db_status
+                    req._event.set()
+                    return
+            remaining = deadline - loop.time()
+            if remaining <= 0 or local_task.done():
+                return
+            await asyncio.wait({local_task}, timeout=min(remaining, self._DB_POLL_INTERVAL_S))
 
     def get_request(self, request_id: str, *, tenant_ctx: TenantContext) -> ApprovalRequest | None:
         """Process-local lookup. Prefer :meth:`aget_request` on any request path.
@@ -1103,7 +1154,9 @@ class HITLGateway:
                 from app.observability.logging import get_logger
 
                 get_logger(__name__).warning("hitl_blpop_error", error=str(exc))
-                break
+                # Fail closed: an error is NOT "no decision yet". Returning None
+                # here let wait_for_approval hand back PENDING immediately.
+                raise HITLWaitUnavailableError(str(exc)) from exc
 
         return None
 
