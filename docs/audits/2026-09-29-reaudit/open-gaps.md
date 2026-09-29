@@ -7,6 +7,13 @@ Status: 20 PASS · 149 PARTIAL · 9 FAIL · 14 NOT_IMPLEMENTED · 0 BLOCKED
 
 > **2026-09-29 update — wave 7C merged:** Insights (real schema), golden datasets (honest 501), platform admin (usage from Postgres; incidents 501), marketplace paid purchase (501 before any charge), Stripe past-due downgrade, multimodal PDF failures, Google Drive partial/failed reporting, perception batch 501, full tenant export, civilization 503s. Re-certify these features before ticking their items.
 
+> **2026-09-29 update — waves 7A, 7B and 7D also merged:**
+> - **7A (HITL / e-stop / security):** tool approval requires APPROVED and fails closed on Redis errors; signed, expiring, tenant-bound email approval links; fleet-wide emergency stop with no TTL (503 if it can't be enforced); org e-stop needs org_admin; authenticated approver identity (incl. batch-approve); group-chat WebSocket uses the shared authenticator.
+> - **7B (correctness):** workflow approval is a hard barrier; `run_goal` atomic claim; `/schedules` on the durable store; worker builds the graph from the persisted runtime profile and gets the bulkhead; debate/supervisor charged; goal-tree ids attributed to the parent; conditional cancel/pause.
+> - **7D (LLM guard / SSRF / ingest):** indexing, KG, workflow llm_step, NL scheduler, classifier, org, memory consolidation, tool healing and RAFT through `complete_decision`; gateway `_BudgetedProvider` breaker+timeout; RAG_INGEST fails closed; ~20 fetch sites on the pinned client; memory PATCH/POST guardrail; GET `/eval` from Postgres; worker BYOK fails closed; per-tenant `/embeddings/usage`; Excel/Azure Blob caps.
+>
+> No item below is ticked yet: every one needs re-verification against current `main`. `file:line` references predate wave 7 and may have moved.
+
 Items already assigned to fix wave 7 (see `HANDOFF.md`) are still listed here; tick them off when the wave's branch is merged and re-verified.
 
 ## Agent core
@@ -1657,3 +1664,16 @@ _FIXED by df515a292. public_status.router is included at app/bootstrap/routers.p
 
 - [ ] NEW app/observability/health.py:34-58 - HealthRegistry.run has no per-check timeout or cache, so each anonymous GET /status (auth bypass, no per-tenant rate limit) pings Postgres and Redis live, and a hung dependency hangs /status instead of reporting 'degraded' [severity: low]
 - [ ] NEW agent-verse-frontend/e2e/status-page.spec.ts:4-28 - the e2e spec still asserts only the heading and button, never the backend payload [severity: low]
+
+## Test-coverage gaps (measured after the audit, not in `certification-matrix.json`)
+
+Counts are references in `tests/` (string or `TriggerType.X`), so they are an upper bound on real coverage, not proof of a firing test.
+
+- [ ] Trigger types with **zero** test references: jira_webhook, slack_event, teams_webhook, salesforce_event, confluence_webhook, linear_webhook, grafana_alert, sentry_issue, log_pattern `[high]`
+- [ ] Trigger types with only 1–6 references (no firing proof): business_calendar, relative_delay, goal_score_below, hitl_rejected, memory_created, chat_keyword, chat_mention, email_intent, sms_inbound, voice_transcript, meeting_ended, form_submission, compound, window_aggregate, github_webhook, stripe_webhook, discord_event, email_arrival, google_sheets, sharepoint, cloudwatch, graphql_subscription `[medium]`
+- [ ] Only cron, interval, once, generic webhook, api_poll, goal_failed and condition have tests under `tests/e2e_full`/`tests/e2e`/`tests/real_e2e`; add e2e (signed payload → dispatcher → goal row → completes) for every SaaS webhook and observability trigger `[high]`
+- [ ] Telegram (30 unit files) and WhatsApp (21) have **0** e2e tests; Slack 2, Teams 1, Discord 1. Add gateway e2e: inbound webhook → tenant binding → goal/chat turn → outbound reply `[high]`
+- [ ] No test fires a schedule on 2+ beat/worker replicas and asserts exactly-once execution `[high]`
+- [ ] No real-payload (recorded fixture) tests for GitHub, Stripe, Jira, PagerDuty, Datadog, Alertmanager webhook bodies and signatures `[medium]`
+- [ ] Retrieval: colbert (library not installed) and raft (needs a deployed fine-tuned model) are unverified on real models; the other 18 strategies pass on the on-prem models `[low]`
+- [ ] Order-dependent unit failure: `tests/api/test_workflows.py::test_tenant_isolation_prevents_cross_tenant_access` fails only in the full suite (passes alone); find the leaking test (see `HANDOFF.md`) `[medium]`
