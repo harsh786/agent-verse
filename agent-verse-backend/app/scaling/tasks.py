@@ -545,8 +545,21 @@ def _pause_gate_host(runner: Any) -> Any:
     return None
 
 
-def _make_worker_pause_gate(goal_id: str, sync_r: Any, event_callback: Any) -> Any:
-    """Step-boundary gate for worker runs, driven by the cross-replica Redis flags."""
+def _make_worker_pause_gate(
+    goal_id: str,
+    sync_r: Any,
+    event_callback: Any,
+    *,
+    tenant_id: str | None = None,
+    org_id: str | None = None,
+) -> Any:
+    """Step-boundary gate for worker runs, driven by the cross-replica Redis flags.
+
+    With *tenant_id* it also enforces the tenant/org emergency stop at every
+    step boundary (fail closed on a Redis error) — the worker used to check it
+    only once, before the goal started.
+    """
+    from app.governance.emergency_stop import enforce_emergency_stop_sync
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
 
     async def _emit(event: dict[str, Any]) -> None:
@@ -557,6 +570,10 @@ def _make_worker_pause_gate(goal_id: str, sync_r: Any, event_callback: Any) -> A
     async def _gate() -> None:
         if is_cancelled_sync(goal_id, sync_r):
             raise GoalCancelledError(f"Goal {goal_id} cancelled")
+        if tenant_id:
+            _stop = enforce_emergency_stop_sync(sync_r, tenant_id, org_id)
+            if _stop:
+                raise GoalCancelledError(f"Goal {goal_id} stopped: {_stop}")
         if not is_paused_sync(goal_id, sync_r):
             return
         logger.info("goal_paused_in_worker goal_id=%s", goal_id)
@@ -597,7 +614,14 @@ async def _run_with_signals(
     sync_r = _get_sync_redis()
     gate_host = _pause_gate_host(agent_runner)
     if gate_host is not None and sync_r is not None:
-        gate_host._pause_gate = _make_worker_pause_gate(goal_id, sync_r, event_callback)
+        _org = (initial_context or {}).get("org_id")
+        gate_host._pause_gate = _make_worker_pause_gate(
+            goal_id,
+            sync_r,
+            event_callback,
+            tenant_id=getattr(tenant_ctx, "tenant_id", None),
+            org_id=str(_org) if _org else None,
+        )
 
     run_task = asyncio.create_task(
         agent_runner.run(

@@ -618,6 +618,9 @@ async def _run_with_assignment(assignment: dict) -> tuple:  # type: ignore[type-
     mock_v2.on_goal_completed = AsyncMock()
     mock_app_state = MagicMock()
     mock_app_state.self_optimizer_v2 = mock_v2
+    # No runtime Redis: a MagicMock one cannot be read, and the emergency-stop
+    # check fails closed on an unreadable stop state.
+    mock_app_state.state._redis = None
     p = _Planner(
         responses=[
             '{"steps": ["search data"]}',

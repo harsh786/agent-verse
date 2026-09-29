@@ -261,7 +261,11 @@ def test_delete_notification_channel_no_service() -> None:
 
 
 def test_emergency_stop_success() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    import fakeredis.aioredis
+
+    app = _make_app()
+    app.state._redis = fakeredis.aioredis.FakeRedis()
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/governance/emergency-stop",
         json={"reason": "Security incident"},
@@ -271,7 +275,11 @@ def test_emergency_stop_success() -> None:
 
 
 def test_clear_emergency_stop() -> None:
-    client = TestClient(_make_app(), raise_server_exceptions=False)
+    import fakeredis.aioredis
+
+    app = _make_app()
+    app.state._redis = fakeredis.aioredis.FakeRedis()
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.delete("/governance/emergency-stop", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code in (200, 204)
 

@@ -1279,51 +1279,52 @@ def test_emergency_stop_goal_cancel_exception_is_swallowed() -> None:
     goal_record.tenant_id = _TENANT_ID
     goal_record.status = "running"
     goal_service._goals = {"goal-1": goal_record}
+    goal_service.active_goal_ids = AsyncMock(return_value=["goal-1"])
     goal_service.cancel_goal = AsyncMock(side_effect=RuntimeError("cancel exploded"))
 
     client = TestClient(
-        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
+    assert resp.json()["failed_goals"] == [{"goal_id": "goal-1", "error": "RuntimeError"}]
 
 
-class _ExplodingGoals:
-    """dict-like stand-in whose `.items()` raises, simulating an internal
-    store failure while merely *enumerating* running goals (distinct from a
-    failure cancelling one, which is a separate, inner try/except)."""
+def _fake_redis() -> Any:
+    import fakeredis.aioredis
 
-    def items(self) -> Any:
-        raise RuntimeError("store corrupted")
+    return fakeredis.aioredis.FakeRedis()
 
 
-def test_emergency_stop_goal_enumeration_exception_is_swallowed() -> None:
+def test_emergency_stop_goal_enumeration_exception_is_reported() -> None:
+    """A failure *enumerating* running goals (distinct from cancelling one) is
+    reported as partial; the persisted stop still halts them at the next step."""
     goal_service = MagicMock()
-    goal_service._goals = _ExplodingGoals()
+    goal_service.active_goal_ids = AsyncMock(side_effect=RuntimeError("store corrupted"))
 
     client = TestClient(
-        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(goal_service=goal_service, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
     assert resp.json()["cancelled_goals"] == 0
+    assert resp.json()["partial"] is True
+    assert any("goal_enumeration_failed" in e for e in resp.json()["errors"])
 
 
-def test_emergency_stop_redis_publish_exception_is_swallowed() -> None:
+def test_emergency_stop_flag_write_failure_is_503() -> None:
     redis = MagicMock()
-    redis.publish = AsyncMock(side_effect=RuntimeError("redis down"))
-    redis.set = AsyncMock()
+    redis.set = AsyncMock(side_effect=RuntimeError("redis down"))
 
     client = TestClient(
         _make_app(redis=redis, ctx=_ADMIN_CTX), raise_server_exceptions=False
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
-    assert resp.status_code == 200
-    # A failed publish is reported, not claimed as sent (no fake success).
-    assert resp.json()["celery_signal_sent"] is False
-    assert resp.json()["partial"] is True
-    assert any("celery_signal_failed" in e for e in resp.json()["errors"])
+    # The stop could not be persisted, so nothing could enforce it: no fake success.
+    assert resp.status_code == 503
 
 
 def test_emergency_stop_reject_pending_exception_is_swallowed() -> None:
@@ -1334,7 +1335,8 @@ def test_emergency_stop_reject_pending_exception_is_swallowed() -> None:
     gateway.reject = AsyncMock(side_effect=RuntimeError("reject exploded"))
 
     client = TestClient(
-        _make_app(hitl=gateway, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(hitl=gateway, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
@@ -1348,7 +1350,8 @@ def test_emergency_stop_pending_approvals_enumeration_exception_is_swallowed() -
     gateway.list_pending = MagicMock(side_effect=RuntimeError("gateway store corrupted"))
 
     client = TestClient(
-        _make_app(hitl=gateway, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(hitl=gateway, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200
@@ -1360,7 +1363,8 @@ def test_emergency_stop_audit_log_exception_is_swallowed() -> None:
     audit.record = MagicMock(side_effect=RuntimeError("audit sink down"))
 
     client = TestClient(
-        _make_app(audit=audit, ctx=_ADMIN_CTX), raise_server_exceptions=False
+        _make_app(audit=audit, ctx=_ADMIN_CTX, redis=_fake_redis()),
+        raise_server_exceptions=False,
     )
     resp = client.post("/governance/emergency-stop", headers=_h())
     assert resp.status_code == 200

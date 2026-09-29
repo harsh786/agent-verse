@@ -83,7 +83,7 @@ from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
 from app.agent.workflow_executor import WorkflowExecutor
 from app.agent.workflow_planner import build_static_workflow
-from app.core.errors import NotFoundError, ServiceUnavailableError
+from app.core.errors import ConflictError, NotFoundError, ServiceUnavailableError
 from app.governance.audit import AuditLog
 from app.governance.hitl import HITLGateway
 from app.observability.metrics import record_goal_duration, record_goal_started
@@ -2084,6 +2084,62 @@ class GoalService:
             )
             raise ServiceUnavailableError(reason, code="PLATFORM_NOT_READY")
 
+    async def _emergency_stop_preflight(
+        self, tenant_ctx: TenantContext, execution_context: dict[str, Any] | None
+    ) -> None:
+        """Refuse new work while a tenant/org emergency stop is active (fail closed)."""
+        from app.governance.emergency_stop import UNVERIFIABLE_REASON, enforce_emergency_stop
+
+        org_id = (execution_context or {}).get("org_id")
+        reason = await enforce_emergency_stop(
+            getattr(self, "_redis", None), tenant_ctx.tenant_id, str(org_id) if org_id else None
+        )
+        if reason is None:
+            return
+        _svc_logger.warning(
+            "goal_blocked_by_emergency_stop", tenant_id=tenant_ctx.tenant_id, reason=reason
+        )
+        if reason == UNVERIFIABLE_REASON:
+            raise ServiceUnavailableError(reason, code="EMERGENCY_STOP_UNVERIFIABLE")
+        raise ConflictError(reason, code="EMERGENCY_STOP_ACTIVE")
+
+    async def active_goal_ids(self, tenant_ctx: TenantContext) -> list[str]:
+        """Every non-terminal goal of the tenant — on ANY replica or worker.
+
+        The emergency stop used to enumerate this replica's in-memory goals only,
+        so goals run by other replicas or Celery workers were never cancelled.
+        Postgres is the fleet-wide source of truth; a DB error propagates (the
+        caller must not report "all goals cancelled" on a partial list).
+        """
+        ids: dict[str, None] = {
+            gid: None
+            for gid, rec in list(self._goals.items())
+            if getattr(rec, "tenant_id", "") == tenant_ctx.tenant_id
+            and rec.status not in _TERMINAL_STATUSES
+        }
+        if self._db is not None:
+            from sqlalchemy import select
+
+            from app.db.models.goal import Goal
+            from app.db.rls import sqlalchemy_rls_context
+
+            terminal = [s.value for s in _TERMINAL_STATUSES]
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                rows = (
+                    await session.execute(
+                        select(Goal.id).where(
+                            Goal.tenant_id == tenant_ctx.tenant_id,
+                            Goal.status.notin_(terminal),
+                        )
+                    )
+                ).scalars().all()
+            ids.update({str(r): None for r in rows})
+        return list(ids)
+
     # ── private helpers ───────────────────────────────────────────────────────
 
     async def _submit_single_goal(
@@ -3766,6 +3822,9 @@ class GoalService:
             # Readiness pre-flight (READINESS_GATE): a goal whose required dependencies
             # are down is refused before any slot, record or queue entry is taken.
             if not dry_run:
+                # Emergency stop: nothing new starts while a tenant/org stop is
+                # active; an unreadable stop state refuses (503), never waves through.
+                await self._emergency_stop_preflight(tenant_ctx, execution_context)
                 await self._readiness_preflight(tenant_ctx)
 
             # ── Goal-level deduplication ────────────────────────────────────────
@@ -4877,12 +4936,23 @@ class GoalService:
         another replica used to be observed only while paused, so the goal ran
         to completion.
         """
+        from app.governance.emergency_stop import enforce_emergency_stop
         from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled, is_paused
 
         async def _gate() -> None:
             _redis = getattr(self, "_redis", None)
             if _redis is not None and await is_cancelled(goal_id, _redis):
                 raise GoalCancelledError(f"Goal {goal_id} cancelled")
+            # Emergency stop, observed at EVERY step boundary on every replica:
+            # it used to be checked only when a goal started, so running goals
+            # (and any on other replicas) kept going. Fails closed on a Redis error.
+            _rec = self._goals.get(goal_id)
+            _org = (_rec.execution_context or {}).get("org_id") if _rec is not None else None
+            _stop = await enforce_emergency_stop(
+                _redis, tenant_ctx.tenant_id, str(_org) if _org else None
+            )
+            if _stop:
+                raise GoalCancelledError(f"Goal {goal_id} stopped: {_stop}")
             announced = False
             while True:
                 evt = _GOAL_PAUSE_EVENTS.get(goal_id)

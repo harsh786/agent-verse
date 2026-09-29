@@ -228,23 +228,25 @@ class TestNotificationChannels:
 
 class TestEmergencyStop:
     def test_emergency_stop_no_services(self):
-        """Emergency stop with no goal_service or redis still returns 200."""
+        """Without Redis the stop cannot be persisted or enforced: 503, not fake success."""
         client = TestClient(_make_app(), raise_server_exceptions=False)
         resp = client.post("/governance/emergency-stop", headers=_H)
-        assert resp.status_code == 200
-        body = resp.json()
-        assert "cancelled_goals" in body or "stopped" in str(body).lower()
+        assert resp.status_code == 503
 
     def test_emergency_stop_with_goal_service(self):
+        import fakeredis.aioredis
+
         mock_goal_service = MagicMock()
-        mock_goal_service._goals = {
-            "g1": MagicMock(tenant_id="tid-gov-extra", status=MagicMock(__str__=lambda self: "running")),
-        }
+        mock_goal_service.active_goal_ids = AsyncMock(return_value=["g1"])
         mock_goal_service.cancel_goal = AsyncMock()
 
-        client = TestClient(_make_app(goal_service=mock_goal_service), raise_server_exceptions=False)
+        client = TestClient(
+            _make_app(goal_service=mock_goal_service, redis=fakeredis.aioredis.FakeRedis()),
+            raise_server_exceptions=False,
+        )
         resp = client.post("/governance/emergency-stop", headers=_H)
         assert resp.status_code == 200
+        mock_goal_service.cancel_goal.assert_awaited_once()
 
     def test_emergency_stop_with_redis(self):
         mock_redis = AsyncMock()
@@ -263,7 +265,12 @@ class TestEmergencyStop:
         gateway.request_approval(
             goal_id="g2", action="deploy_prod", risk_level="high", tenant_ctx=_CTX
         )
-        client = TestClient(_make_app(hitl=gateway), raise_server_exceptions=False)
+        import fakeredis.aioredis
+
+        client = TestClient(
+            _make_app(hitl=gateway, redis=fakeredis.aioredis.FakeRedis()),
+            raise_server_exceptions=False,
+        )
         resp = client.post("/governance/emergency-stop", headers=_H)
         assert resp.status_code == 200
         # Approvals should be rejected

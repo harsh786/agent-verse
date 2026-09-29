@@ -1290,40 +1290,102 @@ def _get_db(request: Request) -> Any:
 # ---------------------------------------------------------------------------
 
 
+def _stop_redis(request: Request) -> Any:
+    """The runtime Redis every enforcement point reads (API gates, AgentGraph, worker)."""
+    st = request.app.state
+    return getattr(st, "_redis", None) or getattr(st, "_policy_pubsub_redis", None)
+
+
+def _stop_unenforceable(exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            "Emergency stop cannot be enforced: the shared control store is unavailable "
+            f"({type(exc).__name__}). Nothing was stopped; retry or stop goals individually."
+        ),
+        headers={"Retry-After": "5"},
+    )
+
+
+@router.get("/emergency-stop")
+async def get_emergency_stop(request: Request) -> dict[str, Any]:
+    """Current tenant emergency-stop state — the source of truth for the UI banner."""
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        read_stop,
+        tenant_stop_key,
+    )
+
+    ctx = _require_tenant(request)
+    try:
+        record = await read_stop(_stop_redis(request), tenant_stop_key(ctx.tenant_id))
+    except EmergencyStopUnavailableError as exc:
+        raise _stop_unenforceable(exc) from exc
+    if record is None:
+        return {"active": False, "tenant_id": ctx.tenant_id}
+    return {
+        "active": True,
+        "tenant_id": ctx.tenant_id,
+        "activated_at": record.get("activated_at"),
+        "activated_by": record.get("activated_by"),
+        "reason": record.get("reason", ""),
+    }
+
+
 @router.post("/emergency-stop")
 async def emergency_stop(
     request: Request,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Immediately cancel all running and queued goals for this tenant.
+    """Stop all autonomous work for this tenant until an admin lifts the stop.
 
     Use for: security incidents, runaway agents, cost overruns.
-    This is irreversible — cancelled goals must be resubmitted.
 
-    Admin-only (RBAC docs: "admin — emergency stop"). Every per-goal cancel and
-    per-approval reject failure is reported in the response (``failed_*`` lists,
-    ``partial``) instead of being swallowed, so an operator can see that the stop
-    did not fully take effect.
+    1. Persists ``emergency_stop:{tenant}`` in Redis with NO expiry (it used to
+       expire after 300 s). Every enforcement point reads it: goal submission,
+       goal start (worker + in-process) and every step boundary on every
+       replica and worker. If it cannot be written the call fails 503 — it
+       used to answer "All running goals cancelled" with nothing persisted.
+    2. Cancels every non-terminal goal of the tenant through the cross-replica
+       cancel path (DB-backed listing; it used to see only this replica's
+       in-memory goals).
+    3. Rejects every pending approval.
+
+    Admin-only. Every per-goal cancel and per-approval reject failure is
+    reported (``failed_*``, ``partial``); the stop flag itself still blocks
+    those goals at their next step boundary.
     """
     import logging
+
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        activate_stop,
+        tenant_stop_key,
+    )
 
     _log = logging.getLogger(__name__)
     ctx = _require_tenant(request)
     errors: list[str] = []
 
-    # 1. Cancel all running in-memory goals via GoalService
+    # 1. Persist the stop first: from here on nothing new starts and every
+    #    running goal halts at its next step boundary, wherever it runs.
+    try:
+        record = await activate_stop(
+            _stop_redis(request),
+            tenant_stop_key(ctx.tenant_id),
+            activated_by=str(getattr(ctx, "api_key_id", "") or ""),
+        )
+    except EmergencyStopUnavailableError as exc:
+        _log.error("emergency_stop_not_persisted: %s", exc)
+        raise _stop_unenforceable(exc) from exc
+
+    # 2. Cancel every non-terminal goal of the tenant, on any replica/worker.
     goal_service = getattr(request.app.state, "goal_service", None)
     cancelled_goals: list[str] = []
     failed_goals: list[dict[str, str]] = []
     if goal_service is not None:
         try:
-            running = [
-                gid
-                for gid, record in goal_service._goals.items()
-                if getattr(record, "tenant_id", "") == ctx.tenant_id
-                and str(getattr(record, "status", "")).lower()
-                not in ("complete", "completed", "failed", "cancelled")
-            ]
+            running = await goal_service.active_goal_ids(ctx)
         except Exception as exc:
             _log.warning("emergency_stop_enumerate_failed: %s", exc)
             running = []
@@ -1335,28 +1397,6 @@ async def emergency_stop(
             except Exception as exc:
                 _log.warning("emergency_stop_cancel_failed goal_id=%s: %s", goal_id, exc)
                 failed_goals.append({"goal_id": goal_id, "error": type(exc).__name__})
-
-    # 2. Publish emergency stop signal to Redis so Celery workers abort
-    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    celery_signal_sent = False
-    if redis is not None:
-        try:
-            from datetime import datetime
-
-            await redis.publish(
-                "emergency_stop",
-                _json.dumps({"tenant_id": ctx.tenant_id, "ts": datetime.now(UTC).isoformat()}),
-            )
-            # Also set a flag that Celery workers can poll
-            await redis.set(
-                f"emergency_stop:{ctx.tenant_id}",
-                "1",
-                ex=300,  # 5 minute window
-            )
-            celery_signal_sent = True
-        except Exception as exc:
-            _log.warning("emergency_stop_redis_failed: %s", exc)
-            errors.append(f"celery_signal_failed: {type(exc).__name__}")
 
     # 3. Reject all pending HITL approvals (DB-backed listing: approvals raised on
     #    other replicas must be rejected too, not just this replica's cache).
@@ -1378,6 +1418,7 @@ async def emergency_stop(
                 ok = await hitl.reject(
                     approval.request_id,
                     tenant_ctx=ctx,
+                    approver=str(getattr(ctx, "api_key_id", "") or "emergency-stop"),
                     note="Emergency stop activated by operator",
                 )
                 if ok is False:
@@ -1432,21 +1473,26 @@ async def emergency_stop(
     partial = bool(failed_goals or failed_approvals or errors)
     return {
         "status": "emergency_stop_partial" if partial else "emergency_stop_activated",
+        "active": True,
         "partial": partial,
         "tenant_id": ctx.tenant_id,
+        "activated_at": record.get("activated_at"),
         "cancelled_goals": len(cancelled_goals),
         "cancelled_goal_ids": cancelled_goals[:20],
         "failed_goals": failed_goals,
         "rejected_approvals": len(rejected_approvals),
         "failed_approvals": failed_approvals,
-        "celery_signal_sent": celery_signal_sent,
+        # Kept for API compatibility: the persisted flag is what workers read.
+        "celery_signal_sent": True,
         "audit_recorded": audit_recorded,
         "errors": errors,
         "message": (
-            "Emergency stop only partially applied — see failed_goals / failed_approvals / "
-            "errors."
+            "Emergency stop is active and persisted, but some goals/approvals could not be "
+            "cancelled directly — they are halted at their next step boundary. See "
+            "failed_goals / failed_approvals / errors."
             if partial
-            else "All running goals cancelled. Celery workers will abort in-progress tasks."
+            else "Emergency stop is active until cleared: running goals were cancelled and "
+            "no goal will start or take another step."
         ),
     }
 
@@ -1456,19 +1502,22 @@ async def clear_emergency_stop(
     request: Request,
     _rbac: None = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """Clear the emergency stop signal to allow new goals to be submitted (admin only)."""
+    """Lift the tenant emergency stop so goals may be submitted again (admin only)."""
+    from app.governance.emergency_stop import (
+        EmergencyStopUnavailableError,
+        clear_stop,
+        tenant_stop_key,
+    )
+
     ctx = _require_tenant(request)
-    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    if redis is None:
-        return {"status": "cleared", "tenant_id": ctx.tenant_id}
     try:
-        await redis.delete(f"emergency_stop:{ctx.tenant_id}")
-    except Exception as exc:
-        # The stop flag is still set — do not report "cleared".
+        await clear_stop(_stop_redis(request), tenant_stop_key(ctx.tenant_id))
+    except EmergencyStopUnavailableError as exc:
+        # The stop may still be set — never report "cleared".
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Failed to clear emergency stop flag"
         ) from exc
-    return {"status": "cleared", "tenant_id": ctx.tenant_id}
+    return {"status": "cleared", "active": False, "tenant_id": ctx.tenant_id}
 
 
 # ---------------------------------------------------------------------------

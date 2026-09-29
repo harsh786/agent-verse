@@ -650,25 +650,46 @@ async def test_twin_what_if_returns_501(client: AsyncClient) -> None:
 
 @pytest.mark.anyio
 async def test_emergency_stop(mock_svc: MagicMock) -> None:
-    """POST /v1/org/{id}/emergency-stop persists the flag and reports stopped."""
+    """POST /v1/org/{id}/emergency-stop persists the flag (no TTL) for an org admin."""
     app = _make_app(mock_svc)
     app.state._redis = MagicMock(set=AsyncMock())
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        resp = await c.post(f"/v1/org/{ORG_ID}/emergency-stop")
+    with patch("app.org.rbac._resolve_actor_role", return_value="org_admin"):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post(f"/v1/org/{ORG_ID}/emergency-stop")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "stopped"
     app.state._redis.set.assert_awaited_once()
     assert app.state._redis.set.await_args.args[0] == f"emergency_stop:{TENANT_ID}:{ORG_ID}"
+    assert "ex" not in app.state._redis.set.await_args.kwargs  # lasts until resumed
 
 
 @pytest.mark.anyio
-async def test_emergency_resume(client: AsyncClient) -> None:
-    """POST /v1/org/{id}/emergency-stop/resume clears stop."""
-    resp = await client.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
+async def test_emergency_stop_requires_org_admin(mock_svc: MagicMock) -> None:
+    app = _make_app(mock_svc)
+    app.state._redis = MagicMock(set=AsyncMock(), delete=AsyncMock())
+    with patch("app.org.rbac._resolve_actor_role", return_value="viewer"):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            stop = await c.post(f"/v1/org/{ORG_ID}/emergency-stop")
+            resume = await c.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
+    assert stop.status_code == 403
+    assert resume.status_code == 403
+    app.state._redis.set.assert_not_awaited()
+    app.state._redis.delete.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_emergency_resume(mock_svc: MagicMock) -> None:
+    """POST /v1/org/{id}/emergency-stop/resume clears the stop (org admin)."""
+    app = _make_app(mock_svc)
+    app.state._redis = MagicMock(delete=AsyncMock())
+    with patch("app.org.rbac._resolve_actor_role", return_value="org_admin"):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            resp = await c.post(f"/v1/org/{ORG_ID}/emergency-stop/resume")
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "resumed"
+    app.state._redis.delete.assert_awaited_once()
 
 
 # ── PART 14: Department Memory ───────────────────────────────────────────────

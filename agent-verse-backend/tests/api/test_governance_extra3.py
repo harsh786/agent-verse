@@ -324,11 +324,18 @@ def test_delete_notification_channel_success() -> None:
 # Lines 766-781, 790-800 — emergency_stop
 # ---------------------------------------------------------------------------
 
+def _fake_redis() -> Any:
+    import fakeredis.aioredis
+
+    return fakeredis.aioredis.FakeRedis()
+
+
 def test_emergency_stop_no_services() -> None:
     """Lines 766-781: emergency stop with no goal_service, no redis, no hitl."""
     app = _make_app()
     # Remove hitl so it exercises the no-hitl path
     del app.state.hitl_gateway
+    app.state._policy_pubsub_redis = _fake_redis()
 
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post("/governance/emergency-stop", headers=_headers())
@@ -336,6 +343,13 @@ def test_emergency_stop_no_services() -> None:
     data = resp.json()
     assert data["status"] == "emergency_stop_activated"
     assert data["cancelled_goals"] == 0
+
+
+def test_emergency_stop_without_redis_is_503() -> None:
+    """No shared store: the stop cannot be enforced, so it must not claim success."""
+    client = TestClient(_make_app(), raise_server_exceptions=False)
+    resp = client.post("/governance/emergency-stop", headers=_headers())
+    assert resp.status_code == 503
 
 
 def test_emergency_stop_with_goal_service() -> None:
@@ -346,9 +360,12 @@ def test_emergency_stop_with_goal_service() -> None:
 
     goal_svc = MagicMock()
     goal_svc._goals = {"g1": record1}
+    goal_svc.active_goal_ids = AsyncMock(return_value=["g1"])
     goal_svc.cancel_goal = AsyncMock(return_value=None)
 
-    client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
+    client = TestClient(
+        _make_app(goal_service=goal_svc, redis=_fake_redis()), raise_server_exceptions=False
+    )
     resp = client.post("/governance/emergency-stop", headers=_headers())
     assert resp.status_code == 200
     data = resp.json()
@@ -381,11 +398,10 @@ def test_clear_emergency_stop() -> None:
 
 
 def test_clear_emergency_stop_no_redis() -> None:
-    """Lines 826-827: no Redis → gracefully clears."""
+    """No Redis: the stop state cannot be cleared, so never answer "cleared"."""
     client = TestClient(_make_app(), raise_server_exceptions=False)
     resp = client.delete("/governance/emergency-stop", headers=_headers())
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "cleared"
+    assert resp.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -1126,7 +1142,7 @@ def test_delete_policy_removes_from_registry() -> None:
 def test_emergency_stop_with_audit_log() -> None:
     """Lines 779-781: emergency stop logs to audit trail."""
     audit = AuditLog()
-    client = TestClient(_make_app(audit=audit), raise_server_exceptions=False)
+    client = TestClient(_make_app(audit=audit, redis=_fake_redis()), raise_server_exceptions=False)
     resp = client.post("/governance/emergency-stop", headers=_headers())
     assert resp.status_code == 200
     data = resp.json()
@@ -1142,9 +1158,12 @@ def test_emergency_stop_running_goals_cancelled() -> None:
 
     goal_svc = MagicMock()
     goal_svc._goals = {"g-running": record}
+    goal_svc.active_goal_ids = AsyncMock(return_value=["g-running"])
     goal_svc.cancel_goal = AsyncMock(return_value=None)
 
-    client = TestClient(_make_app(goal_service=goal_svc), raise_server_exceptions=False)
+    client = TestClient(
+        _make_app(goal_service=goal_svc, redis=_fake_redis()), raise_server_exceptions=False
+    )
     resp = client.post("/governance/emergency-stop", headers=_headers())
     assert resp.status_code == 200
     data = resp.json()

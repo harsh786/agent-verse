@@ -8,8 +8,25 @@ from fastapi.testclient import TestClient
 
 
 def _make_app():
+    import fakeredis.aioredis
+
     from app.main import create_app
-    return create_app()
+
+    app = create_app()
+    # The stop is persisted in the shared runtime Redis (without it the
+    # endpoint answers 503 -- see test_stop_without_redis_is_503).
+    app.state._redis = fakeredis.aioredis.FakeRedis()
+    return app
+
+
+def test_stop_without_redis_is_503():
+    from app.main import create_app
+
+    c, h = _signup(create_app())
+    if not h:
+        pytest.skip("signup failed")
+    assert c.post("/governance/emergency-stop", headers=h).status_code == 503
+    assert c.delete("/governance/emergency-stop", headers=h).status_code == 503
 
 
 def _signup(app):

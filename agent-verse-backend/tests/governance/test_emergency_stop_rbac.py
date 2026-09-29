@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import fakeredis.aioredis
 from httpx import ASGITransport, AsyncClient
 
 from app.api.governance import router
@@ -21,6 +22,10 @@ class _GoalSvc:
     def __init__(self) -> None:
         self._goals = {"g-ok": _Rec("t-gov"), "g-bad": _Rec("t-gov"), "g-other": _Rec("t-x")}
         self.cancelled: list[str] = []
+
+    async def active_goal_ids(self, tenant_ctx: Any) -> list[str]:
+        # DB-backed fleet-wide listing (stubbed): the tenant's non-terminal goals.
+        return [g for g, r in self._goals.items() if r.tenant_id == tenant_ctx.tenant_id]
 
     async def cancel_goal(self, *, goal_id: str, tenant_ctx: Any) -> dict[str, Any]:
         if goal_id == "g-bad":
@@ -62,6 +67,7 @@ async def test_clear_emergency_stop_rejects_non_admin() -> None:
 
 async def test_emergency_stop_reports_cancel_and_reject_failures() -> None:
     app = make_app(router)
+    app.state._redis = fakeredis.aioredis.FakeRedis()
     app.state.goal_service = _GoalSvc()
     app.state.hitl_gateway = _Hitl()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:

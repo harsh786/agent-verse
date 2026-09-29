@@ -1979,12 +1979,14 @@ async def org_emergency_stop(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> dict[str, str]:
-    """Sets org autonomy to L0 — no new missions start, running tasks finish.
+    """Stop all autonomous work of this organisation until an org admin resumes it.
 
-    The stop flag is stored in Redis (key: ``emergency_stop:{tenant_id}:{org_id}``)
-    and checked by every Celery goal task before starting work.
-    Returns the current stop status and audit reference.
+    Org-admin only (it had no role check: any authenticated key could halt, or
+    resume, any org). The flag ``emergency_stop:{tenant_id}:{org_id}`` is stored
+    in Redis WITHOUT a TTL (it used to auto-expire after 24 h) and is enforced
+    at goal submission, goal start and every step boundary of the org's goals.
     """
     import structlog as _slog
     from opentelemetry import trace as _trace
@@ -1998,18 +2000,26 @@ async def org_emergency_stop(
 
 
         redis = getattr(request.app.state, "_redis", None)
-        from app.governance.emergency_stop import org_stop_key
+        from app.governance.emergency_stop import (
+            EmergencyStopUnavailableError,
+            activate_stop,
+            org_stop_key,
+        )
 
         stop_key = org_stop_key(tenant_id, org_id)
-        if redis is None:
+        try:
+            # Read by app.governance.emergency_stop at submit, start and each step.
+            await activate_stop(
+                redis, stop_key, activated_by=str(getattr(ctx, "api_key_id", "") or "")
+            )
+        except EmergencyStopUnavailableError as exc:
             # Answering "stopped" without persisting the flag told operators the
             # org was halted while nothing (worker or API) could ever see it.
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Emergency stop unavailable: Redis is not configured; nothing was stopped",
-            )
-        # Read by app.governance.emergency_stop in the worker and AgentGraph.run.
-        await redis.set(stop_key, "1", ex=86400)  # auto-expire after 24h if not cleared
+                detail="Emergency stop unavailable: the flag could not be persisted; "
+                "nothing was stopped",
+            ) from exc
 
         _log.warning(
             "org.emergency_stop_activated",
@@ -2021,8 +2031,8 @@ async def org_emergency_stop(
             "status": "stopped",
             "org_id": org_id,
             "message": (
-                "All autonomous work paused. Running tasks will complete. "
-                "No new missions will start."
+                "All autonomous work of this organisation is stopped until resumed: "
+                "no new goal starts and running goals halt at their next step."
             ),
             "request_id": x_request_id,
         }
@@ -2039,6 +2049,7 @@ async def org_emergency_resume(
     request: Request,
     x_request_id: str = Header(default_factory=_request_id),
     service: OrgService = Depends(get_org_service),
+    _rbac: str = require_org_role(OrgRole.ORG_ADMIN),
 ) -> dict[str, str]:
     """Clears the emergency stop flag, allowing autonomous work to resume."""
     import structlog as _slog
@@ -2053,9 +2064,20 @@ async def org_emergency_resume(
 
 
         redis = getattr(request.app.state, "_redis", None)
-        stop_key = f"emergency_stop:{tenant_id}:{org_id}"
-        if redis:
-            await redis.delete(stop_key)
+        from app.governance.emergency_stop import (
+            EmergencyStopUnavailableError,
+            clear_stop,
+            org_stop_key,
+        )
+
+        try:
+            await clear_stop(redis, org_stop_key(tenant_id, org_id))
+        except EmergencyStopUnavailableError as exc:
+            # The stop may still be set: never answer "resumed".
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Emergency stop could not be cleared; the organisation is still stopped",
+            ) from exc
 
         _log.info("org.emergency_stop_cleared", tenant_id=tenant_id, org_id=org_id)
         return {
