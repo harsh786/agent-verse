@@ -10,6 +10,7 @@ import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.rpa.executor import RPAExecutor
@@ -54,6 +55,24 @@ def _mock_route(url: str) -> MagicMock:
     return route
 
 
+def _stub_pinned_client(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
+    """The guard fetches via ssrf_guard.public_async_client; serve it locally."""
+    import app.net.ssrf_guard as sg
+
+    seen: list[httpx.Request] = []
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, text="ok")
+
+    monkeypatch.setattr(
+        sg,
+        "public_async_client",
+        lambda **kw: httpx.AsyncClient(transport=httpx.MockTransport(_handle)),
+    )
+    return seen
+
+
 async def _assert_guard_blocks(context: MagicMock, url: str = METADATA) -> None:
     assert context.route.await_args is not None, "no route handler installed"
     pattern, handler = context.route.await_args.args[:2]
@@ -78,6 +97,7 @@ async def test_session_manager_honours_allowed_domains(monkeypatch: pytest.Monke
     import app.net.ssrf_guard as sg
 
     monkeypatch.setattr(sg, "_resolve_host", lambda host: ["10.0.0.9"])
+    seen = _stub_pinned_client(monkeypatch)
     api, _browser, context = _pw_stack()
     with patch.dict(sys.modules, {"playwright": MagicMock(), "playwright.async_api": api}):
         await BrowserSessionManager()._create_session(
@@ -85,9 +105,11 @@ async def test_session_manager_honours_allowed_domains(monkeypatch: pytest.Monke
         )
     handler = context.route.await_args.args[1]
     route = _mock_route("http://wiki.intranet.example/")
-    route.fetch = AsyncMock(return_value=MagicMock(status=200, headers={}))
     await handler(route)
     route.abort.assert_not_called()
+    # fetched through the IP-pinned client, never Playwright's route.fetch
+    route.fetch.assert_not_called()
+    assert [str(r.url) for r in seen] == ["http://wiki.intranet.example/"]
     route.fulfill.assert_awaited_once()
     await _assert_guard_blocks(context, "http://other.example.internal/")
 
@@ -152,6 +174,7 @@ async def test_standalone_executor_context_installs_ssrf_route_guard(
     import app.net.ssrf_guard as sg
 
     monkeypatch.setattr(sg, "_resolve_host", lambda host: ["10.0.0.9"])
+    seen = _stub_pinned_client(monkeypatch)
     api, browser, context = _pw_stack()
     ex = RPAExecutor(allowed_domains=["intranet.example"])
     ex._playwright_available = True
@@ -165,6 +188,8 @@ async def test_standalone_executor_context_installs_ssrf_route_guard(
     # the executor's allowlist reaches the browser guard
     handler: Any = context.route.await_args.args[1]
     route = _mock_route("http://wiki.intranet.example/")
-    route.fetch = AsyncMock(return_value=MagicMock(status=200, headers={}))
     await handler(route)
     route.abort.assert_not_called()
+    # fetched through the IP-pinned client, never Playwright's route.fetch
+    route.fetch.assert_not_called()
+    assert [str(r.url) for r in seen] == ["http://wiki.intranet.example/"]

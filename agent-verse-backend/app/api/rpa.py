@@ -29,6 +29,26 @@ def _session_store(request: Request) -> Any:
     return getattr(request.app.state, "rpa_session_store", None)
 
 
+async def _refuse_if_on_another_replica(request: Request, session_id: str, tenant_id: str) -> None:
+    """409 when the session's live browser is held by a different API replica.
+
+    Browser pages are per-process; the shared registry says where one lives.
+    Pretending it exists here (a fresh blank browser, or a vague 404) is worse.
+    """
+    manager = getattr(request.app.state, "rpa_session_manager", None)
+    live_elsewhere = getattr(manager, "live_elsewhere", None)
+    if live_elsewhere is None:
+        return
+    owner = await live_elsewhere(session_id, tenant_id)
+    if owner:
+        from app.rpa.session_manager import SessionOnAnotherReplicaError
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(SessionOnAnotherReplicaError(session_id, owner)),
+        )
+
+
 @router.get("/tools")
 async def list_rpa_tools(request: Request) -> list[dict[str, Any]]:
     """Return built-in RPA tool metadata for agent clients.
@@ -58,6 +78,9 @@ async def execute_rpa_tool(request: Request, body: RPAExecuteRequest) -> dict[st
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown RPA tool: {body.tool_name}. Valid: {sorted(valid_tools)}",
         )
+
+    if body.session_id:
+        await _refuse_if_on_another_replica(request, body.session_id, tenant.tenant_id)
 
     executor = _executor(request)
     if executor is None:
@@ -226,6 +249,7 @@ async def get_session_screenshot(request: Request, session_id: str) -> dict[str,
         else None
     )
     if page is None:
+        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
@@ -252,6 +276,7 @@ async def get_current_view(request: Request, session_id: str) -> dict[str, Any]:
         else None
     )
     if page is None:
+        await _refuse_if_on_another_replica(request, session_id, tenant.tenant_id)
         raise HTTPException(404, "Session not found or browser not active")
     try:
         screenshot_bytes = await page.screenshot(type="jpeg", quality=60, full_page=False)
@@ -271,8 +296,16 @@ class TakeoverRequest(BaseModel):
 
 
 @router.post("/sessions/{session_id}/takeover")
-async def request_human_takeover(request: Request, session_id: str, body: TakeoverRequest) -> dict:
-    """Request a human operator to take over an RPA session."""
+async def request_human_takeover(
+    request: Request, session_id: str, body: TakeoverRequest
+) -> dict[str, Any]:
+    """Ask a human operator to take over an RPA session.
+
+    Raises a tenant-scoped HITL approval — listed in the Approvals inbox, and
+    alerted to the tenant's notification channels by the gateway — and returns
+    503 when it cannot be delivered. (It used to set a Redis key nothing read
+    and always claim the operator "has been notified".)
+    """
     tenant = _require_tenant(request)
     store = _session_store(request)
     if store is None:
@@ -282,33 +315,56 @@ async def request_human_takeover(request: Request, session_id: str, body: Takeov
     if session is None:
         raise HTTPException(404, f"RPA session {session_id} not found")
 
-    # Store takeover request in Redis for UI polling
-    redis = getattr(request.app.state, "_policy_pubsub_redis", None)
-    if redis is not None:
-        import json
-        from datetime import UTC, datetime
-
-        await redis.set(
-            f"rpa_human_needed:{session_id}",
-            json.dumps(
-                {
-                    "reason": body.reason,
-                    "session_id": session_id,
-                    "tenant_id": tenant.tenant_id,
-                    "requested_at": datetime.now(UTC).isoformat(),
-                }
-            ),
-            ex=3600,
+    gateway = getattr(request.app.state, "hitl_gateway", None)
+    if gateway is None or not hasattr(gateway, "request_approval_async"):
+        raise HTTPException(
+            503, "Takeover cannot be delivered: no human-approval channel is configured"
         )
 
-    frontend_url = getattr(
-        getattr(request.app.state, "settings", None), "frontend_url", "http://localhost:5173"
-    )
+    from app.governance.hitl import HITLDeliveryError
 
+    reason = (body.reason or "").strip()[:500] or "Operator requested assistance"
+    try:
+        request_id = await gateway.request_approval_async(
+            goal_id=f"rpa-session:{session_id}"[:64],
+            action=f"RPA human takeover for session {session_id}: {reason}",
+            risk_level="high",
+            tenant_ctx=tenant,
+            require_persisted=True,
+        )
+    except HITLDeliveryError as exc:
+        raise HTTPException(
+            503, "Takeover cannot be delivered: the approval request could not be saved"
+        ) from exc
+
+    # Channels the gateway's notification dispatch targets (fire-and-forget).
+    notifier = getattr(gateway, "_notification_service", None)
+    channels = 0
+    if notifier is not None and hasattr(notifier, "get_channels"):
+        try:
+            channels = len(notifier.get_channels(tenant.tenant_id))
+        except Exception:
+            channels = 0
+
+    frontend_url = str(
+        getattr(getattr(request.app.state, "settings", None), "frontend_url", "")
+        or "http://localhost:5173"
+    ).rstrip("/")
+    message = f"Takeover request {request_id} is waiting in the Approvals inbox"
+    message += (
+        f"; an alert was queued for {channels} notification channel(s)."
+        if channels
+        else "; no notification channels are configured for this tenant."
+    )
     return {
         "session_id": session_id,
         "status": "awaiting_human",
-        "reason": body.reason,
-        "live_url": f"{frontend_url}/rpa/sessions/{session_id}/live",
-        "message": "Human operator has been notified. Please check the live session URL.",
+        "reason": reason,
+        "approval_request_id": request_id,
+        "notification_channels": channels,
+        # Both are real frontend routes (App.tsx): the RPA live console and the
+        # approvals inbox. There is no per-session live route to deep-link.
+        "live_url": f"{frontend_url}/rpa/live",
+        "approvals_url": f"{frontend_url}/approvals",
+        "message": message,
     }

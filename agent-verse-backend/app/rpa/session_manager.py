@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,6 +61,23 @@ class BrowserSession:
         logger.info("browser_session_closed", session_id=self.session_id)
 
 
+class SessionOnAnotherReplicaError(RuntimeError):
+    """The session's live browser belongs to another API replica.
+
+    Browser pages cannot move between processes; opening a fresh blank browser
+    under the same id would silently lose the page state the caller expects.
+    """
+
+    def __init__(self, session_id: str, owner_replica: str) -> None:
+        self.session_id = session_id
+        self.owner_replica = owner_replica
+        super().__init__(
+            f"RPA session {session_id} is live on another API replica ({owner_replica}); "
+            "browser sessions are per-replica. Route the request to that replica "
+            "(sticky sessions) or open a new session."
+        )
+
+
 class BrowserSessionManager:
     """Manages live Playwright browser sessions across RPA tool calls.
 
@@ -86,6 +104,8 @@ class BrowserSessionManager:
         self._lock = asyncio.Lock()
         self._redis = redis
         self._SESSION_TTL = 3600  # 1 hour
+        # Identifies this process's live browsers in the shared Redis registry.
+        self.replica_id = uuid.uuid4().hex[:12]
 
     async def get_or_create(
         self,
@@ -105,6 +125,9 @@ class BrowserSessionManager:
             if existing and existing.is_alive:
                 existing.touch()
                 return existing
+            owner = await self.live_elsewhere(session_id, tenant_id)
+            if owner is not None:
+                raise SessionOnAnotherReplicaError(session_id, owner)
 
             # Enforce per-tenant session cap
             tenant_active = sum(
@@ -212,6 +235,17 @@ class BrowserSessionManager:
             return True
         return False
 
+    async def close_all(self) -> int:
+        """Close every session this manager holds (owner shutdown)."""
+        async with self._lock:
+            sessions = list(self._sessions.items())
+            self._sessions.clear()
+        for (sid, tid), session in sessions:
+            with contextlib.suppress(Exception):
+                await session.close()
+            await self._deregister_from_redis(sid, tid)
+        return len(sessions)
+
     async def cleanup_expired(self) -> int:
         """Close sessions idle longer than max_idle_seconds."""
         cutoff = time.monotonic() - self._max_idle
@@ -266,9 +300,37 @@ class BrowserSessionManager:
                         "tenant_id": session.tenant_id,
                         "created_at": session.created_at,
                         "current_url": session.current_url,
+                        # The page lives only in this process (see live_elsewhere).
+                        "replica_id": self.replica_id,
+                        "live": session.is_alive,
                     }
                 ),
             )
+
+    async def live_elsewhere(self, session_id: str, tenant_id: str) -> str | None:
+        """Replica id holding this session's live browser, if it is not this one.
+
+        ``None`` when the session is live here, unknown, closed, or the registry
+        is unavailable/unreadable (then this replica may open it as before).
+        """
+        local = self._sessions.get((session_id, tenant_id))
+        if local is not None and local.is_alive:
+            return None
+        if self._redis is None:
+            return None
+        import json as _json
+
+        try:
+            raw = await self._redis.get(f"rpa_session:{tenant_id}:{session_id}")
+            record = _json.loads(raw) if raw else None
+        except Exception:
+            return None
+        if not isinstance(record, dict) or not record.get("live"):
+            return None
+        if record.get("tenant_id") != tenant_id:
+            return None
+        owner = str(record.get("replica_id") or "")
+        return owner if owner and owner != self.replica_id else None
 
     async def _deregister_from_redis(self, session_id: str, tenant_id: str) -> None:
         """Remove session metadata from Redis on close."""
