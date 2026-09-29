@@ -126,7 +126,7 @@ inspect it with `git -C <worktree> status` / `diff` and finish or discard it.
 |---|---|---|---|
 | 7A | `fix/hitl-estop-security` | `23e47c7d3` → 1 (fail closed when the approval wait loses Redis — verify the executor gate now requires APPROVED); `683de71bc` → 2 (email links: real secret, expiry, tenant binding) | 3 (emergency stop), 4, 5 — 8 files uncommitted |
 | 7B | `fix/audit-correctness-defects` | `c2f04e29f` → 1 (approval step is a hard barrier); `5a6d78ecf` → 3 (schedules via durable store); `3960746c1` → 6a (cancel/pause never overwrite finished goals) | 2 (run_goal re-runs), 4 (worker runtime profile), 5 (debate/supervisor charging), 6b (worker concurrency limit) — 5 files uncommitted |
-| 7C | `fix/fake-success-defects` | `35d7c73c6` → 1 (insights); `730a7ce19` → 2 (golden datasets honest 501); `9d0d98383` → 3 (admin usage from Postgres, incidents 501); `3f2f7d678` → 4 (paid purchases 501 before charging); `c0f713faa` → 4 (past-due subscriptions downgrade) | 5, 6 |
+| 7C | `fix/fake-success-defects` | **MERGED to `main`** (all 6 items, 11 commits; 445 targeted tests passed, ruff/mypy clean) | Follow-ups: regenerate `openapi.json` after all waves merge (`uv run python scripts/export_openapi.py`); `AgentStore.list_async` falls back to its cache on DB error (export may be incomplete); export pages by offset; video ingest / goal-with-image placeholders; civilization graph/metrics reads swallow errors; marketplace purchase completion not built (501 blocks charges) |
 | 7D | `fix/audit-llm-ssrf-ingest` | `2d2a0c461` → 2 (RAG_INGEST guardrail fails closed) | 1 (unmetered LLM calls + guard test), 3 (DNS pinning + guard test), 4, 5 — 30 files uncommitted |
 
 To merge a finished branch: `git merge --no-edit <branch>`, re-chain any new migration's

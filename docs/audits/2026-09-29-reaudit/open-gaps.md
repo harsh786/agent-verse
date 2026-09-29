@@ -5,6 +5,8 @@ Every item names the current `file:line`. Work top-down: FAIL features first, th
 
 Status: 20 PASS · 149 PARTIAL · 9 FAIL · 14 NOT_IMPLEMENTED · 0 BLOCKED
 
+> **2026-09-29 update — wave 7C merged:** Insights (real schema), golden datasets (honest 501), platform admin (usage from Postgres; incidents 501), marketplace paid purchase (501 before any charge), Stripe past-due downgrade, multimodal PDF failures, Google Drive partial/failed reporting, perception batch 501, full tenant export, civilization 503s. Re-certify these features before ticking their items.
+
 Items already assigned to fix wave 7 (see `HANDOFF.md`) are still listed here; tick them off when the wave's branch is merged and re-verified.
 
 ## Agent core
