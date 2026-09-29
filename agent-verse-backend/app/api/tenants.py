@@ -1148,7 +1148,11 @@ async def export_tenant_data(request: Request) -> dict:
 
 
 @router.delete("/me")
-async def delete_tenant(request: Request) -> dict:
+async def delete_tenant(
+    request: Request,
+    # Erasing the whole tenant is admin-only (any key could schedule it).
+    _: None = Depends(require_role("admin")),
+) -> dict:
     """Schedule the current tenant's deletion (durable GDPR erasure job).
 
     This returned ``scheduled_for_deletion`` and did nothing. It now records the

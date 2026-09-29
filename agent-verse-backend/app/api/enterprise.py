@@ -35,6 +35,15 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
+def _require_admin(ctx: Any, action: str) -> None:
+    """SSO / provisioning configuration decides who can log in or be provisioned
+    as the tenant: admin only (it was gated by nothing more than any key)."""
+    from app.tenancy.rbac import has_role
+
+    if not has_role(ctx, "admin"):
+        raise HTTPException(403, f"{action} requires the admin role")
+
+
 def _compliance(request: Request) -> Any:
     from app.api._deps import get_compliance_controller as _gcc
 
@@ -1911,6 +1920,7 @@ class SAMLConfigRequest(BaseModel):
 async def configure_saml(request: Request, body: SAMLConfigRequest) -> dict[str, Any]:
     """Configure SAML 2.0 IdP for this tenant."""
     ctx = _require_tenant(request)
+    _require_admin(ctx, "Configuring SAML")
     db = _get_db(request)
     if db is None:
         raise HTTPException(503, "Database not configured")
@@ -2185,14 +2195,10 @@ async def _get_scim_handler(request: Request) -> SCIMHandler:  # noqa: F821
             "default_role": row[4] if row else "viewer",
             "group_role_map": row[5] if row else {},
         }
-    except Exception:
-        config = {
-            "allow_user_create": True,
-            "allow_user_update": True,
-            "allow_user_delete": False,
-            "default_role": "viewer",
-            "group_role_map": {},
-        }
+    except Exception as exc:
+        # Fail CLOSED: an unreadable config used to fall back to permissive
+        # create/update defaults, bypassing a tenant's "no user creation" policy.
+        raise HTTPException(503, "SCIM configuration unavailable; retry") from exc
     return SCIMHandler(tenant_id=tenant_id, config=config, db_factory=db)
 
 
@@ -2247,6 +2253,7 @@ async def provision_scim_token(request: Request) -> dict[str, Any]:
     Token is SHA-256 hashed before storage.
     """
     ctx = _require_tenant(request)
+    _require_admin(ctx, "Provisioning a SCIM token")
     db = _get_db(request)
     if db is None:
         raise HTTPException(503, "Database not configured")
