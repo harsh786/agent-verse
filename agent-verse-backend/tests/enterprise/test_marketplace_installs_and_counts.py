@@ -223,3 +223,15 @@ def test_domain_counts_endpoint_fails_loudly_on_template_store_error() -> None:
     store.list = AsyncMock(side_effect=RuntimeError("store down"))
     client = TestClient(_app(svc, template_store=store), raise_server_exceptions=False)
     assert client.get("/marketplace/domains/counts", headers=_HDR_A).status_code == 503
+
+
+# ── endpoint: reviews list ──────────────────────────────────────────────────
+
+
+def test_list_reviews_endpoint_fails_loudly_on_store_error() -> None:
+    svc = MagicMock()
+    svc.get_template = AsyncMock(return_value={"id": "t1", "tenant_id": "tenant-a"})
+    svc.list_reviews = AsyncMock(side_effect=RuntimeError("db down"))
+    client = TestClient(_app(svc), raise_server_exceptions=False)
+    resp = client.get("/marketplace/templates/t1/reviews", headers=_HDR_A)
+    assert resp.status_code == 503

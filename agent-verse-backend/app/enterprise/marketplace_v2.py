@@ -1549,8 +1549,10 @@ class MarketplaceV2:
                         "page": page,
                         "page_size": page_size,
                     }
-            except Exception:
-                pass
+            except Exception as exc:
+                # Degraded read: only the built-in catalogue can answer (never
+                # tenant-published templates) — say so in the logs.
+                logger.warning("marketplace_list_templates_db_failed", error=str(exc))
 
         # In-memory fallback — apply same visibility rule as the DB path:
         # public/community templates are visible to all; private templates only to their owner.
@@ -2062,32 +2064,32 @@ class MarketplaceV2:
         page_size: int = 20,
         tenant_id: str = "",
     ) -> list[dict[str, Any]]:
-        """List reviews for a template (verified installs first)."""
-        if self._db is not None:
-            try:
-                async with self._db() as session:
-                    if tenant_id:
-                        await session.execute(
-                            _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-                        )
-                    offset = (page - 1) * page_size
-                    rows = (
-                        await session.execute(
-                            _t("""
-                                SELECT * FROM marketplace_reviews
-                                WHERE template_id = :tid
-                                ORDER BY verified_install DESC, helpful_count DESC,
-                                         created_at DESC
-                                LIMIT :limit OFFSET :offset
-                            """),
-                            {"tid": template_id, "limit": page_size, "offset": offset},
-                        )
-                    ).fetchall()
-                    return [dict(r._mapping) for r in rows]
-            except Exception:
-                pass
+        """List reviews for a template (verified installs first).
 
-        # In-memory fallback
+        DB errors propagate. They used to fall back to the in-memory list,
+        which is always empty in DB mode — an outage looked like "no reviews".
+        """
+        if self._db is not None:
+            async with self._db() as session:
+                if tenant_id:
+                    await session.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                    )
+                offset = (page - 1) * page_size
+                rows = (
+                    await session.execute(
+                        _t("""
+                            SELECT * FROM marketplace_reviews
+                            WHERE template_id = :tid
+                            ORDER BY verified_install DESC, helpful_count DESC,
+                                     created_at DESC
+                            LIMIT :limit OFFSET :offset
+                        """),
+                        {"tid": template_id, "limit": page_size, "offset": offset},
+                    )
+                ).fetchall()
+                return [dict(r._mapping) for r in rows]
+
         return [r for r in self._reviews if r.get("template_id") == template_id]
 
     # ------------------------------------------------------------------

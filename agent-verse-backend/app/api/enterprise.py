@@ -654,12 +654,17 @@ async def list_reviews_v2(
     svc = _marketplace_v2(request)
     if await svc.get_template(template_id=template_id, tenant_id=ctx.tenant_id) is None:
         raise HTTPException(status_code=404, detail="Template not found")
-    return await svc.list_reviews(
-        template_id=template_id,
-        page=page,
-        page_size=page_size,
-        tenant_id=ctx.tenant_id,
-    )
+    try:
+        reviews: list[dict[str, Any]] = await svc.list_reviews(
+            template_id=template_id,
+            page=page,
+            page_size=page_size,
+            tenant_id=ctx.tenant_id,
+        )
+    except Exception as exc:
+        _mkt_logger.error("marketplace_list_reviews_failed", error=str(exc))
+        raise HTTPException(status_code=503, detail="Reviews are unavailable") from exc
+    return reviews
 
 
 @marketplace_router.post("/search")
