@@ -111,6 +111,8 @@ For each wave: if its branch has the commits for every item below, merge it
 `ruff`/`mypy` and the wave's test directories. If the branch is missing or incomplete,
 **redo the missing items** — each item below is a complete task statement.
 
+**All four wave-7 branches are merged to `main` (2026-09-29).** Next: full unit suite + least-privilege e2e on `main`, then re-certify the wave-7 features (section 7) and fix the follow-ups listed per wave below.
+
 ### Progress snapshot — 2026-09-29 ~11:10 UTC (weekly usage at 93%)
 
 **Latest state: see `wave7-status.md`** in this folder — refreshed automatically every
@@ -125,7 +127,7 @@ inspect it with `git -C <worktree> status` / `diff` and finish or discard it.
 | Wave | Branch | Done (commit → item) | Still to do |
 |---|---|---|---|
 | 7A | `fix/hitl-estop-security` | **MERGED to `main`** (all 5 items; 987 targeted tests + agent-reported 10,102 passed) | Follow-ups: `run_goal` start-of-goal e-stop check fails open on a Redis error (per-step check fails closed); email/notification approve links point at a frontend route `/hitl/{id}/approve` that doesn't exist and need an authenticated page; org task approve/reject lacks an org-role check; Slack slash command still uses `SLACK_TENANT_ID`; chat HITL card builds an unverifiable `?token=` link (`app/chat/stream.py`, `ChatHITLCard.tsx`). No Redis ⇒ e-stop endpoints 503 (by design). |
-| 7B | `fix/audit-correctness-defects` | `c2f04e29f` → 1 (approval step is a hard barrier); `5a6d78ecf` → 3 (schedules via durable store); `3960746c1` → 6a (cancel/pause never overwrite finished goals) | 2 (run_goal re-runs), 4 (worker runtime profile), 5 (debate/supervisor charging), 6b (worker concurrency limit) — 5 files uncommitted |
+| 7B | `fix/audit-correctness-defects` | **MERGED to `main`** (`c5a602fdf`; all 6 items; agent-reported 5,174 + 4,381 + 661 passed; ruff/mypy clean after merge) | Follow-ups: `app/api/triggers.py` reads schedules non-strict (DB outage → 500 not 503); sync cache-only schedule calls in `app/api/agents.py`, `app/chat/skills/builtin.py`, `app/enterprise/compliance.py`; per-tenant goal counter only incremented at submit; workflow HITL e2e not run (needs Docker). |
 | 7C | `fix/fake-success-defects` | **MERGED to `main`** (all 6 items, 11 commits; 445 targeted tests passed, ruff/mypy clean) | Follow-ups: regenerate `openapi.json` after all waves merge (`uv run python scripts/export_openapi.py`); `AgentStore.list_async` falls back to its cache on DB error (export may be incomplete); export pages by offset; video ingest / goal-with-image placeholders; civilization graph/metrics reads swallow errors; marketplace purchase completion not built (501 blocks charges) |
 | 7D | `fix/audit-llm-ssrf-ingest` | **MERGED to `main`** (all 5 items, 17 commits; 15,063 tests passed after merge; guard tests `tests/providers/test_no_direct_llm_complete.py` and `tests/net/test_no_unpinned_public_fetch.py` green) | Follow-ups: 91 direct `.complete(` calls remain on the guard test's allowlist (~60 ordinary debt: chat, RAG engine, agent patterns, OCR…; 18 RAG adapters already budgeted); `check_mcp_health` in `app/scaling/tasks.py` still unpinned; MCP WebSocket transport and tenant LLM `base_url` providers resolve DNS themselves; `tests/intelligence/test_eval_runner.py::test_llm_for_accuracy_overrides_heuristic` fails only after `tests/services` (pre-existing order dependence). |
 
