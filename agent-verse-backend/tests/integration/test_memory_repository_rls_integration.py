@@ -312,6 +312,68 @@ async def test_tenants_cannot_see_each_others_memory(dbs: tuple[Any, Any]) -> No
 
 
 @pytest.mark.asyncio
+async def test_legacy_backfill_is_bounded_resumable_and_tenant_scoped(
+    dbs: tuple[Any, Any],
+) -> None:
+    from app.memory.backfill_runner import run_reflexion_lessons_backfill
+
+    admin, app = dbs
+    tid = await _seed_tenant(admin)
+    other = await _seed_tenant(admin)
+    async with admin() as s, s.begin():
+        for index in range(5):
+            await s.execute(
+                text(
+                    "INSERT INTO reflexion_lessons "
+                    "(id, tenant_id, lesson, source_goal_id, failure_class, created_at) "
+                    "VALUES (:i, :t, :l, :g, 'timeout', NOW())"
+                ),
+                {
+                    "i": f"legacy{index:02d}",
+                    "t": tid,
+                    "l": f"For goal 'sync {index}': back off on timeouts",
+                    "g": f"goal{index:02d}",
+                },
+            )
+        await s.execute(
+            text(
+                "INSERT INTO reflexion_lessons (id, tenant_id, lesson, source_goal_id) "
+                "VALUES ('otherlegacy', :t, 'other tenant lesson', 'g')"
+            ),
+            {"t": other},
+        )
+    repo = PostgresMemoryRepository(app, cipher=_Cipher())
+
+    first = await run_reflexion_lessons_backfill(app, repo, tenant_id=tid, batch_size=2, max_rows=3)
+    assert (first.processed, first.completed, first.last_source_id) == (3, False, "legacy02")
+    second = await run_reflexion_lessons_backfill(app, repo, tenant_id=tid, batch_size=2)
+    assert (second.processed, second.completed) == (2, True)
+
+    async with admin() as s:
+        counts = (
+            await s.execute(
+                text(
+                    "SELECT tenant_id, count(*) FROM memory_records "
+                    "WHERE source = 'backfill:reflexion_lessons' GROUP BY tenant_id"
+                )
+            )
+        ).all()
+        checkpoint = (
+            await s.execute(
+                text(
+                    "SELECT last_source_id, rows_processed, completed "
+                    "FROM memory_backfill_checkpoints WHERE tenant_id = :t"
+                ),
+                {"t": tid},
+            )
+        ).one()
+    assert dict(counts) == {tid: 5}  # the other tenant's lesson is untouched
+    assert tuple(checkpoint) == ("legacy04", 5, True)
+    hits = await repo.recall(_recall(tid, "back off on timeouts"))
+    assert hits and hits[0].record.source == "backfill:reflexion_lessons"
+
+
+@pytest.mark.asyncio
 async def test_backfill_checkpoint_table_is_rls_forced(dbs: tuple[Any, Any]) -> None:
     admin, _ = dbs
     async with admin() as s:

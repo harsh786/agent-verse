@@ -60,6 +60,7 @@ async def backfill_memory_rows(
                 confidence=row.confidence,
                 idempotency_key=f"backfill:{row.source_table}:{row.source_id}",
                 retention_policy_id="compatibility-backfill-v1",
+                source=f"backfill:{row.source_table}"[:64],
             )
         )
         marker = BackfillCheckpoint(row.tenant_id, row.source_table, row.source_id)

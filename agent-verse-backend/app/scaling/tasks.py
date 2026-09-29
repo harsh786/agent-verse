@@ -5807,6 +5807,38 @@ except Exception as _sched_exc:
     logger.warning("Failed to register consolidate_memories beat schedule: %s", _sched_exc)
 
 
+@celery_app.task(name="agentverse.maintenance.backfill_canonical_memory")
+def backfill_canonical_memory(
+    tenant_id: str, batch_size: int = 100, max_rows: int = 1_000, reset: bool = False
+) -> dict[str, Any]:
+    """Backfill one tenant's legacy Reflexion lessons into canonical memory.
+
+    Bounded (``max_rows`` per run, clamped) and resumable (keyset checkpoint in
+    ``memory_backfill_checkpoints``); re-enqueue until ``completed`` is true.
+    Runs under the tenant's RLS; see app.memory.backfill_runner.
+    """
+
+    async def _run() -> dict[str, Any]:
+        from dataclasses import asdict
+
+        from app.db.session import get_session_factory as _get_fresh_db
+        from app.memory.backfill_runner import run_reflexion_lessons_backfill
+        from app.memory.postgres_repository import PostgresMemoryRepository
+
+        db = _get_fresh_db()
+        result = await run_reflexion_lessons_backfill(
+            db,
+            PostgresMemoryRepository(db),
+            tenant_id=tenant_id,
+            batch_size=batch_size,
+            max_rows=max_rows,
+            reset=reset,
+        )
+        return asdict(result)
+
+    return cast(dict[str, Any], _run_async(_run()))
+
+
 @celery_app.task(name="agentverse.maintenance.reindex_stale_knowledge")
 def reindex_stale_knowledge() -> dict:
     """Retired — deliberately does nothing and is NOT on the beat schedule.
