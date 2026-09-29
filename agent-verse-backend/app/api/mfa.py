@@ -13,8 +13,10 @@ Storage:
     MFA state is persisted in the ``tenant_mfa`` table (see app/db/models/mfa.py).
     The TOTP secret is encrypted at rest with Fernet (app/api/mfa_crypto.py).
     An in-memory cache sits in front of the DB for low-latency reads.
-    ``pending_secret`` (set during enrollment, cleared on verify) is kept
-    *only* in-memory by design — it is never written to the DB.
+    ``pending_secret`` (set during enrollment, cleared on verify) is never
+    written to the DB: with Redis wired it is kept there (Fernet-encrypted,
+    10-minute TTL) so enrollment works across replicas, otherwise in-process.
+    TOTP replay protection is global via Redis (fails closed on Redis errors).
 """
 
 from __future__ import annotations
@@ -122,45 +124,126 @@ def _is_totp_replayed(tenant_id: str, code: str) -> bool:
     could be forgotten while it was still valid (allowing a replay), and two
     processes bucketed the same instant differently.
     """
-    now = time.time()
-    key = f"{code}:{int(now // 30)}"  # TOTP time-step bucket
-    if key in _used_totp_codes[tenant_id]:
+    now_step = int(time.time() // 30)  # TOTP time-step bucket
+    # valid_window=1 accepts a code during up to three consecutive steps, so a
+    # used code is remembered for that long (it used to be forgotten after the
+    # next step, while still acceptable — a replay within ~60 s).
+    oldest = now_step - _REPLAY_STEPS
+    live = {k for k in _used_totp_codes[tenant_id] if int(k.rsplit(":", 1)[1]) >= oldest}
+    _used_totp_codes[tenant_id] = live
+    if any(k.rsplit(":", 1)[0] == code for k in live):
         return True
-    # Clean old entries (keep current and previous window only)
-    _used_totp_codes[tenant_id] = {
-        k for k in _used_totp_codes[tenant_id] if int(k.split(":")[1]) >= int(now // 30) - 1
-    }
-    _used_totp_codes[tenant_id].add(key)
+    live.add(f"{code}:{now_step}")
     return False
+
+
+# A code verified with valid_window=1 is acceptable for 3 TOTP steps (90 s).
+_REPLAY_STEPS = 2
+_REPLAY_TTL = 30 * (_REPLAY_STEPS + 1) + 1
+
+
+def _redis_of(request: Any) -> Any:
+    if request is None:
+        return None
+    try:
+        return getattr(request.app.state, "_redis", None)
+    except Exception:
+        return None
 
 
 async def _check_totp_replay(tenant_id: str, code: str, request: Any = None) -> bool:
     """Return True if code was already used (replay detected).
 
-    Uses Redis for cross-replica consistency when available; falls back to the
-    process-local set in degraded mode (single-replica or Redis down).
-
-    The Redis key has a 31-second TTL — one TOTP window (30 s) plus a 1-second
-    grace — so replayed codes are rejected across all replicas.
+    With Redis wired the check is global across replicas (``SET NX`` with a TTL
+    covering the whole acceptance window) and a Redis error **fails closed**
+    (:class:`MFAStateUnavailableError` → 503): falling back to the process-local
+    set would let the same code be replayed on every other replica. Without
+    Redis (a single process) the in-process set is authoritative.
     """
-    redis = None
-    if request is not None:
+    redis = _redis_of(request)
+    if redis is None:
+        return _is_totp_replayed(tenant_id, code)
+    key = f"mfa:used_totp:{tenant_id}:{hashlib.sha256(code.encode()).hexdigest()}"
+    try:
+        # Truthy when newly created; None/False when it already existed → replay.
+        was_set = await redis.set(key, "1", nx=True, ex=_REPLAY_TTL)
+    except Exception as exc:
+        raise MFAStateUnavailableError(f"TOTP replay check unavailable: {exc}") from exc
+    return not was_set
+
+
+async def _reject_replayed_totp(request: Request, tenant_id: str, code: str) -> None:
+    """422 on a replayed TOTP code, 503 when the replay store is unreachable."""
+    try:
+        replayed = await _check_totp_replay(tenant_id, code, request)
+    except MFAStateUnavailableError as exc:
+        raise _unavailable(exc) from exc
+    if replayed:
+        raise HTTPException(422, "TOTP code already used. Wait for next code.")
+
+
+# ---------------------------------------------------------------------------
+# Pending enrollment secret (shared across replicas via Redis)
+# ---------------------------------------------------------------------------
+# /enroll and /verify-enrollment are separate requests that a load balancer can
+# send to different replicas; the pending secret used to live only in this
+# process's cache, so confirmation failed ("No pending enrollment") elsewhere.
+# With Redis wired it is stored there, Fernet-encrypted, with a TTL; a Redis
+# error fails closed (503). Without Redis the process cache is used.
+
+_PENDING_ENROLLMENT_TTL = 600  # seconds to finish enrollment
+
+
+def _pending_key(tenant_id: str) -> str:
+    return f"mfa:pending:{tenant_id}"
+
+
+async def _set_pending_secret(request: Request, tenant_id: str, secret: str) -> None:
+    redis = _redis_of(request)
+    if redis is None:
+        _mfa_db_store._cache_entry(tenant_id)["pending_secret"] = secret
+        return
+    from app.api.mfa_crypto import encrypt_secret
+
+    try:
+        await redis.set(_pending_key(tenant_id), encrypt_secret(secret), ex=_PENDING_ENROLLMENT_TTL)
+    except Exception as exc:
+        raise _unavailable(MFAStateUnavailableError(str(exc))) from exc
+
+
+async def _get_pending_secret(request: Request, tenant_id: str) -> str | None:
+    redis = _redis_of(request)
+    if redis is None:
+        pending = _mfa_db_store._cache_entry(tenant_id).get("pending_secret")
+        return str(pending) if pending else None
+    try:
+        raw = await redis.get(_pending_key(tenant_id))
+    except Exception as exc:
+        raise _unavailable(MFAStateUnavailableError(str(exc))) from exc
+    if not raw:
+        return None
+    from app.api.mfa_crypto import decrypt_secret
+
+    try:
+        return decrypt_secret(raw.decode() if isinstance(raw, bytes) else str(raw))
+    except ValueError:
+        return None  # undecryptable → treat as no pending enrollment (re-enroll)
+
+
+async def _clear_pending_secret(request: Request, tenant_id: str) -> None:
+    _mfa_db_store._cache_entry(tenant_id)["pending_secret"] = None
+    redis = _redis_of(request)
+    if redis is None:
+        return
+    try:
+        await redis.delete(_pending_key(tenant_id))
+    except Exception as exc:
+        # Harmless leftover: it expires, and verify-enrollment refuses once
+        # MFA is enabled. Not worth failing a completed enrollment/disable.
         with contextlib.suppress(Exception):
-            redis = getattr(request.app.state, "_redis", None)
+            from app.observability.logging import get_logger
 
-    if redis is not None:
-        try:
-            key = f"mfa:used_totp:{tenant_id}:{code}"
-            # SET key "1" NX EX 31: set only if not exists, with 31-second TTL.
-            # Returns the set result (truthy) if the key was newly created,
-            # or None/False if the key already existed (code already used → replay).
-            was_set = await redis.set(key, "1", nx=True, ex=31)
-            return was_set is None or not was_set
-        except Exception:
-            pass  # fall through to in-process fallback on Redis error
-
-    # Degraded mode: in-process set (single-replica only)
-    return _is_totp_replayed(tenant_id, code)
+            get_logger(__name__).warning("mfa_pending_clear_failed", error=str(exc)[:200])
 
 
 # ---------------------------------------------------------------------------
@@ -525,9 +608,10 @@ async def get_mfa_status(request: Request) -> dict[str, Any]:
     """Return whether MFA is enabled for this tenant."""
     tenant = _require_tenant(request)
     state = await _get_state(tenant.tenant_id)
+    pending = await _get_pending_secret(request, tenant.tenant_id)
     return {
         "enabled": state["enabled"],
-        "has_pending_enrollment": state["pending_secret"] is not None,
+        "has_pending_enrollment": pending is not None,
         "recovery_codes_count": len(state["recovery_codes_hashed"]),
     }
 
@@ -546,10 +630,9 @@ async def begin_enrollment(request: Request) -> dict[str, Any]:
         )
 
     secret = pyotp.random_base32()
-    # pending_secret stays in-memory only — saved to cache but NOT to DB
-    state["pending_secret"] = secret
-    # Update cache directly (no DB write needed for pending-only state)
-    _mfa_db_store._cache[tenant.tenant_id] = state
+    # Never written to the tenant_mfa row; shared via Redis (encrypted, TTL)
+    # so /verify-enrollment works on any replica.
+    await _set_pending_secret(request, tenant.tenant_id, secret)
 
     totp = pyotp.TOTP(secret)
 
@@ -605,7 +688,7 @@ async def complete_enrollment(request: Request, body: VerifyRequest) -> dict[str
             detail="MFA is already enabled.",
         )
 
-    pending = state.get("pending_secret")
+    pending = await _get_pending_secret(request, tenant.tenant_id)
     if not pending:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -619,8 +702,7 @@ async def complete_enrollment(request: Request, body: VerifyRequest) -> dict[str
             detail="Invalid TOTP code. Check your authenticator app and try again.",
         )
 
-    if _is_totp_replayed(tenant.tenant_id, body.code.strip()):
-        raise HTTPException(422, "TOTP code already used. Wait for next code.")
+    await _reject_replayed_totp(request, tenant.tenant_id, body.code.strip())
 
     recovery_codes = _generate_recovery_codes()
     state["secret"] = pending
@@ -629,6 +711,7 @@ async def complete_enrollment(request: Request, body: VerifyRequest) -> dict[str
     state["recovery_codes_hashed"] = [_hash_recovery_code(c) for c in recovery_codes]
 
     await _save_state(tenant.tenant_id, state)
+    await _clear_pending_secret(request, tenant.tenant_id)
 
     return {
         "status": "enabled",
@@ -687,8 +770,7 @@ async def verify_mfa(request: Request, body: VerifyRequest) -> dict[str, Any]:
             detail="Invalid TOTP code.",
         )
 
-    if _is_totp_replayed(tenant.tenant_id, body.code.strip()):
-        raise HTTPException(422, "TOTP code already used. Wait for next code.")
+    await _reject_replayed_totp(request, tenant.tenant_id, body.code.strip())
 
     # Issue a short-lived session token (1-hour TTL); frontend stores as X-MFA-Token
     try:
@@ -720,8 +802,7 @@ async def disable_mfa(request: Request, body: DisableRequest) -> dict[str, Any]:
             detail="Invalid TOTP code. MFA not disabled.",
         )
 
-    if _is_totp_replayed(tenant.tenant_id, body.code.strip()):
-        raise HTTPException(422, "TOTP code already used. Wait for next code.")
+    await _reject_replayed_totp(request, tenant.tenant_id, body.code.strip())
 
     state["enabled"] = False
     state["secret"] = None
@@ -729,6 +810,7 @@ async def disable_mfa(request: Request, body: DisableRequest) -> dict[str, Any]:
     state["pending_secret"] = None
 
     await _save_state(tenant.tenant_id, state)
+    await _clear_pending_secret(request, tenant.tenant_id)
 
     return {"status": "disabled", "message": "MFA has been disabled."}
 
@@ -763,8 +845,7 @@ async def regenerate_recovery_codes(request: Request, body: VerifyRequest) -> di
             detail="Invalid TOTP code.",
         )
 
-    if _is_totp_replayed(tenant.tenant_id, body.code.strip()):
-        raise HTTPException(422, "TOTP code already used. Wait for next code.")
+    await _reject_replayed_totp(request, tenant.tenant_id, body.code.strip())
 
     new_codes = _generate_recovery_codes()
     state["recovery_codes_hashed"] = [_hash_recovery_code(c) for c in new_codes]
