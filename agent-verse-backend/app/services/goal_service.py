@@ -12,8 +12,10 @@ Responsible for:
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
@@ -523,6 +525,38 @@ def graph_context_from_execution_context(execution_context: Any) -> dict[str, An
         return {}
     return {k: execution_context[k] for k in GRAPH_CONTEXT_KEYS if k in execution_context}
 
+class _BoundedLRU(collections.OrderedDict[str, Any]):
+    """A dict with a fixed capacity that evicts the least recently used entry.
+
+    The per-replica eval-scorecard cache used to be a plain dict that grew by
+    one scorecard per scored goal for the life of the process. Postgres
+    (``evaluations`` / ``eval_scorecards``) is the record; this is only a cache.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        super().__init__()
+        self.maxsize = max(1, maxsize)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        while len(self) > self.maxsize:
+            self.popitem(last=False)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+
+def _eval_cache_size() -> int:
+    try:
+        return int(os.getenv("AGENTVERSE_EVAL_CACHE_MAX", "2048"))
+    except ValueError:
+        return 2048
+
+
 class GoalService:
     """In-memory goal service.
 
@@ -563,7 +597,7 @@ class GoalService:
         # is needed because redis-py pub/sub blocks the connection while listening.
         self._redis_url_for_pubsub: str = ""
         # Eval scorecards keyed by goal_id; populated on goal completion.
-        self._eval_scores: dict[str, Any] = {}
+        self._eval_scores: _BoundedLRU = _BoundedLRU(_eval_cache_size())
         # Goals whose completion-time eval is still running: GET /eval reports
         # "pending" for them instead of a misleading "not_evaluated" (the goal is
         # marked complete before its charged scoring calls finish).
@@ -4530,10 +4564,109 @@ class GoalService:
             "goals_today": goals_today,
         }
 
+    async def _persisted_eval(
+        self, goal_id: str, tenant_ctx: TenantContext
+    ) -> tuple[Any, float, bool] | None:
+        """The goal's latest persisted scorecard as ``(scorecard, average, passed)``.
+
+        Reads ``evaluations`` (EvalRunner scorecards) then ``eval_scorecards``
+        (runtime scorecards) under the tenant's RLS context. None when nothing
+        is persisted (or no DB is configured). A DB error raises
+        :class:`ServiceUnavailableError` — reporting "not_evaluated" for a goal
+        whose scorecard merely could not be read would be a false answer.
+        """
+        if self._db is None:
+            return None
+        import json as _json
+
+        from sqlalchemy import text as _sql
+
+        from app.db.rls import sqlalchemy_rls_context
+        from app.intelligence.eval import EvalScorecard, _pass_threshold
+
+        def _scores(raw: Any) -> dict[str, float]:
+            data = _json.loads(raw) if isinstance(raw, str | bytes) else raw
+            if not isinstance(data, dict):
+                return {}
+            return {
+                str(k): float(v) for k, v in data.items() if isinstance(v, int | float)
+            }
+
+        params = {"gid": goal_id, "tid": tenant_ctx.tenant_id}
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                row = (
+                    await session.execute(
+                        _sql(
+                            "SELECT scores, average_score, passed FROM evaluations "
+                            "WHERE goal_id = :gid AND tenant_id = :tid "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ),
+                        params,
+                    )
+                ).fetchone()
+                if row is not None:
+                    card = EvalScorecard(goal_id=goal_id, scores=_scores(row[0]))
+                    return card, float(row[1]), bool(row[2])
+                row = (
+                    await session.execute(
+                        _sql(
+                            "SELECT scores, overall_score FROM eval_scorecards "
+                            "WHERE goal_id = :gid AND tenant_id = :tid "
+                            "ORDER BY created_at DESC LIMIT 1"
+                        ),
+                        params,
+                    )
+                ).fetchone()
+        except Exception as exc:
+            _svc_logger.warning("eval_scorecard_read_failed", goal_id=goal_id, error=str(exc)[:200])
+            raise ServiceUnavailableError(
+                "eval scorecards are unavailable", code="EVAL_STORE_UNAVAILABLE"
+            ) from exc
+        if row is None:
+            return None
+        card = EvalScorecard(goal_id=goal_id, scores=_scores(row[0]))
+        average = float(row[1])
+        return card, average, average >= _pass_threshold()
+
+    async def _scorecard_for(self, goal_id: str, tenant_ctx: TenantContext) -> Any:
+        """Cached scorecard, else the persisted one (then cached). None if unscored."""
+        scorecard = self._eval_scores.get(goal_id)
+        if scorecard is not None:
+            return scorecard
+        persisted = await self._persisted_eval(goal_id, tenant_ctx)
+        if persisted is None:
+            return None
+        self._eval_scores[goal_id] = persisted[0]
+        return persisted[0]
+
     async def get_eval(self, goal_id: str, tenant_ctx: TenantContext) -> dict[str, Any]:
-        """Return the eval scorecard for *goal_id*, or a not-evaluated response."""
+        """Return the eval scorecard for *goal_id*, or a not-evaluated response.
+
+        This replica's cache first, then the persisted scorecard (Postgres,
+        tenant RLS) — a goal scored on another replica or before a restart used
+        to report "not_evaluated" forever.
+        """
         self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
         scorecard = self._eval_scores.get(goal_id)
+        persisted = None
+        if scorecard is None and goal_id not in self._eval_pending:
+            persisted = await self._persisted_eval(goal_id, tenant_ctx)
+        if persisted is not None:
+            card, average, passed = persisted
+            self._eval_scores[goal_id] = card
+            return {
+                "goal_id": goal_id,
+                "status": "evaluated",
+                "scores": card.scores,
+                "average_score": average,
+                "passed": passed,
+                "iterations": card.iterations,
+            }
         if scorecard is None:
             return {
                 "goal_id": goal_id,
@@ -4561,7 +4694,7 @@ class GoalService:
         dimensions pass. This is the read side of the self-improvement surface.
         """
         self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
-        scorecard = self._eval_scores.get(goal_id)
+        scorecard = await self._scorecard_for(goal_id, tenant_ctx)
         if scorecard is None:
             return {"goal_id": goal_id, "status": "not_evaluated", "pass_threshold": None,
                     "suggestions": [], "count": 0}
