@@ -1,0 +1,514 @@
+{
+ "group": "g04-security-governance",
+ "code": "fe2eb5b15",
+ "features": [
+  {
+   "area": "tenancy-security",
+   "feature": "API-key authentication pipeline (TenantMiddleware, stream tokens, security headers)",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "TenantMiddleware unchanged since baseline (last touch a1e01aa3d, pre-a4d172588). Enumerated all 55 OpenAPI operations under _BYPASS_PREFIXES: each self-authenticates (signature/secret/token/SCIM bearer) or is an honest 501 (/v1/gateway/{org_id}/config, channels/status) or public discovery; /metrics carries no tenant labels. Real-Postgres security sweep passes.",
+   "verified_fixed": [],
+   "still_open": [
+    "Prefix-based bypass means a new route under /integrations/, /v1/gateway/, /channels/<x>/ is public by default; only the e2e sweep guards it → app/tenancy/middleware.py:70-110 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/tenancy/test_middleware.py tests/tenancy/test_stream_token_scope.py tests/auth/test_stream_tokens.py tests/tenancy/test_public_webhook_bypass.py tests/tenancy/test_middleware_comprehensive.py -q --no-cov -p no:cacheprovider -m 'not slow' → 95 passed",
+    "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/e2e_full/test_security_sweep_e2e.py -q --no-cov → 4 passed (real Postgres)",
+    "probe: create_app().openapi() paths under _BYPASS_PREFIXES → 55 ops, each handler inspected for self-auth"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "Tenant lifecycle and API-key management (app/api/tenants.py + app/services/tenant_service.py)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "GDPR export now pages goals and agents to exhaustion and 503s on a raised read error (c3b7c1380). But the real AgentStore.list_async swallows DB errors and returns the replica's cache, so the agent half can still be silently partial; user_roles remains write-only; expired keys still count toward the key limit.",
+   "verified_fixed": [
+    "POST /me/export only exported the first 50 goals (default limit) → _collect_all_pages pages with limit/offset until an empty page, app/api/tenants.py:1116-1147,1168-1185 (c3b7c1380)",
+    "POST /me/export swallowed goal read errors → goal read failure now raises 503, app/api/tenants.py:1174-1179; GoalService.list_goals no longer catches DB errors, app/services/goal_service.py:4387-4403 (c3b7c1380)"
+   ],
+   "still_open": [
+    "POST /me/roles writes user_roles but load_roles_from_db has no caller, so assignments have no effect → app/tenancy/rbac.py:90 (only definition), app/api/tenants.py:596-631",
+    "Export swallows agent read errors: AgentStore.list_async catches every DB exception and returns the per-replica in-memory cache, so the export returns an incomplete agents list with 200 → app/api/agents.py:293-300 used by app/api/tenants.py:1172-1173; test_tenants_export_complete mocks list_async raising, never the real store",
+    "Key limit counts expired-but-is_active keys as active → app/api/tenants.py:181"
+   ],
+   "new_defects": [
+    "app/api/tenants.py:1116-1193 — GDPR export materialises every goal and agent of the tenant in one in-memory list and one JSON response with OFFSET paging (O(n^2) scan); a tenant with ~1M goals makes the API pod OOM/timeout rather than streaming or running an async export job [medium]",
+    "app/api/tenants.py:1168-1170 — 'export all tenant data' contains only goal summaries (text/status/priority), not results, events, plans, memory or knowledge documents, while claiming to be the GDPR data export [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_tenants.py tests/api/test_tenants_no_fake_success.py tests/api/test_tenants_api_key_limit.py tests/api/test_tenants_export_complete.py -q --no-cov -p no:cacheprovider -m 'not slow' → 33 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "Rate limiting and plan quotas",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/tenancy/limits.py and rate_limiter.py are unchanged since the baseline (no commits a4d172588..HEAD). Degraded-Redis fail-closed behaviour still holds (tests pass), but the knowledge-collection limit is still unenforced and the concurrent-goal counter is still inaccurate; a double release on cancel was also found.",
+   "verified_fixed": [],
+   "still_open": [
+    "check_knowledge_collection_limit is never called → app/tenancy/limits.py:78 (no caller in app/)",
+    "RateLimiter class unused outside the package export → app/tenancy/rate_limiter.py:129",
+    "Degraded mode is per pod: N replicas allow up to N x the plan limit during a Redis outage → app/tenancy/rate_limiter.py:110-127",
+    "concurrent_goals counter gets EXPIRE 3600 on every INCR: goals running >1 h after the last submit let the key expire (limit bypass), leaked slots never decay while the tenant keeps submitting → app/tenancy/limits.py:114-121 [medium]",
+    "decrement_concurrent_goals is a non-atomic GET-then-DECR that swallows errors → app/tenancy/limits.py:152-160 [low]"
+   ],
+   "new_defects": [
+    "app/services/goal_service.py:2708-2712 + app/scaling/tasks.py:3139-3152 — cancelling a Celery-queued goal releases its concurrency slot twice: cancel_goal dispatches goal_cancelled, whose handler decrements the counter, then the worker's pre-execution cancel check calls _decrement_after_completion again; each cancel of a queued goal gives the tenant one extra concurrent slot above its plan limit [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/tenancy/test_key_scopes_and_rate_limit.py tests/tenancy/test_rate_limiter.py tests/tenancy/test_limits.py tests/tenancy/test_limits_fail_closed.py tests/tenancy/test_ip_rate_limit.py tests/tenancy/test_concurrent_goals.py -q --no-cov -p no:cacheprovider -m 'not slow' → 40 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "Scope enforcement, RBAC and IP allowlist enforcement",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No commits touched scope_enforcement.py, ip_allowlist.py or rbac.py since the baseline. Fail-closed scope/allowlist behaviour still passes its tests; the custom-RBAC tables remain inert and the loopback / role-less-read edges are unchanged.",
+   "verified_fixed": [],
+   "still_open": [
+    "api_key_scopes/role_assignments rows are never written by app code (no INSERT outside migrations/seeder), so _load_scopes always falls back to ROLE_SCOPES; custom roles non-functional → app/auth/scope_enforcement.py:750",
+    "user_roles assignments (POST /tenants/me/roles) never consulted → app/tenancy/rbac.py:90 (no caller)",
+    "ABACEvaluator/RoleResolver used only by tests → app/auth/scope_enforcement.py:442,486",
+    "Loopback source IPs always bypass the allowlist; a same-host proxy/sidecar not in TRUSTED_PROXIES bypasses every tenant allowlist → app/auth/ip_allowlist.py:130-132",
+    "Role-less keys may GET every route regardless of scope (legacy rows) → app/auth/scope_enforcement.py:567-583"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/auth/test_scope_enforcement_comprehensive.py tests/auth/test_ip_allowlist_comprehensive.py tests/tenancy/test_rbac.py tests/tenancy/test_scope_ip_fail_closed.py -q --no-cov -p no:cacheprovider -m 'not slow' → 96 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "MFA (TOTP)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No MFA code changed since the baseline. Replay protection, cross-replica enrollment and fail-closed state errors still pass their tests. Wave 7A moved the coordination group-chat WebSocket onto ws_auth (4c829c81c), so MFA now applies there too. Enforcement is still off by default.",
+   "verified_fixed": [],
+   "still_open": [
+    "Enforcement off by default: mfa_enforcement_enabled=False and set in no deploy config, so the server accepts the API key alone → app/core/config.py:444",
+    "MFA attempt rate limit falls back to a per-process counter on Redis errors (N replicas = N x attempts) → app/api/mfa.py:106-110",
+    "One TOTP secret per tenant, not per user (TenantMFA keyed on tenant_id)",
+    "Legacy '.b64' plaintext secrets still decrypt until re-saved → app/api/mfa_crypto.py:61-62"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_mfa_cross_replica.py tests/api/test_mfa.py tests/api/test_mfa_fail_closed.py -q --no-cov -p no:cacheprovider -m 'not slow' → 36 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "SSO: Keycloak OIDC and Google OAuth",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "keycloak.py, google_oauth.py and tenant_service.py are unchanged since the baseline. Keycloak JIT still persists and maps realm roles (tests pass). Google still returns an honest 501 after verifying identity, and the key-id lookup and per-request scans still use the in-process mirror.",
+   "verified_fixed": [],
+   "still_open": [
+    "Google OAuth issues no AgentVerse session (honest 501) → app/auth/google_oauth.py:179-195",
+    "get_key_by_sso_sub checks only in-memory state; on other replicas api_key_id falls back to the ghost 'sso:{sub}' → app/services/tenant_service.py:775-796, app/auth/keycloak.py:196-202",
+    "JIT user with no mapped realm role is a 'viewer' of a personal tenant; one tenant per SSO subject, no org mapping → app/auth/keycloak.py:157",
+    "POST /auth/logout documented but not implemented → app/api/auth.py:7",
+    "Every Keycloak-authenticated request linearly scans self._tenants twice (O(tenants) per request) → app/services/tenant_service.py:745-747,782-783 [medium]"
+   ],
+   "new_defects": [
+    "app/services/tenant_service.py:904-925 — sync_from_db loads every active tenant into the in-process mirror and then runs one RLS-scoped key query per tenant; at millions of tenants every API replica start is O(tenants) queries and memory, and it is also what makes the per-request SSO scans above grow [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/auth/test_keycloak_comprehensive.py tests/auth/test_keycloak_roles_and_plan.py tests/auth/test_google_oauth.py tests/auth/test_user_service.py -q --no-cov -p no:cacheprovider -m 'not slow' → 56 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "SAML 2.0 SSO",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "The ACS endpoint is still public, tenant-scoped and fail-closed on replay, and it answers an honest 501 after a valid assertion because no session is issued. Wave 7D pinned the SAML connection-test probe to validated IPs (2d9d9d074, enterprise.py:2227-2240). Signature validation still cannot run here because python3-saml is not installed.",
+   "verified_fixed": [],
+   "still_open": [
+    "No JIT provisioning / session issuance after a valid assertion: honest 501 → app/api/enterprise.py:2195-2210",
+    "BLOCKED: python3-saml absent (`uv run python -c 'import onelogin'` → ModuleNotFoundError), so SAMLProvider.process_acs signature/strict validation cannot be exercised → app/auth/saml_provider.py:122-160",
+    "Replay key is name_id:session_index, not the assertion ID → app/auth/saml_provider.py:147-149; unauthenticated ACS reveals whether a tenant has SAML configured (404 vs 401) → app/api/enterprise.py:2175-2176",
+    "Replay check is EXISTS then SETEX (not SET NX): two concurrent posts of one assertion on different replicas both pass → app/auth/saml_provider.py:208-212 [low, latent while ACS is 501]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/auth/test_saml_provider.py tests/api/test_saml_acs_public.py tests/auth/test_saml_not_installed.py -q --no-cov -p no:cacheprovider -m 'not slow' → 34 passed",
+    "uv run pytest tests/security/test_ssrf_connectors_saml_health.py -q --no-cov → 7 passed",
+    "signature validation → BLOCKED (python3-saml / onelogin not installed)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "SCIM 2.0 provisioning",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The SCIM handler is unchanged since the baseline. Users CRUD with eq-filters runs under RLS and passes on real Postgres. Only /Users is routed, the page size is unbounded, and deprovisioning only flips tenant_memberships.status, which no auth path reads.",
+   "verified_fixed": [],
+   "still_open": [
+    "No Groups/ServiceProviderConfig/Schemas endpoints; only /Users and /Users/{scim_id} are routed → app/api/enterprise.py:2319-2357",
+    "`count` has no server-side maximum (only max(count,0)), so a SCIM client can request an unbounded page → app/api/enterprise.py:2323, app/auth/scim_handler.py:215 [low]"
+   ],
+   "new_defects": [
+    "app/auth/scim_handler.py:437 + app/tenancy/middleware.py / app/auth/keycloak.py — SCIM DELETE / active=false only sets TenantMembership.status='deactivated', but no authentication path (TenantMiddleware, Keycloak resolve_tenant_from_jwt, ws_auth) reads membership status; an IdP-offboarded user keeps whatever API key or SSO access they had, so SCIM deprovisioning revokes nothing [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/auth/test_scim_filter.py tests/auth/test_scim_handler.py -q --no-cov -p no:cacheprovider -m 'not slow' → 26 passed",
+    "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/tenancy/test_tenancy_auth_integration.py -q --no-cov → 4 passed (real Postgres)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "WebSocket authentication",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "All 7 server WebSocket endpoints (org MCP, voice, civilization, coordination group chat, 3x collab) now authenticate through ws_auth.resolve_ws_tenant. The group-chat socket moved there in 4c829c81c, and a regression test covers allowlist, scope/role and MFA denial. Per-tenant connect rate limiting and JWT (SSO) support on sockets are still missing.",
+   "verified_fixed": [
+    "coordination group-chat socket had its own _authenticate that skipped IP allowlist, key scopes/roles and MFA → now delegates to resolve_ws_tenant(required_scope=None, write=True), app/api/coordination_group_chat.py:57-71 (4c829c81c; tests/api/test_coordination_group_chat_ws_auth.py); resolver exceptions are caught in ws_auth._resolve_key, app/tenancy/ws_auth.py:68-80"
+   ],
+   "still_open": [
+    "No per-tenant rate limit on WebSocket connects in the shared authenticator (group chat has only a per-connection 30 msg/10 s window) → app/tenancy/ws_auth.py:126-167, app/api/coordination_group_chat.py:146-152",
+    "WebSockets accept only API keys and stream tokens, not agent or Keycloak JWTs, so SSO users cannot open sockets → app/tenancy/ws_auth.py:56-65,139-148"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_coordination_group_chat_ws_auth.py tests/api/test_group_chat_websocket.py tests/tenancy/test_ws_auth_policies.py tests/api/test_collab.py tests/api/test_collab_extra3.py tests/voice/test_voice_router_extra.py -q --no-cov -p no:cacheprovider -m 'not slow' → 123 passed"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "SSRF egress guard (app/net/ssrf_guard.py)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Wave 7D moved almost every validate-then-connect site onto the connect-time-pinned public_async_client, and added an AST guard test (tests/net/test_no_unpinned_public_fetch.py) whose only allowlist entry is check_mcp_health. Still unpinned: the worker MCP health probe, the MCP WebSocket transport, tenant LLM base_url providers, and the browser WebSocket guard. The AST guard only sees validation and connection inside the same function.",
+   "verified_fixed": [
+    "MCP client dispatch/discovery → per-call client from public_async_client, app/mcp/client.py:236-244 (f537bbeee)",
+    "Jira/GitHub MCP servers → public_async_client, app/mcp/servers/jira_server.py:304, github_server.py:151 (f537bbeee)",
+    "OAuth code/token exchange → public_async_client, app/mcp/oauth.py:247-261,492-496 (f537bbeee)",
+    "A2A outbound tool and A2A callbacks → public_async_client, app/agent/tools/a2a_call.py:55, app/api/a2a.py:290 (c623ab44e)",
+    "Connector test probes → pinned client, app/api/connectors.py:703-709 (c623ab44e)",
+    "Knowledge URL ingest and gateway file download → public_async_client + request_public, app/api/knowledge.py:1511,1537, app/gateway/router.py:253 (65805e8c5)",
+    "HTTP ingestion connector and hosted reranker → public_async_client, app/ingestion/connectors/http_connector.py:173, app/rag_platform/hosted_reranker.py:109 (6418541c2)",
+    "SAML test probe and knowledge_ingest tool → public_async_client, app/api/enterprise.py:2237, app/tools/knowledge_ingest_tool.py:151 (2d9d9d074)",
+    "API-poll / RSS trigger fetches → sync pinned client (fdc81e6a5)"
+   ],
+   "still_open": [
+    "Worker MCP health probe validates each hop with request_public but connects on plain httpx.AsyncClient (DNS rebinding) → app/scaling/tasks.py:4621,4710 (explicit allowlist entry in the guard test)",
+    "Allowlisted host that fails to resolve returns [] with no IP check (safe only with the pinned client) → app/net/ssrf_guard.py:164-172",
+    "Browser WebSocket guard validates, then Playwright connect_to_server resolves DNS again → app/net/browser_guard.py:319-341",
+    "Synchronous assert_public_url (blocking getaddrinfo) on the event loop in async request paths → app/mcp/client.py:1012, app/api/a2a.py:285,369, app/api/knowledge.py:1499 [low]"
+   ],
+   "new_defects": [
+    "app/mcp/client.py:1008-1032 + app/mcp/ws_client.py:66 — MCP ws/websocket transport: the ws_url is checked with assert_public_url, then websockets.connect resolves the name again, so a tenant connector on a rebinding hostname reaches internal hosts. The AST guard misses it because it only checks httpx calls [medium]",
+    "app/providers/tenant_provider.py:82-93 + app/providers/openai_compatible.py:146 — a tenant BYOK base_url is validated once, then the openai SDK client resolves DNS on every request, so a rebinding base_url sends authenticated LLM POSTs, with tenant prompts, to internal addresses for the provider's lifetime [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/net/ tests/tools/test_http_tool_ssrf.py tests/ingestion/test_azure_blob_egress.py -q --no-cov -p no:cacheprovider -m 'not slow' → 121 passed (includes test_no_unpinned_public_fetch guard)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "A2A protocol, agent directory and JWKS discovery",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "app/api/a2a.py and agent_directory.py are unchanged since the baseline. Callbacks are re-validated at send time and pinned, JWKS reads are RLS-correct, and the tenant boundary holds on real Postgres. Execution is still an in-process fire-and-forget task, so a replica restart strands tasks.",
+   "verified_fixed": [],
+   "still_open": [
+    "Outcome watcher is asyncio.create_task on the API replica, and even submit_goal runs inside it after the 202, so a restart leaves the a2a_tasks row 'accepted' forever with no goal and no callback → app/api/a2a.py:392-414 [medium]",
+    "Agent card advertises only X-A2A-Signature, not X-A2A-Timestamp or the signed-string format → app/api/a2a.py:322-326",
+    "Per-agent directory NOT_IMPLEMENTED (honest 501) → app/api/agent_directory.py:26-37",
+    "Callback POST is unsigned, so the receiver cannot authenticate it → app/api/a2a.py:290-299",
+    "With no goal_service wired the task is persisted and 202 'accepted' but never executed → app/api/a2a.py:392 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_a2a.py tests/api/test_a2a_extra.py tests/api/test_a2a_comprehensive.py tests/api/test_a2a_outcome.py tests/auth/test_jwks_rls.py -q --no-cov -p no:cacheprovider -m 'not slow' → 61 passed",
+    "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/e2e_full/test_a2a_tenant_boundary_e2e.py -q --no-cov → 3 passed (real Postgres)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "Agent-scoped API keys and agent identity",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "FAIL",
+   "evidence": "Unchanged. POST /agents/{id}/keys returns 200 with an av_agent_* key and stores allowed_tools/denied_tools/allowed_connectors (app/api/agent_credentials_api.py:28-55), but no auth path calls is_agent_key/resolve/check_tool_allowed, so the key authenticates nothing and its tool restrictions enforce nothing. Nothing tells the caller. Re-graded FAIL, not NOT_IMPLEMENTED, because this is a 200 fake success rather than an honest 501, consistent with HANDOFF §5 P0. RS256 agent JWT identity does work (a1e01aa3d, tracked under tools-connectors).",
+   "verified_fixed": [],
+   "still_open": [
+    "Agent-scoped keys cannot authenticate: the only importers of app/auth/agent_credentials.py are the key CRUD API and main.py's DB wiring (app/main.py:1706), with no caller of is_agent_key/resolve/check_tool_allowed in TenantMiddleware or the tool gate → app/auth/agent_credentials.py:38,103,135, app/api/agent_credentials_api.py:28-55",
+    "No test exercises an agent key against any authenticated endpoint (the tests cover CRUD only)"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_agent_credentials_api.py tests/auth/test_agent_identity_vault_and_auth.py -q --no-cov -p no:cacheprovider -m 'not slow' → 30 passed (CRUD + JWT identity only)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "PostgreSQL Row-Level Security (app/db/rls.py + migrations)",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "No migration or model changed since the baseline (git diff a4d172588..HEAD on app/db/migrations and app/db/models is empty; alembic single head c8d2f4a6b1e3). On a fresh migrated Postgres, the forced-RLS catalog audit (security sweep) and the behavioural, identity-table and graph-version isolation tests pass. The new wave-7 e-stop DB read runs inside sqlalchemy_rls_context (ed55a2fb5).",
+   "verified_fixed": [],
+   "still_open": [
+    "users is a global table without RLS (by design); agent_templates exposes tenant_id IS NULL rows (intended) → app/db/migrations/versions/0009_intelligence.py:215 [info]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/integration/test_rls_behavioral_isolation.py tests/db/test_identity_tables_rls_integration.py tests/org/test_graph_versions_rls_integration.py tests/db/test_rls.py -q --no-cov → 18 passed, 1 skipped (python3-saml not installed)",
+    "tests/e2e_full/test_security_sweep_e2e.py (forced-RLS catalog audit) → 4 passed (run under feature 1)"
+   ]
+  },
+  {
+   "area": "tenancy-security",
+   "feature": "Unwired tenancy/auth modules (library-only)",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "Unchanged: a grep of app/ for imports of entitlements, temp_elevation, tenant_users, custom_roles, sub_tenants and goal_tokens returns nothing outside the modules themselves. Their unit tests pass, but they have no production path.",
+   "verified_fixed": [],
+   "still_open": [
+    "No importers of app/tenancy/entitlements.py, app/auth/temp_elevation.py, app/tenancy/tenant_users.py, app/auth/custom_roles.py, app/tenancy/sub_tenants.py outside themselves (grep of app/ for import lines → 0 hits)",
+    "goal_tokens docstring claims per-goal worker tokens; nothing mints or verifies them → app/auth/goal_tokens.py:35"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/tenancy/test_entitlements.py tests/tenancy/test_sub_tenants.py tests/tenancy/test_tenant_users.py -q --no-cov -p no:cacheprovider -m 'not slow' → 74 passed (library-level only; no production caller)"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Grantex tool grants (grant store, enforce_tool_call, delegation, grant budgets)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Issue/list/get/revoke, grantee validation, atomic SQL spend increment, recursive revoke cascade (postgres_store.py:98-129) and fail-closed enforcement on both API and worker (tasks.py:2882-2919, enforcer.py:40-45) are intact. Delegation is still dead code in the executor: the parent id comes from a non-existent AgentState.agent_id, inside contextlib.suppress(Exception). No wave-7 change touched this area.",
+   "verified_fixed": [],
+   "still_open": [
+    "delegation inside contextlib.suppress(Exception) with parent=getattr(state,'agent_id','') -> unchanged at app/agent/nodes/executor_mixin.py:2016-2029; AgentState (app/agent/state.py:62-110) still has no agent_id field (agent id lives in state.context['agent_id'], see executor_mixin.py:1703), so delegate_active_grants returns [] (delegation.py:88-89) and children get no grants",
+    "no REST endpoint for delegation or delegation chains -> app/api/grants.py still exposes only POST '', GET '', GET /{id}, POST /{id}/revoke (:131,:170,:177,:187)",
+    "several capped grants with no authorising id -> spend only logged as grant_spend_unattributed, no cap binds: app/agent/nodes/executor_mixin.py:209-221. The charge runs at step start (:1715-1722), before this step's tool gate sets _authorizing_grant_id (:1911-1912), so the first step of every goal with >1 capped grant is always unattributed",
+    "new_defect 'delegation parent always empty' (medium) -> still present, executor_mixin.py:2026",
+    "new_defect 'child copies parent's full max_cost_usd' (low) -> still present, app/governance/grants/delegation.py:95-101 (spent_usd of parent not subtracted, N children x cap)",
+    "no test exercises the executor delegation call site (tests/governance/test_delegation.py calls delegate_active_grants directly with a valid parent id), which is why the dead-code bug is not caught"
+   ],
+   "new_defects": [
+    "app/services/goal_service.py:112-119 — _agent_grants_enforced() returns False on any exception reading settings, and the worker uses the same helper (app/scaling/tasks.py:2890); a settings/import error silently turns Grantex enforcement OFF (fail-open) rather than failing closed, contradicting the 'Default ON' posture at app/core/config.py:219-222 [low]",
+    "app/governance/grants/postgres_store.py:155-168 — list_for_agent selects every grant ever issued to the agent (revoked and expired included, no LIMIT, no active filter in SQL) and enforce_tool_call calls it on every tool call (enforcer.py:47); combined with delegation minting a fresh grant per spawn (delegation.py:92-102) this grows unbounded per long-lived agent [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_grants_api.py tests/governance/test_grants.py tests/governance/test_grant_revocation_and_budget.py tests/governance/test_delegation.py tests/governance/test_grant_store_postgres.py tests/governance/test_grants_postgres_store.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 34 passed, 1 skipped (test_grant_store_postgres.py: Docker daemon not available)",
+    "(parent re-run) DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/governance/test_grant_store_postgres.py tests/governance/test_trust_and_ai_ops_persistence.py tests/governance/test_audit_chain_persistence.py tests/governance/test_audit_chain_store.py tests/governance/test_audit_chain.py tests/governance/test_legal_holds_rls.py -q --no-cov -m 'not slow' → 24 passed, 0 skipped (real Postgres)"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "HITL approval gateway (governance/hitl.py + /governance approvals)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Wave 7A closed the main holes. Supervised approval now fails closed on anything but APPROVED, and a Redis error during the wait falls back to DB polling. Email links are HMAC-signed with a production-refused default, an expiry and a tenant binding, and need the approver role. Batch, org and MCP approvals are attributed to the authenticated key. Slack HITL takes the tenant from the verified workspace binding. Still open: executor gates are persisted fire-and-forget, the org task approve/reject routes have no role check and swallow errors, the one-click email/notification links point at a frontend route that does not exist, and the quorum/timeout issues are unchanged.",
+   "verified_fixed": [
+    "Email-link default secret / no expiry / no role / cross-tenant forge (high) -> 683de71bc: app/integrations/email/approval_sender.py:31-41 refuses the default in production (HITL_EMAIL_SECRET or a key derived from VAULT_MASTER_KEY); :44-59 signs (request_id, tenant_id, action, exp) and checks the expiry; app/api/governance.py:1527-1549 verifies against the CALLER's tenant; routes :1552/:1582 require_role('approver'); approve_async returns False (409) unless the request is still PENDING",
+    "Notification links used ?token= while the endpoint expects ?sig= -> 683de71bc: app/services/notification_service.py:244-254 uses build_decision_urls (sig+exp)",
+    "batch-approve approver taken from body.approver (medium) -> f24fa00ee: app/api/governance.py:1742 approver=_approver_identity(tenant_ctx); body.approver is ignored (:1714-1716)",
+    "batch-approve stray {'action':'approve'} push that ended the waiter's BLPOP early (medium) -> f24fa00ee: the extra publish was removed (app/api/governance.py:1762-1768)",
+    "MCP approve tool had the wrong hitl.approve signature and no role check -> f24fa00ee: app/gateway/mcp_server/__init__.py:602-624 requires the verified ctx, a tenant match and the approver role, and calls approve_async with approver=key_id",
+    "Slack /slack/events and /slack/interactive took the tenant from SLACK_TENANT_ID/'slack-events' -> 28cb879d5: app/api/integrations.py:33-46 _slack_bound_tenant resolves it from the channel_tenant_mappings binding; unbound workspaces are ignored (:167-173, :237-243); approver is slack:<user id> (:49-52)",
+    "Org task/approval-gate approver taken from the body -> f24fa00ee: app/org/router.py:876-887 _decision_actor uses the authenticated key; the body field is ignored",
+    "Supervised tool approval fell through on PENDING after a Redis error (wave 7A item 1) -> 23e47c7d3: app/agent/nodes/executor_mixin.py:2327-2334 raises unless APPROVED; app/governance/hitl.py:558-561 + _wait_local_or_db :592-614 keep waiting on the local event and poll the DB until the deadline"
+   ],
+   "still_open": [
+    "fire-and-forget request_approval() swallows persist errors -> app/governance/hitl.py:254-263 (create_task) and :490-495 (logged only); every executor gate still uses it (executor_mixin.py:286, :971, :1152, :1192, :2291). A failed INSERT makes the gate invisible to other replicas and to the inbox, and an approve on another replica 404s. Fails closed via timeout",
+    "Slack: approve_async/reject results ignored and the handler always returns {'ok': True} -> app/api/integrations.py:194-199, :201; /slack/interactive swallows resume errors (:275-278). Any member of the bound Slack workspace can approve: there is no mapping from Slack user to an AgentVerse approver role (:49-52, :185-199)",
+    "Slack slash command still uses the SLACK_TENANT_ID env var and a hard-coded PlanTier.PROFESSIONAL for every workspace -> app/api/integrations.py:106-124 (wave-7A follow-up, not done)",
+    "org task approve/reject have no role check -> app/org/router.py:898-911 and :1017-1028 (no require_org_role, unlike :1391/:1490 TEAM_LEAD); _resolve_task_hitl_request ignores approve_async's False and swallows every exception including HITLResolutionUnavailableError (:1007-1015), so the task moves to 'running' (:936-940) while the agent's gate is still pending or was rejected",
+    "email/notification one-click links point at {public_base_url|frontend_url}/hitl/{id}/approve (approval_sender.py:70-78; config.py:298 default http://localhost:5173), but no such frontend route exists (agent-verse-frontend/src/app/App.tsx has only /approvals and /workflows/approvals), and the API route is /governance/hitl/{id}/approve behind API-key auth. Every emailed link is dead (fails closed; wave-7A follow-up, not done)",
+    "chat HITL card builds an unverifiable ?token= link to the same non-existent route -> agent-verse-frontend/src/features/chat/ChatHITLCard.tsx:50-52; the token is a random uuid (app/chat/stream.py:165) that nothing verifies. stream_hitl has no caller in app/ [low]",
+    "a vote below quorum returns True, so REST answers {'status':'approved'} while the gate stays closed -> app/governance/hitl.py:752-753, app/api/governance.py:876-883 [low, latent]",
+    "quorum race: INSERT vote + COUNT(*) under READ COMMITTED with no row lock -> app/governance/hitl.py:797-813; two concurrent final votes each see count<required, nobody runs the CAS, and the gate expires [low, latent]",
+    "timeout writes TIMED_OUT only in memory -> app/governance/hitl.py:585-589; until the beat expiry runs, an approver can still approve the row (CAS wins, API says approved) for an action the agent has abandoned [low]"
+   ],
+   "new_defects": [
+    "app/agent/nodes/executor_mixin.py:2362-2374 — in non-supervised modes a write_high tool raises a real approval request (:2290-2297) and emits waiting_approval, but never waits and never runs the tool. The request stays pending in the inbox, and an approver who approves it gets 'approved' from the API while nothing happens. The orphaned gate misleads operators and inflates the pending queue [low]",
+    "app/api/governance.py:1552-1579 — the one-click approve is a state-changing GET authenticated only by the API key plus the approver role. If the frontend route is ever built to forward the link, a GET that changes state is prefetchable/CSRF-prone; it should be a POST from an authenticated confirmation page [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_hitl_*.py tests/integrations/test_hitl_email_link_security.py tests/integrations/test_email_coverage.py tests/integrations/test_email_extra.py tests/org/test_org_approval_endpoints.py tests/gateway/test_mcp_server.py tests/api/test_integrations_api_comprehensive.py tests/api/test_governance_streams.py tests/agent/test_executor_no_fake_success.py tests/agent/nodes/test_executor_mixin_failure_modes.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 360 passed, 1 failed (test_hitl_approval_persistence.py::test_approve_persists_and_phantoms_are_expired_on_restore: UndefinedColumnError required_approvers; local DB at 619ba480ee3a, not head c8d2f4a6b1e3, so BLOCKED by environment)",
+    "(parent re-run) DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run python run_on_fresh_db.py tests/governance/test_hitl_approval_persistence.py -q --no-cov (fresh pgvector container, alembic upgrade head) → 1 passed; the earlier failure was the stale local dev DB (revision 619ba480ee3a), not a code defect"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Trust approvals and compliance bundles (/trust)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 commit touched app/api/trust_governance.py or app/governance/compliance_bundles.py (last change 6f7436498). Trust approvals are durable, but nothing in execution reads them, and bundle required_hitl_for is still never enforced. The API compliance ceiling fails closed (goal_service.py:481-492). The worker ceiling, restructured in wave 7B (f9337a862), fails OPEN on a lookup error.",
+   "verified_fixed": [],
+   "still_open": [
+    "no execution gate reads trust approvals -> the store is only wired at app/main.py:2383-2387 and used only by app/api/trust_governance.py (:195-365); goal_id/tool_name recorded by POST /trust/approvals (:195-232) are never consumed",
+    "bundle required_hitl_for never enforced -> requires_hitl_for_tool_on (app/governance/compliance_bundles.py:314-317) still has no caller in app/",
+    "GET /trust/compliance-bundles lists the guardrails_v2 COMPLIANCE_BUNDLES catalogue (app/api/trust_governance.py:392-404) while enable/disable (:460, :491) use app/governance/compliance_bundles.py, so the two catalogues can disagree",
+    "new_defect 'process-local _approvals fallback with no 503' (low) -> unchanged at app/api/trust_governance.py:33, :225-226, :279, :340, :361",
+    "no test covers the worker ceiling path (tests/services/test_compliance_ceiling_fail_closed.py and tests/security/test_governance_authority_hardening.py:71-82 test only goal_service.compliance_autonomy_ceiling)"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:2884-2910 — worker compliance ceiling fails OPEN. If effective_max_autonomy_for(PostgresComplianceBundleStore) raises (DB timeout, missing table), the broad except at :2907-2910 only logs, and _agent_autonomy_mode stays at the agent's DB value (e.g. fully-autonomous, :2352-2398). When db_factory is None the ceiling is skipped entirely. Scenario: a HIPAA/SOX tenant's queued goal runs write_high tools with no HITL during a DB blip. The API path returns 'supervised' in both cases (app/services/goal_service.py:481-492) [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_phase8_9_guardrails_trust.py tests/services/test_compliance_ceiling_fail_closed.py tests/governance/test_trust_and_ai_ops_persistence.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 39 passed, 8 skipped (test_trust_and_ai_ops_persistence.py: Docker daemon not available)",
+    "uv run pytest tests/security/test_governance_authority_hardening.py tests/scaling/test_scheduled_goal_governance.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 26 passed",
+    "(parent re-run) DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/governance/test_grant_store_postgres.py tests/governance/test_trust_and_ai_ops_persistence.py tests/governance/test_audit_chain_persistence.py tests/governance/test_audit_chain_store.py tests/governance/test_audit_chain.py tests/governance/test_legal_holds_rls.py -q --no-cov -m 'not slow' → 24 passed, 0 skipped (real Postgres)"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Audit trail (AuditLog, audit_log table, SIEM forwarding)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 commit touched app/governance/audit.py, siem_adapters.py or audit_v2.py (last change 6f7436498). The evidence-export fix still holds. The DB write is still fire-and-forget with a failure only logged, the in-memory copy is unbounded per replica, and on the Celery worker the fire-and-forget write can be dropped when the per-task event loop closes.",
+   "verified_fixed": [],
+   "still_open": [
+    "DB write is fire-and-forget and a failure only logs -> app/governance/audit.py:89-95 (loop.create_task) and :165-166 ('DB audit record failed'); no retry and no outbox, so a failed insert loses the audit event permanently",
+    "audit_admin_action applied nowhere -> it appears only in its definition and docstring example (app/governance/audit_v2.py:559, :573); no route uses it",
+    "CEF adapter uses blocking socket connect/send inside async send() -> app/governance/siem_adapters.py:192-198 (5 s settimeout per call blocks the event loop)",
+    "AuditLog.record appends every event to self._log[tenant_id] with no bound -> app/governance/audit.py:80 (and :64); only the warm-up load is capped at 10,000 (:315). A long-lived API replica's memory grows with total audit volume [medium]"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:2532 + :207-225 — the worker builds AuditLog(db_session_factory=db_factory), whose record() schedules the DB insert with loop.create_task (audit.py:92). The goal runs inside _run_async, which returns as soon as the graph coroutine completes and then disposes the engine and closes the loop. Inserts scheduled by the final step(s) are still pending then and are destroyed or run against a disposing engine, so the last tool-execution audit rows of worker goals (the production path) can be lost with no log at all. The same pattern affects the worker HITL gate persist (hitl.py:254-263) [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_audit_log_db.py tests/governance/test_siem_forwarder.py tests/governance/test_audit_correlation.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 25 passed"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Tamper-evident audit chains (PersistentAuditChain, AuditV3, deprecated audit_v2)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Unchanged since the last audit (no commit touched audit_v3.py, audit_chain_store.py or deletion_orchestrator.py in wave 7). HashChainVerifier at GET /governance/audit/integrity/verify (app/api/governance.py:2004) still verifies the real chain. AuditV3.append still INSERTs columns that exist in no migration or model, so every persisted AuditV3 record fails and the failure is only logged. GDPR deletion audit therefore stays unpersisted.",
+   "verified_fixed": [],
+   "still_open": [
+    "AuditV3.append INSERTs non-existent columns (actor, actor_ip, delegation_chain_hash, previous_hash, entry_hash, event_timestamp, metadata_hash, sequence_num) with ON CONFLICT (id) and no event_type -> app/governance/audit_v3.py:274-303; grep finds entry_hash/sequence_num in no file under app/db/migrations or app/db/models; failure only logged as audit_v3_persist_failed (:302-303)",
+    "PersistentAuditChain.verify() exposed by no route -> the chain is wired at app/main.py:1348-1350 and only appended to (app/api/grants.py:43-50); no app/api caller of .verify",
+    "new_defect 'DeletionOrchestrator wired with this AuditV3, so GDPR/DPDP deletion audit is never persisted' (medium) -> still present at app/main.py:2358-2373",
+    "test gap: tests/governance/test_audit_v3_rls.py:43 asserts only statement order on a recorded fake session, so the invalid column list is never exercised against a real schema"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/governance/test_audit_chain.py tests/governance/test_audit_chain_store.py tests/governance/test_audit_chain_persistence.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 11 passed, 1 skipped (Docker daemon not available)",
+    "uv run pytest tests/governance/test_audit_chain_append_retry.py tests/governance/test_audit_v3_rls.py tests/governance/test_audit_v3_verifier_real.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 10 passed",
+    "(parent re-run) DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/governance/test_grant_store_postgres.py tests/governance/test_trust_and_ai_ops_persistence.py tests/governance/test_audit_chain_persistence.py tests/governance/test_audit_chain_store.py tests/governance/test_audit_chain.py tests/governance/test_legal_holds_rls.py -q --no-cov -m 'not slow' → 24 passed, 0 skipped (real Postgres)"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Policy engine (tool policies, propagation, versions, policy-as-code)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 commit touched the policy engine (last change 71c10f6c0). The worker loads policies strictly per tenant under RLS and fails closed with deny '*' (tasks.py:228-243). The pub/sub reload is strict with a real glob and time windows. But the API replica's startup load reads governance_policies without a tenant GUC, and policy_rules, TimePolicyEngine and timezone are still not honoured.",
+   "verified_fixed": [],
+   "still_open": [
+    "policy_rules not used by any execution path -> no reference in app/agent, app/services or app/scaling; CRUD and dry-run only (app/api/policy_rules.py)",
+    "TimePolicyEngine dead code -> no import of app.governance.time_policy anywhere else in app/",
+    "Policy.timezone dropped on reload -> _time_windows_by_name returns only (hours, weekdays) (app/governance/policies.py:70-93) and the strict reload builds Policy without timezone (:262-276), so a non-UTC window reverts to UTC on other replicas and after a restart"
+   ],
+   "new_defects": [
+    "app/main.py:1860-1888 — the API replica's startup policy load runs 'SELECT ... FROM governance_policies' on db_factory with no tenant GUC. governance_policies has RLS USING tenant_id = current_setting('app.tenant_id') and is FORCE-RLS (migrations 0015, a1b2c3d4e5f6:57), so under the least-privilege app role it loads 0 rows and logs policy_engine_loaded count=0. The same code also maps a NULL pattern to [None] instead of '*' and drops time windows (the bugs 71c10f6c0 fixed only in reload_from_db). After a restart an API replica enforces no tenant deny/require_approval policy for in-process execution (GoalService uses app.state.policy_engine, goal_service.py:1452, whenever _task_queue is None, :4224) until that tenant happens to change a policy [medium]",
+    "app/governance/policies.py:386-420 — cross-replica propagation relies only on Redis pub/sub with a 5 s reconnect and no periodic resync or version check. A replica that is disconnected (or starting) when 'policy_changes' fires keeps the stale policy set indefinitely; the worker is unaffected because it reloads per goal [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_policy_versions.py tests/governance/test_policy_propagation.py tests/governance/test_policy_rules.py tests/governance/test_policy_reload_time_windows.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 25 passed"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Permission matrix (default-deny tool permissions, per-agent permissions)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The AgentGraph executor enforces agent_permissions on both the API and worker paths: the worker sets _db_session_factory at tasks.py:2989, a load failure fails closed for high-risk tools, and APPROVAL requires an explicit APPROVED. Both medium defects from the last audit are unchanged: the worker's daily_limit counter is per process, and the workflow GovernedToolGate never applies agent_permissions.",
+   "verified_fixed": [],
+   "still_open": [
+    "worker daily_limit is per process -> executor_mixin.py:320-321 reads _redis from _app_state; the worker's _app_state SimpleNamespace (app/scaling/tasks.py:3072-3077) has no _redis, so reserve_daily_call uses the process-local _LOCAL_DAILY dict (app/governance/agent_permissions.py:188-194). N calls/day becomes N per worker process and resets on restart; the API path has app.state._redis (main.py:2154) [medium]",
+    "GovernedToolGate never applies agent_permissions -> app/agent/tool_gate.py:1-15 lists guardrails, permission matrix, policies, grants, tool risk and cost; there is no agent_permissions reference in tool_gate.py, so per-agent deny rules and per_goal_limit/daily_limit do not bind workflow tool calls [medium]",
+    "no test covers the worker daily-limit path or agent_permissions under GovernedToolGate (tests/agent/test_workflow_executor_governance.py covers only the six listed checks)"
+   ],
+   "new_defects": [
+    "app/governance/agent_permissions.py:188-194 — _LOCAL_DAILY is keyed by (tenant, agent, tool, UTC day) and entries are never evicted, so a long-lived process's dict grows by one entry per active tuple per day [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_agent_permissions_enforced.py tests/governance/test_permission_matrix.py tests/agent/test_workflow_executor_governance.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 52 passed"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Cost budgets and enforcement (CostController, RedisCostController, budget APIs)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No wave-7 commit touched app/governance/cost.py or app/api/costs.py (last change 80351a9bf). Redis errors fail closed (cost.py:486-493), the Lua check-and-increment is atomic, and workers enforce budget_configs (tasks.py:2561-2563). The admin budget API still persists per_agent_daily_usd and alert_pct_thresholds, which nothing enforces. The worker also falls back to a per-task in-memory controller when REDIS_URL is unset.",
+   "verified_fixed": [],
+   "still_open": [
+    "try_record_and_check fails open on non-budget Redis errors -> app/governance/cost.py:632-695; still no caller (only the legacy Lua script note at app/main.py:435, :468), so it is dead but dangerous to reuse [low]",
+    "budget alert only logs, at a hard-coded 79-81% band -> app/governance/cost.py:280-290 (in-memory) and :466-476 (non-Lua fallback only). The production Lua path (:440-452) evaluates no alert [low]",
+    "per_agent_daily_usd and alert_pct_thresholds are persisted and echoed but never enforced or evaluated -> the only references in app/ are the persist helper app/governance/cost.py:119-152 (and the API model in app/api/costs.py). A per-agent daily cap never binds and configured alert thresholds never fire [medium]"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:2539-2559 — the worker builds a fresh in-memory CostController() for every goal task and only swaps in RedisCostController when REDIS_URL is set; a construction error is swallowed (except: pass, :2558-2559). A worker without REDIS_URL (e.g. broker configured only via CELERY_BROKER_URL) counts the tenant daily budget per goal run, so per_tenant_daily_usd never binds across worker goals [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_cost_atomic.py tests/governance/test_tenant_budget_enforced.py tests/costs/test_cost_dashboard_api.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 28 passed"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Guardrails v2 (content rules engine) plus v1 guardrail configs",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Wave 7D (2d2a0c461) made the RAG_INGEST gate fail closed. screen_text raises IngestionScreeningUnavailableError on any engine or rules-load error, and also when the engine is not installed; connector ingest marks the document failed and the /knowledge routes return 503. Still open: rule management has no admin role check, no update/delete routes and a best-effort flush, and violations are per-process and unbounded.",
+   "verified_fixed": [
+    "RAG_INGEST stage caught every exception and indexed the document unscreened (medium) -> 2d2a0c461: app/ingestion/pipeline.py:528-543 raises IngestionScreeningUnavailableError (engine error, GuardrailRulesUnavailableError, or engine absent); process() turns it into a failed document (:420), and app/api/knowledge.py:432, :2510, :2899, :2973 map it to 503. Covered by tests/ingestion/test_rag_ingest_guardrail_fail_closed.py (run, passed)"
+   ],
+   "still_open": [
+    "no update/delete/disable routes for v2 rules -> app/api/guardrails_v2.py has only POST/GET /rules (:62, :95), /evaluate, /simulate, /evaluate-corpus, /violations, /bundles/{name}, /layers",
+    "POST /rules answers 'created' while persistence is a best-effort background flush -> app/api/guardrails_v2.py:90-92 (guardrails_engine.add_rule, then 'created')",
+    "bundles mint a new uuid per rule on every call, so re-enabling duplicates rules -> app/api/guardrails_v2.py:239-248",
+    "violations only in the process-local, unbounded _violations dict -> app/guardrails_v2/engine.py:242, :494; GET /violations (app/api/guardrails_v2.py:183-195) shows only this replica's violations since its restart [medium]",
+    "POST /rules and POST /bundles/{name} have no require_role('admin') -> app/api/guardrails_v2.py:62-63, :216-217; the router is mounted without dependencies (app/bootstrap/routers.py:109). Any write-capable key can add a tenant-wide BLOCK rule, e.g. regex '.*', that halts every agent step [medium]",
+    "REQUIRE_HITL at RAG_INGEST ignored and a redacting rule re-evaluates (duplicate violations and toxicity LLM charges) -> app/ingestion/pipeline.py:510-527 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/guardrails/test_guardrails_v2.py tests/guardrails/test_guardrail_layer_v2_wiring.py tests/guardrails/test_guardrail_enforcer_blocking.py tests/guardrails/test_toxicity_llm_guarded.py tests/intelligence/test_llm_judge_guarded.py tests/ingestion/test_rag_ingest_guardrail_fail_closed.py tests/ingestion/test_document_text_fail_closed.py tests/api/test_knowledge_ingest_pipeline_gate.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 105 passed"
+   ]
+  },
+  {
+   "area": "governance",
+   "feature": "Incident controls: emergency stop and legal holds",
+   "previous_status": "FAIL",
+   "status": "PARTIAL",
+   "evidence": "ed55a2fb5 (wave 7A) makes the tenant e-stop real. The flag has no TTL and POST/DELETE/GET return 503 without Redis. Running goals are enumerated from Postgres and cancelled through the cross-replica path. The stop is enforced at submit (409/503), at AgentGraph start and at every step boundary on the API and the worker (fail closed on a Redis error, proven by tests). Org e-stop requires ORG_ADMIN. Legal holds are unchanged and still work. But the org stop is not enforced at worker step boundaries, the worker start check fails open, and every worker goal start SCANs the whole Redis keyspace.",
+   "verified_fixed": [
+    "e-stop enumerated only this replica's in-memory goals (high) -> ed55a2fb5: app/api/governance.py:1383-1398 uses GoalService.active_goal_ids (Postgres under RLS, app/services/goal_service.py:2083-2118) and cancel_goal for each; per-goal failures are reported in failed_goals/partial",
+    "published to an 'emergency_stop' channel nobody subscribed to; in-flight goals not aborted (high) -> ed55a2fb5: the pub/sub was replaced by the persisted flag, checked at every step boundary: API gate app/services/goal_service.py:5062-5080, worker gate app/scaling/tasks.py:548-586 (installed at :613-623), AgentGraph start app/agent/graph.py:555-568, :820-829; tests test_api_pause_gate_stops_running_goal_at_next_step / test_worker_pause_gate_stops_running_goal_at_next_step pass",
+    "flag expired after 300 s (high) -> ed55a2fb5: app/governance/emergency_stop.py:139-165 activate_stop does a plain SET with no TTL; tests/governance/test_emergency_stop_real.py::test_stop_flag_has_no_ttl_and_is_reported_by_get passes",
+    "no Redis / Redis error treated as not stopped, fake success (high) -> ed55a2fb5: activate/clear/read raise EmergencyStopUnavailableError, so the routes answer 503 (app/api/governance.py:1372-1380, :1511-1519, :1320-1323); enforce_emergency_stop(_sync) returns UNVERIFIABLE_REASON on error (emergency_stop.py:185-219); submit answers 503 EMERGENCY_STOP_UNVERIFIABLE (goal_service.py:2064-2081)",
+    "org emergency stop/resume lacked an org-admin check -> ed55a2fb5: app/org/router.py:2011, :2081 require_org_role(OrgRole.ORG_ADMIN); test_org_stop_and_resume_require_org_admin passes"
+   ],
+   "still_open": [
+    "e-stop audit entry is fire-and-forget, so audit_recorded=True means only queued -> app/api/governance.py:1442-1470 via AuditLog.record (app/governance/audit.py:89-95) [low]",
+    "worker start-of-goal check fails OPEN on a Redis/DB error: app/scaling/tasks.py:1957-1986 wraps emergency_stop_reason_sync (which, unlike enforce_emergency_stop_sync, does not catch errors) in 'except Exception: logger.warning' and proceeds. AgentGraph goals are then caught at the first step gate, but multi_agent workflow goals are not (see new defects) (wave-7A follow-up, not done) [medium]",
+    "'celery_signal_sent': True is hard-coded in the response (app/api/governance.py:1485) whatever happened [low]"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:617 + :3361 + app/services/goal_service.py:511-541 — the worker step gate takes org_id from initial_context, which comes from _subgoal_context -> graph_context_from_execution_context. That function keeps only GRAPH_CONTEXT_KEYS (debate_*/supervisor_*) and never org_id (probe: graph_context_from_execution_context({'org_id':'org-1'}).get('org_id') -> None). So the worker gate checks only the tenant key. POST /orgs/{id}/emergency-stop (app/org/router.py:2037-2066) cancels nothing itself and promises 'running goals halt at their next step', but a running worker (production) goal of the stopped org runs to completion [high]",
+    "app/governance/emergency_stop.py:52-61 + app/scaling/tasks.py:1962-1966 — every worker goal start (when no tenant stop is set) runs redis.scan_iter(match='emergency_stop:{tenant}:*', count=100). SCAN MATCH walks the entire Redis keyspace (goal locks, cancel flags, cost counters, 24 h idempotency keys ...), so each goal start costs O(total keys)/100 round-trips; at millions of goals this serialises worker starts on Redis. The org keys should be a per-tenant SET or looked up by the goal's org_id [medium]",
+    "app/scaling/tasks.py:3346-3352 + :613-623 — multi_agent workflow goals on the worker run _WorkerWorkflowRunner, which exposes no _pause_gate, so no e-stop step-boundary check is installed. The tenant stop reaches them only through the per-goal cancel flag set by the enumeration (lost if active_goal_ids fails, governance.py:1387-1391), and an org stop never stops them [medium]",
+    "app/api/governance.py:1383-1398 — the e-stop request enumerates every non-terminal goal of the tenant with no LIMIT (goal_service.py:2109-2116) and cancels them sequentially inside the HTTP request. For a tenant with a large queued backlog the call times out, although the flag already blocks them [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/governance/test_emergency_stop.py tests/governance/test_emergency_stop_rbac.py tests/governance/test_emergency_stop_real.py tests/governance/test_legal_hold_api.py tests/governance/test_legal_holds_comprehensive.py tests/governance/test_legal_holds_rls.py tests/org/test_org_advanced_endpoints.py -q --no-cov -p no:cacheprovider -m 'not slow' -> 89 passed, 3 skipped (test_legal_holds_rls.py: Docker daemon not available)",
+    "direct probe: uv run python -c \"graph_context_from_execution_context({'org_id':'org-1',...}).get('org_id')\" -> None (org_id never reaches the worker step gate)",
+    "(parent re-run) DOCKER_HOST=colima TESTCONTAINERS_RYUK_DISABLED=true uv run pytest tests/governance/test_grant_store_postgres.py tests/governance/test_trust_and_ai_ops_persistence.py tests/governance/test_audit_chain_persistence.py tests/governance/test_audit_chain_store.py tests/governance/test_audit_chain.py tests/governance/test_legal_holds_rls.py -q --no-cov -m 'not slow' → 24 passed, 0 skipped (real Postgres)"
+   ]
+  }
+ ]
+}
