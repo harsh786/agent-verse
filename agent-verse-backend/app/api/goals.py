@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import uuid
 from collections.abc import AsyncGenerator
@@ -325,6 +326,18 @@ async def _submit_goal_unguarded(
     if body.model_override:
         exec_ctx["model_override"] = body.model_override
 
+    # Debate / supervisor run LLM calls HERE, inside the request, before any goal
+    # exists. Check the tenant's budget first (429 when exhausted — no LLM call),
+    # and give those components a provider whose every call is circuit-broken,
+    # time-bounded and charged to the tenant (they used to call the raw platform
+    # provider: unbilled, unbounded, and ahead of the submission budget check).
+    if body.workflow_mode in ("debate", "supervisor"):
+        preflight = getattr(svc, "_check_budget_preflight", None)
+        if preflight is not None:
+            pending = preflight(tenant)
+            if inspect.isawaitable(pending):
+                await pending
+
     # ── Debate mode: run multi-agent consensus before goal execution ──────────
     if body.workflow_mode == "debate":
         exec_ctx["debate_rounds"] = body.debate_rounds
@@ -332,9 +345,13 @@ async def _submit_goal_unguarded(
         if provider is not None:
             try:
                 from app.agent.debate import DebateOrchestrator
+                from app.providers.guarded_completion import GuardedDecisionProvider
 
                 rounds = body.debate_rounds
-                orchestrator = DebateOrchestrator(provider=provider, rounds=rounds)
+                orchestrator = DebateOrchestrator(
+                    provider=GuardedDecisionProvider(provider, role="debate", tenant_ctx=tenant),
+                    rounds=rounds,
+                )
                 debate_result = await orchestrator.run(goal=body.goal)
                 # debate_consensus is fed to the goal's planner (PlannerMixin).
                 exec_ctx["debate_consensus"] = debate_result.winning_proposal
@@ -353,12 +370,17 @@ async def _submit_goal_unguarded(
     # ── Supervisor mode: LLM decomposes goal → parallel sub-agents ───────────
     if body.workflow_mode == "supervisor":
         from app.agent.supervisor import SupervisorAgent
+        from app.providers.guarded_completion import GuardedDecisionProvider
 
         provider = getattr(request.app.state, "_app_provider", None)
         goal_svc = _goal_service(request)
         try:
             supervisor = SupervisorAgent(
-                planner_provider=provider,
+                planner_provider=(
+                    GuardedDecisionProvider(provider, role="supervisor", tenant_ctx=tenant)
+                    if provider is not None
+                    else None
+                ),
                 goal_service=goal_svc,
                 max_parallel=body.supervisor_max_parallel,
             )
