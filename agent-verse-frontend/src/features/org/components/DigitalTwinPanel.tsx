@@ -15,15 +15,31 @@ import { useState, useCallback } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import { Cpu, Zap, AlertTriangle, ChevronDown, Loader2, TrendingUp } from 'lucide-react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { apiRequest } from '@/lib/api/client';
+import { ApiError, apiFetch, apiRequest } from '@/lib/api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+// The backend returns `null` (plus a reason) wherever it has no real data to
+// measure from — e.g. a department with no staffed agents. Those render as
+// "Not available", never as a number.
+export interface DepartmentUtilisation {
+  dept_id:           string;
+  name:              string;
+  agent_count:       number;
+  busy_agent_count:  number;
+  active_task_count: number;
+  queued_task_count: number;
+  utilisation:       number | null;
+  reason:            string | null;
+}
+
 interface CapacityData {
-  org_id:               string;
-  current_utilisation:  Record<string, number>;
-  queued_missions:      number;
-  estimated_clear_h:    number;
+  org_id:                  string;
+  current_utilisation:     Record<string, number | null>;
+  departments?:            DepartmentUtilisation[];
+  queued_missions:         number;
+  estimated_clear_h:       number | null;
+  estimated_clear_reason?: string | null;
   underutilised_depts:  string[];
   overloaded_depts:     string[];
   active_teams:         number;
@@ -33,14 +49,18 @@ interface CapacityData {
 
 interface SimResult {
   mission_title:        string;
-  estimated_duration_h: number;
-  estimated_cost_usd:   number;
+  estimated_duration_h: number | null;
+  estimated_cost_usd:   number | null;
   resource_usage:       Record<string, number>;
   bottlenecks:          string[];
   recommendations:      string[];
-  feasible:             boolean;
-  confidence:           number;
+  feasible:             boolean | null;
+  confidence:           number | null;
+  sample_size?:         number;
+  estimate_reason?:     string | null;
 }
+
+const NOT_AVAILABLE = 'Not available';
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
@@ -60,12 +80,32 @@ function useSimulate(orgId: string) {
   });
 }
 
-// useWhatIf exported for future what-if panel; unused in this component currently
+export type WhatIfOutcome =
+  | { available: true; result: Record<string, unknown> }
+  | { available: false; reason: string };
+
+/**
+ * What-if simulation. The backend answers 501 (the twin has no throughput model
+ * to re-simulate against) — that maps to `{ available: false }` so a caller can
+ * render "not available" instead of a projection. Unused by this panel today.
+ */
 export function useWhatIf(orgId: string) {
-  return useMutation({
-    mutationFn: (scenario: Record<string, unknown>) =>
-      apiRequest<{ projected_improvement: string; confidence: number }>
-        ('POST', `/v1/org/${orgId}/twin/what-if`, { scenario }),
+  return useMutation<WhatIfOutcome, Error, Record<string, unknown>>({
+    mutationFn: async (scenario) => {
+      try {
+        const result = await apiFetch<Record<string, unknown>>(
+          `/v1/org/${orgId}/twin/what-if`,
+          { method: 'POST', body: JSON.stringify({ scenario }) },
+          { silenceServerErrorToast: true },
+        );
+        return { available: true, result };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 501) {
+          return { available: false, reason: err.message || 'What-if simulation is not implemented.' };
+        }
+        throw err;
+      }
+    },
   });
 }
 
@@ -75,6 +115,20 @@ const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
 const SPRING_PANEL = { type: 'spring', stiffness: 280, damping: 26 } as const;
 
 // ── Utilisation Gauge ─────────────────────────────────────────────────────────
+
+function UnmeasuredGauge({ name, reason }: { name: string; reason: string | null }) {
+  return (
+    <div className="space-y-0.5" data-testid="utilisation-unavailable">
+      <div className="flex items-center justify-between text-[12px]">
+        <span className="text-[#94A3B8] truncate">{name}</span>
+        <span className="text-[11px] text-[#64748B] ml-2" aria-label={`${name} utilisation: not available`}>
+          {NOT_AVAILABLE}
+        </span>
+      </div>
+      {reason && <p className="text-[10px] text-[#475569]">{reason}</p>}
+    </div>
+  );
+}
 
 function UtilisationGauge({ name, value }: { name: string; value: number }) {
   const reduce = useReducedMotion();
@@ -167,10 +221,24 @@ function SimulatorForm({ orgId }: { orgId: string }) {
             <div className="space-y-1.5 pt-1" aria-live="polite">
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { label: 'Est. Time',  value: `${simulate.data.estimated_duration_h}h`, ok: simulate.data.feasible },
-                  { label: 'Est. Cost',  value: `$${simulate.data.estimated_cost_usd}`,   ok: true },
-                  { label: 'Confidence', value: `${Math.round(simulate.data.confidence * 100)}%`, ok: simulate.data.confidence > 0.7 },
-                  { label: 'Feasible',   value: simulate.data.feasible ? 'Yes' : 'No',    ok: simulate.data.feasible },
+                  {
+                    label: 'Est. Time',
+                    value: simulate.data.estimated_duration_h == null ? NOT_AVAILABLE : `${simulate.data.estimated_duration_h}h`,
+                    ok: simulate.data.feasible !== false,
+                  },
+                  {
+                    label: 'Est. Cost',
+                    value: simulate.data.estimated_cost_usd == null ? NOT_AVAILABLE : `$${simulate.data.estimated_cost_usd}`,
+                    ok: true,
+                  },
+                  simulate.data.confidence == null
+                    ? { label: 'Based on', value: `${simulate.data.sample_size ?? 0} missions`, ok: true }
+                    : { label: 'Confidence', value: `${Math.round(simulate.data.confidence * 100)}%`, ok: simulate.data.confidence > 0.7 },
+                  {
+                    label: 'Feasible',
+                    value: simulate.data.feasible == null ? 'Unknown' : simulate.data.feasible ? 'Yes' : 'No',
+                    ok: simulate.data.feasible !== false,
+                  },
                 ].map(({ label, value, ok }) => (
                   <div key={label} className="bg-[#1A1F2E] rounded-lg p-2 text-center">
                     <p className={`text-[14px] font-bold ${ok ? 'text-[#F1F5F9]' : 'text-red-400'} tabular-nums`}>{value}</p>
@@ -178,6 +246,16 @@ function SimulatorForm({ orgId }: { orgId: string }) {
                   </div>
                 ))}
               </div>
+              {simulate.data.estimate_reason && (
+                <p className="text-[11px] text-[#64748B]" data-testid="sim-estimate-reason">
+                  {simulate.data.estimate_reason}
+                </p>
+              )}
+              {simulate.data.bottlenecks.map((b, i) => (
+                <p key={`b${i}`} className="text-[11px] text-red-400 flex gap-1.5">
+                  <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" aria-hidden />{b}
+                </p>
+              ))}
               {simulate.data.recommendations.map((r, i) => (
                 <p key={i} className="text-[11px] text-[#94A3B8] flex gap-1.5">
                   <TrendingUp className="h-3.5 w-3.5 text-blue-400 flex-shrink-0 mt-0.5" aria-hidden />{r}
@@ -201,7 +279,14 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
   const reduce = useReducedMotion();
   const { data, isLoading, refetch } = useCapacity(orgId);
 
-  const utilEntries = Object.entries(data?.current_utilisation ?? {});
+  // Prefer the per-department breakdown (carries the reason for a null);
+  // fall back to the name → value map for older payloads.
+  const utilRows: Array<{ key: string; name: string; value: number | null; reason: string | null }> =
+    data?.departments
+      ? data.departments.map(d => ({ key: d.dept_id, name: d.name, value: d.utilisation, reason: d.reason }))
+      : Object.entries(data?.current_utilisation ?? {}).map(([name, value]) => ({
+          key: name, name, value: value ?? null, reason: null,
+        }));
 
   return (
     <section
@@ -237,9 +322,11 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
             {[
               { label: 'Queued',   value: data.queued_missions,    warn: data.queued_missions > 5 },
               { label: 'Teams',    value: data.active_teams,       warn: false },
-              { label: 'Clear in', value: `${data.estimated_clear_h.toFixed(1)}h`, warn: data.estimated_clear_h > 24 },
-            ].map(({ label, value, warn }) => (
-              <div key={label} className="bg-[#1A1F2E] rounded-lg p-2 text-center border border-[#2D3748]">
+              data.estimated_clear_h == null
+                ? { label: 'Clear in', value: 'n/a', warn: false, title: data.estimated_clear_reason ?? NOT_AVAILABLE }
+                : { label: 'Clear in', value: `${data.estimated_clear_h.toFixed(1)}h`, warn: data.estimated_clear_h > 24 },
+            ].map(({ label, value, warn, title }: { label: string; value: string | number; warn: boolean; title?: string }) => (
+              <div key={label} title={title} className="bg-[#1A1F2E] rounded-lg p-2 text-center border border-[#2D3748]">
                 <p className={`text-[15px] font-bold tabular-nums ${warn ? 'text-amber-400' : 'text-[#F1F5F9]'}`}>{value}</p>
                 <p className="text-[10px] text-[#64748B]">{label}</p>
               </div>
@@ -258,12 +345,14 @@ export function DigitalTwinPanel({ orgId }: DigitalTwinPanelProps) {
           )}
 
           {/* Utilisation gauges */}
-          {utilEntries.length > 0 && (
+          {utilRows.length > 0 && (
             <div className="bg-[#1A1F2E] border border-[#2D3748] rounded-xl p-3 space-y-2.5">
               <p className="text-[11px] font-semibold text-[#64748B] uppercase tracking-wider">Capacity</p>
-              {utilEntries.map(([name, value]) => (
-                <UtilisationGauge key={name} name={name} value={value} />
-              ))}
+              {utilRows.map(({ key, name, value, reason }) =>
+                value == null
+                  ? <UnmeasuredGauge key={key} name={name} reason={reason} />
+                  : <UtilisationGauge key={key} name={name} value={value} />,
+              )}
             </div>
           )}
 
