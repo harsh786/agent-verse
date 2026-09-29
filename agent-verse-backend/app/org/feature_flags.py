@@ -185,34 +185,66 @@ def is_feature_enabled(flag: str, tenant_id: str | None = None) -> bool:
 # These are registered in app/scaling/tasks.py beat_schedule
 
 
+async def _scan_active_orgs(cron: str, *, limit: int) -> list[tuple[Any, Any]]:
+    """Cross-tenant scan of active orgs, as the maintenance (BYPASSRLS) role.
+
+    ``organizations`` is FORCE-RLS: a plain app-role session with no
+    ``app.tenant_id`` GUC sees zero rows, so these crons used to "find" no orgs
+    and report success forever. The scan runs on the system session factory
+    under :func:`~app.db.rls.system_session` (``SET LOCAL row_security = off``,
+    which needs an explicit transaction).
+
+    A scan failure is logged and **re-raised** — it must surface as a failed
+    run, never be reported as "no orgs".
+    """
+    from sqlalchemy import select
+
+    from app.db.rls import system_session
+    from app.db.session import get_system_session_factory
+    from app.org.models import Organization
+
+    try:
+        system_db = get_system_session_factory()
+        async with system_db() as session, session.begin(), system_session(session):
+            result = await session.execute(
+                select(Organization.id, Organization.tenant_id)
+                .where(Organization.status == "active")
+                .limit(limit)
+            )
+            return [(row[0], row[1]) for row in result.all()]
+    except Exception as exc:
+        _log.error(f"{cron}.scan_failed", error=str(exc))
+        raise
+
+
 async def _run_org_intelligence_cron() -> dict[str, Any]:
     """
     org-intelligence-cron: Every 15 minutes.
     Detects bottlenecks, generates insights, updates org health scores.
-    """
-    from sqlalchemy import select
 
+    The org scan is cross-tenant system work (maintenance role); each org is
+    then processed on the application role under that tenant's RLS context.
+    A scan failure propagates; per-org failures are logged and counted in
+    ``failed`` without stopping the batch.
+    """
     from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
     from app.db.session import get_session_factory  # type: ignore[import]
     from app.org.analytics import OrgAnalyticsService
-    from app.org.models import Organization
 
     processed = 0
     insights_generated = 0
+    failed = 0
 
-    try:
+    orgs = await _scan_active_orgs("org_intelligence_cron", limit=50)
+    if orgs:
         db_factory = get_session_factory()
-        async with db_factory() as session:
-            result = await session.execute(
-                select(Organization.id, Organization.tenant_id)
-                .where(Organization.status == "active")
-                .limit(50)
-            )
-            orgs = result.all()
-
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                async with (
+                    db_factory() as s2,
+                    s2.begin(),
+                    sqlalchemy_rls_context(s2, str(tenant_id)),
+                ):
                     svc = OrgAnalyticsService(s2, str(tenant_id))
                     await svc.get_org_health_score(str(org_id))
                     bottlenecks = await svc.get_bottlenecks(str(org_id))
@@ -220,55 +252,58 @@ async def _run_org_intelligence_cron() -> dict[str, Any]:
                         insights_generated += len(bottlenecks)
                 processed += 1
             except Exception as exc:
+                failed += 1
                 _log.warning("org_intelligence_cron.org_failed", org_id=str(org_id), error=str(exc))
 
-    except Exception as exc:
-        _log.error("org_intelligence_cron.failed", error=str(exc))
-
-    _log.info("org_intelligence_cron.done", processed=processed, insights=insights_generated)
-    return {"processed": processed, "insights": insights_generated}
+    _log.info(
+        "org_intelligence_cron.done",
+        processed=processed,
+        insights=insights_generated,
+        failed=failed,
+    )
+    return {"processed": processed, "insights": insights_generated, "failed": failed}
 
 
 async def _run_org_digest_cron() -> dict[str, Any]:
     """
     org-digest-cron: Daily at 06:00 UTC.
     Generates "While You Were Away" digests for all active orgs.
-    """
-    from sqlalchemy import select
 
+    Same session split and failure semantics as the intelligence cron.
+    """
     from app.db.rls import sqlalchemy_rls_context  # type: ignore[import]
     from app.db.session import get_session_factory  # type: ignore[import]
     from app.org.digest import DigestGenerator
-    from app.org.models import Organization
 
     processed = 0
     digests_generated = 0
+    failed = 0
 
-    try:
+    orgs = await _scan_active_orgs("org_digest_cron", limit=100)
+    if orgs:
         db_factory = get_session_factory()
-        async with db_factory() as session:
-            result = await session.execute(
-                select(Organization.id, Organization.tenant_id)
-                .where(Organization.status == "active")
-                .limit(100)
-            )
-            orgs = result.all()
-
         for org_id, tenant_id in orgs:
             try:
-                async with db_factory() as s2, sqlalchemy_rls_context(s2, str(tenant_id)):
+                async with (
+                    db_factory() as s2,
+                    s2.begin(),
+                    sqlalchemy_rls_context(s2, str(tenant_id)),
+                ):
                     digest_svc = DigestGenerator(s2)
                     await digest_svc.generate(str(org_id), str(tenant_id))
                     digests_generated += 1
                 processed += 1
             except Exception as exc:
+                failed += 1
                 _log.warning("org_digest_cron.org_failed", org_id=str(org_id), error=str(exc))
 
-    except Exception as exc:
-        _log.error("org_digest_cron.failed", error=str(exc))
-
-    _log.info("org_digest_cron.done", processed=processed, digests=digests_generated)
-    return {"processed": processed, "digests": digests_generated}
+    _log.info(
+        "org_digest_cron.done",
+        processed=processed,
+        digests=digests_generated,
+        failed=failed,
+    )
+    return {"processed": processed, "digests": digests_generated, "failed": failed}
 
 
 async def _run_org_twin_sync(event: dict[str, Any]) -> None:

@@ -180,85 +180,178 @@ def _null_rls_ctx(*_a, **_kw):
     return _AsyncCtx(None)
 
 
+class _FakeSession:
+    """An AsyncSession stand-in: ``execute`` is awaitable, ``begin()`` is an
+    async context manager (as ``async with s, s.begin(), ...`` requires)."""
+
+    def __init__(self, rows=None, execute_side_effect=None):
+        self.execute = AsyncMock(
+            return_value=MagicMock(all=MagicMock(return_value=rows or [])),
+            side_effect=execute_side_effect,
+        )
+        self.begun = 0
+
+    def begin(self):
+        self.begun += 1
+        return _AsyncCtx(self)
+
+
+def _factory(*sessions):
+    """A session factory yielding the given sessions in order (last repeats)."""
+    queue = list(sessions)
+
+    def _make():
+        s = queue.pop(0) if len(queue) > 1 else queue[0]
+        return _AsyncCtx(s)
+
+    return MagicMock(side_effect=_make)
+
+
+def _cron_patches(*, system_factory, tenant_factory, system_ctx=_null_rls_ctx, rls_ctx=_null_rls_ctx):
+    return (
+        patch("app.db.session.get_system_session_factory", return_value=system_factory),
+        patch("app.db.session.get_session_factory", return_value=tenant_factory),
+        patch("app.db.rls.system_session", side_effect=system_ctx),
+        patch("app.db.rls.sqlalchemy_rls_context", side_effect=rls_ctx),
+    )
+
+
+class TestOrgCronOrgScan:
+    """``organizations`` is FORCE-RLS: a plain app-role session with no tenant
+    GUC sees zero rows, so the cross-tenant scan must run on the maintenance
+    (BYPASSRLS) session factory under ``system_session``. The crons used the
+    regular factory, so in production they always saw zero orgs."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cron_name", ["_run_org_intelligence_cron", "_run_org_digest_cron"])
+    async def test_scan_uses_system_session_factory_and_system_session(self, cron_name):
+        import app.org.feature_flags as ff
+
+        org_id, tenant_id = uuid.uuid4(), uuid.uuid4()
+        scan_session = _FakeSession(rows=[(org_id, tenant_id)])
+        system_factory = _factory(scan_session)
+        tenant_session = _FakeSession()
+        tenant_factory = _factory(tenant_session)
+        system_ctx_calls: list = []
+
+        def _system_ctx(session):
+            system_ctx_calls.append(session)
+            return _AsyncCtx(session)
+
+        mock_analytics = MagicMock(
+            get_org_health_score=AsyncMock(return_value=0.9),
+            get_bottlenecks=AsyncMock(return_value=[]),
+        )
+        mock_digest = MagicMock(generate=AsyncMock(return_value=None))
+        a, b, c, d = _cron_patches(
+            system_factory=system_factory, tenant_factory=tenant_factory, system_ctx=_system_ctx
+        )
+        with (
+            a, b, c, d,
+            patch("app.org.analytics.OrgAnalyticsService", return_value=mock_analytics),
+            patch("app.org.digest.DigestGenerator", return_value=mock_digest),
+        ):
+            result = await getattr(ff, cron_name)()
+
+        system_factory.assert_called_once()
+        assert system_ctx_calls == [scan_session]  # row security off for the scan
+        assert scan_session.begun == 1  # SET LOCAL needs an explicit transaction
+        # The scan's rows were iterated: the org was processed on the tenant factory.
+        assert result["processed"] == 1
+        assert result["failed"] == 0
+        tenant_factory.assert_called_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cron_name", ["_run_org_intelligence_cron", "_run_org_digest_cron"])
+    async def test_scan_never_uses_the_tenant_factory(self, cron_name):
+        import app.org.feature_flags as ff
+
+        scan_session = _FakeSession(rows=[])
+        tenant_factory = MagicMock(side_effect=AssertionError("scan must not use app-role factory"))
+        a, b, c, d = _cron_patches(system_factory=_factory(scan_session), tenant_factory=tenant_factory)
+        with a, b, c, d:
+            result = await getattr(ff, cron_name)()
+
+        assert result["processed"] == 0
+        tenant_factory.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cron_name", ["_run_org_intelligence_cron", "_run_org_digest_cron"])
+    async def test_scan_db_error_propagates_not_reported_as_no_orgs(self, cron_name):
+        import app.org.feature_flags as ff
+
+        scan_session = _FakeSession(
+            execute_side_effect=RuntimeError("query would be affected by row-level security")
+        )
+        a, b, c, d = _cron_patches(system_factory=_factory(scan_session), tenant_factory=MagicMock())
+        with a, b, c, d, patch.object(ff._log, "error") as log_error:
+            with pytest.raises(RuntimeError, match="row-level security"):
+                await getattr(ff, cron_name)()
+
+        log_error.assert_called_once()
+        assert log_error.call_args.args[0].endswith(".scan_failed")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("cron_name", ["_run_org_intelligence_cron", "_run_org_digest_cron"])
+    async def test_factory_error_propagates(self, cron_name):
+        import app.org.feature_flags as ff
+
+        with (
+            patch("app.db.session.get_system_session_factory", side_effect=RuntimeError("db down")),
+            pytest.raises(RuntimeError, match="db down"),
+        ):
+            await getattr(ff, cron_name)()
+
+
 class TestRunOrgIntelligenceCron:
     @pytest.mark.asyncio
     async def test_no_active_orgs_returns_zero_counts(self):
         from app.org.feature_flags import _run_org_intelligence_cron
 
-        session = AsyncMock()
-        session.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-        db_cm = _AsyncCtx(session)
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=lambda: db_cm),
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-        ):
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=[])), tenant_factory=MagicMock()
+        )
+        with a, b, c, d:
             result = await _run_org_intelligence_cron()
 
-        assert result == {"processed": 0, "insights": 0}
+        assert result == {"processed": 0, "insights": 0, "failed": 0}
 
     @pytest.mark.asyncio
     async def test_processes_orgs_and_counts_bottlenecks(self):
         from app.org.feature_flags import _run_org_intelligence_cron
 
         org_id, tenant_id = uuid.uuid4(), uuid.uuid4()
-        list_session = AsyncMock()
-        list_session.execute = AsyncMock(
-            return_value=MagicMock(all=MagicMock(return_value=[(org_id, tenant_id)]))
-        )
-        per_org_session = AsyncMock()
-
-        db_factory_calls = [_AsyncCtx(list_session), _AsyncCtx(per_org_session)]
-
-        def _db_factory():
-            return db_factory_calls.pop(0)
-
         mock_svc = MagicMock()
         mock_svc.get_org_health_score = AsyncMock(return_value=0.9)
         mock_svc.get_bottlenecks = AsyncMock(return_value=["slow_step", "stuck_review"])
 
-        with (
-            patch("app.db.session.get_session_factory", return_value=_db_factory),
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-            patch("app.org.analytics.OrgAnalyticsService", return_value=mock_svc),
-        ):
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=[(org_id, tenant_id)])),
+            tenant_factory=_factory(_FakeSession()),
+        )
+        with a, b, c, d, patch("app.org.analytics.OrgAnalyticsService", return_value=mock_svc):
             result = await _run_org_intelligence_cron()
 
-        assert result == {"processed": 1, "insights": 2}
+        assert result == {"processed": 1, "insights": 2, "failed": 0}
         mock_svc.get_org_health_score.assert_awaited_once_with(str(org_id))
 
     @pytest.mark.asyncio
-    async def test_per_org_failure_is_swallowed_and_does_not_stop_batch(self):
+    async def test_per_org_failure_is_counted_and_does_not_stop_batch(self):
         from app.org.feature_flags import _run_org_intelligence_cron
 
-        org_id, tenant_id = uuid.uuid4(), uuid.uuid4()
-        list_session = AsyncMock()
-        list_session.execute = AsyncMock(
-            return_value=MagicMock(all=MagicMock(return_value=[(org_id, tenant_id)]))
+        rows = [(uuid.uuid4(), uuid.uuid4()), (uuid.uuid4(), uuid.uuid4())]
+        mock_svc = MagicMock()
+        mock_svc.get_org_health_score = AsyncMock(side_effect=[RuntimeError("boom"), 0.8])
+        mock_svc.get_bottlenecks = AsyncMock(return_value=["x"])
+
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=rows)),
+            tenant_factory=_factory(_FakeSession()),
         )
-
-        def _db_factory():
-            return _AsyncCtx(list_session)
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=_db_factory),
-            patch(
-                "app.db.rls.sqlalchemy_rls_context",
-                side_effect=RuntimeError("rls unavailable"),
-            ),
-        ):
+        with a, b, c, d, patch("app.org.analytics.OrgAnalyticsService", return_value=mock_svc):
             result = await _run_org_intelligence_cron()
 
-        assert result == {"processed": 0, "insights": 0}
-
-    @pytest.mark.asyncio
-    async def test_top_level_db_failure_returns_zero_counts(self):
-        from app.org.feature_flags import _run_org_intelligence_cron
-
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("db down")):
-            result = await _run_org_intelligence_cron()
-
-        assert result == {"processed": 0, "insights": 0}
+        assert result == {"processed": 1, "insights": 1, "failed": 1}
 
 
 class TestRunOrgDigestCron:
@@ -266,71 +359,46 @@ class TestRunOrgDigestCron:
     async def test_no_active_orgs_returns_zero_counts(self):
         from app.org.feature_flags import _run_org_digest_cron
 
-        session = AsyncMock()
-        session.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=lambda: _AsyncCtx(session)),
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-        ):
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=[])), tenant_factory=MagicMock()
+        )
+        with a, b, c, d:
             result = await _run_org_digest_cron()
 
-        assert result == {"processed": 0, "digests": 0}
+        assert result == {"processed": 0, "digests": 0, "failed": 0}
 
     @pytest.mark.asyncio
     async def test_generates_digest_per_active_org(self):
         from app.org.feature_flags import _run_org_digest_cron
 
         org_id, tenant_id = uuid.uuid4(), uuid.uuid4()
-        list_session = AsyncMock()
-        list_session.execute = AsyncMock(
-            return_value=MagicMock(all=MagicMock(return_value=[(org_id, tenant_id)]))
-        )
-        per_org_session = AsyncMock()
-        db_factory_calls = [_AsyncCtx(list_session), _AsyncCtx(per_org_session)]
-
         mock_digest_svc = MagicMock()
         mock_digest_svc.generate = AsyncMock(return_value=None)
 
-        with (
-            patch("app.db.session.get_session_factory", return_value=lambda: db_factory_calls.pop(0)),
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-            patch("app.org.digest.DigestGenerator", return_value=mock_digest_svc),
-        ):
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=[(org_id, tenant_id)])),
+            tenant_factory=_factory(_FakeSession()),
+        )
+        with a, b, c, d, patch("app.org.digest.DigestGenerator", return_value=mock_digest_svc):
             result = await _run_org_digest_cron()
 
-        assert result == {"processed": 1, "digests": 1}
+        assert result == {"processed": 1, "digests": 1, "failed": 0}
         mock_digest_svc.generate.assert_awaited_once_with(str(org_id), str(tenant_id))
 
     @pytest.mark.asyncio
-    async def test_per_org_digest_failure_is_swallowed(self):
+    async def test_per_org_digest_failure_is_counted(self):
         from app.org.feature_flags import _run_org_digest_cron
 
         org_id, tenant_id = uuid.uuid4(), uuid.uuid4()
-        list_session = AsyncMock()
-        list_session.execute = AsyncMock(
-            return_value=MagicMock(all=MagicMock(return_value=[(org_id, tenant_id)]))
+        a, b, c, d = _cron_patches(
+            system_factory=_factory(_FakeSession(rows=[(org_id, tenant_id)])),
+            tenant_factory=_factory(_FakeSession()),
+            rls_ctx=MagicMock(side_effect=RuntimeError("rls unavailable")),
         )
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=lambda: _AsyncCtx(list_session)),
-            patch(
-                "app.db.rls.sqlalchemy_rls_context",
-                side_effect=RuntimeError("rls unavailable"),
-            ),
-        ):
+        with a, b, c, d:
             result = await _run_org_digest_cron()
 
-        assert result == {"processed": 0, "digests": 0}
-
-    @pytest.mark.asyncio
-    async def test_top_level_failure_returns_zero_counts(self):
-        from app.org.feature_flags import _run_org_digest_cron
-
-        with patch("app.db.session.get_session_factory", side_effect=RuntimeError("db down")):
-            result = await _run_org_digest_cron()
-
-        assert result == {"processed": 0, "digests": 0}
+        assert result == {"processed": 0, "digests": 0, "failed": 1}
 
 
 class TestRunOrgTwinSync:
@@ -399,39 +467,3 @@ class TestCronDbFactoryImportRegression:
 
         assert not hasattr(digest_module, "OrgDigestService")
         assert hasattr(digest_module, "DigestGenerator")
-
-    @pytest.mark.asyncio
-    async def test_intelligence_cron_actually_calls_get_session_factory(self):
-        from app.org.feature_flags import _run_org_intelligence_cron
-
-        session = AsyncMock()
-        session.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-        factory = MagicMock(return_value=_AsyncCtx(session))
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=factory) as get_factory,
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-        ):
-            result = await _run_org_intelligence_cron()
-
-        get_factory.assert_called_once()
-        factory.assert_called_once()
-        assert result == {"processed": 0, "insights": 0}
-
-    @pytest.mark.asyncio
-    async def test_digest_cron_actually_calls_get_session_factory(self):
-        from app.org.feature_flags import _run_org_digest_cron
-
-        session = AsyncMock()
-        session.execute = AsyncMock(return_value=MagicMock(all=MagicMock(return_value=[])))
-        factory = MagicMock(return_value=_AsyncCtx(session))
-
-        with (
-            patch("app.db.session.get_session_factory", return_value=factory) as get_factory,
-            patch("app.db.rls.sqlalchemy_rls_context", _null_rls_ctx),
-        ):
-            result = await _run_org_digest_cron()
-
-        get_factory.assert_called_once()
-        factory.assert_called_once()
-        assert result == {"processed": 0, "digests": 0}
