@@ -122,12 +122,14 @@ def test_saml_test_revalidates_redirect_hops() -> None:
         calls.append(str(req.url))
         return httpx.Response(302, headers={"location": _META})
 
-    real = httpx.AsyncClient
-
+    # The pinned-client seam: the route builds its client with
+    # public_async_client (never follows redirects itself).
     def _client(**kw: Any) -> httpx.AsyncClient:
-        return real(transport=httpx.MockTransport(_handler), **kw)
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(_handler), follow_redirects=False, **kw
+        )
 
-    with patch("httpx.AsyncClient", _client):
+    with patch("app.net.ssrf_guard.public_async_client", _client):
         r = _saml_client().post(
             "/enterprise/saml/test",
             json={"sso_url": "https://idp.example.com/sso"},
