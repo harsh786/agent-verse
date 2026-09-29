@@ -1,167 +1,69 @@
-"""Observability API — real-time logs, SSE log stream, and structured metrics."""
+"""Observability API — tenant logs (list + SSE), structured metrics, time-series,
+and the per-goal run trace.
+
+Fail-closed contract: nothing here fabricates data.
+
+* ``/logs`` serves the tenant log store fed by the structlog pipeline
+  (``app/observability/logging.py::feed_tenant_log_store``); a store failure is a
+  503, never an empty list.
+* ``/metrics`` and ``/timeseries`` are computed in Postgres, under the tenant's
+  RLS context, from real columns: goal duration is ``completed_at - created_at``
+  and cost/tokens come from the durable ``goal_cost_breakdowns`` ledger (``goals``
+  has no duration or cost column). No database -> 501; database error -> 503.
+* ``/goals/{id}/trace`` is served from the process-local span timeline only where
+  that timeline is authoritative (single process, goals executed in-process);
+  otherwise 501 rather than an empty or partial trace.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-import time
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from sqlalchemy import Select, extract, func, select
+from sqlalchemy.sql.elements import ColumnElement
 
+from app.db.models.goal import Goal
+from app.db.models.runtime_records import GoalCostBreakdownRow
+from app.observability.log_store import StructuredLogStore, log_store
 from app.tenancy.context import TenantContext
+
+__all__ = ["StructuredLogStore", "log_store", "router"]
 
 router = APIRouter(prefix="/observability", tags=["observability"])
 
 _obs_log = logging.getLogger("observability")
 
+_goals = Goal.__table__
+_costs = GoalCostBreakdownRow.__table__
+
+_BUCKETS = frozenset({"minute", "hour", "day"})
+_TERMINAL = ("complete", "failed", "cancelled")
+
 
 def _require_tenant(request: Request) -> TenantContext:
     ctx: TenantContext | None = getattr(request.state, "tenant", None)
     if ctx is None:
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=401, detail="Unauthorized")
     return ctx
 
 
-# ── Structured log store ──────────────────────────────────────────────────────
-
-
-class StructuredLogStore:
-    """Redis Streams-backed structured log store.
-
-    Falls back to an in-memory ring buffer when Redis is unavailable.
-    Supports both push (emit) and pull (query / stream) APIs.
-
-    Redis key layout: ``av:logs:{tenant_id}``  (one Stream per tenant).
-    MAXLEN is approximate (``~`` trimming) to keep overhead low.
-    """
-
-    STREAM_KEY = "av:logs:{tenant_id}"
-    MAX_STREAM_LEN = 10_000  # entries per tenant stream
-
-    def __init__(self) -> None:
-        self._redis: Any = None
-        # In-memory ring buffer: tenant_id → list[dict]
-        self._memory_buffer: dict[str, list[dict[str, Any]]] = {}
-        self._MAX_MEMORY = 500
-
-    def set_redis(self, redis: Any) -> None:
-        """Wire a real (or fake) Redis client. Called from main.py lifespan."""
-        self._redis = redis
-
-    async def emit(
-        self,
-        tenant_id: str,
-        level: str,
-        message: str,
-        source: str = "",
-        goal_id: str = "",
-        **kwargs: Any,
-    ) -> None:
-        """Write a structured log entry. Called from goal_service, agent loop, etc."""
-        ts = int(time.time() * 1000)
-        entry: dict[str, Any] = {
-            "id": f"{ts}-0",
-            "timestamp": datetime.now(UTC).isoformat(),
-            "level": level.lower(),
-            "message": message,
-            "source": source,
-            "goal_id": goal_id,
-            **{k: str(v) for k, v in kwargs.items()},
-        }
-
-        if self._redis is not None:
-            try:
-                key = self.STREAM_KEY.format(tenant_id=tenant_id)
-                # Redis Streams require string values; drop empty strings to save space
-                fields = {k: v for k, v in entry.items() if v}
-                await self._redis.xadd(key, fields, maxlen=self.MAX_STREAM_LEN, approximate=True)
-                return
-            except Exception as exc:
-                _obs_log.debug("Redis log emit failed: %s", exc)
-
-        # In-memory fallback
-        buf = self._memory_buffer.setdefault(tenant_id, [])
-        buf.append(entry)
-        if len(buf) > self._MAX_MEMORY:
-            self._memory_buffer[tenant_id] = buf[-self._MAX_MEMORY :]
-
-    async def query(
-        self,
-        tenant_id: str,
-        limit: int = 50,
-        level: str | None = None,
-        since_ts: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Fetch log entries for a tenant (newest-first)."""
-        if self._redis is not None:
-            try:
-                key = self.STREAM_KEY.format(tenant_id=tenant_id)
-                # xrevrange returns newest-first; fetch 2x so level filter still yields `limit`
-                raw = await self._redis.xrevrange(key, count=limit * 2)
-                logs: list[dict[str, Any]] = []
-                for _stream_id, fields in raw:
-                    if len(logs) >= limit:
-                        break
-                    log = {
-                        (k.decode() if isinstance(k, bytes) else k): (
-                            v.decode() if isinstance(v, bytes) else v
-                        )
-                        for k, v in fields.items()
-                    }
-                    if level and log.get("level") != level.lower():
-                        continue
-                    logs.append(log)
-                return logs
-            except Exception as exc:
-                _obs_log.debug("Redis log query failed: %s", exc)
-
-        # In-memory fallback
-        buf = list(reversed(self._memory_buffer.get(tenant_id, [])))
-        if level:
-            buf = [e for e in buf if e.get("level") == level.lower()]
-        return buf[:limit]
-
-    async def stream_new_since(self, tenant_id: str, last_id: str = "$") -> list[dict[str, Any]]:
-        """Non-blocking read of entries newer than *last_id* (for SSE).
-
-        Uses ``XREAD BLOCK 2000`` so the coroutine yields control every 2 s
-        at most, allowing ``is_disconnected`` checks to run between polls.
-        Returns an empty list when no entries arrive within the block window
-        or when Redis is unavailable.
-        """
-        if self._redis is not None:
-            try:
-                key = self.STREAM_KEY.format(tenant_id=tenant_id)
-                # block=2000 ms — returns None (not []) on timeout in some clients
-                raw = await self._redis.xread({key: last_id}, count=50, block=2000)
-                logs: list[dict[str, Any]] = []
-                if raw:
-                    for _key, msgs in raw:
-                        for stream_id, fields in msgs:
-                            log = {
-                                (k.decode() if isinstance(k, bytes) else k): (
-                                    v.decode() if isinstance(v, bytes) else v
-                                )
-                                for k, v in fields.items()
-                            }
-                            log["_stream_id"] = (
-                                stream_id.decode() if isinstance(stream_id, bytes) else stream_id
-                            )
-                            logs.append(log)
-                return logs
-            except Exception as exc:
-                _obs_log.debug("Redis log stream failed: %s", exc)
-        return []
-
-
-# Module-level singleton — wired to Redis in main.py lifespan
-log_store = StructuredLogStore()
+def _parse_ts(value: str | None, name: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"'{name}' must be an ISO-8601 timestamp"
+        ) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
 # ── Log listing ───────────────────────────────────────────────────────────────
@@ -170,147 +72,98 @@ log_store = StructuredLogStore()
 @router.get("/logs")
 async def list_logs(
     request: Request,
-    limit: int = Query(default=50, le=500),
+    limit: int = Query(default=50, ge=1, le=500),
     level: str | None = Query(default=None),
     since: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    """Return recent log entries from the Redis Streams store (falls back to goal events)."""
+    """Recent tenant log entries (newest first) from the tenant log store.
+
+    ``source`` is ``redis_stream`` (shared across replicas) or ``memory``
+    (process-local: only this replica's lines).
+    """
     tenant = _require_tenant(request)
+    since_dt = _parse_ts(since, "since")
+    try:
+        logs = await log_store.query(tenant.tenant_id, limit=limit, level=level)
+    except Exception as exc:
+        _obs_log.warning("observability_log_query_failed: %s", exc)
+        raise HTTPException(status_code=503, detail="Log store unavailable") from exc
 
-    # ── Primary path: Redis-backed structured log store ───────────────────────
-    logs: list[dict[str, Any]] = await log_store.query(
-        tenant.tenant_id, limit=limit, level=level, since_ts=since
-    )
-    source = "redis_stream" if log_store._redis is not None else "memory"
+    if since_dt is not None:
+        kept: list[dict[str, Any]] = []
+        for log in logs:
+            ts = _entry_ts(log)
+            if ts is not None and ts >= since_dt:
+                kept.append(log)
+        logs = kept
 
-    # ── Legacy fallback: derive from goal events when store is empty ──────────
-    if not logs:
-        goal_svc = getattr(request.app.state, "goal_service", None)
-        if goal_svc is not None:
-            try:
-                resp = await goal_svc.list_goals(tenant_ctx=tenant)
-                goals = resp.get("goals", []) if isinstance(resp, dict) else (resp or [])
-
-                for goal in goals[:20]:  # last 20 goals
-                    goal_id = goal.get("id") or goal.get("goal_id", "")
-                    try:
-                        events = await goal_svc.get_events(goal_id=goal_id, tenant_ctx=tenant)
-                        for evt in events[-10:]:  # last 10 events per goal
-                            evt_type = evt.get("type", "")
-                            level_val = (
-                                "error"
-                                if "fail" in evt_type
-                                else ("warning" if "cancel" in evt_type else "info")
-                            )
-                            if level and level_val != level:
-                                continue
-                            logs.append(
-                                {
-                                    "id": f"{goal_id}_{evt.get('ts', '')}",
-                                    "timestamp": evt.get("ts") or datetime.now(UTC).isoformat(),
-                                    "level": level_val,
-                                    "message": _evt_to_message(evt),
-                                    "source": evt_type,
-                                    "goal_id": goal_id,
-                                }
-                            )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        source = "goal_events"
-
-    # ── since filter ──────────────────────────────────────────────────────────
-    if since:
-        try:
-            since_dt = datetime.fromisoformat(since.rstrip("Z")).replace(tzinfo=UTC)
-            logs = [
-                log
-                for log in logs
-                if datetime.fromisoformat(log.get("timestamp", "").rstrip("Z")).replace(tzinfo=UTC)
-                >= since_dt
-            ]
-        except Exception:
-            pass
-
-    logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return {"logs": logs[:limit], "total": len(logs), "source": source}
+    logs.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+    return {"logs": logs[:limit], "total": len(logs), "source": log_store.backend}
 
 
-def _evt_to_message(evt: dict[str, Any]) -> str:
-    etype = evt.get("type", "unknown")
-    messages: dict[str, str] = {
-        "goal_complete": "Goal completed successfully",
-        "goal_failed": f"Goal failed: {evt.get('reason', '')}",
-        "goal_cancelled": "Goal was cancelled",
-        "plan_ready": f"Plan ready with {len(evt.get('steps', []))} steps",
-        "step_started": f"Started step: {str(evt.get('step', ''))[:80]}",
-        "step_complete": f"Completed step: {str(evt.get('step', ''))[:60]}",
-        "tool_call_complete": f"Tool call: {evt.get('tool_name', evt.get('name', 'unknown'))}",
-        "tool_call_failed": (
-            f"Tool failed: {evt.get('tool_name', 'unknown')} — {evt.get('error', '')}"
-        ),
-        "goal_started": "Goal execution started",
-        "approval_required": "Human approval required",
-        "approval_granted": "Human approval granted",
-    }
-    return messages.get(etype, f"Event: {etype}")
+def _entry_ts(log: dict[str, Any]) -> datetime | None:
+    try:
+        ts = datetime.fromisoformat(str(log.get("timestamp", "")).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
 
 
 # ── SSE log stream ────────────────────────────────────────────────────────────
 
 
+def _sse(payload: dict[str, Any]) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 @router.get("/logs/stream")
 async def stream_logs(request: Request) -> StreamingResponse:
-    """SSE stream of real-time log entries via Redis XREAD (event-driven)."""
+    """SSE stream of tenant log entries (Redis ``XREAD`` tailing when wired).
+
+    Backend errors are surfaced as ``{"type": "error"}`` events rather than a
+    silently idle stream.
+    """
     tenant = _require_tenant(request)
 
     async def event_generator() -> Any:
-        yield 'data: {"type": "connected"}\n\n'
+        yield _sse({"type": "connected"})
 
-        # Send the 20 most-recent historical entries first
-        recent = await log_store.query(tenant.tenant_id, limit=20)
+        try:
+            recent = await log_store.query(tenant.tenant_id, limit=20)
+        except Exception as exc:
+            _obs_log.warning("observability_log_stream_query_failed: %s", exc)
+            yield _sse({"type": "error", "detail": "Log store unavailable"})
+            return
         for log_entry in reversed(recent):  # oldest-first for the initial burst
             if await request.is_disconnected():
                 return
-            yield f"data: {json.dumps(log_entry)}\n\n"
+            yield _sse(log_entry)
 
-        # Stream new entries via Redis XREAD (truly event-driven)
-        last_id = "$"  # read only entries that arrive *after* the initial snapshot
-
+        last_id = "$"  # only entries that arrive after the snapshot
         while True:
             if await request.is_disconnected():
                 break
 
-            if log_store._redis is not None:
-                # stream_new_since blocks up to 2 s then returns (empty on timeout)
-                new_logs = await log_store.stream_new_since(tenant.tenant_id, last_id)
+            if log_store.backend == "redis_stream":
+                try:
+                    # Blocks up to 2 s in XREAD; [] on timeout.
+                    new_logs = await log_store.stream_new_since(tenant.tenant_id, last_id)
+                except Exception as exc:
+                    _obs_log.warning("observability_log_stream_read_failed: %s", exc)
+                    yield _sse({"type": "error", "detail": "Log store unavailable"})
+                    await asyncio.sleep(2)
+                    continue
                 for log_entry in new_logs:
                     if await request.is_disconnected():
                         return
                     last_id = log_entry.pop("_stream_id", last_id)
-                    yield f"data: {json.dumps(log_entry)}\n\n"
-                # No heartbeat needed when Redis is available — XREAD itself polls
-                # for up to 2s on success. But stream_new_since swallows Redis
-                # errors and returns [] *immediately* (no blocking), so a
-                # persistent Redis failure would otherwise busy-loop this
-                # generator with zero backoff, hammering Redis and burning
-                # CPU. Guarantee a minimum pause whenever nothing came back.
+                    yield _sse(log_entry)
+                # A fast-returning (empty) read must not busy-loop the generator.
                 if not new_logs:
                     await asyncio.sleep(0.5)
             else:
-                # No Redis: poll goal events and emit heartbeat with backoff
-                goal_svc = getattr(request.app.state, "goal_service", None)
-                if goal_svc is not None:
-                    # Reuse the in-memory log buffer (populated via emit() calls)
-                    new_logs = await log_store.stream_new_since(tenant.tenant_id, last_id)
-                    for log_entry in new_logs:
-                        if await request.is_disconnected():
-                            return
-                        last_id = log_entry.pop("_stream_id", last_id)
-                        yield f"data: {json.dumps(log_entry)}\n\n"
-
-                yield 'data: {"type": "heartbeat"}\n\n'
+                # Process-local memory store: no tailing primitive — heartbeat only.
+                yield _sse({"type": "heartbeat"})
                 await asyncio.sleep(5)
 
     from app.core.config import get_settings as _get_settings
@@ -330,147 +183,194 @@ async def stream_logs(request: Request) -> StreamingResponse:
     )
 
 
+# ── SQL (SQLAlchemy Core over the ORM tables: a missing column fails to build) ─
+
+
+def _duration_s() -> ColumnElement[Any]:
+    """Goal wall-clock duration in seconds (NULL until the goal is terminal)."""
+    return extract("epoch", _goals.c.completed_at - _goals.c.created_at)
+
+
+def _bucket_expr(bucket: str, column: Any) -> ColumnElement[Any]:
+    if bucket not in _BUCKETS:
+        raise ValueError(f"unsupported bucket {bucket!r}")
+    return func.date_trunc(bucket, column).label("bucket")
+
+
+def _tenant_uuid(tenant_id: str) -> uuid.UUID | None:
+    """``goal_cost_breakdowns.tenant_id`` is a UUID; non-UUID tenants own no rows."""
+    try:
+        return uuid.UUID(str(tenant_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def build_goal_summary_stmt(tenant_id: str, since: datetime) -> Select[Any]:
+    """Goal count, completion counts and duration percentiles since *since*.
+
+    ``PERCENTILE_CONT`` ignores NULLs, so only finished goals (``completed_at``
+    set) contribute to the percentiles.
+    """
+    dur = _duration_s()
+    return select(
+        func.count().label("total"),
+        func.count().filter(_goals.c.status == "complete").label("completed"),
+        func.count().filter(_goals.c.status.in_(_TERMINAL)).label("finished"),
+        func.percentile_cont(0.50).within_group(dur).label("p50_s"),
+        func.percentile_cont(0.95).within_group(dur).label("p95_s"),
+        func.percentile_cont(0.99).within_group(dur).label("p99_s"),
+    ).where(_goals.c.tenant_id == tenant_id, _goals.c.created_at >= since)
+
+
+def build_token_usage_stmt(tenant_id: str, since: datetime) -> Select[Any]:
+    """Tokens per model from the durable per-(goal, role, model) cost ledger."""
+    tokens = func.sum(_costs.c.input_tokens + _costs.c.output_tokens)
+    return (
+        select(_costs.c.model.label("model"), tokens.label("tokens"))
+        .where(_costs.c.tenant_id == _tenant_uuid(tenant_id), _costs.c.updated_at >= since)
+        .group_by(_costs.c.model)
+        .order_by(tokens.desc())
+        .limit(10)
+    )
+
+
+def build_goals_timeseries_stmt(
+    tenant_id: str, since: datetime, until: datetime, bucket: str
+) -> Select[Any]:
+    b = _bucket_expr(bucket, _goals.c.created_at)
+    return (
+        select(
+            b,
+            func.count().label("total"),
+            func.count().filter(_goals.c.status == "complete").label("success"),
+            func.count().filter(_goals.c.status == "failed").label("failed"),
+        )
+        .where(
+            _goals.c.tenant_id == tenant_id,
+            _goals.c.created_at >= since,
+            _goals.c.created_at <= until,
+        )
+        .group_by(b)
+        .order_by(b)
+    )
+
+
+def build_latency_timeseries_stmt(
+    tenant_id: str, since: datetime, until: datetime, bucket: str
+) -> Select[Any]:
+    dur = _duration_s()
+    b = _bucket_expr(bucket, _goals.c.created_at)
+    return (
+        select(
+            b,
+            func.percentile_cont(0.50).within_group(dur).label("p50_s"),
+            func.percentile_cont(0.95).within_group(dur).label("p95_s"),
+        )
+        .where(
+            _goals.c.tenant_id == tenant_id,
+            _goals.c.created_at >= since,
+            _goals.c.created_at <= until,
+            _goals.c.completed_at.is_not(None),
+        )
+        .group_by(b)
+        .order_by(b)
+    )
+
+
+def build_cost_timeseries_stmt(
+    tenant_id: str, since: datetime, until: datetime, bucket: str
+) -> Select[Any]:
+    """Spend per bucket from the durable cost ledger, bucketed by when the
+    (goal, role, model) spend was first recorded."""
+    b = _bucket_expr(bucket, _costs.c.first_recorded_at)
+    return (
+        select(b, func.sum(_costs.c.cost_usd).label("total_cost"))
+        .where(
+            _costs.c.tenant_id == _tenant_uuid(tenant_id),
+            _costs.c.first_recorded_at >= since,
+            _costs.c.first_recorded_at <= until,
+        )
+        .group_by(b)
+        .order_by(b)
+    )
+
+
+def _require_db(request: Request) -> Any:
+    db = getattr(request.app.state, "db_session_factory", None)
+    if db is None:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Observability metrics are computed in Postgres and are not available "
+                "in in-memory mode (no database configured)"
+            ),
+        )
+    return db
+
+
+def _ms(seconds: Any) -> int | None:
+    return None if seconds is None else round(float(seconds) * 1000)
+
+
 # ── Structured metrics ────────────────────────────────────────────────────────
 
 
 @router.get("/metrics")
-async def get_structured_metrics(request: Request) -> dict[str, Any]:
-    """Return structured observability metrics including DB-backed latency percentiles."""
+async def get_structured_metrics(
+    request: Request,
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Goal count, success rate, duration percentiles and token usage by model.
+
+    Window: goals created since ``since`` (default: last 24 h); ``until`` is
+    validated but the window always ends now. Percentiles and success rate are
+    ``null`` when no goal in the window has finished.
+    """
     tenant = _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
+    since_dt = _parse_ts(since, "since") or datetime.now(UTC) - timedelta(hours=24)
+    _parse_ts(until, "until")
+    db = _require_db(request)
+    tid = tenant.tenant_id
 
-    result: dict[str, Any] = {
-        "latency_percentiles": {"p50": 0, "p95": 0, "p99": 0},
-        "goal_duration_percentiles": [],
-        "token_usage_by_provider": [],
-        "success_rate": 0.0,
-        "total_goals": 0,
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tid):
+            row = (await session.execute(build_goal_summary_stmt(tid, since_dt))).mappings().one()
+            token_rows: Any = []
+            if _tenant_uuid(tid) is not None:
+                token_stmt = build_token_usage_stmt(tid, since_dt - timedelta(days=30))
+                token_rows = (await session.execute(token_stmt)).mappings().all()
+    except Exception as exc:
+        _obs_log.warning("observability_metrics_query_failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Observability metrics unavailable: database query failed"
+        ) from exc
+
+    finished = int(row["finished"] or 0)
+    p50, p95, p99 = _ms(row["p50_s"]), _ms(row["p95_s"]), _ms(row["p99_s"])
+    return {
+        "total_goals": int(row["total"] or 0),
+        "success_rate": round(int(row["completed"] or 0) / finished, 3) if finished else None,
+        "latency_percentiles": {"p50": p50, "p95": p95, "p99": p99},
+        "goal_duration_percentiles": (
+            [
+                {"percentile": "p50", "ms": p50},
+                {"percentile": "p95", "ms": p95},
+                {"percentile": "p99", "ms": p99},
+            ]
+            if p50 is not None
+            else []
+        ),
+        # Labelled by model: the cost ledger records (role, model), not provider.
+        "token_usage_by_provider": [
+            {"label": str(r["model"] or "unknown"), "value": int(r["tokens"] or 0)}
+            for r in token_rows
+        ],
+        "since": since_dt.isoformat(),
+        "source": "postgres",
     }
-
-    if goal_svc is None:
-        return result
-
-    # ── Primary path: DB-backed percentiles (accurate across replicas) ─────────
-    db = getattr(goal_svc, "_db", None)
-    if db is not None:
-        try:
-            from sqlalchemy import text as _t
-
-            async with db() as session:
-                await session.execute(
-                    _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
-                )
-                row = (
-                    await session.execute(
-                        _t("""
-                            SELECT
-                                COUNT(*) AS total,
-                                SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END)::float
-                                    / NULLIF(COUNT(*), 0) AS success_rate,
-                                PERCENTILE_CONT(0.50) WITHIN GROUP (
-                                    ORDER BY COALESCE(duration_s, 0)
-                                ) * 1000 AS p50_ms,
-                                PERCENTILE_CONT(0.95) WITHIN GROUP (
-                                    ORDER BY COALESCE(duration_s, 0)
-                                ) * 1000 AS p95_ms,
-                                PERCENTILE_CONT(0.99) WITHIN GROUP (
-                                    ORDER BY COALESCE(duration_s, 0)
-                                ) * 1000 AS p99_ms
-                            FROM goals
-                            WHERE tenant_id = :tid
-                              AND created_at >= NOW() - INTERVAL '24 hours'
-                        """),
-                        {"tid": tenant.tenant_id},
-                    )
-                ).fetchone()
-
-                if row and row[0]:
-                    result["total_goals"] = int(row[0])
-                    result["success_rate"] = round(float(row[1] or 0), 3)
-                    p50 = round(float(row[2] or 0))
-                    p95 = round(float(row[3] or 0))
-                    p99 = round(float(row[4] or 0))
-                    result["latency_percentiles"] = {"p50": p50, "p95": p95, "p99": p99}
-                    result["goal_duration_percentiles"] = [
-                        {"percentile": "p50", "ms": p50},
-                        {"percentile": "p95", "ms": p95},
-                        {"percentile": "p99", "ms": p99},
-                    ]
-        except Exception:
-            pass
-
-    # ── Fallback: in-memory durations (single-replica, lost on restart) ────────
-    if result["total_goals"] == 0:
-        try:
-            metrics_data = await goal_svc.get_metrics(tenant_ctx=tenant)
-            result["total_goals"] = metrics_data.get("total_goals", 0)
-            result["success_rate"] = metrics_data.get("success_rate", 0.0)
-
-            durations: list[float] = getattr(goal_svc, "_goal_durations", {}).get(
-                tenant.tenant_id, []
-            )
-            if durations:
-                sorted_d = sorted(durations)
-                n = len(sorted_d)
-                p50 = round(sorted_d[int(n * 0.5)] * 1000)
-                p95 = round(sorted_d[min(int(n * 0.95), n - 1)] * 1000)
-                p99 = round(sorted_d[min(int(n * 0.99), n - 1)] * 1000)
-                result["latency_percentiles"] = {"p50": p50, "p95": p95, "p99": p99}
-                result["goal_duration_percentiles"] = [
-                    {"percentile": "p50", "ms": p50},
-                    {"percentile": "p95", "ms": p95},
-                    {"percentile": "p99", "ms": p99},
-                ]
-        except Exception:
-            pass
-
-    # ── Token usage by provider (DB query, unchanged) ─────────────────────────
-    if not result["token_usage_by_provider"] and db is not None:
-        try:
-            from sqlalchemy import text as _t
-
-            async with db() as session:
-                rows = (
-                    await session.execute(
-                        _t("""
-                            SELECT
-                                COALESCE(
-                                    execution_context->>'provider', 'unknown'
-                                ) AS provider,
-                                SUM(COALESCE(
-                                    (execution_context->>'tokens_used')::integer, 0
-                                )) AS tokens
-                            FROM goals
-                            WHERE tenant_id = :tid
-                              AND created_at >= NOW() - INTERVAL '30 days'
-                            GROUP BY provider
-                            ORDER BY tokens DESC
-                            LIMIT 10
-                        """),
-                        {"tid": tenant.tenant_id},
-                    )
-                ).fetchall()
-                if rows:
-                    result["token_usage_by_provider"] = [
-                        {"label": r[0], "value": int(r[1] or 0)} for r in rows
-                    ]
-        except Exception:
-            pass
-
-    # Fetch token usage from in-memory metrics when DB is absent
-    if not result["token_usage_by_provider"]:
-        try:
-            token_by_provider = (
-                getattr(goal_svc, "_metrics_cache", {})
-                .get(tenant.tenant_id, {})
-                .get("token_usage_by_provider", [])
-            )
-            if token_by_provider:
-                result["token_usage_by_provider"] = token_by_provider
-        except Exception:
-            pass
-
-    return result
 
 
 # ── Time-series ───────────────────────────────────────────────────────────────
@@ -483,201 +383,68 @@ async def get_timeseries(
     until: str | None = Query(default=None),
     bucket: str = Query(default="hour", pattern="^(minute|hour|day)$"),
 ) -> dict[str, Any]:
-    """Return time-series data for goals, cost, and latency bucketed by time."""
+    """Goals, cost and duration percentiles bucketed by time (default: last 24 h)."""
     tenant = _require_tenant(request)
-    goal_svc = getattr(request.app.state, "goal_service", None)
+    until_dt = _parse_ts(until, "until") or datetime.now(UTC)
+    since_dt = _parse_ts(since, "since") or until_dt - timedelta(hours=24)
+    if since_dt > until_dt:
+        raise HTTPException(status_code=422, detail="'since' must not be after 'until'")
+    db = _require_db(request)
+    tid = tenant.tenant_id
 
-    result: dict[str, Any] = {
-        "goals_per_hour": [],
-        "cost_per_hour": [],
-        "avg_latency_per_hour": [],
+    from app.db.rls import sqlalchemy_rls_context
+
+    try:
+        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tid):
+            goals_stmt = build_goals_timeseries_stmt(tid, since_dt, until_dt, bucket)
+            goal_rows = (await session.execute(goals_stmt)).mappings().all()
+            lat_stmt = build_latency_timeseries_stmt(tid, since_dt, until_dt, bucket)
+            lat_rows = (await session.execute(lat_stmt)).mappings().all()
+            cost_rows: Any = []
+            if _tenant_uuid(tid) is not None:
+                cost_stmt = build_cost_timeseries_stmt(tid, since_dt, until_dt, bucket)
+                cost_rows = (await session.execute(cost_stmt)).mappings().all()
+    except Exception as exc:
+        _obs_log.warning("observability_timeseries_query_failed: %s", exc)
+        raise HTTPException(
+            status_code=503, detail="Observability time-series unavailable: database query failed"
+        ) from exc
+
+    return {
+        "goals_per_hour": [
+            {
+                "ts": r["bucket"].isoformat(),
+                "count": int(r["total"] or 0),
+                "success": int(r["success"] or 0),
+                "failed": int(r["failed"] or 0),
+            }
+            for r in goal_rows
+        ],
+        "cost_per_hour": [
+            {"ts": r["bucket"].isoformat(), "cost_usd": round(float(r["total_cost"] or 0), 4)}
+            for r in cost_rows
+        ],
+        "avg_latency_per_hour": [
+            {"ts": r["bucket"].isoformat(), "p50_ms": _ms(r["p50_s"]), "p95_ms": _ms(r["p95_s"])}
+            for r in lat_rows
+        ],
     }
 
+
+# ── Per-goal run trace ────────────────────────────────────────────────────────
+
+
+def _timeline_is_authoritative(request: Request) -> bool:
+    """The span timeline is process-local. It is the whole truth only when this
+    process is the only one that could have run the goal: no Postgres (in-memory,
+    single-process deployment) and no out-of-process goal queue (Celery)."""
+    state = request.app.state
+    if getattr(state, "db_session_factory", None) is not None:
+        return False
+    goal_svc = getattr(state, "goal_service", None)
     if goal_svc is None:
-        return result
-
-    db = getattr(goal_svc, "_db", None)
-    if db is None:
-        # In-memory mode: synthesise from in-memory goal records
-        import datetime as _dt
-
-        now = _dt.datetime.now(_dt.UTC)
-        buckets: dict[str, dict[str, Any]] = {}
-
-        for record in goal_svc._goals.values():
-            if record.tenant_id != tenant.tenant_id:
-                continue
-            try:
-                created = _dt.datetime.fromisoformat(record.created_at.rstrip("Z")).replace(
-                    tzinfo=_dt.UTC
-                )
-            except Exception:
-                continue
-
-            if since:
-                try:
-                    since_dt = _dt.datetime.fromisoformat(since.rstrip("Z")).replace(tzinfo=_dt.UTC)
-                    if created < since_dt:
-                        continue
-                except Exception:
-                    pass
-
-            if until:
-                try:
-                    until_dt = _dt.datetime.fromisoformat(until.rstrip("Z")).replace(tzinfo=_dt.UTC)
-                    if created > until_dt:
-                        continue
-                except Exception:
-                    pass
-
-            # Bucket key depends on granularity
-            if bucket == "minute":
-                bucket_key = created.strftime("%Y-%m-%dT%H:%M:00Z")
-            elif bucket == "day":
-                bucket_key = created.strftime("%Y-%m-%dT00:00:00Z")
-            else:
-                bucket_key = created.strftime("%Y-%m-%dT%H:00:00Z")
-
-            if bucket_key not in buckets:
-                buckets[bucket_key] = {
-                    "count": 0,
-                    "success": 0,
-                    "failed": 0,
-                    "cost": 0.0,
-                }
-
-            buckets[bucket_key]["count"] += 1
-            status_val = getattr(getattr(record, "status", None), "value", None) or str(
-                getattr(record, "status", "")
-            )
-            if status_val == "complete":
-                buckets[bucket_key]["success"] += 1
-            elif status_val == "failed":
-                buckets[bucket_key]["failed"] += 1
-            cost = getattr(record, "cost_usd", 0.0) or 0.0
-            buckets[bucket_key]["cost"] += float(cost)
-
-        for ts, data in sorted(buckets.items()):
-            result["goals_per_hour"].append(
-                {
-                    "ts": ts,
-                    "count": data["count"],
-                    "success": data["success"],
-                    "failed": data["failed"],
-                }
-            )
-            result["cost_per_hour"].append({"ts": ts, "cost_usd": round(data["cost"], 4)})
-
-        return result
-
-    # DB-backed path
-    try:
-        import datetime as _dt
-
-        from sqlalchemy import text as _t
-
-        trunc = {"minute": "minute", "hour": "hour", "day": "day"}.get(bucket, "hour")
-        now = _dt.datetime.now(_dt.UTC)
-        since_dt = (
-            _dt.datetime.fromisoformat(since.rstrip("Z")).replace(tzinfo=_dt.UTC)
-            if since
-            else now - _dt.timedelta(hours=24)
-        )
-        until_dt = (
-            _dt.datetime.fromisoformat(until.rstrip("Z")).replace(tzinfo=_dt.UTC) if until else now
-        )
-
-        async with db() as session:
-            await session.execute(
-                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant.tenant_id}
-            )
-
-            # Goals per time bucket
-            goals_rows = (
-                await session.execute(
-                    _t(f"""
-                        SELECT
-                            date_trunc('{trunc}', created_at) AS bucket,
-                            COUNT(*) AS total,
-                            SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS success,
-                            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
-                        FROM goals
-                        WHERE tenant_id = :tid
-                          AND created_at BETWEEN :since AND :until
-                        GROUP BY bucket
-                        ORDER BY bucket
-                    """),
-                    {"tid": tenant.tenant_id, "since": since_dt, "until": until_dt},
-                )
-            ).fetchall()
-
-            result["goals_per_hour"] = [
-                {
-                    "ts": r[0].isoformat(),
-                    "count": int(r[1]),
-                    "success": int(r[2] or 0),
-                    "failed": int(r[3] or 0),
-                }
-                for r in goals_rows
-            ]
-
-            # Cost per time bucket
-            cost_rows = (
-                await session.execute(
-                    _t(f"""
-                        SELECT
-                            date_trunc('{trunc}', created_at) AS bucket,
-                            SUM(COALESCE(cost_usd, 0)) AS total_cost
-                        FROM goals
-                        WHERE tenant_id = :tid
-                          AND created_at BETWEEN :since AND :until
-                          AND cost_usd IS NOT NULL
-                        GROUP BY bucket
-                        ORDER BY bucket
-                    """),
-                    {"tid": tenant.tenant_id, "since": since_dt, "until": until_dt},
-                )
-            ).fetchall()
-
-            result["cost_per_hour"] = [
-                {"ts": r[0].isoformat(), "cost_usd": round(float(r[1] or 0), 4)} for r in cost_rows
-            ]
-
-            # Latency (p50 / p95) per time bucket
-            lat_rows = (
-                await session.execute(
-                    _t(f"""
-                        SELECT
-                            date_trunc('{trunc}', created_at) AS bucket,
-                            PERCENTILE_CONT(0.5) WITHIN GROUP (
-                                ORDER BY COALESCE(duration_s, 0)
-                            ) * 1000 AS p50_ms,
-                            PERCENTILE_CONT(0.95) WITHIN GROUP (
-                                ORDER BY COALESCE(duration_s, 0)
-                            ) * 1000 AS p95_ms
-                        FROM goals
-                        WHERE tenant_id = :tid
-                          AND created_at BETWEEN :since AND :until
-                          AND duration_s IS NOT NULL
-                        GROUP BY bucket
-                        ORDER BY bucket
-                    """),
-                    {"tid": tenant.tenant_id, "since": since_dt, "until": until_dt},
-                )
-            ).fetchall()
-
-            result["avg_latency_per_hour"] = [
-                {
-                    "ts": r[0].isoformat(),
-                    "p50_ms": round(float(r[1] or 0)),
-                    "p95_ms": round(float(r[2] or 0)),
-                }
-                for r in lat_rows
-            ]
-    except Exception:
-        pass  # Return empty arrays on any error
-
-    return result
+        return True
+    return getattr(goal_svc, "_db", None) is None and getattr(goal_svc, "_task_queue", None) is None
 
 
 @router.get("/goals/{goal_id}/trace")
@@ -688,8 +455,23 @@ async def get_goal_trace(goal_id: str, request: Request) -> dict[str, Any]:
     (model/tokens/cost/latency/role) and tool calls — each carrying its
     trace_id/span_id for deep-linking into Jaeger/Langfuse, plus a cost/token
     summary. Tenant-scoped (a tenant only sees its own goals' traces).
+
+    The timeline is captured in-process by ``RunTimelineSpanProcessor``; when goals
+    may run in another process or replica this answers 501 instead of serving an
+    empty or partial trace. Durable per-goal cost/token totals remain available
+    from ``GET /goals/{id}/cost-metrics``; full traces from the OTLP backend.
     """
     tenant = _require_tenant(request)
+    if not _timeline_is_authoritative(request):
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Per-goal run traces are captured per process/replica, and goals in this "
+                "deployment may run on other replicas or Celery workers, so this replica's "
+                "view would be incomplete. Use the OTLP trace backend (Jaeger/Langfuse) for "
+                "full traces and GET /goals/{id}/cost-metrics for durable cost/token totals."
+            ),
+        )
     from app.observability.tracing import get_run_timeline_store
 
     entries = get_run_timeline_store().get(tenant.tenant_id, goal_id)
@@ -699,6 +481,7 @@ async def get_goal_trace(goal_id: str, request: Request) -> dict[str, Any]:
     generations = sum(1 for e in entries if str(e.get("name", "")).startswith("gen_ai"))
     return {
         "goal_id": goal_id,
+        "scope": "process",
         "entries": entries,
         "summary": {
             "steps": len(entries),

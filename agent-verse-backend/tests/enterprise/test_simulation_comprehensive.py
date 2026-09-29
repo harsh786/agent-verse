@@ -378,11 +378,26 @@ class TestMarketplace:
         mp = Marketplace()
         assert mp.get_template(template_id="tpl-nonexistent") is None
 
-    async def test_deploy_template_no_agent_store(self) -> None:
-        from app.enterprise.marketplace import DeployedTemplate, Marketplace
+    async def test_deploy_template_no_agent_store_raises(self) -> None:
+        # No agent store → no agent: it used to return a made-up agent id.
+        from app.enterprise.marketplace import Marketplace
 
         mp = Marketplace()
-        result = await mp.deploy(
+        with pytest.raises(RuntimeError, match="no agent store"):
+            await mp.deploy(
+                template_id="tpl-bug-fix",
+                params={"name": "My Bug Fixer"},
+                tenant_ctx=T,
+            )
+
+    async def test_deploy_template_with_agent_store(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        from app.enterprise.marketplace import DeployedTemplate, Marketplace
+
+        store = MagicMock()
+        store.create = AsyncMock(return_value="agent-1")
+        result = await Marketplace(agent_store=store).deploy(
             template_id="tpl-bug-fix",
             params={"name": "My Bug Fixer"},
             tenant_ctx=T,
@@ -390,6 +405,7 @@ class TestMarketplace:
         assert isinstance(result, DeployedTemplate)
         assert result.template_id == "tpl-bug-fix"
         assert result.tenant_id == T.tenant_id
+        assert result.agent_id == "agent-1"
 
     async def test_deploy_nonexistent_template_raises(self) -> None:
         from app.enterprise.marketplace import Marketplace
@@ -445,9 +461,13 @@ class TestMarketplace:
         assert record["template_id"] in ids
 
     async def test_create_bundle_all_valid(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
         from app.enterprise.marketplace import Marketplace
 
-        mp = Marketplace()
+        store = MagicMock()
+        store.create = AsyncMock(return_value="agent-1")
+        mp = Marketplace(agent_store=store)
         result = await mp.create_bundle(
             name="DevOps Bundle",
             template_ids=["tpl-devops", "tpl-e2e-testing"],
@@ -459,9 +479,13 @@ class TestMarketplace:
         assert result["status"] == "complete"
 
     async def test_create_bundle_invalid_template_captured_in_errors(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
         from app.enterprise.marketplace import Marketplace
 
-        mp = Marketplace()
+        store = MagicMock()
+        store.create = AsyncMock(return_value="agent-1")
+        mp = Marketplace(agent_store=store)
         result = await mp.create_bundle(
             name="Bad Bundle",
             template_ids=["tpl-bug-fix", "tpl-nonexistent"],

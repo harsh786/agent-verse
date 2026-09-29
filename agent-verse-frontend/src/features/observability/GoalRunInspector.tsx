@@ -1,6 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { getAuthHeader } from '../../stores/auth';
-import { API_BASE } from '../../lib/api/client';
+import { API_BASE, errorMessageFromBody } from '../../lib/api/client';
+
+/** The trace endpoint answers 501 when traces are not shared across replicas
+ *  (goals run on workers): that is "not available", not a load failure. */
+class TraceUnavailable extends Error {}
 
 // Mirrors the backend GET /observability/goals/{id}/trace (RunTimelineSpanProcessor).
 interface TraceEntry {
@@ -103,7 +107,7 @@ function TimelineRow({ entry, maxMs }: { entry: TraceEntry; maxMs: number }) {
  * span timeline the RunTimelineSpanProcessor captures.
  */
 export function GoalRunInspector({ goalId }: { goalId: string }) {
-  const { data, isLoading, isError } = useQuery<GoalTrace>({
+  const { data, isLoading, isError, error } = useQuery<GoalTrace>({
     queryKey: ['goal-trace', goalId],
     queryFn: async () => {
       // Absolute URL to the backend (relative /api/observability is NOT proxied →
@@ -111,14 +115,27 @@ export function GoalRunInspector({ goalId }: { goalId: string }) {
       const res = await fetch(`${API_BASE}/observability/goals/${goalId}/trace`, {
         headers: getAuthHeader(),
       });
+      if (res.status === 501) {
+        const body = await res.json().catch(() => undefined);
+        throw new TraceUnavailable(errorMessageFromBody(body) ?? 'Run traces are not available.');
+      }
       if (!res.ok) throw new Error(`${res.status}`);
       return res.json();
     },
-    refetchInterval: 4000, // live-ish while the goal runs
+    retry: (count, err) => !(err instanceof TraceUnavailable) && count < 2,
+    // live-ish while the goal runs; no point polling a 501
+    refetchInterval: (q) => (q.state.error instanceof TraceUnavailable ? false : 4000),
   });
 
   if (isLoading) {
     return <div className="p-4 text-sm text-muted-foreground">Loading run trace…</div>;
+  }
+  if (isError && error instanceof TraceUnavailable) {
+    return (
+      <div role="status" className="p-4 text-sm text-muted-foreground">
+        Run traces are not available on this deployment. {error.message}
+      </div>
+    );
   }
   if (isError) {
     return <div className="p-4 text-sm text-red-500">Failed to load run trace.</div>;

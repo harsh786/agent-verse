@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
@@ -10,25 +11,39 @@ import { useEmergencyStore } from "@/stores/emergency";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh";
 import { useAppHotkeys } from "@/hooks/useAppHotkeys";
 import { clsx } from "clsx";
-import { API_BASE } from "@/lib/api/client";
+import { API_BASE, errorMessageFromBody } from "@/lib/api/client";
 
 function EmergencyBanner() {
   const { isActive, activatedAt, cancelledGoals, clear } = useEmergencyStore();
   const qc = useQueryClient();
+  const [clearError, setClearError] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
 
   if (!isActive) return null;
 
+  // Only a successful DELETE lifts the stop. This used to ignore the response
+  // (a 401/403/500 does not throw) and a network error, and clear the banner
+  // anyway — claiming the stop was lifted while the server still held it.
   const handleClear = async () => {
+    setClearing(true);
+    setClearError(null);
     try {
-      await fetch(`${API_BASE}/governance/emergency-stop`, {
+      const res = await fetch(`${API_BASE}/governance/emergency-stop`, {
         method: "DELETE",
         headers: getAuthHeader(),
       });
-    } catch {
-      // best-effort — clear local state regardless
+      if (!res.ok) {
+        const body = await res.json().catch(() => undefined);
+        setClearError(errorMessageFromBody(body) ?? `HTTP ${res.status}`);
+        return;
+      }
+      clear();
+      qc.invalidateQueries();
+    } catch (err) {
+      setClearError(err instanceof Error ? err.message : "network error");
+    } finally {
+      setClearing(false);
     }
-    clear();
-    qc.invalidateQueries();
   };
 
   return (
@@ -38,11 +53,17 @@ function EmergencyBanner() {
         {activatedAt ? new Date(activatedAt).toLocaleTimeString() : "now"}.{" "}
         {cancelledGoals} goals cancelled.
       </span>
+      {clearError && (
+        <span role="alert" className="ml-4 text-xs bg-red-800/60 px-2 py-0.5 rounded">
+          The stop could not be cleared: {clearError}
+        </span>
+      )}
       <button
         onClick={handleClear}
-        className="ml-4 underline hover:no-underline"
+        disabled={clearing}
+        className="ml-4 underline hover:no-underline disabled:opacity-60"
       >
-        Clear Emergency Stop
+        {clearing ? "Clearing…" : "Clear Emergency Stop"}
       </button>
     </div>
   );

@@ -133,7 +133,9 @@ describe('AppLayout', () => {
     expect(screen.queryByText(/Emergency Stop Active/i)).not.toBeInTheDocument();
   });
 
-  test('clearing the emergency stop still resets local state when the DELETE request fails', async () => {
+  test('a network failure clearing the stop keeps the banner and says so', async () => {
+    // Regression: the banner claimed the stop was lifted even when the DELETE
+    // never reached the server (a false UI state for a safety control).
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));
     useEmergencyStore.setState({
       isActive: true,
@@ -145,10 +147,36 @@ describe('AppLayout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Clear Emergency Stop/i }));
 
-    await waitFor(() => {
-      expect(useEmergencyStore.getState().isActive).toBe(false);
-    });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be cleared.*network down/i);
+    expect(useEmergencyStore.getState().isActive).toBe(true);
+    expect(screen.getByText(/Emergency Stop Active/i)).toBeInTheDocument();
   });
+
+  test.each([401, 403, 500, 503])(
+    'a %i from DELETE /governance/emergency-stop keeps the stop shown as active',
+    async (status) => {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        if (String(input).includes('/governance/emergency-stop') && init?.method === 'DELETE')
+          return new Response(JSON.stringify({ detail: 'Admin role required' }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      useEmergencyStore.setState({
+        isActive: true,
+        activatedAt: new Date().toISOString(),
+        cancelledGoals: 1,
+        rejectedApprovals: 0,
+      });
+      renderLayout();
+
+      fireEvent.click(screen.getByRole('button', { name: /Clear Emergency Stop/i }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/could not be cleared/i);
+      expect(useEmergencyStore.getState().isActive).toBe(true);
+    },
+  );
 
   test('opens the keyboard-shortcuts help overlay via "shift+/" and closes it on Escape', () => {
     mockFetch();

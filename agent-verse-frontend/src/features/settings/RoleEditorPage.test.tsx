@@ -33,12 +33,14 @@ vi.mock('framer-motion', async (importOriginal) => {
   };
 });
 
+// The real GET /v1/org/{id}/roles shape (app/org/router.py _OrgRoleResponse):
+// snake_case, and the five built-ins are returned alongside the custom roles.
 const CUSTOM_ROLE = {
   id: 'role-fin',
   name: 'Finance Approver',
   description: 'Approves spend',
-  isBuiltIn: false,
-  memberCount: 2,
+  is_built_in: false,
+  member_count: 2,
   permissions: [
     { feature: 'Billing', view: true, edit: true, delete: false },
     { feature: 'Missions', view: true, edit: false, delete: false },
@@ -224,6 +226,22 @@ describe('RoleEditorPage', () => {
       ).toBe(true),
     );
     expect(await screen.findByText('Role deleted successfully.')).toBeInTheDocument();
+  });
+
+  test('built-in roles returned by the API are not duplicated as custom roles', async () => {
+    // Regression: the backend returns built-ins + custom with snake_case
+    // is_built_in; the page read isBuiltIn and listed every built-in twice
+    // (the copies with delete buttons that 404'd).
+    const serverBuiltIns = ['org_owner', 'org_admin', 'mission_lead', 'agent_runner', 'observer'].map(
+      (id) => ({ id, name: id, description: '', is_built_in: true, member_count: 0, permissions: [] }),
+    );
+    mockFetch([...serverBuiltIns, CUSTOM_ROLE]);
+    renderPage();
+    expect(await screen.findByText('Finance Approver')).toBeInTheDocument();
+    expect(screen.getByText(/5 built-in · 1 custom/i)).toBeInTheDocument();
+    expect(screen.getAllByText('Org Owner')).toHaveLength(1);
+    expect(screen.queryByText('org_owner')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete org_owner role/i })).not.toBeInTheDocument();
   });
 
   test('editing the description field updates its value', async () => {

@@ -165,6 +165,108 @@ class PostgresChatRepository:
             )
             return (result.rowcount or 0) > 0
 
+    # ── Channel-user / principal -> session mappings (migration e5c1a9d3b7f2) ──
+
+    async def resolve_channel_session(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        new_session_id: str,
+        title: str,
+    ) -> str:
+        """Return the durable session id for a channel user, creating it on first contact.
+
+        One transaction: look up the mapping; if absent, insert a new
+        ``chat_sessions`` row and claim the mapping with ``INSERT ... ON CONFLICT
+        DO NOTHING``. A replica that loses the race (the unique key blocks until
+        the winner commits, then does nothing) deletes its own just-inserted
+        session and re-selects the winner's — so racing replicas converge on ONE
+        session and leave no orphan. DB errors propagate (fail closed).
+        """
+        key = {"t": tenant_id, "c": channel, "u": channel_user_id}
+        select_sql = text(
+            "SELECT chat_session_id FROM chat_channel_sessions "
+            "WHERE tenant_id = :t AND channel = :c AND channel_user_id = :u"
+        )
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            found = (await s.execute(select_sql, key)).fetchone()
+            if found is not None:
+                return str(found[0])
+            await s.execute(
+                text(
+                    "INSERT INTO chat_sessions (id, tenant_id, title) "
+                    "VALUES (:id, :t, :title)"
+                ),
+                {"id": new_session_id, "t": tenant_id, "title": title},
+            )
+            claimed = (
+                await s.execute(
+                    text(
+                        "INSERT INTO chat_channel_sessions "
+                        "(tenant_id, channel, channel_user_id, chat_session_id) "
+                        "VALUES (:t, :c, :u, :sid) "
+                        "ON CONFLICT (tenant_id, channel, channel_user_id) DO NOTHING "
+                        "RETURNING chat_session_id"
+                    ),
+                    {**key, "sid": new_session_id},
+                )
+            ).fetchone()
+            if claimed is not None:
+                return str(claimed[0])
+            # Lost the race: drop our session, adopt the winner's.
+            await s.execute(
+                text("DELETE FROM chat_sessions WHERE id = :id AND tenant_id = :t"),
+                {"id": new_session_id, "t": tenant_id},
+            )
+            winner = (await s.execute(select_sql, key)).fetchone()
+            if winner is None:
+                raise RuntimeError(
+                    "chat_channel_sessions conflict reported but no mapping row is visible"
+                )
+            return str(winner[0])
+
+    async def get_principal_session(self, tenant_id: str, principal_id: str) -> str | None:
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT chat_session_id FROM chat_principal_sessions "
+                        "WHERE tenant_id = :t AND principal_id = :p"
+                    ),
+                    {"t": tenant_id, "p": principal_id},
+                )
+            ).fetchone()
+            return None if row is None else str(row[0])
+
+    async def claim_principal_session(
+        self, *, tenant_id: str, principal_id: str, session_id: str
+    ) -> str:
+        """Bind a principal to a thread if it has none; return the bound session id."""
+        params = {"t": tenant_id, "p": principal_id, "sid": session_id}
+        async with self._sf() as s, s.begin(), sqlalchemy_rls_context(s, tenant_id):
+            await s.execute(
+                text(
+                    "INSERT INTO chat_principal_sessions "
+                    "(tenant_id, principal_id, chat_session_id) VALUES (:t, :p, :sid) "
+                    "ON CONFLICT (tenant_id, principal_id) DO NOTHING"
+                ),
+                params,
+            )
+            row = (
+                await s.execute(
+                    text(
+                        "SELECT chat_session_id FROM chat_principal_sessions "
+                        "WHERE tenant_id = :t AND principal_id = :p"
+                    ),
+                    params,
+                )
+            ).fetchone()
+            if row is None:
+                raise RuntimeError("chat_principal_sessions row missing after upsert")
+            return str(row[0])
+
     async def save_message(
         self,
         *,

@@ -130,39 +130,6 @@ describe('EvalSuitesPage', () => {
   });
 });
 
-// ─── Gateway: APIKeyManager ───────────────────────────────────────────────────
-
-describe('APIKeyManager', () => {
-  test('renders without crashing with empty keys', async () => {
-    const { APIKeyManager } = await import('../gateway/APIKeyManager');
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('api-keys') || url.includes('keys')) return mockJsonResponse([]);
-      return mockJsonResponse({});
-    });
-
-    renderWithProviders(<APIKeyManager orgId="org-test-1" />);
-    await waitFor(() => expect(document.body.textContent!.length).toBeGreaterThan(0));
-  });
-
-  test('renders existing keys list', async () => {
-    const { APIKeyManager } = await import('../gateway/APIKeyManager');
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
-      const url = String(input);
-      if (url.includes('api-keys') || url.includes('keys'))
-        return mockJsonResponse([
-          { id: 'key-1', name: 'Production Key', prefix: 'av_pro_', created_at: new Date().toISOString() },
-        ]);
-      return mockJsonResponse({});
-    });
-
-    renderWithProviders(<APIKeyManager orgId="org-test-1" />);
-    await waitFor(() => expect(document.body.textContent!.length).toBeGreaterThan(0));
-  });
-});
-
 // ─── Graphify ─────────────────────────────────────────────────────────────────
 
 describe('GraphifyPage', () => {

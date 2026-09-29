@@ -14,15 +14,28 @@ import pytest
 from fastapi import HTTPException
 
 from app.agent.skill_selector import PLATFORM_SKILLS
-from app.api.skills import SkillCreateRequest, create_skill, delete_skill, list_skills
+from app.api.skills import (
+    SkillCreateRequest,
+    SkillTestRequest,
+    SkillUpdateRequest,
+    create_skill,
+    delete_skill,
+    list_skills,
+    run_skill_test,
+    update_skill,
+)
 
 
 class _FakeResult:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, rowcount=0):
         self._rows = rows or []
+        self.rowcount = rowcount
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
 
 def _fake_session(execute_side_effect=None):
@@ -120,14 +133,17 @@ async def test_list_skills_parses_json_string_columns():
 
 
 @pytest.mark.asyncio
-async def test_list_skills_db_error_falls_back_to_platform_only():
+async def test_list_skills_db_error_is_503_not_platform_only():
+    """Was: swallow the error and answer platform skills only — the tenant's
+    custom skills silently vanished during a DB outage."""
     session = _fake_session(RuntimeError("db down"))
 
     def db():
         return session
 
-    result = await list_skills(_request(tenant=_tenant(), db=db))
-    assert result["total"] == len(PLATFORM_SKILLS)
+    with pytest.raises(HTTPException) as exc:
+        await list_skills(_request(tenant=_tenant(), db=db))
+    assert exc.value.status_code == 503
 
 
 # ── create_skill ─────────────────────────────────────────────────────────
@@ -155,14 +171,14 @@ async def test_create_skill_name_conflicts_with_platform_skill():
 
 
 @pytest.mark.asyncio
-async def test_create_skill_no_db_returns_created_without_persisting():
+async def test_create_skill_no_db_is_503_not_fake_created():
+    """Was: answer "created" for a skill that was stored nowhere."""
     body = SkillCreateRequest(
         name="ephemeral-skill", description="d", trigger_hints=["h"], instructions="i"
     )
-    result = await create_skill(body, _request(tenant=_tenant(), db=None))
-    assert result["name"] == "ephemeral-skill"
-    assert result["status"] == "created"
-    assert "id" in result
+    with pytest.raises(HTTPException) as exc:
+        await create_skill(body, _request(tenant=_tenant(), db=None))
+    assert exc.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -232,9 +248,10 @@ async def test_delete_skill_cannot_delete_platform_skill():
 
 
 @pytest.mark.asyncio
-async def test_delete_skill_no_db_still_returns_deleted():
-    result = await delete_skill("custom-sk", _request(tenant=_tenant(), db=None))
-    assert result == {"id": "custom-sk", "status": "deleted"}
+async def test_delete_skill_no_db_is_503_not_fake_deleted():
+    with pytest.raises(HTTPException) as exc:
+        await delete_skill("custom-sk", _request(tenant=_tenant(), db=None))
+    assert exc.value.status_code == 503
 
 
 @pytest.mark.asyncio
@@ -245,6 +262,7 @@ async def test_delete_skill_soft_deletes_in_db():
         sql = str(query)
         if "UPDATE skills" in sql:
             captured["params"] = params
+            return _FakeResult(rowcount=1)
         return _FakeResult()
 
     session = _fake_session(fake_execute)
@@ -258,11 +276,160 @@ async def test_delete_skill_soft_deletes_in_db():
 
 
 @pytest.mark.asyncio
-async def test_delete_skill_db_error_is_swallowed():
+async def test_delete_skill_db_error_is_503_not_swallowed():
     session = _fake_session(RuntimeError("db down"))
 
     def db():
         return session
 
-    result = await delete_skill("custom-sk", _request(tenant=_tenant(), db=db))
-    assert result == {"id": "custom-sk", "status": "deleted"}
+    with pytest.raises(HTTPException) as exc:
+        await delete_skill("custom-sk", _request(tenant=_tenant(), db=db))
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_delete_unknown_skill_is_404():
+    session = _fake_session(lambda *a, **k: _FakeResult(rowcount=0))
+
+    def db():
+        return session
+
+    with pytest.raises(HTTPException) as exc:
+        await delete_skill("nope", _request(tenant=_tenant(), db=db))
+    assert exc.value.status_code == 404
+
+
+# ── update_skill (PUT /skills/{id}) ──────────────────────────────────────
+
+
+_ROW = ("sk1", "renamed", "d2", ["h"], "new instr", ["t"], 100, "tenant")
+
+
+@pytest.mark.asyncio
+async def test_update_skill_updates_only_sent_fields_under_rls():
+    captured = {}
+
+    async def fake_execute(query, params=None):
+        sql = str(query)
+        if "UPDATE skills" in sql:
+            captured["sql"], captured["params"] = sql, params
+            return _FakeResult([_ROW])
+        return _FakeResult()
+
+    session = _fake_session(fake_execute)
+    body = SkillUpdateRequest(name="renamed", instructions="new instr")
+    result = await update_skill("sk1", body, _request(tenant=_tenant("t1"), db=lambda: session))
+    assert result["id"] == "sk1"
+    assert result["name"] == "renamed"
+    assert result["is_platform"] is False
+    set_clause = captured["sql"].split("WHERE")[0]
+    assert "name = :name" in set_clause
+    assert "instructions = :instructions" in set_clause
+    assert "description" not in set_clause
+    assert "tenant_id = :tid" in captured["sql"]
+    assert captured["params"]["tid"] == "t1"
+    # The tenant GUC was set before the UPDATE.
+    calls = [str(c.args[0]) for c in session.execute.call_args_list]
+    assert any("set_config('app.tenant_id'" in c for c in calls[: calls.index(captured["sql"])])
+
+
+@pytest.mark.asyncio
+async def test_update_platform_skill_is_403_and_unknown_is_404():
+    with pytest.raises(HTTPException) as exc:
+        await update_skill(
+            PLATFORM_SKILLS[0]["id"], SkillUpdateRequest(name="x"), _request(tenant=_tenant())
+        )
+    assert exc.value.status_code == 403
+
+    session = _fake_session(lambda *a, **k: _FakeResult())
+    with pytest.raises(HTTPException) as exc:
+        await update_skill(
+            "nope", SkillUpdateRequest(name="x"), _request(tenant=_tenant(), db=lambda: session)
+        )
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_skill_no_db_or_db_error_is_503():
+    with pytest.raises(HTTPException) as exc:
+        await update_skill("sk1", SkillUpdateRequest(name="x"), _request(tenant=_tenant()))
+    assert exc.value.status_code == 503
+    session = _fake_session(RuntimeError("db down"))
+    with pytest.raises(HTTPException) as exc:
+        await update_skill(
+            "sk1", SkillUpdateRequest(name="x"), _request(tenant=_tenant(), db=lambda: session)
+        )
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_update_skill_rejects_platform_name_and_empty_body():
+    with pytest.raises(HTTPException) as exc:
+        await update_skill(
+            "sk1",
+            SkillUpdateRequest(name=PLATFORM_SKILLS[0]["name"]),
+            _request(tenant=_tenant(), db=lambda: _fake_session()),
+        )
+    assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as exc:
+        await update_skill(
+            "sk1", SkillUpdateRequest(), _request(tenant=_tenant(), db=lambda: _fake_session())
+        )
+    assert exc.value.status_code == 422
+
+
+# ── test_skill (POST /skills/{id}/test) ──────────────────────────────────
+
+
+class _Provider:
+    def __init__(self, fail: bool = False):
+        self.fail = fail
+        self.requests = []
+
+    async def complete(self, req):
+        self.requests.append(req)
+        if self.fail:
+            raise RuntimeError("provider down")
+        return SimpleNamespace(content="summary!", model="m-1")
+
+
+def _test_request(provider, db=None):
+    request = _request(tenant=_tenant(), db=db)
+    request.app.state.llm_provider = provider
+    return request
+
+
+@pytest.mark.asyncio
+async def test_skill_test_runs_platform_skill_through_the_llm():
+    provider = _Provider()
+    skill = PLATFORM_SKILLS[0]
+    result = await run_skill_test(skill["id"], SkillTestRequest(input="long text"), _test_request(provider))
+    assert result["output"] == "summary!"
+    assert result["model"] == "m-1"
+    prompt = provider.requests[0].messages[-1].content
+    assert skill["instructions"][:40] in str(provider.requests[0].messages)
+    assert "long text" in prompt
+
+
+@pytest.mark.asyncio
+async def test_skill_test_without_llm_is_503_not_canned_output():
+    with pytest.raises(HTTPException) as exc:
+        await run_skill_test(PLATFORM_SKILLS[0]["id"], SkillTestRequest(input="x"), _test_request(None))
+    assert exc.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_skill_test_provider_failure_is_502():
+    with pytest.raises(HTTPException) as exc:
+        await run_skill_test(
+            PLATFORM_SKILLS[0]["id"], SkillTestRequest(input="x"), _test_request(_Provider(True))
+        )
+    assert exc.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_skill_test_unknown_custom_skill_is_404():
+    session = _fake_session(lambda *a, **k: _FakeResult())
+    with pytest.raises(HTTPException) as exc:
+        await run_skill_test("nope", SkillTestRequest(input="x"), _test_request(_Provider(), lambda: session))
+    assert exc.value.status_code == 404

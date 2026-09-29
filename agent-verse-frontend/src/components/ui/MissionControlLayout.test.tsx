@@ -134,4 +134,23 @@ describe('MissionControlLayout', () => {
     // itself resolves; verify the layout still renders without throwing.
     await waitFor(() => expect(screen.getByText(/Operational|Degraded/)).toBeInTheDocument());
   });
+
+  test('a failed /goals request is shown as unavailable, not "0 active"', async () => {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path.startsWith('/goals')) return Promise.reject(new Error('503'));
+      return Promise.resolve(responseFor(path));
+    });
+    renderLayout();
+    expect(await screen.findByText('goals unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('active')).not.toBeInTheDocument();
+  });
+
+  test('a failed /ai-ops/alerts request is flagged, not read as "no critical alerts"', async () => {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path.startsWith('/ai-ops/alerts')) return Promise.reject(new Error('503'));
+      return Promise.resolve(responseFor(path));
+    });
+    renderLayout();
+    expect(await screen.findByText('Alerts unavailable')).toBeInTheDocument();
+  });
 });

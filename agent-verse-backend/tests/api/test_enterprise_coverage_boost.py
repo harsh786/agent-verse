@@ -264,35 +264,22 @@ def test_publish_template_version() -> None:
 
 
 # ---------------------------------------------------------------------------
-# list_installs — agent_store fallback branches
+# list_installs — reads install records, never guesses from the agent store
 # ---------------------------------------------------------------------------
 
 
-def test_list_installs_agent_store_awaitable_list() -> None:
-    """agent_store.list() returns an awaitable (coroutine) list of agents."""
-
-    async def _agents_coro() -> list[dict[str, Any]]:
-        return [{"marketplace_template_id": "tmpl-1"}, {"marketplace_template_id": "tmpl-2"}]
-
+def test_list_installs_ignores_agent_store_guesses() -> None:
+    """Installs come from the marketplace's install records only. The endpoint
+    used to fall back to scanning agents for a ``marketplace_template_id``
+    attribute no agent carries, masking that it never read the installs."""
     agent_store = MagicMock()
-    agent_store.list = MagicMock(return_value=_agents_coro())
-    marketplace = MagicMock()
-    app = _make_app(marketplace=marketplace, agent_store=agent_store)
-    client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/marketplace/installs", headers=_headers())
-    assert resp.status_code == 200
-    assert set(resp.json()["installed_ids"]) == {"tmpl-1", "tmpl-2"}
-
-
-def test_list_installs_agent_store_exception_falls_back_empty() -> None:
-    agent_store = MagicMock()
-    agent_store.list = MagicMock(side_effect=RuntimeError("boom"))
-    marketplace = MagicMock()
-    app = _make_app(marketplace=marketplace, agent_store=agent_store)
+    agent_store.list = MagicMock(return_value=[{"marketplace_template_id": "tmpl-1"}])
+    app = _make_app(marketplace=MagicMock(), agent_store=agent_store)
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.get("/marketplace/installs", headers=_headers())
     assert resp.status_code == 200
     assert resp.json()["installed_ids"] == []
+    agent_store.list.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

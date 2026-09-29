@@ -534,9 +534,40 @@ async def test_graph_version_history_empty(client: AsyncClient, mock_svc: MagicM
 
 # ── SUPP-H: Digital Twin ─────────────────────────────────────────────────────
 
+def _wire_twin_data(
+    svc: MagicMock,
+    *,
+    teams: list[Any] | None = None,
+    tasks: list[Any] | None = None,
+    missions: list[Any] | None = None,
+) -> None:
+    """Back the twin's reads (teams / tasks / missions / capabilities)."""
+    all_tasks = tasks or []
+    all_missions = missions or []
+
+    async def _list_tasks(org_id: str, *, status: str | None = None,
+                          limit: int = 100, offset: int = 0, **_kw: Any) -> list[Any]:
+        rows = [t for t in all_tasks if status is None or t.status == status]
+        return rows[offset:offset + limit]
+
+    async def _list_missions(org_id: str, *, status: str | None = None,
+                             limit: int = 50, offset: int = 0, **_kw: Any) -> list[Any]:
+        rows = [m for m in all_missions if status is None or m.status == status]
+        return rows[offset:offset + limit]
+
+    svc.list_teams = AsyncMock(return_value=teams or [])
+    svc.list_tasks = AsyncMock(side_effect=_list_tasks)
+    svc.list_missions = AsyncMock(side_effect=_list_missions)
+    svc.list_capabilities = AsyncMock(return_value=[])
+
+
 @pytest.mark.anyio
-async def test_twin_simulate_mission(client: AsyncClient) -> None:
-    """POST /v1/org/{id}/twin/simulate returns duration and cost estimates."""
+async def test_twin_simulate_mission_without_history_returns_honest_nulls(
+    client: AsyncClient, mock_svc: MagicMock
+) -> None:
+    """POST /v1/org/{id}/twin/simulate: no completed-mission history → null
+    estimates with a reason, never a priority-lookup number."""
+    _wire_twin_data(mock_svc)
     resp = await client.post(f"/v1/org/{ORG_ID}/twin/simulate", json={
         "title": "Market analysis Q3",
         "priority": "high",
@@ -544,20 +575,75 @@ async def test_twin_simulate_mission(client: AsyncClient) -> None:
     })
     assert resp.status_code == 200
     data = resp.json()
-    assert "estimated_duration_h" in data
-    assert "estimated_cost_usd" in data
-    assert "feasible" in data
-    assert "confidence" in data
+    assert data["estimated_duration_h"] is None
+    assert data["estimated_cost_usd"] is None
+    assert data["confidence"] is None
+    assert data["sample_size"] == 0
+    assert data["estimate_reason"]
+    assert data["feasible"] is False  # no staffed agents in this org
+    assert data["resource_usage"] == {
+        "staffed_agents": 0, "busy_agents": 0, "available_agents": 0,
+    }
 
 
 @pytest.mark.anyio
-async def test_twin_capacity_plan(client: AsyncClient) -> None:
-    """GET /v1/org/{id}/twin/capacity returns utilisation data."""
+async def test_twin_capacity_plan_is_computed_from_real_staffing(
+    client: AsyncClient, mock_svc: MagicMock
+) -> None:
+    """GET /v1/org/{id}/twin/capacity derives utilisation from staffed agents
+    and their in-flight tasks — not from the department name."""
+    from types import SimpleNamespace
+
+    team_id = uuid.uuid4()
+    _wire_twin_data(
+        mock_svc,
+        teams=[SimpleNamespace(id=team_id, dept_id=uuid.UUID(DEPT_ID),
+                               member_agent_ids=["a1", "a2"], manager_agent_id=None)],
+        tasks=[SimpleNamespace(status="running", assigned_team_id=team_id,
+                               assigned_agent_ids=["a1"], owner_agent_id=None)],
+        missions=[SimpleNamespace(status="queued")],
+    )
     resp = await client.get(f"/v1/org/{ORG_ID}/twin/capacity")
     assert resp.status_code == 200
     data = resp.json()
-    assert "current_utilisation" in data
+    assert data["current_utilisation"] == {"Engineering": 0.5}
+    (dept,) = data["departments"]
+    assert dept["dept_id"] == DEPT_ID
+    assert dept["agent_count"] == 2
+    assert dept["busy_agent_count"] == 1
+    assert dept["utilisation"] == 0.5
+    assert dept["reason"] is None
+    assert data["queued_missions"] == 1
+    assert data["estimated_clear_h"] is None
+    assert data["estimated_clear_reason"]
     assert "recommendations" in data
+
+
+@pytest.mark.anyio
+async def test_twin_capacity_unstaffed_department_is_null(
+    client: AsyncClient, mock_svc: MagicMock
+) -> None:
+    """A department with no staffed agents reports null + reason, not a number."""
+    _wire_twin_data(mock_svc)
+    resp = await client.get(f"/v1/org/{ORG_ID}/twin/capacity")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["current_utilisation"] == {"Engineering": None}
+    assert data["departments"][0]["utilisation"] is None
+    assert data["departments"][0]["reason"]
+    assert data["overloaded_depts"] == [] and data["underutilised_depts"] == []
+
+
+@pytest.mark.anyio
+async def test_twin_what_if_returns_501(client: AsyncClient) -> None:
+    """What-if simulation is not implemented: 501, never a canned projection."""
+    resp = await client.post(
+        f"/v1/org/{ORG_ID}/twin/what-if", json={"scenario": {"add_agents": 3}}
+    )
+    assert resp.status_code == 501
+    body = resp.json()
+    assert "projected_improvement" not in body
+    assert body["detail"]["status"] == 501
 
 
 # ── QA10: Emergency Stop ─────────────────────────────────────────────────────

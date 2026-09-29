@@ -20,7 +20,8 @@ import {
   Plus, Settings, Loader2, ExternalLink,
   Key, Shield, Clock, Zap,
 } from 'lucide-react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
+import { useParams } from 'react-router-dom';
 import { apiRequest } from '@/lib/api/client';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -53,14 +54,15 @@ const apiClient = {
   delete: <T,>(path: string) => apiRequest<T>('DELETE', path),
 };
 
-function useGatewayConfig() {
+function useGatewayConfig(orgId: string | undefined) {
   return useQuery<GatewayConfig>({
-    queryKey: ['gateway-config'],
-    // No fabricated fallback: the backend has no /v1/gateway/config (per-org
-    // gateway config is NOT IMPLEMENTED server-side), and the old catch
-    // rendered an invented config — "1 channel active", a 100/hour limit and
-    // 2FA rules — as if the server had returned it.
-    queryFn: () => apiClient.get<GatewayConfig>('/v1/gateway/config'),
+    queryKey: ['gateway-config', orgId],
+    // The real route is per org (GET /v1/gateway/{org_id}/config); it answers
+    // an honest 501 today (channels are env-configured). No fabricated
+    // fallback: the old catch rendered an invented config — "1 channel
+    // active", a 100/hour limit and 2FA rules — as if the server had sent it.
+    queryFn: () => apiClient.get<GatewayConfig>(`/v1/gateway/${orgId}/config`),
+    enabled: !!orgId,
     retry: false,
     staleTime: 60_000,
   });
@@ -205,14 +207,11 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
   const reduce  = useReducedMotion();
   const channel = STATIC_CHANNELS.find(c => c.id === channelId);
   const Icon    = CHANNEL_ICONS[channelId] ?? Link2;
-  const [token, setToken] = useState('');
-  const qc = useQueryClient();
-  const connect = useMutation({
-    mutationFn: (t: string) =>
-      apiClient.post(`/v1/gateway/channels/${channelId}/connect`, { token: t }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['gateway-config'] }); onClose(); },
-  });
 
+  // There is no connect endpoint: channels are configured through server
+  // environment variables (see app/gateway/router.py). This modal used to
+  // POST bot/OAuth tokens to a non-existent /v1/gateway/channels/{id}/connect,
+  // fail silently and promise the token was "encrypted at rest".
   return (
     <div role="dialog" aria-modal="true" aria-labelledby={titleId}
       className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -221,7 +220,7 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
       <div
         className="jarvis-pop-in relative bg-[#0F1117] border border-[#2D3748] rounded-2xl w-full max-w-md shadow-2xl p-6"
       >
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-4">
           <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
             <Icon className="h-5 w-5 text-blue-400" aria-hidden />
           </div>
@@ -230,47 +229,17 @@ function ConnectModal({ channelId, onClose }: { channelId: string; onClose: () =
             <p className="text-[12px] text-[#64748B]">{channel?.description}</p>
           </div>
         </div>
-
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="channel-token" className="block text-[12px] font-medium text-[#94A3B8] mb-1.5">
-              {channelId === 'telegram' ? 'Bot Token' :
-               channelId === 'slack' ? 'OAuth Token' : 'Access Token / API Key'}
-            </label>
-            <input
-              id="channel-token"
-              type="password"
-              value={token}
-              onChange={e => setToken(e.target.value)}
-              placeholder="Enter credentials..."
-              aria-required="true"
-              className="w-full px-3 py-2 rounded-lg bg-[#1A1F2E] border border-[#2D3748] text-[14px] text-[#F1F5F9] placeholder:text-[#475569] focus:outline-none focus:ring-2 focus:ring-blue-500/60"
-            />
-            <p className="mt-1.5 text-[11px] text-[#475569]">
-              Token is encrypted at rest and never logged.
-            </p>
-          </div>
-
-          <div className="flex gap-3">
-            <motion.button
-              type="button"
-              onClick={() => connect.mutate(token)}
-              disabled={!token.trim() || connect.isPending}
-              whileTap={reduce ? {} : { scale: 0.97 }}
-              transition={SPRING_FAST}
-              style={{ touchAction: 'manipulation' }}
-              className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 min-h-[44px]"
-            >
-              {connect.isPending ? <Loader2 className="h-4 w-4 animate-spin mx-auto" aria-label="Connecting" /> : 'Connect'}
-            </motion.button>
-            <motion.button
-              type="button" onClick={onClose}
-              whileTap={reduce ? {} : { scale: 0.97 }} transition={SPRING_FAST}
-              style={{ touchAction: 'manipulation' }}
-              className="px-4 py-2.5 rounded-xl border border-[#2D3748] text-[#94A3B8] text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 min-h-[44px]"
-            >Cancel</motion.button>
-          </div>
-        </div>
+        <p className="text-[13px] text-[#94A3B8] mb-5">
+          Connecting channels from the UI is not available. {channel?.name ?? 'This channel'} is
+          configured by the server operator through environment variables; no credentials are
+          accepted or stored here.
+        </p>
+        <motion.button
+          type="button" onClick={onClose}
+          whileTap={reduce ? {} : { scale: 0.97 }} transition={SPRING_FAST}
+          style={{ touchAction: 'manipulation' }}
+          className="w-full px-4 py-2.5 rounded-xl border border-[#2D3748] text-[#94A3B8] text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 min-h-[44px]"
+        >Close</motion.button>
       </div>
     </div>
   );
@@ -320,8 +289,12 @@ interface GatewaySettingsPageProps {
   orgId?: string;
 }
 
-export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
-  const { data: config, isError: configError } = useGatewayConfig();
+export function GatewaySettingsPage({ orgId: orgIdProp }: GatewaySettingsPageProps) {
+  // Routed at org/:orgId/gateway without a prop — read the route param, or the
+  // org emergency-stop banner never rendered.
+  const { orgId: routeOrgId } = useParams<{ orgId?: string }>();
+  const orgId = orgIdProp ?? routeOrgId;
+  const { data: config, isError: configError, error: configErr } = useGatewayConfig(orgId);
   // Without a server config the catalogue is shown for reference only; no
   // channel is claimed as connected.
   const channels = config?.channels ?? STATIC_CHANNELS.map(c => ({ ...c, status: 'disconnected' as const }));
@@ -343,9 +316,10 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
             {connectedCount} channel{connectedCount !== 1 ? 's' : ''} active
             · Limit: {config.max_commands_per_hour} commands/hour
           </p>
-        ) : configError ? (
+        ) : configError || !orgId ? (
           <p role="alert" className="text-[14px] text-amber-400 mt-1">
             Gateway configuration is unavailable from the server; channel status is unknown.
+            {configErr instanceof Error && configErr.message ? ` ${configErr.message}` : ''}
           </p>
         ) : null}
       </div>
@@ -380,7 +354,9 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
                 <p className="text-[#64748B] text-[12px]">Maximum commands per hour across all channels</p>
               </div>
             </div>
-            <span className="font-mono text-[#94A3B8] tabular-nums">{config?.max_commands_per_hour ?? 100}/h</span>
+            <span className="font-mono text-[#94A3B8] tabular-nums">
+              {config ? `${config.max_commands_per_hour}/h` : 'Unknown'}
+            </span>
           </div>
 
           <div className="flex items-start gap-2.5">
@@ -388,9 +364,9 @@ export function GatewaySettingsPage({ orgId }: GatewaySettingsPageProps) {
             <div>
               <p className="font-medium text-[#F1F5F9]">Require 2FA for</p>
               <div className="flex flex-wrap gap-1.5 mt-1.5">
-                {(config?.require_2fa_for ?? ['approve', 'change-autonomy', 'delete']).map(action => (
+                {config ? config.require_2fa_for.map(action => (
                   <span key={action} className="px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 text-[11px] font-medium">{action}</span>
-                ))}
+                )) : <span className="text-[12px] text-[#64748B]">Unknown</span>}
               </div>
             </div>
           </div>

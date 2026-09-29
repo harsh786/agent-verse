@@ -15,12 +15,11 @@ import {
   Database, ExternalLink, Eye, FileText, Globe, Link, Loader2, MessageSquare, Plus,
   RefreshCw, Search, Sparkles, Trash2, Upload, X, Zap, XCircle,
 } from 'lucide-react';
-import { getAuthHeader } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import { ConfirmModal } from '@/components/ui/ConfirmModal';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Pagination } from '@/components/ui/Pagination';
-import { apiFetch, API_BASE } from '@/lib/api/client';
+import { apiFetch } from '@/lib/api/client';
 
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -299,8 +298,6 @@ function AskAITab() {
   const [question, setQuestion] = useState('');
   const [history, setHistory] = useState<Array<{ q: string; a: RagAnswer }>>([]);
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
-  const [streamingAnswer, setStreamingAnswer] = useState('');
-  const [isStreaming, setIsStreaming] = useState(false);
   const answerRef = useRef<HTMLDivElement>(null);
 
   const { data: collections = [] } = useQuery<Collection[]>({
@@ -321,57 +318,12 @@ function AskAITab() {
     onError: (e) => toast({ kind: 'error', message: String(e) }),
   });
 
-  const handleAsk = async () => {
+  // Always the real RAG endpoint (POST /knowledge/chat, scoped by
+  // collection_ids). There is no /knowledge/collections/{id}/query/stream: the
+  // single-collection "streaming" path always 404'd and fell back here.
+  const handleAsk = () => {
     if (!question.trim()) return;
-    const collectionId = selectedCollections.length === 1 ? selectedCollections[0] : undefined;
-    if (collectionId) {
-      const currentQ = question;
-      setStreamingAnswer('');
-      setIsStreaming(true);
-      try {
-        const response = await fetch(`${API_BASE}/knowledge/collections/${collectionId}/query/stream`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...getAuthHeader(),
-          },
-          body: JSON.stringify({ query: currentQ, top_k: 5 }),
-        });
-        if (response.ok && response.body) {
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let fullText = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            chunk.split('\n').forEach((line) => {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6)) as Record<string, unknown>;
-                  const token = ((data.token ?? data.text) as string | undefined) ?? '';
-                  if (token) { fullText += token; setStreamingAnswer(fullText); }
-                } catch { /* ignore parse errors */ }
-              }
-            });
-          }
-          setHistory((h) => [
-            { q: currentQ, a: { question: currentQ, answer: fullText, citations: [], collections_searched: 1, chunks_retrieved: 0 } },
-            ...h.slice(0, 4),
-          ]);
-          setQuestion('');
-          setTimeout(() => answerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 100);
-        } else {
-          askMutation.mutate(question);
-        }
-      } catch {
-        askMutation.mutate(question);
-      } finally {
-        setIsStreaming(false);
-      }
-    } else {
-      askMutation.mutate(question);
-    }
+    askMutation.mutate(question);
   };
 
   const exampleQuestions = [
@@ -391,7 +343,7 @@ function AskAITab() {
           <span className="ml-auto text-xs text-muted-foreground bg-violet-50 text-violet-600 px-2 py-0.5 rounded">RAG-powered</span>
         </div>
         <textarea data-testid="ask-input" value={question} onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey && question.trim()) void handleAsk(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && e.metaKey && question.trim()) handleAsk(); }}
           rows={3} placeholder="Ask anything about your knowledge base…"
           className="w-full px-3 py-2 border border-border rounded-md text-sm bg-background resize-none" />
         {collections.length > 0 && (
@@ -414,19 +366,12 @@ function AskAITab() {
             <button key={q} onClick={() => setQuestion(q)} className="text-xs px-2 py-1 bg-muted rounded hover:bg-muted/80 truncate max-w-[200px]">{q}</button>
           ))}
         </div>
-        <button data-testid="ask-btn" onClick={() => void handleAsk()} disabled={!question.trim() || askMutation.isPending || isStreaming}
+        <button data-testid="ask-btn" onClick={() => handleAsk()} disabled={!question.trim() || askMutation.isPending}
           className="flex items-center gap-2 px-4 py-2 bg-violet-600 text-white rounded-md text-sm disabled:opacity-50">
-          {askMutation.isPending || isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />}
-          {askMutation.isPending ? 'Searching & synthesizing…' : isStreaming ? 'Streaming answer…' : 'Ask (⌘+Enter)'}
+          {askMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <MessageSquare className="h-4 w-4" />}
+          {askMutation.isPending ? 'Searching & synthesizing…' : 'Ask (⌘+Enter)'}
         </button>
       </div>
-
-      {/* Streaming answer */}
-      {isStreaming && (
-        <div className="p-4 bg-muted/30 rounded-lg border border-border">
-          <p className="text-sm leading-relaxed whitespace-pre-wrap">{streamingAnswer}<span className="animate-pulse">▊</span></p>
-        </div>
-      )}
 
       {/* Current answer */}
       {history.length > 0 && (

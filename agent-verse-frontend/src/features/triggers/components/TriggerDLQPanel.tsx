@@ -3,7 +3,7 @@ import type { TriggerDLQEntry } from '../types';
 import { useTriggerDLQ, useRetryDLQEntry } from '../hooks';
 
 export function TriggerDLQPanel() {
-  const { data: entries, isLoading, refetch } = useTriggerDLQ();
+  const { data: entries, isLoading, isError, error, refetch } = useTriggerDLQ();
   const retry = useRetryDLQEntry();
 
   return (
@@ -30,7 +30,20 @@ export function TriggerDLQPanel() {
         </div>
       )}
 
-      {!isLoading && !entries?.length && (
+      {isError && (
+        <div role="alert" className="rounded-xl border border-destructive/30 p-4 text-sm text-destructive">
+          The dead letter queue could not be loaded
+          {error instanceof Error && error.message ? `: ${error.message}` : ''}.
+        </div>
+      )}
+
+      {retry.isError && (
+        <div role="alert" className="rounded-xl border border-destructive/30 p-3 text-xs text-destructive">
+          Retry failed{retry.error instanceof Error && retry.error.message ? `: ${retry.error.message}` : ''}.
+        </div>
+      )}
+
+      {!isLoading && !isError && !entries?.length && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <AlertCircle className="h-10 w-10 mb-3 opacity-20" />
           <p className="text-sm">Dead Letter Queue is empty. ✓</p>

@@ -15,7 +15,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { Network, Zap, CheckCircle2, AlertCircle, X, GitBranch, Brain, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getAuthHeader } from '@/stores/auth';
-import { apiFetch } from '@/lib/api/client';
+import { API_BASE, apiFetch } from '@/lib/api/client';
 
 export type GraphifyPhase =
   | 'idle' | 'queued' | 'extracting' | 'building'
@@ -75,10 +75,11 @@ export function GraphifyProgress({ orgId, onClose, onComplete, onViewGraph }: Gr
     setStats({ nodes: 0, edges: 0, communities: 0, discoveries: 0 });
     setProgress(0);
     try {
-      const resp = await fetch(`/api/v1/org/${orgId}/graphify`, {
+      // The backend route is /v1/org/{org_id}/graphify on API_BASE. The old
+      // relative /api/v1/... only resolved behind the Vite dev proxy.
+      const resp = await fetch(`${API_BASE}/v1/org/${orgId}/graphify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...getAuthHeader() },
-        credentials: 'include',
       });
       if (!resp.ok) throw new Error(`Failed to start: ${resp.status}`);
       const data = await resp.json() as { job_id: string };
@@ -159,8 +160,8 @@ export function GraphifyProgress({ orgId, onClose, onComplete, onViewGraph }: Gr
         /* fall through — connect and let any auth error surface on the stream */
       }
       if (cancelled) return;
-      const url = `/api/v1/org/${orgId}/graphify/${jobId}/stream?token=${encodeURIComponent(token)}`;
-      es = new EventSource(url, { withCredentials: true });
+      const url = `${API_BASE}/v1/org/${orgId}/graphify/${jobId}/stream?token=${encodeURIComponent(token)}`;
+      es = new EventSource(url);
       esRef.current = es;
       es.onmessage = onMessage;
       es.onerror = () => { setPhase('error'); setError('Stream disconnected'); esRef.current?.close(); };

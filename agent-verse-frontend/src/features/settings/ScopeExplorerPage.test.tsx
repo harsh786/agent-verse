@@ -78,6 +78,28 @@ function mockFetch(
 }
 
 describe('ScopeExplorerPage', () => {
+  test('does not call the non-existent /auth/keys/activity and does not claim "Never"', async () => {
+    const spy = mockFetch();
+    renderPage();
+    expect(await screen.findByText('Not tracked')).toBeInTheDocument();
+    expect(screen.queryByText('Never')).not.toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/auth/keys/activity'))).toBe(false);
+  });
+
+  test('a failed key list shows "—" for Active Keys, not 0', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/tenants/me/keys')) return new Response('{}', { status: 503 });
+      return new Response(JSON.stringify({ tenant_id: 't', name: 'ACME', plan: 'professional' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    renderPage();
+    const label = await screen.findByText('Active Keys');
+    await waitFor(() => expect(label.previousElementSibling).toHaveTextContent('—'));
+  });
+
   beforeEach(() => {
     useAuthStore.setState({
       apiKey: 'test-key', tenantId: 'tenant-1', plan: 'professional', isAuthenticated: true,
@@ -219,12 +241,6 @@ describe('ScopeExplorerPage', () => {
     mockFetch('professional', { keys: [] });
     renderPage();
     await waitFor(() => expect(screen.getByText(/no api keys yet/i)).toBeInTheDocument());
-  });
-
-  test('shows the last API call time from activity data', async () => {
-    mockFetch('professional', { activity: { last_used: new Date(Date.now() - 120_000).toISOString() } });
-    renderPage();
-    await waitFor(() => expect(screen.getByText(/m ago/i)).toBeInTheDocument());
   });
 
   test('disables the create-key submit button until a name is entered', async () => {

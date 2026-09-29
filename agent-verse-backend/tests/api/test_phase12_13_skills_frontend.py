@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.skills_runtime import router as skills_router
+from app.providers.fake import FakeProvider
 from app.tenancy.context import PlanTier, TenantContext
 from app.tenancy.middleware import SecurityHeadersMiddleware, TenantMiddleware
 
@@ -14,8 +15,10 @@ _HEADERS = {"X-API-Key": _KEY}
 _HEADERS_B = {"X-API-Key": _KEY_B}
 
 
-def _make_app():
+def _make_app(provider=None):
     app = FastAPI()
+    if provider is not None:
+        app.state._app_provider = provider
 
     async def _resolve(key):
         if key == _KEY:
@@ -88,7 +91,7 @@ def test_create_tenant_skill():
 
 
 def test_execute_skill():
-    client = TestClient(_make_app())
+    client = TestClient(_make_app(FakeProvider(responses=["looks fine"])))
     resp = client.post("/skills-runtime/code_review/execute", json={
         "input_context": "def add(a, b): return a+b",
     }, headers=_HEADERS)
@@ -100,7 +103,7 @@ def test_execute_skill():
 
 
 def test_skill_execution_history():
-    client = TestClient(_make_app())
+    client = TestClient(_make_app(FakeProvider(responses=["ok"])))
     client.post("/skills-runtime/headroom/execute", json={"input_context": "Test input"}, headers=_HEADERS)
 
     resp = client.get("/skills-runtime/headroom/executions", headers=_HEADERS)

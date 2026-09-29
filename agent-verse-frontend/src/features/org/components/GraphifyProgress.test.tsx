@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import React, { type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
+import { API_BASE } from '@/lib/api/client';
 import { GraphifyProgress } from './GraphifyProgress';
 
 vi.mock('framer-motion', async (importOriginal) => {
@@ -211,6 +212,26 @@ describe('GraphifyProgress', () => {
       act(() => { es.onerror?.(new Event('error')); });
       expect(await screen.findByText('Stream disconnected')).toBeInTheDocument();
       expect(es.close).toHaveBeenCalled();
+    });
+
+    test('talks to the backend origin, not the /api/v1 dev-proxy prefix', async () => {
+      // Regression: /api/v1/org/... only worked behind the Vite dev proxy
+      // (which rewrites /api/v1 -> /v1); a production build hit the frontend.
+      const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+        const url = String(input);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (url.includes('/graphify') && method === 'POST')
+          return new Response(JSON.stringify({ job_id: 'job-1' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ token: 't' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      });
+      renderProgress();
+      fireEvent.click(screen.getByRole('button', { name: /Start building knowledge graph/i }));
+      await waitFor(() => expect(mockEventSourceInstances.length).toBe(1));
+      const post = spy.mock.calls.find(([, i]) => (i as RequestInit)?.method === 'POST');
+      expect(String(post?.[0])).toBe(`${API_BASE}/v1/org/o1/graphify`);
+      expect(mockEventSourceInstances[0].url.startsWith(`${API_BASE}/v1/org/o1/graphify/job-1/stream?`)).toBe(true);
+      expect(spy.mock.calls.some(([u]) => String(u).includes('/api/v1/'))).toBe(false);
+      spy.mockRestore();
     });
 
     test('connects with an empty stream token when the token fetch fails', async () => {

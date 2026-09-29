@@ -4,12 +4,21 @@ stream), structured metrics, time-series, and the per-goal trace endpoint.
 Follows the project convention (see ``tests/triggers/test_api.py``) of a bare
 FastAPI app with the router mounted and a middleware injecting
 ``request.state.tenant``. DB-backed branches are covered with a fake async
-session (no live Postgres); the SSE generator is driven directly as an async
-function so it terminates deterministically instead of looping forever.
+session (no live Postgres) that records the statements it is handed; the SSE
+generator is driven directly so it terminates deterministically.
+
+Contract (fail closed — never fabricate):
+* metrics / timeseries need the Postgres backend: 501 in in-memory mode, 503 when
+  the database errors (the old code swallowed errors into zeros and queried
+  columns that do not exist);
+* logs come from the tenant log store fed by the structlog pipeline; a store
+  failure is a 503, not an empty list;
+* goal traces are served only where the process-local timeline is authoritative.
 """
 
 from __future__ import annotations
 
+import datetime as _dt
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -17,6 +26,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy.sql.elements import TextClause
 
 from app.api import observability as obs
 
@@ -25,19 +35,28 @@ from app.api import observability as obs
 # parametrized tests below, which pytest-asyncio warns about (and
 # filterwarnings = ["error"] turns into a failure).
 
+_TENANT = "3f1c2a9e-5b7d-4c8e-9f0a-1b2c3d4e5f60"
+
 
 # ── App / client fixtures ──────────────────────────────────────────────────────
 
 
-def _make_app(*, with_tenant: bool = True, goal_service: Any = None) -> FastAPI:
+def _make_app(
+    *,
+    with_tenant: bool = True,
+    goal_service: Any = None,
+    db: Any = None,
+    tenant_id: str = _TENANT,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(obs.router)
     app.state.goal_service = goal_service
+    app.state.db_session_factory = db
 
     @app.middleware("http")
     async def inject_tenant(request, call_next):  # type: ignore[no-untyped-def]
         if with_tenant:
-            request.state.tenant = SimpleNamespace(tenant_id="tenant-1", plan="free", api_key="k")
+            request.state.tenant = SimpleNamespace(tenant_id=tenant_id, plan="free", api_key="k")
         return await call_next(request)
 
     return app
@@ -46,53 +65,36 @@ def _make_app(*, with_tenant: bool = True, goal_service: Any = None) -> FastAPI:
 @pytest.fixture(autouse=True)
 def _reset_log_store() -> None:
     """The router uses a module-level singleton; keep tests isolated."""
-    obs.log_store._redis = None
-    obs.log_store._memory_buffer = {}
+    obs.log_store.reset()
     yield
-    obs.log_store._redis = None
-    obs.log_store._memory_buffer = {}
+    obs.log_store.reset()
 
 
 # ── _require_tenant / 401 ──────────────────────────────────────────────────────
 
 
-async def test_logs_401_without_tenant() -> None:
-    app = _make_app(with_tenant=False)
-    client = TestClient(app)
-    resp = client.get("/observability/logs")
-    assert resp.status_code == 401
-
-
-async def test_metrics_401_without_tenant() -> None:
-    app = _make_app(with_tenant=False)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
-    assert resp.status_code == 401
-
-
-async def test_timeseries_401_without_tenant() -> None:
-    app = _make_app(with_tenant=False)
-    client = TestClient(app)
-    resp = client.get("/observability/timeseries")
-    assert resp.status_code == 401
-
-
-async def test_goal_trace_401_without_tenant() -> None:
-    app = _make_app(with_tenant=False)
-    client = TestClient(app)
-    resp = client.get("/observability/goals/g1/trace")
-    assert resp.status_code == 401
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/observability/logs",
+        "/observability/metrics",
+        "/observability/timeseries",
+        "/observability/goals/g1/trace",
+    ],
+)
+def test_401_without_tenant(path: str) -> None:
+    client = TestClient(_make_app(with_tenant=False))
+    assert client.get(path).status_code == 401
 
 
 # ── list_logs ──────────────────────────────────────────────────────────────────
 
 
 async def test_list_logs_from_memory_store() -> None:
-    await obs.log_store.emit("tenant-1", "info", "hello", source="test")
-    await obs.log_store.emit("tenant-1", "error", "boom", source="test")
+    await obs.log_store.emit(_TENANT, "info", "hello", source="test")
+    await obs.log_store.emit(_TENANT, "error", "boom", source="test")
 
-    app = _make_app()
-    client = TestClient(app)
+    client = TestClient(_make_app())
     resp = client.get("/observability/logs")
     assert resp.status_code == 200
     data = resp.json()
@@ -101,16 +103,22 @@ async def test_list_logs_from_memory_store() -> None:
     assert {log["level"] for log in data["logs"]} == {"info", "error"}
 
 
-async def test_list_logs_level_filter_memory() -> None:
-    await obs.log_store.emit("tenant-1", "info", "hello")
-    await obs.log_store.emit("tenant-1", "error", "boom")
+async def test_list_logs_is_tenant_scoped() -> None:
+    await obs.log_store.emit(_TENANT, "info", "mine")
+    await obs.log_store.emit("other-tenant", "info", "theirs")
 
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/logs?level=error")
+    data = TestClient(_make_app()).get("/observability/logs").json()
+    assert [log["message"] for log in data["logs"]] == ["mine"]
+
+
+async def test_list_logs_level_filter_memory() -> None:
+    await obs.log_store.emit(_TENANT, "info", "hello")
+    await obs.log_store.emit(_TENANT, "error", "boom")
+
+    resp = TestClient(_make_app()).get("/observability/logs?level=error")
     assert resp.status_code == 200
     data = resp.json()
-    assert all(log["level"] == "error" for log in data["logs"])
+    assert [log["message"] for log in data["logs"]] == ["boom"]
 
 
 async def test_list_logs_redis_backed() -> None:
@@ -128,119 +136,75 @@ async def test_list_logs_redis_backed() -> None:
             },
         )
     ]
-    obs.log_store._redis = fake_redis
+    obs.log_store.set_redis(fake_redis)
 
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/logs")
+    resp = TestClient(_make_app()).get("/observability/logs")
     assert resp.status_code == 200
     data = resp.json()
     assert data["source"] == "redis_stream"
     assert data["logs"][0]["message"] == "from redis"
 
 
-async def test_list_logs_fallback_to_goal_events() -> None:
+async def test_list_logs_redis_failure_is_503_not_empty() -> None:
+    """Regression: a Redis error used to fall through to an empty memory buffer."""
+    fake_redis = AsyncMock()
+    fake_redis.xrevrange.side_effect = ConnectionError("redis down")
+    obs.log_store.set_redis(fake_redis)
+
+    resp = TestClient(_make_app()).get("/observability/logs")
+    assert resp.status_code == 503
+    assert "log store" in resp.json()["detail"].lower()
+
+
+async def test_list_logs_does_not_fabricate_logs_from_goal_events() -> None:
+    """The endpoint serves the log store only — no synthesised 'logs' from events."""
     goal_svc = AsyncMock()
-    goal_svc.list_goals.return_value = {
-        "goals": [{"id": "g1"}, {"goal_id": "g2"}],
-    }
+    goal_svc.list_goals.return_value = {"goals": [{"id": "g1"}]}
+    goal_svc.get_events.return_value = [{"type": "goal_complete", "ts": "2026-01-01T00:00:00Z"}]
 
-    async def _get_events(goal_id: str, tenant_ctx: Any) -> list[dict[str, Any]]:
-        if goal_id == "g1":
-            return [
-                {"type": "goal_complete", "ts": "2026-01-01T00:00:00Z"},
-                {"type": "goal_failed", "reason": "timeout", "ts": "2026-01-01T00:01:00Z"},
-            ]
-        raise RuntimeError("boom")  # exercises the inner except Exception: pass
-
-    goal_svc.get_events.side_effect = _get_events
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/logs")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["source"] == "goal_events"
-    messages = {log["message"] for log in data["logs"]}
-    assert "Goal completed successfully" in messages
-    assert "Goal failed: timeout" in messages
-
-
-async def test_list_logs_fallback_goal_service_list_goals_raises() -> None:
-    goal_svc = AsyncMock()
-    goal_svc.list_goals.side_effect = RuntimeError("down")
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/logs")
+    resp = TestClient(_make_app(goal_service=goal_svc)).get("/observability/logs")
     assert resp.status_code == 200
     assert resp.json()["logs"] == []
-
-
-async def test_list_logs_fallback_goals_as_plain_list() -> None:
-    goal_svc = AsyncMock()
-    goal_svc.list_goals.return_value = [{"id": "g1"}]
-    goal_svc.get_events.return_value = [{"type": "unknown_event", "ts": "2026-01-01T00:00:00Z"}]
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/logs")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["logs"][0]["message"] == "Event: unknown_event"
+    goal_svc.list_goals.assert_not_called()
 
 
 async def test_list_logs_since_filter() -> None:
-    await obs.log_store.emit("tenant-1", "info", "old")
-    app = _make_app()
-    client = TestClient(app)
-    # Far-future `since` excludes everything.
-    resp = client.get("/observability/logs?since=2099-01-01T00:00:00Z")
+    await obs.log_store.emit(_TENANT, "info", "old")
+    resp = TestClient(_make_app()).get("/observability/logs?since=2099-01-01T00:00:00Z")
     assert resp.status_code == 200
     assert resp.json()["logs"] == []
 
 
-async def test_list_logs_since_filter_malformed_is_ignored() -> None:
-    await obs.log_store.emit("tenant-1", "info", "old")
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/logs?since=not-a-date")
-    assert resp.status_code == 200
-    assert len(resp.json()["logs"]) == 1
+async def test_list_logs_since_filter_malformed_is_422() -> None:
+    await obs.log_store.emit(_TENANT, "info", "old")
+    resp = TestClient(_make_app()).get("/observability/logs?since=not-a-date")
+    assert resp.status_code == 422
 
 
-async def test_list_logs_limit_is_bounded() -> None:
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/logs?limit=1000")
+def test_list_logs_limit_is_bounded() -> None:
+    resp = TestClient(_make_app()).get("/observability/logs?limit=1000")
     assert resp.status_code == 422  # le=500
 
 
-# ── _evt_to_message ────────────────────────────────────────────────────────────
+async def test_logs_endpoint_serves_records_fed_by_structlog_pipeline() -> None:
+    """End to end: a structlog line with a bound tenant shows up in /logs."""
+    import structlog
 
+    from app.observability.logging import feed_tenant_log_store
 
-@pytest.mark.parametrize(
-    ("evt", "expected"),
-    [
-        ({"type": "goal_complete"}, "Goal completed successfully"),
-        ({"type": "goal_failed", "reason": "oops"}, "Goal failed: oops"),
-        ({"type": "goal_cancelled"}, "Goal was cancelled"),
-        ({"type": "plan_ready", "steps": [1, 2, 3]}, "Plan ready with 3 steps"),
-        ({"type": "step_started", "step": "do the thing"}, "Started step: do the thing"),
-        ({"type": "step_complete", "step": "did it"}, "Completed step: did it"),
-        ({"type": "tool_call_complete", "tool_name": "search"}, "Tool call: search"),
-        (
-            {"type": "tool_call_failed", "tool_name": "search", "error": "timeout"},
-            "Tool failed: search — timeout",
-        ),
-        ({"type": "goal_started"}, "Goal execution started"),
-        ({"type": "approval_required"}, "Human approval required"),
-        ({"type": "approval_granted"}, "Human approval granted"),
-        ({"type": "mystery"}, "Event: mystery"),
-    ],
-)
-def test_evt_to_message_mappings(evt: dict[str, Any], expected: str) -> None:
-    assert obs._evt_to_message(evt) == expected
+    structlog.contextvars.clear_contextvars()
+    structlog.contextvars.bind_contextvars(tenant_id=_TENANT, goal_id="g-42")
+    try:
+        feed_tenant_log_store(None, "warning", {"event": "tool_retry", "level": "warning"})
+    finally:
+        structlog.contextvars.clear_contextvars()
+
+    data = TestClient(_make_app()).get("/observability/logs").json()
+    assert data["total"] == 1
+    entry = data["logs"][0]
+    assert entry["message"] == "tool_retry"
+    assert entry["level"] == "warning"
+    assert entry["goal_id"] == "g-42"
 
 
 # ── stream_logs (SSE) ──────────────────────────────────────────────────────────
@@ -248,7 +212,7 @@ def test_evt_to_message_mappings(evt: dict[str, Any], expected: str) -> None:
 
 class _FakeRequest:
     def __init__(self, disconnect_after: int = 0) -> None:
-        self.state = SimpleNamespace(tenant=SimpleNamespace(tenant_id="tenant-1"))
+        self.state = SimpleNamespace(tenant=SimpleNamespace(tenant_id=_TENANT))
         self.app = SimpleNamespace(state=SimpleNamespace(goal_service=None))
         self._calls = 0
         self._disconnect_after = disconnect_after
@@ -258,23 +222,21 @@ class _FakeRequest:
         return self._calls > self._disconnect_after
 
 
-async def test_stream_logs_sends_connected_then_historical_then_stops() -> None:
-    await obs.log_store.emit("tenant-1", "info", "hist-1")
-    # 1 historical entry -> its is_disconnected check must pass (call #1), then
-    # the while-loop's own check (call #2) trips and ends the stream.
-    request = _FakeRequest(disconnect_after=1)
-    response = await obs.stream_logs(request)  # type: ignore[arg-type]
-
+async def _drain(response: Any) -> str:
     chunks = [chunk async for chunk in response.body_iterator]
-    joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+    return "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+
+
+async def test_stream_logs_sends_connected_then_historical_then_stops() -> None:
+    await obs.log_store.emit(_TENANT, "info", "hist-1")
+    request = _FakeRequest(disconnect_after=1)
+    joined = await _drain(await obs.stream_logs(request))  # type: ignore[arg-type]
     assert '"type": "connected"' in joined
     assert "hist-1" in joined
 
 
 async def test_stream_logs_redis_path_yields_new_entries_then_disconnects() -> None:
-    fake_redis = AsyncMock()
-    obs.log_store._redis = fake_redis
-
+    obs.log_store.set_redis(AsyncMock())
     call_count = {"n": 0}
 
     async def _stream_new_since(tenant_id: str, last_id: str = "$") -> list[dict[str, Any]]:
@@ -286,13 +248,31 @@ async def test_stream_logs_redis_path_yields_new_entries_then_disconnects() -> N
     obs.log_store.stream_new_since = _stream_new_since  # type: ignore[method-assign]
     obs.log_store.query = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
-    # Checks: #1 top-of-while, #2 before yielding the one new entry, #3 back at
-    # top-of-while on the next iteration (ends the stream).
     request = _FakeRequest(disconnect_after=2)
-    response = await obs.stream_logs(request)  # type: ignore[arg-type]
-    chunks = [chunk async for chunk in response.body_iterator]
-    joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+    joined = await _drain(await obs.stream_logs(request))  # type: ignore[arg-type]
     assert "new-entry" in joined
+
+
+async def test_stream_logs_redis_error_emits_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(obs.asyncio, "sleep", _no_sleep)
+    obs.log_store.set_redis(AsyncMock())
+    obs.log_store.query = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    obs.log_store.stream_new_since = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionError("redis down")
+    )
+    request = _FakeRequest(disconnect_after=1)
+    joined = await _drain(await obs.stream_logs(request))  # type: ignore[arg-type]
+    assert '"type": "error"' in joined
+
+
+async def test_stream_logs_initial_query_error_emits_error_and_ends() -> None:
+    obs.log_store.query = AsyncMock(side_effect=ConnectionError("down"))  # type: ignore[method-assign]
+    request = _FakeRequest(disconnect_after=100)
+    joined = await _drain(await obs.stream_logs(request))  # type: ignore[arg-type]
+    assert '"type": "error"' in joined
 
 
 async def test_stream_logs_no_redis_emits_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,59 +281,59 @@ async def test_stream_logs_no_redis_emits_heartbeat(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(obs.asyncio, "sleep", _no_sleep)
     request = _FakeRequest(disconnect_after=1)
-    request.app.state.goal_service = None
-    response = await obs.stream_logs(request)  # type: ignore[arg-type]
-    chunks = [chunk async for chunk in response.body_iterator]
-    joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+    joined = await _drain(await obs.stream_logs(request))  # type: ignore[arg-type]
     assert "heartbeat" in joined
 
 
 async def test_stream_logs_disconnect_during_historical_burst_returns_early() -> None:
-    await obs.log_store.emit("tenant-1", "info", "hist-1")
-    await obs.log_store.emit("tenant-1", "info", "hist-2")
+    await obs.log_store.emit(_TENANT, "info", "hist-1")
+    await obs.log_store.emit(_TENANT, "info", "hist-2")
 
     class _ImmediateDisconnect(_FakeRequest):
         async def is_disconnected(self) -> bool:
-            self._calls += 1
-            return True  # disconnected from the very first check
+            return True
 
-    request = _ImmediateDisconnect()
-    response = await obs.stream_logs(request)  # type: ignore[arg-type]
-    chunks = [chunk async for chunk in response.body_iterator]
-    joined = "".join(c.decode() if isinstance(c, bytes) else c for c in chunks)
+    joined = await _drain(await obs.stream_logs(_ImmediateDisconnect()))  # type: ignore[arg-type]
     assert '"type": "connected"' in joined
-    # Returned before yielding any historical entry.
     assert "hist-1" not in joined
 
 
-# ── get_structured_metrics ─────────────────────────────────────────────────────
+# ── Fake tenant-scoped DB ──────────────────────────────────────────────────────
 
 
-async def test_metrics_no_goal_service_returns_defaults() -> None:
-    app = _make_app(goal_service=None)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["total_goals"] == 0
-    assert data["latency_percentiles"] == {"p50": 0, "p95": 0, "p99": 0}
+class _FakeMappings:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    def one(self) -> dict[str, Any]:
+        assert len(self._rows) == 1
+        return self._rows[0]
+
+    def all(self) -> list[dict[str, Any]]:
+        return self._rows
 
 
 class _FakeResult:
-    def __init__(self, *, fetchone: Any = None, fetchall: Any = None) -> None:
-        self._fetchone = fetchone
-        self._fetchall = fetchall or []
+    def __init__(self, rows: list[dict[str, Any]] | None = None) -> None:
+        self._rows = rows or []
 
-    def fetchone(self) -> Any:
-        return self._fetchone
+    def mappings(self) -> _FakeMappings:
+        return _FakeMappings(self._rows)
 
-    def fetchall(self) -> Any:
-        return self._fetchall
+
+class _FakeTx:
+    async def __aenter__(self) -> _FakeTx:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
 
 
 class _FakeDBSession:
-    def __init__(self, results: list[_FakeResult]) -> None:
-        self._results = list(results)
+    """Answers Core SELECTs from a queue; records the RLS ``set_config`` calls."""
+
+    def __init__(self, owner: _FakeDB) -> None:
+        self._owner = owner
 
     async def __aenter__(self) -> _FakeDBSession:
         return self
@@ -361,219 +341,150 @@ class _FakeDBSession:
     async def __aexit__(self, *exc: Any) -> bool:
         return False
 
-    async def execute(self, *args: Any, **kwargs: Any) -> _FakeResult:
-        if self._results:
-            return self._results.pop(0)
-        return _FakeResult()
+    def begin(self) -> _FakeTx:
+        return _FakeTx()
+
+    async def execute(self, stmt: Any, params: Any = None) -> _FakeResult:
+        if isinstance(stmt, TextClause):
+            self._owner.guc_calls.append(dict(params or {}))
+            return _FakeResult()
+        if self._owner.error is not None:
+            raise self._owner.error
+        self._owner.statements.append(stmt)
+        return self._owner.results.pop(0) if self._owner.results else _FakeResult()
 
 
-def _fake_db(batches: list[list[_FakeResult]]) -> Any:
-    queue = list(batches)
+class _FakeDB:
+    def __init__(
+        self, results: list[_FakeResult] | None = None, error: Exception | None = None
+    ) -> None:
+        self.results = list(results or [])
+        self.error = error
+        self.statements: list[Any] = []
+        self.guc_calls: list[dict[str, Any]] = []
 
-    def _factory() -> _FakeDBSession:
-        results = queue.pop(0) if queue else []
-        return _FakeDBSession(results)
-
-    return _factory
+    def __call__(self) -> _FakeDBSession:
+        return _FakeDBSession(self)
 
 
-async def test_metrics_db_backed_percentiles_and_token_usage() -> None:
-    percentile_row = _FakeResult(fetchone=(10, 0.9, 100.0, 200.0, 300.0))
-    token_rows = _FakeResult(fetchall=[("anthropic", 500), ("openai", 100)])
-    goal_svc = SimpleNamespace(_db=_fake_db([[_FakeResult(), percentile_row], [token_rows]]))
+# ── get_structured_metrics ─────────────────────────────────────────────────────
 
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
+
+def test_metrics_in_memory_mode_is_501_not_zeros() -> None:
+    """No Postgres → the endpoint says so instead of returning a dashboard of zeros."""
+    resp = TestClient(_make_app(db=None)).get("/observability/metrics")
+    assert resp.status_code == 501
+    assert "postgres" in resp.json()["detail"].lower()
+
+
+def test_metrics_db_backed_percentiles_and_token_usage() -> None:
+    summary = _FakeResult(
+        [{"total": 10, "completed": 9, "finished": 10, "p50_s": 0.1, "p95_s": 0.2, "p99_s": 0.3}]
+    )
+    tokens = _FakeResult(
+        [{"model": "claude-x", "tokens": 500}, {"model": "gpt-y", "tokens": 100}]
+    )
+    db = _FakeDB([summary, tokens])
+
+    resp = TestClient(_make_app(db=db)).get("/observability/metrics")
     assert resp.status_code == 200
     data = resp.json()
     assert data["total_goals"] == 10
     assert data["success_rate"] == 0.9
     assert data["latency_percentiles"] == {"p50": 100, "p95": 200, "p99": 300}
-    assert data["token_usage_by_provider"] == [
-        {"label": "anthropic", "value": 500},
-        {"label": "openai", "value": 100},
+    assert data["goal_duration_percentiles"] == [
+        {"percentile": "p50", "ms": 100},
+        {"percentile": "p95", "ms": 200},
+        {"percentile": "p99", "ms": 300},
     ]
+    assert data["token_usage_by_provider"] == [
+        {"label": "claude-x", "value": 500},
+        {"label": "gpt-y", "value": 100},
+    ]
+    # Every query ran under the tenant's RLS GUC.
+    assert {"tid": _TENANT} in db.guc_calls
 
 
-async def test_metrics_db_query_raises_falls_back_to_memory() -> None:
-    class _RaisingDB:
-        def __call__(self) -> Any:
-            raise RuntimeError("db down")
-
-    goal_svc = AsyncMock()
-    goal_svc._db = _RaisingDB()
-    goal_svc.get_metrics.return_value = {"total_goals": 3, "success_rate": 0.5}
-    goal_svc._goal_durations = {"tenant-1": [1.0, 2.0, 3.0]}
-    goal_svc._metrics_cache = {}
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["total_goals"] == 3
-    assert data["success_rate"] == 0.5
-    assert data["latency_percentiles"]["p50"] > 0
-
-
-async def test_metrics_no_db_uses_in_memory_fallback_and_metrics_cache() -> None:
-    goal_svc = AsyncMock()
-    goal_svc._db = None
-    goal_svc.get_metrics.return_value = {"total_goals": 2, "success_rate": 1.0}
-    goal_svc._goal_durations = {}
-    goal_svc._metrics_cache = {
-        "tenant-1": {"token_usage_by_provider": [{"label": "anthropic", "value": 42}]}
-    }
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
-    assert resp.status_code == 200
-    data = resp.json()
+def test_metrics_no_finished_goals_reports_null_not_zero() -> None:
+    summary = _FakeResult(
+        [{"total": 2, "completed": 0, "finished": 0, "p50_s": None, "p95_s": None, "p99_s": None}]
+    )
+    db = _FakeDB([summary, _FakeResult([])])
+    data = TestClient(_make_app(db=db)).get("/observability/metrics").json()
     assert data["total_goals"] == 2
-    assert data["token_usage_by_provider"] == [{"label": "anthropic", "value": 42}]
+    assert data["success_rate"] is None
+    assert data["latency_percentiles"] == {"p50": None, "p95": None, "p99": None}
+    assert data["goal_duration_percentiles"] == []
 
 
-async def test_metrics_get_metrics_raises_is_swallowed() -> None:
-    goal_svc = AsyncMock()
-    goal_svc._db = None
-    goal_svc.get_metrics.side_effect = RuntimeError("boom")
+def test_metrics_db_error_is_503() -> None:
+    """Regression: a DB error (e.g. UndefinedColumn) used to be swallowed into zeros."""
+    db = _FakeDB(error=RuntimeError('column "duration_s" does not exist'))
+    resp = TestClient(_make_app(db=db)).get("/observability/metrics")
+    assert resp.status_code == 503
+    assert "database" in resp.json()["detail"].lower()
 
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/metrics")
-    assert resp.status_code == 200
-    assert resp.json()["total_goals"] == 0
+
+def test_metrics_malformed_since_is_422() -> None:
+    resp = TestClient(_make_app(db=_FakeDB())).get("/observability/metrics?since=nope")
+    assert resp.status_code == 422
 
 
 # ── get_timeseries ──────────────────────────────────────────────────────────────
 
 
-async def test_timeseries_no_goal_service_returns_empty() -> None:
-    app = _make_app(goal_service=None)
-    client = TestClient(app)
-    resp = client.get("/observability/timeseries")
-    assert resp.status_code == 200
-    assert resp.json() == {
-        "goals_per_hour": [],
-        "cost_per_hour": [],
-        "avg_latency_per_hour": [],
-    }
+def test_timeseries_in_memory_mode_is_501_not_fabricated() -> None:
+    """Regression: in-memory mode summed a ``cost_usd`` GoalRecord never has → zeros."""
+    goal_svc = SimpleNamespace(_db=None, _goals={})
+    resp = TestClient(_make_app(goal_service=goal_svc, db=None)).get("/observability/timeseries")
+    assert resp.status_code == 501
 
 
-async def test_timeseries_in_memory_mode_buckets_by_hour() -> None:
-    record_ok = SimpleNamespace(
-        tenant_id="tenant-1",
-        created_at="2026-01-01T10:15:00Z",
-        status=SimpleNamespace(value="complete"),
-        cost_usd=0.25,
-    )
-    record_failed = SimpleNamespace(
-        tenant_id="tenant-1",
-        created_at="2026-01-01T10:45:00Z",
-        status="failed",
-        cost_usd=0.0,
-    )
-    record_other_tenant = SimpleNamespace(
-        tenant_id="tenant-2",
-        created_at="2026-01-01T10:50:00Z",
-        status="complete",
-        cost_usd=1.0,
-    )
-    record_bad_ts = SimpleNamespace(
-        tenant_id="tenant-1", created_at="not-a-date", status="complete", cost_usd=0.0
-    )
-    goal_svc = SimpleNamespace(
-        _db=None,
-        _goals={
-            "g1": record_ok,
-            "g2": record_failed,
-            "g3": record_other_tenant,
-            "g4": record_bad_ts,
-        },
-    )
+def test_timeseries_db_backed_mode() -> None:
+    ts = _dt.datetime(2026, 1, 1, 10, tzinfo=_dt.UTC)
+    goals_result = _FakeResult([{"bucket": ts, "total": 5, "success": 4, "failed": 1}])
+    lat_result = _FakeResult([{"bucket": ts, "p50_s": 0.123456, "p95_s": 0.456789}])
+    cost_result = _FakeResult([{"bucket": ts, "total_cost": 1.2345}])
+    db = _FakeDB([goals_result, lat_result, cost_result])
 
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/timeseries?bucket=hour")
+    resp = TestClient(_make_app(db=db)).get("/observability/timeseries?bucket=hour")
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data["goals_per_hour"]) == 1
-    bucket = data["goals_per_hour"][0]
-    assert bucket["count"] == 2
-    assert bucket["success"] == 1
-    assert bucket["failed"] == 1
-    assert data["cost_per_hour"][0]["cost_usd"] == 0.25
+    assert data["goals_per_hour"] == [
+        {"ts": ts.isoformat(), "count": 5, "success": 4, "failed": 1}
+    ]
+    assert data["cost_per_hour"] == [{"ts": ts.isoformat(), "cost_usd": 1.2345}]
+    assert data["avg_latency_per_hour"] == [{"ts": ts.isoformat(), "p50_ms": 123, "p95_ms": 457}]
+    assert len(db.statements) == 3
+    assert {"tid": _TENANT} in db.guc_calls
 
 
-async def test_timeseries_in_memory_mode_since_until_and_minute_day_buckets() -> None:
-    record = SimpleNamespace(
-        tenant_id="tenant-1",
-        created_at="2026-01-01T10:15:30Z",
-        status="complete",
-        cost_usd=1.0,
-    )
-    goal_svc = SimpleNamespace(_db=None, _goals={"g1": record})
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-
-    resp_minute = client.get("/observability/timeseries?bucket=minute")
-    assert resp_minute.json()["goals_per_hour"][0]["ts"] == "2026-01-01T10:15:00Z"
-
-    resp_day = client.get("/observability/timeseries?bucket=day")
-    assert resp_day.json()["goals_per_hour"][0]["ts"] == "2026-01-01T00:00:00Z"
-
-    # since in the future excludes the record.
-    resp_since = client.get("/observability/timeseries?since=2099-01-01T00:00:00Z")
-    assert resp_since.json()["goals_per_hour"] == []
-
-    # until in the past excludes the record.
-    resp_until = client.get("/observability/timeseries?until=2000-01-01T00:00:00Z")
-    assert resp_until.json()["goals_per_hour"] == []
-
-    # malformed since/until are ignored (record still included).
-    resp_bad = client.get("/observability/timeseries?since=nope&until=nope")
-    assert len(resp_bad.json()["goals_per_hour"]) == 1
-
-
-async def test_timeseries_db_backed_mode() -> None:
-    import datetime as _dt
-
-    goals_result = _FakeResult(
-        fetchall=[(_dt.datetime(2026, 1, 1, 10, tzinfo=_dt.UTC), 5, 4, 1)]
-    )
-    cost_result = _FakeResult(fetchall=[(_dt.datetime(2026, 1, 1, 10, tzinfo=_dt.UTC), 1.2345)])
-    lat_result = _FakeResult(
-        fetchall=[(_dt.datetime(2026, 1, 1, 10, tzinfo=_dt.UTC), 123.456, 456.789)]
-    )
-    goal_svc = SimpleNamespace(
-        _db=_fake_db([[_FakeResult(), goals_result, cost_result, lat_result]])
-    )
-
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/timeseries?bucket=hour")
+def test_timeseries_non_uuid_tenant_skips_cost_ledger() -> None:
+    """goal_cost_breakdowns.tenant_id is UUID; a non-UUID tenant can own no rows."""
+    db = _FakeDB([_FakeResult([]), _FakeResult([])])
+    resp = TestClient(_make_app(db=db, tenant_id="legacy-tenant")).get("/observability/timeseries")
     assert resp.status_code == 200
-    data = resp.json()
-    assert data["goals_per_hour"][0]["count"] == 5
-    assert data["cost_per_hour"][0]["cost_usd"] == 1.2345
-    assert data["avg_latency_per_hour"][0]["p50_ms"] == 123
-    assert data["avg_latency_per_hour"][0]["p95_ms"] == 457
+    assert resp.json()["cost_per_hour"] == []
+    assert len(db.statements) == 2
 
 
-async def test_timeseries_db_backed_mode_query_raises_returns_empty_arrays() -> None:
-    class _RaisingDB:
-        def __call__(self) -> Any:
-            raise RuntimeError("db down")
+def test_timeseries_db_error_is_503() -> None:
+    db = _FakeDB(error=RuntimeError("db down"))
+    resp = TestClient(_make_app(db=db)).get("/observability/timeseries")
+    assert resp.status_code == 503
 
-    goal_svc = SimpleNamespace(_db=_RaisingDB())
-    app = _make_app(goal_service=goal_svc)
-    client = TestClient(app)
-    resp = client.get("/observability/timeseries")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data == {"goals_per_hour": [], "cost_per_hour": [], "avg_latency_per_hour": []}
+
+@pytest.mark.parametrize("qs", ["since=nope", "until=nope", "bucket=week"])
+def test_timeseries_bad_params_are_422(qs: str) -> None:
+    resp = TestClient(_make_app(db=_FakeDB())).get(f"/observability/timeseries?{qs}")
+    assert resp.status_code == 422
+
+
+def test_timeseries_since_after_until_is_422() -> None:
+    resp = TestClient(_make_app(db=_FakeDB())).get(
+        "/observability/timeseries?since=2026-01-02T00:00:00Z&until=2026-01-01T00:00:00Z"
+    )
+    assert resp.status_code == 422
 
 
 # ── get_goal_trace ──────────────────────────────────────────────────────────────
@@ -584,17 +495,12 @@ async def test_goal_trace_computes_summary(monkeypatch: pytest.MonkeyPatch) -> N
 
     store = InMemoryRunTimelineStore()
     store.append(
-        "tenant-1",
+        _TENANT,
         "goal-1",
-        {
-            "name": "gen_ai.chat",
-            "cost_usd": "0.001",
-            "input_tokens": "100",
-            "output_tokens": "50",
-        },
+        {"name": "gen_ai.chat", "cost_usd": "0.001", "input_tokens": "100", "output_tokens": "50"},
     )
     store.append(
-        "tenant-1",
+        _TENANT,
         "goal-1",
         {"name": "tool_call", "cost_usd": 0.002, "input_tokens": 0, "output_tokens": 0},
     )
@@ -602,12 +508,11 @@ async def test_goal_trace_computes_summary(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(tracing_mod, "get_run_timeline_store", lambda: store)
 
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/goals/goal-1/trace")
+    resp = TestClient(_make_app()).get("/observability/goals/goal-1/trace")
     assert resp.status_code == 200
     data = resp.json()
     assert data["goal_id"] == "goal-1"
+    assert data["scope"] == "process"
     assert len(data["entries"]) == 2
     assert data["summary"]["steps"] == 2
     assert data["summary"]["generations"] == 1
@@ -616,12 +521,23 @@ async def test_goal_trace_computes_summary(monkeypatch: pytest.MonkeyPatch) -> N
     assert data["summary"]["total_output_tokens"] == 50
 
 
-async def test_goal_trace_empty_when_no_entries() -> None:
-    app = _make_app()
-    client = TestClient(app)
-    resp = client.get("/observability/goals/unknown-goal/trace")
+def test_goal_trace_empty_when_no_entries() -> None:
+    resp = TestClient(_make_app()).get("/observability/goals/unknown-goal/trace")
     assert resp.status_code == 200
     data = resp.json()
     assert data["entries"] == []
     assert data["summary"]["steps"] == 0
-    assert data["summary"]["total_cost_usd"] == 0
+
+
+def test_goal_trace_501_when_goals_run_on_distributed_workers() -> None:
+    """Goals dispatched to Celery run in another process: this replica's in-process
+    timeline would be empty/partial, so the endpoint refuses rather than mislead."""
+    goal_svc = SimpleNamespace(_db=None, _task_queue=object())
+    resp = TestClient(_make_app(goal_service=goal_svc)).get("/observability/goals/g1/trace")
+    assert resp.status_code == 501
+    assert "replica" in resp.json()["detail"].lower()
+
+
+def test_goal_trace_501_in_durable_multi_replica_mode() -> None:
+    resp = TestClient(_make_app(db=_FakeDB())).get("/observability/goals/g1/trace")
+    assert resp.status_code == 501

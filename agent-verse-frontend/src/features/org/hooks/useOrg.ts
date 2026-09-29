@@ -243,8 +243,10 @@ export function useUpdateTaskStatus(orgId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ taskId, status }: { taskId: string; status: string }) =>
+      // The backend route is POST (app/org/router.py org_task_status_update);
+      // PATCH was a 405.
       apiFetch(`/v1/org/${orgId}/tasks/${taskId}/status`, {
-        method: 'PATCH',
+        method: 'POST',
         body: JSON.stringify({ status }),
       }),
     onSuccess: () => {

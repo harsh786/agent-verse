@@ -1525,18 +1525,22 @@ def test_unauthorized_valid_endpoint() -> None:
 
 # Lines 361-362 — deploy_bundle endpoint
 def test_deploy_bundle() -> None:
-    """Lines 361-362: deploy_bundle calls marketplace.create_bundle."""
-    mp = _default_marketplace()
-    mp.create_bundle = AsyncMock(return_value={"bundle_id": "b1", "template_ids": ["t1"]})
-
-    client = TestClient(_make_app(marketplace=mp), raise_server_exceptions=False)
+    """deploy_bundle goes through the v2 marketplace's create_bundle."""
+    v2 = MagicMock()
+    v2.create_bundle = AsyncMock(
+        return_value={"bundle_name": "My Bundle", "status": "complete", "items": []}
+    )
+    app = _make_app(marketplace=_default_marketplace())
+    app.state.marketplace_v2 = v2
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/marketplace/bundles",
         json={"name": "My Bundle", "template_ids": ["t1", "t2"]},
         headers=_headers(),
     )
     assert resp.status_code == 201
-    assert resp.json()["bundle_id"] == "b1"
+    assert resp.json()["status"] == "complete"
+    assert v2.create_bundle.await_args.kwargs["template_ids"] == ["t1", "t2"]
 
 
 # Lines 361-362 — publish_template with agent_store exception (exception propagates as 500)

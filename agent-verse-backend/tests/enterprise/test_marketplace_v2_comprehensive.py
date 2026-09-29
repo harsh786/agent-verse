@@ -521,6 +521,11 @@ async def test_add_review_invalid_rating_rejected() -> None:
 @pytest.mark.asyncio
 async def test_add_review_valid_rating_stored() -> None:
     marketplace = MarketplaceV2(db_factory=None)
+    await marketplace.publish_template(
+        data={"template_id": "tpl-review", "name": "R", "slug": "tpl-review"},
+        tenant_ctx=T_A,
+        run_security_review=False,
+    )
     result = await marketplace.add_review(
         template_id="tpl-review",
         tenant_ctx=T_A,
@@ -530,6 +535,16 @@ async def test_add_review_valid_rating_stored() -> None:
     )
     assert result["success"] is True
     assert "review_id" in result
+
+
+@pytest.mark.asyncio
+async def test_add_review_unknown_template_fails_instead_of_faking_success() -> None:
+    # The rating aggregate cannot be updated for a template that does not
+    # exist — that used to be skipped silently and reported as success.
+    marketplace = MarketplaceV2(db_factory=None)
+    result = await marketplace.add_review(template_id="tpl-missing", tenant_ctx=T_A, rating=4)
+    assert result["success"] is False
+    assert marketplace._reviews == []
 
 
 @pytest.mark.asyncio

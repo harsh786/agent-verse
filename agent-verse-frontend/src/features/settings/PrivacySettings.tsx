@@ -18,7 +18,7 @@ import { useState, useCallback, useId } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { Download, Trash2, Shield, ToggleLeft, ToggleRight, AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { apiRequest } from '@/lib/api/client';
+import { apiRequest, downloadAuthenticated, triggerBlobDownload } from '@/lib/api/client';
 
 const apiClient = {
   get: <T,>(path: string) => apiRequest<T>('GET', path),
@@ -28,57 +28,74 @@ const apiClient = {
 };
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+//
+// Backed by the real compliance API (app/api/enterprise.py compliance_router):
+//   GET    /compliance/consent            → active consent purposes
+//   POST   /compliance/consent            → grant a purpose
+//   DELETE /compliance/consent/{purpose}  → revoke it
+//   POST   /compliance/export/start       → queue a GDPR export job
+//   GET    /compliance/export/jobs        → latest export jobs (status + download_url)
+// The /v1/account/* routes this page used to call never existed.
 
-interface ConsentSettings {
-  analytics:  boolean;
-  marketing:  boolean;
+type ConsentPurpose = 'analytics' | 'marketing';
+
+interface ConsentState {
+  active_purposes: string[];
 }
 
-interface DataExportStatus {
-  status:      'idle' | 'queued' | 'processing' | 'ready';
-  downloadUrl?: string;
-  sizeBytes?:  number;
-  expiresAt?:  string;
+interface ExportJob {
+  job_id:       string;
+  status:       string; // pending | processing | complete | failed
+  created_at:   string | null;
+  completed_at: string | null;
+  download_url: string | null;
+  error:        string | null;
 }
+
+const PENDING_EXPORT = new Set(['pending', 'processing']);
 
 // ── Hooks ─────────────────────────────────────────────────────────────────────
 
 function useConsentSettings() {
-  return useQuery<ConsentSettings>({
+  return useQuery<ConsentState>({
     queryKey: ['consent-settings'],
-    // No fabricated defaults: this used to show analytics consent as GRANTED
-    // whenever the request failed (the /v1/account/* routes do not exist).
-    queryFn: () => apiClient.get<ConsentSettings>('/v1/account/consent'),
+    // No fabricated defaults: a failed read is shown as an error, never as
+    // granted (or revoked) consent.
+    queryFn: () => apiClient.get<ConsentState>('/compliance/consent'),
     retry: false,
     staleTime: 300_000,
   });
 }
 
-function useExportStatus() {
-  return useQuery<DataExportStatus>({
+function useLatestExport() {
+  return useQuery<ExportJob | null>({
     queryKey: ['data-export-status'],
-    queryFn: () => apiClient.get<DataExportStatus>('/v1/account/data-export'),
+    queryFn: async () =>
+      (await apiClient.get<{ jobs: ExportJob[] }>('/compliance/export/jobs?limit=1')).jobs[0] ?? null,
     retry: false,
-    refetchInterval: (q) => q.state.data?.status === 'processing' ? 5_000 : false,
+    refetchInterval: (q) => (q.state.data && PENDING_EXPORT.has(q.state.data.status) ? 5_000 : false),
   });
 }
 
 function useRequestExport() {
   return useMutation({
-    mutationFn: () => apiClient.post<DataExportStatus>('/v1/account/data-export', {}),
+    mutationFn: () => apiClient.post<{ job_id: string; status: string }>('/compliance/export/start', {}),
   });
 }
 
 function useUpdateConsent() {
   return useMutation({
-    mutationFn: (body: ConsentSettings) => apiClient.put('/v1/account/consent', body),
+    mutationFn: ({ purpose, granted }: { purpose: ConsentPurpose; granted: boolean }) =>
+      granted
+        ? apiClient.post('/compliance/consent', { purpose, legal_basis: 'consent' })
+        : apiClient.delete(`/compliance/consent/${purpose}`),
   });
 }
 
 function useRequestDeletion() {
   return useMutation({
-    // /v1/account/delete-request does not exist. DELETE /tenants/me records the
-    // real GDPR erasure job (executed after the 30-day grace period).
+    // DELETE /tenants/me records the real GDPR erasure job (executed after the
+    // 30-day grace period).
     mutationFn: () => apiClient.delete('/tenants/me'),
   });
 }
@@ -89,12 +106,13 @@ const SPRING_FAST  = { type: 'spring', stiffness: 600, damping: 35 } as const;
 
 // ── Toggle component ──────────────────────────────────────────────────────────
 
-function ConsentToggle({ id, label, desc, checked, onChange }: {
+function ConsentToggle({ id, label, desc, checked, onChange, disabled = false }: {
   id: string;
   label: string;
   desc: string;
   checked: boolean;
   onChange: (val: boolean) => void;
+  disabled?: boolean;
 }) {
   const reduce = useReducedMotion();
   return (
@@ -108,11 +126,12 @@ function ConsentToggle({ id, label, desc, checked, onChange }: {
         aria-checked={checked}
         aria-label={`${checked ? 'Disable' : 'Enable'} ${label}`}
         id={id}
+        disabled={disabled}
         onClick={() => onChange(!checked)}
         whileTap={reduce ? {} : { scale: 0.9 }}
         transition={SPRING_FAST}
         style={{ touchAction: 'manipulation' }}
-        className="flex-shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded"
+        className="flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 rounded"
       >
         {checked
           ? <ToggleRight className="h-7 w-7 text-blue-400" aria-hidden />
@@ -216,24 +235,43 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export function PrivacySettings() {
   const reduce         = useReducedMotion();
-  const { data: consent, refetch: refetchConsent, isError: consentError } = useConsentSettings();
-  const { data: exportStatus } = useExportStatus();
+  const { data: consent, refetch: refetchConsent, isError: consentError, isLoading: consentLoading } = useConsentSettings();
+  const { data: latestExport, refetch: refetchExport, isError: exportError } = useLatestExport();
   const requestExport  = useRequestExport();
   const updateConsent  = useUpdateConsent();
   const requestDelete  = useRequestDeletion();
   const [showDelete, setShowDelete] = useState(false);
   const [deleted, setDeleted]       = useState(false);
 
-  const handleConsentChange = useCallback(async (key: keyof ConsentSettings, val: boolean) => {
-    await updateConsent.mutateAsync({ ...consent, [key]: val } as ConsentSettings);
-    refetchConsent();
-  }, [consent, updateConsent, refetchConsent]);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const active = new Set(consent?.active_purposes ?? []);
 
-  const handleDelete = useCallback(async () => {
-    await requestDelete.mutateAsync();
-    setShowDelete(false);
-    setDeleted(true);
+  const handleConsentChange = useCallback((purpose: ConsentPurpose, granted: boolean) => {
+    updateConsent.mutate({ purpose, granted }, { onSettled: () => { void refetchConsent(); } });
+  }, [updateConsent, refetchConsent]);
+
+  const handleExport = useCallback(() => {
+    requestExport.mutate(undefined, { onSuccess: () => { void refetchExport(); } });
+  }, [requestExport, refetchExport]);
+
+  const handleDownload = useCallback(async (job: ExportJob) => {
+    if (!job.download_url) return;
+    setDownloadError(null);
+    try {
+      triggerBlobDownload(await downloadAuthenticated(job.download_url), `agentverse-export-${job.job_id}.json`);
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : 'Download failed');
+    }
+  }, []);
+
+  const handleDelete = useCallback(() => {
+    requestDelete.mutate(undefined, {
+      onSuccess: () => { setShowDelete(false); setDeleted(true); },
+      onError: () => setShowDelete(false),
+    });
   }, [requestDelete]);
+
+  const exportPending = !!latestExport && PENDING_EXPORT.has(latestExport.status);
 
   if (deleted) {
     return (
@@ -266,36 +304,48 @@ export function PrivacySettings() {
               <p className="text-[14px] font-medium text-[#F1F5F9]">Download my data</p>
               <p className="text-[12px] text-[#64748B] mt-0.5">
                 Export a complete JSON archive of your account, organisations, and missions.
-                {exportStatus?.sizeBytes && ` Size: ~${Math.round(exportStatus.sizeBytes / 1024 / 1024)}MB`}
               </p>
-              {exportStatus?.status === 'ready' && exportStatus.downloadUrl && (
-                <a
-                  href={exportStatus.downloadUrl}
-                  download
+              {exportError && (
+                <p role="alert" className="mt-2 text-[12px] text-red-400">
+                  Export status could not be loaded.
+                </p>
+              )}
+              {requestExport.isError && (
+                <p role="alert" className="mt-2 text-[12px] text-red-400">
+                  The export could not be queued: {requestExport.error instanceof Error ? requestExport.error.message : 'unknown error'}
+                </p>
+              )}
+              {latestExport?.status === 'failed' && (
+                <p role="alert" className="mt-2 text-[12px] text-red-400">
+                  Your last export failed{latestExport.error ? `: ${latestExport.error}` : ''}.
+                </p>
+              )}
+              {latestExport?.status === 'complete' && latestExport.download_url && (
+                <button
+                  type="button"
+                  onClick={() => { void handleDownload(latestExport); }}
                   className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-blue-400 hover:text-blue-300 underline-offset-2 hover:underline"
                 >
                   <Download className="h-3.5 w-3.5" aria-hidden />
                   Download archive
-                  {exportStatus.expiresAt && (
-                    <span className="text-[#475569] no-underline">
-                      (expires {new Intl.DateTimeFormat('en', { dateStyle: 'short' }).format(new Date(exportStatus.expiresAt))})
-                    </span>
-                  )}
-                </a>
+                </button>
+              )}
+              {downloadError && (
+                <p role="alert" className="mt-2 text-[12px] text-red-400">Download failed: {downloadError}</p>
               )}
             </div>
             <motion.button
               whileTap={reduce ? {} : { scale: 0.97 }}
               transition={SPRING_FAST}
-              onClick={() => requestExport.mutate()}
-              disabled={requestExport.isPending || exportStatus?.status === 'processing' || exportStatus?.status === 'queued'}
+              onClick={handleExport}
+              disabled={requestExport.isPending || exportPending}
               aria-label="Request data export"
               style={{ touchAction: 'manipulation' }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#252B3B] hover:bg-[#2D3748] text-[13px] text-[#94A3B8] font-medium disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/70 min-h-[40px] flex-shrink-0"
             >
-              {requestExport.isPending || exportStatus?.status === 'processing' ? (
+              {requestExport.isPending || latestExport?.status === 'processing' ? (
                 <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />Processing…</>
-              ) : exportStatus?.status === 'queued' ? (
+              ) : latestExport?.status === 'pending' ? (
                 <>Queued</>
               ) : (
                 <>Export</>
@@ -312,18 +362,25 @@ export function PrivacySettings() {
             Your consent settings could not be loaded; they are not shown as granted.
           </p>
         )}
+        {updateConsent.isError && (
+          <p role="alert" className="text-[13px] text-red-400 mb-2">
+            Your consent change could not be saved: {updateConsent.error instanceof Error ? updateConsent.error.message : 'unknown error'}
+          </p>
+        )}
         <ConsentToggle
           id="consent-analytics"
           label="Analytics cookies"
           desc="Help us understand how AgentVerse is used to improve the product."
-          checked={consent?.analytics ?? false}
+          checked={active.has('analytics')}
+          disabled={consentLoading || consentError || updateConsent.isPending}
           onChange={val => handleConsentChange('analytics', val)}
         />
         <ConsentToggle
           id="consent-marketing"
           label="Marketing emails"
           desc="Product updates, tips, and occasional offers from the AgentVerse team."
-          checked={consent?.marketing ?? false}
+          checked={active.has('marketing')}
+          disabled={consentLoading || consentError || updateConsent.isPending}
           onChange={val => handleConsentChange('marketing', val)}
         />
       </Section>
@@ -331,6 +388,11 @@ export function PrivacySettings() {
       {/* Danger zone */}
       <section aria-label="Danger zone" className="bg-[#1A1F2E] border border-red-500/20 rounded-xl p-5">
         <h2 className="text-[13px] font-semibold text-red-400 uppercase tracking-wider mb-4">Danger Zone</h2>
+        {requestDelete.isError && (
+          <p role="alert" className="text-[13px] text-red-400 mb-3">
+            Deletion could not be requested: {requestDelete.error instanceof Error ? requestDelete.error.message : 'unknown error'}
+          </p>
+        )}
         <div className="flex items-start gap-4">
           <div className="w-10 h-10 rounded-xl bg-red-500/10 flex items-center justify-center flex-shrink-0">
             <Trash2 className="h-5 w-5 text-red-400" aria-hidden />

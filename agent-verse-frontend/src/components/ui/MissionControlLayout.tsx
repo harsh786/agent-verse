@@ -31,20 +31,18 @@ function OperationalStatusBar() {
     staleTime: 15_000,
   });
 
-  const { data: goals } = useQuery({
+  // No .catch(() => empty) fallbacks: a failed /goals or /ai-ops/alerts used
+  // to read as "0 active" and "no critical alerts" during an outage.
+  const { data: goals, isError: goalsError } = useQuery({
     queryKey: ['mission-active-goals'],
-    queryFn: () =>
-      apiFetch<{ goals?: Array<{ status: string }> }>('/goals').catch(() => ({ goals: [] })),
+    queryFn: () => apiFetch<{ goals?: Array<{ status: string }> }>('/goals'),
     refetchInterval: 5_000,
     staleTime: 3_000,
   });
 
-  const { data: alerts } = useQuery({
+  const { data: alerts, isError: alertsError } = useQuery({
     queryKey: ['mission-alerts'],
-    queryFn: () =>
-      apiFetch<{ alerts?: Array<{ severity: string }> }>('/ai-ops/alerts?limit=3').catch(
-        () => ({ alerts: [] })
-      ),
+    queryFn: () => apiFetch<{ alerts?: Array<{ severity: string }> }>('/ai-ops/alerts?limit=3'),
     refetchInterval: 30_000,
   });
 
@@ -92,11 +90,29 @@ function OperationalStatusBar() {
         className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-colors"
       >
         <Activity className="h-3 w-3 text-telemetry-cyan" />
-        <span className="font-mono text-telemetry-cyan">{activeGoals.length}</span>
-        <span>active</span>
+        {goalsError ? (
+          <span className="text-risk-amber">goals unavailable</span>
+        ) : (
+          <>
+            <span className="font-mono text-telemetry-cyan">{activeGoals.length}</span>
+            <span>active</span>
+          </>
+        )}
       </button>
 
       {/* Alerts */}
+      {alertsError && (
+        <>
+          <div className="w-px h-4 bg-white/10" />
+          <button
+            onClick={() => navigate('/ai-ops')}
+            className="flex items-center gap-1.5 text-xs text-risk-amber hover:opacity-80"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            <span>Alerts unavailable</span>
+          </button>
+        </>
+      )}
       {criticalAlerts > 0 && (
         <>
           <div className="w-px h-4 bg-white/10" />

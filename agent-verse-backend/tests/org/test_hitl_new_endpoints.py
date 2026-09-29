@@ -236,10 +236,14 @@ def test_configure_org_event_publisher() -> None:
 
 # ── G-17: public_base_url in config ─────────────────────────────────────────
 
-def test_public_base_url_in_config() -> None:
+def test_public_base_url_in_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """G-17: Settings has public_base_url field."""
     import os
-    os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
+
+    # monkeypatch, not os.environ.setdefault: the bogus DSN leaked into every
+    # later test in the process (e.g. GDPR export then hit user "x" and 503'd).
+    if "DATABASE_URL" not in os.environ:
+        monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://x:x@localhost/x")
     from app.core.config import Settings
     s = Settings()
     assert hasattr(s, "public_base_url")

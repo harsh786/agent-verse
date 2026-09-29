@@ -554,12 +554,13 @@ class TestMarketplaceV2DbPaths:
         assert "templates" in result
 
     @pytest.mark.asyncio
-    async def test_list_reviews_db_exception_falls_back(self):
-        """list_reviews DB exception → in-memory fallback."""
+    async def test_list_reviews_db_exception_propagates(self):
+        """list_reviews DB exception is raised, not turned into a (DB-mode:
+        always empty) in-memory list."""
         mp = MarketplaceV2(db_factory=_make_mock_db(raise_on_execute=True))
         mp._reviews = [{"template_id": "t99", "rating": 5}]
-        result = await mp.list_reviews(template_id="t99")
-        assert len(result) == 1
+        with pytest.raises(RuntimeError):
+            await mp.list_reviews(template_id="t99")
 
 
 # ── jsonschema validation path ───────────────────────────────────────────────

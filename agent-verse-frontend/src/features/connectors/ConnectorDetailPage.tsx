@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Activity, ArrowLeft, CheckCircle, Loader2, Pencil, Wrench, XCircle, Zap } from 'lucide-react';
-import { connectorsApi } from '@/lib/api/client';
+import { ApiError, connectorsApi } from '@/lib/api/client';
 import { DetailLayout } from '@/components/detail/DetailLayout';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -185,13 +185,13 @@ export function ConnectorDetailPage() {
   const [testResult, setTestResult] = useState<string | null>(null);
 
   // FIX 1: Use API client instead of raw fetch
-  const { data: connector, isLoading } = useQuery({
+  const { data: connector, isLoading, error: connectorError } = useQuery({
     queryKey: ['connector', connectorId],
     queryFn: () => connectorsApi.get(connectorId!),
     enabled: !!connectorId,
   });
 
-  const { data: tools = [], isLoading: toolsLoading } = useQuery({
+  const { data: tools = [], isLoading: toolsLoading, error: toolsError } = useQuery({
     queryKey: ['connector-tools', connectorId],
     queryFn: () => connectorsApi.tools(connectorId!),
     enabled: !!connectorId,
@@ -222,6 +222,18 @@ export function ConnectorDetailPage() {
     return (
       <div className="flex items-center justify-center h-40">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  // Only a 404 means "not found" — any other failure is an outage, not absence.
+  if (connectorError && !(connectorError instanceof ApiError && connectorError.status === 404)) {
+    return (
+      <div role="alert" className="text-center py-20 text-red-400">
+        Connector could not be loaded: {connectorError.message}{' '}
+        <button onClick={() => navigate('/connectors')} className="text-[#00D4FF] hover:underline">
+          Back
+        </button>
       </div>
     );
   }
@@ -325,6 +337,10 @@ export function ConnectorDetailPage() {
               <h3 className="font-medium text-sm mb-3">Exposed Tools</h3>
               {toolsLoading ? (
                 <Skeleton className="h-16 w-full" />
+              ) : toolsError ? (
+                <p role="alert" className="text-sm text-red-400">
+                  {toolsError.message || 'Tool discovery failed.'}
+                </p>
               ) : tools.length === 0 ? (
                 <EmptyState
           icon={<Wrench size={40} />}

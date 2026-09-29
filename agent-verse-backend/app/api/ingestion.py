@@ -5,7 +5,6 @@
   POST                  /api/v1/sources/{id}/sync         Trigger sync
   POST                  /api/v1/sources/{id}/sync/cancel  Cancel running sync
   GET                   /api/v1/sources/{id}/sync/status  Current job
-  GET                   /api/v1/sources/{id}/sync/history Past jobs
   GET                   /api/v1/sources/{id}/health       Connection check
   GET                   /api/v1/sources/{id}/preview      Sample 5 docs (dry-run)
   GET                   /api/v1/sources/{id}/stats        Totals
@@ -13,7 +12,7 @@
   GET                   /api/v1/sources/catalogue         All supported types
   POST                  /api/v1/sources/validate          Validate config before save
   GET/DELETE            /api/v1/ingestion/documents       Indexed document CRUD
-  GET/POST/POST         /api/v1/ingestion/dlq             DLQ management
+  GET                   /api/v1/ingestion/dlq             DLQ listing (read-only)
   GET                   /api/v1/ingestion/quota           Tenant quota
   GET                   /api/v1/ingestion/cost            Cost breakdown
 """

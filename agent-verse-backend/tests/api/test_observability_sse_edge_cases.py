@@ -54,28 +54,14 @@ class _FakeRequest:
         return self._calls > self._disconnect_after
 
 
-def _restore_log_store_methods() -> None:
-    """Other test modules (e.g. test_observability.py) monkeypatch
-    ``obs.log_store.query`` / ``.stream_new_since`` via direct instance
-    attribute assignment with no teardown, which permanently shadows the
-    class method on the shared module-level singleton for the rest of the
-    test session. Strip any such instance-level override so this file's
-    tests see the real implementation regardless of run order."""
-    for name in ("query", "stream_new_since"):
-        if name in vars(obs.log_store):
-            delattr(obs.log_store, name)
-
-
 def setup_function() -> None:
-    obs.log_store._redis = None
-    obs.log_store._memory_buffer = {}
-    _restore_log_store_methods()
+    # reset() unwires Redis, clears the buffers and strips instance-level
+    # monkeypatches of query/stream_new_since left by other modules.
+    obs.log_store.reset()
 
 
 def teardown_function() -> None:
-    obs.log_store._redis = None
-    obs.log_store._memory_buffer = {}
-    _restore_log_store_methods()
+    obs.log_store.reset()
 
 
 # ── malformed subscription: no tenant identity ──────────────────────────────────
@@ -148,11 +134,11 @@ async def test_stream_logs_redis_failure_storm_backs_off_between_iterations(
     starts), the generator must still pause between iterations instead of
     spinning the event loop and hammering Redis with reconnect attempts."""
     fake_redis = AsyncMock()
-    obs.log_store._redis = fake_redis
+    obs.log_store.set_redis(fake_redis)
     obs.log_store.query = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     async def _always_empty(tenant_id: str, last_id: str = "$") -> list[dict[str, Any]]:
-        return []  # simulates stream_new_since swallowing a persistent Redis error
+        return []  # XREAD returning immediately with nothing (no 2 s block)
 
     obs.log_store.stream_new_since = _always_empty  # type: ignore[method-assign]
 
@@ -178,7 +164,7 @@ async def test_stream_logs_redis_path_with_results_does_not_add_extra_backoff() 
     """When entries ARE flowing, no artificial sleep should be inserted —
     the backoff only guards the empty-result case."""
     fake_redis = AsyncMock()
-    obs.log_store._redis = fake_redis
+    obs.log_store.set_redis(fake_redis)
     obs.log_store.query = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     call_count = {"n": 0}

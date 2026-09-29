@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, renderHook, screen, fireEvent, waitFor } from '@testing-library/react';
 import React, { type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { useAuthStore } from '@/stores/auth';
-import { DigitalTwinPanel } from './DigitalTwinPanel';
+import { DigitalTwinPanel, useWhatIf, type WhatIfOutcome } from './DigitalTwinPanel';
 
 vi.mock('framer-motion', async (importOriginal) => {
   const actual = await importOriginal<typeof import('framer-motion')>();
@@ -49,12 +49,51 @@ const SIM = {
   confidence: 0.82,
 };
 
-function mockFetch(capacity: unknown = CAPACITY) {
+// What the backend now returns when it has no real data to measure from.
+const CAPACITY_UNMEASURED = {
+  org_id: 'o1',
+  current_utilisation: { Engineering: 0.5, Legal: null },
+  departments: [
+    { dept_id: 'd-eng', name: 'Engineering', agent_count: 2, busy_agent_count: 1,
+      active_task_count: 1, queued_task_count: 0, utilisation: 0.5, reason: null },
+    { dept_id: 'd-legal', name: 'Legal', agent_count: 0, busy_agent_count: 0,
+      active_task_count: 0, queued_task_count: 0, utilisation: null,
+      reason: "No agents are staffed on this department's active teams." },
+  ],
+  queued_missions: 0,
+  estimated_clear_h: null,
+  estimated_clear_reason: 'Time-to-clear is not estimated.',
+  underutilised_depts: [],
+  overloaded_depts: [],
+  active_teams: 1,
+  pending_approvals: 0,
+  recommendations: [],
+};
+
+const SIM_NO_HISTORY = {
+  mission_title: 'Reconcile books',
+  estimated_duration_h: null,
+  estimated_cost_usd: null,
+  resource_usage: { staffed_agents: 0, busy_agents: 0, available_agents: 0 },
+  bottlenecks: ['No agents are staffed on any active team.'],
+  recommendations: [],
+  feasible: false,
+  confidence: null,
+  sample_size: 0,
+  estimate_reason: "No completed 'medium'-priority missions yet.",
+};
+
+function mockFetch(capacity: unknown = CAPACITY, sim: unknown = SIM) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/twin/what-if') && method === 'POST')
+      return new Response(
+        JSON.stringify({ detail: { status: 501, detail: 'What-if re-simulation is not implemented.' } }),
+        { status: 501, headers: { 'Content-Type': 'application/json' } },
+      );
     if (url.includes('/twin/simulate') && method === 'POST')
-      return new Response(JSON.stringify(SIM), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(sim), { status: 200, headers: { 'Content-Type': 'application/json' } });
     if (url.includes('/twin/capacity'))
       return new Response(JSON.stringify(capacity), { status: 200, headers: { 'Content-Type': 'application/json' } });
     return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -136,5 +175,60 @@ describe('DigitalTwinPanel', () => {
     expect(screen.getByText('$12.5')).toBeInTheDocument();
     expect(screen.getByText('82%')).toBeInTheDocument();
     expect(screen.getByText('Add an accountant agent')).toBeInTheDocument();
+  });
+
+  test('a department with null utilisation shows "Not available" + reason, not a meter', async () => {
+    mockFetch(CAPACITY_UNMEASURED);
+    renderPanel();
+    expect(await screen.findByLabelText(/Legal utilisation: not available/i)).toBeInTheDocument();
+    expect(screen.getByText("No agents are staffed on this department's active teams.")).toBeInTheDocument();
+    // Only the measured department gets a meter.
+    const meters = screen.getAllByRole('meter');
+    expect(meters).toHaveLength(1);
+    expect(screen.getByLabelText(/Engineering utilisation: 50%/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Legal utilisation: \d+%/i)).not.toBeInTheDocument();
+  });
+
+  test('a null time-to-clear renders n/a instead of a number', async () => {
+    mockFetch(CAPACITY_UNMEASURED);
+    renderPanel();
+    expect(await screen.findByText('n/a')).toBeInTheDocument();
+    expect(screen.getByText('n/a').closest('[title]')).toHaveAttribute('title', 'Time-to-clear is not estimated.');
+    expect(screen.queryByText(/NaN|null/)).not.toBeInTheDocument();
+  });
+
+  test('a simulation without history shows "Not available", the reason and the sample size', async () => {
+    mockFetch(CAPACITY, SIM_NO_HISTORY);
+    renderPanel();
+    await screen.findByText('Digital Twin');
+    fireEvent.click(screen.getByRole('button', { name: /Simulate a mission/i }));
+    fireEvent.change(screen.getByLabelText(/Mission title to simulate/i), { target: { value: 'Reconcile books' } });
+    fireEvent.click(screen.getByRole('button', { name: /Run simulation for this mission/i }));
+
+    expect(await screen.findByTestId('sim-estimate-reason')).toHaveTextContent(
+      "No completed 'medium'-priority missions yet.",
+    );
+    expect(screen.getAllByText('Not available')).toHaveLength(2);
+    expect(screen.getByText('0 missions')).toBeInTheDocument();
+    expect(screen.getByText('Based on')).toBeInTheDocument();
+    expect(screen.queryByText('Confidence')).not.toBeInTheDocument();
+    expect(screen.getByText('No agents are staffed on any active team.')).toBeInTheDocument();
+    expect(screen.queryByText(/NaN|\$null|nullh/)).not.toBeInTheDocument();
+  });
+});
+
+describe('useWhatIf', () => {
+  test('maps the backend 501 to { available: false } instead of a projection', async () => {
+    mockFetch();
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useWhatIf('o1'), { wrapper });
+    let outcome: WhatIfOutcome | undefined;
+    await act(async () => {
+      outcome = await result.current.mutateAsync({ add_agents: 3 });
+    });
+    expect(outcome).toEqual({ available: false, reason: 'What-if re-simulation is not implemented.' });
   });
 });

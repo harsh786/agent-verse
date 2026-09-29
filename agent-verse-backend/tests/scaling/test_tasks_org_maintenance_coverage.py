@@ -991,7 +991,10 @@ class TestOrgBrainLoop:
         assert result["processed"] == 1
         assert result["triggered"] == 0
 
-    def test_outer_exception_is_caught(self):
+    def test_org_scan_failure_propagates_not_reported_as_no_orgs(self):
+        """A failed cross-tenant scan (e.g. the maintenance role lacks
+        BYPASSRLS) used to be swallowed into all-zero totals — identical to
+        "no active orgs". It must fail the task run instead."""
         from app.scaling.tasks import org_brain_loop
 
         with (
@@ -1000,11 +1003,38 @@ class TestOrgBrainLoop:
                 "app.scaling.tasks._active_orgs_for_maintenance",
                 new=AsyncMock(side_effect=RuntimeError("db down")),
             ),
+            patch("app.scaling.tasks.logger") as mock_logger,
+            pytest.raises(RuntimeError, match="db down"),
         ):
-            result = org_brain_loop.run()
+            org_brain_loop.run()
 
-        assert result["processed"] == 0
-        assert result["proposed"] == 0
+        mock_logger.error.assert_called_once()
+        assert mock_logger.error.call_args.args[0] == "org_brain.loop_failed"
+
+    def test_loop_scans_with_the_maintenance_factory(self):
+        from app.scaling.tasks import org_brain_loop
+
+        tenant_db, system_db = MagicMock(name="tenant"), MagicMock(name="system")
+        scan = AsyncMock(return_value=[])
+        with (
+            patch("app.scaling.tasks._org_loop_factories", return_value=(tenant_db, system_db)),
+            patch("app.scaling.tasks._active_orgs_for_maintenance", new=scan),
+            patch("redis.asyncio.from_url", return_value=AsyncMock()),
+        ):
+            org_brain_loop.run()
+
+        assert scan.await_args.args[0] is system_db
+
+    def test_org_loop_factories_returns_the_system_session_factory(self):
+        from app.scaling.tasks import _org_loop_factories
+
+        tenant_db, system_db = MagicMock(name="tenant"), MagicMock(name="system")
+        with (
+            patch("app.db.session.get_session_factory", return_value=tenant_db),
+            patch("app.db.session.get_system_session_factory", return_value=system_db) as gsf,
+        ):
+            assert _org_loop_factories() == (tenant_db, system_db)
+        gsf.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_org_scan_runs_under_system_session(self):
@@ -1194,6 +1224,24 @@ class TestOrgCollaborationLoop:
     def test_per_org_error_is_caught(self):
         result = self._run_with(AsyncMock(side_effect=RuntimeError("boom")))
         assert result == {"processed": 1, "orgs_with_chatter": 0, "messages_emitted": 0}
+
+    def test_org_scan_failure_propagates_not_reported_as_no_orgs(self):
+        from app.scaling.tasks import org_collaboration_loop
+
+        with (
+            patch("app.scaling.tasks._worker_llm_provider", return_value=MagicMock()),
+            patch("app.scaling.tasks._org_loop_factories", return_value=(MagicMock(), MagicMock())),
+            patch(
+                "app.scaling.tasks._active_orgs_for_maintenance",
+                new=AsyncMock(side_effect=RuntimeError("row-level security")),
+            ),
+            patch("app.scaling.tasks.logger") as mock_logger,
+            pytest.raises(RuntimeError, match="row-level security"),
+        ):
+            org_collaboration_loop.run()
+
+        mock_logger.error.assert_called_once()
+        assert mock_logger.error.call_args.args[0] == "org_collaboration.loop_failed"
 
 
 # ── org_intelligence_cron / org_digest_cron / org_twin_sync ─────────────────

@@ -16,6 +16,7 @@ from starlette.responses import StreamingResponse
 
 from app.auth.saml_provider import SAMLNotInstalledError, SAMLReplayCheckUnavailableError
 from app.db.rls import sqlalchemy_rls_context
+from app.observability.logging import get_logger
 
 router = APIRouter(prefix="/enterprise", tags=["enterprise"])
 marketplace_router = APIRouter(prefix="/marketplace", tags=["marketplace"])
@@ -65,6 +66,9 @@ def _red_team(request: Request) -> Any:
     from app.api._deps import get_red_team_runner as _grtr
 
     return _grtr(request)
+
+
+_mkt_logger = get_logger(__name__)
 
 
 def _marketplace(request: Request) -> Any:
@@ -369,7 +373,9 @@ class PublishTemplateRequest(BaseModel):
 
 class BundleDeployRequest(BaseModel):
     name: str
-    template_ids: list[str]
+    template_ids: list[str] = Field(..., min_length=1)
+    # Optional per-template install parameters, keyed by template id.
+    params: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 # ── V2 request/response models ────────────────────────────────────────────────
@@ -474,12 +480,29 @@ async def _publish_v2(request: Request, ctx: Any, data: dict[str, Any]) -> dict[
 
 
 @marketplace_router.post("/bundles", status_code=201)
-async def deploy_bundle(request: Request, body: BundleDeployRequest) -> dict[str, Any]:
-    """Deploy multiple templates as a bundle (group deployment)."""
+async def deploy_bundle(
+    request: Request, body: BundleDeployRequest, response: Response
+) -> dict[str, Any]:
+    """Deploy multiple templates as a bundle (group deployment).
+
+    Goes through the v2 atomic install per template and reports each item's
+    real outcome: 201 when every item deployed, 207 when some failed, 422 (with
+    the per-item report) when none did. It used to go through the v1 gallery,
+    which handed back a made-up agent id when an agent was never created.
+    """
     ctx = _require_tenant(request)
-    return await _marketplace(request).create_bundle(
-        name=body.name, template_ids=body.template_ids, tenant_ctx=ctx
+    report: dict[str, Any] = await _marketplace_v2(request).create_bundle(
+        name=body.name,
+        template_ids=body.template_ids,
+        tenant_ctx=ctx,
+        params=body.params,
+        agent_store=getattr(request.app.state, "agent_store", None),
     )
+    if report["status"] == "failed":
+        raise HTTPException(status_code=422, detail=report)
+    if report["status"] == "partial":
+        response.status_code = 207
+    return report
 
 
 @marketplace_router.get("/browse")
@@ -631,12 +654,17 @@ async def list_reviews_v2(
     svc = _marketplace_v2(request)
     if await svc.get_template(template_id=template_id, tenant_id=ctx.tenant_id) is None:
         raise HTTPException(status_code=404, detail="Template not found")
-    return await svc.list_reviews(
-        template_id=template_id,
-        page=page,
-        page_size=page_size,
-        tenant_id=ctx.tenant_id,
-    )
+    try:
+        reviews: list[dict[str, Any]] = await svc.list_reviews(
+            template_id=template_id,
+            page=page,
+            page_size=page_size,
+            tenant_id=ctx.tenant_id,
+        )
+    except Exception as exc:
+        _mkt_logger.error("marketplace_list_reviews_failed", error=str(exc))
+        raise HTTPException(status_code=503, detail="Reviews are unavailable") from exc
+    return reviews
 
 
 @marketplace_router.post("/search")
@@ -656,73 +684,62 @@ async def search_templates_v2(request: Request, body: SearchRequest) -> dict[str
 
 @marketplace_router.get("/domains/counts")
 async def get_domain_counts(request: Request) -> dict[str, Any]:
-    """Return counts of marketplace templates and goal templates per domain."""
+    """Counts per domain: marketplace templates the caller can see ("agents") and
+    the caller's goal templates ("templates").
+
+    This used to call ``list_templates`` on the deprecated v1 gallery (which has
+    no such method) and swallow the error, so marketplace templates were never
+    counted. Errors now surface as 503 instead of silently empty counts.
+    """
     tenant = _require_tenant(request)
 
     counts: dict[str, dict[str, int]] = {}
 
-    # Count marketplace templates by domain
-    marketplace = getattr(request.app.state, "marketplace", None)
-    if marketplace is not None:
-        try:
-            templates = await marketplace.list_templates(tenant_id=tenant.tenant_id)
-            items = templates if isinstance(templates, list) else templates.get("items", [])
-            for t in items:
-                domain = t.get("domain", "general")
-                if domain not in counts:
-                    counts[domain] = {"agents": 0, "templates": 0}
-                counts[domain]["agents"] += 1
-        except Exception:
-            pass
+    def _bucket(domain: str) -> dict[str, int]:
+        return counts.setdefault(domain or "general", {"agents": 0, "templates": 0})
 
-    # Count goal templates by domain
+    try:
+        by_domain = await _marketplace_v2(request).count_by_domain(tenant_id=tenant.tenant_id)
+    except Exception as exc:
+        _mkt_logger.error("marketplace_domain_counts_failed", error=str(exc))
+        raise HTTPException(
+            status_code=503, detail="Marketplace template counts are unavailable"
+        ) from exc
+    for domain, n in by_domain.items():
+        _bucket(domain)["agents"] += int(n)
+
     template_store = getattr(request.app.state, "template_store", None)
     if template_store is not None:
         try:
             goal_templates = await template_store.list(tenant.tenant_id)
-            for t in goal_templates:
-                domain = t.get("domain", "general")
-                if domain not in counts:
-                    counts[domain] = {"agents": 0, "templates": 0}
-                counts[domain]["templates"] += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            _mkt_logger.error("goal_template_domain_counts_failed", error=str(exc))
+            raise HTTPException(
+                status_code=503, detail="Goal template counts are unavailable"
+            ) from exc
+        for t in goal_templates:
+            _bucket(t.get("domain", "general"))["templates"] += 1
 
     return {"counts": counts}
 
 
 @marketplace_router.get("/installs")
 async def list_installs(request: Request) -> dict[str, Any]:
-    """Return list of template IDs this tenant has deployed."""
+    """The caller's marketplace installs (from marketplace_installs in DB mode).
+
+    This used to probe the deprecated v1 gallery for methods it does not have
+    and swallow every error, so it always answered an empty list.
+    """
     tenant = _require_tenant(request)
-
-    marketplace = getattr(request.app.state, "marketplace", None)
-    installed_ids: list[str] = []
-
-    if marketplace is not None:
-        try:
-            if hasattr(marketplace, "list_installs"):
-                installed_ids = await marketplace.list_installs(tenant.tenant_id)
-            elif hasattr(marketplace, "list_deployments"):
-                deployments = await marketplace.list_deployments(tenant.tenant_id)
-                installed_ids = [d.get("template_id") for d in deployments if d.get("template_id")]
-        except Exception:
-            pass
-
-    # Fallback: scan agent store for marketplace_template_id attribute
-    agent_store = getattr(request.app.state, "agent_store", None)
-    if agent_store is not None and not installed_ids:
-        try:
-            agents = agent_store.list(tenant_ctx=tenant)
-            if hasattr(agents, "__await__"):
-                agents = await agents
-            for agent in agents if isinstance(agents, list) else []:
-                if agent.get("marketplace_template_id"):
-                    installed_ids.append(agent["marketplace_template_id"])
-        except Exception:
-            pass
-
-    return {"installed_ids": list(set(installed_ids))}
+    try:
+        installs = await _marketplace_v2(request).list_installs(tenant_id=tenant.tenant_id)
+    except Exception as exc:
+        _mkt_logger.error("marketplace_list_installs_failed", error=str(exc))
+        raise HTTPException(
+            status_code=503, detail="Marketplace installs are unavailable"
+        ) from exc
+    installed_ids = list(dict.fromkeys(str(i["template_id"]) for i in installs))
+    return {"installed_ids": installed_ids, "installs": installs}
 
 
 @marketplace_router.get("/{template_id}/versions")
@@ -1565,6 +1582,56 @@ async def start_gdpr_export(request: Request) -> dict[str, Any]:
     }
 
 
+@compliance_router.get("/export/jobs")
+async def list_gdpr_export_jobs(
+    request: Request, limit: int = Query(10, ge=1, le=100)
+) -> dict[str, Any]:
+    """The tenant's most recent GDPR export jobs, newest first.
+
+    Lets the privacy page show the real state of an export after a reload.
+    503 without a database or on a read error — never an empty list for a
+    read that did not happen.
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    ctx = _require_tenant(request)
+    db = _gdpr_db_or_503(request, "GDPR export status")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT id, status, created_at, completed_at, download_url, "
+                        "error_message FROM gdpr_export_jobs WHERE tenant_id = :tid "
+                        "ORDER BY created_at DESC LIMIT :lim"
+                    ),
+                    {"tid": ctx.tenant_id, "lim": limit},
+                )
+            ).fetchall()
+    except Exception as exc:
+        logging.getLogger(__name__).error("gdpr_export_jobs_list_failed: %s", exc)
+        raise HTTPException(503, "GDPR export jobs could not be read; retry") from exc
+    return {
+        "jobs": [
+            {
+                "job_id": r[0],
+                "status": r[1],
+                "created_at": r[2].isoformat() if r[2] else None,
+                "completed_at": r[3].isoformat() if r[3] else None,
+                "download_url": r[4],
+                "error": r[5],
+            }
+            for r in rows
+        ]
+    }
+
+
 @compliance_router.get("/export/jobs/{job_id}")
 async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any]:
     """Poll status of async GDPR export job (503 without a database — never a
@@ -1601,6 +1668,54 @@ async def get_gdpr_export_status(request: Request, job_id: str) -> dict[str, Any
 class ConsentRequest(BaseModel):
     purpose: str  # "analytics", "marketing", "ai_processing", etc.
     legal_basis: str = "legitimate_interest"  # GDPR legal basis
+
+
+@compliance_router.get("/consent")
+async def list_consent(request: Request) -> dict[str, Any]:
+    """The tenant's active (non-revoked) consent records.
+
+    503 without a database or on a read error: an unreadable consent state must
+    never be shown as "not granted" (or granted).
+    """
+    import logging
+
+    from sqlalchemy import text
+
+    ctx = _require_tenant(request)
+    db = _gdpr_db_or_503(request, "Consent state")
+    try:
+        async with (
+            db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT purpose, legal_basis, granted_at FROM consent_records "
+                        "WHERE tenant_id = :tid AND revoked_at IS NULL "
+                        "ORDER BY granted_at DESC"
+                    ),
+                    {"tid": ctx.tenant_id},
+                )
+            ).fetchall()
+    except Exception as exc:
+        logging.getLogger(__name__).error("consent_list_failed: %s", exc)
+        raise HTTPException(503, "Consent state could not be read; retry") from exc
+    consents: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for purpose, basis, granted_at in rows:
+        if purpose in seen:  # newest active record per purpose
+            continue
+        seen.add(purpose)
+        consents.append(
+            {
+                "purpose": purpose,
+                "legal_basis": basis,
+                "granted_at": granted_at.isoformat() if granted_at else None,
+            }
+        )
+    return {"consents": consents, "active_purposes": [c["purpose"] for c in consents]}
 
 
 @compliance_router.post("/consent")

@@ -67,6 +67,7 @@ class _FakeRacyRepository:
 
     def __init__(self) -> None:
         self._rows: dict[str, dict] = {}
+        self._channel_map: dict[tuple[str, str, str], str] = {}
         self.create_calls = 0
 
     async def create_session(
@@ -96,6 +97,26 @@ class _FakeRacyRepository:
         if row is None or row["tenant_id"] != tenant_id:
             return None
         return dict(row)
+
+    async def resolve_channel_session(
+        self,
+        *,
+        tenant_id: str,
+        channel: str,
+        channel_user_id: str,
+        new_session_id: str,
+        title: str,
+    ) -> str:
+        """Durable mapping lookup; deliberately NOT atomic, so only the service's
+        per-key lock keeps concurrent callers from each creating a session."""
+        key = (tenant_id, channel, channel_user_id)
+        await asyncio.sleep(0)
+        existing = self._channel_map.get(key)
+        if existing is not None:
+            return existing
+        await self.create_session(session_id=new_session_id, tenant_id=tenant_id, title=title)
+        self._channel_map[key] = new_session_id
+        return new_session_id
 
 
 async def test_concurrent_channel_messages_do_not_fork_the_session() -> None:

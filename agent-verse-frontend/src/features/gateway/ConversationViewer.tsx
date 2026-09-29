@@ -1,12 +1,20 @@
 /**
  * ConversationViewer — multi-turn conversation inspector across channels.
  * JARVIS motion: JARVISPageShell + JARVISStagger turn items.
+ *
+ * Data: GET /v1/org/{orgId}/commands returns `{ org_id, commands, total }` —
+ * newest-first Universal Command Gateway records (app/org/router.py
+ * `org_list_commands`, rows from `OrgCommandStore`). There is no
+ * `conversations` field, so conversations are derived here by grouping commands
+ * on (channel, conversation_id). Command history holds only what the user sent
+ * plus its status/goal/error; assistant replies are not recorded, and the UI
+ * says so instead of inventing them.
  */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  MessageSquare, Search, User, Cpu,
-  MessageCircle, Hash, Terminal, Mail, Webhook, RefreshCw,
+  MessageSquare, Search, User,
+  MessageCircle, Hash, Terminal, Mail, Webhook, RefreshCw, AlertTriangle,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { JARVISPageShell, SPRING_FAST } from '@/components/ui/JARVISPageShell';
@@ -14,22 +22,35 @@ import { Input } from '@/components/ui/input';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 
-interface ConversationTurn {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: string;
+/** One row of `commands` from GET /v1/org/{id}/commands. */
+export interface OrgCommand {
+  command_id: string;
+  command: string;
+  channel: string;
+  status: string;
+  conversation_id?: string | null;
+  goal_id?: string;
+  error?: string;
+  submitted_at: string;
+}
+
+interface OrgCommandsResponse {
+  org_id: string;
+  commands: OrgCommand[];
+  total: number;
 }
 
 interface Conversation {
-  conversation_id: string;
+  key: string;
   channel: string;
-  actor_name?: string;
-  turn_count: number;
-  last_message: string;
-  created_at: string;
-  updated_at: string;
-  turns?: ConversationTurn[];
+  /** null when the command was sent without a conversation id (single command). */
+  conversation_id: string | null;
+  /** Oldest first. */
+  commands: OrgCommand[];
+  last: OrgCommand;
 }
+
+const COMMAND_LIMIT = 100; // backend max for this endpoint
 
 const CHANNEL_ICON: Record<string, { icon: React.ElementType; color: string }> = {
   rest:     { icon: Terminal,      color: 'text-[#475569]'  },
@@ -39,28 +60,53 @@ const CHANNEL_ICON: Record<string, { icon: React.ElementType; color: string }> =
   webhook:  { icon: Webhook,       color: 'text-orange-400' },
 };
 
+const STATUS_COLOR: Record<string, string> = {
+  completed: 'text-emerald-400',
+  failed:    'text-red-400',
+  queued:    'text-[#94A3B8]',
+  running:   'text-[#00D4FF]',
+};
+
+function groupConversations(commands: OrgCommand[]): Conversation[] {
+  const byKey = new Map<string, Conversation>();
+  for (const cmd of commands) {
+    const cid = cmd.conversation_id || null;
+    const key = cid ? `${cmd.channel}:${cid}` : `cmd:${cmd.command_id}`;
+    const conv = byKey.get(key);
+    if (conv) conv.commands.push(cmd);
+    else byKey.set(key, { key, channel: cmd.channel, conversation_id: cid, commands: [cmd], last: cmd });
+  }
+  const ts = (c: OrgCommand) => Date.parse(c.submitted_at) || 0;
+  const list = [...byKey.values()];
+  for (const conv of list) {
+    conv.commands.sort((a, b) => ts(a) - ts(b));
+    conv.last = conv.commands[conv.commands.length - 1];
+  }
+  return list.sort((a, b) => ts(b.last) - ts(a.last));
+}
+
 interface ConversationViewerProps { orgId: string; }
 
 export function ConversationViewer({ orgId }: ConversationViewerProps) {
   const [search, setSearch]         = useState('');
   const [selected, setSelected]     = useState<string | null>(null);
 
-  const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['conversations', orgId],
-    queryFn: () =>
-      apiFetch<any>(`/v1/org/${orgId}/commands?include_conversations=true`)
-        .then(r => (Array.isArray(r) ? r : r?.conversations ?? r?.data ?? []))
-        .catch(() => [] as Conversation[]),
+  const { data, isLoading, isError, refetch, isFetching } = useQuery({
+    queryKey: ['org-commands', orgId, COMMAND_LIMIT],
+    queryFn: () => apiFetch<OrgCommandsResponse>(`/v1/org/${orgId}/commands?limit=${COMMAND_LIMIT}`),
     staleTime: 30_000,
   });
 
-  const conversations: Conversation[] = data ?? [];
+  const conversations = useMemo(() => groupConversations(data?.commands ?? []), [data]);
+  const q = search.trim().toLowerCase();
   const filtered = conversations.filter(c =>
-    !search || c.last_message.toLowerCase().includes(search.toLowerCase())
-      || (c.actor_name?.toLowerCase().includes(search.toLowerCase()) ?? false)
+    !q
+      || (c.conversation_id?.toLowerCase().includes(q) ?? false)
+      || c.commands.some(cmd => cmd.command.toLowerCase().includes(q)),
   );
 
-  const selectedConv = conversations.find(c => c.conversation_id === selected);
+  const selectedConv = conversations.find(c => c.key === selected);
+  const label = (c: Conversation) => c.conversation_id ?? c.last.command;
 
   return (
     <JARVISPageShell className="flex h-full gap-4">
@@ -84,6 +130,13 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
         <div className="flex-1 overflow-y-auto space-y-1" role="list" aria-label="Conversations">
           {isLoading
             ? [1,2,3].map(i => <div key={i} className="h-16 rounded-lg bg-[#0F1623] animate-pulse" aria-hidden />)
+            : isError
+            ? (
+              <p role="alert" className="text-xs text-red-400 text-center py-8 flex items-center justify-center gap-1.5">
+                <AlertTriangle className="h-3.5 w-3.5" aria-hidden />
+                Couldn&apos;t load conversations.
+              </p>
+            )
             : filtered.length === 0
             ? <p className="text-xs text-[#475569] text-center py-8">No conversations yet.</p>
             : filtered.map(conv => {
@@ -91,14 +144,14 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
               const ChanIcon = chanConf.icon;
               return (
                 <button
-                  key={conv.conversation_id}
-                  onClick={() => setSelected(conv.conversation_id)}
+                  key={conv.key}
+                  onClick={() => setSelected(conv.key)}
                   role="listitem"
                   style={{ touchAction: 'manipulation' }}
                   className={cn(
                     'w-full text-left flex items-start gap-2.5 px-3 py-2.5 rounded-xl transition-colors',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00D4FF]/50',
-                    selected === conv.conversation_id
+                    selected === conv.key
                       ? 'bg-[#00D4FF]/10 border border-[#00D4FF]/20'
                       : 'hover:bg-[#1A1F2E] border border-transparent',
                   )}
@@ -106,10 +159,14 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
                   <ChanIcon className={cn('h-3.5 w-3.5 flex-shrink-0 mt-0.5', chanConf.color)} aria-hidden />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs text-[#94A3B8] truncate">{conv.actor_name ?? conv.channel}</span>
-                      <span className="text-[10px] text-[#475569] flex-shrink-0 ml-1">{conv.turn_count}t</span>
+                      <span className="text-xs text-[#94A3B8] truncate">{label(conv)}</span>
+                      <span className="text-[10px] text-[#475569] flex-shrink-0 ml-1">
+                        {conv.commands.length} {conv.commands.length === 1 ? 'cmd' : 'cmds'}
+                      </span>
                     </div>
-                    <p className="text-[11px] text-[#475569] truncate">{conv.last_message}</p>
+                    {conv.conversation_id && (
+                      <p className="text-[11px] text-[#475569] truncate">{conv.last.command}</p>
+                    )}
                   </div>
                 </button>
               );
@@ -118,7 +175,7 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
         </div>
       </div>
 
-      {/* ── Right: turns ── */}
+      {/* ── Right: commands in the selected conversation ── */}
       <div className="flex-1 h-full overflow-y-auto">
         {!selectedConv ? (
           <div className="flex flex-col items-center justify-center h-full gap-3">
@@ -128,7 +185,7 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
         ) : (
           <AnimatePresence mode="wait">
             <motion.div
-              key={selectedConv.conversation_id}
+              key={selectedConv.key}
               initial={false}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0 }}
@@ -136,35 +193,27 @@ export function ConversationViewer({ orgId }: ConversationViewerProps) {
               className="space-y-3"
             >
               <p className="text-[11px] text-[#475569] pb-2 border-b border-[#1E2535]">
-                {selectedConv.channel} · {selectedConv.actor_name ?? 'Unknown'} · {selectedConv.turn_count} turns
+                {selectedConv.channel} · {selectedConv.conversation_id ?? 'no conversation id'} · {selectedConv.commands.length} {selectedConv.commands.length === 1 ? 'command' : 'commands'}
               </p>
-              {(selectedConv.turns ?? []).length === 0 ? (
-                <div className="py-8 text-center">
-                  <p className="text-xs text-[#475569]">Turn details not available (load full conversation).</p>
-                </div>
-              ) : (
-                selectedConv.turns!.map((turn, i) => (
-                  <div key={i} className={cn('flex gap-2.5', turn.role === 'assistant' && 'justify-end')}>
-                    <div className={cn(
-                      'p-1.5 rounded-lg flex-shrink-0 self-start mt-0.5',
-                      turn.role === 'user' ? 'bg-[#1A1F2E]' : 'bg-[#00D4FF]/10',
-                    )}>
-                      {turn.role === 'user'
-                        ? <User className="h-3.5 w-3.5 text-[#475569]" aria-hidden />
-                        : <Cpu className="h-3.5 w-3.5 text-[#00D4FF]" aria-hidden />}
-                    </div>
-                    <div className={cn(
-                      'max-w-xs rounded-xl px-3 py-2 text-xs leading-relaxed',
-                      turn.role === 'user'
-                        ? 'bg-[#1A1F2E] border border-[#1E2535] text-[#94A3B8]'
-                        : 'bg-[#00D4FF]/5 border border-[#00D4FF]/20 text-[#94A3B8]',
-                    )}>
-                      {turn.content}
-                      <p className="text-[10px] text-[#475569] mt-1">{new Date(turn.timestamp).toLocaleTimeString()}</p>
-                    </div>
+              {selectedConv.commands.map(cmd => (
+                <div key={cmd.command_id} className="flex gap-2.5">
+                  <div className="p-1.5 rounded-lg flex-shrink-0 self-start mt-0.5 bg-[#1A1F2E]">
+                    <User className="h-3.5 w-3.5 text-[#475569]" aria-hidden />
                   </div>
-                ))
-              )}
+                  <div className="max-w-xs rounded-xl px-3 py-2 text-xs leading-relaxed bg-[#1A1F2E] border border-[#1E2535] text-[#94A3B8]">
+                    {cmd.command}
+                    <p className="text-[10px] text-[#475569] mt-1 flex items-center gap-1.5">
+                      <span>{new Date(cmd.submitted_at).toLocaleTimeString()}</span>
+                      <span className={STATUS_COLOR[cmd.status] ?? 'text-[#94A3B8]'}>{cmd.status}</span>
+                      {cmd.goal_id && <span className="font-mono">goal {cmd.goal_id}</span>}
+                    </p>
+                    {cmd.error && <p className="text-[10px] text-red-400 mt-1">{cmd.error}</p>}
+                  </div>
+                </div>
+              ))}
+              <p className="text-[11px] text-[#475569] pt-2">
+                Assistant replies are not recorded in command history — open the goal to see its result.
+              </p>
             </motion.div>
           </AnimatePresence>
         )}

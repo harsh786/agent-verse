@@ -305,12 +305,20 @@ async def test_long_term_memory_cross_goal():
 
 async def test_marketplace_deploy_to_agent_creation():
     """Marketplace deploy creates a valid agent configuration."""
-    mp = Marketplace()
+    created: list[dict] = []
+
+    class _Store:
+        async def create(self, config: dict, *, tenant_ctx: object) -> str:
+            created.append(config)
+            return "agent-e2e"
+
+    mp = Marketplace(agent_store=_Store())
     templates = mp.browse(tenant_ctx=T)
     assert len(templates) >= 6
     tpl = templates[0]
     dep = await mp.deploy(template_id=tpl["template_id"], params={}, tenant_ctx=T)
-    assert dep.agent_id
+    assert dep.agent_id == "agent-e2e"
+    assert created and created[0]["goal_template"]
     assert dep.tenant_id == T.tenant_id
 
 

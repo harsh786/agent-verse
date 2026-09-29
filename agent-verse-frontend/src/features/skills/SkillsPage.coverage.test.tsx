@@ -112,12 +112,26 @@ describe('SkillsPage — extra coverage', () => {
     expect(screen.getByText('Used 7×')).toBeInTheDocument();
   });
 
-  test('disabled custom skill renders dimmed with an Off toggle', async () => {
+  test('no enable/disable toggle is offered (the backend has no per-skill switch)', async () => {
+    // Regression: the toggle PATCHed /skills/{id}, a route that never existed.
     mockFetch();
     renderPage();
     await screen.findByText('disabled-skill');
-    expect(screen.getByText('Inactive')).toBeInTheDocument();
-    expect(screen.getByText('○ Off')).toBeInTheDocument();
+    expect(screen.queryByText('○ Off')).not.toBeInTheDocument();
+    expect(screen.queryByText('● On')).not.toBeInTheDocument();
+    expect(screen.queryByText('Inactive')).not.toBeInTheDocument();
+  });
+
+  test('a failed skills load is shown as an error, not "No skills found."', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Custom skills could not be loaded; retry' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    renderPage();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Custom skills could not be loaded; retry/);
+    expect(screen.queryByText('No skills found.')).not.toBeInTheDocument();
   });
 
   test('export downloads a JSON blob of all skills', async () => {
@@ -256,30 +270,6 @@ describe('SkillsPage — extra coverage', () => {
     );
   });
 
-  test('toggle mutation error toasts a failure message', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (url.includes('/skills') && method === 'GET') {
-        return new Response(JSON.stringify({ skills: [...PLATFORM, ...CUSTOM] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (method === 'PATCH') return new Response('nope', { status: 500 });
-      return new Response('{}', { status: 200 });
-    });
-    renderPage();
-    await screen.findByText('my-research-skill');
-    await userEvent.click(screen.getByText(/On/));
-
-    await waitFor(() =>
-      expect(
-        useToastStore.getState().toasts.some(t => t.kind === 'error' && t.message.startsWith('Toggle failed'))
-      ).toBe(true)
-    );
-  });
-
   test('test modal error path renders the error text and X closes it', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
@@ -301,7 +291,7 @@ describe('SkillsPage — extra coverage', () => {
     await userEvent.type(within(modal).getByPlaceholderText(/Enter test input/i), 'go');
     await userEvent.click(within(modal).getByRole('button', { name: /Run Test/i }));
 
-    expect(await screen.findByText(/Error: Error: 500/)).toBeInTheDocument();
+    expect(await screen.findByText(/Error: Error: HTTP 500/)).toBeInTheDocument();
 
     await userEvent.click(within(modal).getByRole('button', { name: '' }));
     expect(screen.queryByText(/^Test:/)).not.toBeInTheDocument();

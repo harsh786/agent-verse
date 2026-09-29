@@ -19,29 +19,29 @@ import { apiFetch } from '@/lib/api/client';
 export function AIOpsDashboard() {
   const navigate = useNavigate();
 
-  const { data: goalsData } = useQuery({
+  // No .catch(() => empty) fallbacks: a failed request used to read as
+  // "0 active goals", "0/0 providers" and "no alerts" during an outage.
+  const { data: goalsData, isError: goalsError } = useQuery({
     queryKey: ['dashboard-goals'],
-    queryFn: () => apiFetch<any>('/goals').catch(() => ({ goals: [] })),
+    queryFn: () => apiFetch<any>('/goals'),
     refetchInterval: 5_000,
   });
 
-  const { data: modelsData } = useQuery({
+  const { data: modelsData, isError: modelsError } = useQuery({
     queryKey: ['dashboard-models'],
-    queryFn: () => apiFetch<any>('/models/health').catch(() => ({ providers: [] })),
+    queryFn: () => apiFetch<any>('/models/health'),
     refetchInterval: 30_000,
   });
 
-  const { data: alertsData } = useQuery({
+  const { data: alertsData, isError: alertsError } = useQuery({
     queryKey: ['dashboard-alerts'],
-    queryFn: () => apiFetch<any>('/ai-ops/alerts?limit=5').catch(() => ({ alerts: [] })),
+    queryFn: () => apiFetch<any>('/ai-ops/alerts?limit=5'),
     refetchInterval: 30_000,
   });
 
-  const { data: regressionData } = useQuery({
+  const { data: regressionData, isError: regressionError } = useQuery({
     queryKey: ['dashboard-regression'],
-    // An unreachable endpoint is "unknown" — it used to be reported as 'ok'
-    // ("All systems normal").
-    queryFn: () => apiFetch<any>('/ai-ops/regression-status').catch(() => ({ status: 'unknown' })),
+    queryFn: () => apiFetch<any>('/ai-ops/regression-status'),
     refetchInterval: 60_000,
   });
 
@@ -52,7 +52,9 @@ export function AIOpsDashboard() {
   const providers = modelsData?.providers ?? [];
   const healthyProviders = providers.filter((p: any) => p.is_healthy).length;
   const alerts = alertsData?.alerts ?? [];
-  const regressionStatus = regressionData?.status ?? 'unknown';
+  // An unreachable endpoint is "unknown" — never 'ok' ("All systems normal").
+  const regressionStatus = regressionError ? 'unknown' : (regressionData?.status ?? 'unknown');
+  const UNAVAILABLE = '—';
 
   const REGRESSION_COLORS: Record<string, string> = {
     ok: 'text-green-600 dark:text-green-400',
@@ -78,30 +80,32 @@ export function AIOpsDashboard() {
         {[
           {
             label: 'Active Goals',
-            value: activeGoals.length,
+            value: goalsError ? UNAVAILABLE : activeGoals.length,
             icon: Activity,
             color: 'text-blue-500',
             onClick: () => navigate('/goals?status=executing'),
           },
           {
             label: 'Completed Today',
-            value: completedToday,
+            value: goalsError ? UNAVAILABLE : completedToday,
             icon: CheckCircle,
             color: 'text-green-500',
             onClick: () => navigate('/goals?status=complete'),
           },
           {
             label: 'Failed Today',
-            value: failedToday,
+            value: goalsError ? UNAVAILABLE : failedToday,
             icon: XCircle,
-            color: failedToday > 0 ? 'text-red-500' : 'text-muted-foreground',
+            color: !goalsError && failedToday > 0 ? 'text-red-500' : 'text-muted-foreground',
             onClick: () => navigate('/goals?status=failed'),
           },
           {
             label: 'Healthy Providers',
-            value: `${healthyProviders}/${providers.length}`,
+            value: modelsError ? UNAVAILABLE : `${healthyProviders}/${providers.length}`,
             icon: Brain,
-            color: healthyProviders === providers.length ? 'text-green-500' : 'text-amber-500',
+            color: modelsError
+              ? 'text-muted-foreground'
+              : healthyProviders === providers.length ? 'text-green-500' : 'text-amber-500',
             onClick: () => navigate('/models'),
           },
         ].map(({ label, value, icon: Icon, color, onClick }) => (
@@ -138,7 +142,12 @@ export function AIOpsDashboard() {
             </button>
           </div>
           <div className="divide-y divide-border">
-            {activeGoals.length === 0 ? (
+            {goalsError ? (
+              <div role="alert" className="px-5 py-8 text-center text-red-500">
+                <XCircle className="h-8 w-8 opacity-40 mx-auto mb-2" />
+                <p className="text-sm">Goals could not be loaded</p>
+              </div>
+            ) : activeGoals.length === 0 ? (
               <div className="px-5 py-8 text-center text-muted-foreground">
                 <CheckCircle className="h-8 w-8 opacity-20 mx-auto mb-2" />
                 <p className="text-sm">No active goals</p>
@@ -187,7 +196,9 @@ export function AIOpsDashboard() {
               </button>
             </div>
             <div className="p-4 space-y-2">
-              {providers.length === 0 ? (
+              {modelsError ? (
+                <p role="alert" className="text-xs text-red-500">Provider health could not be loaded</p>
+              ) : providers.length === 0 ? (
                 <p className="text-xs text-muted-foreground">No providers tested yet</p>
               ) : (
                 providers.map((p: any) => (
@@ -237,14 +248,21 @@ export function AIOpsDashboard() {
                       ? 'Status unavailable'
                       : `${regressionStatus} detected`}
                 </p>
-                <p className="text-xs text-muted-foreground">
-                  {regressionData?.critical_alerts ?? 0} critical · {regressionData?.warning_alerts ?? 0} warnings
-                </p>
+                {!regressionError && regressionData && (
+                  <p className="text-xs text-muted-foreground">
+                    {regressionData.critical_alerts ?? 0} critical · {regressionData.warning_alerts ?? 0} warnings
+                  </p>
+                )}
               </div>
             </div>
           </div>
 
           {/* Recent Alerts */}
+          {alertsError && (
+            <div role="alert" className="bg-card border border-red-500/30 rounded-xl px-4 py-3 text-xs text-red-500">
+              Alerts could not be loaded — there may be alerts you are not seeing.
+            </div>
+          )}
           {alerts.length > 0 && (
             <div className="bg-card border border-border rounded-xl overflow-hidden">
               <div className="px-4 py-3 border-b border-border">

@@ -199,21 +199,6 @@ describe('SkillsPage — branches', () => {
     );
   });
 
-  test('toggling a custom skill PATCHes the enabled flag', async () => {
-    const spy = mockFetch();
-    renderPage();
-    await screen.findByText('my-research-skill');
-    // The custom card renders a "● On" toggle for enabled skills.
-    await userEvent.click(screen.getByText(/On/));
-    await waitFor(() =>
-      expect(
-        spy.mock.calls.some(
-          ([u, i]) => /\/skills\/custom-001$/.test(String(u)) && (i as RequestInit)?.method === 'PATCH'
-        )
-      ).toBe(true)
-    );
-  });
-
   test('test modal runs a skill and renders the JSON result', async () => {
     mockFetch();
     renderPage();

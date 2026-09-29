@@ -574,12 +574,9 @@ async def execute_skill(
         except Exception as exc:
             error = str(exc)
     else:
-        # Fallback
-        output = (
-            f"[{skill['name']} Skill] Processing: {body.input_context[:100]}..."
-            " (LLM provider not configured)"
-        )
-        success = True
+        # No provider: nothing can execute the skill. This used to answer
+        # success=True with a canned "[X Skill] Processing: ..." output.
+        raise HTTPException(503, "No LLM provider is configured; the skill cannot be executed")
 
     execution = {
         "execution_id": execution_id,

@@ -29,7 +29,7 @@ import {
   Database,
   FileDown,
 } from "lucide-react";
-import { simulationApi, apiFetch, API_BASE } from "@/lib/api/client";
+import { simulationApi, API_BASE } from "@/lib/api/client";
 import { useAuthStore, getAuthHeader } from "@/stores/auth";
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -370,16 +370,8 @@ export function PlaygroundPage(): JSX.Element {
     saveScenarios(updated);
     setSaveDialogOpen(false);
     setSaveName("");
-
-    // Best-effort backend persistence
-    try {
-      await apiFetch<void>('/playground/scenarios', {
-        method: 'POST',
-        body: JSON.stringify(scenario),
-      });
-    } catch {
-      // Silently ignore — localStorage is the source of truth
-    }
+    // Scenarios are browser-local by design: there is no backend scenario
+    // store (the POST /playground/scenarios this used to fire always 404'd).
   };
 
   const loadScenario = (s: Scenario): void => {

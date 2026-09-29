@@ -1270,25 +1270,53 @@ def _normalize_domain_filter(domain: str) -> str:
 
 
 # A template is visible to its owner in any state, and to everyone else only
-# when shared (public/community) AND it passed security review.
+# when shared (public/community) AND it passed security review. The system
+# tenant's built-in catalogue counts as reviewed: it ships with the product and
+# never goes through the tenant review pipeline. (Built-ins used to be seeded
+# 'unreviewed', so no tenant but ``system`` could see them in DB mode.) Tenants
+# cannot claim ``is_builtin`` — ``publish_template`` forces it off for them.
 from app.observability.logging import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 
 _VISIBLE_SQL = (
-    "((visibility IN ('public','community') AND review_status = 'approved') "
+    "((visibility IN ('public','community') AND (review_status = 'approved' "
+    f"OR (tenant_id = '{_SYSTEM_TENANT_ID}' AND is_builtin))) "
     "OR tenant_id = :vis_tid)"
 )
+
+
+def _is_system_builtin(template: dict[str, Any]) -> bool:
+    return template.get("tenant_id") == _SYSTEM_TENANT_ID and bool(template.get("is_builtin"))
 
 
 def _visible_to(template: dict[str, Any], tenant_id: str | None) -> bool:
     if tenant_id and template.get("tenant_id") == tenant_id:
         return True
-    return (
-        template.get("visibility") in ("public", "community")
-        and template.get("review_status") == "approved"
+    return template.get("visibility") in ("public", "community") and (
+        template.get("review_status") == "approved" or _is_system_builtin(template)
     )
 
+
+def bundle_report(name: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarise per-item bundle results without overstating success."""
+    deployed = [i for i in items if i["status"] == "deployed"]
+    failed = [i for i in items if i["status"] != "deployed"]
+    if not failed:
+        status = "complete"
+    elif deployed:
+        status = "partial"
+    else:
+        status = "failed"
+    return {
+        "bundle_name": name,
+        "status": status,
+        "templates_deployed": len(deployed),
+        "templates_failed": len(failed),
+        "items": items,
+        "results": deployed,
+        "errors": [{"template_id": i["template_id"], "error": i.get("error", "")} for i in failed],
+    }
 
 class TemplateSlugTakenError(Exception):
     """The slug belongs to another tenant's template."""
@@ -1296,6 +1324,10 @@ class TemplateSlugTakenError(Exception):
     def __init__(self, slug: str) -> None:
         super().__init__(f"Template slug {slug!r} is already taken")
         self.slug = slug
+
+
+class CounterUpdateError(RuntimeError):
+    """A template counter (install_count / rating) update matched no row."""
 
 
 class MarketplaceV2:
@@ -1517,8 +1549,10 @@ class MarketplaceV2:
                         "page": page,
                         "page_size": page_size,
                     }
-            except Exception:
-                pass
+            except Exception as exc:
+                # Degraded read: only the built-in catalogue can answer (never
+                # tenant-published templates) — say so in the logs.
+                logger.warning("marketplace_list_templates_db_failed", error=str(exc))
 
         # In-memory fallback — apply same visibility rule as the DB path:
         # public/community templates are visible to all; private templates only to their owner.
@@ -1554,11 +1588,22 @@ class MarketplaceV2:
         tenant_ctx: TenantContext,
         run_security_review: bool = True,
     ) -> dict[str, Any]:
-        """Create or update a template; optionally run security review."""
+        """Create or update a template; optionally run security review.
+
+        ``is_builtin`` / ``is_verified`` are honoured only for the system
+        tenant (``seed_builtins``): a tenant cannot badge its own template as a
+        built-in or verified. System built-ins are stored ``approved`` — they
+        are the product's own catalogue, not tenant submissions awaiting review.
+        """
         template_id = data.get("template_id") or str(uuid.uuid4().hex[:32])
         slug = data.get("slug", "").strip() or f"tpl-{template_id[:8]}"
+        is_system = tenant_ctx.tenant_id == _SYSTEM_TENANT_ID
+        is_builtin = is_system and bool(data.get("is_builtin", False))
+        is_verified = is_system and bool(data.get("is_verified", False))
 
-        if run_security_review:
+        if is_builtin:
+            review_status = "approved"
+        elif run_security_review:
             review = await self._reviewer.review(data)
             review_status = "approved" if review["approved"] else "pending"
         else:
@@ -1583,8 +1628,8 @@ class MarketplaceV2:
             "icon_url": data.get("icon_url"),
             "visibility": data.get("visibility", "private"),
             "review_status": review_status,
-            "is_builtin": data.get("is_builtin", False),
-            "is_verified": data.get("is_verified", False),
+            "is_builtin": is_builtin,
+            "is_verified": is_verified,
             "version": data.get("version", "1.0.0"),
         }
 
@@ -1661,6 +1706,23 @@ class MarketplaceV2:
             raise TemplateSlugTakenError(slug)
         record["id"] = saved[0]
         return record
+
+    @staticmethod
+    async def _require_counter_update(
+        session: Any, sql: str, template_id: str, *, what: str
+    ) -> None:
+        """Run a counter function (migration d2b7e4f1a8c6); raise unless it hit a row.
+
+        The functions return the number of template rows updated: 0 means the
+        caller may not see the template (or, for installs, has no install
+        record), and the counter did NOT move — never report that as success.
+        """
+        updated = (await session.execute(_t(sql), {"id": template_id})).scalar_one()
+        if not updated:
+            logger.error(
+                "marketplace_counter_not_updated", template_id=template_id, counter=what
+            )
+            raise CounterUpdateError(f"{what} for template {template_id!r} was not updated")
 
     # ------------------------------------------------------------------
     # Atomic install (fixes ghost-agent bug)
@@ -1826,19 +1888,25 @@ class MarketplaceV2:
                             "system_prompt": system_prompt,
                         },
                     )
-                    # Increment install count
-                    await session.execute(
-                        _t(
-                            "UPDATE marketplace_templates "
-                            "SET install_count = install_count + 1, updated_at = NOW() "
-                            "WHERE id = :id"
-                        ),
-                        {"id": template_id},
+                    # Increment install count. The template row usually belongs
+                    # to another tenant (or is a system built-in), and its RLS
+                    # write policy matches only the owner — a direct UPDATE here
+                    # matched 0 rows, silently. The SECURITY DEFINER function
+                    # (migration d2b7e4f1a8c6) does the owner-context update and
+                    # returns the row count; 0 aborts the whole install.
+                    await self._require_counter_update(
+                        session,
+                        "SELECT marketplace_bump_install_count(:id)",
+                        template_id,
+                        what="install_count",
                     )
                     # ALL OR NOTHING
                     await session.commit()
             except Exception as exc:
                 # Atomic failure — no ghost agent since session was not committed
+                logger.error(
+                    "marketplace_install_failed", template_id=template_id, error=str(exc)
+                )
                 return {
                     "success": False,
                     "error": str(exc),
@@ -1848,6 +1916,14 @@ class MarketplaceV2:
             # In-memory path for tests (B.2: include connector_ids + system_prompt)
             _connector_ids = template.get("required_connectors", [])
             _system_prompt = config.get("system_prompt") or template.get("system_prompt", "")
+            cached = self._cache.get(template_id)
+            if cached is None:
+                logger.error("marketplace_install_count_not_updated", template_id=template_id)
+                return {
+                    "success": False,
+                    "error": f"install_count for template {template_id!r} was not updated",
+                    "template_id": template_id,
+                }
             self._installs.append(
                 {
                     "install_id": install_id,
@@ -1859,10 +1935,7 @@ class MarketplaceV2:
                     "system_prompt": _system_prompt,
                 }
             )
-            if template_id in self._cache:
-                self._cache[template_id]["install_count"] = (
-                    self._cache[template_id].get("install_count", 0) + 1
-                )
+            cached["install_count"] = cached.get("install_count", 0) + 1
 
         return {
             "success": True,
@@ -1938,30 +2011,30 @@ class MarketplaceV2:
                             "verified": verified_install,
                         },
                     )
-                    # Aggregate: update rating_avg and rating_count
-                    await session.execute(
-                        _t("""
-                            UPDATE marketplace_templates SET
-                                rating_avg   = (
-                                    SELECT AVG(rating)::float
-                                    FROM marketplace_reviews
-                                    WHERE template_id = :tid
-                                ),
-                                rating_count = (
-                                    SELECT COUNT(*)
-                                    FROM marketplace_reviews
-                                    WHERE template_id = :tid
-                                ),
-                                updated_at = NOW()
-                            WHERE id = :tid
-                        """),
-                        {"tid": template_id},
+                    # Aggregate rating_avg / rating_count on the template row via
+                    # the SECURITY DEFINER function — a direct UPDATE as the
+                    # reviewer matched 0 rows on any template it does not own.
+                    await self._require_counter_update(
+                        session,
+                        "SELECT marketplace_refresh_template_rating(:id)",
+                        template_id,
+                        what="rating",
                     )
                     await session.commit()
             except Exception as exc:
+                logger.error(
+                    "marketplace_add_review_failed", template_id=template_id, error=str(exc)
+                )
                 return {"success": False, "error": str(exc)}
         else:
             # In-memory
+            cached = self._cache.get(template_id)
+            if cached is None:
+                logger.error("marketplace_rating_not_updated", template_id=template_id)
+                return {
+                    "success": False,
+                    "error": f"rating for template {template_id!r} was not updated",
+                }
             verified_install = any(
                 i.get("template_id") == template_id and i.get("tenant_id") == tenant_ctx.tenant_id
                 for i in self._installs
@@ -1977,15 +2050,9 @@ class MarketplaceV2:
                     "verified_install": verified_install,
                 }
             )
-            # Update in-memory cache
-            if template_id in self._cache:
-                all_ratings = [
-                    r["rating"] for r in self._reviews if r["template_id"] == template_id
-                ]
-                self._cache[template_id]["rating_avg"] = (
-                    sum(all_ratings) / len(all_ratings) if all_ratings else None
-                )
-                self._cache[template_id]["rating_count"] = len(all_ratings)
+            all_ratings = [r["rating"] for r in self._reviews if r["template_id"] == template_id]
+            cached["rating_avg"] = sum(all_ratings) / len(all_ratings)
+            cached["rating_count"] = len(all_ratings)
 
         return {"success": True, "review_id": review_id}
 
@@ -1997,32 +2064,32 @@ class MarketplaceV2:
         page_size: int = 20,
         tenant_id: str = "",
     ) -> list[dict[str, Any]]:
-        """List reviews for a template (verified installs first)."""
-        if self._db is not None:
-            try:
-                async with self._db() as session:
-                    if tenant_id:
-                        await session.execute(
-                            _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
-                        )
-                    offset = (page - 1) * page_size
-                    rows = (
-                        await session.execute(
-                            _t("""
-                                SELECT * FROM marketplace_reviews
-                                WHERE template_id = :tid
-                                ORDER BY verified_install DESC, helpful_count DESC,
-                                         created_at DESC
-                                LIMIT :limit OFFSET :offset
-                            """),
-                            {"tid": template_id, "limit": page_size, "offset": offset},
-                        )
-                    ).fetchall()
-                    return [dict(r._mapping) for r in rows]
-            except Exception:
-                pass
+        """List reviews for a template (verified installs first).
 
-        # In-memory fallback
+        DB errors propagate. They used to fall back to the in-memory list,
+        which is always empty in DB mode — an outage looked like "no reviews".
+        """
+        if self._db is not None:
+            async with self._db() as session:
+                if tenant_id:
+                    await session.execute(
+                        _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+                    )
+                offset = (page - 1) * page_size
+                rows = (
+                    await session.execute(
+                        _t("""
+                            SELECT * FROM marketplace_reviews
+                            WHERE template_id = :tid
+                            ORDER BY verified_install DESC, helpful_count DESC,
+                                     created_at DESC
+                            LIMIT :limit OFFSET :offset
+                        """),
+                        {"tid": template_id, "limit": page_size, "offset": offset},
+                    )
+                ).fetchall()
+                return [dict(r._mapping) for r in rows]
+
         return [r for r in self._reviews if r.get("template_id") == template_id]
 
     # ------------------------------------------------------------------
@@ -2047,6 +2114,126 @@ class MarketplaceV2:
             page_size=page_size,
         )
         return result.get("templates", [])
+
+    # ------------------------------------------------------------------
+    # Bundles
+    # ------------------------------------------------------------------
+
+    async def create_bundle(
+        self,
+        *,
+        name: str,
+        template_ids: list[str],
+        tenant_ctx: TenantContext,
+        params: dict[str, dict[str, Any]] | None = None,
+        agent_store: Any = None,
+    ) -> dict[str, Any]:
+        """Install several templates; report each item's real outcome.
+
+        Each template goes through the atomic ``install`` (visibility check,
+        parameter validation, one transaction). An item is ``deployed`` with
+        the agent id the install returned, or ``failed`` with its error — never
+        a made-up id. The bundle is ``complete``, ``partial`` or ``failed``.
+        """
+        if not template_ids:
+            raise ValueError("A bundle needs at least one template")
+        per_template = params or {}
+        items: list[dict[str, Any]] = []
+        for template_id in template_ids:
+            try:
+                result = await self.install(
+                    template_id=template_id,
+                    params=dict(per_template.get(template_id) or {}),
+                    tenant_ctx=tenant_ctx,
+                    agent_store=agent_store,
+                )
+            except Exception as exc:
+                logger.error(
+                    "marketplace_bundle_item_failed", template_id=template_id, error=str(exc)
+                )
+                result = {"success": False, "error": str(exc)}
+            if result.get("success"):
+                items.append(
+                    {
+                        "template_id": template_id,
+                        "status": "deployed",
+                        "agent_id": result["agent_id"],
+                        "install_id": result["install_id"],
+                    }
+                )
+                continue
+            item: dict[str, Any] = {"template_id": template_id, "status": "failed"}
+            missing = result.get("missing_connectors")
+            if missing:
+                item["error"] = f"Required connectors not configured: {missing}"
+                item["missing_connectors"] = missing
+            else:
+                item["error"] = result.get("error") or "Install failed"
+            items.append(item)
+        return bundle_report(name, items)
+
+    # ------------------------------------------------------------------
+    # Installs / domain counts
+    # ------------------------------------------------------------------
+
+    async def list_installs(self, *, tenant_id: str) -> list[dict[str, Any]]:
+        """The tenant's active installs (newest first). DB errors propagate."""
+        if not tenant_id:
+            raise ValueError("tenant_id is required")
+        if self._db is None:
+            return [
+                {
+                    "install_id": i["install_id"],
+                    "template_id": i["template_id"],
+                    "agent_id": i["agent_id"],
+                    "installed_at": None,
+                }
+                for i in reversed(self._installs)
+                if i.get("tenant_id") == tenant_id
+            ]
+        async with self._db() as session:
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
+            )
+            rows = (
+                await session.execute(
+                    _t(
+                        "SELECT id AS install_id, template_id, agent_id, installed_at "
+                        "FROM marketplace_installs "
+                        "WHERE installer_tenant_id = :tid AND uninstalled_at IS NULL "
+                        "AND install_status = 'success' "
+                        "ORDER BY installed_at DESC"
+                    ),
+                    {"tid": tenant_id},
+                )
+            ).fetchall()
+        return [dict(r._mapping) for r in rows]
+
+    async def count_by_domain(self, *, tenant_id: str) -> dict[str, int]:
+        """Number of templates visible to the tenant, per domain. DB errors propagate."""
+        if self._db is None:
+            if not self._builtin_cache_populated:
+                self._ensure_builtin_cache()
+            counts: dict[str, int] = {}
+            for t in self._cache.values():
+                if _visible_to(t, tenant_id):
+                    domain = t.get("domain") or "general"
+                    counts[domain] = counts.get(domain, 0) + 1
+            return counts
+        async with self._db() as session:
+            await session.execute(
+                _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id or ""}
+            )
+            rows = (
+                await session.execute(
+                    _t(
+                        "SELECT domain, count(*) FROM marketplace_templates "
+                        f"WHERE {_VISIBLE_SQL} GROUP BY domain"
+                    ),
+                    {"vis_tid": tenant_id or ""},
+                )
+            ).fetchall()
+        return {str(r[0] or "general"): int(r[1]) for r in rows}
 
     # ------------------------------------------------------------------
     # Seed built-ins

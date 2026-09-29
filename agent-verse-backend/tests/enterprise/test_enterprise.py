@@ -1,6 +1,8 @@
 """Tests for enterprise modules: compliance, simulation, red-team, marketplace, self-optimization."""
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.enterprise.compliance import ComplianceController
@@ -199,7 +201,9 @@ def test_marketplace_get_unknown_template_returns_none() -> None:
 
 
 async def test_marketplace_deploy_template() -> None:
-    m = Marketplace()
+    store = MagicMock()
+    store.create = AsyncMock(return_value="agent-created")
+    m = Marketplace(agent_store=store)
     dep = await m.deploy(
         template_id="tpl-bug-fix",
         params={"repo": "acme/backend", "label": "prod-down"},
@@ -207,7 +211,7 @@ async def test_marketplace_deploy_template() -> None:
     )
     assert dep.template_id == "tpl-bug-fix"
     assert dep.tenant_id == T.tenant_id
-    assert dep.agent_id  # non-empty generated id
+    assert dep.agent_id == "agent-created"  # the id the store created
     assert dep.deployment_id  # non-empty
 
 
