@@ -467,7 +467,9 @@ def test_execute_skill_not_found() -> None:
     assert resp.status_code == 404
 
 
-def test_execute_skill_fallback_without_provider() -> None:
+def test_execute_skill_without_provider_is_503_not_canned_success() -> None:
+    """Was: success=True with a canned '[X Skill] Processing: ...' output when no
+    LLM provider was configured — a fabricated execution."""
     tenant_id = _uniq("tenant")
     app = _make_app(tenant_id=tenant_id)  # no provider configured
     client = TestClient(app)
@@ -478,10 +480,9 @@ def test_execute_skill_fallback_without_provider() -> None:
         json={"input_context": "compress this text"},
     )
 
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["success"] is True
-    assert "LLM provider not configured" in body["output"]
+    assert resp.status_code == 503
+    history = client.get("/skills-runtime/headroom/executions", headers=H).json()
+    assert history["total"] == 0  # no execution recorded for a run that never happened
 
 
 def test_execute_skill_with_provider_success() -> None:
@@ -524,7 +525,7 @@ def test_execute_skill_provider_raises_records_error() -> None:
 
 def test_execute_skill_records_execution_history() -> None:
     tenant_id = _uniq("tenant")
-    app = _make_app(tenant_id=tenant_id)
+    app = _make_app(tenant_id=tenant_id, provider=FakeProvider(responses=["compressed"]))
     client = TestClient(app)
 
     exec_resp = client.post(
