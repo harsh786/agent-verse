@@ -40,6 +40,8 @@ def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
 # execution_context flag: the goal's graph ended waiting for approvals (see
 # GoalService._suspend_for_approval); resume must relaunch it.
 _SUSPENDED_KEY = "_suspended_for_approval"
+# execution_context: fingerprint of the goal's dedup scope (see services/dedup.py)
+_DEDUP_SCOPE_KEY = "_dedup_scope"
 from app.agent.sanitization import sanitize_event
 from app.agent.state import AgentState, GoalStatus, StepResult, StepStatus
 from app.agent.tool_context import ToolContext, ToolRef
@@ -2119,7 +2121,11 @@ class GoalService:
 
                 _goal_text = getattr(record, "goal_text", "") or ""
                 if _goal_text:
-                    await _goal_dedup.release(record.tenant_id, _goal_text)
+                    await _goal_dedup.release(
+                        record.tenant_id,
+                        _goal_text,
+                        scope=str(record.execution_context.get(_DEDUP_SCOPE_KEY, "") or ""),
+                    )
             except Exception:
                 pass
         # Publish ALL non-ephemeral events to a goal-specific Redis channel so that
@@ -3002,6 +3008,22 @@ class GoalService:
             # ── Goal-level deduplication ────────────────────────────────────────
             # If an identical goal is already in-flight for this tenant, return
             # the existing goal_id rather than spawning a duplicate Celery task.
+            # "Identical" means same text AND same agent / dry-run / workflow /
+            # permissions / execution context (autonomy, profile, ...): text
+            # alone attached real submissions to in-flight dry runs or to other
+            # agents' runs. Fingerprinted before anything below mutates the
+            # caller's execution_context.
+            from app.services.dedup import goal_dedup_scope
+
+            _dedup_scope = goal_dedup_scope(
+                agent_id=agent_id,
+                dry_run=dry_run,
+                workflow_mode=workflow_mode,
+                priority=priority,
+                execution_context=execution_context,
+                roles=getattr(tenant_ctx, "roles", ()) or (),
+                scopes=getattr(tenant_ctx, "scopes", ()) or (),
+            )
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
 
@@ -3018,7 +3040,9 @@ class GoalService:
                 _existing_id = (
                     None
                     if _is_subgoal
-                    else await _goal_dedup.get_existing(tenant_ctx.tenant_id, goal)
+                    else await _goal_dedup.get_existing(
+                        tenant_ctx.tenant_id, goal, scope=_dedup_scope
+                    )
                 )
                 if _existing_id:
                     return {
@@ -3049,7 +3073,9 @@ class GoalService:
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
 
-                await _goal_dedup.register(tenant_ctx.tenant_id, goal, goal_id)
+                await _goal_dedup.register(
+                    tenant_ctx.tenant_id, goal, goal_id, scope=_dedup_scope
+                )
             except Exception:
                 pass
 
@@ -3164,6 +3190,9 @@ class GoalService:
                 workflow_mode=workflow_mode,
                 execution_context=execution_context or {},
             )
+            # Persisted with the goal so whichever replica sees the terminal
+            # event releases the same (scoped) dedup key.
+            record.execution_context[_DEDUP_SCOPE_KEY] = _dedup_scope
             self._goals[goal_id] = record
 
             # Compliance autonomy ceiling. ComplianceBundle.max_autonomy_mode
