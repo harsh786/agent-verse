@@ -38,7 +38,12 @@ from app.ingestion.repository_security import (
     validate_branch,
     validate_patterns,
 )
-from app.net.ssrf_guard import SSRFError, assert_public_url
+from app.net.ssrf_guard import (
+    SSRFError,
+    assert_public_url,
+    public_async_client,
+    request_public,
+)
 from app.rag.contracts import (
     RAGCitation,
     RAGExecutionResult,
@@ -1489,12 +1494,19 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
             detail=f"URL blocked for security reasons: {exc}",
         ) from exc
 
+    # Fetches go through the pinned client (connect-time IP check — a plain
+    # client re-resolved the name: DNS rebinding) and request_public, which
+    # follows redirects re-validating every hop.
     try:
         if source_type == "web":
-            import httpx
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers={"User-Agent": "AgentVerse/1.0"})
+            async with public_async_client(timeout=30.0) as client:
+                resp = await request_public(
+                    client,
+                    "GET",
+                    url,
+                    context="/ingest/url",
+                    headers={"User-Agent": "AgentVerse/1.0"},
+                )
                 resp.raise_for_status()
                 raw = resp.text
                 import re
@@ -1508,15 +1520,15 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
             raw_url = url.replace("github.com", "raw.githubusercontent.com").replace(
                 "/blob/", "/"
             )
-            import httpx
-
             # Anonymous fetch only. It used to attach the PLATFORM's GITHUB_TOKEN to
             # a tenant-chosen URL, letting any tenant read every private repo that
             # token can see (confused deputy). Private repos go through a
             # tenant-configured GitHub source instead.
             headers: dict[str, str] = {}
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(raw_url, headers=headers)
+            async with public_async_client(timeout=15.0) as client:
+                resp = await request_public(
+                    client, "GET", raw_url, context="/ingest/url", headers=headers
+                )
                 resp.raise_for_status()
                 content = resp.text[:100000]
             metadata["filename"] = url.split("/")[-1]
@@ -1530,6 +1542,13 @@ async def _fetch_url_content(url: str, source_type: str) -> tuple[str, dict[str,
 
     except HTTPException:
         raise
+    except SSRFError as exc:
+        # A redirect hop (or the connect-time re-check) hit a blocked address:
+        # same 400 as the up-front check.
+        raise HTTPException(
+            status_code=400,
+            detail=f"URL blocked for security reasons: {exc}",
+        ) from exc
     except Exception as exc:
         import logging as _logging
 

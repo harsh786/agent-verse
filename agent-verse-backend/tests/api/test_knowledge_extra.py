@@ -214,12 +214,13 @@ class TestUrlIngest:
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
+        mock_response.is_redirect = False  # request_public follows redirects per hop
         mock_response.text = "<html><head><title>Test Page</title></head><body><p>Content here.</p></body></html>"
 
         mock_http = AsyncMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
-        mock_http.get = AsyncMock(return_value=mock_response)
+        mock_http.request = AsyncMock(return_value=mock_response)
 
         with patch("httpx.AsyncClient", return_value=mock_http):
             resp = client.post(
@@ -264,12 +265,13 @@ class TestUrlIngest:
 
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
+        mock_response.is_redirect = False  # request_public follows redirects per hop
         mock_response.text = "# README\n\nThis is documentation content for testing purposes."
 
         mock_http = AsyncMock()
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
-        mock_http.get = AsyncMock(return_value=mock_response)
+        mock_http.request = AsyncMock(return_value=mock_response)
 
         with patch("httpx.AsyncClient", return_value=mock_http):
             resp = client.post(

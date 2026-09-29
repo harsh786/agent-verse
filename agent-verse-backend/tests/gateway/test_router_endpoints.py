@@ -698,6 +698,7 @@ class TestDownloadCommandFile:
 
         class _FakeResponse:
             content = b"file-bytes"
+            is_redirect = False
 
             def raise_for_status(self) -> None:
                 return None
@@ -709,7 +710,9 @@ class TestDownloadCommandFile:
             async def __aexit__(self, *a: object) -> None:
                 return None
 
-            async def get(self, url: str) -> _FakeResponse:
+            # request_public drives the (pinned) client via .request per hop.
+            async def request(self, method: str, url: str, **kw: object) -> _FakeResponse:
+                assert (method, url) == ("GET", "https://example.com/f.txt")
                 return _FakeResponse()
 
         import httpx as _httpx
