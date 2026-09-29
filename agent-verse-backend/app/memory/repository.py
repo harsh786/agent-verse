@@ -20,7 +20,9 @@ from app.memory.contracts import (
 )
 from app.memory.retention import resolve_expires_at
 
-Embedder = Callable[[str], Awaitable[tuple[float, ...]]]
+# May return None: no usable vector (e.g. the provider failed or its vectors are
+# wider than the column) — the record is then recalled lexically.
+Embedder = Callable[[str], Awaitable[tuple[float, ...] | None]]
 
 
 def _has_evidence(evidence_refs: tuple[str, ...]) -> bool:
@@ -41,6 +43,7 @@ class MemoryRepository(Protocol):
         self, tenant_id: str, memory_id: str, *, state: str, expected_version: int
     ) -> MemoryRecord: ...
     async def purge_expired(self, tenant_id: str, *, now: datetime) -> int: ...
+    async def read_sensitive_content(self, tenant_id: str, memory_id: str) -> str: ...
     async def list_records(
         self,
         tenant_id: str,
@@ -58,7 +61,19 @@ class InMemoryMemoryRepository:
         self._records: dict[tuple[str, str], MemoryRecord] = {}
         self._commands: dict[tuple[str, str], MemoryRecord] = {}
         self._feedback: dict[tuple[str, str, str], MemoryFeedback] = {}
+        self._sensitive: dict[tuple[str, str], str] = {}
         self._lock = asyncio.Lock()
+
+    async def read_sensitive_content(self, tenant_id: str, memory_id: str) -> str:
+        """Resolve a sensitive record's payload (tenant-scoped)."""
+        if (tenant_id, memory_id) not in self._records:
+            raise KeyError("memory not found")
+        content = self._sensitive.get((tenant_id, memory_id))
+        if content is None:
+            from app.memory.sealing import SensitiveMemoryUnavailableError
+
+            raise SensitiveMemoryUnavailableError("memory record has no sealed payload")
+        return content
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
         from opentelemetry import trace as _trace
@@ -74,7 +89,13 @@ class InMemoryMemoryRepository:
                 return prior
             if len(self._records) >= self._maximum:
                 raise RuntimeError("memory repository capacity exceeded")
-            embedding = await self._embedder(request.content) if self._embedder else None
+            sensitive = request.classification in {"confidential", "restricted"}
+            # Sensitive content is never embedded (a vector would leak it).
+            embedding = (
+                await self._embedder(request.content)
+                if self._embedder and not sensitive
+                else None
+            )
             if embedding is not None and len(embedding) != 1536:
                 raise ValueError("memory embedder returned incompatible dimension")
             now = datetime.now(UTC)
@@ -86,7 +107,11 @@ class InMemoryMemoryRepository:
                 marker in request.content.casefold()
                 for marker in ("ignore previous instructions", "reveal secret", "override policy")
             )
-            sensitive = request.classification in {"confidential", "restricted"}
+            if sensitive:
+                # The in-process store keeps the payload privately so the
+                # record's memory://encrypted/<id> reference resolves (the
+                # Postgres adapter seals it with the credential vault).
+                self._sensitive[(request.tenant_id, identifier)] = request.content
             record = MemoryRecord(
                 memory_id=identifier,
                 tenant_id=request.tenant_id,
@@ -248,6 +273,7 @@ class InMemoryMemoryRepository:
             ]
             for key in expired:
                 del self._records[key]
+                self._sensitive.pop(key, None)
             return len(expired)
 
     async def list_records(

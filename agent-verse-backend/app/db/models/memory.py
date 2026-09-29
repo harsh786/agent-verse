@@ -94,12 +94,22 @@ class CanonicalMemoryRecord(Base):
     source_execution_id: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_refs: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     classification: Mapped[str] = mapped_column(String(20), nullable=False)
+    # Optional scoping dimensions of the canonical contract (migration c8d2f4a6b1e3).
+    agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    collection_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Vault-sealed payload of a confidential/restricted record — what its
+    # ``memory://encrypted/<id>`` content_ref resolves to. Never plaintext.
+    sealed_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     confidence: Mapped[int] = mapped_column(Integer, nullable=False)
     lifecycle_state: Mapped[str] = mapped_column(String(20), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(1536), nullable=True)
+    # The embedding model that actually produced ``embedding`` (recall compares
+    # vectors of the same model only).
+    embedding_source_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     outcome_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     effectiveness_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     recall_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -110,6 +120,26 @@ class CanonicalMemoryRecord(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MemoryBackfillCheckpoint(Base):
+    """Resumable position of the legacy → canonical memory backfill."""
+
+    __tablename__ = "memory_backfill_checkpoints"
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    source_table: Mapped[str] = mapped_column(String(64), primary_key=True)
+    last_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rows_processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed: Mapped[bool] = mapped_column(nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class MemoryFeedbackRow(Base):
@@ -134,6 +164,7 @@ class MemoryFeedbackRow(Base):
 __all__ = [
     "CanonicalMemoryRecord",
     "EpisodicMemory",
+    "MemoryBackfillCheckpoint",
     "MemoryFeedbackRow",
     "ProceduralMemory",
 ]

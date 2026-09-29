@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import Select, delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.coordination.store import OptimisticConflictError
@@ -21,19 +22,147 @@ from app.memory.contracts import (
 )
 from app.memory.repository import Embedder, _has_evidence, _matches_scope, _similarity
 from app.memory.retention import resolve_expires_at
+from app.memory.sealing import (
+    MemoryPayloadCipher,
+    SensitiveMemoryUnavailableError,
+    default_cipher,
+    open_payload,
+    seal_payload,
+)
+
+_SENSITIVE = frozenset({"confidential", "restricted"})
+# Candidate-set bounds for recall: each SQL candidate query fetches at most this
+# many rows (deterministically ordered), however large the tenant's memory is.
+_MIN_CANDIDATES = 40
+_MAX_CANDIDATES = 200
+
+
+def _candidate_limit(request: MemoryRecallRequest) -> int:
+    return max(_MIN_CANDIDATES, min(_MAX_CANDIDATES, request.top_k * 8))
+
+
+def recall_candidate_queries(
+    request: MemoryRecallRequest,
+    *,
+    query_embedding: tuple[float, ...] | None,
+    embedding_model: str | None,
+) -> tuple[Select[tuple[CanonicalMemoryRecord]], ...]:
+    """The bounded SQL candidate queries behind :meth:`PostgresMemoryRepository.recall`.
+
+    Every eligibility rule (tenant, kind, classification, confidence, lifecycle,
+    expiry, agent/collection/source scope) is a WHERE clause, so ineligible rows
+    are never loaded. Two deterministically-ordered, LIMITed queries supply the
+    candidates that the blended score then ranks:
+
+    * relevance — cosine distance to the query vector over rows embedded by the
+      same model (``ix_memory_records_embedding_hnsw``), or pg_trgm similarity
+      of the safe summary when no query vector is available;
+    * recency — newest first (``ix_memory_records_recall_scope`` /
+      ``idx_memory_tenant_kind_lifecycle_updated``).
+    """
+    model = CanonicalMemoryRecord
+    states = ["active", *(["disputed"] if request.include_disputed else [])]
+    filters: list[Any] = [
+        model.tenant_id == request.tenant_id,
+        model.memory_kind.in_(sorted(request.memory_kinds)),
+        model.classification.in_(sorted(request.allowed_data_classes)),
+        model.confidence >= request.min_confidence,
+        model.lifecycle_state.in_(states),
+        or_(model.expires_at.is_(None), model.expires_at > request.as_of),
+    ]
+    if request.agent_id is not None:
+        filters.append(model.agent_id == request.agent_id)
+    if request.collection_id is not None:
+        filters.append(model.collection_id == request.collection_id)
+    if request.source is not None:
+        filters.append(model.source == request.source)
+    limit = _candidate_limit(request)
+    relevance: Select[tuple[CanonicalMemoryRecord]]
+    if query_embedding is not None:
+        same_model = (
+            model.embedding_source_model == embedding_model
+            if embedding_model is not None
+            else model.embedding_source_model.is_(None)
+        )
+        relevance = (
+            select(model)
+            .where(*filters, model.embedding.is_not(None), same_model)
+            .order_by(model.embedding.cosine_distance(list(query_embedding)).asc(), model.id)
+            .limit(limit)
+        )
+    else:
+        relevance = (
+            select(model)
+            .where(*filters)
+            .order_by(
+                func.similarity(model.safe_summary, request.query).desc(),
+                model.updated_at.desc(),
+                model.id,
+            )
+            .limit(limit)
+        )
+    recency = (
+        select(model).where(*filters).order_by(model.updated_at.desc(), model.id).limit(limit)
+    )
+    return (relevance, recency)
 
 
 class PostgresMemoryRepository:
     def __init__(
-        self, session_factory: async_sessionmaker[AsyncSession], *, embedder: Embedder | None = None
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        embedder: Embedder | None = None,
+        cipher: MemoryPayloadCipher | None = None,
     ) -> None:
         self._sessions = session_factory
         self._embedder = embedder
+        self._cipher = cipher
+
+    @property
+    def embedding_model(self) -> str | None:
+        """The model id stored with (and matched against) this repository's vectors."""
+        if self._embedder is None:
+            return None
+        model_id = getattr(self._embedder, "model_id", None)
+        return str(model_id) if model_id else None
+
+    def _get_cipher(self) -> MemoryPayloadCipher:
+        if self._cipher is None:
+            self._cipher = default_cipher()
+        return self._cipher
+
+    async def _embed(self, text: str) -> tuple[float, ...] | None:
+        if self._embedder is None:
+            return None
+        embedding = await self._embedder(text)
+        if embedding is None:
+            return None
+        if len(embedding) != 1536:
+            raise ValueError("memory embedder returned incompatible dimension")
+        return tuple(embedding)
 
     async def write(self, request: MemoryWriteRequest) -> MemoryRecord:
-        embedding = await self._embedder(request.content) if self._embedder else None
-        if embedding is not None and len(embedding) != 1536:
-            raise ValueError("memory embedder returned incompatible dimension")
+        sensitive = request.classification in _SENSITIVE
+        identifier = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{request.tenant_id}:{request.memory_kind}:{request.idempotency_key}",
+        ).hex
+        # Sensitive content is sealed before any DB work (fail closed: no vault →
+        # the write is refused; it is never stored in plaintext nor left as a
+        # dangling reference). It is not embedded either — a vector of it would
+        # leak what the [REDACTED] summary hides.
+        sealed = (
+            seal_payload(
+                self._get_cipher(),
+                tenant_id=request.tenant_id,
+                memory_id=identifier,
+                content=request.content,
+            )
+            if sensitive
+            else None
+        )
+        embedding = None if sensitive else await self._embed(request.content)
         async with (
             self._sessions() as db,
             db.begin(),
@@ -49,16 +178,6 @@ class PostgresMemoryRepository:
             ).scalar_one_or_none()
             if prior is not None:
                 return _record(prior)
-            identifier = uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{request.tenant_id}:{request.memory_kind}:{request.idempotency_key}",
-            ).hex
-            # FOLLOW-UP (out of this change's scope: app/db is not touched here):
-            # persist request.agent_id / collection_id / source once a migration
-            # adds those columns to memory_records. Until then Postgres-backed
-            # scope filtering only excludes rows whose (absent) scope is None; the
-            # in-memory repository is the fully-scoped reference implementation.
-            sensitive = request.classification in {"confidential", "restricted"}
             poisoned = any(
                 marker in request.content.casefold()
                 for marker in ("ignore previous instructions", "reveal secret", "override policy")
@@ -80,6 +199,9 @@ class PostgresMemoryRepository:
                 "source_execution_id": request.source_execution_id,
                 "evidence_refs": list(request.evidence_refs),
                 "classification": request.classification,
+                "agent_id": request.agent_id,
+                "collection_id": request.collection_id,
+                "source": request.source,
                 "confidence": request.confidence,
                 "lifecycle_state": "quarantined"
                 if poisoned or not _has_evidence(request.evidence_refs)
@@ -99,44 +221,89 @@ class PostgresMemoryRepository:
                 "created_at": now,
                 "updated_at": now,
             }
-            await db.execute(insert(CanonicalMemoryRecord).values(**values))
+            await db.execute(
+                insert(CanonicalMemoryRecord).values(
+                    **values,
+                    sealed_content=sealed,
+                    embedding_source_model=self.embedding_model
+                    if embedding is not None
+                    else None,
+                )
+            )
             return MemoryRecord(
                 memory_id=identifier,
                 embedding=embedding,
                 **{key: value for key, value in values.items() if key not in {"id", "embedding"}},
             )
 
+    async def read_sensitive_content(self, tenant_id: str, memory_id: str) -> str:
+        """Open the sealed payload of a sensitive record (tenant RLS-scoped).
+
+        Raises ``KeyError`` when the record is not visible to the tenant and
+        :class:`SensitiveMemoryUnavailableError` when it has no sealed payload
+        or the payload cannot be opened.
+        """
+        async with (
+            self._sessions() as db,
+            db.begin(),
+            sqlalchemy_rls_context(db, tenant_id),
+        ):
+            row = (
+                await db.execute(
+                    select(CanonicalMemoryRecord).where(
+                        CanonicalMemoryRecord.tenant_id == tenant_id,
+                        CanonicalMemoryRecord.id == memory_id,
+                    )
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            raise KeyError("memory not found")
+        sealed = getattr(row, "sealed_content", None)
+        if not sealed:
+            raise SensitiveMemoryUnavailableError("memory record has no sealed payload")
+        return open_payload(
+            self._get_cipher(), tenant_id=tenant_id, memory_id=memory_id, sealed=sealed
+        )
+
     async def recall(self, request: MemoryRecallRequest) -> tuple[MemoryRecallHit, ...]:
-        query_embedding = await self._embedder(request.query) if self._embedder else None
+        query_embedding = await self._embed(request.query)
+        embedding_model = self.embedding_model
         async with (
             self._sessions() as db,
             db.begin(),
             sqlalchemy_rls_context(db, request.tenant_id),
         ):
-            rows = (
-                await db.execute(
-                    select(CanonicalMemoryRecord)
-                    .where(
-                        CanonicalMemoryRecord.tenant_id == request.tenant_id,
-                        CanonicalMemoryRecord.memory_kind.in_(request.memory_kinds),
-                        CanonicalMemoryRecord.classification.in_(request.allowed_data_classes),
-                        CanonicalMemoryRecord.confidence >= request.min_confidence,
-                    )
-                    .limit(500)
-                )
-            ).scalars()
-            candidates = tuple(_record(row) for row in rows)
+            rows: dict[str, CanonicalMemoryRecord] = {}
+            for stmt in recall_candidate_queries(
+                request, query_embedding=query_embedding, embedding_model=embedding_model
+            ):
+                for row in (await db.execute(stmt)).scalars():
+                    rows.setdefault(row.id, row)
+            candidates = [
+                (_record(row), getattr(row, "embedding_source_model", None))
+                for row in rows.values()
+            ]
         hits: list[MemoryRecallHit] = []
-        for record in candidates:
-            states = {"active"} | ({"disputed"} if request.include_disputed else set())
+        states = {"active"} | ({"disputed"} if request.include_disputed else set())
+        for record, source_model in candidates:
+            # Defence in depth: the SQL already filtered on each of these.
             if record.lifecycle_state not in states:
                 continue
             if not _matches_scope(record, request):
                 continue
             if record.expires_at is not None and record.expires_at <= request.as_of:
                 continue
+            # Vectors are compared only when both came from the same model.
+            comparable = (
+                record.embedding
+                if query_embedding is not None and source_model == embedding_model
+                else None
+            )
             semantic = _similarity(
-                query_embedding, record.embedding, request.query, record.safe_summary
+                query_embedding if comparable is not None else None,
+                comparable,
+                request.query,
+                record.safe_summary,
             )
             recency = max(0, 10_000 - max(0, (request.as_of - record.updated_at).days) * 100)
             final = (
@@ -316,8 +483,6 @@ def _record(row: CanonicalMemoryRecord) -> MemoryRecord:
         source_execution_id=row.source_execution_id,
         evidence_refs=tuple(row.evidence_refs),
         classification=row.classification,
-        # Scope columns are a follow-up migration (see write()); read defensively
-        # so the field is populated automatically once the columns land.
         agent_id=getattr(row, "agent_id", None),
         collection_id=getattr(row, "collection_id", None),
         source=getattr(row, "source", None),
