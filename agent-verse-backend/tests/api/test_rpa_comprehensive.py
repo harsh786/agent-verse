@@ -280,9 +280,13 @@ def test_request_takeover_success(monkeypatch) -> None:
         async def get(self, session_id, tenant_id):
             return session
 
+    from app.governance.hitl import HITLGateway
+
     app = _make_app()
     store = MockSessionStore()
     app.state.rpa_session_store = store
+    # The takeover is delivered as a HITL approval; without a gateway it is 503.
+    app.state.hitl_gateway = HITLGateway()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/rpa/sessions/sess-1/takeover",
@@ -293,3 +297,22 @@ def test_request_takeover_success(monkeypatch) -> None:
     body = resp.json()
     assert body["session_id"] == "sess-1"
     assert body["status"] == "awaiting_human"
+    assert body["approval_request_id"]
+
+
+def test_request_takeover_without_hitl_gateway_is_503() -> None:
+    session = _make_session()
+
+    class MockSessionStore:
+        async def get(self, session_id, tenant_id):
+            return session
+
+    app = _make_app()
+    app.state.rpa_session_store = MockSessionStore()
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/rpa/sessions/sess-1/takeover",
+        json={"reason": "help"},
+        headers={"X-API-Key": _VALID_KEY},
+    )
+    assert resp.status_code == 503

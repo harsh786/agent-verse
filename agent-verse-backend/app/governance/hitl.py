@@ -175,6 +175,15 @@ class HITLResolutionUnavailableError(Exception):
     """
 
 
+class HITLDeliveryError(Exception):
+    """A new approval request could not be made durable (``approval_requests``).
+
+    Raised by :meth:`HITLGateway.request_approval_async` with
+    ``require_persisted=True`` so a caller never reports a human was asked when
+    the request exists only in one replica's memory.
+    """
+
+
 class HITLGateway:
     """Async-capable HITL gateway with blocking wait and timeout escalation."""
 
@@ -422,8 +431,13 @@ class HITLGateway:
         except RuntimeError:
             pass  # No running loop (shouldn't happen in async context)
 
-    async def _db_persist_approval_request(self, req: ApprovalRequest, tenant_id: str) -> None:
-        """Persist new approval request to DB (Fix 4)."""
+    async def _db_persist_approval_request(
+        self, req: ApprovalRequest, tenant_id: str, *, raise_errors: bool = False
+    ) -> None:
+        """Persist new approval request to DB (Fix 4).
+
+        Best-effort by default (logged); ``raise_errors`` re-raises the failure.
+        """
         if self._db_session_factory is None:
             return
         try:
@@ -467,6 +481,8 @@ class HITLGateway:
             from app.observability.logging import get_logger
 
             get_logger(__name__).warning("hitl_db_persist_failed", error=str(exc))
+            if raise_errors:
+                raise
 
     async def wait_for_approval(
         self,
@@ -792,6 +808,7 @@ class HITLGateway:
         tenant_ctx: TenantContext,
         required_approvers: int = 1,
         context: dict[str, Any] | None = None,
+        require_persisted: bool = False,
     ) -> str:
         """Create an approval and **await** its persistence; return the request id.
 
@@ -799,6 +816,10 @@ class HITLGateway:
         exist yet when the caller returns — another replica asked about it
         immediately afterwards would legitimately not find it. Callers that need
         the gate to be durable and visible before they proceed use this.
+
+        ``require_persisted``: when the gateway is DB-backed and the row cannot
+        be written, drop the request and raise :class:`HITLDeliveryError`
+        instead of returning an id nobody else can see.
         """
         req = self.request_approval(
             goal_id=goal_id,
@@ -809,7 +830,14 @@ class HITLGateway:
             required_approvers=required_approvers,
             context=context,
         )
-        await self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+        if not require_persisted:
+            await self._db_persist_approval_request(req, tenant_ctx.tenant_id)
+            return str(req.request_id)
+        try:
+            await self._db_persist_approval_request(req, tenant_ctx.tenant_id, raise_errors=True)
+        except Exception as exc:
+            self._requests.pop((tenant_ctx.tenant_id, req.request_id), None)
+            raise HITLDeliveryError(f"approval request could not be persisted: {exc}") from exc
         return str(req.request_id)
 
     async def _db_fetch_request(self, request_id: str, tenant_id: str) -> Any:
