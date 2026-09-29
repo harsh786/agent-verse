@@ -33,8 +33,23 @@ from app.workflow.state import (
     WorkflowRunStatus,
     WorkflowState,
 )
+from app.workflow.steps.hitl_step import classify_hitl_decision
 
 _log = get_logger(__name__)
+
+# (direct approval deps, indirect approval ancestors) for one step.
+_Barrier = tuple[frozenset[str], frozenset[str]]
+
+# Run statuses at which an approval gate's router must not release anything.
+_HALTED_STATUSES = frozenset(
+    {
+        WorkflowRunStatus.WAITING_HITL,
+        WorkflowRunStatus.WAITING_TIMER,
+        WorkflowRunStatus.PAUSED,
+        WorkflowRunStatus.FAILED,
+        WorkflowRunStatus.CANCELLED,
+    }
+)
 
 
 class CompiledWorkflow:
@@ -128,8 +143,10 @@ class WorkflowCompiler:
         graph = StateGraph(WorkflowState)
 
         # 1. Register each step as a graph node
+        barriers = self._approval_barriers(definition)
+        by_id = {s.id: s for s in definition.steps}
         for step in definition.steps:
-            node_fn = self._build_node_fn(step)
+            node_fn = self._build_node_fn(step, barriers.get(step.id), by_id)
             graph.add_node(step.id, node_fn)
 
         # 2. Find entry steps (no depends_on or all deps are parallel branches)
@@ -154,47 +171,48 @@ class WorkflowCompiler:
 
                 graph.add_conditional_edges(step.id, make_router(), branch_map)  # type: ignore[arg-type]
 
-            elif step.type == "hitl" and any(a.next for a in step.actions):
-                # After the reviewer decides, route by the ACTION they took. The
-                # router returns the action *id* (step_outputs[gate].action), so the
-                # path map must be keyed by action id → target step — NOT by
-                # ``a.next`` (that mismatched the router's return value and made
-                # LangGraph KeyError, so per-action `next` never worked). An action
-                # with no explicit `next` falls through to the step's normal
-                # downstream; a fallback bucket keeps a missing/empty action from
-                # KeyError-ing.
+            elif step.type == "hitl":
+                # An approval step is a HARD BARRIER. It never gets plain edges
+                # to its dependents (those fired while the approval was still
+                # pending, and "reject" fell through to the same steps). The
+                # router holds the run at END while WAITING_HITL; after the
+                # decision it routes by it: approve → the action's ``next`` or the
+                # step's dependents; reject → the declared reject branch, else END
+                # (the step node marks the run FAILED); anything else → END.
                 downstream = self._find_downstream(step.id, definition)
-                default_next: Any = downstream[0] if downstream else END
-                action_targets: dict[str, Any] = {
-                    a.id: (a.next or default_next) for a in step.actions
-                }
-                action_targets["__end__"] = END  # target for the WAITING_HITL pause
-                action_targets["__default__"] = default_next
-                valid_ids = {a.id for a in step.actions}
+                targets = sorted({*downstream, *(a.next for a in step.actions if a.next)})
 
-                def make_hitl_router(s: Any = step, valid: set[str] = valid_ids) -> Any:
-                    async def router(state: WorkflowState) -> str:
-                        if state.get("status") == WorkflowRunStatus.WAITING_HITL:
-                            return "__end__"
-                        out = (state.get("step_outputs") or {}).get(s.id, {})
-                        action = str(out.get("action", ""))
-                        return action if action in valid else "__default__"
+                def make_hitl_router(s: Any = step, ds: list[str] = downstream) -> Any:
+                    async def router(state: WorkflowState) -> Any:
+                        if state.get("status") in _HALTED_STATUSES or state.get("paused_by"):
+                            return END
+                        out = (state.get("step_outputs") or {}).get(s.id) or {}
+                        if "action" not in out:
+                            return END
+                        decision = classify_hitl_decision(s, out.get("action"))
+                        if decision.kind == "stop":
+                            return END
+                        if decision.next:
+                            return decision.next
+                        return list(ds) if ds else END
 
                     return router
 
-                graph.add_conditional_edges(step.id, make_hitl_router(), action_targets)  # type: ignore[arg-type]
-            elif step.type == "hitl":
-                # No per-action routing — just route to downstream steps.
-                downstream = self._find_downstream(step.id, definition)
-                for ds in downstream:
-                    graph.add_edge(step.id, ds)
+                graph.add_conditional_edges(
+                    step.id,
+                    make_hitl_router(),
+                    [*targets, END],
+                )
             else:
                 # Standard edges: step → all steps that depend on it
                 downstream = self._find_downstream(step.id, definition)
                 for ds in downstream:
                     graph.add_edge(step.id, ds)
 
+        hitl_ids = {s.id for s in definition.steps if s.type == "hitl"}
         for terminal_id in terminal_steps:
+            if terminal_id in hitl_ids:
+                continue  # the approval router already routes to END
             graph.add_edge(terminal_id, END)
 
         compiled_graph = graph.compile(checkpointer=self._checkpointer)
@@ -206,13 +224,80 @@ class WorkflowCompiler:
         )
         return CompiledWorkflow(compiled_graph, definition)
 
-    def _build_node_fn(self, step: Any) -> Any:
+    @staticmethod
+    def _approval_barriers(definition: WorkflowDefinition) -> dict[str, _Barrier]:
+        """Per step: (direct approval deps, indirect approval ancestors).
+
+        Only ``depends_on`` (all-of) edges carry the barrier; a
+        ``depends_on_any`` step is released by the approval router's routing.
+        """
+        by_id = {s.id: s for s in definition.steps}
+        hitl_ids = {s.id for s in definition.steps if s.type == "hitl"}
+        memo: dict[str, frozenset[str]] = {}
+
+        def ancestors(step_id: str, seen: frozenset[str]) -> frozenset[str]:
+            if step_id in memo:
+                return memo[step_id]
+            step = by_id.get(step_id)
+            if step is None or step.depends_on_any or step_id in seen:
+                return frozenset()
+            acc: set[str] = set()
+            for dep in step.depends_on:
+                if dep in hitl_ids:
+                    acc.add(dep)
+                acc |= ancestors(dep, seen | {step_id})
+            memo[step_id] = frozenset(acc)
+            return memo[step_id]
+
+        out: dict[str, _Barrier] = {}
+        for step in definition.steps:
+            if step.depends_on_any:
+                continue
+            all_anc = ancestors(step.id, frozenset())
+            if all_anc:
+                direct = frozenset(d for d in step.depends_on if d in hitl_ids)
+                out[step.id] = (direct, all_anc - direct)
+        return out
+
+    @staticmethod
+    def _barrier_blocks(
+        step_id: str, barrier: _Barrier, state: WorkflowState, by_id: dict[str, Any]
+    ) -> bool:
+        """True when an upstream approval has not released ``step_id``.
+
+        A join step can be triggered by a non-approval sibling's edge while the
+        approval is still pending; this guard keeps it (and everything after it)
+        from running until the approval is decided and routes here.
+        """
+        direct, indirect = barrier
+        outputs = state.get("step_outputs") or {}
+        for hitl_id in direct | indirect:
+            out = outputs.get(hitl_id) or {}
+            if "action" not in out:
+                return True  # still pending
+            decision = classify_hitl_decision(by_id[hitl_id], out.get("action"))
+            if decision.kind == "stop":
+                return True
+            if hitl_id in direct and decision.next and decision.next != step_id:
+                return True  # the decision routed to a different branch
+        return False
+
+    def _build_node_fn(
+        self,
+        step: Any,
+        barrier: _Barrier | None = None,
+        by_id: dict[str, Any] | None = None,
+    ) -> Any:
         """Build the async node function for a step."""
         node_class = StepTypeRegistry.get(step.type)
         node = node_class(step, self._ctx, **self._services)
         run_store = self._services.get("run_store")
+        step_defs = by_id or {}
 
         async def node_fn(state: WorkflowState) -> dict[str, Any]:
+            # Approval barrier: never run downstream of an undecided/rejected gate.
+            if barrier and self._barrier_blocks(step.id, barrier, state, step_defs):
+                return {}
             # Check operator pause before each step
             if state.get("paused_by"):
                 # A durable timer wait suspended the run: skip without touching

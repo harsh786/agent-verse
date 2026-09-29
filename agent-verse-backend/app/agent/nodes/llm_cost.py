@@ -51,6 +51,10 @@ async def charge_llm_call(
 
     context = getattr(agent_state, "context", None)
     goal_id = str(getattr(agent_state, "goal_id", "") or "")
+    # A goal-tree sub-agent runs under its own child id but spends its parent's
+    # budget: charge (and ledger) the parent goal, never an unrelated id.
+    if isinstance(context, dict) and context.get("_budget_goal_id"):
+        goal_id = str(context["_budget_goal_id"])
     lock = getattr(graph, "_state_lock", None)
     if isinstance(context, dict):
         if lock is not None:

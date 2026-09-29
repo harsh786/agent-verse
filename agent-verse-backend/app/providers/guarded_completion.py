@@ -182,6 +182,46 @@ async def _charge(
         raise DecisionBudgetExceededError("tenant LLM budget exhausted by this call")
 
 
+class GuardedDecisionProvider:
+    """Provider proxy whose every ``complete`` goes through :func:`complete_decision`.
+
+    For components that take a provider and call it internally (the debate
+    orchestrator and supervisor decomposition run inside the goal-submission
+    HTTP request, before any goal exists): each call gets the circuit breaker,
+    the bounded timeout, the tenant budget preflight and the post-call charge.
+    Every other attribute is delegated to the wrapped provider.
+    """
+
+    def __init__(
+        self,
+        provider: Any,
+        *,
+        role: str,
+        tenant_ctx: Any = None,
+        goal_id: str | None = None,
+    ) -> None:
+        self._inner = provider
+        self._role = role
+        self._tenant_ctx = tenant_ctx
+        self._goal_id = goal_id
+
+    @property
+    def inner(self) -> Any:
+        return self._inner
+
+    async def complete(self, request: Any) -> Any:
+        return await complete_decision(
+            self._inner,
+            request,
+            role=self._role,
+            tenant_ctx=self._tenant_ctx,
+            goal_id=self._goal_id,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 async def complete_decision(
     provider: Any,
     request: Any,

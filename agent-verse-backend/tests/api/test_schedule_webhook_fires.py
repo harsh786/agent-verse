@@ -93,12 +93,15 @@ def test_other_tenants_token_is_not_found() -> None:
     dispatcher.dispatch.assert_not_awaited()
 
 
-def test_token_survives_restart_of_the_in_memory_token_map() -> None:
+def test_token_resolves_without_any_process_local_token_map() -> None:
+    # The token is resolved from the schedule record (the schedules row when
+    # DB-backed — cross-replica coverage lives in test_schedules_cross_replica),
+    # never from an app.state map that another replica would not have.
     dispatcher = _dispatcher()
     app = _app(dispatcher)
     client = TestClient(app)
     token = _create_webhook(client)["spec"]["webhook_token"]
-    app.state._webhook_tokens = {}  # what a restart / another replica looks like
+    assert not hasattr(app.state, "_webhook_tokens")
     r = client.post(f"/webhooks/{token}", json={}, headers={"X-API-Key": "key-a"})
     assert r.status_code == 202
     dispatcher.dispatch.assert_awaited_once()

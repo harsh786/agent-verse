@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import secrets
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,7 +16,7 @@ from pydantic import BaseModel
 from app.tenancy.context import TenantContext
 from app.triggers.models import TriggerSpec, TriggerType
 from app.triggers.nl_scheduler import NLScheduler
-from app.triggers.store import ScheduleStore
+from app.triggers.store import ScheduleStore, ScheduleStoreUnavailableError
 
 # Four routers covering different URL prefixes defined in this module.
 router = APIRouter(prefix="/schedules", tags=["schedules"])
@@ -59,7 +60,39 @@ def _require_tenant(request: Request) -> Any:
 
 
 def _schedule_store(request: Request) -> ScheduleStore:
-    return request.app.state.schedule_store  # type: ignore[no-any-return]
+    store: ScheduleStore | None = getattr(request.app.state, "schedule_store", None)
+    if store is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Schedule store unavailable")
+    return store
+
+
+async def _durable[T](awaitable: Awaitable[T]) -> T:
+    """Await a durable-store call; an outage is a 503, never a stale-cache answer.
+
+    Every handler here goes through the store's ``*_async`` methods, which read
+    and write Postgres (the source of truth across replicas). They used to call
+    the sync ``get``/``list_all``/``pause``/``resume``, which only see THIS
+    process's cache — a schedule created on another replica was a 404 here.
+    """
+    try:
+        return await awaitable
+    except ScheduleStoreUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Schedule store unavailable; retry",
+        ) from exc
+
+
+async def _get_or_404(
+    store: ScheduleStore, schedule_id: str, tenant_ctx: TenantContext
+) -> dict[str, Any]:
+    rec = await _durable(store.get_async(schedule_id, tenant_ctx=tenant_ctx, strict=True))
+    if rec is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Schedule {schedule_id} not found",
+        )
+    return rec
 
 
 async def _create_with_quota(
@@ -76,13 +109,15 @@ async def _create_with_quota(
     from app.triggers.quota import TriggerQuotaExceeded
 
     try:
-        return await store.create_async(
-            goal_id=goal_id,
-            spec=spec,
-            tenant_ctx=tenant_ctx,
-            agent_id=agent_id,
-            goal_template=goal_template,
-            quota_plan=str(getattr(tenant_ctx, "plan", "free") or "free"),
+        return await _durable(
+            store.create_async(
+                goal_id=goal_id,
+                spec=spec,
+                tenant_ctx=tenant_ctx,
+                agent_id=agent_id,
+                goal_template=goal_template,
+                quota_plan=str(getattr(tenant_ctx, "plan", "free") or "free"),
+            )
         )
     except TriggerQuotaExceeded as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
@@ -90,13 +125,6 @@ async def _create_with_quota(
 
 def _nl_scheduler(request: Request) -> NLScheduler:
     return request.app.state.nl_scheduler  # type: ignore[no-any-return]
-
-
-def _token_map(request: Request) -> dict[str, str]:
-    """Lazy {webhook_token: schedule_id} map stored on app.state."""
-    if not hasattr(request.app.state, "_webhook_tokens"):
-        request.app.state._webhook_tokens = {}
-    return request.app.state._webhook_tokens  # type: ignore[no-any-return]
 
 
 def _validate_agent_id(
@@ -158,7 +186,7 @@ async def list_schedules(
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    records = store.list_all(tenant_ctx=tenant_ctx)
+    records = await _durable(store.list_all_async(tenant_ctx=tenant_ctx, strict=True))
     return [_record_to_dict(r) for r in records[offset : offset + limit]]
 
 
@@ -166,7 +194,6 @@ async def list_schedules(
 async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    token_map = _token_map(request)
 
     try:
         ttype = TriggerType(body.trigger_type)
@@ -229,10 +256,9 @@ async def create_schedule(request: Request, body: CreateScheduleRequest) -> dict
         agent_id=body.agent_id,
         goal_template=body.goal_template,
     )
-
-    if webhook_token:
-        token_map[webhook_token] = schedule_id
-
+    # The webhook token is persisted on the schedules row, so POST
+    # /webhooks/{token} resolves it on any replica (no process-local map).
+    # create_async wrote the cache on this instance after the durable insert.
     record = store.get(schedule_id, tenant_ctx=tenant_ctx) or {}
     return _record_to_dict(record)
 
@@ -265,7 +291,7 @@ async def get_schedule_analytics(request: Request) -> dict[str, Any]:
     """
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    records = store.list_all(tenant_ctx=tenant_ctx)
+    records = await _durable(store.list_all_async(tenant_ctx=tenant_ctx, strict=True))
 
     total = len(records)
     active = sum(1 for r in records if not r.get("paused", False))
@@ -318,20 +344,14 @@ async def get_schedule_analytics(request: Request) -> dict[str, Any]:
 async def get_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
-    if rec is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Schedule {schedule_id} not found",
-        )
-    return _record_to_dict(rec)
+    return _record_to_dict(await _get_or_404(store, schedule_id, tenant_ctx))
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_schedule(request: Request, schedule_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    removed = await store.delete_async(schedule_id, tenant_ctx=tenant_ctx)
+    removed = await _durable(store.delete_async(schedule_id, tenant_ctx=tenant_ctx))
     if not removed:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -339,30 +359,32 @@ async def delete_schedule(request: Request, schedule_id: str) -> None:
         )
 
 
-@router.post("/{schedule_id}/pause")
-async def pause_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
+async def _set_paused(request: Request, schedule_id: str, *, paused: bool) -> dict[str, Any]:
+    """Durable pause/resume: the ``schedules`` row (what the Celery beat reads
+    and what every other replica serves), then Redis, then this cache. The sync
+    ``store.pause``/``resume`` only flipped THIS process's record (a 404 for a
+    schedule created elsewhere) and persisted fire-and-forget."""
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    ok = store.pause(schedule_id, tenant_ctx=tenant_ctx)
-    if not ok:
+    rec = await _durable(
+        store.set_paused_async(schedule_id, paused=paused, tenant_ctx=tenant_ctx)
+    )
+    if rec is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Schedule {schedule_id} not found",
         )
-    return {"schedule_id": schedule_id, "paused": True}
+    return {"schedule_id": schedule_id, "paused": paused}
+
+
+@router.post("/{schedule_id}/pause")
+async def pause_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
+    return await _set_paused(request, schedule_id, paused=True)
 
 
 @router.post("/{schedule_id}/resume")
 async def resume_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
-    tenant_ctx: TenantContext = _require_tenant(request)
-    store = _schedule_store(request)
-    ok = store.resume(schedule_id, tenant_ctx=tenant_ctx)
-    if not ok:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Schedule {schedule_id} not found",
-        )
-    return {"schedule_id": schedule_id, "paused": False}
+    return await _set_paused(request, schedule_id, paused=False)
 
 
 @router.post("/{schedule_id}/fire", status_code=202)
@@ -370,9 +392,7 @@ async def fire_schedule_now(request: Request, schedule_id: str) -> dict[str, Any
     """Manually fire a REST or webhook schedule."""
     tenant = _require_tenant(request)
     store = _schedule_store(request)
-    rec = store.get(schedule_id, tenant_ctx=tenant)
-    if rec is None:
-        raise HTTPException(404, f"Schedule {schedule_id} not found")
+    rec = await _get_or_404(store, schedule_id, tenant)
     spec = rec.get("spec")
     trigger_type_val = spec.trigger_type.value if spec is not None else ""
     if trigger_type_val not in {"rest", "webhook"}:
@@ -420,7 +440,6 @@ async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
     nl = _nl_scheduler(request)
-    token_map = _token_map(request)
 
     _validate_agent_id(request, body.agent_id, tenant_ctx=tenant_ctx)
 
@@ -428,10 +447,9 @@ async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[
     created: list[dict[str, Any]] = []
 
     for spec in specs:
-        webhook_token = ""
         if spec.trigger_type == TriggerType.WEBHOOK:
-            webhook_token = secrets.token_hex(16)
-            spec.webhook_token = webhook_token
+            # Persisted on the schedules row, so it resolves on every replica.
+            spec.webhook_token = secrets.token_hex(16)
 
         schedule_id = await _create_with_quota(
             store,
@@ -441,9 +459,6 @@ async def nl_create_schedule(request: Request, body: NLScheduleRequest) -> list[
             agent_id=body.agent_id,
             goal_template=body.command,
         )
-
-        if webhook_token:
-            token_map[webhook_token] = schedule_id
 
         rec = store.get(schedule_id, tenant_ctx=tenant_ctx) or {}
         created.append(_record_to_dict(rec))
@@ -474,8 +489,8 @@ async def receive_alert_webhook(
     # The schedule must be the caller's, and the cache key is tenant-scoped: any
     # tenant used to be able to inject alert context into another tenant's
     # alert-triggered goal by naming its schedule_id.
-    store = getattr(request.app.state, "schedule_store", None)
-    if store is None or not store.get(schedule_id, tenant_ctx=tenant_ctx):
+    store = _schedule_store(request)
+    if not await _durable(store.get_async(schedule_id, tenant_ctx=tenant_ctx, strict=True)):
         raise HTTPException(404, "Schedule not found")
 
     pools = getattr(request.app.state, "pools", None)
@@ -507,25 +522,16 @@ async def webhook_trigger(request: Request, token: str) -> dict[str, Any]:
     (the path ``POST /triggers/webhooks/webhook/{token}`` uses), enforcing the
     trigger's signing secret when it has one.
     """
-    import hmac
-
     from app.api.triggers import _spec_for_dispatch
     from app.triggers.webhooks.verifier import WebhookSignatureVerifier
 
     tenant_ctx: TenantContext = _require_tenant(request)
-    store = getattr(request.app.state, "schedule_store", None)
-    if store is None:
-        raise HTTPException(503, "Schedule store unavailable")
-
-    rec: dict[str, Any] | None = None
-    for candidate in store.list_all(tenant_ctx=tenant_ctx):
-        spec = candidate.get("spec")
-        if spec is None or getattr(spec, "trigger_type", None) != TriggerType.WEBHOOK:
-            continue
-        stored = str(getattr(spec, "webhook_token", "") or "")
-        if stored and hmac.compare_digest(stored, token):
-            rec = candidate
-            break
+    store = _schedule_store(request)
+    # Resolved from the durable schedules row (webhook_token column), so a
+    # token minted on another replica works here; an outage is a 503.
+    rec = await _durable(
+        store.get_by_webhook_token_async(token, tenant_ctx=tenant_ctx, strict=True)
+    )
     if rec is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown webhook token")
     if rec.get("paused"):

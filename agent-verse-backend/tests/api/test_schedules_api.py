@@ -259,9 +259,28 @@ def test_delete_schedule() -> None:
     assert get_resp.status_code == 404
 
 
-def test_delete_schedule_returns_500_when_durable_delete_fails(
+def test_delete_schedule_returns_503_when_durable_delete_fails(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    # The durable-store failure is surfaced as a retryable 503 (it was an
+    # unhandled 500); the schedule is not reported deleted.
+    row = SimpleNamespace(
+        id="sched-delete-fail",
+        tenant_id=_CTX.tenant_id,
+        agent_id="",
+        goal_id_template="g1",
+        trigger_type="once",
+        cron_expression="",
+        timezone="UTC",
+        interval_seconds=0,
+        webhook_token="",
+        event_channel="",
+        fire_at_iso="",
+        condition="",
+        description="",
+        paused=False,
+    )
+
     @contextlib.asynccontextmanager
     async def noop_rls_context(*args: Any, **kwargs: Any) -> AsyncIterator[None]:
         yield None
@@ -279,7 +298,8 @@ def test_delete_schedule_returns_500_when_durable_delete_fails(
         async def execute(self, statement: Any) -> Any:
             if str(statement).startswith("DELETE"):
                 raise RuntimeError("db delete failed")
-            return SimpleNamespace(rowcount=0)
+            # The existence read (SELECT) finds the persisted row.
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [row]))
 
     monkeypatch.setattr(
         "app.db.rls.sqlalchemy_rls_context",
@@ -301,7 +321,8 @@ def test_delete_schedule_returns_500_when_durable_delete_fails(
         "/schedules/sched-delete-fail", headers={"X-API-Key": _VALID_KEY}
     )
 
-    assert resp.status_code == 500
+    assert resp.status_code == 503
+    assert store.get("sched-delete-fail", tenant_ctx=_CTX) is not None
 
 
 def test_pause_resume_schedule() -> None:

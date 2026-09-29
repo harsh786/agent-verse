@@ -52,6 +52,27 @@ class _FakeSession:
         )
 
 
+def _db_row(schedule_id: str, tenant_id: str = T.tenant_id) -> SimpleNamespace:
+    """A persisted ``schedules`` row. With a DB, Postgres (not the cache) decides
+    whether a schedule exists, so DB-backed delete tests must seed a row."""
+    return SimpleNamespace(
+        id=schedule_id,
+        tenant_id=tenant_id,
+        agent_id="",
+        goal_id_template="g1",
+        trigger_type="once",
+        cron_expression="",
+        timezone="UTC",
+        interval_seconds=0,
+        webhook_token="",
+        event_channel="",
+        fire_at_iso="",
+        condition="",
+        description="",
+        paused=False,
+    )
+
+
 class _FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
@@ -379,7 +400,9 @@ async def test_delete_async_waits_for_db_delete_before_returning(
         lambda *args, **kwargs: _noop_async_context(),
     )
 
-    store = ScheduleStore(db_session_factory=lambda: AwaitingDeleteSession())
+    store = ScheduleStore(
+        db_session_factory=lambda: AwaitingDeleteSession(rows=[_db_row("sched-await-delete")])
+    )
     spec = TriggerSpec(trigger_type=TriggerType.ONCE)
     store._data[(T.tenant_id, "sched-await-delete")] = {
         "schedule_id": "sched-await-delete",
@@ -411,7 +434,9 @@ async def test_delete_async_raises_on_db_delete_failure(
         lambda *args, **kwargs: _noop_async_context(),
     )
 
-    store = ScheduleStore(db_session_factory=lambda: FailingDeleteSession())
+    store = ScheduleStore(
+        db_session_factory=lambda: FailingDeleteSession(rows=[_db_row("sched-db-fail")])
+    )
     spec = TriggerSpec(trigger_type=TriggerType.ONCE)
     store._data[(T.tenant_id, "sched-db-fail")] = {
         "schedule_id": "sched-db-fail",
@@ -500,7 +525,10 @@ async def test_delete_async_db_failure_leaves_memory_and_redis_untouched(
             return await super().execute(statement)
 
     redis = _FakeRedis()
-    store = ScheduleStore(db_session_factory=lambda: FailingDeleteSession(), redis=redis)
+    store = ScheduleStore(
+        db_session_factory=lambda: FailingDeleteSession(rows=[_db_row("sched-db-fail")]),
+        redis=redis,
+    )
     spec = TriggerSpec(trigger_type=TriggerType.ONCE)
     store._data[(T.tenant_id, "sched-db-fail")] = {
         "schedule_id": "sched-db-fail",
@@ -524,6 +552,74 @@ async def test_delete_async_db_failure_leaves_memory_and_redis_untouched(
     assert store.get("sched-db-fail", tenant_ctx=T) is not None
     assert redis.values == {key: "{}"}
     assert redis.deleted == []
+
+
+async def test_delete_async_cache_hit_but_deleted_in_db_is_not_found(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A schedule deleted on another replica is gone, even if THIS cache still
+    holds it: delete answers False (404) and drops the stale cache entry."""
+    executed: list[str] = []
+
+    class NoRowSession(_FakeSession):
+        async def execute(self, statement: Any) -> Any:
+            executed.append(str(statement))
+            return await super().execute(statement)
+
+    monkeypatch.setattr(
+        "app.db.rls.sqlalchemy_rls_context",
+        lambda *args, **kwargs: _noop_async_context(),
+    )
+    store = ScheduleStore(db_session_factory=lambda: NoRowSession())
+    store._data[(T.tenant_id, "sched-gone")] = {
+        "schedule_id": "sched-gone",
+        "goal_id": "g1",
+        "agent_id": "",
+        "goal_template": "",
+        "spec": TriggerSpec(trigger_type=TriggerType.ONCE),
+        "paused": False,
+    }
+
+    assert await store.delete_async("sched-gone", tenant_ctx=T) is False
+    assert store.get("sched-gone", tenant_ctx=T) is None
+    assert not any(sql.startswith("DELETE") for sql in executed)
+
+
+async def test_strict_reads_raise_instead_of_serving_the_cache(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from app.triggers.store import ScheduleStoreUnavailableError
+
+    class DownSession(_FakeSession):
+        async def execute(self, statement: Any) -> Any:
+            raise OSError("connection refused")
+
+    monkeypatch.setattr(
+        "app.db.rls.sqlalchemy_rls_context",
+        lambda *args, **kwargs: _noop_async_context(),
+    )
+    store = ScheduleStore(db_session_factory=lambda: DownSession())
+    store._data[(T.tenant_id, "cached")] = {
+        "schedule_id": "cached",
+        "goal_id": "g1",
+        "agent_id": "",
+        "goal_template": "",
+        "spec": TriggerSpec(trigger_type=TriggerType.ONCE),
+        "paused": False,
+    }
+
+    # Lenient (legacy) reads still fall back to the cache ...
+    assert await store.get_async("cached", tenant_ctx=T) is not None
+    # ... strict reads and every durable write fail closed.
+    with pytest.raises(ScheduleStoreUnavailableError):
+        await store.get_async("cached", tenant_ctx=T, strict=True)
+    with pytest.raises(ScheduleStoreUnavailableError):
+        await store.list_all_async(tenant_ctx=T, strict=True)
+    with pytest.raises(ScheduleStoreUnavailableError):
+        await store.set_paused_async("cached", paused=True, tenant_ctx=T)
+    with pytest.raises(ScheduleStoreUnavailableError):
+        await store.delete_async("cached", tenant_ctx=T)
+    assert store.get("cached", tenant_ctx=T)["paused"] is False  # type: ignore[index]
 
 
 async def test_delete_async_raises_on_redis_delete_failure() -> None:
@@ -563,7 +659,8 @@ async def test_delete_async_redis_failure_after_db_success_leaves_memory(
             return await super().execute(statement)
 
     store = ScheduleStore(
-        db_session_factory=lambda: SuccessfulDeleteSession(), redis=FailingRedis()
+        db_session_factory=lambda: SuccessfulDeleteSession(rows=[_db_row("sched-redis-fail")]),
+        redis=FailingRedis(),
     )
     spec = TriggerSpec(trigger_type=TriggerType.ONCE)
     store._data[(T.tenant_id, "sched-redis-fail")] = {

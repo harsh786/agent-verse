@@ -18,7 +18,11 @@ from app.api.schedules import webhooks_router
 
 
 class _Store:
-    def get(self, schedule_id: str, *, tenant_ctx: Any) -> dict | None:
+    # The handler reads through the durable store (``get_async``, strict), not
+    # the process-local ``get`` — a schedule created on another replica exists.
+    async def get_async(
+        self, schedule_id: str, *, tenant_ctx: Any, strict: bool = False
+    ) -> dict | None:
         return {"schedule_id": schedule_id} if (tenant_ctx.tenant_id, schedule_id) == ("t1", "s1") else None
 
 

@@ -313,10 +313,11 @@ def test_webhook_trigger_known_token():
     )
     assert resp.status_code == 201
 
-    # Extract the token from the token_map
-    token_map = app.state._webhook_tokens
-    assert len(token_map) > 0
-    token = list(token_map.keys())[0]
+    # The token lives on the (durable) schedule record — there is no
+    # process-local token map any more (it was invisible to other replicas).
+    token = resp.json()["spec"]["webhook_token"]
+    assert token
+    assert not hasattr(app.state, "_webhook_tokens")
 
     # Hit the webhook endpoint — it must really dispatch (it used to return
     # {"status": "ok"} and drop the webhook). See test_schedule_webhook_fires.py.
@@ -378,8 +379,9 @@ def test_nl_create_schedule_webhook_type():
         headers=_HEADERS,
     )
     assert resp.status_code == 201
-    # Token map should have an entry
-    assert len(app.state._webhook_tokens) > 0
+    # The minted token is on the stored schedule (persisted to its row).
+    assert resp.json()[0]["spec"]["webhook_token"]
+    assert not hasattr(app.state, "_webhook_tokens")
 
 
 def test_nl_create_schedule_multiple_specs():

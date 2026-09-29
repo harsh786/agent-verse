@@ -1,10 +1,15 @@
-"""In-memory schedule store — CRUD for trigger specs, per-tenant.
+"""Schedule store — CRUD for trigger specs, per-tenant.
 
-In production this is backed by PostgreSQL (schedules table).
+In production this is backed by PostgreSQL (schedules table), which is the
+source of truth; the in-process dict is only a write-through cache.
 
 When ``db_session_factory`` is supplied, mutations are also persisted to
-PostgreSQL. Most synchronous mutations use fire-and-forget asyncio tasks;
-async durable paths await persistence and raise failures to callers.
+PostgreSQL. The legacy synchronous methods (``get``/``list_all``/``pause``/…)
+only see this process's cache and use fire-and-forget persistence; request
+handlers must use the ``*_async`` methods, which read through to Postgres and
+await durable writes. With ``strict=True`` (and on every durable write) a
+database failure raises :class:`ScheduleStoreUnavailableError` instead of falling
+back to the cache.
 """
 
 from __future__ import annotations
@@ -146,6 +151,17 @@ def decrypt_webhook_secret(ciphertext: str) -> str:
 
 def _strip_secret_redis_fields(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key.lower() not in _SECRET_REDIS_FIELDS}
+
+
+class ScheduleStoreUnavailableError(RuntimeError):
+    """The durable schedule store (Postgres) could not be read or written.
+
+    Raised by the strict read paths and the durable write paths so callers fail
+    CLOSED (the API answers 503) instead of serving this process's cache, which
+    on a multi-replica deployment may be stale or simply missing the schedule.
+    Subclasses ``RuntimeError`` so existing broad handlers keep working; the
+    message carries the underlying error.
+    """
 
 
 def bind_refs_to_spec(spec: TriggerSpec, *, agent_id: str = "", goal_template: str = "") -> None:
@@ -469,7 +485,7 @@ class ScheduleStore:
         except Exception as exc:
             _log.warning("DB schedule create failed: %s", exc)
             if strict:
-                raise
+                raise ScheduleStoreUnavailableError(f"schedule create failed: {exc}") from exc
 
     async def update_secret_async(
         self,
@@ -490,7 +506,7 @@ class ScheduleStore:
         """
         from datetime import timedelta
 
-        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id, strict=True)
         if rec is None:
             return False
         spec = rec["spec"]
@@ -525,16 +541,20 @@ class ScheduleStore:
         from app.db.models.scheduling import Schedule
         from app.db.rls import sqlalchemy_rls_context
 
-        async with (
-            self._db() as session,
-            session.begin(),
-            sqlalchemy_rls_context(session, tenant_id),
-        ):
-            result = await session.execute(
-                update(Schedule)
-                .where(Schedule.id == schedule_id, Schedule.tenant_id == tenant_id)
-                .values(**values)
-            )
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_id),
+            ):
+                result = await session.execute(
+                    update(Schedule)
+                    .where(Schedule.id == schedule_id, Schedule.tenant_id == tenant_id)
+                    .values(**values)
+                )
+        except Exception as exc:
+            _log.warning("DB schedule update failed: %s", exc)
+            raise ScheduleStoreUnavailableError(f"schedule update failed: {exc}") from exc
         rowcount = getattr(result, "rowcount", None)
         return not isinstance(rowcount, int) or rowcount > 0
 
@@ -549,7 +569,7 @@ class ScheduleStore:
         again, and a restart reloaded it as paused.
         """
         tenant_id = tenant_ctx.tenant_id
-        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id, strict=True)
         if rec is None:
             return None
         if self._db is not None and not await self._db_update_values(
@@ -579,7 +599,7 @@ class ScheduleStore:
         edit cannot silently disable a webhook's URL or its signature check.
         """
         tenant_id = tenant_ctx.tenant_id
-        rec = await self._get_for_tenant_async(tenant_id, schedule_id)
+        rec = await self._get_for_tenant_async(tenant_id, schedule_id, strict=True)
         if rec is None:
             return None
         new_rec = dict(rec)
@@ -688,10 +708,14 @@ class ScheduleStore:
         *,
         schedule_id: str | None = None,
         trigger_type: str | None = None,
+        webhook_token: str | None = None,
+        strict: bool = False,
     ) -> list[dict[str, Any]] | None:
         """Read this tenant's schedule rows under its RLS context and refresh the
-        cache from them. Returns None when there is no DB or the read failed
-        (callers then fall back to the cache)."""
+        cache from them. Returns None when there is no DB, or when the read
+        failed and ``strict`` is False (callers then fall back to the cache).
+        With ``strict`` a failed read raises :class:`ScheduleStoreUnavailableError`
+        so the caller fails closed instead of trusting a possibly stale cache."""
         if self._db is None:
             return None
         try:
@@ -705,6 +729,8 @@ class ScheduleStore:
                 stmt = stmt.where(Schedule.id == schedule_id)
             if trigger_type is not None:
                 stmt = stmt.where(Schedule.trigger_type == trigger_type)
+            if webhook_token is not None:
+                stmt = stmt.where(Schedule.webhook_token == webhook_token)
             async with (
                 self._db() as session,
                 session.begin(),
@@ -714,6 +740,8 @@ class ScheduleStore:
             records = [self._record_from_row(row) for row in rows]
         except Exception as exc:
             _log.warning("DB schedule read failed tenant=%s: %s", tenant_id, exc)
+            if strict:
+                raise ScheduleStoreUnavailableError(f"schedule read failed: {exc}") from exc
             return None
         for rec in records:
             self._data[(tenant_id, rec["schedule_id"])] = rec
@@ -723,22 +751,58 @@ class ScheduleStore:
         return records
 
     async def _get_for_tenant_async(
-        self, tenant_id: str, schedule_id: str
+        self, tenant_id: str, schedule_id: str, *, strict: bool = False
     ) -> dict[str, Any] | None:
-        fetched = await self._db_fetch_tenant(tenant_id, schedule_id=schedule_id)
+        fetched = await self._db_fetch_tenant(tenant_id, schedule_id=schedule_id, strict=strict)
         if fetched is not None:
             return fetched[0] if fetched else None
         return self._data.get((tenant_id, schedule_id))
 
     async def get_async(
-        self, schedule_id: str, *, tenant_ctx: TenantContext
+        self, schedule_id: str, *, tenant_ctx: TenantContext, strict: bool = False
     ) -> dict[str, Any] | None:
         """``get`` with DB read-through, so a trigger created/edited/deleted on
-        another replica is seen here (``get`` only knows this process)."""
-        return await self._get_for_tenant_async(tenant_ctx.tenant_id, schedule_id)
+        another replica is seen here (``get`` only knows this process).
 
-    async def list_all_async(self, *, tenant_ctx: TenantContext) -> list[dict[str, Any]]:
-        fetched = await self._db_fetch_tenant(tenant_ctx.tenant_id)
+        ``strict=True`` raises :class:`ScheduleStoreUnavailableError` when the DB
+        read fails instead of answering from this process's cache."""
+        return await self._get_for_tenant_async(
+            tenant_ctx.tenant_id, schedule_id, strict=strict
+        )
+
+    async def get_by_webhook_token_async(
+        self, token: str, *, tenant_ctx: TenantContext, strict: bool = False
+    ) -> dict[str, Any] | None:
+        """The tenant's ``webhook`` trigger whose token is ``token`` (paused or
+        not), or None. With a DB the ``schedules`` row is the source of truth,
+        so a token minted on another replica resolves here too; the stored
+        token is re-confirmed in constant time either way."""
+        import hmac
+
+        from app.triggers.models import TriggerType
+
+        if not token:
+            return None
+        fetched = await self._db_fetch_tenant(
+            tenant_ctx.tenant_id,
+            trigger_type=TriggerType.WEBHOOK.value,
+            webhook_token=token,
+            strict=strict,
+        )
+        candidates = fetched if fetched is not None else self.list_all(tenant_ctx=tenant_ctx)
+        for rec in candidates:
+            spec = rec.get("spec")
+            if spec is None or getattr(spec, "trigger_type", None) != TriggerType.WEBHOOK:
+                continue
+            stored = str(getattr(spec, "webhook_token", "") or "")
+            if stored and hmac.compare_digest(stored.encode(), token.encode()):
+                return rec
+        return None
+
+    async def list_all_async(
+        self, *, tenant_ctx: TenantContext, strict: bool = False
+    ) -> list[dict[str, Any]]:
+        fetched = await self._db_fetch_tenant(tenant_ctx.tenant_id, strict=strict)
         if fetched is not None:
             live = {rec["schedule_id"] for rec in fetched}
             for key in [k for k in self._data if k[0] == tenant_ctx.tenant_id]:
@@ -864,14 +928,17 @@ class ScheduleStore:
 
     async def delete_async(self, schedule_id: str, *, tenant_ctx: TenantContext) -> bool:
         key = (tenant_ctx.tenant_id, schedule_id)
-        # A cache miss is not "not found" with a DB: the trigger may have been
-        # created on another replica, so ask Postgres before answering 404.
-        if key not in self._data and (
-            self._db is None
-            or await self._get_for_tenant_async(tenant_ctx.tenant_id, schedule_id) is None
-        ):
-            return False
-        if self._db is not None:
+        if self._db is None:
+            if key not in self._data:
+                return False
+        else:
+            # Postgres decides existence, not the cache: a cache miss may be a
+            # trigger created on another replica, and a cache HIT may be one
+            # already deleted elsewhere (a 404, not a second delete). The read
+            # is strict so an outage fails closed.
+            rec = await self._get_for_tenant_async(tenant_ctx.tenant_id, schedule_id, strict=True)
+            if rec is None:
+                return False
             await self._db_delete_schedule(schedule_id, tenant_ctx.tenant_id, strict=True)
         await self._delete_redis_schedule_async(tenant_ctx.tenant_id, schedule_id, strict=True)
         self._data.pop(key, None)
@@ -963,7 +1030,7 @@ class ScheduleStore:
         except Exception as exc:
             _log.warning("DB schedule delete failed: %s", exc)
             if strict:
-                raise
+                raise ScheduleStoreUnavailableError(f"schedule delete failed: {exc}") from exc
 
     async def sync_from_db(self) -> int:
         """Load schedules from PostgreSQL into memory (startup warm-up).

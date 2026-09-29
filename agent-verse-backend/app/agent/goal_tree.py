@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -84,10 +85,28 @@ async def execute_sub_goal(
     async with semaphore:
         try:
             graph = graph_factory()
+            parent_goal_id = str(sub_goal.parent_goal_id or "")
+            # The child runs under its own id (its own checkpoint thread — unique
+            # per execution, so a replanned parent never resumes a stale child),
+            # derived from the parent so its records trace back to it; its LLM
+            # spend is charged to the PARENT goal's budget (_budget_goal_id). It
+            # used to run with no goal id at all: a random one, so the spend hit
+            # an unrelated per-goal budget and was not attributable.
+            child_goal_id = (
+                f"{parent_goal_id}-{sub_goal.sub_goal_id}-{uuid.uuid4().hex[:8]}"
+                if parent_goal_id
+                else None
+            )
+            initial_context: dict[str, Any] = {"sub_goal_id": sub_goal.sub_goal_id}
+            if parent_goal_id:
+                initial_context["parent_goal_id"] = parent_goal_id
+                initial_context["_budget_goal_id"] = parent_goal_id
             state: AgentState = await graph.run(
                 goal=sub_goal.description,
                 tenant_ctx=tenant_ctx,
                 event_callback=event_callback,
+                goal_id=child_goal_id,
+                initial_context=initial_context,
             )
             sub_goal.status = state.status
             sub_goal.provenance = list(state.provenance)

@@ -275,6 +275,86 @@ class GoalRuntimeProfile:
 
         return cast(dict[str, Any], _convert(self))
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GoalRuntimeProfile:
+        """Rebuild a profile from its :meth:`to_dict` snapshot (goals.runtime_profile).
+
+        The Celery worker runs a goal in another process than the one that built
+        its profile; this is how it executes the SAME persisted profile rather
+        than a plain loop. Raises ``ValueError`` / ``TypeError`` / ``KeyError``
+        on a malformed or no-longer-valid snapshot (e.g. a deadline already
+        passed) — the caller records an honest downgrade.
+        """
+        import dataclasses
+
+        def _section(kind: Any, raw: Any) -> Any:
+            raw = dict(raw or {})
+            names = {f.name for f in dataclasses.fields(kind)}
+            return kind(**{k: v for k, v in raw.items() if k in names})
+
+        props = dict(data["properties"])
+        for key, enum_cls in (
+            ("complexity", Complexity),
+            ("domain", Domain),
+            ("risk", RiskLevel),
+            ("time_sensitivity", TimeSensitivity),
+            ("kb_state", KnowledgeState),
+        ):
+            if key in props:
+                props[key] = enum_cls(props[key])
+
+        def _selection(raw: Any) -> StrategySelection:
+            return StrategySelection(str(raw["strategy_id"]), str(raw["adapter_version"]))
+
+        def _limits(raw: Any) -> PatternLimits | None:
+            return None if raw is None else PatternLimits.model_validate(raw)
+
+        deadline_raw = data.get("deadline")
+        deadline = (
+            datetime.fromisoformat(deadline_raw)
+            if isinstance(deadline_raw, str)
+            else deadline_raw
+        )
+        effective = _limits(data.get("effective_limits"))
+        return cls(
+            goal_id=str(data["goal_id"]),
+            tenant_id=str(data["tenant_id"]),
+            properties=_section(GoalProperties, props),
+            agent_patterns=_section(AgentPatternConfig, data.get("agent_patterns")),
+            rag_strategy=_section(RAGStrategyConfig, data.get("rag_strategy")),
+            model_plan=_section(ModelPlanConfig, data.get("model_plan")),
+            security=_section(SecurityConfig, data.get("security")),
+            memory_cache=_section(MemoryCacheConfig, data.get("memory_cache")),
+            eval_config=_section(EvalConfig, data.get("eval_config")),
+            profile_id=str(data.get("profile_id") or uuid.uuid4().hex),
+            assembly_latency_ms=float(data.get("assembly_latency_ms") or 0.0),
+            feature_flag_active=bool(data.get("feature_flag_active", True)),
+            tenant_plan=str(data.get("tenant_plan") or "professional"),
+            profile_version=int(data.get("profile_version", 2)),
+            registry_revision=str(data.get("registry_revision") or "legacy-unversioned"),
+            primary_strategy=_selection(data["primary_strategy"]),
+            auxiliary_strategies=tuple(
+                _selection(item) for item in data.get("auxiliary_strategies") or ()
+            ),
+            execution_tier=ExecutionTier(data.get("execution_tier") or ExecutionTier.LOCAL),
+            effective_limits=effective if effective is not None else default_pattern_limits(),
+            tenant_limit_ceiling=_limits(data.get("tenant_limit_ceiling")),
+            readiness_snapshot_ref=str(data.get("readiness_snapshot_ref") or "legacy-unverified"),
+            policy_snapshot_ref=str(data.get("policy_snapshot_ref") or "legacy-unversioned"),
+            budget_snapshot_ref=str(data.get("budget_snapshot_ref") or "legacy-unversioned"),
+            deadline=deadline,
+            selected_alternatives=tuple(
+                _selection(item) for item in data.get("selected_alternatives") or ()
+            ),
+            rejected_alternatives=tuple(
+                StrategyRejection(str(item["strategy_id"]), str(item["reason_code"]))
+                for item in data.get("rejected_alternatives") or ()
+            ),
+            model_role_assignments=tuple(
+                (str(pair[0]), str(pair[1])) for pair in data.get("model_role_assignments") or ()
+            ),
+        )
+
 
 # ── Named spec profile classes (spec §3.1-3.5 requirements) ──────────────────
 

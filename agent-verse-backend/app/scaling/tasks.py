@@ -1673,6 +1673,97 @@ async def _subgoal_context(goal_id: str, tenant_id: str) -> dict[str, Any] | Non
     return out or None
 
 
+async def _goal_execution_context(goal_id: str, tenant_id: str) -> dict[str, Any]:
+    """The goal's persisted ``execution_context`` (runtime profile, pattern flags …).
+
+    Raises on a DB error; the caller decides how to degrade (and records it).
+    """
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, sqlalchemy_rls_context(session, tenant_id):
+        raw = (
+            await session.execute(
+                text("SELECT execution_context FROM goals WHERE id = :g AND tenant_id = :t"),
+                {"g": goal_id, "t": tenant_id},
+            )
+        ).scalar()
+    try:
+        ctx = raw if isinstance(raw, dict) else _json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        ctx = {}
+    return ctx if isinstance(ctx, dict) else {}
+
+
+def _pattern_flags_from_context(ctx: dict[str, Any]) -> dict[str, bool]:
+    """The agent's reasoning-pattern flags snapshotted on the goal at submission."""
+    from app.services.goal_service import AGENT_PATTERN_FLAG_KEYS
+
+    raw = ctx.get("agent_pattern_flags") if isinstance(ctx, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    return {k: bool(raw[k]) for k in AGENT_PATTERN_FLAG_KEYS if k in raw}
+
+
+def _runtime_profile_from_context(
+    ctx: dict[str, Any],
+) -> tuple[Any | None, Any | None, dict[str, str] | None]:
+    """``(profile_that_drives, observed_profile, downgrade)`` from a persisted goal.
+
+    Mirrors GoalService._build_runtime_profile's rollout decision: the profile
+    drives execution only on the ``v2`` strategy-runtime path; it is always the
+    observed profile (eval scorecards). A snapshot that cannot be rebuilt here is
+    an honest downgrade — never a claim that the requested strategy ran.
+    """
+    snapshot = ctx.get("runtime_profile") if isinstance(ctx, dict) else None
+    if not isinstance(snapshot, dict):
+        return None, None, None
+    drives = str(ctx.get("strategy_runtime_path") or "legacy") == "v2"
+    try:
+        from app.orchestration.runtime_profile import GoalRuntimeProfile
+
+        profile = GoalRuntimeProfile.from_dict(snapshot)
+    except Exception as exc:
+        logger.warning("worker_runtime_profile_rehydrate_failed: %s", exc)
+        requested = snapshot.get("primary_strategy")
+        requested_id = (
+            str(requested.get("strategy_id")) if isinstance(requested, dict) else "unknown"
+        )
+        downgrade = (
+            {
+                "strategy_id": requested_id,
+                "from": "runtime_profile",
+                "to": "agent_graph",
+                "reason": "runtime_profile_unavailable_on_worker",
+            }
+            if drives
+            else None
+        )
+        return None, None, downgrade
+    return (profile if drives else None), profile, None
+
+
+def _worker_bulkhead_registry() -> Any:
+    """The distributed per-tenant bulkhead the API path gives its graphs (or None)."""
+    try:
+        import redis.asyncio as _aioredis_bh
+
+        from app.reliability.bulkhead import RedisBulkheadRegistry
+
+        return RedisBulkheadRegistry(
+            redis=_aioredis_bh.from_url(REDIS_URL, decode_responses=True),
+            default_max_concurrent=20,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("worker_bulkhead_registry_wire_failed: %s", exc)
+        return None
+
+
 async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
     """The goal-level ``model_override`` persisted in goals.execution_context ("" if none).
 
@@ -1701,8 +1792,15 @@ async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
     return str(value or "")
 
 
-async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
-    """Mark a goal an emergency stop prevented from running as cancelled."""
+_TERMINAL_GOAL_STATUSES = ("complete", "failed", "cancelled")
+
+
+async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> bool:
+    """Mark a goal an emergency stop prevented from running as cancelled.
+
+    Conditional: a redelivered message for a goal that already finished must
+    not rewrite its terminal status. Returns whether the row was changed.
+    """
     from sqlalchemy import update
 
     from app.db.models.goal import Goal
@@ -1711,11 +1809,63 @@ async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> None:
 
     db = get_session_factory()
     async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-        await session.execute(
+        result = await session.execute(
             update(Goal)
-            .where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            .where(
+                Goal.id == goal_id,
+                Goal.tenant_id == tenant_id,
+                Goal.status.notin_(_TERMINAL_GOAL_STATUSES),
+            )
             .values(status="cancelled", error_message=f"Blocked by emergency stop: {reason}")
         )
+    rowcount = getattr(result, "rowcount", None)
+    return not isinstance(rowcount, int) or rowcount > 0
+
+
+async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
+    """Atomically claim a goal row for this worker run.
+
+    One conditional ``UPDATE goals SET status='executing' WHERE status NOT IN
+    terminal RETURNING id`` under the tenant's RLS context. Returns
+    ``"claimed"`` when this run may execute the goal, otherwise the row's
+    terminal status (the goal already finished — a redelivered message).
+    Raises ``LookupError`` when the row does not exist and propagates DB
+    errors: the caller fails closed rather than running an unverified goal.
+
+    A goal still ``executing`` is claimable: concurrent runs are excluded by the
+    per-goal execution lock taken before this, so a claim of a running goal only
+    succeeds when its previous worker died (crash recovery via acks_late).
+    """
+    from sqlalchemy import select, update
+
+    from app.db.models.goal import Goal
+    from app.db.rls import sqlalchemy_rls_context
+    from app.db.session import get_session_factory
+
+    db = get_session_factory()
+    async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
+        claimed = (
+            await session.execute(
+                update(Goal)
+                .where(
+                    Goal.id == goal_id,
+                    Goal.tenant_id == tenant_id,
+                    Goal.status.notin_(_TERMINAL_GOAL_STATUSES),
+                )
+                .values(status="executing")
+                .returning(Goal.id)
+            )
+        ).scalar()
+        if claimed is not None:
+            return "claimed"
+        existing = (
+            await session.execute(
+                select(Goal.status).where(Goal.id == goal_id, Goal.tenant_id == tenant_id)
+            )
+        ).scalar()
+    if existing is None:
+        raise LookupError(f"goal row {goal_id} not found")
+    return str(existing)
 
 
 async def _update_goal_dlq(goal_id: str, tenant_id: str, reason: str) -> None:
@@ -1823,10 +1973,14 @@ def run_goal(
             )
             # Record it: the goal row used to stay "queued" forever and keep its
             # concurrency slot, so the stop looked like a hang.
+            _blocked: Any = None
             with contextlib.suppress(Exception):
-                _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
-            with contextlib.suppress(Exception):
-                _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+                _blocked = _run_async(_mark_goal_blocked(goal_id, tenant_id, _stop_reason))
+            # A redelivered message for an already-finished goal changes nothing
+            # and must not free a slot a running goal holds.
+            if _blocked is not False:
+                with contextlib.suppress(Exception):
+                    _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "blocked", "reason": _stop_reason}
     except Exception as _es_exc:
         logger.warning("emergency_stop_check_failed: %s", _es_exc)
@@ -1856,8 +2010,11 @@ def run_goal(
         *,
         error_message: str = "",
         iterations: int = 0,
-        only_if_active: bool = False,
+        only_if_active: bool = True,
     ) -> None:
+        # Conditional by default: a worker never rewrites a goal that already
+        # reached a terminal status (an operator cancel landing mid-run, or a
+        # redelivered message for a finished goal).
         if goal_bridge is None:
             return
         try:
@@ -2071,6 +2228,48 @@ def run_goal(
         _run_async(ensure_submitted_goal_row())
     except Exception as db_exc:
         logger.warning("DB operation failed (non-fatal): %s", db_exc)
+
+    # ── Terminal-state check + atomic claim ───────────────────────────────────
+    # With acks_late, Celery redelivers a message whose run outlived the broker
+    # visibility timeout (or whose worker died). The lock above excludes a
+    # concurrent run; this conditional UPDATE excludes RE-running a goal that
+    # already reached a terminal status. Fail closed when it cannot be verified.
+    if goal_bridge is not None:
+        try:
+            _claim = _run_async(_claim_goal_for_execution(goal_id, tenant_id))
+        except Exception as _claim_exc:
+            logger.error("goal_claim_unavailable goal_id=%s: %s", goal_id, _claim_exc)
+            if _lock:
+                with contextlib.suppress(Exception):
+                    _lock.release(goal_id)
+            if self.request.retries < self.max_retries:
+                raise self.retry(
+                    exc=_claim_exc, countdown=2**self.request.retries
+                ) from _claim_exc
+            _claim_reason = "Goal could not be claimed for execution; not run to avoid duplicates"
+            with contextlib.suppress(Exception):
+                _run_async(update_submitted_goal_status("failed", error_message=_claim_reason))
+            with contextlib.suppress(Exception):
+                _run_async(
+                    append_submitted_goal_event({"type": "worker_failed", "reason": _claim_reason})
+                )
+            _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+            return {"status": "failed", "goal_id": goal_id, "reason": "goal_claim_unavailable"}
+        if _claim != "claimed":
+            logger.warning(
+                "goal_already_terminal_skipping goal_id=%s status=%s", goal_id, _claim
+            )
+            if _lock:
+                with contextlib.suppress(Exception):
+                    _lock.release(goal_id)
+            # No counter decrement: the run that finished it released the slot.
+            return {
+                "status": "skipped",
+                "goal_id": goal_id,
+                "reason": "already_terminal",
+                "goal_status": _claim,
+            }
+
     try:
         _run_async(mark_worker_started())
     except Exception as db_exc:
@@ -2201,6 +2400,35 @@ def run_goal(
         except Exception as _ae:
             logger.debug("worker_agent_config_lookup_failed: %s", _ae)
 
+    # ── Runtime profile + pattern flags persisted on the goal ────────────────
+    # The worker used to build a plain loop whatever the goal's persisted runtime
+    # profile / agent pattern flags said (while the goal was recorded as running
+    # the profile's strategy). Read them back and build the graph like GoalService.
+    _worker_exec_ctx: dict[str, Any] = {}
+    if goal_bridge is not None:
+        try:
+            _worker_exec_ctx = _run_async(_goal_execution_context(goal_id, tenant_id)) or {}
+        except Exception as _ctx_exc:
+            logger.warning("worker_execution_context_lookup_failed goal=%s: %s", goal_id, _ctx_exc)
+    _worker_pattern_flags = _pattern_flags_from_context(_worker_exec_ctx)
+    (
+        _worker_profile,
+        _worker_observed_profile,
+        _worker_profile_downgrade,
+    ) = _runtime_profile_from_context(_worker_exec_ctx)
+
+    async def _record_worker_strategy_execution(execution: dict[str, Any]) -> None:
+        """Persist which strategy the worker actually runs (goals.execution_context)."""
+        if goal_bridge is None:
+            return
+        try:
+            _, _, _bridge = _make_worker_goal_bridge()
+            await _bridge._db_merge_context_key(
+                goal_id, tenant_id, "strategy_execution", execution
+            )
+        except Exception as _se_exc:
+            logger.warning("worker_strategy_execution_persist_failed: %s", _se_exc)
+
     _agent_runner: Any = None
     _use_agent_graph = False
     # Canonical Reflexion memory (recall in the planner, learning after the goal).
@@ -2291,7 +2519,6 @@ def run_goal(
     if not _loop_is_patched:
         # Production path: Try AgentGraph first (full capabilities)
         try:
-            from app.agent.graph import AgentGraph
             from app.governance.audit import AuditLog
             from app.governance.cost import CostController, RedisCostController
             from app.governance.hitl import HITLGateway
@@ -2682,7 +2909,7 @@ def run_goal(
                 # means tool calls are denied (enforce_tool_call has no grants).
                 logger.warning("worker_governance_wire_failed: %s", _gov_exc)
 
-            _agent_runner = AgentGraph(
+            _worker_graph_services: dict[str, Any] = dict(
                 planner=provider,
                 executor=provider,
                 verifier=_verifier_for_graph,
@@ -2716,7 +2943,31 @@ def run_goal(
                 answer_synthesizer=_phase3_synthesizer,
                 calibration_store=_phase3_calibration,
                 consensus_verifier=_phase3_consensus,
+                # Distributed per-tenant concurrency bulkhead — same registry the
+                # API path gives its graphs (tool-call concurrency per tenant).
+                bulkhead_registry=_worker_bulkhead_registry(),
+                # The agent's reasoning-pattern flags (snapshotted on the goal at
+                # submission — the worker has no in-memory agent store).
+                **_worker_pattern_flags,
             )
+            # Same assembly as GoalService: the persisted runtime profile is
+            # compiled (GraphFactory) when the rollout lets it drive; what runs —
+            # including any downgrade — is recorded on the goal.
+            from app.orchestration.profiled_graph import build_profiled_graph
+
+            _agent_runner, _worker_strategy_execution = build_profiled_graph(
+                _worker_profile,
+                _worker_graph_services,
+                dict(_worker_pattern_flags),
+            )
+            if _worker_profile_downgrade:
+                _worker_strategy_execution.setdefault("downgrades", []).append(
+                    _worker_profile_downgrade
+                )
+            # Scorecards read the observed profile (set for non-v2 tenants too).
+            with contextlib.suppress(Exception):
+                _agent_runner._observed_runtime_profile = _worker_observed_profile
+            _run_async(_record_worker_strategy_execution(_worker_strategy_execution))
             # RPA parity with the in-process path (goal_service sets
             # graph._rpa_executor from app.state): without it every rpa_* tool
             # call on a queued goal fell through to "Tool not found". Same

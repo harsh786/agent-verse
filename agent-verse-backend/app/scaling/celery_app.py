@@ -322,6 +322,26 @@ celery_app.conf.update(
     },
 )
 
+# ── Redelivery window for long goals ───────────────────────────────────────────
+# Tasks are acks_late (a crashed worker's goal is redelivered, not lost). On the
+# Redis transport an unacked message is redelivered once the visibility timeout
+# (default 1h) passes — far shorter than a goal may legitimately run (24h for
+# enterprise), so a healthy long goal was handed to a second worker mid-run. The
+# window must outlast the longest plan goal timeout. run_goal additionally takes
+# a per-goal lock and atomically claims the goal row, so a redelivery that still
+# arrives never runs a goal twice.
+def _goal_visibility_timeout_s() -> int:
+    from app.tenancy.context import PLAN_LIMITS
+
+    longest = max(limits.goal_timeout_seconds for limits in PLAN_LIMITS.values())
+    return int(longest) + 3_600  # + 1h headroom for setup / teardown
+
+
+_BROKER_TRANSPORT_OPTIONS: dict[str, object] = {
+    "visibility_timeout": _goal_visibility_timeout_s(),
+}
+celery_app.conf.broker_transport_options = dict(_BROKER_TRANSPORT_OPTIONS)
+
 # ── RedBeat HA Beat Scheduler ──────────────────────────────────────────────────
 # Allows multiple beat replicas — only one acquires the Redis lock at a time.
 # Requires: pip install celery-redbeat
@@ -341,6 +361,7 @@ except ImportError:
 # result backend at the same Sentinel topology.
 if _SENTINEL_URLS:
     celery_app.conf.broker_transport_options = {
+        **_BROKER_TRANSPORT_OPTIONS,
         "master_name": _SENTINEL_MASTER,
         "sentinel_kwargs": {},
     }

@@ -231,10 +231,6 @@ def get_policy_registry(request: Request) -> Any:
     return getattr(request.app.state, "_policy_registry", None)
 
 
-def get_webhook_tokens(request: Request) -> Any:
-    return getattr(request.app.state, "_webhook_tokens", {})
-
-
 def get_budget_config(request: Request) -> Any:
     return getattr(request.app.state, "_budget_config", None)
 

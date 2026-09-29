@@ -25,6 +25,8 @@ from app.agent.state import GoalStatus
 from app.services.goal_service import _RUNNER_KEY, GoalRecord, GoalService
 from app.tenancy.context import PlanTier, TenantContext
 
+_TERMINAL = {"complete", "failed", "cancelled"}
+
 TENANT = "t-recover"
 
 
@@ -61,8 +63,12 @@ class _GoalsTable:
             return table.plans.get(tenant_id)
 
         async def _update(goal_id: str, tenant_id: str, status: str, error_message: str = "",
-                          iterations: int = 0, only_if_active: bool = False) -> None:
+                          iterations: int = 0, only_if_active: bool = False,
+                          raise_on_error: bool = False) -> bool:
+            if only_if_active and table.rows[goal_id]["status"] in _TERMINAL:
+                return False
             table.rows[goal_id]["status"] = status
+            return True
 
         svc._db_claim_goal_runner = _claim  # type: ignore[method-assign]
         svc._tenant_plan = _plan  # type: ignore[method-assign]

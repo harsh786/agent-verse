@@ -66,4 +66,9 @@ class GraphFactory:
         graph_kwargs: dict[str, Any] = dict(services)
         graph_kwargs.update(flags)
         graph_kwargs["runtime_profile"] = profile
-        return AgentGraph(**graph_kwargs)
+        # Resolved at call time (like the plain-graph fallback in profiled_graph), so
+        # the class bound at this module's first import is never pinned for good.
+        from app.agent import graph as _graph_mod
+
+        graph: AgentGraph = _graph_mod.AgentGraph(**graph_kwargs)
+        return graph

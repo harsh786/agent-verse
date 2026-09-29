@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
 
 from app.observability.logging import get_logger
 from app.workflow.context import ContextResolver
@@ -10,6 +11,52 @@ from app.workflow.dsl import StepDefinition
 from app.workflow.state import WorkflowRunStatus, WorkflowState
 
 _log = get_logger(__name__)
+
+# Decision ids treated as a rejection / an approval when the step does not
+# declare its own actions (or declares these ids). Compared case-insensitively.
+REJECT_ACTIONS = frozenset({"reject", "rejected", "deny", "denied", "decline", "declined"})
+APPROVE_ACTIONS = frozenset({"approve", "approved", "accept", "accepted"})
+
+
+@dataclass(frozen=True)
+class HITLDecision:
+    """How a reviewer's decision on an approval step routes the run.
+
+    ``kind``:
+      * ``proceed`` — continue to ``next`` (when set) or the step's dependents;
+      * ``reject_branch`` — a rejection with a declared branch: route to ``next``;
+      * ``stop`` — halt the run (rejection with no branch, or an unrecognised
+        decision — fail closed rather than treat it as an approval).
+    """
+
+    kind: Literal["proceed", "reject_branch", "stop"]
+    next: str = ""
+    reason: str = ""
+
+
+def classify_hitl_decision(step: Any, action: Any) -> HITLDecision:
+    """Classify ``action`` taken on approval ``step`` (single source of truth
+    for the compiler router, the downstream barrier and the step node)."""
+    act = str(action or "").strip()
+    norm = act.lower()
+    step_id = getattr(step, "id", "")
+    declared = {a.id: a for a in (getattr(step, "actions", None) or [])}
+    match = declared.get(act)
+    if match is None:
+        # Case-insensitive match against the declared ids.
+        match = next((a for i, a in declared.items() if i.lower() == norm), None)
+    if norm in REJECT_ACTIONS:
+        if match is not None and match.next:
+            return HITLDecision("reject_branch", match.next)
+        return HITLDecision("stop", reason=f"Approval step {step_id!r} was rejected ({act!r})")
+    if match is not None:
+        return HITLDecision("proceed", match.next)
+    if norm in APPROVE_ACTIONS:
+        return HITLDecision("proceed")
+    return HITLDecision(
+        "stop",
+        reason=f"Approval step {step_id!r} received an unrecognised decision {act!r}",
+    )
 
 
 class HITLStepNode:
@@ -105,14 +152,22 @@ class HITLStepNode:
         }
 
         # Find which step to route to based on chosen action
-        next_step = None
-        for act in self.step.actions:
-            if act.id == action:
-                next_step = act.next
-                break
+        decision = classify_hitl_decision(self.step, action)
+        next_step = decision.next or None
+        stopped = decision.kind == "stop"
+        if stopped:
+            _log.info(
+                "hitl_step_rejected_run_stopped",
+                step_id=self.step.id,
+                run_id=state.get("run_id"),
+                action=action,
+            )
 
         return {
-            "status": WorkflowRunStatus.RUNNING,
+            # A rejection with no declared reject branch (or an unrecognised
+            # decision) ends the run: nothing downstream of the gate may run.
+            "status": WorkflowRunStatus.FAILED if stopped else WorkflowRunStatus.RUNNING,
+            **({"error": decision.reason, "error_step_id": self.step.id} if stopped else {}),
             "hitl_request_id": None,
             "hitl_action": None,
             "hitl_note": None,
