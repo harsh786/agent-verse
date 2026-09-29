@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -113,6 +114,21 @@ class RAFTFineTuneJob(Base):
             "status NOT IN ('submitted', 'running', 'completed') OR provider_job_id IS NOT NULL",
             name="ck_raft_jobs_provider_identity",
         ),
+        # Target of the deployment FK: a deployment can only name a job of the
+        # same tenant AND the same collection.
+        UniqueConstraint(
+            "tenant_id",
+            "collection_id",
+            "id",
+            name="uq_raft_jobs_tenant_collection_id",
+        ),
+        # Background status poller: oldest in-flight jobs first.
+        Index(
+            "idx_raft_jobs_in_flight",
+            "updated_at",
+            "id",
+            postgresql_where=text("status IN ('submitted', 'running')"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
@@ -197,4 +213,44 @@ class RAFTConfirmationGrant(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-__all__ = ["RAFTConfirmationGrant", "RAFTDataset", "RAFTFineTuneJob"]
+class RAFTModelDeployment(Base):
+    """Which completed RAFT job serves a collection (at most one per collection)."""
+
+    __tablename__ = "raft_model_deployments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("tenant_id", "collection_id"),
+            ("knowledge_collections.tenant_id", "knowledge_collections.id"),
+            name="fk_raft_deployments_tenant_collection",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ("tenant_id", "collection_id", "job_id"),
+            (
+                "raft_fine_tune_jobs.tenant_id",
+                "raft_fine_tune_jobs.collection_id",
+                "raft_fine_tune_jobs.id",
+            ),
+            name="fk_raft_deployments_tenant_collection_job",
+            ondelete="CASCADE",
+        ),
+    )
+
+    tenant_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    collection_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    deployed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+__all__ = [
+    "RAFTConfirmationGrant",
+    "RAFTDataset",
+    "RAFTFineTuneJob",
+    "RAFTModelDeployment",
+]

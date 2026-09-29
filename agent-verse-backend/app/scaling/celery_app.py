@@ -63,6 +63,8 @@ celery_app = Celery(
         # ingestion.dispatch_due_sources / retry_dlq_entries, which were never
         # registered on the worker without this import.
         "app.ingestion.scheduler",
+        # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
+        "app.scaling.raft_tasks",
     ],
 )
 
@@ -98,6 +100,7 @@ celery_app.conf.update(
         "app.scaling.tasks.execute_retention_policy": {"queue": "maintenance"},
         "app.scaling.tasks.expire_hitl_approvals": {"queue": "maintenance"},
         "app.scaling.tasks.check_email_goals": {"queue": "maintenance"},
+        "app.scaling.raft_tasks.poll_raft_fine_tune_jobs": {"queue": "maintenance"},
         # GDPR export — runs in background, long-running
         "agentverse.compliance.run_gdpr_export": {"queue": "maintenance"},
         # Per-plan routing aliases (workers can subscribe to these specific queues)
@@ -197,6 +200,13 @@ celery_app.conf.update(
         "check-email-goals": {
             "task": "app.scaling.tasks.check_email_goals",
             "schedule": 60.0,  # every 60 seconds
+            "options": {"queue": "maintenance"},
+        },
+        # RAFT: advance submitted/running fine-tune jobs (bounded batch per tick)
+        # so a finished model becomes deployable without a manual refresh.
+        "poll-raft-fine-tune-jobs": {
+            "task": "app.scaling.raft_tasks.poll_raft_fine_tune_jobs",
+            "schedule": 120.0,  # every 2 minutes
             "options": {"queue": "maintenance"},
         },
         # Ingestion: dispatch due sources every 60s, retry DLQ every 5min

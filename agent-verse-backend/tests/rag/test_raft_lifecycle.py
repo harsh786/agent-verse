@@ -368,6 +368,7 @@ async def test_paid_submission_requires_action_time_confirmation() -> None:
     service = RAFTService(
         repository=InMemoryRAFTRepository(),
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -438,6 +439,7 @@ async def test_expired_confirmation_never_submits_paid_work() -> None:
     service = RAFTService(
         repository=InMemoryRAFTRepository(),
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
         confirmation_ttl=timedelta(seconds=-1),
     )
     dataset = await service.create_dataset(
@@ -470,6 +472,7 @@ async def test_wrong_binding_does_not_consume_confirmation_grant() -> None:
     service = RAFTService(
         repository=InMemoryRAFTRepository(),
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -511,6 +514,7 @@ async def test_confirmed_job_lifecycle_is_durable_and_token_is_one_time() -> Non
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -549,7 +553,12 @@ async def test_confirmed_job_lifecycle_is_durable_and_token_is_one_time() -> Non
     assert submitted.estimated_cost == preview.estimated_cost
     assert completed.status == "completed"
     assert completed.fine_tuned_model == "raft-model-1"
-    assert evaluated.evaluation == FineTuneEvaluation(metrics={"accuracy": 0.9})
+    # Evaluation is real inference over the held-out split through the serving
+    # provider; this fake never echoes the reference answer.
+    assert evaluated.evaluation == FineTuneEvaluation(
+        metrics={"answer_match_rate": 0.0, "evaluated_examples": 3.0, "test_examples": 3.0}
+    )
+    assert {call[2] for call in provider.inference_calls} == {"raft-model-1"}
     assert await repository.get_job(TENANT.tenant_id, submitted.job_id) == evaluated
     assert await repository.get_job(OTHER_TENANT.tenant_id, submitted.job_id) is None
 
@@ -559,6 +568,7 @@ async def test_consumed_confirmation_retry_rejects_changed_dataset_without_provi
     service = RAFTService(
         repository=InMemoryRAFTRepository(),
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     first_dataset = await service.create_dataset(
         TENANT,
@@ -612,6 +622,7 @@ async def test_in_memory_consumed_confirmation_compares_every_immutable_field() 
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -718,6 +729,7 @@ async def test_stale_update_cannot_regress_terminal_job_or_erase_evaluation() ->
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -777,6 +789,7 @@ async def test_response_lost_retry_reuses_durable_job_and_idempotency_key() -> N
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -855,6 +868,7 @@ async def test_concurrent_submit_has_one_provider_contact() -> None:
     service = RAFTService(
         repository=InMemoryRAFTRepository(),
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -941,6 +955,7 @@ async def test_crash_boundaries_reconcile_by_durable_job_id(
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     dataset = await service.create_dataset(
         TENANT,
@@ -1039,46 +1054,29 @@ async def _completed_service() -> tuple[RAFTService, RecordingFineTuneProvider, 
         confirmation_token=preview.confirmation_token,
     )
     await service.refresh_job(TENANT, job.job_id)
+    await service.deploy_job(TENANT, job.job_id)
     return service, provider, job.job_id, dataset.dataset_id
 
 
-async def test_raft_degrades_to_hybrid_when_no_completed_model() -> None:
+async def test_raft_is_unavailable_when_no_completed_model() -> None:
+    """No deployed model → unavailable. It used to degrade to an answer-less hybrid
+    result, which the retriever then synthesized with the base model under the
+    RAFT label."""
     unavailable = RAFTService(repository=InMemoryRAFTRepository(), providers={})
     adapter = RAFTRAGRuntimeAdapter(unavailable)
-
-    fallback_results = [
-        RetrievalResult(
-            chunk_id="hybrid-1",
-            content="Hybrid fallback evidence",
-            score=0.6,
-            source_metadata={"source": "policy.pdf"},
-            retrieval_legs=["hybrid"],
-        )
-    ]
-
-    async def embed(*args: object, **kwargs: object) -> list[float]:
-        del args, kwargs
-        return [1.0, 0.0]
+    searched: list[object] = []
 
     async def search(*args: object, **kwargs: object) -> list[RetrievalResult]:
-        del args, kwargs
-        return fallback_results
+        searched.append(args)
+        return []
 
     with (
-        patch("app.rag.gateway._embed_text", side_effect=embed),
         patch("app.rag.gateway._search_persisted", side_effect=search),
+        pytest.raises(RetrievalStrategyExecutionError, match="no RAFT model is deployed"),
     ):
-        result = await adapter.execute(execution_request(), execution_context())
+        await adapter.execute(execution_request(), execution_context())
 
-    # Honest degradation: a real (fallback) result, not an unhandled exception.
-    assert result.resolved_strategy_id is RAGStrategy.RAFT
-    assert result.citations[0].chunk_id == "hybrid-1"
-    fallback_trace = next(
-        item for item in result.strategy_trace if item.action == "raft_fallback"
-    )
-    assert fallback_trace.status == "degraded"
-    assert fallback_trace.detail["reason"] == "raft_unavailable"
-    assert fallback_trace.detail["fallback_retrieval"] == "hybrid"
+    assert searched == []
 
 
 async def test_raft_retrieval_uses_completed_model_and_traces_job_and_model_ids() -> None:
@@ -1131,7 +1129,7 @@ async def test_raft_rejects_incompatible_dataset_model_binding() -> None:
 
     with pytest.raises(
         RetrievalStrategyExecutionError,
-        match="dataset is incompatible",
+        match="does not match the deployed RAFT model",
     ):
         await RAFTRAGRuntimeAdapter(service).execute(
             execution_request("different-dataset"),
@@ -1158,6 +1156,7 @@ def test_raft_lifecycle_api_is_authenticated_and_rejects_unconfirmed_submission(
     service = RAFTService(
         repository=repository,
         providers={provider.provider_id: provider},
+        inference_providers={provider.provider_id: provider},
     )
     client = raft_api(service)
 

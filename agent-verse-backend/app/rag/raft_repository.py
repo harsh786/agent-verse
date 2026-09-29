@@ -8,19 +8,30 @@ from dataclasses import asdict, replace
 from typing import Literal, cast
 
 from sqlalchemy import delete, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.raft import RAFTConfirmationGrant, RAFTDataset, RAFTFineTuneJob
-from app.db.rls import sqlalchemy_rls_context
+from app.db.models.raft import (
+    RAFTConfirmationGrant,
+    RAFTDataset,
+    RAFTFineTuneJob,
+    RAFTModelDeployment,
+)
+from app.db.rls import sqlalchemy_rls_context, system_session
 from app.rag.raft import (
+    DEFAULT_MAX_TRAINING_CHUNKS,
+    IN_FLIGHT_STATUSES,
     ConfirmationRequiredError,
     FineTuneCost,
     FineTuneEvaluation,
     PersistedRAFTChunk,
     RAFTDatasetRecord,
+    RAFTDeploymentRecord,
+    RAFTError,
     RAFTExample,
     RAFTJobRecord,
     RAFTJobStatus,
+    RAFTNotFoundError,
     _ConfirmationGrant,
     _grant_matches_job,
     _job_confirmation_digest,
@@ -30,14 +41,51 @@ from app.rag.raft import (
 )
 from app.rag.store import SUPPORTED_EMBEDDING_DIMENSIONS
 
+DEFAULT_CHUNK_PAGE_SIZE = 500
+
+# Only curated chunks (a non-blank question AND answer) can become RAFT examples,
+# so the cap and the paging apply to those rows, not the whole collection.
+_CURATED_CHUNK_FILTER = (
+    "AND btrim(COALESCE(metadata->>'question', '')) <> '' "
+    "AND btrim(COALESCE(metadata->>'answer', '')) <> '' "
+)
+
 
 class SQLRAFTRepository:
-    """Persist all RAFT state inside tenant RLS transactions."""
+    """Persist all RAFT state inside tenant RLS transactions.
 
-    def __init__(self, session_factory: Callable[[], AsyncSession]) -> None:
+    ``system_session_factory`` (a BYPASSRLS maintenance role) is used only by the
+    cross-tenant in-flight scan of the background status poller; every other
+    read and write runs under the owning tenant's RLS context.
+    """
+
+    def __init__(
+        self,
+        session_factory: Callable[[], AsyncSession],
+        *,
+        system_session_factory: Callable[[], AsyncSession] | None = None,
+        chunk_page_size: int = DEFAULT_CHUNK_PAGE_SIZE,
+    ) -> None:
+        if chunk_page_size < 1:
+            raise ValueError("chunk_page_size must be positive")
         self._session_factory = session_factory
+        self._system_session_factory = system_session_factory
+        self._chunk_page_size = chunk_page_size
 
-    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]:
+    async def load_chunks(
+        self,
+        tenant_id: str,
+        collection_id: str,
+        *,
+        limit: int = DEFAULT_MAX_TRAINING_CHUNKS,
+    ) -> list[PersistedRAFTChunk]:
+        """Keyset-page curated chunks in ``(document_id, chunk_index, id)`` order.
+
+        Never materialises more than ``limit`` rows: each page is bounded, and the
+        next page resumes strictly after the last row seen.
+        """
+        if limit < 1:
+            return []
         async with self._tenant_session(tenant_id) as session:
             dimension = await session.scalar(
                 text(
@@ -50,25 +98,50 @@ class SQLRAFTRepository:
             if dimension is None or int(dimension) not in SUPPORTED_EMBEDDING_DIMENSIONS:
                 return []
             table = f"knowledge_chunks_{int(dimension)}"
-            rows = (
-                await session.execute(
-                    text(
-                        f"SELECT id, document_id, content, metadata FROM {table} "
-                        "WHERE tenant_id = :tenant_id AND collection_id = :collection_id "
-                        "AND is_proposition IS FALSE ORDER BY document_id, chunk_index"
-                    ),
-                    {"tenant_id": tenant_id, "collection_id": collection_id},
-                )
-            ).fetchall()
-        return [
-            PersistedRAFTChunk(
-                chunk_id=str(row[0]),
-                document_id=str(row[1]),
-                content=str(row[2]),
-                metadata=dict(row[3] or {}),
+            base = (
+                f"SELECT id, document_id, chunk_index, content, metadata FROM {table} "
+                "WHERE tenant_id = :tenant_id AND collection_id = :collection_id "
+                f"AND is_proposition IS FALSE {_CURATED_CHUNK_FILTER}"
             )
-            for row in rows
-        ]
+            first_page = text(f"{base}ORDER BY document_id, chunk_index, id LIMIT :page_size")
+            next_page = text(
+                f"{base}AND (document_id, chunk_index, id) > "
+                "(:after_document_id, :after_chunk_index, :after_id) "
+                "ORDER BY document_id, chunk_index, id LIMIT :page_size"
+            )
+            chunks: list[PersistedRAFTChunk] = []
+            cursor: tuple[str, int, str] | None = None
+            while len(chunks) < limit:
+                page_size = min(self._chunk_page_size, limit - len(chunks))
+                params: dict[str, object] = {
+                    "tenant_id": tenant_id,
+                    "collection_id": collection_id,
+                    "page_size": page_size,
+                }
+                if cursor is None:
+                    statement = first_page
+                else:
+                    statement = next_page
+                    params.update(
+                        after_document_id=cursor[0],
+                        after_chunk_index=cursor[1],
+                        after_id=cursor[2],
+                    )
+                rows = (await session.execute(statement, params)).fetchall()
+                for row in rows:
+                    chunks.append(
+                        PersistedRAFTChunk(
+                            chunk_id=str(row[0]),
+                            document_id=str(row[1]),
+                            content=str(row[3]),
+                            metadata=dict(row[4] or {}),
+                        )
+                    )
+                if len(rows) < page_size:
+                    break
+                last = rows[-1]
+                cursor = (str(last[1]), int(last[2]), str(last[0]))
+        return chunks
 
     async def save_dataset(self, tenant_id: str, record: RAFTDatasetRecord) -> None:
         _require_matching_tenant(tenant_id, record.tenant_id)
@@ -324,6 +397,79 @@ class SQLRAFTRepository:
                 await session.scalars(statement.order_by(RAFTFineTuneJob.updated_at.desc()))
             ).all()
         return [_job_record(row) for row in rows]
+
+    async def list_in_flight_jobs(self, *, limit: int) -> list[tuple[str, str]]:
+        if limit < 1:
+            return []
+        if self._system_session_factory is None:
+            raise RAFTError("RAFT in-flight scan requires a maintenance session factory")
+        async with (
+            self._system_session_factory() as session,
+            session.begin(),
+            system_session(session),
+        ):
+            rows = (
+                await session.execute(
+                    select(RAFTFineTuneJob.tenant_id, RAFTFineTuneJob.id)
+                    .where(
+                        RAFTFineTuneJob.status.in_(sorted(IN_FLIGHT_STATUSES)),
+                        RAFTFineTuneJob.provider_job_id.is_not(None),
+                    )
+                    .order_by(RAFTFineTuneJob.updated_at.asc(), RAFTFineTuneJob.id.asc())
+                    .limit(limit)
+                )
+            ).all()
+        return [(str(row[0]), str(row[1])) for row in rows]
+
+    async def save_deployment(self, tenant_id: str, record: RAFTDeploymentRecord) -> None:
+        _require_matching_tenant(tenant_id, record.tenant_id)
+        async with self._tenant_session(tenant_id) as session:
+            job_exists = await session.scalar(
+                select(RAFTFineTuneJob.id).where(
+                    RAFTFineTuneJob.tenant_id == tenant_id,
+                    RAFTFineTuneJob.id == record.job_id,
+                    RAFTFineTuneJob.collection_id == record.collection_id,
+                )
+            )
+            if job_exists is None:
+                raise RAFTNotFoundError("RAFT job not found for this collection")
+            statement = pg_insert(RAFTModelDeployment).values(
+                tenant_id=record.tenant_id,
+                collection_id=record.collection_id,
+                job_id=record.job_id,
+                deployed_at=record.deployed_at,
+            )
+            await session.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        RAFTModelDeployment.tenant_id,
+                        RAFTModelDeployment.collection_id,
+                    ],
+                    set_={
+                        "job_id": statement.excluded.job_id,
+                        "deployed_at": statement.excluded.deployed_at,
+                    },
+                )
+            )
+
+    async def get_deployment(
+        self, tenant_id: str, collection_id: str
+    ) -> RAFTDeploymentRecord | None:
+        async with self._tenant_session(tenant_id) as session:
+            row = await session.scalar(
+                select(RAFTModelDeployment).where(
+                    RAFTModelDeployment.tenant_id == tenant_id,
+                    RAFTModelDeployment.collection_id == collection_id,
+                )
+            )
+        if row is None:
+            return None
+        return RAFTDeploymentRecord(
+            tenant_id=row.tenant_id,
+            collection_id=row.collection_id,
+            job_id=row.job_id,
+            deployed_at=row.deployed_at,
+        )
 
     @asynccontextmanager
     async def _tenant_session(self, tenant_id: str) -> AsyncIterator[AsyncSession]:

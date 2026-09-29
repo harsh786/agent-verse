@@ -17,11 +17,19 @@ from app.rag.contracts import (
 )
 from app.rag.gateway import CollectionNotFoundError
 from app.rag.raft import (
+    POLL_FAILURE_PREFIX,
     ConfirmationRequiredError,
+    RAFTConcurrentUpdateError,
     RAFTDatasetConfig,
+    RAFTDeploymentRecord,
     RAFTError,
+    RAFTJobRecord,
+    RAFTJobStateError,
+    RAFTModelUnavailableError,
     RAFTNotFoundError,
     RAFTService,
+    RAFTSubmissionPendingError,
+    RAFTUnsupportedProviderError,
 )
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
@@ -71,8 +79,19 @@ def _raise_raft_http_error(exc: Exception) -> NoReturn:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, RAFTNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    if isinstance(exc, ValueError):
+    if isinstance(exc, RAFTUnsupportedProviderError | ValueError):
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if isinstance(exc, RAFTModelUnavailableError | RAFTJobStateError | RAFTConcurrentUpdateError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, RAFTSubmissionPendingError):
+        # The job exists durably; the client must reconcile it, not resubmit.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Fine-tune submission outcome is unknown; reconcile the job",
+                "job_id": exc.job_id,
+            },
+        ) from exc
     if isinstance(exc, RAFTError):
         raise HTTPException(status_code=503, detail="RAFT lifecycle is unavailable") from exc
     raise HTTPException(status_code=503, detail="RAFT lifecycle is unavailable") from exc
@@ -312,7 +331,56 @@ async def evaluate_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-def _job_response(job: Any) -> dict[str, Any]:
+@router.post("/raft/jobs/{job_id}/deploy")
+async def deploy_raft_job(request: Request, job_id: str) -> dict[str, Any]:
+    """Serve this completed job's fine-tuned model for its collection's RAFT queries."""
+    tenant = _require_tenant(request)
+    service = _raft_service(request)
+    try:
+        deployment = await service.deploy_job(tenant, job_id)
+        job = await service.get_job(tenant, job_id)
+    except Exception as exc:
+        _raise_raft_http_error(exc)
+    return _deployment_response(deployment, job)
+
+
+@router.get("/raft/collections/{collection_id}/deployment")
+async def get_raft_deployment(request: Request, collection_id: str) -> dict[str, Any]:
+    tenant = _require_tenant(request)
+    service = _raft_service(request)
+    try:
+        deployment = await service.get_deployment(tenant, collection_id=collection_id)
+        job = await service.get_job(tenant, deployment.job_id)
+        servable = await service.has_servable_model(tenant, collection_id=collection_id)
+    except Exception as exc:
+        _raise_raft_http_error(exc)
+    return {**_deployment_response(deployment, job), "servable": servable}
+
+
+def _deployment_response(deployment: RAFTDeploymentRecord, job: RAFTJobRecord) -> dict[str, Any]:
+    return {
+        "collection_id": deployment.collection_id,
+        "job_id": deployment.job_id,
+        "provider_id": job.provider_id,
+        "base_model": job.base_model,
+        "fine_tuned_model": job.fine_tuned_model,
+        "deployed_at": deployment.deployed_at.isoformat(),
+    }
+
+
+def _job_error(job: RAFTJobRecord) -> str | None:
+    if not job.error:
+        return None
+    if job.status == "failed":
+        return "Fine-tune provider reported job failure"
+    if job.error.startswith(POLL_FAILURE_PREFIX):
+        return "Fine-tune status check failed; it will be retried"
+    if job.status == "reconciling":
+        return "Fine-tune submission outcome is unknown; reconcile the job"
+    return "Fine-tune provider returned an inconsistent status; it will be retried"
+
+
+def _job_response(job: RAFTJobRecord) -> dict[str, Any]:
     return {
         "job_id": job.job_id,
         "dataset_id": job.dataset_id,
@@ -331,7 +399,7 @@ def _job_response(job: Any) -> dict[str, Any]:
             if job.estimated_cost
             else None
         ),
-        "error": "Fine-tune provider reported job failure" if job.error else None,
+        "error": _job_error(job),
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
     }

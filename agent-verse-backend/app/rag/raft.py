@@ -8,12 +8,16 @@ import random
 import secrets
 import uuid
 from asyncio import Lock
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
-from app.tenancy.context import TenantContext
+from app.observability.logging import get_logger
+from app.tenancy.context import PlanTier, TenantContext
+
+logger = get_logger(__name__)
 
 RAFTJobStatus = Literal[
     "pending",
@@ -27,6 +31,11 @@ MONEY_SCALE = Decimal("0.000001")
 RAFT_INFERENCE_CAPABILITY = "raft-grounded-answer-v1"
 _RAFT_DATASET_ARTIFACT_SCHEMA_VERSION = 1
 _TERMINAL_STATUSES = frozenset({"completed", "failed"})
+# Statuses a background poller advances: the provider has accepted the job.
+IN_FLIGHT_STATUSES: frozenset[RAFTJobStatus] = frozenset({"submitted", "running"})
+DEFAULT_MAX_TRAINING_CHUNKS = 2000
+DEFAULT_MAX_EVAL_EXAMPLES = 50
+POLL_FAILURE_PREFIX = "status_poll_failed:"
 _LEGAL_TRANSITIONS: dict[RAFTJobStatus, frozenset[RAFTJobStatus]] = {
     "pending": frozenset({"pending", "reconciling", "submitted", "failed"}),
     "reconciling": frozenset({"reconciling", "submitted", "failed"}),
@@ -55,6 +64,22 @@ class RAFTModelUnavailableError(RAFTError):
 
 class RAFTConcurrentUpdateError(RAFTError):
     """Raised when a stale writer loses an optimistic job update."""
+
+
+class RAFTUnsupportedProviderError(RAFTError):
+    """Raised at job creation when a provider cannot train *and* serve a RAFT model."""
+
+
+class RAFTJobStateError(RAFTError):
+    """Raised when an operation is not valid for the job's current state."""
+
+
+class RAFTSubmissionPendingError(RAFTError):
+    """Raised when the provider submission outcome is unknown; reconcile the job."""
+
+    def __init__(self, job_id: str) -> None:
+        super().__init__(f"Fine-tune submission outcome is reconciling for job {job_id}")
+        self.job_id = job_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,8 +195,18 @@ class FineTuneEvaluation:
     metrics: dict[str, float]
 
 
+@runtime_checkable
 class FineTuneProvider(Protocol):
-    """Provider adapter for explicitly confirmed external fine-tuning work."""
+    """Explicit adapter contract for a vendor's paid fine-tuning API.
+
+    A provider is registered under its ``provider_id`` and must implement all of
+    ``preview_cost`` (network-free, shown to the operator before confirmation),
+    ``submit`` (upload + create; returns the vendor job id) and ``status``
+    (map the vendor state onto :data:`RAFTJobStatus`). A model it trains is only
+    usable when a :class:`FineTunedInferenceProvider` with the same
+    ``provider_id`` can serve the resulting model id; job creation refuses
+    providers that cannot (see :meth:`RAFTService.preview_job`).
+    """
 
     @property
     def provider_id(self) -> str: ...
@@ -194,13 +229,6 @@ class FineTuneProvider(Protocol):
     ) -> str: ...
 
     async def status(self, provider_job_id: str) -> FineTuneJobState: ...
-
-    async def evaluate(
-        self,
-        *,
-        model: str,
-        test_jsonl: str,
-    ) -> FineTuneEvaluation: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +275,29 @@ class _ConfirmationGrant:
     expires_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class RAFTDeploymentRecord:
+    """The completed RAFT job that serves a tenant collection (one per collection)."""
+
+    tenant_id: str
+    collection_id: str
+    job_id: str
+    deployed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RAFTPollSummary:
+    scanned: int = 0
+    advanced: int = 0
+    completed: int = 0
+    failed: int = 0
+    errors: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return asdict(self)
+
+
+@runtime_checkable
 class FineTunedInferenceProvider(Protocol):
     """Provider-neutral inference capability for a selected fine-tuned model."""
 
@@ -266,7 +317,16 @@ class FineTunedInferenceProvider(Protocol):
 
 
 class RAFTRepository(Protocol):
-    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]: ...
+    async def load_chunks(
+        self,
+        tenant_id: str,
+        collection_id: str,
+        *,
+        limit: int = DEFAULT_MAX_TRAINING_CHUNKS,
+    ) -> list[PersistedRAFTChunk]:
+        """Return at most ``limit`` curated (question + answer) chunks, stably ordered."""
+        ...
+
     async def save_dataset(self, tenant_id: str, record: RAFTDatasetRecord) -> None: ...
     async def get_dataset(self, tenant_id: str, dataset_id: str) -> RAFTDatasetRecord | None: ...
     async def save_confirmation(self, tenant_id: str, grant: _ConfirmationGrant) -> None: ...
@@ -303,6 +363,14 @@ class RAFTRepository(Protocol):
         dataset_id: str | None = None,
         base_model: str | None = None,
     ) -> list[RAFTJobRecord]: ...
+    async def list_in_flight_jobs(self, *, limit: int) -> list[tuple[str, str]]:
+        """Cross-tenant ``(tenant_id, job_id)`` of submitted/running jobs, oldest first."""
+        ...
+
+    async def save_deployment(self, tenant_id: str, record: RAFTDeploymentRecord) -> None: ...
+    async def get_deployment(
+        self, tenant_id: str, collection_id: str
+    ) -> RAFTDeploymentRecord | None: ...
 
 
 class InMemoryRAFTRepository:
@@ -313,6 +381,7 @@ class InMemoryRAFTRepository:
         self._datasets: dict[tuple[str, str], RAFTDatasetRecord] = {}
         self._confirmations: dict[tuple[str, str], _ConfirmationGrant] = {}
         self._jobs: dict[tuple[str, str], RAFTJobRecord] = {}
+        self._deployments: dict[tuple[str, str], RAFTDeploymentRecord] = {}
         self._submission_lock = Lock()
 
     def seed_chunks(
@@ -323,8 +392,19 @@ class InMemoryRAFTRepository:
     ) -> None:
         self._chunks[(tenant_id, collection_id)] = list(chunks)
 
-    async def load_chunks(self, tenant_id: str, collection_id: str) -> list[PersistedRAFTChunk]:
-        return list(self._chunks.get((tenant_id, collection_id), []))
+    async def load_chunks(
+        self,
+        tenant_id: str,
+        collection_id: str,
+        *,
+        limit: int = DEFAULT_MAX_TRAINING_CHUNKS,
+    ) -> list[PersistedRAFTChunk]:
+        curated = [
+            chunk
+            for chunk in self._chunks.get((tenant_id, collection_id), [])
+            if _is_curated(chunk.metadata)
+        ]
+        return curated[: max(limit, 0)]
 
     async def save_dataset(self, tenant_id: str, record: RAFTDatasetRecord) -> None:
         _require_matching_tenant(tenant_id, record.tenant_id)
@@ -440,6 +520,29 @@ class InMemoryRAFTRepository:
         ]
         return sorted(matches, key=lambda job: job.updated_at, reverse=True)
 
+    async def list_in_flight_jobs(self, *, limit: int) -> list[tuple[str, str]]:
+        in_flight = sorted(
+            (
+                job
+                for job in self._jobs.values()
+                if job.status in IN_FLIGHT_STATUSES and job.provider_job_id
+            ),
+            key=lambda job: (job.updated_at, job.job_id),
+        )
+        return [(job.tenant_id, job.job_id) for job in in_flight[: max(limit, 0)]]
+
+    async def save_deployment(self, tenant_id: str, record: RAFTDeploymentRecord) -> None:
+        _require_matching_tenant(tenant_id, record.tenant_id)
+        job = self._jobs.get((tenant_id, record.job_id))
+        if job is None or job.collection_id != record.collection_id:
+            raise RAFTNotFoundError("RAFT job not found for this collection")
+        self._deployments[(tenant_id, record.collection_id)] = record
+
+    async def get_deployment(
+        self, tenant_id: str, collection_id: str
+    ) -> RAFTDeploymentRecord | None:
+        return self._deployments.get((tenant_id, collection_id))
+
 
 class RAFTService:
     """Construct datasets and coordinate explicitly confirmed provider jobs."""
@@ -451,11 +554,38 @@ class RAFTService:
         providers: dict[str, FineTuneProvider],
         inference_providers: dict[str, FineTunedInferenceProvider] | None = None,
         confirmation_ttl: timedelta = timedelta(minutes=10),
+        max_training_chunks: int = DEFAULT_MAX_TRAINING_CHUNKS,
+        max_eval_examples: int = DEFAULT_MAX_EVAL_EXAMPLES,
     ) -> None:
+        if max_training_chunks < 1:
+            raise ValueError("max_training_chunks must be positive")
+        if max_eval_examples < 1:
+            raise ValueError("max_eval_examples must be positive")
+        _require_registry(providers, FineTuneProvider, "FineTuneProvider")
+        _require_registry(
+            inference_providers or {},
+            FineTunedInferenceProvider,
+            "FineTunedInferenceProvider",
+        )
         self._repository = repository
         self._providers = providers
         self._inference_providers = inference_providers or {}
         self._confirmation_ttl = confirmation_ttl
+        self._max_training_chunks = max_training_chunks
+        self._max_eval_examples = max_eval_examples
+
+    @property
+    def supported_provider_ids(self) -> frozenset[str]:
+        """Providers that can both train a RAFT model and serve the result."""
+        return frozenset(
+            provider_id
+            for provider_id in self._providers
+            if self._can_serve(provider_id, RAFT_INFERENCE_CAPABILITY)
+        )
+
+    @property
+    def has_fine_tune_providers(self) -> bool:
+        return bool(self._providers)
 
     async def create_dataset(
         self,
@@ -481,9 +611,21 @@ class RAFTService:
         collection_id: str,
         config: RAFTDatasetConfig | None = None,
     ) -> RAFTDatasetRecord:
-        chunks = await self._repository.load_chunks(tenant.tenant_id, collection_id)
+        chunks = await self._repository.load_chunks(
+            tenant.tenant_id,
+            collection_id,
+            limit=self._max_training_chunks,
+        )
         if not chunks:
             raise RAFTNotFoundError("Persisted collection chunks not found")
+        if len(chunks) >= self._max_training_chunks:
+            logger.warning(
+                "raft_training_chunks_capped",
+                tenant_id=tenant.tenant_id,
+                collection_id=collection_id,
+                limit=self._max_training_chunks,
+            )
+        chunks = chunks[: self._max_training_chunks]
         return await self.create_dataset(
             tenant,
             collection_id=collection_id,
@@ -499,8 +641,8 @@ class RAFTService:
         provider_id: str,
         base_model: str,
     ) -> RAFTCostPreview:
+        provider = self._require_creatable_provider(provider_id)
         dataset = await self._require_dataset(tenant, dataset_id)
-        provider = self._require_provider(provider_id)
         cost = await provider.preview_cost(
             training_examples=len(dataset.train_examples),
             validation_examples=len(dataset.test_examples),
@@ -547,8 +689,8 @@ class RAFTService:
         base_model: str,
         confirmation_token: str,
     ) -> RAFTJobRecord:
+        provider = self._require_creatable_provider(provider_id)
         dataset = await self._require_dataset(tenant, dataset_id)
-        provider = self._require_provider(provider_id)
         token_hash = _token_hash(confirmation_token)
         job_id = hashlib.sha256(f"raft-job:{tenant.tenant_id}:{token_hash}".encode()).hexdigest()[
             :32
@@ -656,9 +798,7 @@ class RAFTService:
                     updated_at=datetime.now(UTC),
                 ),
             )
-            raise RAFTError(
-                f"Fine-tune submission outcome is reconciling for job {job.job_id}"
-            ) from exc
+            raise RAFTSubmissionPendingError(job.job_id) from exc
         return await self._transition(
             tenant.tenant_id,
             replace(
@@ -681,25 +821,128 @@ class RAFTService:
         if job.status in _TERMINAL_STATUSES:
             return job
         if not job.provider_job_id:
-            raise RAFTError("RAFT job has not been submitted")
+            raise RAFTJobStateError("RAFT job has not been submitted")
         state = await self._require_provider(job.provider_id).status(job.provider_job_id)
-        updated = replace(
-            job,
-            status=state.status,
-            fine_tuned_model=state.fine_tuned_model,
-            error=state.error,
-            updated_at=datetime.now(UTC),
-        )
+        fine_tuned_model = state.fine_tuned_model or job.fine_tuned_model
+        if state.status == "completed" and not fine_tuned_model:
+            # Never record "completed" without a servable model id; keep polling.
+            updated = replace(
+                job,
+                error="provider_reported_completion_without_model",
+                updated_at=datetime.now(UTC),
+            )
+        else:
+            updated = replace(
+                job,
+                status=state.status,
+                fine_tuned_model=fine_tuned_model,
+                error=state.error,
+                updated_at=datetime.now(UTC),
+            )
         return await self._transition(tenant.tenant_id, updated)
 
+    async def poll_in_flight_jobs(self, *, limit: int) -> RAFTPollSummary:
+        """Advance a bounded, oldest-first batch of submitted/running jobs.
+
+        The scan is cross-tenant (the repository runs it under a maintenance
+        session); every read and write of a job then runs under that job's own
+        tenant RLS context. A per-job failure is recorded on the job and never
+        aborts the batch.
+        """
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        refs = await self._repository.list_in_flight_jobs(limit=limit)
+        advanced = completed = failed = errors = 0
+        for tenant_id, job_id in refs:
+            tenant = TenantContext(
+                tenant_id=tenant_id,
+                plan=PlanTier.ENTERPRISE,
+                api_key_id="raft-status-poller",
+            )
+            before = await self._repository.get_job(tenant_id, job_id)
+            if before is None or before.status not in IN_FLIGHT_STATUSES:
+                continue
+            try:
+                after = await self.refresh_job(tenant, job_id)
+            except RAFTConcurrentUpdateError:
+                continue  # another writer advanced it; the next poll sees the result
+            except Exception as exc:
+                errors += 1
+                await self._record_poll_failure(tenant_id, job_id, exc)
+                continue
+            if after.status != before.status:
+                advanced += 1
+            if after.status == "completed":
+                completed += 1
+            elif after.status == "failed":
+                failed += 1
+        return RAFTPollSummary(
+            scanned=len(refs),
+            advanced=advanced,
+            completed=completed,
+            failed=failed,
+            errors=errors,
+        )
+
+    async def _record_poll_failure(self, tenant_id: str, job_id: str, exc: Exception) -> None:
+        logger.warning(
+            "raft_status_poll_failed",
+            tenant_id=tenant_id,
+            job_id=job_id,
+            error_type=type(exc).__name__,
+        )
+        job = await self._repository.get_job(tenant_id, job_id)
+        if job is None or job.status not in IN_FLIGHT_STATUSES:
+            return
+        try:
+            await self._repository.transition_job(
+                tenant_id,
+                replace(
+                    job,
+                    error=f"{POLL_FAILURE_PREFIX}{type(exc).__name__}",
+                    updated_at=datetime.now(UTC),
+                ),
+                job.version,
+            )
+        except Exception as record_exc:  # the failure itself is already logged
+            logger.warning(
+                "raft_status_poll_failure_not_recorded",
+                tenant_id=tenant_id,
+                job_id=job_id,
+                error_type=type(record_exc).__name__,
+            )
+
     async def evaluate_job(self, tenant: TenantContext, job_id: str) -> RAFTJobRecord:
+        """Score the fine-tuned model on the dataset's held-out test split.
+
+        Each evaluated example is a real inference call through the provider
+        that serves the model (bounded by ``max_eval_examples``); the metric is
+        the fraction of answers that contain the curated reference answer.
+        """
         job = await self.get_job(tenant, job_id)
         if job.status != "completed" or not job.fine_tuned_model:
             raise RAFTModelUnavailableError("RAFT job has no completed model to evaluate")
+        self._require_servable(job)
         dataset = await self._require_dataset(tenant, job.dataset_id)
-        evaluation = await self._require_provider(job.provider_id).evaluate(
-            model=job.fine_tuned_model,
-            test_jsonl=dataset.test_jsonl,
+        held_out = dataset.test_examples
+        if not held_out:
+            raise ValueError("RAFT dataset has no held-out test examples")
+        sample = held_out[: self._max_eval_examples]
+        matches = 0
+        for example in sample:
+            answer = await self.infer(
+                job,
+                query=example.question,
+                evidence=tuple(raft_training_contexts(example)),
+            )
+            if _normalize_answer(example.answer) in _normalize_answer(answer):
+                matches += 1
+        evaluation = FineTuneEvaluation(
+            metrics={
+                "answer_match_rate": matches / len(sample),
+                "evaluated_examples": float(len(sample)),
+                "test_examples": float(len(held_out)),
+            }
         )
         updated = replace(
             job,
@@ -707,6 +950,54 @@ class RAFTService:
             updated_at=datetime.now(UTC),
         )
         return await self._transition(tenant.tenant_id, updated)
+
+    async def deploy_job(self, tenant: TenantContext, job_id: str) -> RAFTDeploymentRecord:
+        """Make a completed, servable job the model that answers for its collection."""
+        job = await self.get_job(tenant, job_id)
+        if job.status != "completed" or not job.fine_tuned_model:
+            raise RAFTModelUnavailableError("Only a completed RAFT job can be deployed")
+        self._require_servable(job)
+        record = RAFTDeploymentRecord(
+            tenant_id=tenant.tenant_id,
+            collection_id=job.collection_id,
+            job_id=job.job_id,
+            deployed_at=datetime.now(UTC),
+        )
+        await self._repository.save_deployment(tenant.tenant_id, record)
+        return record
+
+    async def get_deployment(
+        self, tenant: TenantContext, *, collection_id: str
+    ) -> RAFTDeploymentRecord:
+        record = await self._repository.get_deployment(tenant.tenant_id, collection_id)
+        if record is None:
+            raise RAFTNotFoundError("No RAFT model is deployed for this collection")
+        return record
+
+    async def resolve_deployed_model(
+        self, tenant: TenantContext, *, collection_id: str
+    ) -> RAFTJobRecord:
+        """The deployed job for a collection, only if this process can serve it."""
+        record = await self._repository.get_deployment(tenant.tenant_id, collection_id)
+        if record is None:
+            raise RAFTModelUnavailableError("no RAFT model is deployed for this collection")
+        job = await self._repository.get_job(tenant.tenant_id, record.job_id)
+        if (
+            job is None
+            or job.collection_id != collection_id
+            or job.status != "completed"
+            or not job.fine_tuned_model
+        ):
+            raise RAFTModelUnavailableError("the deployed RAFT job is no longer servable")
+        self._require_servable(job)
+        return job
+
+    async def has_servable_model(self, tenant: TenantContext, *, collection_id: str) -> bool:
+        try:
+            await self.resolve_deployed_model(tenant, collection_id=collection_id)
+        except RAFTModelUnavailableError:
+            return False
+        return True
 
     async def require_completed_model(
         self,
@@ -847,6 +1138,31 @@ class RAFTService:
             raise RAFTNotFoundError("Fine-tune provider not found")
         return provider
 
+    def _require_creatable_provider(self, provider_id: str) -> FineTuneProvider:
+        provider = self._providers.get(provider_id)
+        if provider is None:
+            supported = ", ".join(sorted(self.supported_provider_ids)) or "none configured"
+            raise RAFTUnsupportedProviderError(
+                f"Fine-tune provider '{provider_id}' is not supported (supported: {supported})"
+            )
+        if not self._can_serve(provider_id, RAFT_INFERENCE_CAPABILITY):
+            raise RAFTUnsupportedProviderError(
+                f"no configured inference provider can serve models fine-tuned by "
+                f"'{provider_id}'; refusing to train a model that could never answer"
+            )
+        return provider
+
+    def _can_serve(self, provider_id: str, capability: str) -> bool:
+        inference = self._inference_providers.get(provider_id)
+        return inference is not None and inference.capability == capability
+
+    def _require_servable(self, job: RAFTJobRecord) -> None:
+        if not self._can_serve(job.provider_id, job.capability):
+            raise RAFTModelUnavailableError(
+                f"no configured inference provider can serve the RAFT model "
+                f"(provider '{job.provider_id}')"
+            )
+
 
 def _build_dataset(
     tenant: TenantContext,
@@ -919,6 +1235,84 @@ def _build_dataset(
 def _require_matching_tenant(tenant_id: str, entity_tenant_id: str) -> None:
     if tenant_id != entity_tenant_id:
         raise ValueError("RAFT entity tenant does not match the trusted tenant")
+
+
+def _require_registry(registry: Mapping[str, object], protocol: type, name: str) -> None:
+    for provider_id, provider in registry.items():
+        if not isinstance(provider, protocol):
+            raise TypeError(f"RAFT provider '{provider_id}' does not implement {name}")
+        declared = getattr(provider, "provider_id", None)
+        if declared != provider_id:
+            raise ValueError(
+                f"RAFT provider registered as '{provider_id}' declares provider_id '{declared}'"
+            )
+
+
+def _is_curated(metadata: Mapping[str, object]) -> bool:
+    return bool(
+        str(metadata.get("question", "") or "").strip()
+        and str(metadata.get("answer", "") or "").strip()
+    )
+
+
+def _normalize_answer(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+# ── Prompt contract shared by training-data export and inference ─────────────
+# A fine-tuned model only behaves as trained when inference sends the same
+# shape it was trained on, so both sides build messages with these helpers.
+
+RAFT_SYSTEM_PROMPT = (
+    "Answer the question using only the provided documents. Some documents are "
+    "distractors that do not contain the answer; ignore them. If no document "
+    "contains the answer, say that you do not know."
+)
+
+
+def raft_user_prompt(question: str, contexts: Sequence[str]) -> str:
+    documents = "\n\n".join(
+        f'<document index="{index}">\n{context}\n</document>'
+        for index, context in enumerate(contexts, start=1)
+    )
+    return f"{documents}\n\nQuestion: {question}"
+
+
+def raft_training_contexts(example: RAFTExample | Mapping[str, object]) -> list[str]:
+    """Oracle + distractor contexts in a deterministic per-example shuffled order.
+
+    Unshuffled, the oracle is always first and the model learns position, not
+    relevance; the per-example seed keeps exports and evaluation reproducible.
+    """
+    record = example.to_json_record() if isinstance(example, RAFTExample) else example
+    raw_contexts = record.get("contexts")
+    contexts = [str(item) for item in raw_contexts] if isinstance(raw_contexts, list) else []
+    random.Random(str(record.get("example_id", ""))).shuffle(contexts)
+    return contexts
+
+
+def raft_chat_jsonl(jsonl: str) -> str:
+    """Convert exported RAFT records into chat fine-tuning examples."""
+    lines: list[str] = []
+    for line in jsonl.splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        if not isinstance(record, dict):
+            raise ValueError("RAFT export lines must be JSON objects")
+        messages = [
+            {"role": "system", "content": RAFT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": raft_user_prompt(
+                    str(record["question"]),
+                    raft_training_contexts(record),
+                ),
+            },
+            {"role": "assistant", "content": str(record["answer"])},
+        ]
+        lines.append(json.dumps({"messages": messages}, separators=(",", ":")))
+    return "\n".join(lines)
 
 
 def _validate_examples(examples: list[RAFTExample]) -> list[str]:
@@ -1125,4 +1519,17 @@ def _require_legal_transition(
 
 
 __all__ = [name for name in globals() if name.startswith("RAFT") or name.startswith("FineTune")]
-__all__.extend(["ConfirmationRequiredError", "InMemoryRAFTRepository", "PersistedRAFTChunk"])
+__all__.extend(
+    [
+        "DEFAULT_MAX_EVAL_EXAMPLES",
+        "DEFAULT_MAX_TRAINING_CHUNKS",
+        "IN_FLIGHT_STATUSES",
+        "POLL_FAILURE_PREFIX",
+        "ConfirmationRequiredError",
+        "InMemoryRAFTRepository",
+        "PersistedRAFTChunk",
+        "raft_chat_jsonl",
+        "raft_training_contexts",
+        "raft_user_prompt",
+    ]
+)

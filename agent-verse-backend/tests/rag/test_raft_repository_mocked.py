@@ -19,14 +19,22 @@ from typing import Any
 
 import pytest
 
-from app.db.models.raft import RAFTConfirmationGrant, RAFTDataset, RAFTFineTuneJob
+from app.db.models.raft import (
+    RAFTConfirmationGrant,
+    RAFTDataset,
+    RAFTFineTuneJob,
+    RAFTModelDeployment,
+)
 from app.rag.raft import (
     RAFT_INFERENCE_CAPABILITY,
     ConfirmationRequiredError,
     FineTuneCost,
     RAFTDatasetRecord,
+    RAFTDeploymentRecord,
+    RAFTError,
     RAFTExample,
     RAFTJobRecord,
+    RAFTNotFoundError,
     _ConfirmationGrant,
     _confirmation_binding_digest,
     _job_confirmation_digest,
@@ -277,12 +285,34 @@ async def test_load_chunks_unsupported_dimension_returns_empty() -> None:
     assert await repository.load_chunks(TENANT, "col-1") == []
 
 
-async def test_load_chunks_maps_rows_for_supported_dimension() -> None:
-    class _FetchResult(FakeResult):
-        def fetchall(self) -> list[Any]:
-            return [("chunk-1", "doc-1", "hello world", {"page": 1})]
+class _FetchResult(FakeResult):
+    def __init__(self, rows: list[tuple[Any, ...]]) -> None:
+        super().__init__()
+        self._rows = rows
 
-    session = FakeSession(scalars=[1536], executes=[_FetchResult()])
+    def fetchall(self) -> list[Any]:
+        return self._rows
+
+
+class _PagingSession(FakeSession):
+    """Records each chunk query and its bound parameters."""
+
+    def __init__(self, pages: list[list[tuple[Any, ...]]]) -> None:
+        super().__init__(scalars=[1536], executes=[_FetchResult(page) for page in pages])
+        self.chunk_queries: list[tuple[str, dict[str, Any]]] = []
+
+    async def execute(self, stmt: Any, params: Any = None) -> FakeResult:
+        if "knowledge_chunks_" in str(stmt):
+            self.chunk_queries.append((str(stmt), dict(params or {})))
+        return await super().execute(stmt, params)
+
+
+def _chunk_row(index: int) -> tuple[Any, ...]:
+    return (f"chunk-{index}", f"doc-{index // 2}", index % 2, f"text {index}", {"q": index})
+
+
+async def test_load_chunks_maps_rows_for_supported_dimension() -> None:
+    session = _PagingSession([[("chunk-1", "doc-1", 0, "hello world", {"page": 1})]])
     repository = SQLRAFTRepository(FakeSessionFactory([session]))
     chunks = await repository.load_chunks(TENANT, "col-1")
     assert len(chunks) == 1
@@ -290,6 +320,128 @@ async def test_load_chunks_maps_rows_for_supported_dimension() -> None:
     assert chunks[0].document_id == "doc-1"
     assert chunks[0].content == "hello world"
     assert chunks[0].metadata == {"page": 1}
+
+
+async def test_load_chunks_keyset_pages_curated_rows_and_stops_at_the_limit() -> None:
+    session = _PagingSession(
+        [
+            [_chunk_row(0), _chunk_row(1)],
+            [_chunk_row(2), _chunk_row(3)],
+            [_chunk_row(4)],
+        ]
+    )
+    repository = SQLRAFTRepository(FakeSessionFactory([session]), chunk_page_size=2)
+
+    chunks = await repository.load_chunks(TENANT, "col-1", limit=5)
+
+    assert [chunk.chunk_id for chunk in chunks] == [f"chunk-{i}" for i in range(5)]
+    queries = session.chunk_queries
+    assert len(queries) == 3
+    assert all("LIMIT :page_size" in sql for sql, _ in queries)
+    assert all("metadata->>'question'" in sql for sql, _ in queries)
+    first_sql, first_params = queries[0]
+    assert "after_id" not in first_params
+    assert first_params["page_size"] == 2
+    _, second_params = queries[1]
+    assert (
+        second_params["after_document_id"],
+        second_params["after_chunk_index"],
+        second_params["after_id"],
+    ) == ("doc-0", 1, "chunk-1")
+    # The last page only asks for what the cap still allows.
+    assert queries[2][1]["page_size"] == 1
+
+
+async def test_load_chunks_stops_on_a_short_page() -> None:
+    session = _PagingSession([[_chunk_row(0)]])
+    repository = SQLRAFTRepository(FakeSessionFactory([session]), chunk_page_size=10)
+
+    chunks = await repository.load_chunks(TENANT, "col-1", limit=100)
+
+    assert len(chunks) == 1
+    assert len(session.chunk_queries) == 1
+
+
+def test_repository_rejects_non_positive_page_size() -> None:
+    with pytest.raises(ValueError):
+        SQLRAFTRepository(FakeSessionFactory([]), chunk_page_size=0)
+
+
+async def test_in_flight_scan_fails_closed_without_a_maintenance_session() -> None:
+    repository = SQLRAFTRepository(FakeSessionFactory([]))
+
+    with pytest.raises(RAFTError, match="maintenance session"):
+        await repository.list_in_flight_jobs(limit=10)
+
+
+async def test_in_flight_scan_runs_under_system_session_and_is_bounded() -> None:
+    class _Rows(FakeResult):
+        def all(self) -> list[Any]:
+            return [("tenant-a", "job-1"), ("tenant-b", "job-2")]
+
+    system = FakeSession(executes=[FakeResult(), _Rows()])
+    repository = SQLRAFTRepository(
+        FakeSessionFactory([]),
+        system_session_factory=FakeSessionFactory([system]),
+    )
+
+    refs = await repository.list_in_flight_jobs(limit=2)
+
+    assert refs == [("tenant-a", "job-1"), ("tenant-b", "job-2")]
+    assert "row_security = off" in system.executed_sql[0]
+    scan = system.executed_sql[1]
+    assert "raft_fine_tune_jobs.status IN" in scan
+    assert "ORDER BY raft_fine_tune_jobs.updated_at ASC" in scan
+    assert "LIMIT" in scan
+
+
+async def test_save_deployment_requires_a_job_of_that_collection() -> None:
+    session = FakeSession(scalars=[None])
+    repository = SQLRAFTRepository(FakeSessionFactory([session]))
+    record = RAFTDeploymentRecord(
+        tenant_id=TENANT,
+        collection_id="col-1",
+        job_id="job-1",
+        deployed_at=datetime.now(UTC),
+    )
+
+    with pytest.raises(RAFTNotFoundError):
+        await repository.save_deployment(TENANT, record)
+    with pytest.raises(ValueError):
+        await SQLRAFTRepository(FakeSessionFactory([])).save_deployment(OTHER_TENANT, record)
+
+
+async def test_save_deployment_upserts_one_row_per_collection() -> None:
+    session = FakeSession(scalars=["job-1"])
+    repository = SQLRAFTRepository(FakeSessionFactory([session]))
+
+    await repository.save_deployment(
+        TENANT,
+        RAFTDeploymentRecord(
+            tenant_id=TENANT,
+            collection_id="col-1",
+            job_id="job-1",
+            deployed_at=datetime.now(UTC),
+        ),
+    )
+
+    upsert = next(sql for sql in session.executed_sql if "raft_model_deployments" in sql)
+    assert "ON CONFLICT (tenant_id, collection_id) DO UPDATE" in upsert
+
+
+async def test_get_deployment_found_and_missing() -> None:
+    deployed_at = datetime.now(UTC)
+    row = RAFTModelDeployment(
+        tenant_id=TENANT, collection_id="col-1", job_id="job-1", deployed_at=deployed_at
+    )
+    repository = SQLRAFTRepository(
+        FakeSessionFactory([FakeSession(scalars=[row]), FakeSession(scalars=[None])])
+    )
+
+    assert await repository.get_deployment(TENANT, "col-1") == RAFTDeploymentRecord(
+        tenant_id=TENANT, collection_id="col-1", job_id="job-1", deployed_at=deployed_at
+    )
+    assert await repository.get_deployment(TENANT, "col-2") is None
 
 
 # ── save_dataset / get_dataset ───────────────────────────────────────────────

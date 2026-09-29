@@ -878,13 +878,11 @@ def create_app(
         policy_services=(_policy_engine, _cost, _hitl),
         allowed_domains=parse_allowed_domains(settings.web_search_allowed_domains),
     )
-    from app.rag.raft import InMemoryRAFTRepository, RAFTService
-    from app.rag.raft_openai_provider import build_raft_providers
+    from app.rag.raft_wiring import build_raft_service
 
-    _raft_service = RAFTService(
-        repository=InMemoryRAFTRepository(),
-        providers=build_raft_providers(settings),
-    )
+    # Fine-tune providers AND the inference providers that serve their models;
+    # without the latter no trained RAFT model could ever answer.
+    _raft_service = build_raft_service(settings)
     _rag_adapter_configuration = RAGAdapterConfiguration(
         colbert_checkpoint=settings.colbert_checkpoint
     )
@@ -1773,10 +1771,7 @@ def create_app(
             except Exception as _kg_exc:
                 logger.warning("knowledge_graph_db_wire_failed", error=str(_kg_exc))
 
-            from app.rag.raft_openai_provider import (
-                build_raft_providers as _build_raft_providers,
-            )
-            from app.rag.raft_repository import SQLRAFTRepository
+            from app.rag.raft_wiring import build_raft_service as _build_raft_service
 
             db_retrieval_gateway = RetrievalGateway(
                 RetrievalDependencies(
@@ -1793,10 +1788,7 @@ def create_app(
                     cost_controller=getattr(app.state, "redis_cost_controller", _cost),
                     collection_authorizer=SQLCollectionAuthorizer(),
                     strategy_capabilities=core_strategy_capabilities(_rag_adapter_configuration),
-                    raft_service=RAFTService(
-                        repository=SQLRAFTRepository(db_factory),
-                        providers=_build_raft_providers(settings),
-                    ),
+                    raft_service=_build_raft_service(settings, session_factory=db_factory),
                     long_term_memory=_long_term_memory,
                     colbert_checkpoint=settings.colbert_checkpoint,
                 )

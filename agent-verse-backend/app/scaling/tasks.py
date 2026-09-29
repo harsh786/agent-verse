@@ -353,6 +353,12 @@ def _build_worker_retrieval_gateway(dependencies: Any) -> Any:
     return RetrievalGateway(dependencies)
 
 
+def _build_worker_raft_service(settings: Any, db_factory: Any) -> Any:
+    from app.rag.raft_wiring import build_raft_service
+
+    return build_raft_service(settings, session_factory=db_factory)
+
+
 # ── Deployment (on-prem / NVIDIA / hybrid) provider, once per worker process ──
 # Old bug: the API builds its provider with build_onprem_provider (a
 # MultiEndpointLLMProvider fronting NVIDIA + on-prem Qwen) and GoalService pins a
@@ -2518,6 +2524,9 @@ def run_goal(
                     strategy_capabilities=core_strategy_capabilities(
                         worker_rag_adapter_configuration
                     ),
+                    # Same RAFT wiring as the API: deployed fine-tuned models are
+                    # served here too (it was absent, so RAFT was never ready).
+                    raft_service=_build_worker_raft_service(worker_settings, db_factory),
                     colbert_checkpoint=worker_settings.colbert_checkpoint,
                 )
             )
