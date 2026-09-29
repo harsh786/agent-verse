@@ -64,16 +64,6 @@ function mockFetch(opts: {
   });
 }
 
-function makeStreamResponse(chunks: string[], status = 200): Response {
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      chunks.forEach((c) => controller.enqueue(encoder.encode(c)));
-      controller.close();
-    },
-  });
-  return new Response(stream, { status });
-}
 
 beforeEach(() => {
   localStorage.clear();
@@ -548,33 +538,16 @@ describe('KnowledgePage – Ask AI tab (extended)', () => {
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.kind === 'error')).toBe(true));
   });
 
-  test('streams the answer when a single collection filter is selected', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+  test('a single-collection question goes to /knowledge/chat scoped to that collection', async () => {
+    // Regression: it first POSTed a non-existent
+    // /knowledge/collections/{id}/query/stream (always 404) before falling back.
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
-      if (url.includes('/query/stream')) return makeStreamResponse(['data: {"token":"Hello "}\n', 'data: {"token":"world"}\n', 'data: [DONE]\n']);
+      const method = init?.method ?? 'GET';
       if (url.includes('/knowledge/collections'))
         return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      return new Response('{}', { status: 200 });
-    });
-    renderPage();
-    await screen.findByRole('heading', { name: /knowledge/i });
-    await userEvent.click(screen.getByTestId('tab-ask'));
-    await userEvent.click(await screen.findByRole('button', { name: 'Engineering Docs' }));
-    await userEvent.type(screen.getByTestId('ask-input'), 'stream this');
-    await userEvent.click(screen.getByTestId('ask-btn'));
-    expect(await screen.findByTestId('answer-panel')).toBeInTheDocument();
-    expect(screen.getByText(/Hello world/)).toBeInTheDocument();
-  });
-
-  test('falls back to non-streaming ask when the stream response is not ok', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url.includes('/query/stream')) return new Response('error', { status: 500 });
-      if (url.includes('/knowledge/collections') && !url.includes('stream'))
-        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
       if (url.includes('/knowledge/chat') && method === 'POST')
-        return new Response(JSON.stringify({ answer: 'fallback answer', citations: [], collections_searched: 1, chunks_retrieved: 1, question: 'q' }),
+        return new Response(JSON.stringify({ answer: 'scoped answer', citations: [], collections_searched: 1, chunks_retrieved: 1, question: 'q' }),
           { status: 200, headers: { 'Content-Type': 'application/json' } });
       return new Response('{}', { status: 200 });
     });
@@ -584,28 +557,10 @@ describe('KnowledgePage – Ask AI tab (extended)', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Engineering Docs' }));
     await userEvent.type(screen.getByTestId('ask-input'), 'q');
     await userEvent.click(screen.getByTestId('ask-btn'));
-    expect(await screen.findByText(/fallback answer/)).toBeInTheDocument();
-  });
-
-  test('falls back to non-streaming ask when the stream fetch throws', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
-      const url = String(input);
-      const method = init?.method ?? 'GET';
-      if (url.includes('/query/stream')) throw new Error('network down');
-      if (url.includes('/knowledge/collections') && !url.includes('stream'))
-        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      if (url.includes('/knowledge/chat') && method === 'POST')
-        return new Response(JSON.stringify({ answer: 'caught fallback', citations: [], collections_searched: 1, chunks_retrieved: 1, question: 'q' }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } });
-      return new Response('{}', { status: 200 });
-    });
-    renderPage();
-    await screen.findByRole('heading', { name: /knowledge/i });
-    await userEvent.click(screen.getByTestId('tab-ask'));
-    await userEvent.click(await screen.findByRole('button', { name: 'Engineering Docs' }));
-    await userEvent.type(screen.getByTestId('ask-input'), 'q');
-    await userEvent.click(screen.getByTestId('ask-btn'));
-    expect(await screen.findByText(/caught fallback/)).toBeInTheDocument();
+    expect(await screen.findByText(/scoped answer/)).toBeInTheDocument();
+    expect(spy.mock.calls.some(([u]) => String(u).includes('/query/stream'))).toBe(false);
+    const chat = spy.mock.calls.find(([u]) => String(u).includes('/knowledge/chat'));
+    expect(JSON.parse(String((chat?.[1] as RequestInit).body)).collection_ids).toEqual([COLLECTION.collection_id]);
   });
 });
 

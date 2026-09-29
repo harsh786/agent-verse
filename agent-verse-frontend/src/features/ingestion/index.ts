@@ -24,7 +24,6 @@ export {
   useSourcePreview,
   useDocuments,
   useIngestionDLQ,
-  useRetryDLQEntry,
   useIngestionQuota,
   useIngestionCost,
   useConnectorCatalogue,

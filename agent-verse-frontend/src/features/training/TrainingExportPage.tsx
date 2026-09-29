@@ -27,7 +27,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react';
-import { trainingApi, apiFetch, type TrainingPreview } from '@/lib/api/client';
+import { trainingApi, type TrainingPreview } from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
@@ -90,20 +90,12 @@ function loadHistory(): ExportRecord[] {
   catch { return []; }
 }
 
-// Hybrid: localStorage (always) + best-effort backend persist
+// Export history is browser-local: there is no backend export-history store
+// (the POST /training/exports this used to fire always 404'd).
 async function saveExportHistory(entry: ExportRecord): Promise<void> {
   const stored = loadHistory();
   const updated = [entry, ...stored.slice(0, 9)];
   localStorage.setItem(HISTORY_KEY, JSON.stringify(updated));
-
-  try {
-    await apiFetch<void>('/training/exports', {
-      method: 'POST',
-      body: JSON.stringify({ format: entry.format, count: entry.count, min_score: entry.minScore, limit: entry.limit }),
-    });
-  } catch {
-    // Silently ignore backend errors — localStorage is the source of truth
-  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

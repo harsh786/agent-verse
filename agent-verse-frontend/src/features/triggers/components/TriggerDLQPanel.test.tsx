@@ -45,6 +45,15 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('TriggerDLQPanel', () => {
+  test('a failed load is an error, not "Dead Letter Queue is empty ✓"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'DLQ unavailable' }), { status: 503, headers: { 'Content-Type': 'application/json' } }),
+    );
+    renderPanel();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be loaded: DLQ unavailable/);
+    expect(screen.queryByText(/Dead Letter Queue is empty/i)).not.toBeInTheDocument();
+  });
+
   test('renders the empty state when the queue has no entries', async () => {
     mockDLQ([]);
     renderPanel();

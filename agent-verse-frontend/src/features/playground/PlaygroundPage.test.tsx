@@ -430,13 +430,7 @@ describe('PlaygroundPage', () => {
     });
   });
 
-  it('saveScenario swallows a backend persistence failure', async () => {
-    mockFetch.mockImplementation(async (url: string) => {
-      if (String(url).includes('/playground/scenarios')) {
-        throw new Error('network down');
-      }
-      return { ok: true, json: async () => ({ tools: [], total: 0 }), body: null };
-    });
+  it('saveScenario keeps scenarios browser-local and calls no phantom backend route', async () => {
 
     renderPage();
     const textarea = await waitFor(() =>
@@ -452,6 +446,7 @@ describe('PlaygroundPage', () => {
     await waitFor(() => {
       expect(screen.getByText('Failing Scenario')).toBeDefined();
     });
+    expect(mockFetch.mock.calls.some(([u]) => String(u).includes('/playground/scenarios'))).toBe(false);
   });
 
   it('cancels the save-scenario dialog', async () => {

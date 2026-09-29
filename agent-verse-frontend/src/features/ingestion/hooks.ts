@@ -20,7 +20,6 @@ export const INGESTION_KEYS = {
   source:      (id: string) => ['ingestion', 'source', id] as const,
   health:      (id: string) => ['ingestion', 'health', id] as const,
   syncStatus:  (id: string) => ['ingestion', 'sync', id] as const,
-  syncHistory: (id: string) => ['ingestion', 'history', id] as const,
   documents:   (sourceId: string) => ['ingestion', 'documents', sourceId] as const,
   dlq:         () => ['ingestion', 'dlq'] as const,
   quota:       () => ['ingestion', 'quota'] as const,
@@ -110,13 +109,8 @@ export function useSyncStatus(sourceId: string) {
   });
 }
 
-export function useSyncHistory(sourceId: string) {
-  return useQuery({
-    queryKey: INGESTION_KEYS.syncHistory(sourceId),
-    queryFn: () => apiFetch<IngestionJob[]>(`/sources/${sourceId}/sync/history`),
-    enabled: !!sourceId,
-  });
-}
+// No sync-history hook: the backend has no /sources/{id}/sync/history route
+// (only /sync/status, the current job).
 
 // ── Preview ───────────────────────────────────────────────────────────────────
 
@@ -149,13 +143,9 @@ export function useIngestionDLQ() {
   });
 }
 
-export function useRetryDLQEntry() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (dlqId: string) => apiFetch<void>(`/ingestion/dlq/${dlqId}/retry`, { method: 'POST' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: INGESTION_KEYS.dlq() }),
-  });
-}
+// Ingestion DLQ entries are read-only: there is no /ingestion/dlq/{id}/retry
+// route (trigger DLQ retry lives at /triggers/dlq/{id}/retry — see
+// features/triggers/hooks.ts), so no retry hook is offered here.
 
 // ── Quota & Cost ──────────────────────────────────────────────────────────────
 

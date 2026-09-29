@@ -8,7 +8,7 @@
  *   GET  /enterprise/simulation/available-tools  (simulationApi.getAvailableTools)
  *   POST /enterprise/simulation/stream            (raw fetch, SSE)
  *   POST /enterprise/simulation                   (simulationApi.run — fallback)
- *   POST /playground/scenarios                    (best-effort persistence)
+ * Scenarios are stored in localStorage only (there is no backend scenario store).
  */
 import { test, expect, type Page } from '@playwright/test';
 import { setupAuth } from './helpers/auth';
