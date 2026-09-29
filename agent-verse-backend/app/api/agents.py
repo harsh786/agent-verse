@@ -1381,6 +1381,10 @@ async def issue_agent_credential(
             description=body.description,
         )
         return result
+    except RuntimeError as exc:
+        # No credential store / vault: the credential could never be exchanged
+        # for a token, so it is not issued (fail closed).
+        raise HTTPException(503, f"Agent identity unavailable: {exc}") from exc
     except Exception as exc:
         raise HTTPException(500, f"Failed to issue credential: {exc}") from exc
 
@@ -1409,6 +1413,9 @@ async def exchange_agent_token(
     """Exchange a service-account key for a short-lived RS256 JWT (15 minutes).
 
     Provide the key_id in the X-Agent-Key-Id header, query param, or request body.
+    The returned token authenticates as ``Authorization: Bearer <jwt>``: the
+    TenantMiddleware verifies it against this tenant's registered, non-revoked
+    key and grants roles=("agent",) limited to the credential's scopes.
     """
     tenant = _require_tenant(request)
 

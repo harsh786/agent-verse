@@ -11,10 +11,11 @@ Provides:
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
+import logging
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,6 +25,21 @@ from jose import jwt
 
 JWT_ALGORITHM = "RS256"
 JWT_EXPIRY_MINUTES = 15
+# Prefix of a private_key_ref that holds the vault-sealed (Fernet) private key.
+_SEALED_KEY_PREFIX = "vault:v1:"
+
+_log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AgentPrincipal:
+    """An agent authenticated by a verified agent JWT."""
+
+    agent_id: str
+    tenant_id: str
+    key_id: str
+    # Token scopes capped by the credential's CURRENT scopes.
+    scopes: tuple[str, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +132,7 @@ def verify_agent_token(token: str, public_key_pem: str, tenant_id: str) -> dict[
         token,
         public_key_pem,
         algorithms=[JWT_ALGORITHM],
-        options={"verify_aud": False},
+        options={"verify_aud": False, "require_exp": True},
     )
     aud = payload.get("aud") or []
     if isinstance(aud, str):
@@ -239,6 +255,35 @@ class AgentIdentityService:
         self._redis = redis_client
 
     # ------------------------------------------------------------------
+    # Private-key sealing (CredentialVault: Fernet, same key as connector secrets)
+    # ------------------------------------------------------------------
+
+    def _seal_private_key(self, private_pem: str) -> str:
+        """Encrypt the signing key for storage in agent_credentials.private_key_ref.
+
+        The row is FORCE-RLS tenant data; the key itself is vault-encrypted, so a
+        database read alone never yields it. Raises when no vault is configured.
+        """
+        encrypt = getattr(self._vault, "encrypt", None)
+        if not callable(encrypt):
+            raise RuntimeError("credential vault unavailable: cannot seal the agent signing key")
+        return f"{_SEALED_KEY_PREFIX}{encrypt(private_pem)}"
+
+    def _unseal_private_key(self, ref: str | None) -> str | None:
+        """Decrypt a sealed private_key_ref; ``None`` if absent, legacy, or undecryptable."""
+        if not ref or not ref.startswith(_SEALED_KEY_PREFIX):
+            return None
+        decrypt = getattr(self._vault, "decrypt", None)
+        if not callable(decrypt):
+            return None
+        try:
+            pem = decrypt(ref[len(_SEALED_KEY_PREFIX) :])
+        except Exception as exc:
+            _log.warning("agent_key_unseal_failed: %s", type(exc).__name__)
+            return None
+        return pem if isinstance(pem, str) and pem else None
+
+    # ------------------------------------------------------------------
     # Credential lifecycle
     # ------------------------------------------------------------------
 
@@ -262,6 +307,13 @@ class AgentIdentityService:
         """
         from sqlalchemy import text as _t
 
+        # Fail closed: a credential that cannot be exchanged for a token (no
+        # durable store, or no vault to seal the signing key) must not be issued.
+        # The vault call used to be ``vault.store`` — a method CredentialVault
+        # does not have — inside contextlib.suppress, so every credential was
+        # saved without its key and the token exchange always 404'd.
+        if self._db is None:
+            raise RuntimeError("agent credential store unavailable (no database configured)")
         private_pem, public_pem = generate_agent_keypair()
         key_id = f"kid_{secrets.token_hex(12)}"
         credential_id = str(uuid.uuid4())
@@ -269,10 +321,7 @@ class AgentIdentityService:
         if expires_in_days is not None:
             expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
 
-        vault_ref: str | None = None
-        if self._vault is not None:
-            with contextlib.suppress(Exception):
-                vault_ref = await self._vault.store(f"agent_key:{credential_id}", private_pem)
+        vault_ref = self._seal_private_key(private_pem)
 
         if self._db is not None:
             async with self._db() as session:
@@ -369,10 +418,13 @@ class AgentIdentityService:
                         FROM agent_credentials ac
                         JOIN agents a ON a.id = ac.agent_id
                         WHERE ac.key_id = :kid AND ac.tenant_id = :tid
+                          AND ac.agent_id = :aid
                           AND ac.revoked_at IS NULL
                           AND (ac.expires_at IS NULL OR ac.expires_at > NOW())
                     """),
-                    {"kid": key_id, "tid": tenant_id},
+                    # Bound to the agent in the URL: another agent's key must not
+                    # mint a token for this agent (with that key's scopes).
+                    {"kid": key_id, "tid": tenant_id, "aid": agent_id},
                 )
             ).fetchone()
 
@@ -381,9 +433,7 @@ class AgentIdentityService:
 
         scopes, autonomy_mode, domain_context, vault_ref = row
 
-        private_pem: str | None = None
-        if self._vault is not None and vault_ref is not None:
-            private_pem = await self._vault.retrieve(vault_ref)
+        private_pem = self._unseal_private_key(vault_ref)
         if not private_pem:
             return None
 
@@ -395,6 +445,89 @@ class AgentIdentityService:
             scopes=list(scopes or []),
             autonomy_mode=autonomy_mode or "bounded-autonomous",
             domain_context=domain_context or "general",
+        )
+
+    # ------------------------------------------------------------------
+    # Agent JWT authentication (used by TenantMiddleware)
+    # ------------------------------------------------------------------
+
+    async def _fetch_verification_key(
+        self, key_id: str, tenant_id: str
+    ) -> tuple[str, str, list[str]] | None:
+        """(agent_id, public_key_pem, scopes) of an active credential, under tenant RLS."""
+        from sqlalchemy import text as _t
+
+        from app.db.rls import sqlalchemy_rls_context
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            row = (
+                await session.execute(
+                    _t("""
+                        SELECT agent_id, public_key, scopes FROM agent_credentials
+                        WHERE key_id = :kid AND tenant_id = :tid
+                          AND revoked_at IS NULL
+                          AND (expires_at IS NULL OR expires_at > NOW())
+                          AND public_key IS NOT NULL
+                    """),
+                    {"kid": key_id, "tid": tenant_id},
+                )
+            ).fetchone()
+        if row is None:
+            return None
+        return str(row[0]), str(row[1]), list(row[2] or [])
+
+    async def authenticate_agent_jwt(self, token: str) -> AgentPrincipal | None:
+        """Verify an agent JWT against the tenant's registered (non-revoked) key.
+
+        The ``kid`` header and ``tenant_id`` claim only select which registered
+        public key to verify with; nothing is trusted until the RS256 signature,
+        expiry, audience and issuer check out against that key. The token's
+        agent must be the credential's agent, and its scopes are capped by the
+        credential's current scopes (narrowing a credential takes effect at once).
+        Returns ``None`` for anything that does not verify (fail closed).
+        """
+        if self._db is None:
+            return None
+        try:
+            header = jwt.get_unverified_header(token)
+            unverified = jwt.get_unverified_claims(token)
+        except Exception:
+            return None
+        if header.get("alg") != JWT_ALGORITHM:
+            return None
+        key_id = header.get("kid")
+        tenant_id = unverified.get("tenant_id")
+        if not isinstance(key_id, str) or not key_id:
+            return None
+        if not isinstance(tenant_id, str) or not tenant_id:
+            return None
+        try:
+            found = await self._fetch_verification_key(key_id, tenant_id)
+        except Exception as exc:
+            _log.warning("agent_jwt_key_lookup_failed: %s", exc)
+            return None
+        if found is None:
+            return None
+        agent_id, public_pem, credential_scopes = found
+        try:
+            payload = verify_agent_token(token, public_pem, tenant_id)
+        except Exception:
+            return None
+        if payload.get("tenant_id") != tenant_id:
+            return None
+        if payload.get("agent_id") != agent_id or payload.get("sub") != f"agent:{agent_id}":
+            return None
+        token_scopes = payload.get("scopes") or []
+        if not isinstance(token_scopes, list):
+            return None
+        allowed = set(credential_scopes)
+        scopes = tuple(sorted({s for s in token_scopes if isinstance(s, str) and s in allowed}))
+        return AgentPrincipal(
+            agent_id=agent_id, tenant_id=tenant_id, key_id=key_id, scopes=scopes
         )
 
     async def list_credentials(self, agent_id: str, tenant_id: str) -> list[dict[str, Any]]:
