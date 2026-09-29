@@ -1,0 +1,33 @@
+# Post-wave-7 re-certification (in progress)
+
+Baseline: `docs/audits/2026-09-29-reaudit/certification-matrix.json` (192 features, audited at `a4d172588`).
+Target: `main` at `287cb90f7` (waves 7A–7D merged).
+
+One agent per area group writes `<group>.json` here, rewriting the file after **each** feature, so a
+cut-off loses at most one feature. Schema per feature:
+
+```json
+{"area":"…","feature":"…","previous_status":"PARTIAL","status":"PASS|PARTIAL|FAIL|NOT_IMPLEMENTED|BLOCKED",
+ "evidence":"…","verified_fixed":["gap text → how fixed, file:line/commit"],
+ "still_open":["gap text → current file:line"],"new_defects":["file:line — defect [severity]"],
+ "tests_run":["command → result"]}
+```
+
+## Resume after a limit cut-off
+For every group below whose file is missing or whose `features` array is shorter than the area's feature
+count in the baseline matrix, re-run that group's agent with the prompt in `PROMPT.md`, telling it to
+skip features already present in its file. Then merge all files into `certification-matrix.json` +
+`open-gaps.md` in this folder.
+
+| Group | Areas |
+|---|---|
+| g01-agent-core | agent-core |
+| g02-providers-services | providers-routing, services-reliability |
+| g03-tools | tools-connectors |
+| g04-security-governance | tenancy-security, governance |
+| g05-knowledge | knowledge |
+| g06-workflows-triggers | workflows-triggers |
+| g07-memory-evals | memory-intelligence |
+| g08-org-frontend | org-collab, frontend-sdks |
+| g09-enterprise | enterprise-ops |
+| g10-critic | critic |

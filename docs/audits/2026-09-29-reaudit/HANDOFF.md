@@ -345,3 +345,9 @@ breaker is process-global (give fake providers unique `_default_model` values).
 - Keep paid marketplace templates disabled (honest 501) until purchase completion,
   install gating and author payouts exist?
 - Rotate the NVIDIA API key (it was pasted in chat); push `main` when ready.
+
+## 2026-09-29 — Post-wave-7 re-certification IN PROGRESS
+Started against `287cb90f7`. Plan, per-group output files and the resume procedure are in
+`docs/audits/2026-09-29-recert/README.md` (agent prompt: `PROMPT.md`). Groups g01, g04, g05, g06 were
+launched first; g02, g03, g07, g08, g09, g10 queue behind them. If this session ran out, check which
+`gNN-*.json` files are missing/incomplete and resume those groups with `PROMPT.md`.
