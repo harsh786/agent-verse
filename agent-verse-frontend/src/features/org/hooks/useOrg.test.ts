@@ -359,7 +359,7 @@ describe('useOrgTasks', () => {
 });
 
 describe('useUpdateTaskStatus', () => {
-  test('PATCHes the task status and invalidates the tasks query', async () => {
+  test('POSTs the task status (the backend has no PATCH) and invalidates the tasks query', async () => {
     apiFetchMock.mockResolvedValue({ id: 't1', status: 'completed' });
     const { qc, Wrapper } = makeWrapperWithClient();
     const invalidateSpy = vi.spyOn(qc, 'invalidateQueries');
@@ -367,7 +367,7 @@ describe('useUpdateTaskStatus', () => {
 
     await act(async () => { await result.current.mutateAsync({ taskId: 't1', status: 'completed' }); });
     expect(apiFetchMock).toHaveBeenCalledWith('/v1/org/o1/tasks/t1/status', {
-      method: 'PATCH',
+      method: 'POST',
       body: JSON.stringify({ status: 'completed' }),
     });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: orgKeys.tasks('o1') });
