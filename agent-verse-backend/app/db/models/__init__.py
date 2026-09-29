@@ -14,6 +14,7 @@ class Base(DeclarativeBase):
 # Re-export all ORM models.  The imports must come AFTER Base is defined so that
 # each model file can successfully import Base from this (partially-loaded) module.
 from app.db.models.agent import Agent, AgentPermission  # noqa: E402
+from app.db.models.chat_channel import ChatChannelSession, ChatPrincipalSession  # noqa: E402
 from app.db.models.civilization import (  # noqa: E402
     BlackboardEntry,
     BusMessage,
@@ -74,6 +75,9 @@ __all__ = [  # noqa: RUF022
     # tenancy
     "Tenant",
     "ApiKey",
+    # chat gateway conversation mappings
+    "ChatChannelSession",
+    "ChatPrincipalSession",
     # agent
     "Agent",
     "AgentPermission",
