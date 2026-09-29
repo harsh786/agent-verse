@@ -564,6 +564,10 @@ class GoalService:
         self._redis_url_for_pubsub: str = ""
         # Eval scorecards keyed by goal_id; populated on goal completion.
         self._eval_scores: dict[str, Any] = {}
+        # Goals whose completion-time eval is still running: GET /eval reports
+        # "pending" for them instead of a misleading "not_evaluated" (the goal is
+        # marked complete before its charged scoring calls finish).
+        self._eval_pending: set[str] = set()
         # Per-tenant list of completed goal durations (seconds) for latency metrics.
         self._goal_durations: dict[str, list[float]] = {}
         # Time-based eviction: track last eviction timestamp.
@@ -2576,13 +2580,17 @@ class GoalService:
                         steps=steps,
                         verification_success=verification_success,
                     )
-                    scorecard = await eval_runner.score_and_persist(
-                        agent_state,
-                        tenant_ctx_for_record,
-                        provider=getattr(_eval_aps, "_app_provider", None),  # on app.state
-                        db=self._db,
-                    )
-                    self._eval_scores[goal_id] = scorecard
+                    self._eval_pending.add(goal_id)
+                    try:
+                        scorecard = await eval_runner.score_and_persist(
+                            agent_state,
+                            tenant_ctx_for_record,
+                            provider=getattr(_eval_aps, "_app_provider", None),  # on app.state
+                            db=self._db,
+                        )
+                        self._eval_scores[goal_id] = scorecard
+                    finally:
+                        self._eval_pending.discard(goal_id)
                     await self._publish_chain_event(
                         record,
                         "goal.score_below",
@@ -4529,7 +4537,7 @@ class GoalService:
         if scorecard is None:
             return {
                 "goal_id": goal_id,
-                "status": "not_evaluated",
+                "status": "pending" if goal_id in self._eval_pending else "not_evaluated",
                 "scores": {},
                 "average_score": None,
                 "passed": None,

@@ -116,7 +116,16 @@ async def test_scorecard_is_produced_automatically_on_completion(
     await wait_for_status(evals_client, goal_id, "complete", timeout=30.0)
 
     # DESIRED: scoring happens automatically on completion, no on-demand call.
+    # It finishes shortly AFTER the goal is marked complete (its scorer calls are
+    # charged and circuit-broken), reporting "pending" meanwhile — poll for it.
+    import asyncio
+
     got = await evals_client.get(f"/goals/{goal_id}/eval")
+    for _ in range(60):
+        if got.json()["status"] != "pending":
+            break
+        await asyncio.sleep(0.25)
+        got = await evals_client.get(f"/goals/{goal_id}/eval")
     assert got.status_code == 200
     assert got.json()["status"] == "evaluated", (
         "auto-eval on completion did not populate a scorecard"
