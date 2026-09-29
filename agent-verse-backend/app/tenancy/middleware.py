@@ -22,7 +22,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
-from app.tenancy.context import TenantContext
+from app.tenancy.context import PlanTier, TenantContext
 
 # ---------------------------------------------------------------------------
 # H4: In-process rate-limit fallback (used when Redis is unavailable)
@@ -273,6 +273,58 @@ async def _try_resolve_sso(request: Request) -> TenantContext | None:
         return None
 
 
+async def _try_resolve_agent_jwt(request: Request, token: str) -> TenantContext | None:
+    """Resolve an agent JWT (issued by POST /agents/{id}/token) to a TenantContext.
+
+    Only tokens whose (unverified) issuer is ``agentverse:<tenant>`` are
+    considered; they are then verified RS256 against the tenant's registered,
+    non-revoked agent key (AgentIdentityService.authenticate_agent_jwt). The
+    context carries ``roles=("agent",)`` and the verified scopes, so both
+    ``_key_scope_denial`` and ScopeEnforcementMiddleware bound what it may do,
+    and ``require_role("operator"/"admin")`` endpoints stay closed to agents.
+    """
+    if token.count(".") != 2:
+        return None
+    try:
+        from jose import jwt as _jwt
+
+        issuer = _jwt.get_unverified_claims(token).get("iss")
+    except Exception:
+        return None
+    if not isinstance(issuer, str) or not issuer.startswith("agentverse:"):
+        return None
+    svc = getattr(request.app.state, "agent_identity_service", None)
+    authenticate = getattr(svc, "authenticate_agent_jwt", None)
+    if authenticate is None:
+        return None
+    from app.observability.logging import get_logger
+
+    try:
+        principal = await authenticate(token)
+    except Exception as exc:
+        get_logger(__name__).warning("agent_jwt_resolution_failed", error=str(exc)[:200])
+        return None
+    if principal is None or not principal.scopes:
+        # No scopes = nothing the agent may do; never an unrestricted context.
+        return None
+    tenant_service = getattr(request.app.state, "tenant_service", None)
+    if tenant_service is None:
+        return None
+    try:
+        profile = await tenant_service.get_tenant(principal.tenant_id)
+        plan = PlanTier(str(profile.get("plan", "free")))
+    except Exception as exc:
+        get_logger(__name__).warning("agent_jwt_tenant_lookup_failed", error=str(exc)[:200])
+        return None
+    return TenantContext(
+        tenant_id=principal.tenant_id,
+        plan=plan,
+        api_key_id=f"agent:{principal.key_id}",
+        roles=("agent",),
+        scopes=principal.scopes,
+    )
+
+
 # Endpoints a tenant with MFA enabled must reach BEFORE it holds an X-MFA-Token
 # (the second factor itself). Without this, enforcement 401'd /auth/mfa/verify
 # too, so no tenant with MFA enabled could ever obtain a token.
@@ -396,10 +448,12 @@ class TenantMiddleware(BaseHTTPMiddleware):
         if raw_key is None:
             return _auth_error_response()
 
-        # Try SSO JWT first when the token looks like a JWT (has 2+ dots)
+        # Try agent JWTs, then SSO JWTs, when the token looks like a JWT (2+ dots)
         tenant_ctx: TenantContext | None = None
         if raw_key.count(".") >= 2:
-            tenant_ctx = await _try_resolve_sso(request)
+            tenant_ctx = await _try_resolve_agent_jwt(request, raw_key)
+            if tenant_ctx is None:
+                tenant_ctx = await _try_resolve_sso(request)
 
         # Fall back to API key resolution
         if tenant_ctx is None:

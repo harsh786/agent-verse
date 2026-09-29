@@ -905,11 +905,18 @@ class AgentGraph(
         self._last_served_model = primary
         self._failed_models: list[str] = []
         last_exc: BaseException | None = None
+        emitted = [0]
+
+        async def _counting_on_token(chunk: str) -> None:
+            emitted[0] += 1
+            await on_token(chunk)
+
         for i, model in enumerate(models):
             attempt = request if i == 0 else dataclasses.replace(request, model=model)
+            emitted[0] = 0
             try:
                 resp = await asyncio.wait_for(
-                    self._executor.stream_tokens(attempt, on_token), timeout=timeout
+                    self._executor.stream_tokens(attempt, _counting_on_token), timeout=timeout
                 )
                 self._last_served_model = model
                 return resp
@@ -917,10 +924,18 @@ class AgentGraph(
                 last_exc = exc
                 self._failed_models.append(model)
                 token_buffer.clear()
-                if i + 1 < len(models):
+                if emitted[0]:
                     # Tokens of the failed attempt already reached SSE clients;
-                    # tell them to discard the partial text before the retry.
-                    await self._emit({"type": "token_reset", "reason": "model_failover"})
+                    # tell them to discard the partial text — before a retry, and
+                    # also when this was the last model (the step then fails and
+                    # the half-answer must not stay on screen as its output).
+                    await self._emit(
+                        {
+                            "type": "token_reset",
+                            "reason": "model_failover" if i + 1 < len(models) else "stream_failed",
+                        }
+                    )
+                if i + 1 < len(models):
                     self._logger.warning(
                         "executor_model_failover",
                         from_model=model, to_model=models[i + 1], error=str(exc)[:200],

@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import pytest
 
+from tests.intelligence._opt_redis import add_counter_ops
 from app.intelligence.self_optimizer_v2 import (
     DEFAULT_MIN_GOALS,
     DOMAIN_METRICS,
@@ -53,6 +54,7 @@ class TestTenantOptimizationState:
 
         mock_redis.get = get
         mock_redis.setex = setex
+        add_counter_ops(mock_redis, store)
 
         state = TenantOptimizationState(mock_redis)
         await state.update("tenant-A", "agent-1", {"goals_completed": 100})
@@ -84,6 +86,7 @@ class TestTenantOptimizationState:
 
         mock_redis.get = get
         mock_redis.setex = setex
+        add_counter_ops(mock_redis, store)
 
         state = TenantOptimizationState(mock_redis)
         c1 = await state.increment_goals("t1", "a1")
@@ -117,6 +120,7 @@ class TestMinGoalsThreshold:
 
         mock_redis.get = get
         mock_redis.setex = setex
+        add_counter_ops(mock_redis, store)
 
         mock_db = AsyncMock()
         mock_db.__aenter__ = AsyncMock(return_value=mock_db)
@@ -152,7 +156,8 @@ class TestMinGoalsThreshold:
 @pytest.mark.asyncio
 async def test_apply_suggestion_reads_real_agent_config() -> None:
     """
-    Fix 1: apply_suggestion() must UPDATE agents SET config = :candidate_config.
+    Fix 1: apply_suggestion() must write the candidate config to the agent's
+    real config columns (there is no ``agents.config`` column).
     Was: called API endpoint with empty body — every optimization silently failed.
     """
     updated_configs: list[dict] = []
@@ -166,10 +171,14 @@ async def test_apply_suggestion_reads_real_agent_config() -> None:
         q = str(query)
         mock_result = MagicMock()
         mock_result.fetchone = lambda: None
-        if "UPDATE agents" in q and params and "config" in params:
-            cfg_raw = params.get("config", "{}")
+        if "FROM agents" in q:
+            mock_result.fetchone = lambda: (
+                "You are a legal agent.", "", "", "bounded-autonomous", 5, 300
+            )
+        if "UPDATE agents" in q and params:
+            assert "config" not in params
             updated_configs.append(
-                json.loads(cfg_raw) if isinstance(cfg_raw, str) else cfg_raw
+                {k: params[k] for k in ("system_prompt", "max_iterations") if k in params}
             )
         return mock_result
 
@@ -212,17 +221,23 @@ async def test_before_prompt_not_placeholder() -> None:
     """
     Fix 2: _read_current_agent_config() returns real config from DB, not 'before'.
     """
-    real_config = {"system_prompt": "You are a real production agent.", "max_iterations": 10}
+    real_config = {
+        "system_prompt": "You are a real production agent.",
+        "goal_template": "",
+        "model_override": "",
+        "autonomy_mode": "bounded-autonomous",
+        "max_iterations": 10,
+        "timeout_seconds": 300,
+    }
 
     mock_db = AsyncMock()
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)
     mock_db.__aexit__ = AsyncMock(return_value=None)
 
     async def execute_side_effect(query, params=None, **kwargs):
+        # The agents table's real config columns, in AGENT_CONFIG_COLUMNS order.
         mock_result = MagicMock()
-        mock_result.fetchone = lambda: MagicMock(
-            __getitem__=lambda s, i: real_config
-        )
+        mock_result.fetchone = lambda: tuple(real_config.values())
         return mock_result
 
     mock_db.execute = AsyncMock(side_effect=execute_side_effect)
@@ -259,6 +274,7 @@ async def test_tenant_scoped_arm_namespace() -> None:
 
     mock_redis.get = get
     mock_redis.setex = setex
+    add_counter_ops(mock_redis, store)
 
     state = TenantOptimizationState(mock_redis)
     await state.update("tenant-A", "agent-X", {
@@ -474,6 +490,7 @@ async def test_integration_point_records_result_in_graph() -> None:
 
     mock_redis.get = get
     mock_redis.setex = setex
+    add_counter_ops(mock_redis, store)
 
     mock_db = AsyncMock()
     mock_db.__aenter__ = AsyncMock(return_value=mock_db)

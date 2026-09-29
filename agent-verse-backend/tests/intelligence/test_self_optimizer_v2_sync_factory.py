@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.intelligence.self_optimizer_v2 import DEFAULT_MIN_GOALS, SelfOptimizerV2
+from tests.intelligence._opt_redis import add_counter_ops
 
 
 def _redis() -> MagicMock:
@@ -30,6 +31,7 @@ def _redis() -> MagicMock:
 
     r.get = AsyncMock(side_effect=_get)
     r.setex = AsyncMock(side_effect=_setex)
+    add_counter_ops(r, store)
     return r
 
 
@@ -49,8 +51,11 @@ class _Session:
         sql = str(stmt)
         self._log.append(sql)
         res = MagicMock()
-        if "SELECT config FROM agents" in sql:
-            res.fetchone.return_value = ({"system_prompt": "You are helpful."},)
+        if "FROM agents" in sql and "system_prompt" in sql:
+            # The agents table's real config columns (there is no agents.config).
+            res.fetchone.return_value = (
+                "You are helpful.", "", "", "bounded-autonomous", 15, 300
+            )
         else:
             res.fetchone.return_value = None
         return res

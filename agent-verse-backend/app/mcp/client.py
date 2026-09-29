@@ -1558,7 +1558,14 @@ class MCPClient:
             if self._oauth_manager is not None:
                 try:
                     tenant_id = getattr(tenant_ctx, "tenant_id", "")
-                    token = self._oauth_manager.get_token(tenant_id, server_id)
+                    # Read through the durable token store when the manager has
+                    # one: the token may have been obtained by another replica
+                    # (or this is the worker, which never ran the OAuth flow).
+                    _aget = getattr(self._oauth_manager, "aget_token", None)
+                    if inspect.iscoroutinefunction(_aget):
+                        token = await _aget(tenant_id, server_id)
+                    else:
+                        token = self._oauth_manager.get_token(tenant_id, server_id)
                     if token is not None:
                         if token.is_expired():
                             with suppress(Exception):

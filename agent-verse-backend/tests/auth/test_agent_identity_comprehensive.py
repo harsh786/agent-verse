@@ -16,6 +16,20 @@ from app.auth.agent_identity import (
     issue_agent_token,
     verify_agent_token,
 )
+from app.providers.vault import CredentialVault
+
+
+def _vault() -> CredentialVault:
+    return CredentialVault("comprehensive-test-master-key-0123456789")
+
+
+def _db_mock() -> tuple[MagicMock, AsyncMock]:
+    session_mock = AsyncMock()
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+    session_mock.execute = AsyncMock()
+    session_mock.commit = AsyncMock()
+    return MagicMock(return_value=session_mock), session_mock
 
 # ---------------------------------------------------------------------------
 # generate_agent_keypair
@@ -293,15 +307,28 @@ def test_agent_identity_service_set_redis():
     assert svc._redis is redis
 
 
-async def test_issue_credential_no_db_returns_result_without_db():
-    svc = AgentIdentityService(db=None)
+async def test_issue_credential_no_db_fails_closed():
+    # A credential that is stored nowhere can never be exchanged for a token:
+    # refuse to issue it (it used to return a key that was persisted nowhere).
+    svc = AgentIdentityService(db=None, vault=_vault())
+    with pytest.raises(RuntimeError):
+        await svc.issue_credential(
+            agent_id="a1",
+            tenant_id="t1",
+            created_by="user-1",
+            scopes=["goals:read"],
+        )
+
+
+async def test_issue_credential_returns_keypair_once():
+    db_factory, _ = _db_mock()
+    svc = AgentIdentityService(db=db_factory, vault=_vault())
     result = await svc.issue_credential(
         agent_id="a1",
         tenant_id="t1",
         created_by="user-1",
         scopes=["goals:read"],
     )
-    # Even without DB, keypair is generated and returned
     assert "key_id" in result
     assert result["private_key_pem"].startswith("-----BEGIN PRIVATE KEY-----")
     assert result["public_key_pem"].startswith("-----BEGIN PUBLIC KEY-----")
@@ -317,7 +344,7 @@ async def test_issue_credential_with_db_stores_public_key():
     session_mock.commit = AsyncMock()
     db_factory = MagicMock(return_value=session_mock)
 
-    svc = AgentIdentityService(db=db_factory)
+    svc = AgentIdentityService(db=db_factory, vault=_vault())
     result = await svc.issue_credential(
         agent_id="a1",
         tenant_id="t1",
@@ -330,17 +357,20 @@ async def test_issue_credential_with_db_stores_public_key():
     session_mock.commit.assert_awaited_once()
 
 
-async def test_issue_credential_stores_in_vault_if_configured():
-    vault_mock = AsyncMock()
-    vault_mock.store = AsyncMock(return_value="vault://key-ref-123")
-
-    svc = AgentIdentityService(db=None, vault=vault_mock)
+async def test_issue_credential_seals_private_key_with_vault():
+    db_factory, session_mock = _db_mock()
+    vault = _vault()
+    svc = AgentIdentityService(db=db_factory, vault=vault)
     result = await svc.issue_credential(
         agent_id="a1", tenant_id="t1", created_by="user",
         scopes=[], expires_in_days=None,
     )
 
-    vault_mock.store.assert_awaited_once()
+    insert_params = next(
+        c.args[1] for c in session_mock.execute.await_args_list
+        if len(c.args) > 1 and "vault" in c.args[1]
+    )
+    assert svc._unseal_private_key(insert_params["vault"]) == result["private_key_pem"]
     assert result["expires_at"] is None
 
 
@@ -348,7 +378,8 @@ async def test_issue_credential_clears_jwks_cache_on_redis():
     redis_mock = AsyncMock()
     redis_mock.delete = AsyncMock()
 
-    svc = AgentIdentityService(db=None, redis=redis_mock)
+    db_factory, _ = _db_mock()
+    svc = AgentIdentityService(db=db_factory, vault=_vault(), redis=redis_mock)
     await svc.issue_credential(
         agent_id="a1", tenant_id="t1", created_by="user", scopes=[],
     )
@@ -461,16 +492,15 @@ async def test_issue_agent_jwt_with_vault_returns_token():
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
-    row = (["goals:read", "goals:execute"], "bounded-autonomous", "general", "vault://ref")
+    vault = _vault()
+    sealed = AgentIdentityService(vault=vault)._seal_private_key(private_pem)
+    row = (["goals:read", "goals:execute"], "bounded-autonomous", "general", sealed)
     result_mock = MagicMock()
     result_mock.fetchone.return_value = row
     session_mock.execute = AsyncMock(return_value=result_mock)
     db_factory = MagicMock(return_value=session_mock)
 
-    vault_mock = AsyncMock()
-    vault_mock.retrieve = AsyncMock(return_value=private_pem)
-
-    svc = AgentIdentityService(db=db_factory, vault=vault_mock)
+    svc = AgentIdentityService(db=db_factory, vault=vault)
     token = await svc.issue_agent_jwt("agent-1", "kid-1", "t1")
 
     assert token is not None

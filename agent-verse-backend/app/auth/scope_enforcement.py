@@ -290,6 +290,32 @@ ROLE_SCOPES: dict[str, frozenset[str]] = {
 }
 
 
+# Ceiling for an agent authenticated by an agent JWT (TenantMiddleware maps it
+# to roles=("agent",) with the credential's scopes, so the effective permission
+# is the intersection). Agents run goals and use tools and knowledge; they never
+# administer the tenant, change agents, approve HITL requests or manage costs.
+ROLE_SCOPES["agent"] = frozenset(
+    {
+        "goals:read",
+        "goals:write",
+        "goals:execute",
+        "agents:read",
+        "knowledge:read",
+        "knowledge:write",
+        "mcp:read",
+        "a2a:read",
+        "a2a:write",
+        "artifacts:read",
+        "artifacts:write",
+        "memory:read",
+        "memory:write",
+        "tools:read",
+        "rpa:read",
+        "perception:read",
+        "guardrails:read",
+    }
+)
+
 _WRITE_ROLES = frozenset({"admin", "operator"})
 
 

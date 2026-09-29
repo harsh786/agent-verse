@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from app.agent_runtime.store import agent_runtime_store
+
 router = APIRouter(prefix="/agent-runtime", tags=["agent-runtime"])
 
 
@@ -18,9 +20,9 @@ def _require_tenant(request: Request) -> Any:
     return ctx
 
 
-# In-memory trace store (production: DB)
-_traces: dict[str, Any] = {}
-_plans: dict[str, Any] = {}
+# Plans/traces live in agent_runtime_store: a bounded in-process LRU in front of
+# Redis (tenant-namespaced keys), so other replicas can read them. They used to
+# be unbounded module-level dicts (one plan + one trace per goal, never evicted).
 
 
 @router.post("/plans")
@@ -67,7 +69,7 @@ async def create_execution_plan(request: Request) -> dict[str, Any]:
         created_at=now,
         agent_id=body.get("agent_id"),
     )
-    _plans[plan_id] = plan
+    await agent_runtime_store.put_plan(plan)
 
     return {
         "plan_id": plan_id,
@@ -91,7 +93,7 @@ async def create_execution_plan(request: Request) -> dict[str, Any]:
 async def get_execution_plan(request: Request, plan_id: str) -> dict[str, Any]:
     """Get a specific execution plan."""
     tenant = _require_tenant(request)
-    plan = _plans.get(plan_id)
+    plan = await agent_runtime_store.get_plan(tenant.tenant_id, plan_id)
     if not plan or plan.tenant_id != tenant.tenant_id:
         raise HTTPException(404, "Plan not found")
 
@@ -124,7 +126,7 @@ async def create_run_trace(request: Request) -> dict[str, Any]:
         goal_id=body.get("goal_id", ""),
         tenant_id=tenant.tenant_id,
     )
-    _traces[trace_id] = trace
+    await agent_runtime_store.put_trace(trace)
     return {"trace_id": trace_id, "status": "created"}
 
 
@@ -132,7 +134,7 @@ async def create_run_trace(request: Request) -> dict[str, Any]:
 async def get_run_trace(request: Request, trace_id: str) -> dict[str, Any]:
     """Get a run trace."""
     tenant = _require_tenant(request)
-    trace = _traces.get(trace_id)
+    trace = await agent_runtime_store.get_trace(tenant.tenant_id, trace_id)
     if not trace or trace.tenant_id != tenant.tenant_id:
         raise HTTPException(404, "Trace not found")
 

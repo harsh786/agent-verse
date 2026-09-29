@@ -231,8 +231,11 @@ class AnthropicProvider:
     ) -> CompletionResponse:
         """Stream tokens from the Anthropic API, calling on_token for each text chunk.
 
-        Uses the official Anthropic streaming API (messages.stream).  Falls back
-        to a non-streaming complete() call if the streaming API raises.
+        Uses the official Anthropic streaming API (messages.stream). Structured
+        ``tool_use`` blocks are returned as ``tool_calls`` (read from the SDK's
+        accumulated final message). Falls back to a non-streaming complete() call
+        only if the stream fails before any token was delivered; a failure after
+        partial output propagates instead of producing a second answer.
         """
         model = request.model or self._default_model
         messages = []
@@ -281,29 +284,65 @@ class AnthropicProvider:
                 for t in request.tools
             ]
 
-        full_text = ""
-        input_tokens = 0
-        output_tokens = 0
+        if request.response_schema is not None and not request.tools:
+            # Structured output forces a synthetic tool; that path lives in complete().
+            return await self.complete(request)
 
+        full_text = ""
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for text_chunk in stream.text_stream:
                     full_text += text_chunk
                     await on_token(text_chunk)
+                # The SDK accumulates every content block, including tool_use blocks
+                # whose input arrived as input_json_delta events, into the final
+                # message. Text-only iteration used to drop them, so a tool step on
+                # Anthropic never dispatched its tool.
                 final_msg = await stream.get_final_message()
-                input_tokens = getattr(final_msg.usage, "input_tokens", 0)
-                output_tokens = getattr(final_msg.usage, "output_tokens", 0)
         except Exception as exc:
+            if full_text:
+                # Tokens already reached the caller: re-running complete() would
+                # emit a second, different answer after the partial one. Propagate
+                # so the executor can send token_reset and fail over.
+                raise
             logging.getLogger(__name__).warning(
                 "anthropic_stream_tokens_failed error=%s fallback=True", str(exc)
             )
             return await self.complete(request)
 
+        return self._response_from_final(final_msg, model, full_text)
+
+    @staticmethod
+    def _response_from_final(final_msg: Any, model: str, streamed_text: str) -> CompletionResponse:
+        """Build a CompletionResponse (text + tool_calls + usage) from a streamed message."""
+        usage = getattr(final_msg, "usage", None)
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+        blocks = getattr(final_msg, "content", None)
+        blocks = blocks if isinstance(blocks, list) else []
+        tool_calls = [
+            {"name": b.name, "input": b.input, "id": b.id}
+            for b in blocks
+            if getattr(b, "type", None) == "tool_use"
+        ]
+        stop_reason = getattr(final_msg, "stop_reason", None)
+        served = getattr(final_msg, "model", None)
         return CompletionResponse(
-            content=full_text,
-            model=model,
+            content=streamed_text,
+            model=served if isinstance(served, str) and served else model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            tool_calls=tool_calls,
+            stop_reason=(
+                stop_reason
+                if isinstance(stop_reason, str) and stop_reason
+                else ("tool_use" if tool_calls else "end_turn")
+            ),
+            usage=TokenUsage(
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+            ),
         )
 
     async def embed(self, request: EmbedRequest) -> EmbedResponse:

@@ -90,6 +90,19 @@ class InitializeMixin:
                 experiment_id=assignment.get("experiment_id"),
                 keys=unapplicable,
             )
+            # Excluded on every goal, it would never conclude and would block
+            # every later experiment for this agent: stop it.
+            conclude = getattr(self_opt_v2, "conclude_unrealizable", None)
+            exp_id = assignment.get("experiment_id")
+            if conclude is not None and exp_id:
+                try:
+                    await conclude(
+                        tenant_ctx.tenant_id, self._agent_id, str(exp_id), keys=unapplicable
+                    )
+                except Exception as exc:
+                    self._logger.warning(
+                        "experiment_conclude_unrealizable_failed", error=str(exc)[:200]
+                    )
             return
         if arm != "control":
             config = assignment.get("config") or {}

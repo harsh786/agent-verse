@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.intelligence._opt_redis import add_counter_ops
 from app.intelligence.self_optimizer_v2 import (
     DEFAULT_MIN_GOALS,
     DOMAIN_METRICS,
@@ -29,6 +30,7 @@ def _make_redis(data: dict | None = None) -> AsyncMock:
 
     redis.get = AsyncMock(side_effect=_get)
     redis.setex = AsyncMock(side_effect=_setex)
+    add_counter_ops(redis, store)
     return redis
 
 
@@ -239,11 +241,20 @@ def test_bayesian_zero_means():
 @pytest.mark.asyncio
 async def test_apply_suggestion_success():
     redis = _make_redis()
-    mock_session = _make_db_session(fetchone_return=(json.dumps({"system_prompt": "old"}),))
+    # The agents table's real config columns (there is no agents.config).
+    mock_session = _make_db_session(
+        fetchone_return=("old", "", "", "bounded-autonomous", 15, 300)
+    )
     opt = _make_optimizer(redis=redis, db_session=mock_session)
 
     result = await opt.apply_suggestion("t1", "a1", "exp1", {"system_prompt": "new"})
     assert result is True
+    update = next(
+        c for c in mock_session.execute.await_args_list if "UPDATE agents" in str(c.args[0])
+    )
+    assert "system_prompt = :system_prompt" in str(update.args[0])
+    assert "config" not in update.args[1]
+    assert update.args[1]["system_prompt"] == "new"
 
 
 @pytest.mark.asyncio

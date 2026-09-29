@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.intelligence._opt_redis import add_counter_ops
 from app.intelligence.self_optimizer_v2 import (
     SelfOptimizerV2,
 )
@@ -29,6 +30,7 @@ def _make_redis(data: dict | None = None) -> AsyncMock:
 
     redis.get = AsyncMock(side_effect=_get)
     redis.setex = AsyncMock(side_effect=_setex)
+    add_counter_ops(redis, store)
     return redis
 
 
@@ -64,12 +66,19 @@ def _make_optimizer(redis=None, db_session=None, llm_factory=None, db_returns_no
 
 @pytest.mark.asyncio
 async def test_read_current_agent_config_returns_dict():
-    config = {"system_prompt": "be helpful"}
-    mock_session = _make_db_session(fetchone_return=(json.dumps(config),))
+    # The config is the agents table's real columns (there is no agents.config).
+    mock_session = _make_db_session(fetchone_return=("be helpful", "", "", "bounded-autonomous", 15, 300))
     opt = _make_optimizer(db_session=mock_session)
 
     result = await opt._read_current_agent_config("t1", "a1")
-    assert result == config
+    assert result == {
+        "system_prompt": "be helpful",
+        "goal_template": "",
+        "model_override": "",
+        "autonomy_mode": "bounded-autonomous",
+        "max_iterations": 15,
+        "timeout_seconds": 300,
+    }
 
 
 @pytest.mark.asyncio
@@ -82,34 +91,38 @@ async def test_read_current_agent_config_returns_none_when_empty():
 
 
 @pytest.mark.asyncio
-async def test_read_current_agent_config_returns_none_on_empty_config():
-    mock_session = _make_db_session(fetchone_return=("",))
+async def test_read_current_agent_config_selects_real_columns():
+    mock_session = _make_db_session(fetchone_return=None)
     opt = _make_optimizer(db_session=mock_session)
 
-    result = await opt._read_current_agent_config("t1", "a1")
-    assert result is None
+    await opt._read_current_agent_config("t1", "a1")
+    sql = " ".join(str(c.args[0]) for c in mock_session.execute.await_args_list)
+    assert "SELECT config" not in sql
+    assert "system_prompt" in sql
 
 
 @pytest.mark.asyncio
-async def test_read_current_agent_config_handles_dict_directly():
-    config = {"key": "value"}
-    mock_session = _make_db_session(fetchone_return=(config,))  # already a dict
+async def test_read_current_agent_config_keeps_int_columns():
+    mock_session = _make_db_session(fetchone_return=("be helpful", "", "", "bounded-autonomous", 15, 300))
     opt = _make_optimizer(db_session=mock_session)
 
     result = await opt._read_current_agent_config("t1", "a1")
-    assert result == config
+    assert result is not None and result["max_iterations"] == 15
 
 
 @pytest.mark.asyncio
-async def test_read_current_agent_config_db_error_returns_none():
+async def test_read_current_agent_config_db_error_raises():
+    # A DB failure used to be swallowed into None, which hid the missing column.
+    from app.intelligence.self_optimizer_v2 import AgentConfigUnavailableError
+
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(side_effect=Exception("DB error"))
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
     opt = _make_optimizer(db_session=mock_session)
-    result = await opt._read_current_agent_config("t1", "a1")
-    assert result is None
+    with pytest.raises(AgentConfigUnavailableError):
+        await opt._read_current_agent_config("t1", "a1")
 
 
 # ── _get_recent_metrics ───────────────────────────────────────────────────────
@@ -354,11 +367,13 @@ async def test_maybe_start_experiment_no_config_returns_none():
 @pytest.mark.asyncio
 async def test_get_arm_config_no_experiment_returns_config():
     redis = _make_redis()
-    mock_session = _make_db_session(fetchone_return=(json.dumps({"prompt": "current"}),))
+    mock_session = _make_db_session(
+        fetchone_return=("current", "", "", "bounded-autonomous", 15, 300)
+    )
     opt = _make_optimizer(redis=redis, db_session=mock_session)
 
     result = await opt.get_arm_config("t1", "a1", "g1")
-    assert result == {"prompt": "current"}
+    assert result["system_prompt"] == "current"
 
 
 @pytest.mark.asyncio
