@@ -688,7 +688,7 @@ class GoalService:
                 _svc_logger.warning("hitl_rejection_subscriber_error", error=str(exc))
                 await asyncio.sleep(5)
 
-    def _track_db_task(self, coro: Coroutine[Any, Any, None]) -> None:
+    def _track_db_task(self, coro: Coroutine[Any, Any, Any]) -> None:
         task = asyncio.create_task(coro)
         self._db_tasks.add(task)
         task.add_done_callback(self._db_tasks.discard)
@@ -4696,19 +4696,31 @@ class GoalService:
         if record.status in _TERMINAL_STATUSES:
             return {"goal_id": goal_id, "status": record.status.value}
         await self._signal_runner(record, signal_cancel, "cancel")
-        if self._runs_locally(record):
-            assert record.task is not None
-            record.task.cancel()
 
-        record.status = GoalStatus.CANCELLED
         # Persist to the DB directly. The worker normally writes terminal status,
         # but a cancelled goal whose worker already died (or a stuck/zombie
         # "executing" row) would otherwise be refreshed straight back to its old
         # status by _refresh_goal_from_db_if_needed on the next read — leaving the
         # goal un-cancellable and holding a plan concurrency slot forever.
-        await self._db_update_goal_status(
-            goal_id, tenant_ctx.tenant_id, GoalStatus.CANCELLED.value
+        # The write is CONDITIONAL: this replica's copy may be stale, and a goal
+        # the worker finished meanwhile must keep its real terminal status. A
+        # failed write is a 503, never a reported-but-lost cancel.
+        changed = await self._db_update_goal_status(
+            goal_id,
+            tenant_ctx.tenant_id,
+            GoalStatus.CANCELLED.value,
+            only_if_active=True,
+            raise_on_error=True,
         )
+        if changed is False:
+            fresh = await self._db_get_goal_record(goal_id, tenant_ctx)
+            if fresh is not None and fresh.status in _TERMINAL_STATUSES:
+                return {"goal_id": goal_id, "status": fresh.status.value}
+        if self._runs_locally(record):
+            assert record.task is not None
+            record.task.cancel()
+
+        record.status = GoalStatus.CANCELLED
         cancelled_event: dict[str, Any] = {"type": "goal_cancelled"}
         await self._dispatch_event(goal_id, cancelled_event, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": GoalStatus.CANCELLED.value}
@@ -4727,9 +4739,6 @@ class GoalService:
         if record.status not in {GoalStatus.EXECUTING, GoalStatus.PLANNING}:
             raise ValueError(f"Goal {goal_id} is not running (status: {record.status.value})")
         await self._signal_runner(record, signal_pause, "pause")
-        if self._runs_locally(record):
-            _GOAL_PAUSE_EVENTS[goal_id] = asyncio.Event()
-        record.status = GoalStatus.WAITING_HUMAN
         # Persist to the DB directly, mirroring the cancel_goal fix: a concurrent
         # (or merely subsequent) get_goal() call refreshes from the DB whenever a
         # task_queue is configured — regardless of status — via
@@ -4737,9 +4746,30 @@ class GoalService:
         # the stale "executing" row and silently un-pauses the goal from every
         # caller's point of view (while the operator believes it is paused and
         # the worker may in fact be blocked on the Redis pause flag).
-        await self._db_update_goal_status(
-            goal_id, tenant_ctx.tenant_id, GoalStatus.WAITING_HUMAN.value
+        # Conditional (a goal that finished meanwhile is not "paused") and a
+        # failed write is a 503, not a pause reported as done.
+        changed = await self._db_update_goal_status(
+            goal_id,
+            tenant_ctx.tenant_id,
+            GoalStatus.WAITING_HUMAN.value,
+            only_if_active=True,
+            raise_on_error=True,
         )
+        if changed is False:
+            fresh = await self._db_get_goal_record(goal_id, tenant_ctx)
+            if fresh is not None and fresh.status in _TERMINAL_STATUSES:
+                # Drop the pause flag we just set: nothing is left to pause.
+                _redis = getattr(self, "_redis", None)
+                if _redis is not None:
+                    from app.reliability.goal_lifecycle import clear_signals
+
+                    await clear_signals(goal_id, _redis)
+                raise ValueError(
+                    f"Goal {goal_id} is not running (status: {fresh.status.value})"
+                )
+        if self._runs_locally(record):
+            _GOAL_PAUSE_EVENTS[goal_id] = asyncio.Event()
+        record.status = GoalStatus.WAITING_HUMAN
         await self._dispatch_event(goal_id, {"type": "goal_paused"}, tenant_ctx=tenant_ctx)
         return {"goal_id": goal_id, "status": "paused"}
 
@@ -5418,14 +5448,20 @@ class GoalService:
         error_message: str = "",
         iterations: int = 0,
         only_if_active: bool = False,
-    ) -> None:
-        """Update goal status in PostgreSQL.
+        raise_on_error: bool = False,
+    ) -> bool:
+        """Update goal status in PostgreSQL; return whether a row was changed.
 
         *only_if_active* leaves a row that is already terminal untouched (e.g. a
-        worker reporting "cancelled" after a HITL rejection recorded "failed").
+        worker reporting "cancelled" after a HITL rejection recorded "failed", or
+        a cancel racing the worker's "complete") — the result is then ``False``.
+
+        *raise_on_error* turns a failed write into ``ServiceUnavailableError``
+        (503) for callers that report the transition to a user; background
+        writers keep the log-and-continue behaviour (result ``False``).
         """
         if self._db is None:
-            return
+            return True
         try:
             from datetime import datetime
 
@@ -5447,9 +5483,16 @@ class GoalService:
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
-                await session.execute(stmt.values(**values))
+                result = await session.execute(stmt.values(**values))
+            rowcount = getattr(result, "rowcount", None)
+            return not isinstance(rowcount, int) or rowcount > 0
         except Exception as exc:
             _svc_logger.warning("DB update goal status failed: %s", exc)
+            if raise_on_error:
+                raise ServiceUnavailableError(
+                    f"Goal {goal_id} status could not be persisted", cause=exc
+                ) from exc
+            return False
 
     async def _db_persist_step(
         self,

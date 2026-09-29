@@ -71,10 +71,15 @@ class SharedGoalsTable:
             return record
 
         async def _update(goal_id: str, tenant_id: str, status: str,
-                          error_message: str = "", iterations: int = 0) -> None:
+                          error_message: str = "", iterations: int = 0,
+                          only_if_active: bool = False, raise_on_error: bool = False) -> bool:
             row = table.rows.get(goal_id)
-            if row is not None and row["tenant_id"] == tenant_id:
-                row["status"] = status
+            if row is None or row["tenant_id"] != tenant_id:
+                return False
+            if only_if_active and row["status"] in {"complete", "failed", "cancelled"}:
+                return False  # the conditional UPDATE matches no terminal row
+            row["status"] = status
+            return True
 
         async def _suspended(goal_id: str, tenant_id: str, suspended: bool) -> None:
             row = table.rows.get(goal_id)
