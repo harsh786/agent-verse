@@ -182,34 +182,89 @@ def _require_tenant(request: Request) -> TenantContext:
     return ctx
 
 
+_IDEMPOTENCY_REPLAY_TTL_SECONDS = 3600
+
+
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def submit_goal(request: Request, body: GoalRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     svc = _goal_service(request)
 
-    # Idempotency check — prevent duplicate goal submissions
+    # Idempotency — prevent duplicate goal submissions.
+    #
+    # The key used to be claimed before validation and never released (so a
+    # 422/429 made every retry a 409 with no goal_id for an hour) and store
+    # errors were swallowed (fail open). Now: claim → run → on success record the
+    # response (a replay returns the same goal_id) / on any failure release the
+    # claim (the client may retry). A store error fails closed with 503.
     idempotency_key = request.headers.get("Idempotency-Key")
-    if idempotency_key:
-        try:
-            _idem = getattr(request.app.state, "idempotency_store", None)
-            if _idem is not None:
-                is_new = await _idem.check_and_set(
-                    idempotency_key, tenant.tenant_id, ttl_seconds=3600
-                )
-                if not is_new:
-                    raise HTTPException(
-                        status_code=status.HTTP_409_CONFLICT,
-                        detail={
-                            "error": "duplicate_request",
-                            "idempotency_key": idempotency_key,
-                            "message": "A request with this Idempotency-Key was already received.",
-                        },
-                    )
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # Fail open: don't block goal submission on idempotency errors
+    _idem = getattr(request.app.state, "idempotency_store", None)
+    if not idempotency_key or _idem is None:
+        return await _submit_goal_unguarded(request, body, tenant, svc)
 
+    try:
+        existing = await _idem.claim(idempotency_key, tenant.tenant_id)
+    except Exception as exc:
+        _logger.warning("idempotency_claim_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": "idempotency_unavailable",
+                "message": "Idempotency-Key could not be checked; retry the request.",
+            },
+        ) from exc
+    if existing is not None:
+        response = existing.get("response") if existing.get("state") == "done" else None
+        if isinstance(response, dict):
+            return {**response, "idempotent_replay": True}
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "duplicate_request",
+                "idempotency_key": idempotency_key,
+                "message": "A request with this Idempotency-Key is still being processed.",
+            },
+        )
+
+    try:
+        result = await _submit_goal_unguarded(request, body, tenant, svc)
+    except BaseException:
+        await _release_idempotency_claim(_idem, idempotency_key, tenant.tenant_id)
+        raise
+    if not result.get("goal_id"):
+        # Nothing was created (e.g. needs_agent_selection): the same key may be
+        # used again for the real submission.
+        await _release_idempotency_claim(_idem, idempotency_key, tenant.tenant_id)
+        return result
+    try:
+        await _idem.complete(
+            idempotency_key,
+            tenant.tenant_id,
+            result,
+            ttl_seconds=_IDEMPOTENCY_REPLAY_TTL_SECONDS,
+        )
+    except Exception as exc:
+        # The goal exists; a replay within the pending window answers 409, after
+        # it a retry would create a second goal. Loud, never silent.
+        _logger.error(
+            "idempotency_complete_failed",
+            goal_id=result.get("goal_id"),
+            error=str(exc)[:200],
+        )
+    return result
+
+
+async def _release_idempotency_claim(store: Any, key: str, tenant_id: str) -> None:
+    try:
+        await store.release(key, tenant_id)
+    except Exception as exc:
+        # The pending claim expires on its own (short TTL); log so it is visible.
+        _logger.warning("idempotency_release_failed", error=str(exc)[:200])
+
+
+async def _submit_goal_unguarded(
+    request: Request, body: GoalRequest, tenant: TenantContext, svc: Any
+) -> dict[str, Any]:
     # Build execution_context with persistence settings when enabled
     exec_ctx: dict[str, Any] = {}
     if body.strategy_override is not None or body.auxiliary_strategies or body.pattern_limits:

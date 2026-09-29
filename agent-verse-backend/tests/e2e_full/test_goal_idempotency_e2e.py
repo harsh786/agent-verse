@@ -1,7 +1,7 @@
 """e2e_full: goal submission idempotency on the live path.
 
 Proves the wired idempotency store: two submits with the same ``Idempotency-Key``
-create the goal once and the duplicate is rejected with 409 — against the booted
+create the goal once and the replay returns that same goal — against the booted
 app with real Redis. Runs goals inline (no Celery worker) and pins a deterministic
 provider so the first submit is a normal accepted goal.
 """
@@ -60,7 +60,7 @@ def _inline_goals(app: Any) -> Any:
         gs._task_queue = prev_queue
 
 
-async def test_duplicate_idempotency_key_is_rejected(
+async def test_duplicate_idempotency_key_replays_the_original_goal(
     fresh_client: Any, _inline_goals: Any
 ) -> None:
     key = f"idem-{uuid.uuid4().hex}"
@@ -76,10 +76,14 @@ async def test_duplicate_idempotency_key_is_rejected(
     second = await fresh_client.post(
         "/goals", json={"goal": "Summarize the report"}, headers=headers
     )
-    assert second.status_code == 409, (
-        f"duplicate Idempotency-Key must be rejected with 409, got "
+    # A replay of a finished submission returns the goal it created (it used to
+    # be a bare 409 with no goal_id) — and creates nothing new.
+    assert second.status_code == 202, (
+        f"replayed Idempotency-Key must return the original goal, got "
         f"{second.status_code} {second.text}"
     )
+    assert second.json()["goal_id"] == goal_id
+    assert second.json()["idempotent_replay"] is True
 
 
 async def test_distinct_idempotency_keys_both_accepted(
