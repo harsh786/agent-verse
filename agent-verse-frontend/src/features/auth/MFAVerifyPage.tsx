@@ -21,10 +21,16 @@ export default function MFAVerifyPage() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const verifyMutation = useMutation({
-    mutationFn: () => mfaApi.verify(code.trim()),
-    onSuccess: (data) => {
-      setMfaRequired(false);
+    mutationFn: () => {
+      // Never send a stale/pending token with the verification itself.
       setMfaToken(null);
+      return mfaApi.verify(code.trim());
+    },
+    onSuccess: (data) => {
+      // Keep the session token: request() sends it as X-MFA-Token. It used to
+      // be discarded here, so every call after verification 401'd.
+      setMfaToken(data.session_token ?? null);
+      setMfaRequired(false);
       toast({ kind: 'success', message: 'Verified! Welcome back.' });
       if (data.remaining_recovery_codes !== undefined && data.remaining_recovery_codes <= 3) {
         toast({

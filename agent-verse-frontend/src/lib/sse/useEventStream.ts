@@ -8,7 +8,7 @@
  * do NOT retry — retrying against an expired/invalid token creates a request storm.
  */
 import { useEffect, useRef, useState } from "react";
-import { useAuthStore } from "@/stores/auth";
+import { getMfaHeader, useAuthStore } from "@/stores/auth";
 
 export interface StreamEvent {
   type: string;
@@ -79,6 +79,7 @@ export function useEventStream(
         : apiKey
         ? { "X-API-Key": apiKey }
         : {};
+      Object.assign(authHeaders, getMfaHeader());
 
       let terminalReceived = false;
       try {

@@ -157,6 +157,23 @@ describe('MFAVerifyPage', () => {
     expect(useAuthStore.getState().mfaToken).toBeNull();
   });
 
+  test('stores the returned session_token so later requests carry X-MFA-Token', async () => {
+    const spy = mockFetch(200, {
+      status: 'verified',
+      method: 'totp',
+      session_token: 'mfa-session-xyz',
+      expires_in: 3600,
+    });
+    renderPage();
+    fireEvent.change(screen.getByLabelText('TOTP verification code'), { target: { value: '123456' } });
+    await waitFor(() => expect(useAuthStore.getState().mfaToken).toBe('mfa-session-xyz'));
+    expect(useAuthStore.getState().mfaRequired).toBe(false);
+    // The verify call itself must not carry the stale pending value.
+    const call = spy.mock.calls.find(([u]) => String(u).includes('/auth/mfa/verify'));
+    const sent = ((call?.[1] as RequestInit)?.headers ?? {}) as Record<string, string>;
+    expect(sent['X-MFA-Token']).toBeUndefined();
+  });
+
   test('warns when recovery codes are running low after a successful recovery-code verification', async () => {
     mockFetch(200, { status: 'verified', method: 'recovery', remaining_recovery_codes: 2 });
     renderPage();

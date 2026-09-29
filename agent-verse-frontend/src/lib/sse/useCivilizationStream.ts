@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { CivilizationEvent } from '../api/civilizationApi';
-import { useAuthStore } from '@/stores/auth';
+import { getMfaHeader, useAuthStore } from '@/stores/auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -43,6 +43,7 @@ export function useCivilizationStream(
       : apiKey
       ? { 'X-API-Key': apiKey }
       : {};
+    Object.assign(authHeaders, getMfaHeader());
 
     const url = `${API_BASE}/civilizations/${civilizationId}/stream`;
 

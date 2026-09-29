@@ -5,7 +5,7 @@
  * works too and is required for production builds.
  */
 
-import { useAuthStore } from '@/stores/auth';
+import { getMfaHeader, useAuthStore } from '@/stores/auth';
 import { toast } from '@/stores/toast';
 import type { ResultArtifact } from '@/features/goals/resultArtifact';
 
@@ -91,6 +91,9 @@ async function request<T>(
   } else if (apiKey) {
     headers["X-API-Key"] = apiKey;
   }
+  // Second factor: the session token from /auth/mfa/verify (never sent before,
+  // so every call after verification 401'd with MFA_REQUIRED).
+  Object.assign(headers, getMfaHeader());
 
   let res: Response;
   try {
@@ -105,6 +108,17 @@ async function request<T>(
     // text — so a toast/ApiError carries the real reason, not "Service Unavailable".
     const message = errorMessageFromBody(body) ?? res.statusText;
     if (res.status === 401) {
+      const code = (body as { error?: { code?: unknown } } | undefined)?.error?.code;
+      if (code === "MFA_REQUIRED" || code === "MFA_SESSION_EXPIRED") {
+        // The credentials are fine; only the second factor is missing/expired.
+        // Drop the stale token and re-prompt instead of logging the user out.
+        const { setMfaToken, setMfaRequired } = useAuthStore.getState();
+        setMfaToken(null);
+        setMfaRequired(true);
+        toast({ kind: 'error', message: 'Two-factor verification required.' });
+        redirectToMfa();
+        throw new ApiError(401, message, body);
+      }
       const { logout } = useAuthStore.getState();
       logout();
       toast({ kind: 'error', message: 'Session expired — please sign in again.' });
@@ -117,6 +131,18 @@ async function request<T>(
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+const MFA_VERIFY_PATH = "/auth/mfa";
+
+function redirectToMfa(): void {
+  try {
+    if (typeof window !== "undefined" && window.location.pathname !== MFA_VERIFY_PATH) {
+      window.location.assign(MFA_VERIFY_PATH);
+    }
+  } catch {
+    // Non-browser / test environment: the mfaRequired flag is still set.
+  }
 }
 
 export class ApiError extends Error {
@@ -149,7 +175,7 @@ export const apiFetch = request;
 export async function downloadAuthenticated(path: string): Promise<Blob> {
   const { ssoMode, accessToken } = useAuthStore.getState();
   const apiKey = getApiKey();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...getMfaHeader() };
   if (ssoMode && accessToken) {
     headers["Authorization"] = `Bearer ${accessToken}`;
   } else if (apiKey) {
@@ -1674,7 +1700,7 @@ export const trainingApi = {
     if (opts.fromDate) params.set("from_date", opts.fromDate);
     if (opts.toDate) params.set("to_date", opts.toDate);
     const apiKey = getApiKey();
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...getMfaHeader() };
     if (apiKey) headers["X-API-Key"] = apiKey;
     const res = await fetch(
       `${API_BASE_URL}/intelligence/export-training-data?${params.toString()}`,
@@ -2718,7 +2744,7 @@ export const costsApi = {
   getSummary: (periodDays = 30) => request<CostSummary>(`/costs/summary?period_days=${periodDays}`),
   getSummaryCsv: (periodDays = 30): Promise<Blob> => {
     const apiKey = getApiKey();
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...getMfaHeader() };
     if (apiKey) headers["X-API-Key"] = apiKey;
     return fetch(`${API_BASE_URL}/costs/summary?format=csv&period_days=${periodDays}`, { headers })
       .then((r) => r.blob());
@@ -2923,10 +2949,14 @@ export const mfaApi = {
       body: JSON.stringify({ code }),
     }),
   verify: (code: string) =>
-    request<{ status: string; method: string; remaining_recovery_codes?: number }>(
-      '/auth/mfa/verify',
-      { method: 'POST', body: JSON.stringify({ code }) }
-    ),
+    request<{
+      status: string;
+      method: string;
+      remaining_recovery_codes?: number;
+      /** X-MFA-Token for subsequent requests. */
+      session_token?: string;
+      expires_in?: number;
+    }>('/auth/mfa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
   disable: (code: string) =>
     request<{ status: string; message: string }>('/auth/mfa/disable', {
       method: 'POST',

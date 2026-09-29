@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { useAuthStore } from "@/stores/auth";
+import { getMfaHeader, useAuthStore } from "@/stores/auth";
 
 export interface GoalEvent {
   type: string;
@@ -116,6 +116,7 @@ export function useGoalStream(goalId: string | null, opts?: UseGoalStreamOptions
         : apiKey
         ? { "X-API-Key": apiKey }
         : {};
+      Object.assign(authHeaders, getMfaHeader());
 
       // Attach Last-Event-ID so the backend can replay missed events on
       // reconnect (RFC 6202 / SSE spec).  Only sent when we have a previous ID.

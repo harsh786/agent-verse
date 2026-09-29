@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react';
+import { mfaSubprotocol } from '@/stores/auth';
 
 interface UseCollabSocketOptions {
   sessionId: string;
@@ -56,7 +57,10 @@ export function useCollabSocket({
   const connect = useCallback(() => {
     const wsBase = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8000';
     const url = `${wsBase}/collab/sessions/${sessionId}/ws`;
-    const ws = new WebSocket(url, [encodeProtocolToken(apiKey)]);
+    // The server echoes the av.v1.* protocol; av.mfa.* carries the MFA session.
+    const mfa = mfaSubprotocol();
+    const protocols = mfa ? [encodeProtocolToken(apiKey), mfa] : [encodeProtocolToken(apiKey)];
+    const ws = new WebSocket(url, protocols);
     wsRef.current = ws;
 
     ws.onopen = () => {

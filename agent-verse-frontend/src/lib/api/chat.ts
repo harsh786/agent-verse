@@ -3,7 +3,7 @@
  */
 
 import { API_BASE } from './client';
-import { useAuthStore } from '@/stores/auth';
+import { getMfaHeader, useAuthStore } from '@/stores/auth';
 import type {
   ChatSession,
   ChatMessage,
@@ -32,11 +32,16 @@ function headers(): HeadersInit {
   // SSO parity: send a Bearer token under Keycloak SSO, else the API key.
   const { ssoMode, accessToken } = useAuthStore.getState();
   if (ssoMode && accessToken) {
-    return { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` };
+    return {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      ...getMfaHeader(),
+    };
   }
   return {
     'Content-Type': 'application/json',
     'X-API-Key': getApiKey(),
+    ...getMfaHeader(),
   };
 }
 
@@ -258,7 +263,7 @@ export const chatApi = {
     fd.append('file', file);
     return fetch(`${API_BASE}/chat/sessions/${sessionId}/attachments`, {
       method: 'POST',
-      headers: { 'X-API-Key': getApiKey() },
+      headers: { 'X-API-Key': getApiKey(), ...getMfaHeader() },
       body: fd,
     }).then((r) =>
       _json<{

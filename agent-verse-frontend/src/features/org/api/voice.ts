@@ -5,7 +5,7 @@
  *   X-API-Key header via apiFetch / manual fetch with useAuthStore.
  */
 import { apiFetch, API_BASE } from '@/lib/api/client';
-import { useAuthStore, getAuthHeader } from '@/stores/auth';
+import { useAuthStore, getAuthHeader, mfaSubprotocol } from '@/stores/auth';
 import type {
   PersonaResponse,
   TranscribeResponse,
@@ -97,6 +97,8 @@ export const voiceApi = {
     let binary = '';
     new TextEncoder().encode(apiKey).forEach((b) => { binary += String.fromCharCode(b); });
     const encoded = btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    return [`av.v1.${encoded}`];
+    // The MFA session travels as a second (never-selected) subprotocol.
+    const mfa = mfaSubprotocol();
+    return mfa ? [`av.v1.${encoded}`, mfa] : [`av.v1.${encoded}`];
   },
 };

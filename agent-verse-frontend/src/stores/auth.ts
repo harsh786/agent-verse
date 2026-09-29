@@ -32,7 +32,12 @@ interface AuthState {
   // ── MFA state ─────────────────────────────────────────────────────────────
   /** True when login succeeded but MFA code is still needed. */
   mfaRequired: boolean;
-  /** Temporary token identifying the pending MFA session. */
+  /**
+   * MFA session token (`session_token` from POST /auth/mfa/verify, ~1 h TTL).
+   * Sent as `X-MFA-Token` on every request; the backend answers 401
+   * MFA_REQUIRED without it once MFA is enabled. Kept in sessionStorage only
+   * (see secureStorage) and cleared on logout / MFA session expiry.
+   */
   mfaToken: string | null;
 
   // ── Actions ───────────────────────────────────────────────────────────────
@@ -159,6 +164,8 @@ export const useAuthStore = create<AuthState>()(
           refreshToken: "",
           tokenExpiresAt: 0,
           sessionValidated: false,
+          mfaRequired: false,
+          mfaToken: null,
         });
       },
 
@@ -178,9 +185,30 @@ export const useAuthStore = create<AuthState>()(
 export function getAuthHeader(): Record<string, string> {
   const { ssoMode, accessToken, apiKey } = useAuthStore.getState();
   if (ssoMode && accessToken) {
-    return { Authorization: `Bearer ${accessToken}` };
+    return { Authorization: `Bearer ${accessToken}`, ...getMfaHeader() };
   }
-  return { 'X-API-Key': apiKey ?? '' };
+  return { 'X-API-Key': apiKey ?? '', ...getMfaHeader() };
+}
+
+/** `{ 'X-MFA-Token': token }` once MFA was verified this session, else `{}`. */
+export function getMfaHeader(): Record<string, string> {
+  const { mfaToken } = useAuthStore.getState();
+  return mfaToken ? { 'X-MFA-Token': mfaToken } : {};
+}
+
+/**
+ * The MFA session token as a WebSocket subprotocol (`av.mfa.<base64url>`),
+ * the form the backend's resolve_ws_tenant() accepts — browsers cannot set
+ * headers on a WebSocket. `null` when no MFA session is held.
+ */
+export function mfaSubprotocol(): string | null {
+  const { mfaToken } = useAuthStore.getState();
+  if (!mfaToken) return null;
+  let binary = '';
+  new TextEncoder().encode(mfaToken).forEach((b) => {
+    binary += String.fromCharCode(b);
+  });
+  return `av.mfa.${btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')}`;
 }
 
 /** Returns true if the current session token is expired (SSO mode only). */
