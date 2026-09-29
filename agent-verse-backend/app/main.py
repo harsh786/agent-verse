@@ -2576,12 +2576,15 @@ def create_app(
         DistributedStrategyExecutor,
         default_distributed_admission,
     )
+    from app.orchestration.strategy_probes import register_strategy_readiness_probes
     from app.orchestration.strategy_readiness import ReadinessEvaluator
     from app.orchestration.strategy_registry import build_default_registry
     from app.orchestration.strategy_runner import StrategyRunner
 
     app.state.strategy_registry = build_default_registry()
     app.state.strategy_readiness = ReadinessEvaluator()
+    # Probes read app.state when evaluated, so the lifespan's DB/Redis swaps apply.
+    register_strategy_readiness_probes(app.state.strategy_readiness, app.state)
     app.state.strategy_certification = CertificationEvaluator()
     # D-1: StrategyRunner previously used the inert module-default executor (always raised
     # "strategy executor is not configured") and nothing ever called .run() on it. Wire a real
