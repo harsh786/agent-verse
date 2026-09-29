@@ -673,10 +673,19 @@ class _WorkerSubgoalService:
 
 
 class _WorkerMCPAgentRunner:
-    def __init__(self, runner: Any, context_factory: Any, system_prompt: str = "") -> None:
+    def __init__(
+        self,
+        runner: Any,
+        context_factory: Any,
+        system_prompt: str = "",
+        rpa_executor: Any = None,
+    ) -> None:
         self._runner = runner
         self._context_factory = context_factory
         self._system_prompt = system_prompt
+        # The run's RPAExecutor: vault:// refs resolve through this run's Redis
+        # connector secret store, and its browser sessions die with the run.
+        self._rpa_executor = rpa_executor
 
     async def run(
         self,
@@ -697,6 +706,11 @@ class _WorkerMCPAgentRunner:
             redis_client, mcp_client, tool_context = await self._context_factory()
             if mcp_client is not None:
                 self._runner._mcp_client = mcp_client
+            if self._rpa_executor is not None and redis_client is not None:
+                from app.providers.vault import RedisConnectorSecretStore, get_vault
+
+                _rpa_secret_store = RedisConnectorSecretStore(redis=redis_client, vault=get_vault())
+                self._rpa_executor._secret_store_resolver = lambda: _rpa_secret_store
             if tool_context is not None:
                 context.update(
                     {
@@ -713,6 +727,13 @@ class _WorkerMCPAgentRunner:
                 **({"attempt": attempt} if attempt is not None else {}),
             )
         finally:
+            if self._rpa_executor is not None:
+                # Close every browser/Playwright session the run opened — in this
+                # loop, before it is torn down — so no Chromium outlives the task.
+                try:
+                    await self._rpa_executor.aclose()
+                except Exception as _rpa_close_exc:
+                    logger.warning("worker_rpa_executor_close_failed: %s", _rpa_close_exc)
             if redis_client is not None:
                 await redis_client.aclose()
 
@@ -2607,6 +2628,23 @@ def run_goal(
                 calibration_store=_phase3_calibration,
                 consensus_verifier=_phase3_consensus,
             )
+            # RPA parity with the in-process path (goal_service sets
+            # graph._rpa_executor from app.state): without it every rpa_* tool
+            # call on a queued goal fell through to "Tool not found". Same
+            # builder as the API lifespan — session manager + browser SSRF guard,
+            # artifact store, RPA_SSRF_ALLOWED_DOMAINS. Without Playwright the
+            # executor fails each call honestly (NOT IMPLEMENTED).
+            from app.rpa import executor as _rpa_exec_mod
+
+            _worker_rpa_vision = (
+                _embedder_for_graph is not None
+                and hasattr(_embedder_for_graph, "supports_vision")
+                and _embedder_for_graph.supports_vision()
+            )
+            _worker_rpa_executor = _rpa_exec_mod.build_rpa_executor(
+                vision_provider=_embedder_for_graph if _worker_rpa_vision else None
+            )
+            _agent_runner._rpa_executor = _worker_rpa_executor
             if db_factory is not None:
                 _agent_runner._db_session_factory = db_factory
             _agent_runner._agent_collection_ids = list(_agent_collection_ids)
@@ -2699,6 +2737,7 @@ def run_goal(
                     self_optimizer_v2=_self_opt_v2,
                     prompt_optimizer=_prompt_opt,
                     reflexion_service=_reflexion_service,
+                    rpa_executor=_worker_rpa_executor,
                 )
                 _agent_runner._agent_id = agent_id
                 _agent_runner._reflexion_service = _reflexion_service
@@ -2708,6 +2747,7 @@ def run_goal(
                 _agent_runner,
                 _build_worker_mcp_context,
                 system_prompt=_agent_system_prompt,
+                rpa_executor=_worker_rpa_executor,
             )
             _use_agent_graph = True
             logger.info("Goal %s will run with AgentGraph (full capabilities)", goal_id)

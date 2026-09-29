@@ -212,6 +212,17 @@ class BrowserSessionManager:
             return True
         return False
 
+    async def close_all(self) -> int:
+        """Close every session this manager holds (owner shutdown)."""
+        async with self._lock:
+            sessions = list(self._sessions.items())
+            self._sessions.clear()
+        for (sid, tid), session in sessions:
+            with contextlib.suppress(Exception):
+                await session.close()
+            await self._deregister_from_redis(sid, tid)
+        return len(sessions)
+
     async def cleanup_expired(self) -> int:
         """Close sessions idle longer than max_idle_seconds."""
         cutoff = time.monotonic() - self._max_idle

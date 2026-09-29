@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import os
 import time
 import uuid
 from collections.abc import Callable
@@ -106,6 +107,40 @@ class RPAResult:
     error: str | None = None
 
 
+def rpa_allowed_domains_from_env() -> list[str] | None:
+    """SSRF egress allowlist for RPA navigation (``RPA_SSRF_ALLOWED_DOMAINS``).
+
+    Empty by default → public-only (metadata/loopback/RFC-1918 blocked). A
+    comma-separated list permits specific internal hosts per deployment.
+    """
+    raw = os.environ.get("RPA_SSRF_ALLOWED_DOMAINS", "")
+    return [d.strip() for d in raw.split(",") if d.strip()] or None
+
+
+def build_rpa_executor(
+    *,
+    vision_provider: Any = None,
+    secret_store_resolver: Callable[[], Any] | None = None,
+) -> RPAExecutor:
+    """The RPAExecutor every runtime uses (API lifespan and Celery worker alike).
+
+    One place for the configuration so the worker cannot drift from the API:
+    a Playwright session manager (whose contexts carry the SSRF browser guard),
+    the configured artifact store, the env allowlist, and the vault:// secret
+    store resolver used for credential injection.
+    """
+    from app.rpa.artifacts import get_artifact_store
+    from app.rpa.session_manager import BrowserSessionManager
+
+    return RPAExecutor(
+        session_manager=BrowserSessionManager(),
+        artifact_store=get_artifact_store(),
+        vision_provider=vision_provider,
+        allowed_domains=rpa_allowed_domains_from_env(),
+        secret_store_resolver=secret_store_resolver,
+    )
+
+
 class RPAExecutor:
     """Executes RPA tool calls via Playwright; without a browser it fails closed."""
 
@@ -136,6 +171,17 @@ class RPAExecutor:
         # an ``open_url`` → ``extract_text`` sequence sharing a session id returns
         # the page it actually fetched (mirrors Playwright session page state).
         self._http_pages: dict[str, str] = {}
+
+    async def aclose(self) -> None:
+        """Close every browser session this executor opened and drop page caches.
+
+        Owners with a bounded lifetime (a Celery goal run, a test) call this so no
+        Chromium process or Playwright driver outlives them.
+        """
+        self._http_pages.clear()
+        close_all = getattr(self._session_manager, "close_all", None)
+        if close_all is not None:
+            await close_all()
 
     @staticmethod
     def _check_playwright() -> bool:

@@ -103,8 +103,6 @@ from app.rag.gateway import (
 )
 from app.rag.semantic_cache import SemanticCache
 from app.rag.store import KnowledgeStore
-from app.rpa.artifacts import get_artifact_store
-from app.rpa.session_manager import BrowserSessionManager
 from app.services.event_store import EventStore
 from app.services.goal_queue import CeleryGoalTaskQueue
 from app.services.goal_service import GoalService
@@ -908,11 +906,8 @@ def create_app(
     )
     _retrieval_gateways_to_close: dict[int, object] = {id(_retrieval_gateway): _retrieval_gateway}
 
-    from app.rpa.executor import RPAExecutor
+    from app.rpa.executor import build_rpa_executor
     from app.rpa.session import RPASessionStore
-
-    _rpa_session_manager = BrowserSessionManager()
-    _rpa_artifact_store = get_artifact_store()
 
     # Determine whether the embedder supports vision for screenshot analysis
     _supports_vision = (
@@ -920,21 +915,12 @@ def create_app(
         and hasattr(_embedder, "supports_vision")
         and _embedder.supports_vision()
     )
-    # SSRF egress allowlist for RPA navigation. Empty by default → public-only
-    # (metadata/loopback/RFC-1918 blocked). Set RPA_SSRF_ALLOWED_DOMAINS to a
-    # comma-separated list to permit specific internal hosts (e.g. an internal
-    # staging site) per deployment.
-    import os as _os
-
-    _rpa_allowed_domains = [
-        d.strip() for d in _os.environ.get("RPA_SSRF_ALLOWED_DOMAINS", "").split(",") if d.strip()
-    ] or None
-    _rpa_executor = RPAExecutor(
-        session_manager=_rpa_session_manager,
-        artifact_store=_rpa_artifact_store,
-        vision_provider=_embedder if _supports_vision else None,
-        allowed_domains=_rpa_allowed_domains,
-    )
+    # Shared with the Celery worker (app.scaling.tasks) so both runtimes get the
+    # same session manager + browser guard, artifact store and SSRF allowlist
+    # (RPA_SSRF_ALLOWED_DOMAINS; empty → public-only).
+    _rpa_executor = build_rpa_executor(vision_provider=_embedder if _supports_vision else None)
+    _rpa_session_manager = _rpa_executor._session_manager
+    _rpa_artifact_store = _rpa_executor._artifact_store
     _rpa_session_store = RPASessionStore()
 
     # Perception
