@@ -91,8 +91,11 @@ def test_get_status_no_vision_provider() -> None:
 
 
 def test_get_status_with_vision_provider() -> None:
-    app = _make_app()
-    app.state.embedder = MagicMock()
+    from app.perception.browser_agent import BrowserAgent
+
+    vision = MagicMock()
+    vision.supports_vision.return_value = True
+    app = _make_app(BrowserAgent(vision_provider=vision))
     client = TestClient(app)
     resp = client.get("/perception/status", headers=_HEADERS)
     assert resp.json()["vision_available"] is True
@@ -358,6 +361,89 @@ def test_analyze_provider_failure_is_502() -> None:
     )
     assert resp.status_code == 502
     assert "rate limited" in resp.json()["detail"]
+
+
+def _real_agent(provider: Any = None) -> Any:
+    from app.perception.browser_agent import BrowserAgent, BrowserResult
+
+    agent = BrowserAgent(vision_provider=provider)
+    agent.take_screenshot = AsyncMock(  # type: ignore[method-assign]
+        return_value=BrowserResult(success=True, action="screenshot", screenshot_b64="img")
+    )
+    agent.extract_text = AsyncMock(  # type: ignore[method-assign]
+        return_value=BrowserResult(success=True, action="extract_text", output="page text")
+    )
+    return agent
+
+
+class _NonVisionProvider:
+    def supports_vision(self) -> bool:
+        return False
+
+
+def test_batch_analyze_without_vision_is_501_not_fake_analysis() -> None:
+    """Regression: each result came back success=True with the analysis
+    "No vision provider configured."."""
+    agent = _real_agent(_NonVisionProvider())
+    client = TestClient(_make_app(agent))
+    resp = client.post(
+        "/perception/batch-analyze", json={"urls": ["https://example.com"]}, headers=_HEADERS
+    )
+    assert resp.status_code == 501
+    assert "vision" in resp.json()["detail"]
+    agent.take_screenshot.assert_not_called()
+
+
+def test_batch_analyze_vision_failure_marks_result_failed() -> None:
+    class _FailingVision:
+        def supports_vision(self) -> bool:
+            return True
+
+        async def complete(self, request: Any) -> Any:
+            raise RuntimeError("rate limited")
+
+    client = TestClient(_make_app(_real_agent(_FailingVision())))
+    resp = client.post(
+        "/perception/batch-analyze", json={"urls": ["https://example.com"]}, headers=_HEADERS
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["succeeded"] == 0
+    [result] = body["results"]
+    assert result["success"] is False
+    assert result["analysis"] == ""
+    assert "rate limited" in result["error"]
+
+
+def test_status_reports_vision_from_the_browser_agent_not_the_embedder() -> None:
+    """An embedder without vision support must not advertise vision_available
+    (the analyze endpoints would then answer 501)."""
+    app = _make_app(_real_agent(_NonVisionProvider()))
+    app.state.embedder = MagicMock()
+    client = TestClient(app)
+    resp = client.get("/perception/status", headers=_HEADERS)
+    assert resp.json()["vision_available"] is False
+
+
+def test_goal_with_image_url_vision_failure_injects_no_fake_analysis() -> None:
+    agent = MagicMock()
+    agent.has_vision = True
+    agent.take_screenshot = AsyncMock(return_value=_make_screenshot_result(b64="screenshot"))
+    agent.analyze_screenshot = AsyncMock(side_effect=RuntimeError("rate limited"))
+    app = _make_app(agent)
+    mock_svc = MagicMock()
+    mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "g4"})
+    app.state.goal_service = mock_svc
+    client = TestClient(app)
+    resp = client.post(
+        "/perception/goal-with-image",
+        json={"goal": "Check this site", "image_url": "https://example.com"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == 202
+    submitted_goal = mock_svc.submit_goal.await_args.kwargs["goal"]
+    assert "Page analysis" not in submitted_goal
+    assert "rate limited" not in submitted_goal
 
 
 def test_goal_with_image_with_invalid_image_url_returns_400() -> None:
