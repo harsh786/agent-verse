@@ -2568,6 +2568,8 @@ async def org_twin_simulate(
         from app.org.digital_twin import get_twin
 
         twin = get_twin()
+        # Estimates come from this org's completed-mission history and staffing
+        # (read through the RLS-scoped service); no history → null + reason.
         result = await twin.simulate_mission(
             org_id=org_id,
             mission_config={
@@ -2576,9 +2578,10 @@ async def org_twin_simulate(
                 "description": body.description,
                 "required_capabilities": body.required_capabilities,
             },
+            service=service,
         )
-        span.set_attribute("estimated_h", result.estimated_duration_h)
-        span.set_attribute("feasible", result.feasible)
+        span.set_attribute("sample_size", result.sample_size)
+        span.set_attribute("feasible", bool(result.feasible))
 
         return {
             "org_id": org_id,
@@ -2590,6 +2593,8 @@ async def org_twin_simulate(
             "recommendations": result.recommendations,
             "feasible": result.feasible,
             "confidence": result.confidence,
+            "sample_size": result.sample_size,
+            "estimate_reason": result.estimate_reason,
             "simulated_at": result.simulated_at,
         }
 
@@ -2605,8 +2610,13 @@ async def org_twin_capacity(
     request: Request,
     service: OrgService = Depends(get_org_service),
 ) -> dict[str, object]:
-    """Return the current capacity plan — department utilisation, queued work,
-    and predicted time-to-clear.  Never modifies production state.
+    """Return the current capacity plan — per-department utilisation and queued work.
+
+    Utilisation is measured, not estimated: staffed agents (members/managers of
+    the department's active teams) with in-flight tasks / staffed agents. A
+    department with no staffed agents reports ``utilisation: null`` plus a
+    ``reason``; time-to-clear is ``null`` because there is no throughput model.
+    Never modifies production state.
     """
     from opentelemetry import trace as _trace
 
@@ -2614,49 +2624,35 @@ async def org_twin_capacity(
         _require_tenant(request)
         span.set_attribute("org_id", org_id)
 
+        from app.org.digital_twin import get_twin
+
         health = await service.get_org_health(org_id)
-        task_counts = health.get("task_counts", {})
-        total_tasks = sum(task_counts.values()) or 1
-        blocked_pct = task_counts.get("blocked", 0) / total_tasks
+        plan = await get_twin().capacity_plan(org_id, service)
 
-        # Real utilisation: derive from active tasks across departments
-        depts = await service.list_departments(org_id)
-        utilisation = {
-            # Deterministic heuristic until real per-dept task metrics are collected
-            d.name: min(0.95, 0.4 + (hash(d.name) % 60) / 100)
-            for d in depts
-        }
-        overloaded = [k for k, v in utilisation.items() if v > 0.85]
-        underutilised = [k for k, v in utilisation.items() if v < 0.35]
-
-        span.set_attribute("departments", len(depts))
-        span.set_attribute("overloaded", len(overloaded))
+        span.set_attribute("departments", len(plan.departments))
+        span.set_attribute("overloaded", len(plan.overloaded))
 
         return {
             "org_id": org_id,
-            "current_utilisation": utilisation,
-            "queued_missions": health.get("active_missions", 0),
-            "estimated_clear_h": blocked_pct * 24,
-            "underutilised_depts": underutilised,
-            "overloaded_depts": overloaded,
+            "current_utilisation": plan.current_utilisation,
+            "departments": [asdict(d) for d in plan.departments],
+            "queued_missions": plan.queued_missions,
+            "estimated_clear_h": plan.estimated_clear_h,
+            "estimated_clear_reason": plan.estimated_clear_reason,
+            "underutilised_depts": plan.underutilised,
+            "overloaded_depts": plan.overloaded,
             "active_teams": health.get("active_teams", 0),
             "pending_approvals": health.get("pending_approvals", 0),
-            "recommendations": [
-                f"Redistribute work from {o} — at {utilisation[o]:.0%} capacity."
-                for o in overloaded[:2]
-            ]
-            + [
-                f"{u} is underutilised ({utilisation[u]:.0%}) — assign more work."
-                for u in underutilised[:2]
-            ],
+            "recommendations": plan.recommendations,
         }
 
 
 @router.post(
     "/{org_id}/twin/what-if",
     operation_id="org_twin_what_if",
-    summary="SUPP-H Digital Twin — what-if scenario analysis",
+    summary="SUPP-H Digital Twin — what-if scenario analysis (not implemented: 501)",
     status_code=status.HTTP_200_OK,
+    responses={501: {"description": "What-if re-simulation is not implemented"}},
 )
 async def org_twin_what_if(
     org_id: str,
@@ -2666,9 +2662,9 @@ async def org_twin_what_if(
 ) -> dict[str, object]:
     """Run a what-if scenario through the digital twin.
 
-    Example scenarios:
-      - {"department": "Engineering", "speed_multiplier": 2.0}
-      - {"add_agents": 3, "team": "Finance"}
+    The twin has no throughput model to re-simulate a scenario against, so this
+    returns **501 Not Implemented** rather than a canned projection (it used to
+    answer every scenario with "Estimated 15-20% throughput gain").
     """
     from opentelemetry import trace as _trace
 
@@ -2677,11 +2673,23 @@ async def org_twin_what_if(
         span.set_attribute("org_id", org_id)
         span.set_attribute("scenario", str(list(body.scenario.keys())))
 
-        from app.org.digital_twin import get_twin
+        from app.org.digital_twin import WhatIfNotSupportedError, get_twin
 
         twin = get_twin()
-        result = await twin.what_if(org_id=org_id, scenario=dict(body.scenario))
-        return result
+        try:
+            return await twin.what_if(org_id=org_id, scenario=dict(body.scenario))
+        except WhatIfNotSupportedError as exc:
+            span.set_attribute("not_implemented", True)
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail={
+                    "type": "not-implemented",
+                    "title": "Not Implemented",
+                    "status": 501,
+                    "detail": str(exc),
+                    "request_id": _request_id(),
+                },
+            ) from exc
 
 
 # ── P4: Strategic Advisor endpoint ──────────────────────────────────────────
