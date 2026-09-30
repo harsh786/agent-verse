@@ -8,6 +8,7 @@ A false-positive (false-confirm) occurs when:
 
 from __future__ import annotations
 
+import collections
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,9 @@ from app.db.rls import sqlalchemy_rls_context
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: Verdicts kept in the per-process buffer (the table is the record).
+DEFAULT_MAX_RECORDS = 10_000
 
 
 class VerifierCalibrationStore:
@@ -28,14 +32,18 @@ class VerifierCalibrationStore:
     where a *false_positive* is a record where the verifier said SUCCESS
     but the actual outcome was FAILURE.
 
-    The store maintains an in-memory buffer for fast stats without requiring
-    a running DB.  When a ``db_factory`` is provided the records are also
-    persisted asynchronously.
+    With a ``db_factory`` every verdict is persisted to ``verifier_calibration``
+    (tenant RLS) and outcomes are written there by goal, so feedback reaches a
+    verdict recorded by any replica or worker. The in-memory buffer is a
+    bounded ring of this process's recent verdicts for quick stats — it used to
+    grow on every verdict and be scanned linearly per feedback request.
     """
 
-    def __init__(self, db_factory: Any = None) -> None:
+    def __init__(self, db_factory: Any = None, *, max_records: int = DEFAULT_MAX_RECORDS) -> None:
         self._db = db_factory
-        self._records: list[dict[str, Any]] = []
+        self._records: collections.deque[dict[str, Any]] = collections.deque(
+            maxlen=max(1, max_records)
+        )
 
     async def record_verdict(
         self,
@@ -55,7 +63,7 @@ class VerifierCalibrationStore:
             "goal_id": goal_id,
             "tenant_id": tenant_id,
             "verifier_verdict": verifier_verdict,
-            "actual_outcome": None,  # filled in by record_actual_outcome()
+            "actual_outcome": None,  # filled in by record_actual_outcome*()
             "verifier_model": verifier_model,
             "verifier_source": verifier_source,
             "iteration": iteration,
@@ -64,11 +72,13 @@ class VerifierCalibrationStore:
         }
         self._records.append(record)
 
-        # Async DB persistence (best-effort)
         if self._db is not None:
             try:
                 from sqlalchemy import text
 
+                # The table's real columns (migration 0073). This used to write
+                # predicted_success / verifier_source, which do not exist, so no
+                # verdict was ever persisted (and the error was logged at debug).
                 async with (
                     self._db() as session,
                     session.begin(),
@@ -77,24 +87,23 @@ class VerifierCalibrationStore:
                     await session.execute(
                         text("""
                             INSERT INTO verifier_calibration
-                            (id, tenant_id, goal_id, verifier_source, predicted_success,
+                            (id, tenant_id, goal_id, verifier_verdict,
                              verifier_model, iteration, goal_text, created_at)
-                            VALUES (:id, :tid, :gid, :src, :verdict, :model, :iter, :goal, NOW())
+                            VALUES (:id, :tid, :gid, :verdict, :model, :iter, :goal, NOW())
                             ON CONFLICT (id) DO NOTHING
                         """),
                         {
                             "id": record_id,
                             "tid": tenant_id,
                             "gid": goal_id,
-                            "src": verifier_source,
                             "verdict": verifier_verdict,
-                            "model": verifier_model,
+                            "model": verifier_model[:128],
                             "iter": iteration,
                             "goal": goal_text[:200],
                         },
                     )
             except Exception as exc:
-                logger.debug("calibration_record_failed", error=str(exc)[:60])
+                logger.warning("calibration_record_failed", goal_id=goal_id, error=str(exc)[:200])
 
         return record_id
 
@@ -104,13 +113,7 @@ class VerifierCalibrationStore:
         actual_success: bool,
         tenant_id: str | None = None,
     ) -> None:
-        """Update a record with the actual outcome (from human eval or next replan).
-
-        ``verifier_calibration`` is FORCE ROW LEVEL SECURITY, and this UPDATE
-        previously ran with no RLS context AND no tenant predicate — just
-        ``WHERE id = :id``. Under a real role it therefore matched zero rows and
-        the outcome was never persisted, leaving every calibration record's
-        ``actual_success`` permanently NULL (the whole point of the table).
+        """Update one record (by id) with the actual outcome.
 
         ``tenant_id`` may be omitted by older callers; it is then recovered from
         the in-process record. If neither is available the row cannot be scoped,
@@ -134,16 +137,60 @@ class VerifierCalibrationStore:
                     await session.execute(
                         text("""
                             UPDATE verifier_calibration
-                            SET actual_success = :outcome
+                            SET actual_outcome = :outcome
                             WHERE id = :id AND tenant_id = :tid
                         """),
                         {"outcome": actual_success, "id": record_id, "tid": tenant_id},
                     )
             except Exception as exc:
-                logger.debug("calibration_update_failed", error=str(exc)[:60])
+                logger.warning("calibration_update_failed", error=str(exc)[:200])
+
+    async def record_actual_outcome_by_goal(
+        self, *, goal_id: str, tenant_id: str, actual_success: bool
+    ) -> int:
+        """Attach a human/eval outcome to the goal's final verdict. Returns rows updated.
+
+        Written in Postgres by goal under the tenant's RLS context, so it works
+        for a goal verified by another replica or a Celery worker. The goal's
+        LATEST verdict (highest iteration) is the one the outcome judges —
+        earlier iterations judged intermediate states. A DB error propagates
+        (the caller decides how loudly to report it).
+        """
+        latest: dict[str, Any] | None = None
+        for r in self._records:
+            if r["goal_id"] == goal_id and r["tenant_id"] == tenant_id and (
+                latest is None or int(r.get("iteration") or 0) >= int(latest.get("iteration") or 0)
+            ):
+                latest = r
+        if latest is not None:
+            latest["actual_outcome"] = actual_success
+
+        if self._db is None:
+            return 1 if latest is not None else 0
+
+        from sqlalchemy import text
+
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_id),
+        ):
+            result = await session.execute(
+                text("""
+                    UPDATE verifier_calibration SET actual_outcome = :outcome
+                    WHERE id = (
+                        SELECT id FROM verifier_calibration
+                        WHERE tenant_id = :tid AND goal_id = :gid
+                        ORDER BY iteration DESC, created_at DESC
+                        LIMIT 1
+                    ) AND tenant_id = :tid
+                """),
+                {"outcome": actual_success, "tid": tenant_id, "gid": goal_id},
+            )
+        return int(getattr(result, "rowcount", 0) or 0)
 
     def false_confirm_rate(self, tenant_id: str | None = None) -> dict[str, Any]:
-        """Compute false-confirm rate across all resolved records.
+        """Compute false-confirm rate across this process's resolved records.
 
         A *false_positive* means the verifier said SUCCESS but the actual outcome
         was FAILURE.

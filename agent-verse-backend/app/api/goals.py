@@ -902,8 +902,8 @@ async def ghost_run(request: Request, body: GhostRunRequest) -> dict[str, Any]:
     Each strategy gets a unique goal_id so callers can track them individually via
     ``GET /goals/{id}`` or ``GET /goals/{id}/stream``.
 
-    Failed strategies are reported inline — other strategies still execute and
-    the endpoint always returns HTTP 202 with a ``ghost_run_id``.
+    Failed strategies are reported inline and the others still execute (202 with
+    a ``ghost_run_id``); when every strategy fails to submit the answer is 503.
     """
     tenant = _require_tenant(request)
     svc = _goal_service(request)
@@ -1301,22 +1301,26 @@ async def submit_goal_feedback(
     except NotFoundError as exc:
         raise _not_found_response(request, exc) from exc
 
-    # Store feedback in golden dataset if high confidence
+    # The human verdict is the verifier's ground truth (calibration). Written in
+    # Postgres by goal, so it reaches a verdict recorded by any replica or worker
+    # (it used to scan this process's in-memory buffer and swallow errors).
     if body.is_correct is not None:
-        try:
-            from app.intelligence.verifier_calibration import _default_calibration_store
+        from app.intelligence.verifier_calibration import _default_calibration_store
 
-            # Find the calibration record for this goal and update actual_outcome
-            for record in _default_calibration_store._records:
-                if record["goal_id"] == goal_id and record["tenant_id"] == tenant_ctx.tenant_id:
-                    await _default_calibration_store.record_actual_outcome(
-                        record["id"],
-                        actual_success=body.is_correct,
-                        tenant_id=tenant_ctx.tenant_id,
-                    )
-                    break
-        except Exception:
-            pass
+        cal_store = getattr(request.app.state, "calibration_store", None) or (
+            _default_calibration_store
+        )
+        try:
+            await cal_store.record_actual_outcome_by_goal(
+                goal_id=goal_id, tenant_id=tenant_ctx.tenant_id, actual_success=body.is_correct
+            )
+        except Exception as cal_exc:
+            import logging
+
+            # The feedback itself is still stored below; only calibration lags.
+            logging.getLogger(__name__).warning(
+                "verifier_calibration_feedback_failed goal_id=%s: %s", goal_id, cal_exc
+            )
 
     # Persist to goal_feedback table (migration 0082)
     try:
