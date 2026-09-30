@@ -180,6 +180,47 @@ def test_forged_or_tampered_sns_message_is_rejected(fetched: list[str]) -> None:
     assert all(u == CERT_URL for u in fetched)  # nothing but the SNS cert was fetched
 
 
+def test_signature_version_1_notification_is_accepted(fetched: list[str]) -> None:
+    """TRG-28: SignatureVersion 1 (SHA1withRSA) as well as 2 (SHA256withRSA)."""
+    store, disp = _Store(), _Dispatcher()
+    client = _app(store, disp, caller=None)  # type: ignore[arg-type]
+    msg = {k: v for k, v in _notification({"AlarmName": "A"}).items() if k != "Signature"}
+    r = _post(client, _signed(msg, version="1"), "Notification")
+    assert r.status_code == 200, r.text
+    assert len(disp.fired) == 1
+
+
+def test_unsupported_signature_version_is_rejected(fetched: list[str]) -> None:
+    store, disp = _Store(), _Dispatcher()
+    client = _app(store, disp, caller=None)  # type: ignore[arg-type]
+    msg = {**_notification({"AlarmName": "A"}), "SignatureVersion": "3"}
+    assert _post(client, msg, "Notification").status_code == 401
+    assert disp.fired == []
+
+
+def test_replayed_notification_collapses_onto_one_firing(fetched: list[str]) -> None:
+    """TRG-28: a replayed (or SNS-redelivered) notification carries the same
+    MessageId and payload, so the dispatcher derives the same idempotency key and
+    its Redis + trigger_events dedup fires it once."""
+    from app.triggers.dedup import derive_idempotency_key
+
+    store, disp = _Store(), _Dispatcher()
+    client = _app(store, disp, caller=None)  # type: ignore[arg-type]
+    first = _notification({"AlarmName": "HighErrors"}, message_id="n-7")
+    assert _post(client, first, "Notification").status_code == 200
+    assert _post(client, first, "Notification").status_code == 200
+    assert _post(
+        client, _notification({"AlarmName": "HighErrors"}, message_id="n-8"), "Notification"
+    ).status_code == 200
+
+    keys = [
+        derive_idempotency_key("s-cw", "cloudwatch", payload, message_id=kw.get("message_id"))
+        for payload, kw in disp.fired
+    ]
+    assert keys[0] == keys[1]
+    assert keys[2] != keys[0]
+
+
 def test_sns_url_allowlist() -> None:
     assert sns.is_sns_url(CERT_URL, pem=True)
     assert sns.is_sns_url("https://sns.cn-north-1.amazonaws.com.cn/x.pem", pem=True)

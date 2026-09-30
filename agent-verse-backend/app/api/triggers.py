@@ -893,6 +893,11 @@ async def receive_typed_webhook(webhook_type: str, token: str, request: Request)
         # TRG-24: the headers Slack and Teams actually sign with.
         "slack": "x-slack-signature",
         "teams": "authorization",
+        # TRG-28: Grafana's configured signature header default, Atlassian Data
+        # Center's X-Hub-Signature, Salesforce's x-signature.
+        "grafana": "x-grafana-alerting-signature",
+        "confluence": "x-hub-signature",
+        "salesforce": "x-signature",
     }
     sig_header = request.headers.get(sig_header_map.get(webhook_type, "x-signature"), "")
 

@@ -16,6 +16,10 @@ _log = logging.getLogger(__name__)
 STRIPE_TOLERANCE_SECONDS = 300
 # Slack: "verify that the request timestamp is within five minutes".
 SLACK_TOLERANCE_SECONDS = 300
+# Grafana has no default timestamp header name (it is set per contact point);
+# AgentVerse documents this one for the "Timestamp header" setting.
+GRAFANA_TIMESTAMP_HEADER = "x-grafana-alerting-timestamp"
+GRAFANA_TOLERANCE_SECONDS = 300
 
 
 class WebhookSignatureVerifier:
@@ -142,6 +146,75 @@ class WebhookSignatureVerifier:
         expected = base64.b64encode(hmac.new(key, payload_bytes, hashlib.sha256).digest())
         return hmac.compare_digest(expected, presented.strip().encode())
 
+    @staticmethod
+    def _hmac_sha256(secret: str, data: bytes) -> bytes:
+        return hmac.new(secret.encode(), data, hashlib.sha256).digest()
+
+    def verify_pagerduty(self, payload_bytes: bytes, header: str, secret: str) -> bool:
+        """Verify ``X-PagerDuty-Signature: v1=<hex>[,v1=<hex>...]`` (v3 webhooks).
+
+        PagerDuty sends one ``v1`` per active secret while a secret is rolled.
+        The generic check compared only the text after the LAST ``=``, so a valid
+        signature in any other position was refused.
+        """
+        if not secret or not header:
+            return False
+        expected = self._hmac_sha256(secret, payload_bytes).hex()
+        for item in header.split(","):
+            version, sep, value = item.strip().partition("=")
+            if sep and version == "v1" and hmac.compare_digest(expected, value.strip()):
+                return True
+        return False
+
+    def verify_hub_signature(self, payload_bytes: bytes, header: str, secret: str) -> bool:
+        """Verify Atlassian Data Center ``X-Hub-Signature: sha256=<hex>`` (Confluence)."""
+        if not secret or not header.startswith("sha256="):
+            return False
+        expected = "sha256=" + self._hmac_sha256(secret, payload_bytes).hex()
+        return hmac.compare_digest(expected, header.strip())
+
+    def verify_salesforce(self, payload_bytes: bytes, header: str, secret: str) -> bool:
+        """Verify Salesforce ``x-signature``: HMAC-SHA256 of the body, base64 (the
+        Data Cloud webhook target default) or hex (a configurable encoding)."""
+        if not secret or not header:
+            return False
+        mac = self._hmac_sha256(secret, payload_bytes)
+        presented = header.strip()
+        return hmac.compare_digest(base64.b64encode(mac).decode(), presented) or (
+            hmac.compare_digest(mac.hex(), presented.lower())
+        )
+
+    def verify_grafana(
+        self,
+        payload_bytes: bytes,
+        signature: str,
+        secret: str,
+        *,
+        timestamp: str = "",
+        tolerance_seconds: int = GRAFANA_TOLERANCE_SECONDS,
+        now: float | None = None,
+    ) -> bool:
+        """Verify ``X-Grafana-Alerting-Signature`` (lower-case hex HMAC-SHA256).
+
+        With a timestamp header configured on the contact point Grafana signs
+        ``"{timestamp}:{body}"``; the timestamp must then be recent (replay
+        protection). Without one it signs the body alone.
+        """
+        if not secret or not signature:
+            return False
+        data = payload_bytes
+        if timestamp:
+            try:
+                ts = int(timestamp)
+            except ValueError:
+                return False
+            current = time.time() if now is None else now
+            if abs(current - ts) > tolerance_seconds:
+                return False
+            data = timestamp.encode() + b":" + payload_bytes
+        expected = self._hmac_sha256(secret, data).hex()
+        return hmac.compare_digest(expected, signature.strip())
+
     async def verify_for_type(
         self,
         webhook_type: str,
@@ -167,4 +240,13 @@ class WebhookSignatureVerifier:
             if not secret or not header:
                 return False
             return self.verify_github(payload_bytes, header, secret)
+        if webhook_type == "pagerduty":
+            return self.verify_pagerduty(payload_bytes, header, secret)
+        if webhook_type == "confluence":
+            return self.verify_hub_signature(payload_bytes, header, secret)
+        if webhook_type == "salesforce":
+            return self.verify_salesforce(payload_bytes, header, secret)
+        if webhook_type == "grafana":
+            timestamp = (headers or {}).get(GRAFANA_TIMESTAMP_HEADER, "")
+            return self.verify_grafana(payload_bytes, header, secret, timestamp=timestamp)
         return await self.verify(payload_bytes, header, secret)
