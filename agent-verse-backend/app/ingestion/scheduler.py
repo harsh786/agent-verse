@@ -52,7 +52,12 @@ def _backoff_seconds(consecutive_failures: int) -> float:
 
 @shared_task(name="ingestion.sync_source", bind=True, max_retries=5, default_retry_delay=60)
 def sync_source_task(
-    self, *, source_id: str, tenant_id: str, triggered_by: str = "scheduler"
+    self,
+    *,
+    source_id: str,
+    tenant_id: str,
+    triggered_by: str = "scheduler",
+    job_id: str | None = None,
 ) -> dict:
     """Celery task: synchronise a single source through the full 13-stage pipeline.
 
@@ -67,6 +72,7 @@ def sync_source_task(
             source_id=source_id,
             tenant_id=tenant_id,
             triggered_by=triggered_by,
+            job_id=job_id,
         )
     )
 
@@ -159,15 +165,22 @@ def _bind_worker_guardrail_rules(db_factory: object) -> None:
         )
 
 
-async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_by: str) -> dict:
-    """Async body of sync_source_task."""
+async def _sync_source_async(
+    *, task, source_id: str, tenant_id: str, triggered_by: str, job_id: str | None = None
+) -> dict:
+    """Async body of sync_source_task.
+
+    ``job_id`` is set by ``POST /sources/{id}/sync``, which already took the
+    source's lock (its token is the job id) so it can answer "already running";
+    the task adopts that lock instead of acquiring it, and releases it at the end.
+    """
     from app.ingestion.connector_registry import get_connector, load_all_connectors
 
     load_all_connectors()  # ensure the @register registry is populated in the worker
     tracker, pipeline, source_store = _build_worker_ingestion()
 
     # ── Distributed lock (LAW-14) ────────────────────────────────────────────
-    lock_acquired = await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
+    lock_acquired = job_id or await tracker.acquire_lock(source_id, tenant_id, ttl_seconds=3600)
     if not lock_acquired:
         _log.info("source=%s already locked — skipping duplicate sync", source_id)
         return {"skipped": True, "reason": "already_running"}
@@ -220,7 +233,7 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
 
     job = await tracker.create_job(
         config,
-        job_id=str(_uuid.uuid4()),
+        job_id=job_id or str(_uuid.uuid4()),
         triggered_by=triggered_by,
     )
 
@@ -331,7 +344,12 @@ async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_
             source_id, tenant_id, docs_indexed=docs_indexed, chunks=0, failed=1
         )
         # Celery retry
-        raise task.retry(exc=exc, countdown=int(_backoff_seconds(1))) from exc
+        # The retry acquires the lock itself (this run releases it below).
+        raise task.retry(
+            exc=exc,
+            countdown=int(_backoff_seconds(1)),
+            kwargs={"source_id": source_id, "tenant_id": tenant_id, "triggered_by": triggered_by},
+        ) from exc
 
     finally:
         await tracker.release_lock(source_id, tenant_id)

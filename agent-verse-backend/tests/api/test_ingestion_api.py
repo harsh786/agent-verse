@@ -339,7 +339,8 @@ def test_trigger_sync_already_running() -> None:
     assert resp.json()["status"] == "already_running"
 
 
-def test_trigger_sync_queues_background_task() -> None:
+def test_trigger_sync_queues_the_durable_sync_task() -> None:
+    # KB-16: a Celery task on the ingestion queue, not an in-process BackgroundTask.
     source = _make_source()
     ingestion_mod._SOURCES[source.source_id] = source
     tracker = AsyncMock()
@@ -347,17 +348,15 @@ def test_trigger_sync_queues_background_task() -> None:
     pipeline = AsyncMock()
     client = _client(ingestion_job_tracker=tracker, ingestion_pipeline=pipeline)
 
-    with patch("app.api.ingestion._run_sync", new=AsyncMock()) as run_sync_mock:
+    with patch("app.ingestion.scheduler.sync_source_task") as task:
         resp = client.post(f"/sources/{source.source_id}/sync", headers=_auth())
 
     assert resp.status_code == 202
     body = resp.json()
     assert body["status"] == "queued"
     assert body["job_id"] == "job-123"
-    run_sync_mock.assert_awaited_once()
-    call_args = run_sync_mock.await_args.args
-    assert call_args[0] is source
-    assert call_args[3] == "job-123"
+    task.apply_async.assert_called_once()
+    assert task.apply_async.call_args.kwargs["kwargs"]["job_id"] == "job-123"
 
 
 def test_sync_status_404_missing_source() -> None:

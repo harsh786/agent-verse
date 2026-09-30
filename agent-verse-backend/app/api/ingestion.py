@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
@@ -298,12 +298,13 @@ async def health_check(source_id: str, request: Request) -> dict:
 
 
 @router.post("/{source_id}/sync", response_model=dict, status_code=202)
-async def trigger_sync(
-    source_id: str,
-    request: Request,
-    background_tasks: BackgroundTasks,
-) -> dict:
-    """Trigger a manual sync (LAW-14: acquires distributed lock first)."""
+async def trigger_sync(source_id: str, request: Request) -> dict:
+    """Trigger a manual sync (LAW-14: acquires distributed lock first).
+
+    The sync runs as the durable ``ingestion.sync_source`` Celery task on the
+    ingestion queue — it used to run in this API process's BackgroundTasks, so
+    a restart or scale-down lost it with the job stuck ``running``.
+    """
     tenant = _require_tenant(request)
     source = await _load_source(request, source_id, tenant.tenant_id)
     if source is None:
@@ -320,9 +321,25 @@ async def trigger_sync(
     if job_id is None:
         return {"status": "already_running", "message": "Sync already in progress for this source"}
 
-    background_tasks.add_task(
-        _run_sync, source, pipeline, tracker, job_id, _get_source_store(request)
-    )
+    del pipeline  # the worker builds its own fully wired pipeline
+    from app.ingestion.scheduler import sync_source_task
+
+    try:
+        sync_source_task.apply_async(
+            kwargs={
+                "source_id": source_id,
+                "tenant_id": tenant.tenant_id,
+                "triggered_by": "manual",
+                "job_id": job_id,
+            },
+            queue="ingestion",
+        )
+    except Exception as exc:
+        await tracker.release_lock(source_id, tenant.tenant_id, job_id)
+        _log.exception("ingestion_manual_sync_enqueue_failed", source_id=source_id)
+        raise HTTPException(
+            status_code=503, detail="Sync could not be queued; try again shortly"
+        ) from exc
     return {"status": "queued", "job_id": job_id}
 
 
