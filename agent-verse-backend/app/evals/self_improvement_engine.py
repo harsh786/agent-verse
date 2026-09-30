@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import enum
+import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.evals.scoring_config import ImprovementThresholds
+
+#: Feedback rows one tenant's run handles at most (the rest wait for the next run).
+FEEDBACK_MAX_ROWS_PER_RUN = 5000
 
 if TYPE_CHECKING:
     from app.agent.state import AgentState
@@ -123,11 +127,19 @@ class SelfImprovementEngine:
         db_session_factory: Any,
         tenant_id: str,
         batch_size: int = 100,
+        max_rows: int = FEEDBACK_MAX_ROWS_PER_RUN,
+        embedder: Any = None,
     ) -> dict[str, int]:
         """Read unprocessed rows from ``goal_feedback`` and derive improvement actions.
 
-        This method is safe to call from a Celery beat task — it is idempotent and
-        marks each processed row so it is not re-processed on the next run.
+        Safe to call from a Celery beat task and concurrently from several
+        workers: each batch is claimed with ``FOR UPDATE SKIP LOCKED`` and marked
+        processed in the same transaction; batches repeat until the tenant's
+        backlog is drained or ``max_rows`` were handled (it used to stop at one
+        batch of 100 per daily run). A lesson's id is derived from its feedback
+        row, so re-processing a row whose outer commit failed rewrites the same
+        lesson instead of storing a duplicate. ``embedder`` (the platform's
+        shared embedder) gives lessons a vector for semantic recall.
 
         Returns a summary dict: ``{"processed": N, "actions_derived": M}``.
         """
@@ -135,63 +147,70 @@ class SelfImprovementEngine:
         actions_derived = 0
         if db_session_factory is None:
             return {"processed": 0, "actions_derived": 0}
+        skip: list[str] = []  # rows that failed this run: not retried until next run
         try:
             from sqlalchemy import text as _t
 
             from app.db.rls import sqlalchemy_rls_context
 
-            async with db_session_factory() as session, sqlalchemy_rls_context(session, tenant_id):
-                rows = (
-                    await session.execute(
-                        _t(
-                            # goal_feedback's text column is ``correction`` (there
-                            # is no feedback_text/metadata column — this SELECT
-                            # always failed and the failure was swallowed).
-                            "SELECT id, goal_id, rating, correction AS feedback_text "
-                            "FROM goal_feedback "
-                            "WHERE tenant_id = :tid AND processed_at IS NULL "
-                            "ORDER BY created_at ASC "
-                            "LIMIT :lim"
-                        ),
-                        {"tid": tenant_id, "lim": batch_size},
-                    )
-                ).fetchall()
-
-                for row in rows:
-                    try:
-                        rating = int(row.rating or 0)
-                        feedback_text = row.feedback_text or ""
-                        # Low rating → store the correction as a failure-pattern
-                        # lesson in long-term memory. This used to import a module
-                        # that does not exist (app.memory.long_term_memory), swallow
-                        # the ImportError, still count the action and mark the row
-                        # processed — so no lesson was ever stored. Now the action
-                        # counts only when the lesson was durably stored; a failed
-                        # store leaves the row unprocessed for the next run.
-                        if rating <= 2 and feedback_text.strip():
-                            await _store_feedback_lesson(
-                                db_session_factory,
-                                tenant_id=tenant_id,
-                                goal_id=str(row.goal_id),
-                                lesson=feedback_text[:500],
-                            )
-                            actions_derived += 1
+            while processed + len(skip) < max_rows:
+                limit = max(1, min(batch_size, max_rows - processed - len(skip)))
+                async with (
+                    db_session_factory() as session,
+                    sqlalchemy_rls_context(session, tenant_id),
+                ):
+                    rows = (
                         await session.execute(
-                            _t("UPDATE goal_feedback SET processed_at = NOW() WHERE id = :id"),
-                            {"id": row.id},
+                            _t(
+                                # goal_feedback's text column is ``correction``.
+                                "SELECT id, goal_id, rating, correction AS feedback_text "
+                                "FROM goal_feedback "
+                                "WHERE tenant_id = :tid AND processed_at IS NULL "
+                                "AND NOT (id = ANY(:skip)) "
+                                "ORDER BY created_at ASC "
+                                "LIMIT :lim FOR UPDATE SKIP LOCKED"
+                            ),
+                            {"tid": tenant_id, "lim": limit, "skip": skip},
                         )
-                        processed += 1
-                    except Exception as row_exc:
-                        import logging
+                    ).fetchall()
 
-                        logging.getLogger(__name__).warning(
-                            "feedback_row_not_processed tenant=%s id=%s: %s",
-                            tenant_id,
-                            getattr(row, "id", "?"),
-                            row_exc,
-                        )
-                        continue
-                await session.commit()
+                    for row in rows:
+                        try:
+                            rating = int(row.rating or 0)
+                            feedback_text = row.feedback_text or ""
+                            # Low rating → the correction becomes a failure-pattern
+                            # lesson. The action counts only when the lesson was
+                            # durably stored; a failed store leaves the row
+                            # unprocessed for the next run.
+                            if rating <= 2 and feedback_text.strip():
+                                await _store_feedback_lesson(
+                                    db_session_factory,
+                                    tenant_id=tenant_id,
+                                    feedback_id=str(row.id),
+                                    goal_id=str(row.goal_id),
+                                    lesson=feedback_text[:500],
+                                    embedder=embedder,
+                                )
+                                actions_derived += 1
+                            await session.execute(
+                                _t("UPDATE goal_feedback SET processed_at = NOW() WHERE id = :id"),
+                                {"id": row.id},
+                            )
+                            processed += 1
+                        except Exception as row_exc:
+                            import logging
+
+                            skip.append(str(getattr(row, "id", "")))
+                            logging.getLogger(__name__).warning(
+                                "feedback_row_not_processed tenant=%s id=%s: %s",
+                                tenant_id,
+                                getattr(row, "id", "?"),
+                                row_exc,
+                            )
+                            continue
+                    await session.commit()
+                if len(rows) < limit:
+                    break  # backlog drained
         except Exception as exc:
             import logging
 
@@ -201,11 +220,23 @@ class SelfImprovementEngine:
         return {"processed": processed, "actions_derived": actions_derived}
 
 
+def feedback_lesson_id(tenant_id: str, feedback_id: str) -> str:
+    """The long-term-memory id of the lesson derived from one feedback row."""
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"goal_feedback:{tenant_id}:{feedback_id}").hex
+
+
 async def _store_feedback_lesson(
-    db_session_factory: Any, *, tenant_id: str, goal_id: str, lesson: str
+    db_session_factory: Any,
+    *,
+    tenant_id: str,
+    feedback_id: str,
+    goal_id: str,
+    lesson: str,
+    embedder: Any = None,
 ) -> str:
     """Persist a low-rating correction as a ``failure_pattern`` LTM lesson.
 
+    Idempotent per feedback row (deterministic id; the store upserts on id).
     Raises (LongTermMemoryUnavailableError) when the lesson could not be stored.
     """
     from app.memory.long_term import LongTermMemory, LongTermMemoryStore
@@ -219,6 +250,9 @@ async def _store_feedback_lesson(
         memory_type="failure_pattern",
         confidence=0.9,
         tags=["goal_feedback", "self_improvement"],
+        memory_id=feedback_lesson_id(tenant_id, feedback_id),
     )
     ctx = TenantContext(tenant_id=tenant_id, plan=PlanTier.FREE, api_key_id="self-improvement")
-    return await store.store_async(memory=memory, tenant_ctx=ctx, db=db_session_factory)
+    return await store.store_async(
+        memory=memory, tenant_ctx=ctx, db=db_session_factory, embedder=embedder
+    )

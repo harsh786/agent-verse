@@ -7396,8 +7396,19 @@ async def _process_feedback_batch_async(
     total_processed = 0
     total_actions = 0
     engine_svc = SelfImprovementEngine()
+    # Lessons get the platform's shared embedder (same selection as the API),
+    # so they are found by semantic recall, not only by keyword.
+    embedder: Any = None
+    try:
+        from app.providers.embedder_factory import build_query_embedder
+
+        embedder = build_query_embedder()
+    except Exception as exc:
+        logger.warning("feedback_lesson_embedder_unavailable", error=str(exc)[:200])
     for tid in tenant_ids:
-        result = await engine_svc.process_feedback_batch(db_session_factory=db, tenant_id=tid)
+        result = await engine_svc.process_feedback_batch(
+            db_session_factory=db, tenant_id=tid, embedder=embedder
+        )
         total_processed += result.get("processed", 0)
         total_actions += result.get("actions_derived", 0)
     return {"processed": total_processed, "actions_derived": total_actions}
