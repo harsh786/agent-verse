@@ -431,9 +431,10 @@ app = celery_app
 
 def _preload_retrieval_models() -> None:
     try:
-        from app.rag import cross_encoder
+        from app.rag import colbert_model, cross_encoder
 
         cross_encoder.preload_default_cross_encoder()
+        colbert_model.prefetch_checkpoint()
     except Exception as exc:  # never fail worker start over a warm-up
         import logging
 

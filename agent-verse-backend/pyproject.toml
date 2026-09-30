@@ -99,8 +99,9 @@ multimodal = [
     "pdfminer.six>=20221105",
     "pymupdf>=1.24.0",
     "pillow>=11.0.0"]
-colbert = [
-    "ragatouille==0.0.9.post2"]
+# No `colbert` extra: ragatouille 0.0.9 cannot import against langchain 1.x and
+# PyLate pins transformers<=5.3, so ColBERT runs on the native late-interaction
+# scorer in app/rag/colbert_model.py (torch/transformers via sentence-transformers).
 ocr = [
     "pytesseract>=0.3.13",
     "Pillow>=10.0.0",

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import importlib
 import math
-import warnings
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
@@ -30,7 +28,7 @@ _MAX_CANDIDATES = 100
 
 
 class RAGatouilleColBERTModel(Protocol):
-    """Supported blocking RAGatouille surface for checkpoint-correct scoring."""
+    """Blocking ColBERT scorer surface (RAGatouille-compatible ``rerank`` results)."""
 
     def rerank(
         self,
@@ -83,20 +81,16 @@ def maxsim_score(
 def _load_colbert_model(
     checkpoint: str = DEFAULT_COLBERT_CHECKPOINT,
 ) -> RAGatouilleColBERTModel:
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r"(?s).*RAGatouille WARNING: Future Release Notice.*",
-                category=UserWarning,
-            )
-            ragatouille = importlib.import_module("ragatouille")
-            pretrained_model = ragatouille.RAGPretrainedModel
+    """Load a Stanford ColBERT checkpoint with the native scorer.
 
-        return cast(
-            RAGatouilleColBERTModel,
-            pretrained_model.from_pretrained(checkpoint),
-        )
+    RAGatouille (the old backend) cannot be installed against this service's
+    langchain/transformers versions; :mod:`app.rag.colbert_model` reproduces
+    ColBERT inference on plain transformers instead.
+    """
+    try:
+        from app.rag import colbert_model
+
+        return cast(RAGatouilleColBERTModel, colbert_model.load_colbert_checkpoint(checkpoint))
     except Exception as exc:
         raise RerankerLoadError(f"ColBERT model could not be loaded: {checkpoint}") from exc
 

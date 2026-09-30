@@ -412,6 +412,9 @@ class Settings(BaseSettings):
     enable_peer_review: bool = True
     enable_agentic_chunking: bool = True
     colbert_checkpoint: str = "colbert-ir/colbertv2.0"
+    # Download the ColBERT checkpoint in the background at startup when it is not
+    # cached (the strategy is only offered once the checkpoint is local).
+    colbert_prefetch: bool = True
 
     # --- RAFT (retrieval-augmented fine-tuning) ---
     # Cap on curated chunks read into one training dataset (keyset-paged).

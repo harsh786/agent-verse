@@ -22,11 +22,17 @@ def snapshot_download(*, repo_id: str, local_files_only: bool) -> str:
 
 
 def probe_colbert_library() -> ReadinessFact:
-    """Check that RAGatouille imports successfully without downloading artifacts."""
+    """Check the native ColBERT scorer's libraries import, without downloading.
+
+    (This probed RAGatouille, which cannot be installed against this service's
+    dependency pins — so ColBERT was always ``colbert_library_unavailable``.)
+    """
     try:
-        available = importlib.util.find_spec("ragatouille") is not None
+        from app.rag.colbert_model import colbert_backend_available
+
+        available = colbert_backend_available()
         if available:
-            importlib.import_module("ragatouille")
+            importlib.import_module("transformers")
     except Exception:
         available = False
     return ReadinessFact(

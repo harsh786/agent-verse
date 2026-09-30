@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -156,21 +155,16 @@ async def test_gateway_factory_loads_exact_configured_colbert_checkpoint(
 ) -> None:
     pretrained_calls: list[str] = []
 
-    class FakeRAGPretrainedModel:
-        @classmethod
-        def from_pretrained(cls, model_name: str) -> RecordingRAGatouilleModel:
-            pretrained_calls.append(model_name)
-            return RecordingRAGatouilleModel()
+    def fake_load(model_name: str) -> RecordingRAGatouilleModel:
+        pretrained_calls.append(model_name)
+        return RecordingRAGatouilleModel()
 
     capabilities = core_strategy_capabilities(
         RAGAdapterConfiguration(colbert_checkpoint=checkpoint)
     )
     adapter = capabilities[RAGStrategy.COLBERT].adapter
     assert isinstance(adapter, ColBERTRAGRuntimeAdapter)
-    with patch.dict(
-        sys.modules,
-        {"ragatouille": SimpleNamespace(RAGPretrainedModel=FakeRAGPretrainedModel)},
-    ):
+    with patch("app.rag.colbert_model.load_colbert_checkpoint", fake_load):
         try:
             await adapter._reranker.score("policy", ["policy document"])
         finally:
@@ -180,25 +174,20 @@ async def test_gateway_factory_loads_exact_configured_colbert_checkpoint(
     assert "colbert-ir/colbertv2.0" not in pretrained_calls
 
 
-async def test_ragatouille_loader_and_rerank_run_in_worker_threads() -> None:
+async def test_colbert_loader_and_rerank_run_in_worker_threads() -> None:
     event_loop_thread_id = threading.get_ident()
     loader_thread_ids: list[int] = []
     model: RecordingRAGatouilleModel | None = None
     pretrained_calls: list[str] = []
 
-    class FakeRAGPretrainedModel:
-        @classmethod
-        def from_pretrained(cls, model_name: str) -> RecordingRAGatouilleModel:
-            nonlocal model
-            pretrained_calls.append(model_name)
-            loader_thread_ids.append(threading.get_ident())
-            model = RecordingRAGatouilleModel()
-            return model
+    def fake_load(model_name: str) -> RecordingRAGatouilleModel:
+        nonlocal model
+        pretrained_calls.append(model_name)
+        loader_thread_ids.append(threading.get_ident())
+        model = RecordingRAGatouilleModel()
+        return model
 
-    with patch.dict(
-        sys.modules,
-        {"ragatouille": SimpleNamespace(RAGPretrainedModel=FakeRAGPretrainedModel)},
-    ):
+    with patch("app.rag.colbert_model.load_colbert_checkpoint", fake_load):
         reranker = ColBERTLateInteractionReranker(model_loader=_load_colbert_model)
         try:
             scores = await reranker.score(

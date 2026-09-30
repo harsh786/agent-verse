@@ -1015,9 +1015,11 @@ def create_app(
             """RERANK-PRELOAD: warm the cross-encoder on a background thread so
             the first search after a restart does not pay the model load."""
             try:
+                from app.rag import colbert_model as _colbert_model
                 from app.rag import cross_encoder as _cross_encoder
 
                 _cross_encoder.preload_default_cross_encoder(settings)
+                _colbert_model.prefetch_checkpoint(settings)
             except Exception as _warm_exc:
                 logger.warning("cross_encoder_preload_failed", error=str(_warm_exc))
 

@@ -283,7 +283,7 @@ def select_adaptive_strategy(
 
     # ColBERT (D-6): a request for an exact/verbatim phrase or precise keyword
     # match benefits from token-level late-interaction scoring over plain
-    # semantic similarity. Dependency-gated (RAGatouille + a locally cached
+    # semantic similarity. Dependency-gated (native ColBERT scorer + a locally cached
     # checkpoint, see `app/rag/readiness.py`) — `available_strategies` already
     # excludes COLBERT when that dependency probe fails, so this branch only
     # ever fires when the capability is truly ready; otherwise it falls through
