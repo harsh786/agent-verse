@@ -53,6 +53,45 @@ class ReasoningMixin:
         """
         return bool(getattr(step, "tool_calls", None))
 
+    async def _record_pattern_failure(
+        self, agent_state: AgentState, pattern: str, exc: BaseException
+    ) -> None:
+        """Leave evidence that an optional reasoning pattern failed and was skipped.
+
+        The error used to be only logged, so the goal trace could not tell a
+        skipped pattern from one that ran (CORE-05). Never raises.
+        """
+        entry = {
+            "pattern": pattern,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:200],
+        }
+        with contextlib.suppress(Exception):
+            agent_state.context.setdefault("patterns_failed", []).append(entry)
+            agent_state.context.setdefault("reasoning_evidence", []).append(
+                {
+                    "strategy_id": pattern,
+                    "adapter_version": "1.0.0",
+                    "status": "failed",
+                    "call_count": 0,
+                    "error_class": type(exc).__name__,
+                }
+            )
+        with contextlib.suppress(Exception):
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(f"node_{pattern}_failed", error=str(exc))
+        emit = getattr(self, "_emit", None)
+        if emit is not None:
+            with contextlib.suppress(Exception):
+                await emit(
+                    {
+                        "type": "pattern_failed",
+                        "pattern": pattern,
+                        "error_type": type(exc).__name__,
+                    }
+                )
+
     async def _node_refine(self, state: GraphState) -> dict:
         """Self-Refine node — improves last step output before verification (doc-1 §3.4).
 
@@ -326,12 +365,7 @@ class ReasoningMixin:
                 last_step.output = refined
                 agent_state.context["self_consistency_applied"] = True
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("node_self_consistency_failed", error=str(exc))
-            except Exception:
-                pass
+            await self._record_pattern_failure(agent_state, "self_consistency", exc)
         return {"agent_state": agent_state}
 
     async def _node_tree_of_thoughts(self, state: GraphState) -> dict[str, Any]:
@@ -355,12 +389,7 @@ class ReasoningMixin:
                 agent_state.context["tot_answer"] = answer
                 agent_state.context["tree_of_thoughts_applied"] = True
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("node_tree_of_thoughts_failed", error=str(exc))
-            except Exception:
-                pass
+            await self._record_pattern_failure(agent_state, "tree_of_thoughts", exc)
         return {"agent_state": agent_state}
 
     async def _node_peer_review(self, state: GraphState) -> dict[str, Any]:
@@ -406,12 +435,7 @@ class ReasoningMixin:
                 )
                 agent_state.verification_success = False
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("node_peer_review_failed", error=str(exc))
-            except Exception:
-                pass
+            await self._record_pattern_failure(agent_state, "peer_review", exc)
         return {"agent_state": agent_state}
 
     # ------------------------------------------------------------------
@@ -486,12 +510,7 @@ class ReasoningMixin:
                 },
             )
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("node_supervisor_failed", error=str(exc))
-            except Exception:
-                pass
+            await self._record_pattern_failure(agent_state, "supervisor", exc)
         return {"agent_state": agent_state}
 
     async def _node_debate(self, state: GraphState) -> dict[str, Any]:
@@ -535,10 +554,5 @@ class ReasoningMixin:
                 },
             )
         except Exception as exc:
-            try:
-                from app.observability.logging import get_logger
-
-                get_logger(__name__).warning("node_debate_failed", error=str(exc))
-            except Exception:
-                pass
+            await self._record_pattern_failure(agent_state, "debate", exc)
         return {"agent_state": agent_state}
