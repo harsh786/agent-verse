@@ -367,7 +367,10 @@ def test_run_goal_ensures_goal_row_before_status_and_events(monkeypatch: Any) ->
             assert dry_run is True
             assert agent_id == "agent-abc"
             assert workflow_mode == "single_agent"
-            assert execution_context == {}
+            # CORE-20: a row the worker had to recreate says so explicitly.
+            assert (execution_context or {}).get(
+                "execution_context_source"
+            ) == "worker_recreated_row"
             order.append("ensure")
 
         async def _db_update_goal_status(
