@@ -378,7 +378,9 @@ async def hybrid_search(
     Returns:
         Fused and sorted list of RetrievalResult
     """
-    # Determine table name — query collection's embedding_dim when not provided (C6 fix)
+    # Determine table name — query collection's embedding_dim when not provided (C6 fix).
+    # Never guess 1536: a collection built by a 768/1024-dim embedder would be
+    # searched in the wrong table and silently return nothing.
     if embedding_dim is None:
         try:
             row = (
@@ -387,11 +389,27 @@ async def hybrid_search(
                     {"cid": collection_id},
                 )
             ).fetchone()
-            embedding_dim = int(row[0]) if row and row[0] else 1536
         except Exception as exc:
             if strict:
                 raise RetrievalLegExecutionError("collection_metadata") from exc
-            embedding_dim = 1536
+            logger.warning("collection_metadata_unreadable", collection_id=collection_id)
+            return []
+        if row is not None and row[0]:
+            embedding_dim = int(row[0])
+        elif query_embedding:
+            # The query was embedded by the resolved embedder, whose width is
+            # the width this collection's chunks were written with.
+            embedding_dim = len(query_embedding)
+            logger.warning(
+                "collection_embedding_dim_missing_using_query_width",
+                collection_id=collection_id,
+                embedding_dim=embedding_dim,
+            )
+        else:
+            if strict:
+                raise RetrievalLegExecutionError("collection_metadata")
+            logger.warning("collection_embedding_dim_unknown", collection_id=collection_id)
+            return []
     if embedding_dim not in _SUPPORTED_EMBEDDING_DIMENSIONS:
         if strict:
             raise RetrievalLegExecutionError("collection_metadata")
