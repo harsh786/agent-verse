@@ -48,6 +48,24 @@ class EmbeddingUnavailableError(RuntimeError):
     """No embedding provider is configured, or it failed, and no fallback was requested."""
 
 
+class EmbeddingModelUnavailableError(EmbeddingUnavailableError):
+    """The configured provider does not serve the requested embedding model."""
+
+    def __init__(self, requested: str, served: str) -> None:
+        self.requested = requested
+        self.served = served
+        super().__init__(
+            f"embedding model {requested!r} is not served by the configured embedding "
+            f"provider (it serves {served!r})"
+        )
+
+
+def _same_model(served: str, requested: str) -> bool:
+    """``nvidia/nv-embedqa-e5-v5`` serves a request for ``nv-embedqa-e5-v5``."""
+    a, b = served.strip().lower(), requested.strip().lower()
+    return a == b or a.rsplit("/", 1)[-1] == b.rsplit("/", 1)[-1]
+
+
 @dataclass
 class EmbeddingRunResult:
     """What an embedding call actually produced (never ambiguous about fallback)."""
@@ -85,8 +103,8 @@ class EmbeddingRouter:
     async def embed_texts(
         self,
         texts: list[str],
-        provider: str = "openai",
-        model: str = "text-embedding-3-small",
+        provider: str = "",
+        model: str = "",
         fallback_lexical: bool = False,
         tenant_id: str = "",
     ) -> list[list[float]]:
@@ -111,8 +129,8 @@ class EmbeddingRouter:
         self,
         texts: list[str],
         *,
-        provider: str = "openai",
-        model: str = "text-embedding-3-small",
+        provider: str = "",
+        model: str = "",
         fallback_lexical: bool = False,
         provider_impl: Any = None,
         tenant_id: str = "",
@@ -122,8 +140,13 @@ class EmbeddingRouter:
         ``provider_impl`` overrides the router's provider for this call only
         (the API passes the app's provider per request instead of mutating this
         process-wide singleton).
+
+        A requested ``model`` is forwarded to the provider, and a result served
+        by a different model raises :class:`EmbeddingModelUnavailableError`
+        (never silently the default model's vectors). Without one the
+        provider's configured model is used.
         """
-        model_key = f"{provider}/{model}"
+        model_key = f"{provider}/{model}" if model else (provider or "default")
         if not texts:
             return EmbeddingRunResult(embeddings=[], model=model_key, used_fallback=False)
 
@@ -135,7 +158,13 @@ class EmbeddingRouter:
                 # embed_batch() is an optional default that some provider ducks may not have.
                 from app.providers.base import EmbedRequest
 
-                resp = await impl.embed(EmbedRequest(texts=texts))
+                resp = await impl.embed(EmbedRequest(texts=texts, model=model))
+                if model:
+                    from app.providers.embedder_factory import embedder_model_name
+
+                    served = str(getattr(resp, "model", "") or "") or embedder_model_name(impl)
+                    if not _same_model(served, model):
+                        raise EmbeddingModelUnavailableError(model, served)
                 embeddings = list(resp.embeddings or [])
                 if len(embeddings) != len(texts) or any(not e for e in embeddings):
                     raise RuntimeError(
@@ -148,6 +177,8 @@ class EmbeddingRouter:
                     t_usage[model_key] = t_usage.get(model_key, 0) + token_count
                 actual = str(getattr(resp, "model", "") or "") or model_key
                 return EmbeddingRunResult(embeddings=embeddings, model=actual, used_fallback=False)
+            except EmbeddingModelUnavailableError:
+                raise  # a client error: no fallback substitutes another model
             except Exception as exc:
                 self._errors[model_key] = self._errors.get(model_key, 0) + 1
                 if tenant_id:

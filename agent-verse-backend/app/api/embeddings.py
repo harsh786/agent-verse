@@ -21,8 +21,11 @@ def _require_tenant(request: Request) -> Any:
 
 class EmbedRequest(BaseModel):
     texts: list[str] = Field(..., max_length=100)
-    provider: str = "openai"
-    model: str = "text-embedding-3-small"
+    # Omit both to use the configured embedder's model. A requested model is
+    # forwarded; one the provider does not serve is a 422 (it used to be
+    # ignored, returning the default model's vectors).
+    provider: str = ""
+    model: str = ""
     # Opt-in only. When true and the provider is missing/failing, deterministic
     # hashing vectors (no semantic meaning) are returned and flagged as such.
     # The default used to be True — callers silently got fake 384-dim vectors.
@@ -38,7 +41,11 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
     ran, and ``model`` is what produced the vectors.
     """
     tenant = _require_tenant(request)
-    from app.embedding.router import EmbeddingUnavailableError, embedding_router
+    from app.embedding.router import (
+        EmbeddingModelUnavailableError,
+        EmbeddingUnavailableError,
+        embedding_router,
+    )
 
     provider = getattr(request.app.state, "embedder", None) or getattr(
         request.app.state, "_app_provider", None
@@ -52,6 +59,8 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
             provider_impl=provider,
             tenant_id=tenant.tenant_id,
         )
+    except EmbeddingModelUnavailableError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except EmbeddingUnavailableError as exc:
         raise HTTPException(
             status_code=503,
@@ -62,7 +71,7 @@ async def embed_texts(request: Request, body: EmbedRequest) -> dict[str, Any]:
     return {
         "embeddings": embeddings,
         "model": result.model,
-        "requested_model": f"{body.provider}/{body.model}",
+        "requested_model": (f"{body.provider}/{body.model}" if body.model else None),
         "dimension": len(embeddings[0]) if embeddings else 0,
         "count": len(embeddings),
         "used_fallback": result.used_fallback,
