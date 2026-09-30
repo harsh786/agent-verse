@@ -9,6 +9,33 @@ function lastArg(fn: ReturnType<typeof vi.fn>): Record<string, unknown> {
 afterEach(() => vi.restoreAllMocks());
 
 describe('DataFamilyForm', () => {
+  test('db_row_change offers the allowlisted tables as a select (TRG-08)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ tables: ['orders', 'tickets'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const onChange = vi.fn();
+    render(<DataFamilyForm triggerType="db_row_change" value={{}} onChange={onChange} />);
+    expect(await screen.findByRole('option', { name: 'tickets' })).toBeInTheDocument();
+    const select = screen.getByLabelText('Database Table');
+    expect(select.tagName).toBe('SELECT');
+    fireEvent.change(select, { target: { value: 'tickets' } });
+    expect(lastArg(onChange)).toEqual({ db_table: 'tickets' });
+  });
+
+  test('db_row_change with no allowlist says it cannot fire', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      new Response(JSON.stringify({ tables: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    render(<DataFamilyForm triggerType="db_row_change" value={{}} onChange={vi.fn()} />);
+    expect(await screen.findByText(/No tables are allowlisted/)).toBeInTheDocument();
+  });
+
   test('db_row_change renders table, operation and filter fields', () => {
     render(<DataFamilyForm triggerType="db_row_change" value={{}} onChange={vi.fn()} />);
     expect(screen.getByText('Database Table')).toBeInTheDocument();

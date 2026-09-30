@@ -14,6 +14,7 @@ filters that legitimately default to "any") are intentionally not required.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 
 from app.triggers.models import TriggerSpec, validate_cron
@@ -27,6 +28,25 @@ def _is_iso(value: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+_SAFE_TABLE = re.compile(r"^[a-z_][a-z0-9_]*$")
+
+
+def db_row_change_allowlist() -> frozenset[str]:
+    """Tables DB_ROW_CHANGE may poll (settings ``db_row_change_tables``); only
+    bare identifiers count, exactly as the beat checks before querying."""
+    from app.core.config import get_settings
+
+    raw = getattr(get_settings(), "db_row_change_tables", "") or ""
+    return frozenset(t for t in (p.strip() for p in raw.split(",")) if _SAFE_TABLE.match(t))
+
+
+def _require_iso(value: str, missing: str) -> None:
+    if not value.strip():
+        raise ValueError(missing)
+    if not _is_iso(value):
+        raise ValueError(f"fire_at_iso is not a valid ISO datetime: {value!r}")
 
 
 def is_trigger_expired(expires_at_iso: object, *, now: datetime | None = None) -> bool:
@@ -103,17 +123,28 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
             raise ValueError("once trigger requires fire_at_iso")
         if not _is_iso(spec.fire_at_iso):
             raise ValueError(f"fire_at_iso is not a valid ISO datetime: {spec.fire_at_iso!r}")
+    # TRG-08: require exactly what the beat reads. relative_to_field /
+    # deadline_field / business_calendar_id alone passed validation but the
+    # beat fires only from fire_at_iso / cron_expression, so they never fired.
     elif v == "relative_delay":
-        if not spec.relative_to_field.strip() and spec.relative_offset_seconds == 0:
-            raise ValueError(
-                "relative_delay requires relative_to_field or a non-zero relative_offset_seconds"
-            )
+        _require_iso(
+            spec.fire_at_iso,
+            "relative_delay trigger requires fire_at_iso (the base time the offset is "
+            "added to); payload-relative delays (relative_to_field) are not supported yet",
+        )
     elif v == "deadline":
-        if not spec.deadline_field.strip() and not spec.fire_at_iso.strip():
-            raise ValueError("deadline trigger requires deadline_field (or fire_at_iso)")
+        _require_iso(
+            spec.fire_at_iso,
+            "deadline trigger requires fire_at_iso (the deadline); payload deadlines "
+            "(deadline_field) are not supported yet",
+        )
     elif v == "business_calendar":
-        if not spec.business_calendar_id.strip():
-            raise ValueError("business_calendar trigger requires business_calendar_id")
+        if not spec.cron_expression.strip():
+            raise ValueError(
+                "business_calendar trigger requires a cron_expression (fired only in "
+                "business hours); business_calendar_id alone never fires"
+            )
+        validate_cron(spec.cron_expression, plan)
     elif v == "api_poll":
         if not spec.poll_url.strip():
             raise ValueError("api_poll trigger requires poll_url")
@@ -125,6 +156,13 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
     elif v == "db_row_change":
         if not spec.db_table.strip():
             raise ValueError("db_row_change trigger requires db_table")
+        allowed = db_row_change_allowlist()
+        if spec.db_table not in allowed:
+            raise ValueError(
+                f"db_table {spec.db_table!r} is not in the operator's db_row_change "
+                "allowlist (DB_ROW_CHANGE_TABLES), so it would never be polled; allowed: "
+                + (", ".join(sorted(allowed)) or "none configured")
+            )
     elif v == "file_drop":
         if not spec.file_drop_path.strip():
             raise ValueError("file_drop trigger requires file_drop_path")

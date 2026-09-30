@@ -57,20 +57,14 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
       )}
       {triggerType === 'deadline' && (
         <>
-          <Field label="Deadline (ISO 8601)">
+          {/* TRG-08: the beat fires from fire_at_iso only; payload deadlines
+              (deadline_field) are not supported yet, so the field is not offered. */}
+          <Field label="Deadline (ISO 8601)" hint="Times without a zone are read as UTC">
             <input
               type="datetime-local"
+              required
               value={(value.fire_at_iso as string) ?? ''}
               onChange={(e) => set('fire_at_iso', e.target.value)}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Deadline Field (optional)" hint="JSONPath to a deadline value in the goal payload, e.g. $.due_at">
-            <input
-              type="text"
-              value={(value.deadline_field as string) ?? ''}
-              onChange={(e) => set('deadline_field', e.target.value)}
-              placeholder="$.due_at"
               className={inputCls}
             />
           </Field>
@@ -87,16 +81,18 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
       )}
       {triggerType === 'relative_delay' && (
         <>
-          <Field label="Relative To Field" hint="JSONPath to the base timestamp, e.g. $.created_at">
+          {/* TRG-08: the delay is added to fire_at_iso; payload-relative
+              delays (relative_to_field) are not supported yet. */}
+          <Field label="Base Time (ISO 8601)" hint="The offset is added to this time (UTC if no zone)">
             <input
-              type="text"
-              value={(value.relative_to_field as string) ?? ''}
-              onChange={(e) => set('relative_to_field', e.target.value)}
-              placeholder="$.created_at"
+              type="datetime-local"
+              required
+              value={(value.fire_at_iso as string) ?? ''}
+              onChange={(e) => set('fire_at_iso', e.target.value)}
               className={inputCls}
             />
           </Field>
-          <Field label="Offset (seconds)" hint="Fire this many seconds after the base timestamp">
+          <Field label="Offset (seconds)" hint="Fire this many seconds after the base time (negative = before)">
             <input
               type="number"
               value={(value.relative_offset_seconds as number) ?? 3600}
@@ -108,13 +104,16 @@ export function TimeFamilyForm({ triggerType, value, onChange }: FamilyFormProps
       )}
       {triggerType === 'business_calendar' && (
         <>
-          <Field label="Business Calendar ID" hint="Identifier of the business calendar to follow">
+          {/* TRG-08: fires on this cron, only during business hours (Mon-Fri
+              09:00-17:00 in the timezone). Named calendars are not supported yet. */}
+          <Field label="Cron Expression" hint="Slots outside business hours (Mon-Fri 9-17) are skipped">
             <input
               type="text"
-              value={(value.business_calendar_id as string) ?? ''}
-              onChange={(e) => set('business_calendar_id', e.target.value)}
-              placeholder="us-holidays"
-              className={inputCls}
+              required
+              value={(value.cron_expression as string) ?? ''}
+              onChange={(e) => set('cron_expression', e.target.value)}
+              placeholder="0 9 * * 1-5"
+              className={`${inputCls} font-mono`}
             />
           </Field>
           <Field label="Timezone" hint="IANA timezone, e.g. America/New_York">

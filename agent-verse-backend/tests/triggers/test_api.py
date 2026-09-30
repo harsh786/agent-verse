@@ -161,8 +161,8 @@ def test_webhook_signature_secret_round_trips(client):
 @pytest.mark.parametrize("trigger_type,extra", [
     ("once", {"fire_at_iso": "2030-01-01T09:00:00Z"}),
     ("interval", {"interval_seconds": 3600}),
-    ("relative_delay", {"relative_offset_seconds": 300}),
-    ("business_calendar", {"business_calendar_id": "cal-1"}),
+    ("relative_delay", {"relative_offset_seconds": 300, "fire_at_iso": "2030-01-01T09:00:00Z"}),
+    ("business_calendar", {"cron_expression": "0 9 * * 1-5"}),
     ("condition", {"condition_expression": "payload.x > 1"}),
     ("counter_threshold", {"counter_key": "k", "counter_threshold": 5}),
     ("compound", {"compound_trigger_ids": ["t1", "t2"]}),

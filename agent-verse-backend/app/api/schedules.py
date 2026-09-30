@@ -275,6 +275,17 @@ def _analytics_trigger_type(rec: dict[str, Any]) -> str:
     return str(getattr(ttype, "value", ttype) or "unknown")
 
 
+@router.get("/db-row-change-tables")
+async def list_db_row_change_tables(request: Request) -> dict[str, list[str]]:
+    """Tables a db_row_change trigger may watch (the operator allowlist), so the
+    UI can offer them instead of accepting names that never fire (TRG-08).
+    Declared before ``/{schedule_id}``."""
+    _require_tenant(request)
+    from app.triggers.validation import db_row_change_allowlist
+
+    return {"tables": sorted(db_row_change_allowlist())}
+
+
 # Declared BEFORE ``/{schedule_id}``: FastAPI matches routes in order, so the
 # parameterized route used to swallow GET /schedules/analytics (→ 404).
 @router.get("/analytics")

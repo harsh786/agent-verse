@@ -37,28 +37,40 @@ describe('TimeFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ fire_at_iso: '2026-01-01T09:30' });
   });
 
-  test('deadline renders its $.due_at placeholder and coerces the warning seconds to a number', () => {
+  test('deadline asks for the deadline time (fire_at_iso) and warn-before seconds (TRG-08)', () => {
     const onChange = vi.fn();
-    render(<TimeFamilyForm triggerType="deadline" value={{}} onChange={onChange} />);
-    expect(screen.getByPlaceholderText('$.due_at')).toBeInTheDocument();
+    const { container } = render(<TimeFamilyForm triggerType="deadline" value={{}} onChange={onChange} />);
+    // Payload deadlines (deadline_field) never fired; the field is gone.
+    expect(screen.queryByPlaceholderText('$.due_at')).not.toBeInTheDocument();
+    const dt = container.querySelector('input[type="datetime-local"]')!;
+    expect(dt).toBeRequired();
+    fireEvent.change(dt, { target: { value: '2026-10-01T09:00' } });
+    expect(lastArg(onChange)).toEqual({ fire_at_iso: '2026-10-01T09:00' });
     fireEvent.change(screen.getByDisplayValue('3600'), { target: { value: '600' } });
     expect(lastArg(onChange)).toEqual({ deadline_warning_seconds: 600 });
   });
 
-  test('relative_delay merges relative_to_field text and numeric offset', () => {
+  test('relative_delay asks for a base time plus a numeric offset (TRG-08)', () => {
     const onChange = vi.fn();
-    render(<TimeFamilyForm triggerType="relative_delay" value={{}} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText('$.created_at'), { target: { value: '$.submitted_at' } });
-    expect(lastArg(onChange)).toEqual({ relative_to_field: '$.submitted_at' });
+    const { container } = render(<TimeFamilyForm triggerType="relative_delay" value={{}} onChange={onChange} />);
+    expect(screen.queryByPlaceholderText('$.created_at')).not.toBeInTheDocument();
+    expect(screen.getByText('Base Time (ISO 8601)')).toBeInTheDocument();
+    const dt = container.querySelector('input[type="datetime-local"]')!;
+    expect(dt).toBeRequired();
+    fireEvent.change(dt, { target: { value: '2026-10-01T09:00' } });
+    expect(lastArg(onChange)).toEqual({ fire_at_iso: '2026-10-01T09:00' });
     fireEvent.change(screen.getByDisplayValue('3600'), { target: { value: '120' } });
     expect(lastArg(onChange)).toEqual({ relative_offset_seconds: 120 });
   });
 
-  test('business_calendar renders the us-holidays placeholder and Timezone default', () => {
+  test('business_calendar asks for a cron expression, not a calendar id (TRG-08)', () => {
     const onChange = vi.fn();
     render(<TimeFamilyForm triggerType="business_calendar" value={{}} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText('us-holidays'), { target: { value: 'nyse' } });
-    expect(lastArg(onChange)).toEqual({ business_calendar_id: 'nyse' });
+    expect(screen.queryByPlaceholderText('us-holidays')).not.toBeInTheDocument();
+    const cron = screen.getByPlaceholderText('0 9 * * 1-5');
+    expect(cron).toBeRequired();
+    fireEvent.change(cron, { target: { value: '0 10 * * *' } });
+    expect(lastArg(onChange)).toEqual({ cron_expression: '0 10 * * *' });
     expect(screen.getByDisplayValue('UTC')).toBeInTheDocument();
   });
 

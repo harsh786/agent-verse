@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+import { apiFetch } from '@/lib/api/client';
 import type { TriggerType } from '../../types';
 
 interface FamilyFormProps {
@@ -11,18 +13,60 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
     onChange({ ...value, [key]: val });
   }
 
+  // null = unknown (not loaded / failed): fall back to free text; the backend
+  // still rejects a non-allowlisted table with a 422 naming the allowed ones.
+  const [dbTables, setDbTables] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (triggerType !== 'db_row_change') return;
+    let cancelled = false;
+    apiFetch<{ tables?: string[] }>('/schedules/db-row-change-tables')
+      .then((res) => {
+        if (!cancelled) setDbTables(Array.isArray(res?.tables) ? res.tables : null);
+      })
+      .catch(() => {
+        if (!cancelled) setDbTables(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [triggerType]);
+
   return (
     <div className="space-y-4">
       {triggerType === 'db_row_change' && (
         <>
+          {/* TRG-08: only operator-allowlisted tables are ever polled; offer them. */}
           <Field label="Database Table">
-            <input
-              type="text"
-              value={(value.db_table as string) ?? ''}
-              onChange={(e) => set('db_table', e.target.value)}
-              placeholder="orders"
-              className={`${inputCls} font-mono`}
-            />
+            {dbTables && dbTables.length > 0 ? (
+              <select
+                aria-label="Database Table"
+                value={(value.db_table as string) ?? ''}
+                onChange={(e) => set('db_table', e.target.value)}
+                className={`${inputCls} font-mono`}
+              >
+                <option value="">Select a table…</option>
+                {dbTables.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                aria-label="Database Table"
+                value={(value.db_table as string) ?? ''}
+                onChange={(e) => set('db_table', e.target.value)}
+                placeholder="orders"
+                className={`${inputCls} font-mono`}
+              />
+            )}
+            {dbTables && dbTables.length === 0 && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                No tables are allowlisted for DB row-change triggers (DB_ROW_CHANGE_TABLES), so
+                this trigger cannot fire. Ask your operator to allowlist the table.
+              </p>
+            )}
           </Field>
           <Field label="Operation">
             <select
