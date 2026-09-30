@@ -485,8 +485,12 @@ class StateMachine:
                 updated_at=row.updated_at.isoformat() if row.updated_at else "",
             )
         except Exception as exc:
+            # No fallback to this process's cache: on another replica it is stale
+            # or missing, and a state computed from it is wrong (TRG-39).
             get_logger(__name__).warning("state_machine_get_inst_db_failed", error=str(exc))
-            return self.get_instance(machine_id, entity_id, tenant_id)
+            raise StateMachineStoreUnavailableError(
+                f"state machine instance could not be read: {exc}"
+            ) from exc
 
     async def transition_async(
         self,
@@ -514,63 +518,89 @@ class StateMachine:
                 )
             return result
 
-        instance = await self.get_instance_async(machine_id, entity_id, tenant_id)
-        if instance is None:
-            instance = await self.create_instance_async(machine_id, entity_id, tenant_id)
-
         defn = await self.get_definition_async(machine_id, tenant_id)
         if defn is None:
             raise ValueError(f"Unknown state machine: {machine_id}")
+        initial = defn.initial_state()
+        if initial is None:
+            raise ValueError(f"State machine {machine_id} has no states")
 
-        t = defn.find_transition(instance.current_state, event)
-        if t is None:
-            return {
-                "from_state": instance.current_state,
-                "to_state": instance.current_state,
-                "event": event,
-                "transitioned": False,
-                "reason": "no_matching_transition",
-            }
-
-        old_state = instance.current_state
-        new_state = t.to_state
-        now = datetime.now(UTC).isoformat()
-        history_entry = {
-            "from_state": old_state,
-            "to_state": new_state,
-            "event": event,
-            "at": now,
-            "payload": payload or {},
-        }
-        terminal = any(s.name == new_state and s.is_terminal for s in defn.states)
-        new_status = "completed" if terminal else instance.status
-
+        # Read-and-update in ONE transaction under a row lock (TRG-39). The old
+        # read-then-update-in-another-session let two replicas transition the
+        # same instance from the same state: both "succeeded" and one history
+        # entry was lost. A concurrent transition now waits for the lock and
+        # then evaluates against the committed state.
         try:
             from sqlalchemy import select
             from sqlalchemy import text as _t
+            from sqlalchemy.dialects.postgresql import insert as _pg_insert
 
             from app.db.models.state_machine import StateMachineInstanceRow
 
+            locked = (
+                select(StateMachineInstanceRow)
+                .where(
+                    StateMachineInstanceRow.tenant_id == tenant_id,
+                    StateMachineInstanceRow.machine_id == machine_id,
+                    StateMachineInstanceRow.entity_id == entity_id,
+                )
+                .with_for_update()
+            )
             async with db() as session:
                 await session.execute(
                     _t("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": tenant_id}
                 )
-                row = (
+                row = (await session.execute(locked)).scalar_one_or_none()
+                if row is None:
+                    # First event for this entity: create the instance in the same
+                    # transaction (a concurrent creator wins the unique key; both
+                    # then lock the one row).
                     await session.execute(
-                        select(StateMachineInstanceRow).where(
-                            StateMachineInstanceRow.tenant_id == tenant_id,
-                            StateMachineInstanceRow.machine_id == machine_id,
-                            StateMachineInstanceRow.entity_id == entity_id,
+                        _pg_insert(StateMachineInstanceRow)
+                        .values(
+                            instance_id=uuid.uuid4().hex,
+                            machine_id=machine_id,
+                            tenant_id=tenant_id,
+                            entity_id=entity_id,
+                            current_state=initial,
+                            history=[],
+                            status="running",
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=["tenant_id", "machine_id", "entity_id"]
                         )
                     )
-                ).scalar_one_or_none()
+                    row = (await session.execute(locked)).scalar_one_or_none()
                 if row is None:
                     raise StateMachineInstanceNotFoundError(
                         f"state machine instance {entity_id!r} not found"
                     )
+
+                old_state = row.current_state
+                t = defn.find_transition(old_state, event)
+                if t is None:
+                    await session.commit()  # keeps a just-created instance
+                    return {
+                        "from_state": old_state,
+                        "to_state": old_state,
+                        "event": event,
+                        "transitioned": False,
+                        "reason": "no_matching_transition",
+                    }
+                new_state = t.to_state
+                terminal = any(s.name == new_state and s.is_terminal for s in defn.states)
                 row.current_state = new_state
-                row.history = [*list(row.history or []), history_entry]
-                row.status = new_status
+                row.history = [
+                    *list(row.history or []),
+                    {
+                        "from_state": old_state,
+                        "to_state": new_state,
+                        "event": event,
+                        "at": datetime.now(UTC).isoformat(),
+                        "payload": payload or {},
+                    },
+                ]
+                row.status = "completed" if terminal else row.status
                 await session.commit()
         except StateMachineInstanceNotFoundError:
             raise

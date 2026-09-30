@@ -418,14 +418,17 @@ async def test_get_instance_async_not_found_in_db() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_instance_async_db_failure_falls_back_to_memory() -> None:
+async def test_get_instance_async_db_failure_raises_instead_of_cache() -> None:
+    """TRG-39: a read error never answers from this process's (stale) cache."""
+    from app.triggers.state_machine import StateMachineStoreUnavailableError
+
     sm = StateMachine()
     sm.define(_defn())
-    created = sm.create_instance("m1", "e1", "t1")
+    sm.create_instance("m1", "e1", "t1")
     session = FakeSession(raise_on_call_index=0)
     sm._db_factory = session
-    result = await sm.get_instance_async("m1", "e1", "t1")
-    assert result is created
+    with pytest.raises(StateMachineStoreUnavailableError):
+        await sm.get_instance_async("m1", "e1", "t1")
 
 
 # ── transition_async ──────────────────────────────────────────────────────────
@@ -443,22 +446,30 @@ async def test_transition_async_no_db_delegates_to_sync() -> None:
 
 @pytest.mark.asyncio
 async def test_transition_async_creates_missing_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A first event creates the instance in the same locked transaction
+    (INSERT ... ON CONFLICT DO NOTHING, then re-lock the row)."""
     defn = _defn()
-    instance = StateMachineInstance(
-        instance_id="i1", machine_id="m1", tenant_id="t1", entity_id="e1",
-        current_state="pending",
+    created_row = MagicMock(current_state="pending", history=[], status="running")
+    session = FakeSession(
+        execute_results=[
+            _Result(),  # set_config GUC
+            _Result(scalar=None),  # SELECT ... FOR UPDATE: no row yet
+            _Result(),  # INSERT ... ON CONFLICT DO NOTHING
+            _Result(scalar=created_row),  # re-lock the new row
+        ]
     )
-    session = FakeSession(execute_results=[_Result(), _Result(scalar=MagicMock())])
     sm = StateMachine()
     sm._db_factory = session
-    monkeypatch.setattr(sm, "get_instance_async", AsyncMock(return_value=None))
-    monkeypatch.setattr(sm, "create_instance_async", AsyncMock(return_value=instance))
     monkeypatch.setattr(sm, "get_definition_async", AsyncMock(return_value=defn))
 
     result = await sm.transition_async("m1", "e1", "complete", "t1")
     assert result["transitioned"] is True
     assert result["from_state"] == "pending"
     assert result["to_state"] == "completed"
+    assert created_row.current_state == "completed"
+    sqls = [str(stmt) for stmt, _ in session.execute_calls]
+    assert "FOR UPDATE" in sqls[1] and "ON CONFLICT" in sqls[2]
+    session.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -476,21 +487,20 @@ async def test_transition_async_unknown_machine_raises(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_transition_async_no_matching_transition_skips_db(
+async def test_transition_async_no_matching_transition_changes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defn = _defn()
-    instance = StateMachineInstance(
-        instance_id="i1", machine_id="m1", tenant_id="t1", entity_id="e1",
-        current_state="completed",  # terminal — no outgoing transition for "complete"
-    )
+    # terminal — no outgoing transition for "complete"
+    row = MagicMock(current_state="completed", history=[{"event": "complete"}], status="completed")
+    session = FakeSession(execute_results=[_Result(), _Result(scalar=row)])
     sm = StateMachine()
-    sm._db_factory = MagicMock()  # would blow up if actually called
-    monkeypatch.setattr(sm, "get_instance_async", AsyncMock(return_value=instance))
+    sm._db_factory = session
     monkeypatch.setattr(sm, "get_definition_async", AsyncMock(return_value=defn))
     result = await sm.transition_async("m1", "e1", "complete", "t1")
     assert result["transitioned"] is False
     assert result["reason"] == "no_matching_transition"
+    assert row.current_state == "completed" and row.history == [{"event": "complete"}]
 
 
 @pytest.mark.asyncio
