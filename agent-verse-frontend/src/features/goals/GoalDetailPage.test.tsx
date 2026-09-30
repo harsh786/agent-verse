@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -843,6 +843,56 @@ describe('GoalDetailPage — additional coverage', () => {
     expect(screen.getByText('Task Completion')).toBeInTheDocument();
     expect(screen.getByText('Safety')).toBeInTheDocument();
     expect(screen.getByText('unknown dim')).toBeInTheDocument();
+  });
+
+  test.each([
+    [503, { error: { code: 'EVAL_STORE_UNAVAILABLE', message: 'eval scorecards are unavailable' } }, /evaluation temporarily unavailable/i],
+    [404, { error: { code: 'NOT_FOUND', message: 'Goal not found' } }, /goal not found/i],
+  ])('eval tab distinguishes a %s from "no evaluation yet"', async (code, body, expected) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions') || url.endsWith('/eval')) {
+        return new Response(JSON.stringify(body), {
+          status: code, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+    const panel = await screen.findByRole('tabpanel', { name: /eval/i });
+    expect(await within(panel).findByText(expected)).toBeInTheDocument();
+    expect(within(panel).queryByText(/no evaluation yet/i)).toBeNull();
+  });
+
+  test('eval tab reports scoring in progress instead of a 0% scorecard', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/eval/suggestions')) {
+        return new Response(JSON.stringify({ status: 'not_evaluated', suggestions: [] }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/eval')) {
+        return new Response(
+          JSON.stringify({ status: 'pending', scores: {}, average_score: null, passed: null }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ id: 'goal-1', goal_id: 'goal-1', status: 'complete', goal: 'Fix prod' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    });
+
+    renderGoalDetailPage();
+    await userEvent.click(await screen.findByRole('tab', { name: /^eval$/i }));
+    expect(await screen.findByText(/scoring in progress/i)).toBeInTheDocument();
+    expect(screen.queryByText(/FAILED/)).toBeNull();
   });
 
   test('eval tab shows failed scorecard styling when evaluation did not pass', async () => {

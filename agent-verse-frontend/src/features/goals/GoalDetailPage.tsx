@@ -36,6 +36,7 @@ import { GoalFeedback } from "./components/GoalFeedback";
 import { GoalExplainPanel } from "./components/GoalExplainPanel";
 import { PatternSelectionPanel } from "./components/PatternSelectionPanel";
 import { EvalSuggestionsPanel } from "./components/EvalSuggestionsPanel";
+import { evalLoadError } from "./components/evalLoadError";
 import { normalizeAdaptiveResult } from "./adaptiveResult";
 import { AdaptiveResultPanel } from "./components/AdaptiveResultPanel";
 import { artifactToCsv, artifactToMarkdown } from "./resultArtifact";
@@ -810,7 +811,7 @@ export function GoalDetailPage() {
   });
 
   // Eval
-  const { data: evaluation, isLoading: evalLoading } = useQuery({
+  const { data: evaluation, isLoading: evalLoading, error: evalError } = useQuery({
     queryKey: ["goal-eval", goalId],
     queryFn: () => goalsApi.getEvaluation(goalId!),
     enabled: !!goalId && activeTab === "eval" && isTerminal,
@@ -1216,7 +1217,18 @@ export function GoalDetailPage() {
           </div>
           {evalLoading || triggerEvalMutation.isPending ? (
             <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}</div>
-          ) : !evaluation || (evaluation as any).status === "not_evaluated" ? (
+          ) : evalError ? (
+            <div role="alert" className="rounded-xl border border-dashed bg-muted/20 p-8 text-center">
+              <p className="text-sm font-medium">{evalLoadError(evalError).title}</p>
+              <p className="text-xs text-muted-foreground mt-1">{evalLoadError(evalError).detail}</p>
+            </div>
+          ) : evaluation?.status === "pending" ? (
+            <div className="rounded-xl border border-dashed bg-muted/20 p-8 text-center">
+              <Loader2 className="mx-auto h-6 w-6 animate-spin opacity-40 mb-3" aria-hidden="true" />
+              <p className="text-sm font-medium">Scoring in progress</p>
+              <p className="text-xs text-muted-foreground mt-1">The completion-time evaluation is still running.</p>
+            </div>
+          ) : !evaluation || evaluation.status === "not_evaluated" ? (
             <div className="rounded-xl border border-dashed bg-muted/20 p-8 text-center">
               <FlaskConical className="mx-auto h-8 w-8 opacity-30 mb-3" aria-hidden="true" />
               <p className="text-sm font-medium">No evaluation yet</p>

@@ -14,9 +14,10 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import ServiceUnavailableError
+from app.agent.state import GoalStatus
+from app.core.errors import NotFoundError, ServiceUnavailableError
 from app.intelligence.eval import EvalScorecard
-from app.services.goal_service import GoalService
+from app.services.goal_service import GoalRecord, GoalService
 from app.tenancy.context import PlanTier, TenantContext
 
 _CTX = TenantContext(tenant_id="t-eval-read", plan=PlanTier.PROFESSIONAL, api_key_id="k")
@@ -136,3 +137,87 @@ def test_eval_score_cache_is_bounded() -> None:
         svc._eval_scores[f"g{i}"] = EvalScorecard(goal_id=f"g{i}", scores={})
     assert len(svc._eval_scores) == cap
     assert "g0" not in svc._eval_scores and f"g{cap + 49}" in svc._eval_scores
+
+
+# ── MEM-19: eval reads work on a replica that does not hold the goal ─────────
+
+
+def _db_record(goal_id: str) -> GoalRecord:
+    return GoalRecord(
+        goal_id=goal_id,
+        goal_text="Summarise the churn cohort",
+        status=GoalStatus.COMPLETE,
+        tenant_id=_CTX.tenant_id,
+        priority="normal",
+        dry_run=False,
+        created_at="2026-09-01T00:00:00+00:00",
+    )
+
+
+def _fresh_replica(db: _DB, *, known: set[str]) -> GoalService:
+    """A GoalService with no in-memory goals whose Postgres knows *known*."""
+    svc = GoalService()
+    svc._db = db
+
+    async def _load(goal_id: str, tenant_ctx: TenantContext) -> GoalRecord | None:
+        if goal_id in known and tenant_ctx.tenant_id == _CTX.tenant_id:
+            return _db_record(goal_id)
+        return None
+
+    svc._db_get_goal_record = _load  # type: ignore[method-assign]
+    return svc
+
+
+async def test_fresh_replica_serves_the_persisted_scorecard() -> None:
+    db = _DB(evaluations_row=(json.dumps({"accuracy": 0.9}), 0.9, True))
+    svc = _fresh_replica(db, known={"g-remote"})
+    out = await svc.get_eval("g-remote", _CTX)
+    assert out["status"] == "evaluated" and out["average_score"] == pytest.approx(0.9)
+
+
+async def test_fresh_replica_serves_suggestions_from_the_persisted_scorecard() -> None:
+    db = _DB(evaluations_row=(json.dumps({"accuracy": 0.1}), 0.1, False))
+    svc = _fresh_replica(db, known={"g-remote"})
+    out = await svc.get_eval_suggestions("g-remote", _CTX)
+    assert out["status"] == "evaluated" and out["count"] == 1
+
+
+async def test_unknown_goal_is_still_not_found() -> None:
+    svc = _fresh_replica(_DB(), known=set())
+    with pytest.raises(NotFoundError):
+        await svc.get_eval("g-missing", _CTX)
+    with pytest.raises(NotFoundError):
+        await svc.get_eval_suggestions("g-missing", _CTX)
+    with pytest.raises(NotFoundError):
+        await svc.run_eval("g-missing", _CTX)
+
+
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+        self.ttl: dict[str, int | None] = {}
+
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        self.store[key] = value
+        self.ttl[key] = ex
+
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+    async def exists(self, key: str) -> int:
+        return 1 if key in self.store else 0
+
+
+async def test_pending_scoring_is_visible_to_every_replica() -> None:
+    redis = _FakeRedis()
+    scoring = GoalService()
+    scoring._redis = redis
+    await scoring._mark_eval_pending("g-remote", _CTX.tenant_id)
+    assert all(redis.ttl.values()), "the pending marker must expire on its own"
+
+    other = _fresh_replica(_DB(), known={"g-remote"})
+    other._redis = redis
+    assert (await other.get_eval("g-remote", _CTX))["status"] == "pending"
+
+    await scoring._clear_eval_pending("g-remote", _CTX.tenant_id)
+    assert (await other.get_eval("g-remote", _CTX))["status"] == "not_evaluated"

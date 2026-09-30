@@ -1,13 +1,23 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { EvalSuggestions } from '@/lib/api/client';
+import { ApiError, type EvalSuggestions } from '@/lib/api/client';
 import { EvalSuggestionsPanel } from './EvalSuggestionsPanel';
 
 const getEvalSuggestions = vi.fn();
-vi.mock('@/lib/api/client', () => ({
-  goalsApi: { getEvalSuggestions: (id: string) => getEvalSuggestions(id) },
-}));
+vi.mock('@/lib/api/client', () => {
+  class ApiError extends Error {
+    status: number;
+    constructor(status: number, message: string) {
+      super(message);
+      this.status = status;
+    }
+  }
+  return {
+    ApiError,
+    goalsApi: { getEvalSuggestions: (id: string) => getEvalSuggestions(id) },
+  };
+});
 
 function renderPanel(enabled = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -18,7 +28,9 @@ function renderPanel(enabled = true) {
   );
 }
 
-beforeEach(() => getEvalSuggestions.mockReset());
+beforeEach(() => {
+  getEvalSuggestions.mockReset();
+});
 
 describe('EvalSuggestionsPanel', () => {
   it('renders real suggestions for sub-threshold dimensions (worst first)', async () => {
@@ -63,5 +75,17 @@ describe('EvalSuggestionsPanel', () => {
     const { container } = renderPanel();
     await waitFor(() => expect(getEvalSuggestions).toHaveBeenCalled());
     expect(container.querySelector('section')).toBeNull();
+  });
+
+  it('says the goal was not found on a 404 instead of hiding the panel', async () => {
+    getEvalSuggestions.mockRejectedValue(new ApiError(404, 'Goal not found'));
+    renderPanel();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/goal not found/i);
+  });
+
+  it('says suggestions are temporarily unavailable on a 503', async () => {
+    getEvalSuggestions.mockRejectedValue(new ApiError(503, 'eval scorecards are unavailable'));
+    renderPanel();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/temporarily unavailable/i);
   });
 });

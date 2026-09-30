@@ -74,6 +74,9 @@ _RUNNER_WORKER = "worker"
 _RUNNER_IN_PROCESS = "in_process"
 _REPLICA_ALIVE_KEY = "goal_replica_alive:{replica}"
 _REPLICA_HEARTBEAT_TTL_SECONDS = 45
+# Upper bound on how long a completion-time eval may be reported "pending" by
+# other replicas; a marker left by a crashed scorer expires after this.
+_EVAL_PENDING_TTL_SECONDS = 600
 _REPLICA_HEARTBEAT_INTERVAL_SECONDS = 15
 # Worker per-goal execution lock (scaling/tasks.py _SyncGoalLock.KEY_PREFIX).
 _WORKER_GOAL_LOCK_KEY = "goal_lock:{goal_id}"
@@ -2164,6 +2167,69 @@ class GoalService:
             raise NotFoundError(f"Goal not found: {goal_id}")
         return loaded
 
+    async def _aget_read_record(self, goal_id: str, tenant_ctx: TenantContext) -> GoalRecord:
+        """This replica's record if it holds one, else the goal from Postgres (RLS).
+
+        For read-only views (eval scorecard / suggestions / on-demand scoring):
+        a goal submitted to another replica, run by a worker, evicted after
+        completion or predating a restart used to 404 here although Postgres
+        had it. Unlike :meth:`_aget_record` an in-memory record is kept as is
+        (it carries this replica's recorded events).
+        """
+        record = self._goals.get(goal_id)
+        if record is not None and record.tenant_id == tenant_ctx.tenant_id:
+            return record
+        loaded = await self._db_get_goal_record(goal_id, tenant_ctx)
+        if loaded is None:
+            raise NotFoundError(f"Goal not found: {goal_id}")
+        return loaded
+
+    # ── Eval-scoring "pending" marker, shared across replicas ────────────────
+
+    @staticmethod
+    def _eval_pending_key(goal_id: str, tenant_id: str) -> str:
+        return f"eval_pending:{tenant_id}:{goal_id}"
+
+    async def _mark_eval_pending(self, goal_id: str, tenant_id: str) -> None:
+        """Record that *goal_id* is being scored — locally and in Redis (TTL'd).
+
+        The TTL bounds a marker left behind by a crashed scorer. Redis failures
+        only lose the cross-replica hint (other replicas then report
+        "not_evaluated" until the scorecard lands); scoring itself proceeds.
+        """
+        self._eval_pending.add(goal_id)
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.set(
+                self._eval_pending_key(goal_id, tenant_id), "1", ex=_EVAL_PENDING_TTL_SECONDS
+            )
+        except Exception as exc:
+            _svc_logger.warning("eval_pending_mark_failed", goal_id=goal_id, error=str(exc)[:120])
+
+    async def _clear_eval_pending(self, goal_id: str, tenant_id: str) -> None:
+        self._eval_pending.discard(goal_id)
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            return
+        try:
+            await redis.delete(self._eval_pending_key(goal_id, tenant_id))
+        except Exception as exc:
+            _svc_logger.warning("eval_pending_clear_failed", goal_id=goal_id, error=str(exc)[:120])
+
+    async def _is_eval_pending(self, goal_id: str, tenant_id: str) -> bool:
+        if goal_id in self._eval_pending:
+            return True
+        redis = getattr(self, "_redis", None)
+        if redis is None:
+            return False
+        try:
+            return bool(await redis.exists(self._eval_pending_key(goal_id, tenant_id)))
+        except Exception as exc:
+            _svc_logger.warning("eval_pending_read_failed", goal_id=goal_id, error=str(exc)[:120])
+            return False
+
     @staticmethod
     def _runs_locally(record: GoalRecord) -> bool:
         return record.task is not None and not record.task.done()
@@ -2613,7 +2679,7 @@ class GoalService:
                         steps=steps,
                         verification_success=verification_success,
                     )
-                    self._eval_pending.add(goal_id)
+                    await self._mark_eval_pending(goal_id, record.tenant_id)
                     try:
                         scorecard = await eval_runner.score_and_persist(
                             agent_state,
@@ -2623,7 +2689,7 @@ class GoalService:
                         )
                         self._eval_scores[goal_id] = scorecard
                     finally:
-                        self._eval_pending.discard(goal_id)
+                        await self._clear_eval_pending(goal_id, record.tenant_id)
                     await self._publish_chain_event(
                         record,
                         "goal.score_below",
@@ -4680,11 +4746,14 @@ class GoalService:
         tenant RLS) — a goal scored on another replica or before a restart used
         to report "not_evaluated" forever.
         """
-        self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+        await self._aget_read_record(goal_id, tenant_ctx)  # 404 if unknown / wrong tenant
         scorecard = self._eval_scores.get(goal_id)
         persisted = None
-        if scorecard is None and goal_id not in self._eval_pending:
-            persisted = await self._persisted_eval(goal_id, tenant_ctx)
+        pending = False
+        if scorecard is None:
+            pending = await self._is_eval_pending(goal_id, tenant_ctx.tenant_id)
+            if not pending:
+                persisted = await self._persisted_eval(goal_id, tenant_ctx)
         if persisted is not None:
             card, average, passed = persisted
             self._eval_scores[goal_id] = card
@@ -4699,7 +4768,7 @@ class GoalService:
         if scorecard is None:
             return {
                 "goal_id": goal_id,
-                "status": "pending" if goal_id in self._eval_pending else "not_evaluated",
+                "status": "pending" if pending else "not_evaluated",
                 "scores": {},
                 "average_score": None,
                 "passed": None,
@@ -4722,7 +4791,7 @@ class GoalService:
         fabricated data; honest empty when the goal is unevaluated or all
         dimensions pass. This is the read side of the self-improvement surface.
         """
-        self._get_record(goal_id, tenant_ctx)  # raises if not found / wrong tenant
+        await self._aget_read_record(goal_id, tenant_ctx)  # 404 if unknown / wrong tenant
         scorecard = await self._scorecard_for(goal_id, tenant_ctx)
         if scorecard is None:
             return {"goal_id": goal_id, "status": "not_evaluated", "pass_threshold": None,
@@ -4791,7 +4860,7 @@ class GoalService:
         Unlike ``get_eval`` which returns cached scores, this always runs
         the EvalRunner and stores the result. Enables the "Run Eval" button.
         """
-        record = self._get_record(goal_id, tenant_ctx)
+        record = await self._aget_read_record(goal_id, tenant_ctx)
 
         # Try to get live AgentState from the record
         state = getattr(record, "agent_state", None)

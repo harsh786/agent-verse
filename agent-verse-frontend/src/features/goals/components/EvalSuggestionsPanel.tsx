@@ -7,13 +7,14 @@
  * fabricated — the trigger and score are real, the copy points at the lever.
  */
 import { useQuery } from '@tanstack/react-query';
-import { Lightbulb, CheckCircle2 } from 'lucide-react';
+import { Lightbulb, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 import { goalsApi, type EvalSuggestions } from '@/lib/api/client';
 import { Skeleton } from '@/components/ui/Skeleton';
+import { evalLoadError } from './evalLoadError';
 
 export function EvalSuggestionsPanel({ goalId, enabled }: { goalId: string; enabled: boolean }) {
-  const { data, isLoading } = useQuery<EvalSuggestions>({
+  const { data, isLoading, error } = useQuery<EvalSuggestions>({
     queryKey: ['eval-suggestions', goalId],
     queryFn: () => goalsApi.getEvalSuggestions(goalId),
     enabled: enabled && !!goalId,
@@ -22,6 +23,18 @@ export function EvalSuggestionsPanel({ goalId, enabled }: { goalId: string; enab
 
   if (!enabled) return null;
   if (isLoading) return <Skeleton className="h-20 w-full rounded-xl" />;
+  if (error) {
+    const view = evalLoadError(error);
+    return (
+      <div role="alert" className="flex items-start gap-2 rounded-xl border px-4 py-3 text-sm">
+        <AlertTriangle className="h-4 w-4 mt-0.5 text-amber-500 shrink-0" aria-hidden="true" />
+        <div>
+          <p className="font-medium">Suggestions: {view.title}</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{view.detail}</p>
+        </div>
+      </div>
+    );
+  }
   if (!data || data.status === 'not_evaluated') return null;
 
   return (
