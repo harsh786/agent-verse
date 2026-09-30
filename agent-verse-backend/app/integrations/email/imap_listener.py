@@ -8,6 +8,10 @@ Configuration via environment variables:
   IMAP_SSL      — "true" for SSL (default), "false" for STARTTLS
   IMAP_MAILBOX  — mailbox to monitor (default "INBOX")
   IMAP_ENABLED  — "true" to enable (default "false")
+  IMAP_SENDER_ALLOWLIST — comma-separated addresses / @domains allowed to create
+                  goals (REQUIRED: empty = every email is dropped)
+  IMAP_AUTHSERV_ID — optional: the receiving MTA's authserv-id; when set, only
+                  an Authentication-Results header written by it is trusted
 
 Emails are processed as follows:
   Subject → goal text
@@ -21,7 +25,9 @@ import contextlib
 import email
 import hashlib
 import os
+import re
 from email.header import decode_header
+from email.utils import parseaddr
 from typing import Any
 
 from app.observability.logging import get_logger
@@ -72,6 +78,83 @@ def _get_config() -> dict[str, Any]:
         "ssl": os.getenv("IMAP_SSL", "true").lower() not in {"false", "0"},
         "mailbox": os.getenv("IMAP_MAILBOX", "INBOX"),
     }
+
+
+# ── Sender trust (TRG-37) ────────────────────────────────────────────────────
+# Every unseen email used to become an autonomous goal, from ANY sender. A
+# message must now (1) come from an address or @domain on IMAP_SENDER_ALLOWLIST
+# and (2) carry the receiving MTA's Authentication-Results verdict with a
+# dkim/spf/dmarc pass aligned to the From domain. Only the TOPMOST
+# Authentication-Results header counts (the MTA prepends its own; lower ones can
+# be written by the sender); IMAP_AUTHSERV_ID pins which host wrote it.
+_AR_COMMENT = re.compile(r"\([^)]*\)")
+_AR_PAIR = re.compile(r"([A-Za-z0-9_.-]+)\s*=\s*([^\s;]+)")
+
+
+def _sender_allowlist() -> tuple[set[str], set[str]]:
+    """(allowed addresses, allowed domains) from IMAP_SENDER_ALLOWLIST."""
+    addresses: set[str] = set()
+    domains: set[str] = set()
+    for item in os.getenv("IMAP_SENDER_ALLOWLIST", "").split(","):
+        entry = item.strip().lower()
+        if entry.startswith("@") and len(entry) > 1:
+            domains.add(entry[1:])
+        elif "@" in entry:
+            addresses.add(entry)
+    return addresses, domains
+
+
+def _aligned(from_domain: str, auth_domain: str) -> bool:
+    auth_domain = auth_domain.strip().lower().rstrip(".")
+    if "@" in auth_domain:
+        auth_domain = auth_domain.rsplit("@", 1)[1]
+    return bool(auth_domain) and (
+        from_domain == auth_domain or from_domain.endswith("." + auth_domain)
+    )
+
+
+def _auth_results_pass(header: str, from_domain: str) -> tuple[str, bool]:
+    """(authserv-id, whether an aligned dkim/spf/dmarc pass is present)."""
+    parts = [p.strip() for p in _AR_COMMENT.sub("", header).split(";")]
+    authserv_id = parts[0].split()[0].lower() if parts and parts[0] else ""
+    for resinfo in parts[1:]:
+        pairs = _AR_PAIR.findall(resinfo)
+        if not pairs:
+            continue
+        method, result = pairs[0][0].lower(), pairs[0][1].lower()
+        if result != "pass":
+            continue
+        props = {k.lower(): v for k, v in pairs[1:]}
+        if method == "dkim" and _aligned(from_domain, props.get("header.d", "")):
+            return authserv_id, True
+        if method == "spf" and _aligned(
+            from_domain, props.get("smtp.mailfrom", "") or props.get("smtp.helo", "")
+        ):
+            return authserv_id, True
+        if method == "dmarc" and _aligned(from_domain, props.get("header.from", from_domain)):
+            return authserv_id, True
+    return authserv_id, False
+
+
+def sender_trust_problem(msg: Any) -> str | None:
+    """Why *msg* must not become a goal, or ``None`` when its sender is trusted."""
+    addresses, domains = _sender_allowlist()
+    if not addresses and not domains:
+        return "IMAP_SENDER_ALLOWLIST is empty — no sender is trusted"
+    sender = parseaddr(str(msg.get("From", "") or ""))[1].strip().lower()
+    from_domain = sender.rsplit("@", 1)[1] if "@" in sender else ""
+    if not from_domain or (sender not in addresses and from_domain not in domains):
+        return f"sender {sender or '<none>'} is not on IMAP_SENDER_ALLOWLIST"
+    results = msg.get_all("Authentication-Results") or []
+    if not results:
+        return "no Authentication-Results header (sender not verified)"
+    authserv_id, passed = _auth_results_pass(str(results[0]), from_domain)
+    pinned = os.getenv("IMAP_AUTHSERV_ID", "").strip().lower()
+    if pinned and authserv_id != pinned:
+        return f"Authentication-Results authserv-id {authserv_id!r} is not {pinned!r}"
+    if not passed:
+        return "sender not authenticated (no dkim/spf/dmarc pass aligned with the From domain)"
+    return None
 
 
 def _decode_header_value(value: str) -> str:
@@ -132,6 +215,20 @@ async def check_and_process_emails(goal_service: Any, tenant_ctx: Any) -> int:
 
             subject = _decode_header_value(msg.get("Subject", "No subject"))
             from_addr = msg.get("From", "")
+
+            untrusted = sender_trust_problem(msg)
+            if untrusted:
+                logger.warning(
+                    "email_dropped_untrusted_sender",
+                    from_addr=from_addr,
+                    subject=subject[:100],
+                    reason=untrusted,
+                )
+                # Marked read so it is not re-evaluated (and does not crowd out
+                # trusted mail in the 10-per-poll window) on every poll.
+                with contextlib.suppress(Exception):
+                    await imap.store(email_id, "+FLAGS", r"(\Seen)")
+                continue
 
             # Extract body
             body = ""

@@ -193,6 +193,8 @@ services:
       # IMAP_SSL: "true"
       # IMAP_MAILBOX: INBOX
       # IMAP_TENANT_ID: ""
+      # IMAP_SENDER_ALLOWLIST: "@example.com"   # required; DKIM/SPF-verified senders only
+      # IMAP_AUTHSERV_ID: mx.example.com
       # ── SMTP outbound email ────────────────────────────────────────────────
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

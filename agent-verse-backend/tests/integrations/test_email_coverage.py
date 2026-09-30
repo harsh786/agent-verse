@@ -17,6 +17,14 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _trusted_imap_senders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TRG-37: the poller only turns allow-listed, DKIM/SPF-verified senders
+    into goals; these tests exercise parsing/dedup for such trusted mail."""
+    monkeypatch.setenv("IMAP_SENDER_ALLOWLIST", "@company.com,@example.com,@x.com")
+    monkeypatch.delenv("IMAP_AUTHSERV_ID", raising=False)
+
 # ── imap_listener: configuration helpers ────────────────────────────────────
 
 class TestImapListenerIsEnabled:
@@ -277,6 +285,7 @@ class TestCheckAndProcessEmails:
         msg = email_lib.message.Message()
         msg["Subject"] = "Deploy the new feature"
         msg["From"] = "boss@company.com"
+        msg["Authentication-Results"] = "mx.test; dkim=pass header.d=company.com"
         msg.set_payload("Please deploy feature X to production tonight.")
 
         mock_imap = AsyncMock()
@@ -332,6 +341,7 @@ class TestCheckAndProcessEmails:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "Run the ETL pipeline"
         msg["From"] = "data@company.com"
+        msg["Authentication-Results"] = "mx.test; dkim=pass header.d=company.com"
         msg.attach(MIMEText("Run the ETL job for today's data", "plain"))
         msg.attach(MIMEText("<p>Run the ETL job</p>", "html"))
 
@@ -422,6 +432,7 @@ class TestCheckAndProcessEmails:
         msg = email_lib.message.Message()
         msg["Subject"] = "Test Subject"
         msg["From"] = "test@x.com"
+        msg["Authentication-Results"] = "mx.test; dkim=pass header.d=x.com"
         msg.set_payload("Some body text")
 
         mock_imap = AsyncMock()

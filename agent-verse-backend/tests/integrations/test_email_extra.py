@@ -12,6 +12,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _trusted_imap_senders(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TRG-37: the poller only turns allow-listed, DKIM/SPF-verified senders
+    into goals; these tests exercise parsing/dedup for such trusted mail."""
+    monkeypatch.setenv("IMAP_SENDER_ALLOWLIST", "@company.com,@example.com,@x.com")
+    monkeypatch.delenv("IMAP_AUTHSERV_ID", raising=False)
+
 # ── approval_sender._sign and _verify ─────────────────────────────────────────
 
 _TENANT = "t-email-extra"
@@ -213,6 +221,7 @@ class TestCheckAndProcessEmailsHappyPath:
         msg = MIMEText("Email body content here for testing purposes.")
         msg["Subject"] = "Fix production bug"
         msg["From"] = "user@example.com"
+        msg["Authentication-Results"] = "mx.test; dkim=pass header.d=example.com"
         raw_bytes = msg.as_bytes()
 
         mock_imap = AsyncMock()
@@ -316,6 +325,7 @@ class TestCheckAndProcessEmailsDedup:
         msg = MIMEText("Investigate and roll back the bad deploy.")
         msg["Subject"] = "Prod incident"
         msg["From"] = "oncall@example.com"
+        msg["Authentication-Results"] = "mx.test; dkim=pass header.d=example.com"
         msg["Message-ID"] = "<abc123@example.com>"
         raw_bytes = msg.as_bytes()
 
@@ -373,11 +383,13 @@ class TestCheckAndProcessEmailsDedup:
         msg1 = MIMEText("First incident body.")
         msg1["Subject"] = "Incident A"
         msg1["From"] = "oncall@example.com"
+        msg1["Authentication-Results"] = "mx.test; dkim=pass header.d=example.com"
         msg1["Message-ID"] = "<incident-a@example.com>"
 
         msg2 = MIMEText("Second incident body.")
         msg2["Subject"] = "Incident B"
         msg2["From"] = "oncall@example.com"
+        msg2["Authentication-Results"] = "mx.test; dkim=pass header.d=example.com"
         msg2["Message-ID"] = "<incident-b@example.com>"
 
         mock_imap = AsyncMock()
