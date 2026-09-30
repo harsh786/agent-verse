@@ -93,3 +93,26 @@ class SemanticCacheHitsSource:
             return []
         cached = self._cache.lookup_text(query, tenant_id)
         return [{"content": cached}] if cached else []
+
+    async def aget_hits(
+        self, query: str, *, tenant_id: str | None, embedder: Any
+    ) -> list[dict[str, Any]]:
+        """Similarity lookup (MEM-18): embed *query* and ask the cache for the
+        nearest tenant-scoped entry above its threshold. Raises on an embedding
+        or cache failure so the caller can surface it."""
+        if not tenant_id:
+            return []
+        from app.providers.base import EmbedRequest
+
+        resp = await embedder.embed(EmbedRequest(texts=[query[:2000]]))
+        if not resp.embeddings:
+            return []
+        hit = await self._cache.get_similar(list(resp.embeddings[0]), tenant_id)
+        if hit is None or not getattr(hit, "response", ""):
+            return []
+        return [
+            {
+                "content": hit.response,
+                "similarity": float(getattr(hit, "similarity", 0.0) or 0.0),
+            }
+        ]

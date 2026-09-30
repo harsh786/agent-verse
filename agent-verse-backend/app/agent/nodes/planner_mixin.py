@@ -211,7 +211,21 @@ class PlannerMixin:
             retrieved_chunks = agent_state.context.get("_retrieved_chunks", [])
             if not retrieved_chunks and rag_context:
                 retrieved_chunks = [{"content": rag_context, "score": 0.7, "chunk_id": "rag_0"}]
-            if retrieved_chunks:
+            # MEM-18: run whenever ANY source can contribute — memory, reflexion,
+            # graph facts and the semantic cache used to be dropped whenever RAG
+            # found nothing.
+            _ctx = agent_state.context
+            _has_context_sources = bool(
+                retrieved_chunks
+                or _ctx.get("_reflexion_lessons")
+                or _ctx.get("_execution_memory_records")
+                or _ctx.get("_long_term_memory_records")
+                or _ctx.get("_graph_facts")
+                or _ctx.get("_semantic_cache_hits")
+                or self._knowledge_graph_store is not None
+                or self._semantic_cache is not None
+            )
+            if _has_context_sources:
                 # BK3 (D-20 follow-up): wrap the already-injected knowledge-graph
                 # store / semantic cache (two-phase app.state wiring, same as every
                 # other optional service on self) as ContextPipeline's duck-typed
@@ -230,10 +244,29 @@ class PlannerMixin:
                         _prefetched_graph_facts = await KnowledgeGraphFactsSource(
                             self._knowledge_graph_store
                         ).aget_facts(agent_state.goal, tenant_id=tenant_ctx.tenant_id, top_k=5)
-                if self._semantic_cache is not None:
+                _sem_cache_hits = agent_state.context.get("_semantic_cache_hits")
+                if self._semantic_cache is not None and not isinstance(_sem_cache_hits, list):
                     from app.context.context_sources import SemanticCacheHitsSource
 
-                    _semantic_cache_source = SemanticCacheHitsSource(self._semantic_cache)
+                    _sc_source = SemanticCacheHitsSource(self._semantic_cache)
+                    _sc_embedder = getattr(self, "_embedder", None)
+                    if _sc_embedder is not None:
+                        # A real similarity lookup: the goal embedding is computed
+                        # here (async) because ContextPipeline.run is synchronous.
+                        try:
+                            _sem_cache_hits = await _sc_source.aget_hits(
+                                agent_state.goal,
+                                tenant_id=tenant_ctx.tenant_id,
+                                embedder=_sc_embedder,
+                            )
+                        except Exception as _sc_exc:
+                            _sem_cache_hits = []
+                            await self._memory_degraded(
+                                agent_state, "semantic_cache_lookup", _sc_exc
+                            )
+                    else:
+                        # No embedder: only the exact-text key lookup is possible.
+                        _semantic_cache_source = _sc_source
                 pipeline = ContextPipeline(
                     max_tokens=6000,
                     rerank_strategy=rerank_strategy,
@@ -252,7 +285,6 @@ class PlannerMixin:
                 _graph_facts = agent_state.context.get("_graph_facts")
                 if not isinstance(_graph_facts, list) and _prefetched_graph_facts is not None:
                     _graph_facts = _prefetched_graph_facts
-                _sem_cache_hits = agent_state.context.get("_semantic_cache_hits")
                 pipeline_result = pipeline.run(
                     chunks=retrieved_chunks,
                     query=agent_state.goal,
@@ -277,9 +309,13 @@ class PlannerMixin:
                 if pipeline_result.verifier_context:
                     agent_state.context["_verifier_context"] = pipeline_result.verifier_context
         except Exception as _ctx_exc:
-            from app.observability.logging import get_logger
+            # MEM-18: the plan proceeds on the raw RAG context, but the failure
+            # is recorded on the goal and streamed — never just a log line.
+            agent_state.context["context_pipeline_failed"] = True
+            from app.observability.metrics import record_memory_degraded
 
-            get_logger(__name__).warning("context_pipeline_failed_in_plan", error=str(_ctx_exc))
+            record_memory_degraded("context", "pipeline")
+            await self._memory_degraded(agent_state, "context_pipeline", _ctx_exc)
         # ── end ContextPipeline ────────────────────────────────────────────────
 
         # Build planner prompt with RAG context injected
