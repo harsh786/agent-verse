@@ -621,18 +621,21 @@ async def _run_with_signals(
       the flag is cleared — never mid tool call, and the run continues where it
       stopped. Legacy runners without a gate fall back to cancel-and-rerun.
     """
+    from app.governance.emergency_stop import enforce_emergency_stop_sync
     from app.reliability.goal_lifecycle import GoalCancelledError, is_cancelled_sync, is_paused_sync
 
     sync_r = _get_sync_redis()
     gate_host = _pause_gate_host(agent_runner)
+    _tenant_id = getattr(tenant_ctx, "tenant_id", None)
+    _org = (initial_context or {}).get("org_id")
+    _org_id = str(_org) if _org else None
     if gate_host is not None and sync_r is not None:
-        _org = (initial_context or {}).get("org_id")
         gate_host._pause_gate = _make_worker_pause_gate(
             goal_id,
             sync_r,
             event_callback,
-            tenant_id=getattr(tenant_ctx, "tenant_id", None),
-            org_id=str(_org) if _org else None,
+            tenant_id=_tenant_id,
+            org_id=_org_id,
         )
 
     run_task = asyncio.create_task(
@@ -656,6 +659,16 @@ async def _run_with_signals(
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await run_task
                 raise GoalCancelledError(f"Goal {goal_id} cancelled during execution")
+
+            # Emergency stop (tenant/org), fail closed like the step gate: it used
+            # to be polled nowhere here, so a runner without a step gate — or one
+            # stuck in a long step — ran on through a stop (CORE-13).
+            _stop = enforce_emergency_stop_sync(sync_r, _tenant_id, _org_id) if _tenant_id else None
+            if _stop:
+                run_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await run_task
+                raise GoalCancelledError(f"Goal {goal_id} stopped: {_stop}")
 
             if gate_host is None and is_paused_sync(goal_id, sync_r):
                 # Pause: cancel current run and wait for resume signal
@@ -3065,6 +3078,9 @@ def run_goal(
                     prompt_optimizer=_prompt_opt,
                     reflexion_service=_reflexion_service,
                     rpa_executor=_worker_rpa_executor,
+                    # The graph's start-of-goal emergency-stop check reads
+                    # ``_app_state._redis``; without it the check was inert here.
+                    _redis=_worker_async_redis(),
                 )
                 _agent_runner._agent_id = agent_id
                 _agent_runner._reflexion_service = _reflexion_service

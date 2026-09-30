@@ -3267,6 +3267,14 @@ class GoalService:
                     goal_id, {"type": "goal_cancelled"}, tenant_ctx=tenant_ctx
                 )
             raise
+        except GoalCancelledError as exc:
+            # A cancel / emergency stop seen at a step boundary ends the
+            # persistence run as cancelled (the engine no longer retries it).
+            if record is not None and record.status not in _TERMINAL_STATUSES:
+                record.status = GoalStatus.CANCELLED
+                await self._dispatch_event(
+                    goal_id, {"type": "goal_cancelled", "reason": str(exc)}, tenant_ctx=tenant_ctx
+                )
         except Exception as exc:
             await self._dispatch_event(
                 goal_id, {"type": "goal_failed", "reason": str(exc)}, tenant_ctx=tenant_ctx

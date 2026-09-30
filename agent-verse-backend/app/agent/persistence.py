@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import Any
 
 from app.observability.logging import get_logger
+from app.reliability.goal_lifecycle import GoalCancelledError
 
 logger = get_logger(__name__)
 
@@ -660,6 +661,32 @@ class GoalPersistenceEngine:
                     cost_usd=attempt.cost_usd,
                 )
                 await emit({"type": "persistence_cancelled", "attempt": attempt_number})
+                raise
+            except (GoalCancelledError, PermissionError) as exc:
+                # An operator cancel / emergency stop (raised by the step gate) or a
+                # governance denial is final: retrying re-planned through the stop
+                # (an LLM call per attempt) and re-ran the same denial, then ended
+                # "failed" instead of stopped (CORE-13).
+                reason = "stopped" if isinstance(exc, GoalCancelledError) else "denied"
+                attempt.failure_reason = f"{reason}: {exc}"[:200]
+                attempt.ended_at = datetime.now(UTC).isoformat()
+                await self._write_attempt_end(
+                    attempt_id=_db_attempt_id,
+                    tenant_id=tenant_id,
+                    succeeded=False,
+                    failure_reason=f"{reason}: {exc}"[:500],
+                    iterations=attempt.iterations_used,
+                    cost_usd=attempt.cost_usd,
+                )
+                await emit(
+                    {
+                        "type": "persistence_stopped",
+                        "attempt": attempt_number,
+                        "reason": reason,
+                        "detail": str(exc)[:200],
+                    }
+                )
+                logger.info("persistent_goal_stopped", goal_id=goal_id, reason=reason)
                 raise
             except Exception as exc:
                 attempt.failure_reason = str(exc)[:200]
