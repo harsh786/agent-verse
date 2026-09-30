@@ -135,8 +135,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     ),
     "rag/agentic/query_expander.py::QueryExpander.expand_for_fusion_async": (1, _DEBT),
     "rag/agentic/query_reformulator.py::QueryReformulator.reformulate_async": (1, _DEBT),
-    "rag/contextual_enricher.py::ContextualChunkEnricher.enrich_with_llm": (1, _DEBT),
-    "rag/contextual_enricher.py::ContextualChunkEnricher.summarize_document": (1, _DEBT),
     "rag/engine.py::rerank_results": (1, _DEBT),
     "rag/engine.py::retrieve_hyde": (1, _DEBT),
     "rag/engine.py::retrieve_multi_hop": (1, _DEBT),

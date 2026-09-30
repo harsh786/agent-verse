@@ -15,13 +15,9 @@ logic are **not** swallowed — they surface to the caller so ingestion can log
 and decide. (The store's *DB* persistence is intentionally best-effort and
 already isolated inside the store.)
 
-TODO(pipeline-wiring): invoke ``extract_and_store_graph`` from the ingestion
-pipeline's ENRICH stage (Stage 9) — or immediately after INDEX — in
-``app/ingestion/`` once per indexed chunk/document, passing the chunk text,
-the tenant id, the chunk/document id as ``source_id``, the shared
-``kg_store`` singleton, and the configured LLM provider (or ``None`` for the
-deterministic path). That wiring is deliberately out of scope here to avoid
-touching ``app/ingestion/*``.
+The ingestion pipeline calls :class:`KGIngestionHook` right after INDEX for
+every indexed document (API and Celery worker), stamping each node with the id
+of the chunk it came from.
 """
 
 from __future__ import annotations

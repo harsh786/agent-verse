@@ -219,3 +219,40 @@ async def test_cursor_column_must_be_identifier() -> None:
     cfg = _config(mode="file", file="d.csv", cursor_column="id; DROP TABLE x")
     with patch.dict("sys.modules", {"duckdb": fake_mod}), pytest.raises(ValueError):
         _ = [d async for d in DuckDBConnector().get_delta(cfg, "1")]
+
+
+# --- KB-20: the confinement exercised against a REAL duckdb (when installed) --
+
+
+@pytest.mark.asyncio
+async def test_real_duckdb_refuses_host_files_and_external_access(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The mocked tests above only prove the config dict is passed; this one
+    proves DuckDB itself enforces it. Skips where duckdb is not installed."""
+    pytest.importorskip("duckdb")
+    outside = tmp_path / "outside.csv"
+    outside.write_text("secret\nhost-file-content\n")
+    root = _root_path()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "mine.csv").write_text("value\ntenant-row\n")
+
+    connector = DuckDBConnector()
+    try:
+        leaked = [
+            d
+            async for d in connector.get_delta(
+                _config(query=f"SELECT * FROM read_csv('{outside}')"), None
+            )
+        ]
+    except Exception:
+        leaked = []  # refused by DuckDB's allowed_directories
+    assert all(b"host-file-content" not in d.content for d, _ in leaked)
+
+    own = [
+        d
+        async for d in connector.get_delta(
+            _config(query=f"SELECT * FROM read_csv('{root / 'mine.csv'}')"), None
+        )
+    ]
+    assert any(b"tenant-row" in d.content for d, _ in own)
