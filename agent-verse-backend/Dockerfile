@@ -12,11 +12,11 @@ WORKDIR /app
 # Avoid BuildKit-only RUN --mount syntax so this image builds on Minikube/Colima
 # Docker daemons that do not ship with buildx.
 COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-install-project --no-dev --extra browser --extra ocr
+RUN uv sync --frozen --no-install-project --no-dev --extra browser --extra ocr --extra sandbox
 
 # Now copy the app and install the project itself.
 COPY . /app
-RUN uv sync --frozen --no-dev --extra browser --extra ocr
+RUN uv sync --frozen --no-dev --extra browser --extra ocr --extra sandbox
 
 
 FROM python:3.12-slim-bookworm AS runtime

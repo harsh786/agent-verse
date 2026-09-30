@@ -303,6 +303,12 @@ services:
       # DATADOG_TENANT_ID: ""
     volumes:
       - ../app/db/migrations:/app/app/db/migrations:ro
+      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
+      # on the host daemon. Local dev only: this grants control of Docker here.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
+    group_add:
+      - "${DOCKER_SOCKET_GID:-991}"
     deploy:
       resources:
         limits:
@@ -388,6 +394,12 @@ services:
       # VOYAGE_API_KEY: pa-...
     volumes:
       - ../app/db/migrations:/app/app/db/migrations:ro
+      # Code steps run in throwaway sandbox containers (app/tools/code_interpreter.py)
+      # on the host daemon. Local dev only: this grants control of Docker here.
+      - /var/run/docker.sock:/var/run/docker.sock
+    # The socket is root:docker 0660 in the colima VM; the image runs as "app".
+    group_add:
+      - "${DOCKER_SOCKET_GID:-991}"
     deploy:
       resources:
         limits:
