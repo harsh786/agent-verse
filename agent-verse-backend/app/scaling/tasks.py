@@ -3537,6 +3537,7 @@ def run_scheduled_goal(
     max_firings_per_hour: int = 0,
     tenant_plan: str = "",
     event_payload: dict[str, Any] | None = None,
+    condition_expression: str = "",
 ) -> dict[str, Any]:
     """Execute a scheduled goal trigger.
 
@@ -3567,6 +3568,7 @@ def run_scheduled_goal(
                 condition=condition,
                 max_firings_per_hour=max_firings_per_hour,
                 event_payload=event_payload,
+                condition_expression=condition_expression,
             )
         )
     except Exception as exc:
@@ -3668,6 +3670,12 @@ def _enqueue_governed_fire(
         "max_firings_per_hour": int(sched.get("max_firings_per_hour") or 0),
         # No tenant_plan: the governed dispatch resolves it from the tenant record.
     }
+    # TRG-07: the API stores ``condition_cel`` as ``condition_expression`` (via
+    # the config JSONB); forwarding only ``condition`` made a CEL-gated trigger
+    # fire unconditionally.
+    condition_expression = str(sched.get("condition_expression") or "")
+    if condition_expression:
+        kwargs["condition_expression"] = condition_expression
     if event_payload is not None:
         kwargs["event_payload"] = event_payload
     run_scheduled_goal.apply_async(kwargs=kwargs, queue="schedules")
@@ -3739,6 +3747,8 @@ def _build_scheduled_trigger_spec(schedule_key: str, sched: dict[str, Any]) -> A
         trigger_type=trigger_type,
         goal_template=goal_text,
         condition=str(sched.get("condition") or ""),
+        # TRG-07: the dispatcher requires BOTH gates to hold.
+        condition_expression=str(sched.get("condition_expression") or ""),
         max_firings_per_hour=int(sched.get("max_firings_per_hour") or 0),
         watch_agent_id=str(sched.get("agent_id") or ""),
     )
@@ -3935,6 +3945,7 @@ async def _run_scheduled_goal_governed(
     condition: str = "",
     max_firings_per_hour: int = 0,
     event_payload: dict[str, Any] | None = None,
+    condition_expression: str = "",
 ) -> Any:
     """Async body of ``run_scheduled_goal`` — governed scheduled dispatch (WT-9)."""
     goal_service, db_factory = _build_worker_goal_service()
@@ -3945,6 +3956,7 @@ async def _run_scheduled_goal_governed(
         "tenant_id": tenant_id,
         "agent_id": agent_id,
         "condition": condition,
+        "condition_expression": condition_expression,
         "max_firings_per_hour": max_firings_per_hour,
     }
     if event_payload is not None:
