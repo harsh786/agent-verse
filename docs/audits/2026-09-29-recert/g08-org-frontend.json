@@ -1,0 +1,390 @@
+{
+  "group": "g08-org-frontend",
+  "code": "287cb90f7",
+  "features": [
+    {
+      "area": "org-collab",
+      "feature": "Org OS core CRUD (organizations, departments, teams, custom roles, tasks, missions, schedules, attachments, department memory)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Router-wide org ownership (app/org/router.py:127-128 _verify_org_ownership) and the fail-closed viewer default in app/org/rbac.py:80-117 hold, and org CRUD tests pass. Wave 7 only touched approvals/e-stop/LLM metering in this package; attachments are still host-local, org_artifacts is still unused, and the viewer fail-closed role is enforced on only 11 of 40 mutating routes.",
+      "verified_fixed": [],
+      "still_open": [
+        "Attachments on host-local FS → app/org/router.py:3326-3338 _attachments_dir (ORG_ATTACHMENTS_DIR or tempdir/av-attachments) and :3391-3400 returns the absolute server path; a worker/replica on another host cannot read it, and there is no retention/cleanup",
+        "org_artifacts table unused → still no reference outside app/db/migrations (grep org_artifacts/OrgArtifact in app/)",
+        "Low/latent: per-tenant flag overrides process-local → app/org/feature_flags.py:86,115-122 (still no route calls enable_for_tenant/disable_for_tenant)"
+      ],
+      "new_defects": [
+        "app/org/router.py:445,500,603,631,762,844,1080,2442,2928,3105,3461,3746,3800,3816,3876 — mutating org routes have no require_org_role although rbac.py:96-99 says a key without an org role resolves to viewer and 'is denied'; e.g. POST /missions requires TEAM_LEAD (:532) but POST /missions/execute (:3461, creates AND dispatches a mission) and POST /missions/batch (:2928) need no role, so a viewer-role key launches billable missions [severity: medium]",
+        "app/org/router.py:1932-1995 custom-role create/update/delete have no role check, and OrgRoleStore is only ever listed (no enforcement reads the permissions), so custom roles are decorative metadata any tenant key can rewrite [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/org/test_org_router.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 23 passed",
+        "uv run pytest tests/org/test_rbac_wiring.py tests/org/test_roles.py ... → 19 passed (no test covers viewer access to /missions/execute, /missions/batch or schedules)"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Org mission execution, HITL approvals and brain proposals",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "f24fa00ee now records every org decision under the authenticated key (_decision_actor, app/org/router.py:876-887) rather than the body's approver, and HITL votes stay DB-first across replicas. The gate-wiring swallow, the unbounded KEYS scan and the keyword preview remain. The task-level approve/reject routes bypass the TEAM_LEAD gate that the approvals routes enforce.",
+      "verified_fixed": [
+        "(wave 7A follow-up, not a baseline gap) approver taken from request body → app/org/router.py:876-887 _decision_actor uses request.state.tenant.api_key_id for task, org-approval and HITL decisions (f24fa00ee; tests/org/test_org_approval_endpoints.py passes)"
+      ],
+      "still_open": [
+        "Gate-wiring exceptions only logged, mission still dispatched → app/org/service.py:3141-3145 (HITL register) and :3215-3219 (outer); still mitigated by the supervised override at :3235-3243",
+        "approval_chain unbounded KEYS + process-local fallback → app/org/approval_chain.py:313 keys(approval_chain:req:*) across all tenants; :294,305,320-322 fall back to self._store on Redis errors",
+        "Low: mission preview is a keyword heuristic → app/org/router.py:3430-3457 (documented as such; similar_missions_count omitted)"
+      ],
+      "new_defects": [
+        "app/org/router.py:898-911,1012-1025 POST /{org_id}/tasks/{task_id}/approve and /reject have no require_org_role and no task_kind=='approval_gate'/status check, while /approvals/{id}/approve requires TEAM_LEAD (:1386) and approval_gate kind (:1407-1412). A viewer-role key can therefore clear a human approval gate (task→running plus HITL approve_async) through the task route [severity: high]",
+        "app/org/router.py:1008-1009 _resolve_task_hitl_request swallows every gateway error (`except Exception: pass`), and approve_task/reject_task then flip the DB task anyway. On a DB/Redis hiccup the task shows running/failed while the paired HITL request stays pending, so the blocked agent is never released, or times out against the recorded decision [severity: medium]",
+        "app/org/service.py:1470-1490 update_task_status validates only the status name, not the transition, so approve_task moves a completed/failed/cancelled task back to running [severity: low]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/org/test_finalize_mission_many_tasks_isolation.py tests/governance/test_hitl_multi_replica.py tests/org/test_org_approval_endpoints.py tests/org/test_hitl_gap_closures.py tests/org/test_approval_chains.py tests/org/test_brain_router.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 49 passed (no test calls the task-level approve route with a viewer role)"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Org realtime streams, Universal Command Gateway, Graphify job, org MCP WebSocket, emergency stop",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "ed55a2fb5 fixed both org e-stop defects: stop and resume now require ORG_ADMIN, the flag is written with no TTL through activate_stop, and resume 503s when the flag cannot be cleared. The org MCP WebSocket authenticates with the shared resolve_ws_tenant(write=True) before accepting. UCG routing and the Graphify job are still in-process fire-and-forget tasks. The org stop has no GET/status or event, so the UI cannot learn it.",
+      "verified_fixed": [
+        "Org emergency-stop/resume had no require_org_role → app/org/router.py:2011 and :2081 require_org_role(OrgRole.ORG_ADMIN) (ed55a2fb5; tests/org/test_org_advanced_endpoints.py::test_emergency_stop_requires_org_admin passes)",
+        "Resume answered 'resumed' with no Redis → app/org/router.py:2096-2109 clear_stop raises EmergencyStopUnavailableError when Redis is None or the DELETE fails (app/governance/emergency_stop.py:158-164), and the route answers 503 (ed55a2fb5)",
+        "(wave 7A) org flag auto-expired after 24h → app/governance/emergency_stop.py:133-155 activate_stop does a plain SET with no TTL (tests/governance/test_emergency_stop_real.py asserts ttl == -1)"
+      ],
+      "still_open": [
+        "UCG command routed via fire-and-forget create_task → app/org/router.py:2265-2270; a replica crash loses a queued command (status stays 'queued' in the persisted history) with no resweep",
+        "Graphify job is an in-process task holding the Request → app/org/router.py:1687; pub/sub only, no replay"
+      ],
+      "new_defects": [
+        "app/org/router.py:2001-2115 — there is no GET org emergency-stop status route, and stop/resume never publish the org.emergency_stop.triggered/resumed events declared at app/org/events.py:165-166 (no emitter in app/). No client can therefore learn whether an org is stopped: the org banner is local useState that resets to 'not stopped' on reload (see frontend Org OS feature) [severity: medium]",
+        "app/org/router.py:2242-2254,2283-2290 high-risk UCG commands are stored as 'pending_2fa' and the response says 'queued for 2FA confirmation', but no route confirms them (grep pending_2fa finds only the insert). They never execute and never expire, and the keyword list ('delete','deploy',...) is trivially bypassed by rephrasing [severity: low]",
+        "app/org/router.py:2202 POST /{org_id}/command (turns text into a submitted goal) has no require_org_role, so a viewer-role key can launch goals through the UCG [severity: medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/org/test_emergency_stop_enforced.py tests/org/test_event_publisher.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 26 passed",
+        "uv run pytest tests/governance/test_emergency_stop_rbac.py tests/governance/test_emergency_stop_real.py tests/org/test_org_advanced_endpoints.py ... → 48 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Org intelligence, digital twin, briefs, decision history, graph versioning, crons",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Twin capacity still comes from real teams and tasks, and what-if is still an honest 501 (app/org/router.py:2702-2720). The crons scan on the system session and re-raise failures (app/org/feature_flags.py:188-215). 340f40776 now charges the strategic-brief LLM call to the org's tenant (advanced_services.py:246-256; router passes tenant_id at :2784). Decision history and the capability graph still have no writer, and both crons still stop at a fixed, unordered LIMIT.",
+      "verified_fixed": [
+        "(wave 7D) strategic brief LLM call unmetered → app/org/advanced_services.py:246-256 complete_decision(role='org_strategic_brief', tenant_id=...) with the tenant passed from app/org/router.py:2784 (340f40776)"
+      ],
+      "still_open": [
+        "No app writer for DecisionIntelligence.record()/CapabilityGraph.add_capability() → GET /intelligence/capabilities (app/org/router.py:2852-2888) and /intelligence/decisions (:2891-2918) read process-local singletons that nothing fills, so they always return empty data; the capability graph is not org/tenant-keyed",
+        "Intelligence cron capped at 50 orgs → app/org/feature_flags.py:238 _scan_active_orgs(limit=50). The digest cron is also capped at 100 (:282), and the query has no ORDER BY/cursor (:205-209), so the same arbitrary subset is processed every run and other orgs are never scored"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/org/test_digital_twin.py tests/org/test_graph_version_isolation.py tests/org/test_feature_flags_service_and_cron.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 56 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Agent Civilization (society, governor, bus, blackboard, learning, spawn, replay, live stream)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "82bd08282 makes the list-civilizations, list-members and spawn-request reads 503 on a DB failure through _db_unavailable, with the driver text logged and not returned. The governor gaps are unchanged: the kill signal is never read, pause/resume and kill still report success after swallowed writes, a failed tick is still a Celery success, and five 500 paths still echo raw exception text.",
+      "verified_fixed": [
+        "List endpoints swallowed DB errors into [] → app/api/civilization.py:302-304 (civilizations) and :546-548 (members) raise _db_unavailable (503, generic detail, :79-84); spawn requests likewise at :822-824 (82bd08282; tests/api/test_civilization_list_db_errors.py passes)"
+      ],
+      "still_open": [
+        "Kill signal never read → app/civilization/governor.py:275 civ_kill_agent:{civ}:{agent} is still the only occurrence in app/",
+        "Pause/resume answer success after a failed UPDATE → app/civilization/governor.py:625-626 _set_civilization_status logs and returns; returns silently when db is None (:608-609); unknown civ ids not rejected",
+        "kill_agent always answers {killed} → app/api/civilization.py:968-988 has no existence check, and _retire_member_by_agent_id swallows errors (app/civilization/governor.py:558)",
+        "Tick failures are Celery successes → app/scaling/tasks.py:6375-6376 a failed constitution read silently runs the default Constitution(); :6434-6437 civilization_tick returns {error} instead of raising",
+        "500s leak raw exception text → app/api/civilization.py:254,342,397,436,482,573,608 (HTTPException(500, str(exc)) / f'...{exc}'); SSE stream_error echoes str(exc) at :1033",
+        "(wave 7C follow-up) society graph swallows bus errors → app/api/civilization.py:635-657 `except Exception: pass` returns a graph with no edges, indistinguishable from 'no messages'"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_civilization_controls_honest.py tests/civilization/test_orchestrator.py tests/api/test_civilization_list_db_errors.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 43 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Coordination runtime: sessions, transcript, group-chat WebSocket, event replay, handoffs",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "4c829c81c (wave 7A) replaced the group-chat socket's private authenticator with the shared resolve_ws_tenant(write=True), which enforces the IP allowlist, scopes and MFA. Role-derived session permissions and Idempotency-Key naming (d814ad96c) still hold. Handoff completion still resumes nothing, group chat still acks the sender only, and admission still does not validate civilization_id/goal_id.",
+      "verified_fixed": [
+        "(wave 7A) group-chat WebSocket had its own authenticator that skipped IP allowlist/scopes/MFA → app/api/coordination_group_chat.py:56-70 delegates to app.tenancy.ws_auth.resolve_ws_tenant(required_scope=None, write=True) (4c829c81c; tests/api/test_coordination_group_chat_ws_auth.py passes)"
+      ],
+      "still_open": [
+        "Completed handoff resumes nothing → app/coordination/handoffs/service.py:33-34 default emit_event/resume_parent are no-ops, and both wirings pass neither (app/main.py:1270-1273 DB path, :2677-2682 in-memory path)",
+        "No cross-connection fan-out → app/api/coordination_group_chat.py:185-195 persists and acks to the sender only (no pub/sub); other connections see a message only on reconnect replay",
+        "Low: admission does not validate civilization_id/goal_id ownership → app/coordination/service.py:16-20,82-89 passes them straight to create_session"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_coordination_api.py tests/api/test_coordination_authz_idempotency.py tests/coordination/test_service.py tests/api/test_coordination_group_chat_ws_auth.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 26 passed",
+        "uv run pytest tests/api/test_coordination_group_chat_ws_auth.py tests/api/test_coordination_handoffs.py ... → 14 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Coordination pattern read models (Magentic ledger and human review, MoA layers, CAMEL, generative agents, swarm, sealed-bid auction)",
+      "previous_status": "NOT_IMPLEMENTED",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": "Still only supervisor, goal_tree and debate have an execution driver (app/orchestration/execution_drivers.py:60). f9337a862 (wave 7B) makes the Celery worker build the goal's persisted runtime profile and record a DISTRIBUTED strategy it cannot run as a downgrade, not a claimed run. That keeps the honesty fix, but no Magentic/MoA/CAMEL/generative/swarm/auction runtime writes the read models.",
+      "verified_fixed": [
+        "(wave 7B, related) the worker no longer ignores the persisted runtime profile. build_profiled_graph is shared by GoalService and the worker, and an unrunnable DISTRIBUTED strategy is recorded as a downgrade (f9337a862, app/orchestration/profiled_graph.py)"
+      ],
+      "still_open": [
+        "Only three patterns have a driver → app/orchestration/execution_drivers.py:60 STRATEGY_RUNNER_STRATEGIES = {supervisor, goal_tree, debate}",
+        "Magentic human review always 409s → MagenticHumanReviewService.issue() still has no app caller; app.state.magentic_human_review (app/main.py:2691, DB-wired at :1724-1727) is used only by the submit route app/api/coordination_magentic.py:61-65",
+        "Swarm edges always [] → app/api/coordination_swarm.py:20; sealed bids have unseal/allocate logic (app/coordination/auction/sealed_bids.py:96-98, allocator.py:57) but no runtime path invokes it"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_magentic_api.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 2 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Human/agent collaboration sessions (operations, rounds and consensus, delegation, insights, WebSocket, org presence, Yjs CRDT)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched app/api/collab.py, app/collab or app/core/pools.py in the wave-7 window. Redis-held CRDT tokens, the removal of ?api_key= and the wired llm_provider still hold. The CRDT relay still uses the decode_responses=True runtime client, and every 50th incremental update is still saved as the 'full' snapshot.",
+      "verified_fixed": [],
+      "still_open": [
+        "CRDT relay on a text-decoding Redis → app/main.py:2149-2154 wires redis_for_runtime (created with decode_responses=True, app/core/pools.py:38-45) into _crdt_manager; publish/subscribe (app/api/collab.py:798-803, :836+) and load_snapshot (:785-795) cannot round-trip binary Yjs frames across replicas (non-UTF-8 bytes fail to decode; failures are swallowed at :794-795, :832-833)"
+      ],
+      "new_defects": [
+        "app/api/collab.py:823-833 (previously :821-822, still present) — every 50th update saves that single incremental update as the room 'full document snapshot', and :932-936 sends it to late joiners as full history, so a late joiner gets 1 of N updates [severity: medium]"
+      ],
+      "tests_run": [
+        "uv run pytest tests/collab/test_collab.py tests/api/test_collab.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 18 passed (no test publishes binary Yjs frames through a decode_responses=True client)"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Voice (STT/TTS, greeting, persona cloning, real-time voice WebSocket, proactive voice alerts, phone calls)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched app/voice in the wave-7 window. The fail-closed phone consent gate, the binary-safe persona store (_voice_redis, app/voice/router.py:450-455) and the lifespan-bound voice_alert_manager (app/main.py:1007) hold. Nothing publishes voice alerts, TTS still falls back silently to a silent WAV, and consent is still not ledgered.",
+      "verified_fixed": [],
+      "still_open": [
+        "publish_voice_alert has no caller → app/voice/alerts.py:163 (the only other mention is its own docstring at :175), so /v1/voice/alerts/stream emits keepalives only",
+        "Dev fallback builds VoiceAlertManager from app.state.redis (never set by create_app) → app/voice/router.py:590-595",
+        "Silent TTS fallback → app/voice/providers/__init__.py:97-110 auto-falls back to kokoro/browser on ImportError; app/voice/providers/tts/browser_fallback.py:28-29 is_ready()=True and :42-44 returns 100ms of silence, with no fallback signal in the TTS response",
+        "Voice consent not ledgered → app/voice/consent.py:21 TODO(D-24) (fails closed; no durable record)",
+        "Minor: _fetch_wywa reads app.state.redis (never set) → app/voice/router.py:430, so the digest has no Redis cache"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/voice/test_voice_router.py tests/gateway/test_voice_incoming_e2e.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 27 passed"
+      ]
+    },
+    {
+      "area": "org-collab",
+      "feature": "Gateway conversations (channel messages → conversation continuity)",
+      "previous_status": "PASS",
+      "status": "PASS",
+      "evidence": "The durable channel/principal session path is unchanged in the wave-7 window: app/chat/repository.py has no diff, and the only app/chat/service.py change is the nl_scheduler tenant_ctx argument at :849. aget_or_create_channel_session → repository.resolve_channel_session (INSERT ... ON CONFLICT on the FORCE-RLS tables) still makes replicas converge on one session, and the unit suites pass. The real-Postgres integration test could not be re-run here. It passed at the baseline, and the code it covers has not changed since.",
+      "verified_fixed": [],
+      "still_open": [
+        "Low: dead code → app/gateway/conversation.py and the gateway_conversations table are still unused by app/ (only a comment at app/db/models/__init__.py:79)",
+        "Low: sync handle_channel_message still uses the in-memory map → app/chat/service.py:1540-1567 (no app caller; app/voice/chat_bridge.py:163 uses the async durable ahandle_channel_message)"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/chat/test_channel_session_durable.py tests/chat/test_repository_channel_sessions.py tests/chat/test_cross_channel_continuity.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 19 passed",
+        "tests/chat/test_channel_sessions_integration.py (pytest.mark.integration, real Postgres via testcontainers) → BLOCKED: Docker/colima must not be started in this run (it passed at baseline a4d172588; covered code unchanged)"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Frontend app shell and routing (agent-verse-frontend/src/app/App.tsx)",
+      "previous_status": "PARTIAL",
+      "status": "PASS",
+      "evidence": "Wave 7A closed the baseline gap and both new defects. The backend now has GET /governance/emergency-stop (app/api/governance.py:1310-1332), the flag has no TTL, and the stop cancels goals through the DB-backed cross-replica path. The layout polls that endpoint every 30s and syncs the store from it (6c9e8315c). Clear still lifts the banner only after a 2xx. Vitest and tsc are green. The two remaining items are low severity.",
+      "verified_fixed": [
+        "e-stop banner state browser-local with no GET status → agent-verse-frontend/src/components/ui/AppLayout.tsx:20-35 useEmergencyStopSync polls governanceApi.getEmergencyStop() every 30s and calls syncFromServer (src/stores/emergency.ts:29-34); backend GET at app/api/governance.py:1310-1332 (6c9e8315c, ed55a2fb5; AppLayout.test.tsx covers it)",
+        "Tenant flag expired after 300s while the banner stayed up → app/governance/emergency_stop.py:133-155 activate_stop does a plain SET with no TTL, and governance.py:1368-1380 answers 503 if the flag cannot be persisted (ed55a2fb5)",
+        "POST /governance/emergency-stop enumerated only this replica's goals → app/api/governance.py:1382-1398 goal_service.active_goal_ids(ctx) (DB-backed listing) then cancel_goal via the cross-replica cancel path; failures are reported as failed_goals/partial (ed55a2fb5)"
+      ],
+      "still_open": [],
+      "new_defects": [
+        "agent-verse-frontend/src/stores/emergency.ts:15-44 + AppLayout.tsx:24-27 — the store is still zustand persist (localStorage) and the query uses retry:false, so when GET /governance/emergency-stop fails (for example 503 with Redis down) the banner shows the last persisted value. The '{cancelledGoals} goals cancelled' count (AppLayout.tsx:83) is local and reads 0 for a stop set by another admin [severity: low]"
+      ],
+      "tests_run": [
+        "npx vitest run src/app/App.test.tsx src/components/ui/AppLayout.test.tsx src/features/settings/RoleEditorPage.test.tsx src/stores/emergency.test.ts --coverage.enabled=false → 4 files, 41 passed",
+        "npm run typecheck → exit 0"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Frontend API client and contract drift vs backend OpenAPI",
+      "previous_status": "PASS",
+      "status": "PASS",
+      "evidence": "The contract test still passes at HEAD, and EXCEPTIONS is empty: every literal frontend HTTP/EventSource call resolves to a method+path in app.openapi(). That now includes the wave-7 frontend commits (6c9e8315c's new GET /governance/emergency-stop, d0b4daf48, 8a195cb7b, 9d0d98383, 730a7ce19, 35d7c73c6). The two remaining gaps are low severity.",
+      "verified_fixed": [],
+      "still_open": [
+        "Low: the contract test checks method+path only → tests/frontend/test_api_contract.py. Payload shapes, non-literal paths and new WebSocket(...) URLs are unchecked (CursorPresence.tsx:66,75 /collab/presence/{org}/ws, useCollabSocket.ts:63, useVoiceStream.ts:42)",
+        "Low: mock payment client path → agent-verse-frontend/src/features/settings/BillingPage.tsx:131 rzp_test_placeholder and :143 is_mock branch (backend-gated by allow_mock_payments)"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/frontend/test_api_contract.py -q --no-cov -p no:cacheprovider -m \"not slow\" -rs → 3 passed, 1 skipped (no exceptions registered)"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Frontend realtime transports (SSE / WebSocket)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched these transports in the wave-7 window. The goal/chat/collab/org-event SSE paths still use short-lived stream tokens: OrgRealtimeManager.ts:120-137 mints /tenants/stream-token on every reconnect and never falls back to ?api_key=. CursorPresence still builds a same-origin WS URL that the static nginx image cannot proxy, the dead relative-URL hooks remain, and there is no Last-Event-ID replay.",
+      "verified_fixed": [],
+      "still_open": [
+        "CursorPresence same-origin WS → agent-verse-frontend/src/features/org/components/CursorPresence.tsx:66 window.location.origin + /collab/presence/{org}/ws; agent-verse-frontend/nginx.conf:25-36 has only SPA/static locations (no proxy_pass), so org presence cannot connect in the containerised deployment",
+        "Dead useOrgStream/useMissionStream → agent-verse-frontend/src/features/org/hooks/useOrg.ts:261-266,285-291 relative EventSource with no API base or auth (no non-test caller)",
+        "No Last-Event-ID replay on the org event stream → agent-verse-frontend/src/features/org/OrgRealtimeManager.ts:115-140 reconnects with a fresh token only, so events emitted during a disconnect are lost"
+      ],
+      "new_defects": [
+        "agent-verse-frontend/src/features/org/components/CursorPresence.tsx:67,75 and src/lib/ws/useCollabSocket.ts:45-63 (baseline defect, still present) — the permanent API key is sent as the av.v1.<base64(key)> WebSocket subprotocol instead of a short-lived token, unlike the SSE paths [severity: low]"
+      ],
+      "tests_run": [
+        "npx vitest run src/lib/sse/useGoalStream.test.ts src/lib/ws/useCollabSocket.test.ts src/features/org/OrgRealtimeManager.test.ts src/features/org/components/GraphifyProgress.test.tsx --coverage.enabled=false (in a 9-file run) → 87 passed (16+8+46+17)",
+        "npm run typecheck → exit 0"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Frontend feature pages: browser-local state standing in for backend state",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "Unchanged at HEAD. The only wave-7 commits under these folders (8a195cb7b perception, 730a7ce19 evals) changed a test and an e2e spec, not the history storage. The A2A registry, marketplace installed markers, eval/ghost-run/OCR/perception/training history and playground scenarios still use localStorage as their source of truth. The marketplace page still ignores GET /marketplace/installs.",
+      "verified_fixed": [],
+      "still_open": [
+        "A2A remote-agent registry in localStorage → agent-verse-frontend/src/features/a2a/A2APage.tsx:351-360",
+        "Marketplace installed markers from a per-tenant localStorage Set → agent-verse-frontend/src/features/marketplace/MarketplacePage.tsx:720-735, although GET /marketplace/installs exists (agent-verse-backend/app/api/enterprise.py:726)",
+        "Eval history in localStorage → agent-verse-frontend/src/features/eval/EvalPage.tsx:154-165",
+        "History only in localStorage → src/features/goals/GhostRunPage.tsx:69-77, src/features/ocr/OcrPage.tsx:114-122, src/features/perception/PerceptionPage.tsx:68-75",
+        "localStorage is the source of truth → src/features/training/TrainingExportPage.tsx:89-98, src/features/playground/PlaygroundPage.tsx:176-183"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "npx vitest run src/features/marketplace/MarketplacePage.test.tsx src/features/a2a/A2APage.test.tsx --coverage.enabled=false (in a 9-file run) → 42 passed (11+31)"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Org OS / Gateway frontend (features/org, features/gateway)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched features/org or features/gateway in the wave-7 window. GatewaySettingsPage still surfaces the honest 501 for the per-org config. Channels are still env-only, the Kanban board is display-only, the org e2e specs skip by default, and e2e/gateway.spec.ts still mocks removed routes. The org e-stop banner is local state with no server source.",
+      "verified_fixed": [],
+      "still_open": [
+        "Gateway per-org channel config/status remain 501 → agent-verse-backend/app/gateway/router.py:13-15,936-938; channels are configured only via env, so the settings page is informational",
+        "Kanban board display-only → agent-verse-frontend/src/features/org/KanbanBoard.tsx:88,154 onStatusChange is optional and never passed (MissionPage.tsx:237, TeamPage.tsx:211), and useUpdateTaskStatus has no non-test caller",
+        "Org e2e specs skipped by default → agent-verse-frontend/e2e/org/agent-profile.spec.ts:10, mission-creation.spec.ts:10, command-bar.spec.ts:10 test.skip unless TEST_ORG_ID/E2E_FULL"
+      ],
+      "new_defects": [
+        "agent-verse-frontend/e2e/gateway.spec.ts:35,53,130 (baseline defect, still present) still mocks the removed GET /v1/gateway/config and POST /v1/gateway/channels/{id}/connect [severity: low]",
+        "agent-verse-frontend/src/features/gateway/GatewaySettingsPage.tsx:250-260 EmergencyStopBanner keeps the org stop in a local useState(false), so a reload or another tab shows 'not stopped' while the org flag is set. The backend has no GET org stop status and never emits org.emergency_stop.* (app/org/router.py:2001-2115), and the realtime manager's EMERGENCY_STOP handler (OrgRealtimeManager.ts:55-56) never fires [severity: medium]"
+      ],
+      "tests_run": [
+        "npx vitest run src/features/gateway/GatewaySettingsPage.test.tsx src/features/org/ArtifactGallery.test.tsx src/features/org/KanbanBoard.test.tsx --coverage.enabled=false (in a 9-file run) → 14 passed (7+2+5)",
+        "e2e/org/*.spec.ts and e2e/gateway.spec.ts → BLOCKED: Playwright needs a running dev server/backend, which this run may not start"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Playwright e2e suites and CI coverage (agent-verse-frontend/e2e)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched playwright.config.ts, .github/workflows or agent-verse-frontend/.github in the wave-7 window. full-live/mobile still match **/*.spec.ts, which sweeps in e2e/real-backend/*.realbe.spec.ts (only real-e2e/** is ignored). PR CI runs smoke-live only. Nightly runs 9 mocked projects plus real-backend. Stale mocked specs remain, and 730a7ce19 only adjusted e2e/eval.eval.spec.ts for the 501 golden-dataset change.",
+      "verified_fixed": [],
+      "still_open": [
+        "full-live/mobile sweep real-backend specs → agent-verse-frontend/playwright.config.ts:14 testIgnore only '**/real-e2e/**'; :66-75 testMatch '**/*.spec.ts' includes e2e/real-backend/{agent-patterns,evals,goal-lifecycle,org}.realbe.spec.ts, which have no skip gate",
+        "CI coverage → .github/workflows/ci.yml:113,124 PR runs only --project=smoke-live (dev and build); .github/workflows/nightly.yml:194,330 runs 9 mocked projects plus real-backend; full-live/mobile/real-e2e are never run in CI",
+        "Mocked specs fulfil routes that do not exist → agent-verse-frontend/e2e/gateway.spec.ts:35,53,130",
+        "agent-verse-frontend/e2e/sdk-integration.spec.ts:1-12 still claims Python/TypeScript SDK parity but only exercises mocked REST (SDKs removed in cabce1238)"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "Playwright e2e → BLOCKED: needs a running dev server/backend and a browser; this run may not start them. Config and workflows inspected instead"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Python SDK (agent-verse-sdk-python) - REMOVED",
+      "previous_status": "NOT_IMPLEMENTED",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": "Confirmed absent at HEAD: there is no agent-verse-sdk-python (or Archived/agent-verse-sdk-python) directory, git ls-files lists no SDK files, agent-verse-backend/pyproject.toml has no agentverse-sdk/[tool.uv.sources] entry, and app/ has no `import agentverse` from the SDK. CLAUDE.md/AGENTS.md:20 document the removal in cabce1238. This was a deliberate removal. The only leftovers are dead test scaffolding that now skips.",
+      "verified_fixed": [
+        "CLAUDE.md:20-21 and AGENTS.md:20-21 document the removal (080dfb399; still true at HEAD)"
+      ],
+      "still_open": [
+        "Low: dead SDK coverage → agent-verse-backend/tests/_paths.py:38-41,55-59 SDK_PYTHON_ROOT is None, so SDK cases in tests/intelligence/test_benchmarking.py, tests/compliance/test_async_gdpr.py and tests/agent/test_medium_fixes.py always skip (4 skips observed)",
+        "Low: dangling scaffolding → agent-verse-backend/tests/api/conftest.py:7-14 still prepends ../../../Archived/agent-verse-sdk-python (non-existent) to sys.path; tests/api/test_phase5_api.py:297-301 skips with 'agentverse SDK not available'"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/api/test_phase5_api.py tests/intelligence/test_benchmarking.py tests/compliance/test_async_gdpr.py tests/agent/test_medium_fixes.py tests/agent/test_phase_completeness.py -q --no-cov -p no:cacheprovider -m \"not slow\" -rs → 77 passed, 7 skipped (1 phase5 SDK import, 4 SDK_PYTHON_ROOT, 2 SDK_TS_ROOT)"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "TypeScript SDK (agent-verse-sdk-typescript) - REMOVED",
+      "previous_status": "NOT_IMPLEMENTED",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": "Confirmed absent at HEAD: there is no agent-verse-sdk-typescript (or Archived/...) directory, no tracked SDK files, and no @agentverse/sdk import in the frontend (git grep outside docs finds only .gitignore and backend test scaffolding). This was a deliberate removal in cabce1238. The leftovers are low-severity dangling references.",
+      "verified_fixed": [
+        "CLAUDE.md/AGENTS.md build/test commands for the TS SDK removed (080dfb399; still true at HEAD)"
+      ],
+      "still_open": [
+        "Low: agent-verse-frontend/e2e/sdk-integration.spec.ts:1-12 still claims 'Python SDK / TypeScript SDK' parity but only exercises mocked REST",
+        "Low: agent-verse-backend/tests/_paths.py:42-45,62-66 SDK_TS_ROOT is None, so the tests/agent/test_phase_completeness.py SDK checks skip (2 skips observed); .github/copilot-instructions.md:16 still names the directory (as out of scope); .gitignore:28 still ignores agent-verse-sdk-typescript/dist/"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/agent/test_phase_completeness.py (in the same run as the Python SDK entry) → passed with 2 SDK_TS_ROOT skips"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "Backend SDK helpers (agent-verse-backend/app/sdk)",
+      "previous_status": "PASS",
+      "status": "PASS",
+      "evidence": "No commits touched app/sdk or app/cli in the wave-7 window. The manifest loader still uses yaml.safe_load (app/sdk/manifest.py:44-50), and `agentverse manifest validate` is still wired (app/cli/main.py:338-360). It is a dev/test helper with no HTTP exposure, by design, and its tests pass.",
+      "verified_fixed": [],
+      "still_open": [
+        "Informational: MockMCPServer (app/sdk/mock_server.py) is not wired into any runtime path; the only app/ import of app.sdk is the CLI manifest command (app/cli/main.py:346)"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "uv run pytest tests/sdk/test_manifest.py tests/sdk/test_mock_server.py -q --no-cov -p no:cacheprovider -m \"not slow\" → 20 passed"
+      ]
+    },
+    {
+      "area": "frontend-sdks",
+      "feature": "GitHub Action (agent-verse-github-action)",
+      "previous_status": "PARTIAL",
+      "status": "PARTIAL",
+      "evidence": "No commits touched agent-verse-github-action in the wave-7 window, and its 31 tests pass. It is still not run by any CI workflow, it does not recognise waiting_human, polling never checks the HTTP status, and blocking urllib runs inside async main.",
+      "verified_fixed": [],
+      "still_open": [
+        "No CI workflow runs the action's tests → grep 'github-action' over .github/workflows finds nothing",
+        "waiting_human not recognised → agent-verse-github-action/entrypoint.py:43-50 handles only goal_complete/goal_finished/goal_failed/goal_error, and the poll loop (:125-140) only complete/failed/cancelled, so a goal parked in waiting_human (agent-verse-backend/app/agent/state.py:20) ends as a timeout",
+        "Polling ignores the HTTP status → agent-verse-github-action/entrypoint.py:128-130 does resp.json() with no status check, so a 401/5xx becomes 'unknown' and then a misleading timeout",
+        "Blocking urllib inside async main → agent-verse-github-action/entrypoint.py:30-34 urlopen(timeout=TIMEOUT) plus the polling loop (:125-127) can wait up to 2x wait-timeout"
+      ],
+      "new_defects": [],
+      "tests_run": [
+        "cd agent-verse-github-action && uv run pytest tests -q -p no:cacheprovider → 31 passed"
+      ]
+    }
+  ]
+}

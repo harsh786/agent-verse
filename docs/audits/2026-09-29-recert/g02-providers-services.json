@@ -1,0 +1,466 @@
+{
+ "group": "g02-providers-services",
+ "code": "287cb90f7",
+ "features": [
+  {
+   "area": "providers-routing",
+   "feature": "LLM / embedding provider adapters",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No provider adapter file changed in a4d172588..287cb90f7 (git diff --stat shows only guarded_completion.py under app/providers). Streaming tool_use/usage/stop_reason, no re-run after partial output, and Gemini stream usage remain in place and tested (21 passed). All three prior open gaps and the SDK-timeout defect are still present at their cited lines.",
+   "verified_fixed": [],
+   "still_open": [
+    "Metrics cost via deprecated governance.pricing.estimate_cost inside except-pass → app/providers/openai_compatible.py:360-385 (observability only)",
+    "embed_texts returns [] vectors on NotImplementedError → app/providers/base.py:163-178 (documented contract; callers must handle)",
+    "Gemini rejects tool-bearing requests (honest NotImplementedError) so Gemini cannot run executor tool steps → app/providers/gemini_provider.py:44-53",
+    "SDK clients built with default timeout (600s) and retries; only complete_with_failover/_stream_with_failover callers get a bounded timeout → app/providers/openai_compatible.py:146, anthropic_provider.py:41 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/providers/test_stream_tool_calls.py tests/agent/test_executor_tool_capability.py tests/providers/test_onprem.py -q --no-cov -p no:cacheprovider -m 'not slow' → 21 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Provider resolution and deployment wiring (env registry, on-prem/NVIDIA cluster, worker parity)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "registry.py and deployment_roles.py are unchanged since the baseline. FakeProvider is still refused in production on both the API (main.py:199-215) and worker (tasks.py:3108-3115), and the worker keeps API precedence: tenant BYOK (fails closed on TenantProviderError, tasks.py:2307-2319), then deployment cluster, then the env registry (tasks.py:2321-2336). All five prior gaps remain; 21 tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "ProviderConfig.healthy never checked; 'first healthy' is 'first that instantiates', and init failures are only logged at debug → app/providers/registry.py:56,235-255",
+    "Ollama models hardcoded (qwen3.8/qwen3-embedding/glm-ocr) in auto-detect; no OLLAMA_MODEL → app/providers/registry.py:161,348-350",
+    "Gemini ImportError silently returns None and falls through to the next provider/Fake → app/providers/registry.py:339-340",
+    "GET /tenants/me/providers 'configured' reads only process env, ignoring tenant BYOK → app/api/tenants.py:521-545",
+    "probe_model_windows runs only at API startup (main.py:2175-2178); nothing in app/scaling calls it, so workers keep an empty window map → app/ai_router/deployment_roles.py:52,145"
+   ],
+   "new_defects": [
+    "app/providers/registry.py:325 — the NVIDIA LLM_PROVIDERS path falls back to the hardcoded default 'moonshotai/kimi-k3' when NVIDIA_MODEL is unset, contradicting the 'never hardcoded' comment at registry.py:89-91; HANDOFF records this model 404s for the current key, so a missing env var yields runtime 404s rather than a startup error [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/providers/test_registry_resolution.py tests/scaling/test_worker_onprem_provider.py -q --no-cov -p no:cacheprovider -m 'not slow' → 21 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Tenant BYOK LLM configuration",
+   "previous_status": "PARTIAL",
+   "status": "PASS",
+   "evidence": "The worker reads the tenant config strictly and fails the goal with TenantProviderError, never falling back to the platform provider (tasks.py:484-529, 2307-2319). The API isolated path reads strict and decrypts (goal_service.py:3512-3530). 6780d5d65 makes the worker isolated path raise instead of dispatching with '' when key resolution throws (tasks.py:3232-3245), tested by tests/scaling/test_worker_isolated_byok.py. Only low-severity residue remains.",
+   "verified_fixed": [
+    "Worker isolated path swallowed aget_llm_api_key_for_tenant errors and ran on the platform key → now logs and raises RuntimeError, failing the goal before the envelope is built (app/scaling/tasks.py:3232-3245; 6780d5d65; test_byok_key_resolution_failure_fails_the_goal_closed)"
+   ],
+   "still_open": [
+    "aget_llm_api_key_for_tenant still calls store.get_config non-strictly, so a DB read error there returns '' rather than raising → app/services/llm_config_store.py:292. This is mitigated because run_goal already did a strict read at tasks.py:2307 (via _get_llm_provider), but a Redis cache hit on that first read plus a transient DB error on the second still dispatches the isolated run with '' (platform key) [low]",
+    "If the worker store cannot be built (get_session_factory raises) and Redis returns no key with no error, config=None and the goal runs on the platform provider → app/services/llm_config_store.py:239-245 and tasks.py:506-510 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/providers/test_tenant_byok_provider.py tests/scaling/test_worker_isolated_byok.py -q --no-cov -p no:cacheprovider -m 'not slow' → 21 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Credential vault",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "vault.py is unchanged in a4d172588..287cb90f7. Fernet/PBKDF2 encryption and the production dev-key guard are tested (29 passed). Key rotation is still dead code that would orphan Postgres ciphertext and reports rotation_complete after a swallowed scan failure; per-tenant vault BYOK is an honest 'validated_not_persisted'.",
+   "verified_fixed": [],
+   "still_open": [
+    "rotate_key has no caller in app/ (grep finds only the definition) → app/providers/vault.py:208",
+    "Rotation scans only mcp:connector_secrets:*; ciphertext in Postgres (tenant_llm_configs.encrypted_key, source credentials) would become undecryptable → app/providers/vault.py:257",
+    "Redis scan error is logged as a warning, yet the call returns status 'rotation_complete' → app/providers/vault.py:306-307,352",
+    "Per-process _CONNECTOR_SECRET_STORE fallback when no store is passed → app/providers/vault.py:26,74,85",
+    "POST /tenants/me/vault-key validates the key but does not persist it (honest 'validated_not_persisted'; per-tenant vault BYOK not implemented) → app/api/tenants.py:953-980"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/providers/test_vault.py tests/providers/test_vault_rotation_fix.py -q --no-cov -p no:cacheprovider -m 'not slow' → 29 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Configured model registry and capability-based selection",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No change to app/ai_router or api/model_registry.py in the range. Registry writes are platform-admin gated (model_registry.py:35-67). Selection still works from the seeded configured set (21 passed), but provider health is still unverified-by-default, per-process, and fed only by the admin ping.",
+   "verified_fixed": [],
+   "still_open": [
+    "AIRouter.record_call has no callers; health is updated only by POST /models/test, per process; ProviderHealth defaults is_healthy=True so GET /models/health reports unverified 'healthy' → app/ai_router/router.py:119, app/ai_router/models.py:110, app/api/model_registry.py:151-160,201-209",
+    "price_for returns (0.0,0.0) for unknown models while cost_tracker charges a non-zero fallback → app/ai_router/registry.py:212-219",
+    "_lazy_seeded once per process; configured-model overrides reseed only the replica that received the POST → app/ai_router/selection.py:49-63"
+   ],
+   "new_defects": [
+    "app/api/model_registry.py:183-209 — POST /models/test always pings request.app.state._app_provider with the requested model_id, whatever 'provider' was named, then records the outcome as that named provider's health. Testing anthropic/<model> on an NVIDIA-backed deployment marks 'anthropic' unhealthy (or healthy) based on NVIDIA's reply; the only health signal is misattributed [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/api/test_configured_model_registry_api.py tests/ai_router/test_generic_registry_selection.py -q --no-cov -p no:cacheprovider -m 'not slow' → 21 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Per-role model routing (planner/executor/verifier)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "Goal- and agent-level overrides and tenant routing policies still apply on the API and worker paths (tasks.py:2597-2638); a goal-level override that fails to APPLY now raises instead of silently running on another model (tasks.py:2633-2636). The routing code (model_orchestrator.py, registry.py) is unchanged and the four prior gaps remain, at shifted worker lines.",
+   "verified_fixed": [],
+   "still_open": [
+    "Override, role map and select_configured_model_id return before tier assignment, so plan caps and budget downgrade never constrain them → app/ai_router/model_orchestrator.py:418-440",
+    "_TIER_MODELS/_MODEL_PROVIDER use OpenAI slugs and unknown models map to 'openai' → app/ai_router/model_orchestrator.py:52-80",
+    "Tenant routing policies are read (tasks.py:2601-2614) before the worker wires the Redis ModelRegistryStore (tasks.py:2860-2873), so the first goal in a fresh worker reads the process-local policy dict (registry.py:283-284) and ignores policies",
+    "Goal model_override lookup failure logs and returns '' (tasks.py:1789-1791), silently dropping an explicit override (the new raise at tasks.py:2633-2636 covers only the apply step); registry.get_route_policy falls back to the process-local copy on store errors → app/ai_router/registry.py:293-297"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/ai_router/test_routing_policy_persistence.py tests/scaling/test_worker_applies_agent_model_override.py -q --no-cov -p no:cacheprovider -m 'not slow' → 10 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Provider circuit breakers, health and model failover",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 moves the remaining narrow and indexing call sites named in the baseline onto complete_decision, which adds the per-model circuit and a bounded timeout: knowledge_graph/extractor.py:92,161, nl_scheduler.py:494, goal_classifier.py:333, llm_step.py:111, rag/indexing.py:449, memory/consolidation.py:177, tool_intelligence.py:377, org/service.py:502. An AST guard test (tests/providers/test_no_direct_llm_complete.py) now fails on any new direct .complete( call. About 60 direct calls remain on its _DEBT/_OWNED allowlist, and the executor stream, process-local circuits and health half-open gaps are unchanged.",
+   "verified_fixed": [
+    "Direct provider.complete() with no circuit or timeout at knowledge_graph/extractor, nl_scheduler, goal_classifier, workflow llm_step, org/*, memory consolidation, tool_intelligence → all now call complete_decision (see evidence lines; 340f40776), and the guard test pins the remaining set"
+   ],
+   "still_open": [
+    "About 60 direct .complete( calls still have no circuit and rely on the SDK default timeout; they are allowlisted as debt in tests/providers/test_no_direct_llm_complete.py:36-160 (chat/service.py run_qa/_llm_summarize, rag/engine.py hyde/multi_hop/rerank, rag_platform/retriever.py synthesize, agent/patterns/*, consensus, grounding, synthesis, workflow_executor, OCR/vision, debate/supervisor internals) [medium]",
+    "Platform circuits are process-global per model: per-replica state that is not shared → app/providers/circuit_breaker.py:118-133",
+    "The executor's _stream_with_failover wraps stream_tokens in asyncio.wait_for only and never goes through the per-model _provider_cb → app/agent/graph.py:903-945",
+    "Health circuits have no time-based half-open; they close only on record_success, so an open provider that is never selected again stays open → app/ai_router/provider_health_policy.py:24-37",
+    "The executor exception path records the failure against _exec_model only; the models actually attempted are recorded only on success → app/agent/nodes/executor_mixin.py:1632-1636"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/providers/test_guarded_completion.py tests/providers/test_circuit_breaker_failover.py tests/agent/test_executor_stream_failover.py tests/providers/test_tenant_circuit_isolation.py tests/providers/test_no_direct_llm_complete.py -q --no-cov -p no:cacheprovider -m 'not slow' → 22 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "LLM generation tracing (TracedProvider / GenAI spans)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "traced_provider.py and genai.py are unchanged. TracedProvider is still applied only in GoalService._make_agent_loop (goal_service.py:1627-1633). The 7B worker graph rebuild (build_profiled_graph in tasks.py / profiled_graph.py) does not wrap providers, so Celery-run goals (the production path) still emit no GenAI spans. The newly routed complete_decision calls and embeddings are untraced. 11 tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "No TracedProvider in app/scaling, app/orchestration/profiled_graph.py or app/workflow: Celery goals, workflows, complete_decision calls and embeddings emit no GenAI spans (only goal_service.py:1627 wraps)",
+    "TracedProvider calls rec.set_response(resp) with no cost_usd or cache_hit, although genai.py:81-97 supports both → app/observability/traced_provider.py:76,88",
+    "MultiEndpointLLMProvider has no base_url, so provider_system_of returns the lowercased class name as gen_ai.system → app/observability/traced_provider.py:45-54"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/observability/test_traced_provider.py tests/observability/test_genai_span.py -q --no-cov -p no:cacheprovider -m 'not slow' → 11 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "LLM cost and token accounting, budgets",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "340f40776 charges the ingestion-scale and narrow call sites through complete_decision with a tenant: RAPTOR/agentic indexing (rag/indexing.py:449), KG extractor, nl_scheduler, goal_classifier, workflow llm_step, org/*, consolidation and tool_intelligence. 337e78e6f wraps the debate/supervisor submission calls in GuardedDecisionProvider (api/goals.py:348-380) and charges goal-tree sub-goal spend to the parent (goal_tree.py:88-97). 28 tests pass. Still open: the executor gate uses estimate_cost, pricing uses a prefix match, and chat, the RAG engine and insights LLM calls are still unmetered.",
+   "verified_fixed": [
+    "Unmetered provider.complete() at rag/indexing (RAPTOR/agentic chunking), knowledge_graph/extractor, nl_scheduler, goal_classifier, workflow llm_step, org/service, memory/consolidation, tool_intelligence → complete_decision with tenant_id/tenant_ctx (e.g. rag/indexing.py:449-468, org/service.py:502, llm_step.py:111; 340f40776)",
+    "Debate/supervisor workflow-mode calls ran uncharged in the HTTP request → GuardedDecisionProvider (budget preflight + charge) at app/api/goals.py:348-380 (337e78e6f; tests/api/test_goals_pattern_modes_guarded.py)",
+    "Goal-tree sub-goals used an empty goal id → child ids derive from parent_goal_id and spend is charged to the parent budget (app/agent/goal_tree.py:88-97; 337e78e6f; tests/agent/test_goal_tree_spend_attribution.py)"
+   ],
+   "still_open": [
+    "The executor budget gate charges the deprecated governance.pricing.estimate_cost while the ledger uses calculate_cost → app/agent/nodes/executor_mixin.py:1649-1660 vs 1679",
+    "calculate_cost prefix match `model.startswith(key) or key.startswith(model)`: an empty model matches the first key, and dated or unknown models are mispriced; the model_pricing table is never read → app/intelligence/cost_tracker.py:82-88",
+    "LLM spend is recorded as metric scope 'tool' → app/governance/cost.py:291,483",
+    "Still-unmetered direct calls: api/insights.py:578,692 (analyze_failure, natural_language_query; allowlisted _OWNED), rag/engine.py:912,976,1098 (hyde/multi-hop/rerank), rag_platform/retriever synthesize, agent patterns/consensus/grounding and about 55 more on the guard allowlist [high]",
+    "_platform() swallows resolver exceptions to (None,None), so _charge returns without charging and out-of-goal calls fail open → app/providers/guarded_completion.py:113-119,170-172 [low]",
+    "With no goal scope and no tenant the call is never charged → app/providers/guarded_completion.py:131-132,168-169 [low]",
+    "try_record_and_check fails open on Redis errors (no callers; dead code) → app/governance/cost.py:632+ [low]",
+    "The worker sets set_platform_cost_services(lambda: (_decision_cost, None)) as a module global per run_goal, with no cost_tracker (no ledger) and last-writer-wins across concurrent threaded tasks → app/scaling/tasks.py:2566-2569 [low]"
+   ],
+   "new_defects": [
+    "app/chat/service.py:1355-1377,1481,1511 — chat Q&A streams through the raw platform provider (answer_generator=resolve_llm_provider(app.state), main.py:1396/2570) via getattr(..., 'stream_complete') and complete(), with no budget preflight, charge, ledger entry or tenant BYOK. Any tenant's chat traffic is free platform spend. Because the stream call goes through getattr and stream_complete, the AST guard in tests/providers/test_no_direct_llm_complete.py (which only matches '.complete(') cannot flag it [medium]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/agent/test_llm_cost_charging.py tests/intelligence/test_eval_runner_guarded.py tests/intelligence/test_llm_judge_guarded.py tests/governance/test_tenant_budget_enforced.py tests/api/test_goals_pattern_modes_guarded.py tests/agent/test_goal_tree_spend_attribution.py -q --no-cov -p no:cacheprovider -m 'not slow' → 28 passed"
+   ]
+  },
+  {
+   "area": "providers-routing",
+   "feature": "Unwired / legacy routing modules",
+   "previous_status": "NOT_IMPLEMENTED",
+   "status": "NOT_IMPLEMENTED",
+   "evidence": "providers/model_router.py, ai_router/shadow_router.py and ai_router/complexity_scorer.py are still imported by nothing in app/ (grep excluding graphify cache finds no importer). They are exercised only by unit tests (79 passed), and the AST guard allowlists ShadowRouter.shadow_call's 3 direct complete() calls as a 'guarded wrapper'.",
+   "verified_fixed": [],
+   "still_open": [
+    "app/providers/model_router.py is unwired; required_capabilities is not enforced anywhere",
+    "app/ai_router/shadow_router.py is unwired (3 direct provider.complete calls; shadow failures swallowed); there is no /shadow-log API",
+    "app/ai_router/complexity_scorer.py is unwired"
+   ],
+   "new_defects": [
+    "tests/providers/test_no_direct_llm_complete.py:40 — ShadowRouter.shadow_call's 3 direct calls are allowlisted as _WRAPPER ('delegates to the inner provider inside its own metering/tracing'), but the router has no metering or tracing. The reason is inaccurate, so wiring the module later would silently add unmetered calls the guard won't flag [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/intelligence/test_gap_fill_phase2.py tests/providers/test_all_providers.py -q --no-cov -p no:cacheprovider -m 'not slow' → 79 passed (unit tests of the dead modules)"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Goal lifecycle service (GoalService)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "3960746c1 makes cancel/pause conditional (WHERE status NOT IN terminal). A goal that finished meanwhile keeps and reports its real status, and a failed write is a 503 (goal_service.py:4836-4930, 5606-5656; tests/services/test_goal_status_transitions.py). ff36dadf4 makes GET /eval read persisted evaluations/eval_scorecards under RLS, answers 503 on a DB error, and bounds the cache with an LRU (goal_service.py:4585-4700, 615). Still open: goal dedup races, the eval endpoints still gate on the memory-only _get_record, and the HITL resume/reject status writes are unconditional and swallow DB errors.",
+   "verified_fixed": [
+    "cancel_goal overwrote a COMPLETE row → only_if_active=True conditional write that re-reads and returns the real terminal status (goal_service.py:4860-4870; 3960746c1)",
+    "_db_update_goal_status swallowed DB errors for cancel/pause → raise_on_error=True raises ServiceUnavailableError (503) (goal_service.py:5648-5655; 3960746c1)",
+    "_eval_scores grew without bound → _BoundedLRU(AGENTVERSE_EVAL_CACHE_MAX=2048) (goal_service.py:565-570,615; ff36dadf4)",
+    "clear_signals had no callers → used by pause_goal when the goal finished meanwhile (goal_service.py:4916-4918)"
+   ],
+   "still_open": [
+    "Dedup still races: get_existing (goal_service.py:3838-3843) and register (goal_service.py:3869-3876) are separate calls, register()'s False (SET NX lost) is ignored, and errors hit a bare 'except Exception: pass', so concurrent identical submits both run",
+    "get_eval/get_eval_suggestions/run_eval still start with the memory-only _get_record (goal_service.py:4673, 4715, 4778+), so the new persisted read is unreachable for any goal not in this replica's memory. That includes every goal evicted 1h after completion (_COMPLETED_GOAL_TTL_SECONDS=3600, goal_service.py:123) and goals older than the sync_from_db window, which get 404 instead of their persisted scorecard. tests/services/test_eval_persisted_read.py only covers a goal submitted to the same service [medium]",
+    "is_valid_transition is still imported with noqa F401 and never enforced → goal_service.py:96",
+    "Every status write sets iterations=0 (the default at goal_service.py:5613,5636), so cancel/pause wipe the recorded iteration count [low]",
+    "Restart recovery only scans self._goals as warmed by sync_from_db (last 24h, capped per tenant) → goal_service.py:963-1060 [low]"
+   ],
+   "new_defects": [
+    "app/services/goal_service.py:5166-5168,5200-5202 — resume_goal's reject (FAILED) and approve (EXECUTING) writes call _db_update_goal_status with neither only_if_active nor raise_on_error. A DB error is swallowed while the API answers 'rejected'/'resumed' and dispatches goal_failed/goal_resumed. For a suspended supervised goal (no runner to write the terminal state) a lost reject write leaves the row WAITING_HUMAN forever. This is the fake-success class 3960746c1 fixed for cancel/pause but left here [medium]",
+    "app/services/goal_service.py:4852-4870 — cancel sends the Redis cancel signal (_signal_runner) BEFORE the conditional DB write, so when the write fails the caller gets 503 while the runner still cancels the goal (reported failure, action applied) [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/services/test_goal_lifecycle_cross_replica.py tests/services/test_goal_restart_recovery.py tests/scaling/test_worker_lifecycle_signals.py tests/services/test_goal_dedup_scope.py tests/services/test_goal_service.py tests/services/test_goal_status_transitions.py tests/services/test_eval_persisted_read.py -q --no-cov -p no:cacheprovider -m 'not slow' → 77 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "SSE goal event delivery and cross-replica fanout",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No SSE code changed in the range. The local path still registers its queue before replay, and the Celery bridge treats worker_failed and worker_complete as terminal (goal_service.py:824-840). The cross-replica subscribe path (goal_service.py:5254-5319) and the SSE endpoint (api/goals.py:745-765) are unchanged, so every prior gap and defect remains; 27 tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "SSE id is event._seq or a local counter; live/queued events carry no _seq, so Last-Event-ID drifts → app/api/goals.py:749-761",
+    "Resume replay is capped at list_events_since's default limit=100 (event_store.py:132); _list_events_since_persisted passes no limit and does not paginate → goal_service.py:2381-2393",
+    "The cross-replica path replays persisted events (goal_service.py:5264-5270) BEFORE pubsub.subscribe (goal_service.py:5298), losing events published in between; it returns silently when no Redis URL is set (goal_service.py:5285-5286)",
+    "No heartbeat or is_disconnected check on the goal SSE stream, so a WAITING_HUMAN goal holds an idle connection indefinitely → app/api/goals.py:745-765",
+    "Bridge stub GoalRecords (created_at='') are created for every unknown goal_id (goal_service.py:777-800). The bridge sets the terminal status but never completed_at (goal_service.py:836-840), and _evict_stale_goals skips records without completed_at (goal_service.py:871-879), so stubs grow without bound",
+    "The cross-replica live loop stops only on goal_complete/goal_failed/goal_cancelled; worker_failed (timeout, lock failure, crash) never matches, so the stream hangs → goal_service.py:5302-5308 [medium]",
+    "Every API replica psubscribes goal_events:* for ALL tenants and creates a stub per goal, so per-replica memory and CPU scale with fleet-wide event volume → goal_service.py:764 [medium]",
+    "The cross-replica path yields the worker's raw envelope {goal_id, tenant_id, type, payload}, not the local event shape → goal_service.py:5299-5304 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/services/test_sse_resume.py tests/services/test_cross_replica_sse.py tests/services/test_sse_bridge_sentinel.py tests/services/test_goal_service_sse_refresh.py -q --no-cov -p no:cacheprovider -m 'not slow' → 27 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Durable goal event store",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "event_store.py is unchanged. Sequences are allocated race-free by UPDATE goals.event_seq ... RETURNING in the same statement as the INSERT (event_store.py:55-67). The API and the worker (tasks.py:2096) both append through it. A final append failure and a missing goal row are still only logged, and a list_events DB error is still replayed as an empty history. The one unit test passes; a Postgres-backed concurrency test was not run (Docker not used by this audit).",
+   "verified_fixed": [],
+   "still_open": [
+    "append_event swallows the final failure after 3 retries (event_store.py:85-91), and a missing goal row (rowcount 0) is only logged (event_store.py:76-84), so events can silently vanish from the durable stream",
+    "list_events has no try/except (event_store.py:93-126); GoalService._list_persisted_events catches and returns [] (goal_service.py:2369-2379), and list_events_since returns [] on error (event_store.py:170-174), so a DB outage replays an empty history as if the goal had no events",
+    "Replay queries filter on goal_id/sequence but not on the created_at partition key, so every replay probes every monthly partition → event_store.py:115-124,152-160 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/services/test_event_store.py -q --no-cov -p no:cacheprovider -m 'not slow' → 1 passed",
+    "Postgres concurrency/partition behaviour: BLOCKED — needs testcontainers/Docker, which this audit was told not to start"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Goal dedup and idempotency",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "No change to reliability/idempotency.py, services/dedup.py or the submit handler in the range. Idempotency-Key claim/complete/release with a fail-closed 503 and goal_id replay still work (api/goals.py:188-262; 16 passed). Goal dedup is still a non-atomic check-then-register with a 60s TTL, and a missing idempotency store still fails open.",
+   "verified_fixed": [],
+   "still_open": [
+    "Goal dedup race: get_existing (goal_service.py:3838-3843) then register (goal_service.py:3869-3876) is non-atomic; register()'s False is ignored and exceptions are swallowed",
+    "RedisDeduplicationCache still keys on per-process hash(goal) (reliability/dedup.py:76,84,90); unused in production [low]",
+    "Idempotency-Key replay is not bound to the request body, so reusing a key with a different body returns the first response → api/goals.py:216-219 [low]",
+    "When app.state.idempotency_store is missing (Redis wiring failed at main.py:2082-2083) the Idempotency-Key header is silently ignored and the submission runs unguarded, failing open → api/goals.py:200-202 [medium]",
+    "The pending claim TTL is 120s and release/complete are not owner-checked, so a submission slower than 120s lets a retry create a second goal → reliability/idempotency.py:11,44-57 [low]",
+    "Dedup TTL is 60s (services/dedup.py:34). The release in _dispatch_event (goal_service.py:2709-2723) runs only for locally dispatched events, and the worker never releases the key, so a resubmit within 60s of a finished worker goal returns 'running, deduplicated' [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/api/test_goal_idempotency_key.py tests/reliability/test_idempotency.py tests/services/test_goal_dedup_scope.py -q --no-cov -p no:cacheprovider -m 'not slow' → 16 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Cross-process goal lifecycle signals and execution locks",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "2d8ea71f7 adds an atomic claim after the per-goal lock: UPDATE goals SET status='executing' WHERE status NOT IN terminal RETURNING id, under RLS. A redelivered finished goal is skipped, and an unverifiable claim retries and then fails closed (tasks.py:1825-1870, 2230-2270; tests/scaling/test_run_goal_claim.py). The broker visibility_timeout now outlasts the longest plan timeout (celery_app.py:333-343). Strict remote signalling, the Redis pause gate and a lock TTL of timeout+300s remain. There is still no lock renewal, paused time still counts toward the timeout, and signal read errors still hide a cancel.",
+   "verified_fixed": [
+    "Celery redelivery re-ran finished goals → atomic terminal-state claim before mark_worker_started (app/scaling/tasks.py:1825-1870,2230-2270; 2d8ea71f7) plus visibility_timeout = longest plan timeout + 1h (app/scaling/celery_app.py:333-343)"
+   ],
+   "still_open": [
+    "_SyncGoalLock has no extend/renewal (tasks.py:133-148); correctness depends on wait_for(goal_timeout_s) (tasks.py:3354-3365) firing before the TTL of timeout+300s (tasks.py:2191-2196)",
+    "check_pause_cancel still has no callers (reliability/goal_lifecycle.py:155+) and GoalExecutionLock (reliability/distributed_lock.py) is unused [low]",
+    "is_paused/is_cancelled (and the _sync variants) return False on Redis read errors, so a Redis blip hides a cancel from a runner → reliability/goal_lifecycle.py:121-152",
+    "Plan timeout includes paused time: a worker goal paused longer than its plan timeout (1h on free) is killed as 'Goal timed out' (worker_failed) although the pause flag lives 7 days (goal_lifecycle.py:36,79) → tasks.py:3354-3368 [medium]",
+    "No lock when the broker is not Redis and REDIS_URL is unset: _redis_url='' skips the lock with no warning → tasks.py:2166-2172 [low]"
+   ],
+   "new_defects": [
+    "app/scaling/celery_app.py:333-343 — broker_transport_options.visibility_timeout (about 25h) is global to every task on the Redis broker, so the acks_late crash recovery the claim relies on only redelivers after about 25h. Meanwhile detect_stuck_goals (tasks.py:5531+) fails the goal, so a worker crash never actually resumes a goal; the late redelivery just hits 'already_terminal'. This fails honestly, but crash recovery exists only on paper [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/reliability/test_goal_lifecycle.py tests/scaling/test_lock_in_run_goal.py tests/scaling/test_worker_lifecycle_signals.py tests/scaling/test_run_goal_claim.py -q --no-cov -p no:cacheprovider -m 'not slow' → 20 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Tenant service (signup, API keys, auth resolution)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "tenant_service.py and auth/keycloak.py are unchanged in the range. Signup, key creation, revoke and plan change are DB-first, and auth resolves keys in Postgres via the api_key_hash RLS policy with a shared Redis cache cleared on revoke (28 passed). The prior open gaps and defects remain at the same lines.",
+   "verified_fixed": [],
+   "still_open": [
+    "_get_tenant_from_db swallows errors (tenant_service.py:959-995); get_tenant_cached has no callers (tenant_service.py:997+)",
+    "get_tenant_by_sso_sub checks per-pod memory first, which skips the is_active filter for cached tenants (tenant_service.py:745-747); get_key_by_sso_sub is memory-only (tenant_service.py:775-796), so on other replicas SSO contexts carry a ghost 'sso:{sub}' api_key_id (auth/keycloak.py:196-202)",
+    "Redis cache read errors pass silently (benign: resolution falls through to the DB) → tenant_service.py:385-386 [low]",
+    "sync_from_db loads EVERY active tenant and every API key into each replica's memory, one query per tenant: unbounded memory and startup time → tenant_service.py:891-957 [medium]",
+    "A DB error in _db_resolve_by_hash returns None, so a Postgres outage becomes 401 for all API-key auth instead of a retryable 503 → tenant_service.py:733-735 [low]",
+    "Revoke deletes api_key:{hash}, but a concurrent resolve that read the row before the revoke committed re-caches it for 300s, so the revoked key keeps working up to 5 min → tenant_service.py:337-349 vs 395-406,444-464 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/services/test_tenant_service.py tests/services/test_tenant_service_durable.py -q --no-cov -p no:cacheprovider -m 'not slow' → 28 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Tenant LLM config store",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "llm_config_store.py and the BYOK read paths in main.py/tenants.py are unchanged for the store. The goal path reads strictly (goal_service.py:3518, 4938), and the worker reads strictly via _get_llm_provider. RAG retrieval and GET /tenants/me/llm still read non-strictly, and the process-local _llm_configs fallback is still written and read. 14 tests pass.",
+   "verified_fixed": [],
+   "still_open": [
+    "Process-local app.state._llm_configs is still written on every save (api/tenants.py:373-383) and read when the store returns None (api/tenants.py:333-334; main.py:821-822; goal_service.py:1349-1355)",
+    "_resolve_retrieval_llm calls config_store.get_config() non-strictly; a DB read error returns None (llm_config_store.py:93-97), then the stale local dict or the platform provider is used, so a BYOK tenant's RAG LLM traffic and cost go to the platform vendor on a DB blip → app/main.py:818-822 [medium]",
+    "GET /tenants/me/llm reads non-strictly, so a DB error reports configured:false → app/api/tenants.py:326-334 [low]",
+    "set_config's Redis cache overwrite failure is only logged, so other replicas serve the previous cached config (including the old key) for up to 300s → llm_config_store.py:78,136-137 [low]"
+   ],
+   "new_defects": [
+    "app/services/llm_config_store.py:104-115 — delete_config has no caller and tenants.py exposes only GET/PUT /me/llm and /me/llm-config. A tenant cannot remove a stored BYOK key (for example a compromised or offboarded key) or revert to the platform provider; the only option is to overwrite it with another key [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/scaling/test_llm_config_store.py -q --no-cov -p no:cacheprovider -m 'not slow' → 14 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Notification service",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "683de71bc switches Slack/webhook approval links to the signed ?sig=&exp= format bound to request, tenant and action (notification_service.py:241-254 via approval_sender.build_decision_urls), and drops them when no production secret is set. Webhook delivery stays IP-pinned. The links are still unusable: they point at {public_base_url}/hitl/{id}/approve, a frontend route that does not exist (App.tsx defines only /approvals), and the backend GET /governance/hitl/{id}/approve requires tenant API-key auth plus the approver role, which a browser click does not carry. Per-process channel hydration and swallowed persistence errors remain. 64 tests pass.",
+   "verified_fixed": [
+    "Magic links used ?token= while the endpoint requires ?sig= (always 403) → signed build_decision_urls(?sig=&exp=) (notification_service.py:241-254; 683de71bc; tests/integrations/test_hitl_email_link_security.py)",
+    "approval_token defaulted to '' and hitl.py passed none → parameter removed, links are HMAC-signed per request/tenant/action (notification_service.py:221-254)"
+   ],
+   "still_open": [
+    "Approve/reject links are still dead: they target {public_base_url} (default http://localhost:5173, config.py:298) + /hitl/{id}/approve, which is not a frontend route (agent-verse-frontend/src/app/App.tsx:240 has only /approvals), while the backend endpoint is /governance/hitl/{id}/approve behind _require_tenant + require_role('approver') (api/governance.py:1552-1560), unreachable from a mail/Slack click [medium]",
+    "_loaded_tenants hydrates each tenant once per process: channels created or deleted on another replica are not seen → notification_service.py:40,55-60",
+    "_persist_channel swallows DB errors (notification_service.py:135-167), so POST /governance/notifications answers 201 'created' for a channel that exists only in one pod's memory; the API comment claiming the row exists for every replica is false (api/governance.py:1193-1197)",
+    "No channel_type/URL validation at create → api/governance.py:51-53,1178-1197",
+    "notify_goal_complete still has no callers → notification_service.py:331",
+    "Approval notifications are fire-and-forget create_task with no retained reference (noqa RUF006), so their failure is never surfaced → governance/hitl.py:266-280 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/services/test_notification_service_comprehensive.py tests/governance/test_notification_service.py tests/net/test_webhook_dns_rebinding.py -q --no-cov -p no:cacheprovider -m 'not slow' → 53 passed",
+    "uv run pytest tests/integrations/test_hitl_email_link_security.py -q --no-cov -p no:cacheprovider -m 'not slow' → 11 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Usage metering, outbound webhooks, legacy persistence adapters",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "usage_service.py/usage_metering.py are unchanged. The API and worker paths still meter tool calls and terminal goals with deterministic per-goal ids and ON CONFLICT DO NOTHING (17 passed, including the worker hook test adjusted for the 2d8ea71f7 claim in c15c1276d). The new atomic claim makes a redelivered finished goal skip, which narrows (but does not remove) tool-call re-metering. The dead modules and the swallowed rollup error remain.",
+   "verified_fixed": [],
+   "still_open": [
+    "OutboundWebhookService (app/services/webhook_service.py) and app/services/persistence.py still have no importers in app/ (dead code)",
+    "An unused module singleton remains → services/usage_service.py:309 [low]",
+    "tool_call records use random ids (usage_service.py:69,127-142), so a crash redelivery that re-runs a still-executing goal re-meters tool calls; a flush failure in the worker's throwaway UsageService loses the record → scaling/tasks.py worker meter path [low]",
+    "get_usage_summary swallows a DB rollup failure and returns only the in-memory buffer (usually empty), so /billing/usage reports zero usage instead of an error → services/usage_service.py:176-205 [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/services/test_usage_metering_hooks.py tests/services/test_usage_service.py -q --no-cov -p no:cacheprovider -m 'not slow' → 17 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Circuit breakers",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "redis_circuit_breaker.py and the executor breaker code are unchanged. The MCP client's async per-connector Redis breaker and complete_decision's per-model breaker plus timeout (now covering many more call sites via 340f40776) still apply, and an open circuit fails the step honestly (88 passed). The executor breaker still uses the sync in-memory fallback, HALF_OPEN still has no TTL, and the 7B worker graph rebuild still passes no circuit_breakers.",
+   "verified_fixed": [],
+   "still_open": [
+    "The executor picks get('llm') or get(tool_name), so connector breakers are never consulted there and tool-step failures are recorded on the 'llm' breaker. It calls sync can_call/record_*, which on RedisCircuitBreaker delegate to a per-instance in-memory fallback, so the Redis state is never read or written from the executor → app/agent/nodes/executor_mixin.py:1036-1044,1621,1634",
+    "OPEN->HALF_OPEN is a SET without TTL (redis_circuit_breaker.py:122-125). HALF_OPEN then returns False fleet-wide forever if the prober never reports (redis_circuit_breaker.py:129-133)",
+    "The worker graph services dict (tasks.py:2912-2951) still has no circuit_breakers, so Celery-run goals get no executor-level breaker (MCP-client and provider breakers still apply) [low]",
+    "The provider breaker is a module-level per-process singleton, so each replica and worker learns about a dead provider independently → app/providers/circuit_breaker.py:69 [low]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/reliability/test_circuit_breaker_async.py tests/reliability/test_redis_circuit_breaker_comprehensive.py tests/agent/nodes/test_executor_mixin_failure_modes.py -q --no-cov -p no:cacheprovider -m 'not slow' → 88 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Bulkhead (per-tenant concurrency)",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "The Celery worker graph now receives a RedisBulkheadRegistry (tasks.py:1751-1764, 2946-2948; 9e03570d5), so worker-run goals count against the same distributed per-tenant bulkhead as the API. This is tested by tests/scaling/test_worker_runtime_profile.py::test_worker_graph_gets_the_tenant_bulkhead. bulkhead.py is unchanged: the atomic Lua acquire/release, the degrade-to-local-or-deny on Redis errors, and the executor failing closed still hold (14 + 6 passed). Limits are still a flat 20, never plan-derived, and the slot-TTL issues remain.",
+   "verified_fixed": [
+    "Worker AgentGraph was built without bulkhead_registry → bulkhead_registry=_worker_bulkhead_registry() in the worker services dict (app/scaling/tasks.py:1751-1764,2946-2948; 9e03570d5; test_worker_graph_gets_the_tenant_bulkhead)"
+   ],
+   "still_open": [
+    "available_slots_sync returns max, and the registry's available_slots reads the local registry → reliability/bulkhead.py:139-141,197-198 [low]",
+    "configure_tenant limits live in a per-process _limits dict and nothing outside bulkhead.py calls configure_tenant, so every tenant gets 20 regardless of plan (main.py:2052-2055, tasks.py:1760) [medium]",
+    "EXPIRE on every acquire (bulkhead.py:81) keeps leaked slots (crashed holder, or a release error swallowed at bulkhead.py:143-144) alive while traffic continues, and a step longer than _SLOT_TTL=300s lets the key expire mid-flight, resetting the count and allowing more than the limit"
+   ],
+   "new_defects": [
+    "app/scaling/tasks.py:1751-1764 — _worker_bulkhead_registry() builds a new RedisBulkheadRegistry (and a new redis.asyncio client/pool, never closed) for every run_goal. Its in-process fallback semaphore is therefore per goal, so when Redis is unreachable the worker's 'degrade to local limit' does not limit a tenant across its goals, and each goal leaves an unclosed connection pool behind [low]"
+   ],
+   "tests_run": [
+    "uv run pytest tests/reliability/test_bulkhead.py tests/reliability/test_redis_bulkhead.py -q --no-cov -p no:cacheprovider -m 'not slow' → 14 passed",
+    "uv run pytest tests/scaling/test_worker_runtime_profile.py -q --no-cov -p no:cacheprovider -m 'not slow' → 6 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Rollback engine and tool inverses",
+   "previous_status": "PARTIAL",
+   "status": "PARTIAL",
+   "evidence": "rollback.py, tool_inverses.py and verifier_mixin.py are unchanged. Production rollback still runs only through rollback_all_async in stack mode from the verifier's permanent-failure branch (verifier_mixin.py:821-835), with honest RollbackReport counts (18 passed). The undo stack is still in memory per graph (tasks.py:2924, goal_service.py:1651). Timeout, operator cancel and the new 7A fleet-wide emergency stop still end goals without rolling back side effects already registered.",
+   "verified_fixed": [],
+   "still_open": [
+    "Legacy None-returning inverses would still be counted as rolled_back and the sync paths fire-and-forget (dead but unremoved) → reliability/rollback.py:42,130-179; tool_inverses.py:123-133 [low]",
+    "The rollback stack is in memory per AgentGraph (RollbackEngine() per build at goal_service.py:1651, tasks.py:2924), so it is lost on worker crash or redelivery",
+    "Rollback runs only on the verifier's permanent-failure branch (verifier_mixin.py:821-823). Goals that end by timeout (wait_for cancel, tasks.py:3354-3368), operator cancel (goal_service.py:4836-4878) or the 7A emergency stop never roll back registered side effects [medium]"
+   ],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/reliability/test_rollback_async.py tests/reliability/test_rollback_honest_report.py tests/reliability/test_tool_inverses.py -q --no-cov -p no:cacheprovider -m 'not slow' → 18 passed"
+   ]
+  },
+  {
+   "area": "services-reliability",
+   "feature": "Result processor (output sanitization)",
+   "previous_status": "PASS",
+   "status": "PASS",
+   "evidence": "result_processor.py is unchanged. It redacts the shared BARE_SECRET_PATTERNS plus provider token and base64-credential patterns, truncates at 16k, and strips C0/C1 control characters. It remains wired into the API graph (goal_service.py:1649), the harness graph (goal_service.py:341) and the 7B worker graph (tasks.py:2922). The worker services dict passes straight through build_profiled_graph/GraphFactory.create into AgentGraph(**services) (profiled_graph.py:46-90; graph_factory.py:66-73), so the v2 profile path keeps it too. 40 tests pass; no new defects.",
+   "verified_fixed": [],
+   "still_open": [],
+   "new_defects": [],
+   "tests_run": [
+    "uv run pytest tests/agent/test_sanitization_bare_secrets.py tests/reliability/test_reliability.py tests/reliability/test_reliability_fixes.py -q --no-cov -p no:cacheprovider -m 'not slow' → 40 passed"
+   ]
+  }
+ ]
+}
