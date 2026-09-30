@@ -4,6 +4,7 @@ import { FormEvent, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { coordinationApi } from './coordinationApi';
 import { AuctionBidView } from './AuctionBidView';
+import { GroupChatPanel } from './GroupChatPanel';
 import { MagenticLedgerView } from './MagenticLedgerView';
 import { SwarmTopologyView } from './SwarmTopologyView';
 import { ParentChildTopology } from './ParentChildTopology';
@@ -95,6 +96,7 @@ export function CoordinationRunPage() {
               <span className="rounded-full border px-2.5 py-1 font-mono text-xs">{run.messages.items.length} events</span>
             </div>
             <SharedTranscript messages={run.messages.items} />
+            <div className="mt-8 border-t pt-6"><GroupChatPanel sessionId={sessionId} /></div>
             <div className="mt-8 border-t pt-6"><RunTimeline events={stream.events} /></div>
           </section>
 

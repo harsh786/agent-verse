@@ -97,3 +97,41 @@ def test_websocket_rejects_privileged_messages() -> None:
         with pytest.raises(WebSocketDisconnect) as exc:
             socket.receive_json()
     assert exc.value.code == 1008
+
+
+_WS = "/api/v1/coordination/sessions/session/group-chat/ws"
+_HEADERS = {"X-API-Key": "valid", "Origin": "https://app.example"}
+
+
+def _assert_live_delivery(client: TestClient) -> None:
+    with (
+        client.websocket_connect(_WS, headers=_HEADERS) as sender,
+        client.websocket_connect(_WS, headers=_HEADERS) as receiver,
+    ):
+        assert sender.receive_json()["type"] == "replay_complete"
+        assert receiver.receive_json()["type"] == "replay_complete"
+        sender.send_json({"content": "hello team", "client_message_id": "live-1"})
+        ack = sender.receive_json()
+        assert ack["type"] == "ack"
+        # ORG-23: the other participant receives the message without reconnecting.
+        live = receiver.receive_json()
+        assert live["type"] == "message"
+        assert live["message"]["message_id"] == ack["message"]["message_id"]
+        assert live["message"]["safe_content"] == "hello team"
+        # The sender is not sent its own echo: the next frame it sees is the pong.
+        sender.send_json({"type": "ping"})
+        assert sender.receive_json() == {"type": "pong"}
+        sender.send_json({"type": "close"})
+        receiver.send_json({"type": "close"})
+
+
+def test_group_chat_message_reaches_other_connections_live() -> None:
+    _assert_live_delivery(TestClient(_app()))
+
+
+def test_group_chat_live_delivery_uses_redis_when_configured() -> None:
+    import fakeredis
+
+    app = _app()
+    app.state._redis = fakeredis.FakeAsyncRedis(decode_responses=True)
+    _assert_live_delivery(TestClient(app))

@@ -2719,6 +2719,7 @@ def create_app(
     from app.coordination.handoffs.repository import InMemoryHandoffRepository
     from app.coordination.handoffs.service import HandoffService
     from app.coordination.ledger.repository import InMemoryProgressLedgerRepository
+    from app.coordination.live_bus import CoordinationLiveBus
     from app.coordination.magentic.human_review import MagenticHumanReviewService
     from app.coordination.moa.repository import InMemoryMoARepository
     from app.coordination.service import CoordinationService
@@ -2727,6 +2728,11 @@ def create_app(
     from app.coordination.transcript.repository import InMemoryTranscriptRepository
     from app.coordination.transcript.service import TranscriptService
 
+    # Live fan-out for group chat / coordination events: Redis pub/sub once the
+    # lifespan sets app.state._redis (read per call), in-process until then.
+    app.state.coordination_live_bus = CoordinationLiveBus(
+        lambda: getattr(app.state, "_redis", None)
+    )
     _transcript_repository = InMemoryTranscriptRepository()
     _coordination_store = InMemoryCoordinationStore()
     app.state.coordination_service = CoordinationService(_coordination_store)
