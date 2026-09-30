@@ -1,22 +1,16 @@
 """e2e_full: AI Agent Team -- supervisor decomposition + real sub-agent execution.
 
 Phase-3 *AI Agent Team* dimension (Row 20). ``POST /goals`` with
-``workflow_mode="supervisor"`` drives ``app.agent.supervisor.SupervisorAgent``: an LLM
-decomposes the goal into independent sub-tasks, each sub-task is dispatched as a REAL
-goal via ``GoalService.submit_goal`` (persisted, driven through the full
+``workflow_mode="supervisor"`` submits a parent goal (CORE-07) whose own graph runs
+``app.agent.supervisor.SupervisorAgent``: an LLM decomposes the goal into independent
+sub-tasks, each sub-task is dispatched as a REAL goal via ``GoalService.submit_goal``
+(persisted, linked by ``goals.parent_goal_id``, driven through the full
 plan -> execute -> verify ``AgentGraph`` loop -- not mocked), and the sub-agent results
-are synthesized into one final answer. This proves the team/coordination path
-end-to-end: decomposition ("team formation") -> parallel sub-agent execution ->
-durable persistence -> retrieval -> synthesis, against the booted app
-(``manage_pools=True``) with real Postgres + Redis, goals run inline (no Celery worker).
-
-``SupervisorAgent``'s HTTP response only surfaces internal ephemeral task ids -- see
-``app/agent/supervisor.py``'s ``SubAgentTask``, which has no ``goal_id`` field, so the
-real ``goal_id`` returned by ``goal_service.submit_goal`` for each sub-task is never
-threaded back onto the task or exposed in the API response. So the proof of real
-persisted state here is ``GET /goals`` (``list_goals``), which reads the tenant-scoped
-``Goal`` records created by the sub-task dispatch by their goal text -- a real API
-response shape backed by the same ``GoalService`` instance, not a mock.
+are synthesized. This proves the team/coordination path end-to-end: decomposition
+("team formation") -> parallel sub-agent execution -> durable persistence -> retrieval
+-> synthesis, against the booted app (``manage_pools=True``) with real Postgres +
+Redis, goals run inline (no Celery worker; the worker path is covered by
+``test_supervisor_subgoal_pool_e2e.py``).
 """
 
 from __future__ import annotations
@@ -49,10 +43,9 @@ def _prompt_text(request: Any) -> str:
 class _TeamProvider(FakeProvider):
     """Deterministic provider driving both halves of the team flow:
 
-    - ``app.state._app_provider`` -- consulted directly by the supervisor's
-      decompose/synthesize LLM calls in ``app/api/goals.py``.
     - ``app.state._llm_provider_override`` -- consulted by ``GoalService`` when it
-      builds the ``AgentGraph`` for each dispatched sub-goal (same seam used by
+      builds the ``AgentGraph`` for the parent (whose supervisor node decomposes and
+      synthesizes) and for each dispatched sub-goal (same seam used by
       ``tests/e2e_full/test_agent_patterns_e2e.py``).
     """
 
@@ -131,17 +124,21 @@ async def test_supervisor_forms_team_and_persists_subagent_results(
     assert submit.status_code == 202, f"submit failed: {submit.status_code} {submit.text}"
     body = submit.json()
 
+    # CORE-07: the request returns the real parent goal at once; the parent's own
+    # graph forms the team (decompose -> sub-goals -> synthesis).
     assert body["mode"] == "supervisor"
-    assert body["success"] is True
-    assert len(body["sub_goal_ids"]) == 2
-    assert SYNTHESIS_TEXT in body["synthesized_result"]
-    sub_tasks = {t["goal"]: t for t in body["sub_tasks"]}
-    assert set(sub_tasks) == {SUBTASK_A, SUBTASK_B}
-    assert all(t["status"] == "complete" for t in sub_tasks.values()), sub_tasks
+    parent_id = str(body["goal_id"])
+    assert parent_id
+    from tests.e2e_full.conftest import wait_for_status
+
+    parent = await wait_for_status(
+        team_client, parent_id, {"complete", "failed", "cancelled"}, timeout=90.0
+    )
+    assert parent["status"] == "complete", parent
 
     # Durable proof: each sub-task was dispatched as a REAL goal (persisted Goal
     # record, driven through plan -> execute -> verify) and is retrievable for this
-    # tenant, in a terminal state -- not merely an in-memory dataclass on the response.
+    # tenant, in a terminal state -- not merely an in-memory dataclass.
     listing = await team_client.get("/goals")
     assert listing.status_code == 200
     goals = listing.json()["goals"]
@@ -150,16 +147,24 @@ async def test_supervisor_forms_team_and_persists_subagent_results(
         assert sub_goal in by_text, f"sub-agent goal not persisted/retrievable: {sub_goal!r}"
         assert by_text[sub_goal]["status"] == "complete"
 
-    # The response's sub_goal_ids are the REAL persisted goal ids (not the
-    # in-memory task_id), so a client can correlate a result to its goal by id.
-    by_id = {str(g.get("id") or g.get("goal_id")): g for g in goals}
-    for sub_goal_id in body["sub_goal_ids"]:
-        assert sub_goal_id, "empty sub_goal_id in response"
-        assert str(sub_goal_id) in by_id, (
-            f"sub_goal_id {sub_goal_id!r} does not correspond to a persisted goal"
-        )
-    # Each sub_task carries its real goal_id, matching sub_goal_ids by identity.
-    assert {t["goal_id"] for t in body["sub_tasks"]} == set(body["sub_goal_ids"])
+    # The sub-goals are linked to their parent goal row (goals.parent_goal_id).
+    import os
+
+    import asyncpg
+
+    conn = await asyncpg.connect(
+        os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+    )
+    try:
+        rows = await conn.fetch("SELECT goal_text FROM goals WHERE parent_goal_id = $1", parent_id)
+    finally:
+        await conn.close()
+    assert {r["goal_text"] for r in rows} == {SUBTASK_A, SUBTASK_B}
+
+    # The parent's supervisor synthesized the team's results.
+    assert any(
+        "Synthesize a coherent" in _prompt_text(req) for req in _team_provider.call_history
+    ), "the supervisor never synthesized the sub-goal results"
 
     # Negative assertion: an unrelated tenant cannot see this team's persisted work --
     # the feature must FAIL this test if tenant scoping on the goals list regresses.

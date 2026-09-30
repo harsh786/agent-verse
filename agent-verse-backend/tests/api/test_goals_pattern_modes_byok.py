@@ -66,16 +66,6 @@ class _Orchestrator:
         return MagicMock(winning_proposal="A", consensus_level=1.0, winning_agent="agent_1")
 
 
-class _Supervisor:
-    captured: dict[str, Any] = {}
-
-    def __init__(self, *, planner_provider: Any, goal_service: Any, max_parallel: int) -> None:
-        _Supervisor.captured["provider"] = planner_provider
-
-    async def run(self, goal: str, tenant_ctx: Any) -> Any:
-        return MagicMock(tasks=[])
-
-
 def _post(app: FastAPI, mode: str) -> Any:
     client = TestClient(app, raise_server_exceptions=False)
     return client.post(
@@ -87,7 +77,8 @@ def _post(app: FastAPI, mode: str) -> Any:
     ("mode", "target", "fake"),
     [
         ("debate", "app.agent.debate.DebateOrchestrator", _Orchestrator),
-        ("supervisor", "app.agent.supervisor.SupervisorAgent", _Supervisor),
+        # Supervisor mode makes no LLM call in the request any more (CORE-07):
+        # its parent goal's own planner (BYOK-resolved, charged) decomposes it.
     ],
 )
 def test_pattern_mode_uses_the_tenant_byok_provider(mode: str, target: str, fake: Any) -> None:
@@ -135,24 +126,20 @@ def test_broken_byok_config_refuses_instead_of_using_the_platform() -> None:
 
 def test_unreadable_byok_store_is_a_503() -> None:
     ran = MagicMock()
-    with patch("app.agent.supervisor.SupervisorAgent", ran):
-        resp = _post(_app(_Store(error=LLMConfigReadError("db down")), MagicMock()), "supervisor")
+    with patch("app.agent.debate.DebateOrchestrator", ran):
+        resp = _post(_app(_Store(error=LLMConfigReadError("db down")), MagicMock()), "debate")
     assert resp.status_code == 503, resp.text
     ran.assert_not_called()
 
 
-def test_supervisor_failure_does_not_echo_the_exception_text() -> None:
-    """CORE-07 (partial): the 500 used to carry str(exc) — internal detail."""
-
-    class _Boom:
-        def __init__(self, **kwargs: Any) -> None:
-            pass
-
-        async def run(self, goal: str, tenant_ctx: Any) -> Any:
-            raise RuntimeError("secret-internal-dsn postgresql://user:pw@db/x")
-
-    with patch("app.agent.supervisor.SupervisorAgent", _Boom):
-        resp = _post(_app(_Store(cfg=None), MagicMock()), "supervisor")
-    assert resp.status_code == 500
-    assert "secret-internal-dsn" not in resp.text
-    assert "postgresql://" not in resp.text
+def test_supervisor_mode_leaves_provider_resolution_to_the_goal() -> None:
+    """CORE-07: no in-request decomposition, so no BYOK read here; the parent
+    goal's run resolves the tenant provider (and fails the goal honestly when the
+    BYOK config is unusable)."""
+    store = _Store(error=LLMConfigReadError("db down"))
+    ran = MagicMock()
+    with patch("app.agent.supervisor.SupervisorAgent", ran):
+        resp = _post(_app(store, MagicMock()), "supervisor")
+    assert resp.status_code == 202, resp.text
+    assert store.strict_calls == 0
+    ran.assert_not_called()

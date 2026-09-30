@@ -110,19 +110,14 @@ def test_debate_runs_on_a_guarded_provider() -> None:
     assert provider._tenant_ctx.tenant_id == _CTX.tenant_id
 
 
-def test_supervisor_runs_on_a_guarded_provider() -> None:
-    captured: dict[str, Any] = {}
-    raw = MagicMock()
-
-    class _Supervisor:
-        def __init__(self, *, planner_provider: Any, goal_service: Any, max_parallel: int) -> None:
-            captured["provider"] = planner_provider
-
-        async def run(self, goal: str, tenant_ctx: Any) -> Any:
-            return MagicMock(tasks=[])  # no decomposition -> single goal
+def test_supervisor_makes_no_llm_call_in_the_request() -> None:
+    """CORE-07: supervisor mode submits a parent goal whose graph decomposes it
+    (with the goal's own charged planner); the request itself calls no LLM."""
+    raw = AsyncMock()
+    ran = MagicMock()
 
     svc = _svc(budget_ok=True)
-    with patch("app.agent.supervisor.SupervisorAgent", _Supervisor):
+    with patch("app.agent.supervisor.SupervisorAgent", ran):
         client = TestClient(_app(svc, raw), raise_server_exceptions=False)
         resp = client.post(
             "/goals",
@@ -132,8 +127,8 @@ def test_supervisor_runs_on_a_guarded_provider() -> None:
 
     assert resp.status_code == 202, resp.text
     svc._check_budget_preflight.assert_awaited_once()
-    assert isinstance(captured["provider"], GuardedDecisionProvider)
-    assert captured["provider"].inner is raw
+    ran.assert_not_called()
+    raw.complete.assert_not_awaited()
 
 
 @pytest.mark.asyncio

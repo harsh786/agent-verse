@@ -370,11 +370,12 @@ async def _submit_goal_unguarded(
     if body.model_override:
         exec_ctx["model_override"] = body.model_override
 
-    # Debate / supervisor run LLM calls HERE, inside the request, before any goal
-    # exists. Check the tenant's budget first (429 when exhausted — no LLM call),
-    # and give those components a provider whose every call is circuit-broken,
-    # time-bounded and charged to the tenant (they used to call the raw platform
-    # provider: unbilled, unbounded, and ahead of the submission budget check).
+    # Debate runs LLM calls HERE, inside the request, before any goal exists.
+    # Check the tenant's budget first (429 when exhausted — no LLM call), and give
+    # the orchestrator a provider whose every call is circuit-broken, time-bounded
+    # and charged to the tenant (it used to call the raw platform provider:
+    # unbilled, unbounded, and ahead of the submission budget check). Supervisor
+    # mode makes no LLM call here (see below) but is refused just as early.
     _decision_provider: Any = None
     if body.workflow_mode in ("debate", "supervisor"):
         preflight = getattr(svc, "_check_budget_preflight", None)
@@ -382,6 +383,7 @@ async def _submit_goal_unguarded(
             pending = preflight(tenant)
             if inspect.isawaitable(pending):
                 await pending
+    if body.workflow_mode == "debate":
         _decision_provider = await _tenant_decision_provider(request, tenant)
 
     # ── Debate mode: run multi-agent consensus before goal execution ──────────
@@ -413,77 +415,16 @@ async def _submit_goal_unguarded(
         else:
             exec_ctx["debate_error"] = "no LLM provider available for the debate"
 
-    # ── Supervisor mode: LLM decomposes goal → parallel sub-agents ───────────
+    # ── Supervisor mode: a parent goal whose own graph runs the fan-out ───────
+    # It used to run SupervisorAgent inside this request — awaiting every
+    # sub-goal (up to 300 s each) — create no parent goal and answer goal_id "".
+    # Now the parent is submitted like any goal (workflow_mode="supervisor"
+    # compiles the in-graph supervisor node, which decomposes the goal with the
+    # goal's own charged, BYOK-resolved planner, dispatches the sub-goals — on a
+    # worker, to the dedicated sub-goal pool (CORE-09) — and synthesizes their
+    # results); its id comes back at once and the goal page follows it.
     if body.workflow_mode == "supervisor":
-        from app.agent.supervisor import SupervisorAgent
-        from app.providers.guarded_completion import GuardedDecisionProvider
-
-        provider = _decision_provider
-        goal_svc = _goal_service(request)
-        try:
-            supervisor = SupervisorAgent(
-                planner_provider=(
-                    GuardedDecisionProvider(provider, role="supervisor", tenant_ctx=tenant)
-                    if provider is not None
-                    else None
-                ),
-                goal_service=goal_svc,
-                max_parallel=body.supervisor_max_parallel,
-            )
-            result = await supervisor.run(goal=body.goal, tenant_ctx=tenant)
-        except Exception as exc:
-            # Log the detail; never echo exception text (DSNs, hosts, internals).
-            _logger.warning(
-                "supervisor_mode_failed", error_type=type(exc).__name__, error=str(exc)[:300]
-            )
-            raise HTTPException(500, "Supervisor execution failed") from exc
-        if not isinstance(result, dict) and len(result.tasks) <= 1:
-            # The goal did not decompose into several sub-tasks, so the supervisor
-            # ran nothing (it used to answer success=False with no goal at all).
-            # Run it as one ordinary goal and say so.
-            exec_ctx["supervisor_applied"] = True  # do not decompose again in-graph
-            exec_ctx["supervisor_fallback"] = (
-                "goal did not decompose into multiple sub-tasks; ran as a single goal"
-            )
-        else:
-            if isinstance(result, dict):
-                sub_goal_ids = [str(value) for value in result.get("sub_goal_ids", [])]
-                return {
-                    "id": str(result.get("parent_goal_id", "")),
-                    "goal_id": str(result.get("parent_goal_id", "")),
-                    "status": "multi_agent",
-                    "mode": "supervisor",
-                    "success": bool(result.get("success", True)),
-                    "synthesized_result": str(
-                        result.get("synthesized_result", result.get("synthesis", ""))
-                    ),
-                    "sub_goal_ids": sub_goal_ids,
-                    "sub_tasks": list(result.get("sub_tasks", [])),
-                    "goal": body.goal,
-                }
-            return {
-                "id": "",
-                "goal_id": "",
-                "status": "multi_agent",
-                "mode": "supervisor",
-                "success": result.success,
-                "synthesized_result": result.synthesized_result,
-                # Real persisted goal ids (skip any sub-task that never got to
-                # submit a goal), so a client can correlate results to goals.
-                "sub_goal_ids": [t.goal_id for t in result.tasks if t.goal_id],
-                "sub_tasks": [
-                    {
-                        "task_id": t.task_id,
-                        "goal_id": t.goal_id,
-                        "goal": t.goal,
-                        "status": t.status,
-                        "result": t.result,
-                        "error": t.error,
-                    }
-                    for t in result.tasks
-                ],
-                "goal": body.goal,
-            }
+        exec_ctx["supervisor_max_parallel"] = body.supervisor_max_parallel
 
     # ── Multi-agent mode: same goal dispatched to N agents in parallel ────────
     if body.workflow_mode == "multi_agent" and body.agent_ids:
@@ -574,6 +515,8 @@ async def _submit_goal_unguarded(
         workflow_mode=body.workflow_mode,
         execution_context=exec_ctx,
     )
+    if body.workflow_mode == "supervisor":
+        result["mode"] = "supervisor"
     # Gap 5: Dry-run vs simulation — surface execution mode in response
     result["execution_mode"] = "preview" if body.dry_run else "live"
     result["execution_mode_description"] = (

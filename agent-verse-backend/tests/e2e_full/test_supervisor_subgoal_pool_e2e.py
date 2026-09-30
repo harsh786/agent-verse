@@ -207,3 +207,52 @@ async def test_supervisor_goal_completes_with_a_single_main_pool_slot(
     done = [e for e in events if e.get("type") == "supervisor_complete"]
     assert done, [e.get("type") for e in events]
     assert done[-1].get("success") is True and done[-1].get("completed_tasks") == 2, done
+
+
+async def _child_goal_ids(parent_id: str) -> list[str]:
+    import asyncpg
+
+    dsn = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+    conn = await asyncpg.connect(dsn)
+    try:
+        rows = await conn.fetch("SELECT id FROM goals WHERE parent_goal_id = $1", parent_id)
+    finally:
+        await conn.close()
+    return [str(r["id"]) for r in rows]
+
+
+async def test_supervisor_mode_submission_enqueues_a_parent_goal(
+    app: Any, tenant_client: Any, worker_pools: dict[str, Any]
+) -> None:
+    """CORE-07: POST /goals workflow_mode=supervisor returns a real parent goal id
+    at once (no in-request fan-out); the parent runs on a worker and its sub-goals
+    are linked to it (goals.parent_goal_id) and run on the sub-goal pool."""
+    started = time.monotonic()
+    resp = await tenant_client.post(
+        "/goals",
+        json={"goal": "Contrast the ocean with the desert", "workflow_mode": "supervisor"},
+    )
+    assert resp.status_code == 202, resp.text
+    assert time.monotonic() - started < 10, "the request must not wait for the sub-goals"
+    parent_id = resp.json()["goal_id"]
+    assert parent_id and resp.json()["mode"] == "supervisor"
+
+    deadline = asyncio.get_event_loop().time() + 240
+    goal: dict[str, Any] = {}
+    while asyncio.get_event_loop().time() < deadline:
+        got = await tenant_client.get(f"/goals/{parent_id}")
+        if got.status_code == 200:
+            goal = got.json()
+            if goal.get("status") in _TERMINAL:
+                break
+        await asyncio.sleep(1.0)
+    main_log = worker_pools["main"]["log_path"].read_text()
+    sub_log = worker_pools["sub"]["log_path"].read_text()
+    logs = f"--- main pool ---\n{main_log[-4000:]}\n--- sub-goal pool ---\n{sub_log[-4000:]}"
+    assert goal.get("status") == "complete", f"{goal!r}\n{logs}"
+
+    children = await _child_goal_ids(parent_id)
+    assert len(children) == 2, (children, logs)
+    assert parent_id in _goal_ids_run(main_log)
+    for child in children:
+        assert child in _goal_ids_run(sub_log) and child not in _goal_ids_run(main_log), logs

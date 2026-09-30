@@ -485,10 +485,19 @@ class ReasoningMixin:
             tenant_ctx = getattr(agent_state, "tenant_ctx", None) or getattr(
                 self, "_tenant_ctx_ref", None
             )
+            # POST /goals workflow_mode=supervisor carries the requested fan-out
+            # width (bounded 1-20 by the API) on the goal's context.
+            _width = agent_state.context.get("supervisor_max_parallel")
+            _width_kw: dict[str, Any] = (
+                {"max_parallel": max(1, min(20, _width))}
+                if isinstance(_width, int) and not isinstance(_width, bool)
+                else {}
+            )
             supervisor = SupervisorAgent(
                 planner_provider=self._charging(self._planner, "supervisor", agent_state),
                 goal_service=goal_service,
                 agent_router=getattr(self, "_agent_router", None),
+                **_width_kw,
             )
             result = await supervisor.run(
                 goal=agent_state.goal,

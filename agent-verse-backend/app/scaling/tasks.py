@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import datetime
 import hashlib
 import os
@@ -21,7 +22,7 @@ from app.observability.logging import get_logger
 from app.org.feature_flags import is_feature_enabled
 from app.reliability.goal_lifecycle import GoalCancelledError
 from app.scaling.beat_guard import beat_task_guard
-from app.scaling.celery_app import PLAN_QUEUE_MAP, celery_app
+from app.scaling.celery_app import celery_app, goal_queue_for
 
 logger = get_logger(__name__)
 
@@ -159,13 +160,23 @@ return 0
             self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._value)
 
 
+# True while this worker thread runs a supervisor sub-goal (set by run_goal from
+# its ``subgoal`` kwarg on every invocation). A sub-goal runs under its parent's
+# concurrent-goal slot and never took one, so it must not release one (CORE-07).
+_SUBGOAL_RUN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "agentverse_subgoal_run", default=False
+)
+
+
 async def _decrement_after_completion(tenant_id: str, redis_url: str) -> None:
     """Decrement the concurrent-goal counter in Redis after a Celery goal finishes.
 
     Celery workers never call ``_dispatch_event`` in the API process, so the
     counter must be decremented explicitly here at every terminal exit of
-    ``run_goal``.
+    ``run_goal``. A supervisor sub-goal holds no slot of its own: nothing to do.
     """
+    if _SUBGOAL_RUN.get():
+        return
     try:
         import redis.asyncio as aioredis
 
@@ -1997,8 +2008,12 @@ def run_goal(
     plan: str = "free",
     trigger_chain_depth: int = 0,
     source_trigger_id: str = "",
+    subgoal: bool = False,
 ) -> dict[str, Any]:
     """Run a submitted goal in a worker and return its local result.
+
+    ``subgoal`` marks a supervisor's sub-goal (dispatched to goals.subgoals.*):
+    it runs under its parent's concurrent-goal slot, so no slot is released.
 
     Through the goal status bridge (``goal_bridge``) the worker claims the goal
     row, updates its DB status and appends its lifecycle events, so the API
@@ -2011,7 +2026,7 @@ def run_goal(
 
     logger.info("Running goal %s for tenant %s", goal_id, tenant_id)
     # Log which queue tier this task was dispatched to for observability
-    _dispatch_queue = PLAN_QUEUE_MAP.get(plan, "goals.free")
+    _dispatch_queue = goal_queue_for(plan, subgoal=bool(subgoal))
     logger.info(
         "run_goal_queue_selected",
         goal_id=goal_id,
@@ -2020,6 +2035,8 @@ def run_goal(
     )
     started_monotonic = _monotonic()
     effective_goal = goal_text or goal_template
+    # Set on EVERY invocation (the worker thread is reused across tasks).
+    _SUBGOAL_RUN.set(bool(subgoal))
 
     # The tenant's plan is what the API enqueued with the goal. It used to be
     # read from a "plan" field of the LLM-config cache that nothing writes, so

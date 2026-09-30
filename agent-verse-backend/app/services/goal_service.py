@@ -48,6 +48,13 @@ def _subgoal_queue_kwargs(execution_context: Any) -> dict[str, Any]:
     return {"subgoal": True} if ctx.get(SUBGOAL_MARKER) else {}
 
 
+def _holds_concurrency_slot(execution_context: Any) -> bool:
+    """False for a supervisor's sub-goal: it runs under its parent's concurrent-goal
+    slot. Taking its own slot let a parent at the tenant's limit starve its own
+    children (CORE-07). The fan-out is bounded (<= 6 sub-tasks, one level)."""
+    return not _subgoal_queue_kwargs(execution_context)
+
+
 def _tenant_llm_kwargs(cfg: dict[str, Any] | None) -> dict[str, Any]:
     """``tenant_llm_config=`` only when one was resolved (keeps subclass
     overrides of ``_make_agent_loop_for_tenant`` without the kwarg working)."""
@@ -531,6 +538,8 @@ GRAPH_CONTEXT_KEYS: tuple[str, ...] = (
     "debate_error",
     "supervisor_applied",
     "supervisor_fallback",
+    # POST /goals workflow_mode=supervisor: the in-graph fan-out width.
+    "supervisor_max_parallel",
 )
 
 
@@ -2842,7 +2851,8 @@ class GoalService:
         if etype in {"goal_complete", "goal_failed", "goal_cancelled"}:
             from app.tenancy.limits import decrement_concurrent_goals
 
-            await decrement_concurrent_goals(tenant_id=record.tenant_id, redis=self._redis)
+            if _holds_concurrency_slot(record.execution_context):
+                await decrement_concurrent_goals(tenant_id=record.tenant_id, redis=self._redis)
             # Release dedup key so future identical goals can be submitted
             try:
                 from app.services.dedup import _default_deduplicator as _goal_dedup
@@ -4014,10 +4024,12 @@ class GoalService:
             # Raises PlanLimitExceededError (HTTP 429) when the tenant is at limit.
             from app.tenancy.limits import check_and_increment_concurrent_goals
 
-            await check_and_increment_concurrent_goals(
-                tenant_ctx=tenant_ctx,
-                redis=getattr(self, "_redis", None),
-            )
+            _takes_slot = _holds_concurrency_slot(execution_context)
+            if _takes_slot:
+                await check_and_increment_concurrent_goals(
+                    tenant_ctx=tenant_ctx,
+                    redis=getattr(self, "_redis", None),
+                )
 
             goal_id = uuid.uuid4().hex
 
@@ -4188,6 +4200,10 @@ class GoalService:
             # (Read from the DB-backed store by _validate_agent_id above — the
             # local cache, read under suppress(Exception), lost them silently.)
             _flags = pattern_flags_from_record(_agent_record)
+            if workflow_mode == "supervisor":
+                # POST /goals workflow_mode=supervisor (CORE-07): this goal is the
+                # supervisor parent; its own graph runs the fan-out node.
+                _flags["enable_supervisor"] = True
             if _flags:
                 record.execution_context["agent_pattern_flags"] = _flags
 
@@ -4308,10 +4324,11 @@ class GoalService:
                     try:
                         from app.tenancy.limits import decrement_concurrent_goals
 
-                        await decrement_concurrent_goals(
-                            tenant_id=tenant_ctx.tenant_id,
-                            redis=getattr(self, "_redis", None),
-                        )
+                        if _takes_slot:
+                            await decrement_concurrent_goals(
+                                tenant_id=tenant_ctx.tenant_id,
+                                redis=getattr(self, "_redis", None),
+                            )
                     except Exception as _dec_exc:
                         _svc_logger.warning(
                             "counter_decrement_failed_on_error", error=str(_dec_exc)
@@ -5163,7 +5180,8 @@ class GoalService:
         await self._db_set_suspended(goal_id, tenant_ctx.tenant_id, True)
         from app.tenancy.limits import decrement_concurrent_goals
 
-        await decrement_concurrent_goals(tenant_id=tenant_ctx.tenant_id, redis=self._redis)
+        if _holds_concurrency_slot(record.execution_context):
+            await decrement_concurrent_goals(tenant_id=tenant_ctx.tenant_id, redis=self._redis)
         await self._dispatch_event(
             goal_id,
             {"type": "goal_waiting_human", "reason": "pending approvals (supervised mode)"},
@@ -5177,8 +5195,10 @@ class GoalService:
         from app.tenancy.limits import check_and_increment_concurrent_goals
 
         # The slot was released on suspension; a tenant at its limit gets a 429
-        # and the goal stays waiting (the approval can be retried).
-        await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
+        # and the goal stays waiting (the approval can be retried). A sub-goal
+        # runs under its parent's slot and never held one.
+        if _holds_concurrency_slot(record.execution_context):
+            await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
         record.execution_context.pop(_SUSPENDED_KEY, None)
         await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, False)
         # The relaunch may run somewhere else than the original run did.
@@ -5678,17 +5698,28 @@ class GoalService:
         if self._db is None:
             return
         try:
+            from app.agent.supervisor import SUBGOAL_MARKER
             from app.db.models.goal import Goal
             from app.db.rls import sqlalchemy_rls_context
 
+            _parent = str((execution_context or {}).get(SUBGOAL_MARKER) or "")
             async with (
                 self._db() as session,
                 session.begin(),
                 sqlalchemy_rls_context(session, tenant_id),
             ):
+                # A supervisor's sub-goal is linked to its parent goal row (same
+                # tenant, via RLS) when that row exists; the marker may be a bare
+                # "supervisor" placeholder with no parent goal.
+                parent_goal_id = (
+                    _parent
+                    if _parent and _parent != goal_id and await session.get(Goal, _parent)
+                    else None
+                )
                 g = Goal(
                     id=goal_id,
                     tenant_id=tenant_id,
+                    parent_goal_id=parent_goal_id,
                     goal_text=goal_text,
                     status=status,
                     priority=priority,

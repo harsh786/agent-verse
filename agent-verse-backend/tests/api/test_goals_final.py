@@ -96,61 +96,43 @@ def test_submit_goal_debate_mode_orchestrator_exception_falls_back() -> None:
 
 
 def test_submit_goal_supervisor_mode_success() -> None:
-    """Lines 97-118: supervisor mode returns multi_agent result."""
+    """Supervisor mode returns the submitted parent goal (CORE-07)."""
     svc = AsyncMock()
+    svc.submit_goal = AsyncMock(return_value={"goal_id": "pg", "status": "planning"})
 
     app = _make_app(svc)
     app.state._app_provider = MagicMock()
 
-    from app.agent.supervisor import SubAgentTask, SupervisionResult
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/goals",
+        json={"goal": "run three tasks in parallel", "workflow_mode": "supervisor"},
+        headers={"X-API-Key": _KEY},
+    )
 
-    with patch("app.agent.supervisor.SupervisorAgent") as mock_cls:
-        mock_supervisor = AsyncMock()
-        mock_supervisor.run = AsyncMock(return_value=SupervisionResult(
-            success=True,
-            tasks=[
-                SubAgentTask(task_id="sg1", goal="sub-task 1", status="complete", result="ok"),
-                SubAgentTask(task_id="sg2", goal="sub-task 2", status="complete", result="ok"),
-            ],
-            synthesized_result="Both sub-tasks completed.",
-        ))
-        mock_cls.return_value = mock_supervisor
-
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/goals",
-            json={"goal": "run three tasks in parallel", "workflow_mode": "supervisor"},
-            headers={"X-API-Key": _KEY},
-        )
-
-    assert resp.status_code in (200, 202)
-    if resp.status_code in (200, 202):
-        body = resp.json()
-        assert body["mode"] == "supervisor"
-        assert body["success"] is True
-        assert len(body["sub_tasks"]) == 2
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["mode"] == "supervisor"
+    assert body["goal_id"] == "pg"
 
 
 def test_submit_goal_supervisor_mode_exception_raises_500() -> None:
-    """Lines 119-120: supervisor.run raises → 500 HTTP exception."""
+    """The parent submission failing is a 500 that does not echo internals."""
     svc = AsyncMock()
+    svc.submit_goal = AsyncMock(side_effect=RuntimeError("supervisor crashed"))
 
     app = _make_app(svc)
-    app.state._app_provider = None  # provider is None → still enters supervisor path
+    app.state._app_provider = None
 
-    with patch("app.agent.supervisor.SupervisorAgent") as mock_cls:
-        mock_supervisor = AsyncMock()
-        mock_supervisor.run = AsyncMock(side_effect=RuntimeError("supervisor crashed"))
-        mock_cls.return_value = mock_supervisor
-
-        client = TestClient(app, raise_server_exceptions=False)
-        resp = client.post(
-            "/goals",
-            json={"goal": "do something", "workflow_mode": "supervisor"},
-            headers={"X-API-Key": _KEY},
-        )
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/goals",
+        json={"goal": "do something", "workflow_mode": "supervisor"},
+        headers={"X-API-Key": _KEY},
+    )
 
     assert resp.status_code == 500
+    assert "supervisor crashed" not in resp.text
 
 
 # ── lines 165-175: agent_router needs_human_choice + exception ───────────────
@@ -429,11 +411,10 @@ def test_get_goal_attempts_db_exception_returns_empty() -> None:
     assert resp.json() == []
 
 
-def test_supervisor_single_task_runs_as_ordinary_goal() -> None:
-    """<=1 decomposed task: the supervisor ran nothing and answered success=False.
-
-    Now the goal is submitted as one ordinary goal, flagged in its context.
-    """
+def test_supervisor_mode_is_one_parent_goal_submission() -> None:
+    """Supervisor mode no longer decomposes in the request (CORE-07): a goal that
+    does not decompose simply runs as one goal in its own graph. The API submits
+    exactly one parent goal with workflow_mode="supervisor"."""
     svc = AsyncMock()
     svc.submit_goal = AsyncMock(
         return_value={"id": "g1", "goal_id": "g1", "status": "planning", "goal": "g"}
@@ -441,14 +422,7 @@ def test_supervisor_single_task_runs_as_ordinary_goal() -> None:
     app = _make_app(svc)
     app.state._app_provider = MagicMock()
 
-    from app.agent.supervisor import SubAgentTask, SupervisionResult
-
     with patch("app.agent.supervisor.SupervisorAgent") as mock_cls:
-        mock_supervisor = AsyncMock()
-        mock_supervisor.run = AsyncMock(
-            return_value=SupervisionResult(success=False, tasks=[SubAgentTask(goal="g")])
-        )
-        mock_cls.return_value = mock_supervisor
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/goals",
@@ -458,9 +432,9 @@ def test_supervisor_single_task_runs_as_ordinary_goal() -> None:
 
     assert resp.status_code in (200, 202)
     assert resp.json()["goal_id"] == "g1"
-    ctx = svc.submit_goal.await_args.kwargs["execution_context"]
-    assert "single goal" in ctx["supervisor_fallback"]
-    assert ctx["supervisor_applied"] is True
+    mock_cls.assert_not_called()
+    svc.submit_goal.assert_awaited_once()
+    assert svc.submit_goal.await_args.kwargs["workflow_mode"] == "supervisor"
 
 
 def test_debate_failure_is_recorded_on_the_goal() -> None:

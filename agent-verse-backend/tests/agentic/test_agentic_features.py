@@ -72,20 +72,15 @@ def _make_rpa_app(session_manager: Any = None) -> FastAPI:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: workflow_mode=supervisor returns sub_goal_ids
+# Test 1: workflow_mode=supervisor submits a parent goal and returns its id
 # ---------------------------------------------------------------------------
 
-def test_workflow_mode_supervisor_returns_sub_goal_ids() -> None:
-    """Supervisor mode should return sub_goal_ids in the response."""
+def test_workflow_mode_supervisor_returns_the_parent_goal_id() -> None:
+    """Supervisor mode submits one parent goal (its graph runs the fan-out on a
+    worker, CORE-07) and returns its id; nothing is decomposed in the request."""
     svc = AsyncMock()
-    # The supervisor import path is mocked so no real LLM required
+    svc.submit_goal = AsyncMock(return_value={"goal_id": "pg-1", "status": "planning"})
     with patch("app.agent.supervisor.SupervisorAgent") as MockSupervisor:
-        instance = MockSupervisor.return_value
-        instance.run = AsyncMock(return_value={
-            "parent_goal_id": "pg-1",
-            "sub_goal_ids": ["sg-1", "sg-2", "sg-3"],
-            "synthesis": "done",
-        })
         app = _make_goals_app(svc, extra_state={"_app_provider": MagicMock()})
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
@@ -96,9 +91,10 @@ def test_workflow_mode_supervisor_returns_sub_goal_ids() -> None:
 
     assert resp.status_code == 202
     data = resp.json()
-    assert data["status"] == "multi_agent"
+    assert data["goal_id"] == "pg-1"
     assert data["mode"] == "supervisor"
-    assert isinstance(data["sub_goal_ids"], list)
+    MockSupervisor.assert_not_called()
+    assert svc.submit_goal.await_args.kwargs["workflow_mode"] == "supervisor"
 
 
 # ---------------------------------------------------------------------------

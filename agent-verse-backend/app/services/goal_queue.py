@@ -65,6 +65,10 @@ class CeleryGoalTaskQueue:
         )
         if source_trigger_id:
             extra["source_trigger_id"] = source_trigger_id
+        if subgoal:
+            # The worker must not release a concurrency slot the sub-goal never
+            # took (it runs under its parent's). Only the sub-goal pool reads it.
+            extra["subgoal"] = True
         result: Any = run_goal.apply_async(
             kwargs={
                 **extra,
