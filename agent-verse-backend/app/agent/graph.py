@@ -833,8 +833,15 @@ class AgentGraph(
                             _as_ref.goal_id = goal_id
                         input_state["agent_state"] = _as_ref
                     _as_ref.context["_goal_start_ms"] = _goal_start_ms
-                except Exception:
-                    pass
+                except Exception as _stamp_exc:
+                    # Latency scoring loses its start time; say so (was silent).
+                    from app.observability.logging import get_logger
+
+                    get_logger(__name__).warning(
+                        "goal_start_latency_stamp_failed",
+                        goal_id=goal_id,
+                        error=str(_stamp_exc)[:200],
+                    )
 
                 # Emergency stop (tenant- or org-level). In-process API execution
                 # used to check no flag at all; the worker checks the same keys.

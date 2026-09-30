@@ -2202,7 +2202,15 @@ def run_goal(
                 dry_run=dry_run,
                 agent_id=agent_id or None,
                 workflow_mode=workflow_mode,
-                execution_context={},
+                # The submitted context is not delivered to the worker; say so
+                # instead of writing a blank {} that reads like "no context".
+                execution_context={
+                    "execution_context_source": "worker_recreated_row",
+                    "execution_context_note": (
+                        "goal row was missing when the worker started; the submitted "
+                        "execution context was not available"
+                    ),
+                },
             )
         except Exception as db_exc:
             logger.warning("DB ensure goal row failed (non-fatal): %s", db_exc)
@@ -2501,10 +2509,12 @@ def run_goal(
     # profile / agent pattern flags said (while the goal was recorded as running
     # the profile's strategy). Read them back and build the graph like GoalService.
     _worker_exec_ctx: dict[str, Any] = {}
+    _worker_ctx_unreadable = False
     if goal_bridge is not None:
         try:
             _worker_exec_ctx = _run_async(_goal_execution_context(goal_id, tenant_id)) or {}
         except Exception as _ctx_exc:
+            _worker_ctx_unreadable = True
             logger.warning("worker_execution_context_lookup_failed goal=%s: %s", goal_id, _ctx_exc)
     _worker_pattern_flags = _pattern_flags_from_context(_worker_exec_ctx)
     (
@@ -2512,6 +2522,15 @@ def run_goal(
         _worker_observed_profile,
         _worker_profile_downgrade,
     ) = _runtime_profile_from_context(_worker_exec_ctx)
+    if _worker_ctx_unreadable and not _worker_profile_downgrade:
+        # A plain graph runs because the goal's profile / pattern flags could not
+        # be read: record why instead of skipping the v2 profile silently (CORE-20).
+        _worker_profile_downgrade = {
+            "strategy_id": "unknown",
+            "from": "runtime_profile",
+            "to": "agent_graph",
+            "reason": "profile_unreadable",
+        }
 
     # What the worker's graph actually runs, for certification evidence at the end.
     _worker_strategy_run: dict[str, Any] = {}
