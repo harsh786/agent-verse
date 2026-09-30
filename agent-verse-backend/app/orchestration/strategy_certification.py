@@ -164,21 +164,40 @@ class StrategyEvidenceStore:
         LIMIT 500
     """
 
+    # Newest N rows PER STRATEGY (window function), not a single LIMIT over the
+    # tenant: a hot strategy's rows used to crowd quiet strategies out of the
+    # catalogue entirely (CORE-17). Served by ix_strategy_evidence_recent.
     tenant_current_query = """
-        SELECT * FROM strategy_certification_evidence
-        WHERE tenant_id = :tenant_id
-          AND expires_at > :now
-        ORDER BY observed_at DESC
-        LIMIT 5000
+        SELECT * FROM (
+            SELECT e.*,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY e.strategy_id ORDER BY e.observed_at DESC
+                   ) AS evidence_rank
+            FROM strategy_certification_evidence e
+            WHERE e.tenant_id = :tenant_id
+              AND e.expires_at > :now
+        ) ranked
+        WHERE ranked.evidence_rank <= :per_strategy
+        ORDER BY ranked.observed_at DESC
+    """
+
+    purge_batch_query = """
+        DELETE FROM strategy_certification_evidence
+        WHERE id IN (
+            SELECT id FROM strategy_certification_evidence
+            WHERE expires_at <= :now
+            ORDER BY expires_at
+            LIMIT :batch_size
+        )
     """
 
     def __init__(self, db_session_factory: Any) -> None:
         self._db = db_session_factory
 
     async def list_current_for_tenant(
-        self, *, tenant_id: str, now: datetime | None = None
+        self, *, tenant_id: str, now: datetime | None = None, per_strategy: int = 200
     ) -> list[dict[str, Any]]:
-        """All of a tenant's unexpired evidence (bounded), newest first — one query."""
+        """A tenant's unexpired evidence, newest ``per_strategy`` rows of each strategy."""
         if self._db is None:
             return []
         from sqlalchemy import text
@@ -191,9 +210,47 @@ class StrategyEvidenceStore:
             )
             result = await session.execute(
                 text(self.tenant_current_query),
-                {"tenant_id": tenant_id, "now": checked_at},
+                {
+                    "tenant_id": tenant_id,
+                    "now": checked_at,
+                    "per_strategy": max(1, int(per_strategy)),
+                },
             )
             return [dict(row) for row in result.mappings().all()]
+
+    async def purge_expired(
+        self,
+        *,
+        now: datetime | None = None,
+        batch_size: int = 1000,
+        max_batches: int = 100,
+    ) -> int:
+        """Delete expired evidence across tenants in bounded batches; returns rows deleted.
+
+        Nothing deleted expired rows, so the table grew forever. This is SYSTEM
+        work: the factory must be the maintenance (BYPASSRLS) one and each batch
+        runs under ``system_session`` — under the NOBYPASSRLS application role it
+        fails loudly instead of silently deleting nothing.
+        """
+        if self._db is None:
+            return 0
+        from sqlalchemy import text
+
+        from app.db.rls import system_session
+
+        cutoff = now or datetime.now(UTC)
+        total = 0
+        for _ in range(max(1, int(max_batches))):
+            async with self._db() as session, session.begin(), system_session(session):
+                result = await session.execute(
+                    text(self.purge_batch_query),
+                    {"now": cutoff, "batch_size": max(1, int(batch_size))},
+                )
+                deleted = int(getattr(result, "rowcount", 0) or 0)
+            total += deleted
+            if deleted < batch_size:
+                break
+        return total
 
     @staticmethod
     def is_current(expires_at: datetime, now: datetime) -> bool:

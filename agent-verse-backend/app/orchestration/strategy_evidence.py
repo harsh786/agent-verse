@@ -214,7 +214,7 @@ class StrategyEvidenceRecorder:
         grouped: dict[str, list[StrategyRunEvidence]] = {sid: [] for sid in wanted}
         try:
             rows = await StrategyEvidenceStore(factory).list_current_for_tenant(
-                tenant_id=tenant_id, now=self._clock()
+                tenant_id=tenant_id, now=self._clock(), per_strategy=self._read_limit
             )
         except Exception as exc:
             _logger.warning("strategy_evidence_read_failed", error_type=type(exc).__name__)

@@ -65,6 +65,8 @@ celery_app = Celery(
         "app.ingestion.scheduler",
         # RAFT fine-tune status poller (beat: poll-raft-fine-tune-jobs).
         "app.scaling.raft_tasks",
+        # Expired strategy-evidence purge (beat: purge-expired-strategy-evidence).
+        "app.orchestration.evidence_maintenance",
     ],
 )
 
@@ -193,6 +195,11 @@ celery_app.conf.update(
         "execute-retention-policy": {
             "task": "app.scaling.tasks.execute_retention_policy",
             "schedule": crontab(hour=3, minute=0),  # 3 AM UTC daily
+            "options": {"queue": "maintenance"},
+        },
+        "purge-expired-strategy-evidence": {
+            "task": "agentverse.maintenance.purge_expired_strategy_evidence",
+            "schedule": crontab(hour=4, minute=15),  # daily, off-peak
             "options": {"queue": "maintenance"},
         },
         "expire-hitl-approvals": {
