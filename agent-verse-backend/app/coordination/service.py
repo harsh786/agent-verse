@@ -127,6 +127,22 @@ class CoordinationService:
             target_state="cancelling",
         )
 
+    async def pause_session(
+        self,
+        tenant_ctx: TenantContext,
+        session_id: str,
+        *,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> AcceptedTransition:
+        return await self._transition(
+            tenant_ctx,
+            session_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            target_state="paused",
+        )
+
     async def resume_session(
         self,
         tenant_ctx: TenantContext,

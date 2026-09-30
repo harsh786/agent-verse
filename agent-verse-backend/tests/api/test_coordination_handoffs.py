@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -106,3 +107,40 @@ def test_handoff_api_accept_replay_conflict_and_missing_token() -> None:
     assert accepted.status_code == replay.status_code == 200
     assert accepted.json() == replay.json()
     assert stale.status_code == 409
+
+
+def test_handoff_api_target_reports_progress_and_completion_with_token() -> None:
+    """ORG-22: a handoff can reach COMPLETED over REST (only with the token)."""
+    resumed: list[str] = []
+    app = _app()
+    app.state.handoff_service = HandoffService(
+        InMemoryHandoffRepository(),
+        membership=Membership(),
+        resume_parent=lambda record: resumed.append(record.state.value),
+    )
+    client = TestClient(app)
+    created = _create(client)
+    base = f"/api/v1/coordination/sessions/session-a/handoffs/{created['handoff_id']}"
+    token = "long-enough-secret"
+
+    def post(action: str, key: str, body: dict[str, object]) -> Any:
+        return client.post(
+            f"{base}/{action}", headers={"X-API-Key": "a", "Idempotency-Key": key}, json=body
+        )
+
+    accepted = post("accept", "accept", {"expected_version": 1, "acceptance_token": token})
+    assert accepted.status_code == 200
+    assert post("start", "start-0", {"expected_version": 2}).status_code == 422
+    wrong = post("start", "start-1", {"expected_version": 2, "acceptance_token": "x" * 20})
+    assert wrong.status_code == 403
+    started = post("start", "start-2", {"expected_version": 2, "acceptance_token": token})
+    assert started.json()["state"] == "executing"
+    completed = post(
+        "complete",
+        "complete",
+        {"expected_version": 3, "acceptance_token": token, "result_reference": "artifact://r"},
+    )
+    assert completed.status_code == 200
+    assert completed.json()["state"] == "completed"
+    assert completed.json()["result_reference"] == "artifact://r"
+    assert resumed == ["completed"]

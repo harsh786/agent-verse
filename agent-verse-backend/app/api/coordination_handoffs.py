@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.coordination.contracts import Classification
 from app.coordination.handoffs.models import HandoffState
+from app.coordination.state_machines import InvalidTransitionError
 from app.coordination.store import OptimisticConflictError
 
 router = APIRouter(prefix="/api/v1/coordination/sessions", tags=["coordination-handoffs"])
@@ -32,6 +33,10 @@ class HandoffTransitionRequest(BaseModel):
     expected_version: int = Field(gt=0)
     acceptance_token: str | None = None
     result_reference: str | None = None
+
+
+_TARGET_REPORTS = frozenset({HandoffState.EXECUTING, HandoffState.COMPLETED, HandoffState.FAILED})
+_TOKEN_REQUIRED = _TARGET_REPORTS | {HandoffState.ACCEPTED}
 
 
 def _tenant_id(request: Request) -> str:
@@ -92,15 +97,29 @@ async def _transition(
         current = await _service(request).get(_tenant_id(request), handoff_id)
         if current is None or current.session_id != session_id:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Handoff not found")
+        if target in _TOKEN_REQUIRED and body.acceptance_token is None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Token required")
+        # Non-empty whenever required (checked above); "" can never match a digest.
+        token = body.acceptance_token or ""
         if target is HandoffState.ACCEPTED:
-            if body.acceptance_token is None:
-                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Token required")
             record = await _service(request).accept(
                 _tenant_id(request),
                 handoff_id,
-                token=body.acceptance_token,
+                token=token,
                 expected_version=body.expected_version,
                 idempotency_key=idempotency_key,
+            )
+        elif target in _TARGET_REPORTS:
+            # Progress/completion reports come from the accepting target, which
+            # proves it by presenting the acceptance token.
+            record = await _service(request).report(
+                _tenant_id(request),
+                handoff_id,
+                target=target,
+                token=token,
+                expected_version=body.expected_version,
+                idempotency_key=idempotency_key,
+                result_reference=body.result_reference,
             )
         else:
             record = await _service(request).transition(
@@ -111,7 +130,7 @@ async def _transition(
                 idempotency_key=idempotency_key,
                 result_reference=body.result_reference,
             )
-    except OptimisticConflictError as exc:
+    except (OptimisticConflictError, InvalidTransitionError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Handoff not found") from exc
@@ -156,6 +175,46 @@ async def cancel_handoff(
 ) -> dict[str, Any]:
     return await _transition(
         request, session_id, handoff_id, body, idempotency_key, HandoffState.CANCELLED
+    )
+
+
+@router.post("/{session_id}/handoffs/{handoff_id}/start")
+async def start_handoff(
+    request: Request,
+    session_id: str,
+    handoff_id: str,
+    body: HandoffTransitionRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+) -> dict[str, Any]:
+    return await _transition(
+        request, session_id, handoff_id, body, idempotency_key, HandoffState.EXECUTING
+    )
+
+
+@router.post("/{session_id}/handoffs/{handoff_id}/complete")
+async def complete_handoff(
+    request: Request,
+    session_id: str,
+    handoff_id: str,
+    body: HandoffTransitionRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+) -> dict[str, Any]:
+    """Target finished: the parent session resumes and the outcome is recorded."""
+    return await _transition(
+        request, session_id, handoff_id, body, idempotency_key, HandoffState.COMPLETED
+    )
+
+
+@router.post("/{session_id}/handoffs/{handoff_id}/fail")
+async def fail_handoff(
+    request: Request,
+    session_id: str,
+    handoff_id: str,
+    body: HandoffTransitionRequest,
+    idempotency_key: str = Header(alias="Idempotency-Key", min_length=1),
+) -> dict[str, Any]:
+    return await _transition(
+        request, session_id, handoff_id, body, idempotency_key, HandoffState.FAILED
     )
 
 

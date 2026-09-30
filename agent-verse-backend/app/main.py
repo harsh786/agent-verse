@@ -1294,9 +1294,22 @@ def create_app(
             app.state.transcript_service = TranscriptService(
                 PostgresTranscriptRepository(db_factory)
             )
+            from app.coordination.handoffs.resumption import HandoffParentResumer
+
+            # A finished handoff resumes its parent session, records the outcome in
+            # the transcript and publishes live events (ORG-22). Transitions are also
+            # written to coordination_events + outbox by the repository.
+            _handoff_resumer = HandoffParentResumer(
+                coordination_service=lambda: getattr(app.state, "coordination_service", None),
+                transcript_service=lambda: getattr(app.state, "transcript_service", None),
+                live_bus=lambda: getattr(app.state, "coordination_live_bus", None),
+            )
             app.state.handoff_service = HandoffService(
                 PostgresHandoffRepository(db_factory),
                 membership=DatabaseHandoffMembership(lambda: db_factory),
+                emit_event=_handoff_resumer.emit_event,
+                pause_parent=_handoff_resumer.pause_parent,
+                resume_parent=_handoff_resumer.resume_parent,
             )
             app.state.camel_repository = PostgresCamelRepository(db_factory)
             app.state.generative_repository = PostgresGenerativeRepository(db_factory)
@@ -2717,6 +2730,7 @@ def create_app(
         InMemorySessionAuthorizer,
     )
     from app.coordination.handoffs.repository import InMemoryHandoffRepository
+    from app.coordination.handoffs.resumption import HandoffParentResumer
     from app.coordination.handoffs.service import HandoffService
     from app.coordination.ledger.repository import InMemoryProgressLedgerRepository
     from app.coordination.live_bus import CoordinationLiveBus
@@ -2737,11 +2751,19 @@ def create_app(
     _coordination_store = InMemoryCoordinationStore()
     app.state.coordination_service = CoordinationService(_coordination_store)
     app.state.transcript_service = TranscriptService(_transcript_repository)
+    _handoff_resumer = HandoffParentResumer(
+        coordination_service=lambda: getattr(app.state, "coordination_service", None),
+        transcript_service=lambda: getattr(app.state, "transcript_service", None),
+        live_bus=lambda: getattr(app.state, "coordination_live_bus", None),
+    )
     app.state.handoff_service = HandoffService(
         InMemoryHandoffRepository(),
         membership=DatabaseHandoffMembership(
             lambda: getattr(app.state, "db_session_factory", None)
         ),
+        emit_event=_handoff_resumer.emit_event,
+        pause_parent=_handoff_resumer.pause_parent,
+        resume_parent=_handoff_resumer.resume_parent,
     )
     app.state.coordination_session_authorizer = InMemorySessionAuthorizer(_coordination_store)
     app.state.progress_ledger_repository = InMemoryProgressLedgerRepository()

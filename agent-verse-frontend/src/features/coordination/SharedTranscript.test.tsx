@@ -76,4 +76,16 @@ describe('SharedTranscript', () => {
     render(<SharedTranscript messages={[message]} />);
     expect(screen.getByText('Compacts #0–#2')).toBeInTheDocument();
   });
+  test('shows the handoff "completed → parent resumed" decision recorded in the transcript', () => {
+    const message: CoordinationMessage = {
+      message_id: 'resume-1',
+      sequence: 9,
+      sender_agent_id: 'target',
+      recipient_agent_ids: ['source'],
+      safe_content: 'Handoff h1 completed by target → parent resumed: control returns to source.',
+    };
+    render(<SharedTranscript messages={[message]} />);
+    expect(screen.getByText(/completed by target → parent resumed/)).toBeInTheDocument();
+    expect(screen.getByText('→ source')).toBeInTheDocument();
+  });
 });
