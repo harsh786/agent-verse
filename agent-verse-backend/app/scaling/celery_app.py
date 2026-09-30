@@ -368,7 +368,10 @@ if _SENTINEL_URLS:
         "sentinel_kwargs": {},
     }
     # Result backend mirrors the broker topology so failover works end-to-end.
+    # The Sentinel result backend reads master_name from its OWN transport
+    # options - without them every result store failed.
     celery_app.conf.result_backend = _BROKER_URL
+    celery_app.conf.result_backend_transport_options = {"master_name": _SENTINEL_MASTER}
     celery_app.conf.redis_backend_use_ssl = REDIS_URL.startswith("rediss://")
 
     # RedBeat also needs the Sentinel URL so the lock key survives failover.
