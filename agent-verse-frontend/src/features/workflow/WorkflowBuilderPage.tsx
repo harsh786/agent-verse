@@ -716,6 +716,7 @@ export default function WorkflowBuilderPage() {
           {editingName ? (
             <input
               autoFocus
+              onFocus={(e) => e.currentTarget.select()}
               value={nameDraft}
               onChange={(e) => setNameDraft(e.target.value)}
               onKeyDown={(e) => {
