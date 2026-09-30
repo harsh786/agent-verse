@@ -1,7 +1,7 @@
 """Tests for P0 governance fixes."""
 
 from app.governance.hitl import ApprovalStatus, HITLGateway
-from app.governance.pricing import estimate_cost
+from app.intelligence.cost_tracker import calculate_cost as estimate_cost
 from app.tenancy.context import PlanTier, TenantContext
 
 CTX = TenantContext(tenant_id="t1", plan=PlanTier.FREE, api_key_id="k1")

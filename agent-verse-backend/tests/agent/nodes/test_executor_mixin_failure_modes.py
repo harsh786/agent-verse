@@ -20,6 +20,7 @@ just touching a line.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1370,7 +1371,6 @@ async def test_executor_llm_cost_is_recorded_exactly_once() -> None:
     trail, and persisted attempt-cost records — all get inflated.
     """
     from app.governance.cost import CostController
-    from app.governance.pricing import estimate_cost
     from app.intelligence.cost_tracker import CostTracker, calculate_cost
 
     model = "gpt-4o"
@@ -1387,15 +1387,45 @@ async def test_executor_llm_cost_is_recorded_exactly_once() -> None:
     await graph._execute_step("do something simple", state, T)
 
     expected_single_charge = calculate_cost(model, input_tokens, output_tokens)
-    # Sanity check: the two pricing tables genuinely disagree for this model/
-    # token combination, so a bug that sums both would land on neither figure
-    # alone — it would be their sum.
-    deprecated_estimate = estimate_cost(model, input_tokens, output_tokens)
-    assert deprecated_estimate != pytest.approx(expected_single_charge)
 
     recorded = state.context["total_cost_usd"]
     assert recorded == pytest.approx(expected_single_charge, rel=1e-6), (
         f"total_cost_usd={recorded} but a single call should cost "
-        f"{expected_single_charge} (CostTracker's authoritative figure) — "
-        f"got sum-of-both-estimates={deprecated_estimate + expected_single_charge} instead?"
+        f"{expected_single_charge} (charged once, not budget-gate + ledger)"
     )
+
+
+async def test_executor_budget_gate_and_ledger_charge_the_same_amount() -> None:
+    """PROV-03: the budget gate and the ledger price one call identically."""
+    from app.governance.cost import CostController
+    from app.intelligence.cost_tracker import CostTracker, calculate_cost
+
+    model = "gpt-4o-mini-2024-07-18"
+    controller = CostController(per_goal_usd=1_000.0, per_tenant_daily_usd=1_000.0)
+    gate_charges: list[float] = []
+    _orig = controller.check_and_record
+
+    async def _spy(**kw: Any) -> bool:
+        gate_charges.append(float(kw["cost_usd"]))
+        return await _orig(**kw)
+
+    controller.check_and_record = _spy  # type: ignore[method-assign]
+    tracker = CostTracker()
+    ledger: list[float] = []
+    _orig_rec = tracker.record_llm_usage
+
+    async def _rec(**kw: Any) -> float:
+        cost = await _orig_rec(**kw)
+        ledger.append(cost)
+        return cost
+
+    tracker.record_llm_usage = _rec  # type: ignore[method-assign]
+    executor = _UsageAwareProvider(input_tokens=1000, output_tokens=500, model=model)
+    graph = _make_graph(executor=executor, cost_controller=controller, cost_tracker=tracker)
+    state = _make_state(step_desc="do something simple")
+
+    await graph._execute_step("do something simple", state, T)
+
+    assert gate_charges and ledger
+    assert gate_charges[0] == pytest.approx(ledger[0])
+    assert ledger[0] == pytest.approx(calculate_cost("gpt-4o-mini", 1000, 500))

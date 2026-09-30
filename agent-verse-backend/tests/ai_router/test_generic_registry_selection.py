@@ -45,9 +45,11 @@ def test_seeder_registers_configured_reasoning_model(monkeypatch):
     assert n >= 1
     ids = {m.model_id for m in reg.list_configured(_TG)}
     assert "openai/gpt-oss-20b" in ids
-    # self-hosted slug -> unpriced (cost 0.0)
+    # self-hosted slug -> the same fallback price the ledger charges (PROV-03)
+    from app.intelligence.cost_tracker import model_pricing
+
     m = next(m for m in reg.list_configured() if m.model_id == "openai/gpt-oss-20b")
-    assert m.cost_per_1k_input == 0.0
+    assert m.cost_per_1k_input == model_pricing("openai/gpt-oss-20b")[0] / 1000
 
 
 def test_seeder_prices_known_cloud_slug(monkeypatch):

@@ -298,34 +298,14 @@ async def test_get_projected_monthly_cost_no_db():
     assert result["confidence"] == "low"
 
 
-# ── Pricing deprecation ────────────────────────────────────────────────────────
+# ── Pricing: one source of truth (PROV-03) ─────────────────────────────────────
 
-def test_pricing_estimate_cost_emits_deprecation_warning():
-    """governance.pricing.estimate_cost must emit DeprecationWarning."""
-    import warnings
-
+def test_deprecated_estimate_cost_was_removed():
+    """governance.pricing no longer offers a second, disagreeing pricing table."""
     from app.governance import pricing
 
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        pricing.estimate_cost("gpt-4o", 1000, 500)
-    assert any(issubclass(warning.category, DeprecationWarning) for warning in w), (
-        "estimate_cost() must emit a DeprecationWarning directing callers to "
-        "app.intelligence.cost_tracker.calculate_cost()"
-    )
+    assert not hasattr(pricing, "estimate_cost")
 
 
-def test_calculate_cost_matches_pricing_for_known_model():
-    """calculate_cost and the deprecated estimate_cost agree for GPT-4o-mini."""
-    import warnings
-
-    from app.governance import pricing
-
-    with warnings.catch_warnings(record=True):
-        warnings.simplefilter("always")
-        old = pricing.estimate_cost("gpt-4o-mini", 1_000, 500)
-    new = calculate_cost("gpt-4o-mini", 1_000, 500)
-    # Both should give a non-zero positive value; exact match isn't required
-    # because rate tables differ (per-1k vs per-1M), but both must be positive
-    assert old > 0
-    assert new > 0
+def test_calculate_cost_positive_for_known_model():
+    assert calculate_cost("gpt-4o-mini", 1_000, 500) > 0

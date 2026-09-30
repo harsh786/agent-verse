@@ -2100,12 +2100,13 @@ class ExecutorMixin:
 
         # 1. Calculate actual LLM cost from token usage and check budget
         if self._cost_controller is not None:
-            from app.governance.pricing import estimate_cost as _estimate_cost
+            from app.agent.nodes.llm_cost import llm_call_tokens as _gate_tokens
+            from app.intelligence.cost_tracker import calculate_cost as _gate_cost
 
-            _actual_cost = _estimate_cost(
-                resp.model if hasattr(resp, "model") and resp.model else "",
-                resp.input_tokens,
-                resp.output_tokens,
+            # Same pricing function, model and token counts as the ledger (1b).
+            _actual_cost = _gate_cost(
+                resp.model if hasattr(resp, "model") and resp.model else _exec_model,
+                *_gate_tokens(resp),
             )
             async with self._state_lock:
                 state.context["total_cost_usd"] = (

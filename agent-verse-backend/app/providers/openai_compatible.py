@@ -359,7 +359,7 @@ class OpenAICompatibleProvider:
 
         # Record token and cost metrics (never let this break the main path)
         try:
-            from app.governance.pricing import estimate_cost
+            from app.intelligence.cost_tracker import calculate_cost
             from app.observability.metrics import record_cost_usd, record_llm_tokens
 
             usage = getattr(response, "usage", None)
@@ -374,7 +374,7 @@ class OpenAICompatibleProvider:
                     "completion",
                     getattr(usage, "completion_tokens", 0),
                 )
-                cost = estimate_cost(
+                cost = calculate_cost(
                     response.model or "",
                     getattr(usage, "prompt_tokens", 0),
                     getattr(usage, "completion_tokens", 0),

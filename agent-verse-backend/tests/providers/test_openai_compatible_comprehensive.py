@@ -457,7 +457,7 @@ async def test_complete_metrics_silently_swallowed_on_error() -> None:
     with patch.dict(sys.modules, {"openai": mock_openai}):
         from app.providers.openai_compatible import OpenAICompatibleProvider
         provider = OpenAICompatibleProvider(api_key="key")
-        with patch("app.governance.pricing.estimate_cost", side_effect=RuntimeError("boom")):
+        with patch("app.intelligence.cost_tracker.calculate_cost", side_effect=RuntimeError("boom")):
             result = await provider.complete(
                 CompletionRequest(messages=[Message(role="user", content="Hi")], model="gpt-4o")
             )

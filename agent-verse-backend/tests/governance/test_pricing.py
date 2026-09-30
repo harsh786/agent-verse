@@ -1,7 +1,8 @@
-"""Tests for app/governance/pricing.py — 8 tests."""
+"""Tests for app/governance/pricing.py (format_cost) and relative pricing via calculate_cost."""
 from __future__ import annotations
 
-from app.governance.pricing import estimate_cost, format_cost
+from app.governance.pricing import format_cost
+from app.intelligence.cost_tracker import calculate_cost as estimate_cost
 
 # ---------------------------------------------------------------------------
 # Cost comparisons
@@ -10,7 +11,7 @@ from app.governance.pricing import estimate_cost, format_cost
 def test_claude_opus_more_expensive_than_haiku() -> None:
     """claude-opus-4 should cost significantly more than claude-haiku per token."""
     opus_cost = estimate_cost("claude-opus-4", 1000, 1000)
-    haiku_cost = estimate_cost("claude-haiku", 1000, 1000)
+    haiku_cost = estimate_cost("claude-haiku-3-5", 1000, 1000)
     assert opus_cost > haiku_cost
 
 
@@ -22,7 +23,7 @@ def test_gpt4o_mini_cheaper_than_gpt4o() -> None:
 
 
 def test_estimate_cost_returns_positive_float_for_known_model() -> None:
-    cost = estimate_cost("claude-sonnet-4", 500, 200)
+    cost = estimate_cost("claude-sonnet-4-5", 500, 200)
     assert isinstance(cost, float)
     assert cost > 0.0
 

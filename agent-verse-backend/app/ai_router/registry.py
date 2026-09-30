@@ -210,13 +210,15 @@ class ModelRegistry:
         return models
 
     def price_for(self, model_id: str) -> tuple[float, float]:
-        """Best-effort (input, output) per-1k price for a model slug from the
-        reference catalog; (0.0, 0.0) when unknown (self-hosted)."""
-        want = model_id.split("/")[-1].lower()
-        for m in BUILTIN_MODELS:
-            if m.model_id.split("/")[-1].lower() == want:
-                return (m.cost_per_1k_input, m.cost_per_1k_output)
-        return (0.0, 0.0)
+        """(input, output) per-1k price for a model slug.
+
+        Same source as the ledger (:func:`app.intelligence.cost_tracker.model_pricing`),
+        so routing cost estimates and budget charges agree — including the
+        configurable fallback for unknown / self-hosted models."""
+        from app.intelligence.cost_tracker import model_pricing
+
+        inp, out = model_pricing(model_id)
+        return (inp / 1000, out / 1000)
 
     def list_models(
         self,

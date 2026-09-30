@@ -127,7 +127,7 @@ class AnthropicProvider:
 
         # Record token and cost metrics (never let this break the main path)
         try:
-            from app.governance.pricing import estimate_cost
+            from app.intelligence.cost_tracker import calculate_cost
             from app.observability.metrics import record_cost_usd, record_llm_tokens
 
             record_llm_tokens(
@@ -142,7 +142,7 @@ class AnthropicProvider:
                 "completion",
                 getattr(response.usage, "output_tokens", 0),
             )
-            cost = estimate_cost(
+            cost = calculate_cost(
                 response.model or "",
                 getattr(response.usage, "input_tokens", 0),
                 getattr(response.usage, "output_tokens", 0),

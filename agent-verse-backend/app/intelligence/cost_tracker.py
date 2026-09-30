@@ -71,26 +71,102 @@ def _fallback_pricing() -> dict[str, float]:
     }
 
 
-def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """Return cost in USD for a given model + token counts.
+# Rows of the ``model_pricing`` table (USD per 1M tokens), loaded by
+# :func:`refresh_model_pricing`. Takes precedence over MODEL_PRICING so prices can
+# change without a deploy. Keys are normalised (lower-case).
+_DB_PRICING: dict[str, tuple[float, float]] = {}
+_DB_PRICING_LOADED_AT: float = 0.0
+_DB_PRICING_TTL_S = 300.0
+# Characters that may follow a base model name in a dated / variant slug
+# ("claude-sonnet-4-5-20250929", "gpt-4o-mini-2024-07-18", "model:latest").
+_PRICE_KEY_BOUNDARY = frozenset("-_:@.")
 
-    Uses the in-memory MODEL_PRICING table; falls back to the (env-configurable)
-    fallback pricing when the model is not recognised.  Callers may pass a full
-    model name like ``"claude-sonnet-4-5"`` or a partially-qualified name — the
-    lookup tries an exact match first, then a prefix scan.
+
+def set_db_pricing(rows: dict[str, tuple[float, float]]) -> None:
+    """Replace the DB pricing overlay (``{model_id: (input_per_1m, output_per_1m)}``)."""
+    global _DB_PRICING
+    _DB_PRICING = {str(k).strip().lower(): (float(i), float(o)) for k, (i, o) in rows.items()}
+
+
+async def refresh_model_pricing(db_factory: Any, *, force: bool = False) -> int:
+    """Load active rows of the ``model_pricing`` table into the pricing overlay.
+
+    Cached for ``_DB_PRICING_TTL_S`` unless ``force``. A failed read keeps the
+    previous overlay (and the reference table) and returns 0 — pricing never
+    blocks a charge. Returns the number of rows loaded.
     """
-    pricing = MODEL_PRICING.get(model)
-    if pricing is None:
-        # Try prefix match (e.g. "claude-sonnet-4-5-20241022" → "claude-sonnet-4-5")
-        for key, val in MODEL_PRICING.items():
-            if model.startswith(key) or key.startswith(model):
-                pricing = val
-                break
-    if pricing is None:
-        logger.warning("model_pricing_miss", model=model)
-        pricing = _fallback_pricing()
+    global _DB_PRICING_LOADED_AT
+    import time
 
-    return (prompt_tokens * pricing["input"] + completion_tokens * pricing["output"]) / 1_000_000
+    if db_factory is None:
+        return 0
+    now = time.monotonic()
+    if not force and _DB_PRICING_LOADED_AT and now - _DB_PRICING_LOADED_AT < _DB_PRICING_TTL_S:
+        return 0
+    try:
+        from sqlalchemy import text
+
+        async with db_factory() as session:
+            result = await session.execute(
+                text(
+                    "SELECT model_id, input_usd_per_1m, output_usd_per_1m "
+                    "FROM model_pricing WHERE is_active"
+                )
+            )
+            rows = {str(r[0]): (float(r[1]), float(r[2])) for r in result.all()}
+    except Exception as exc:
+        logger.warning("model_pricing_refresh_failed", error=str(exc)[:200])
+        return 0
+    set_db_pricing(rows)
+    _DB_PRICING_LOADED_AT = now
+    return len(rows)
+
+
+def _lookup(table: dict[str, tuple[float, float]], name: str) -> tuple[float, float] | None:
+    """Exact key, else the LONGEST key that ``name`` extends at a separator."""
+    if name in table:
+        return table[name]
+    best: str | None = None
+    for key in table:
+        if (
+            len(name) > len(key)
+            and name.startswith(key)
+            and name[len(key)] in _PRICE_KEY_BOUNDARY
+            and (best is None or len(key) > len(best))
+        ):
+            best = key
+    return table[best] if best is not None else None
+
+
+def model_pricing(model: str) -> tuple[float, float]:
+    """(input, output) USD per 1M tokens for ``model`` — the single pricing source.
+
+    DB overlay first, then the MODEL_PRICING reference table, then the
+    env-configurable fallback. Matching is exact (case-insensitive; a
+    ``provider/`` prefix is ignored when the full slug is unknown) or the longest
+    base-model prefix followed by a separator — never the reverse direction, so an
+    empty or truncated name cannot borrow another model's price.
+    """
+    raw = str(model or "").strip().lower()
+    reference = {k.lower(): (v["input"], v["output"]) for k, v in MODEL_PRICING.items()}
+    if raw:
+        names = [raw]
+        if "/" in raw:
+            names.append(raw.rsplit("/", 1)[-1])
+        for table in (_DB_PRICING, reference):
+            for name in names:
+                found = _lookup(table, name)
+                if found is not None:
+                    return found
+    logger.warning("model_pricing_miss", model=model)
+    fb = _fallback_pricing()
+    return fb["input"], fb["output"]
+
+
+def calculate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Return cost in USD for a given model + token counts (see :func:`model_pricing`)."""
+    inp, out = model_pricing(model)
+    return (prompt_tokens * inp + completion_tokens * out) / 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +320,7 @@ class CostTracker:
 
         Returns the cost in USD so the caller can accumulate it on state.
         """
+        await refresh_model_pricing(self._db)  # TTL-cached model_pricing overlay
         cost_usd = calculate_cost(model, prompt_tokens, completion_tokens)
         tenant_id: str = (
             tenant_ctx.tenant_id if hasattr(tenant_ctx, "tenant_id") else str(tenant_ctx)

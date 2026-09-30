@@ -1552,6 +1552,10 @@ def create_app(
             # Wire DB into CostTracker for ledger persistence + historical queries
             _cost_tracker._db = db_factory
             app.state.cost_tracker = _cost_tracker
+            # model_pricing table → the single pricing source (calculate_cost).
+            from app.intelligence.cost_tracker import refresh_model_pricing
+
+            await refresh_model_pricing(db_factory, force=True)
             # Enforce each tenant's configured budget_configs row (PUT /costs/budgets)
             # instead of the hard-coded BudgetConfig() defaults.
             for _cc_name in ("redis_cost_controller", "cost_controller"):

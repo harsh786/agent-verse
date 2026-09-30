@@ -408,7 +408,7 @@ async def test_complete_metrics_silently_swallowed_on_error() -> None:
         mock_client.messages.create = AsyncMock(return_value=mock_resp)
 
         with patch(
-            "app.governance.pricing.estimate_cost", side_effect=RuntimeError("fail")
+            "app.intelligence.cost_tracker.calculate_cost", side_effect=RuntimeError("fail")
         ):
             provider = AnthropicProvider(api_key="key")
             result = await provider.complete(
@@ -445,7 +445,7 @@ async def test_complete_metrics_recorded_when_available() -> None:
 
         with (
             patch("app.observability.metrics.record_llm_tokens", _fake_record_tokens),
-            patch("app.governance.pricing.estimate_cost", return_value=0.001),
+            patch("app.intelligence.cost_tracker.calculate_cost", return_value=0.001),
             patch("app.observability.metrics.record_cost_usd", _fake_record_cost),
         ):
             provider = AnthropicProvider(api_key="key")
