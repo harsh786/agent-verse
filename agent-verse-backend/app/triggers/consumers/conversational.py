@@ -32,6 +32,7 @@ from typing import Any
 
 import regex
 
+from app.triggers.bus import publish_trigger_event as publish_bus_event
 from app.triggers.consumers.event import CHANNEL_PREFIX, _decode, event_channel_name
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
 
@@ -121,9 +122,8 @@ async def publish_conversational_event(
     body = {**strip_reserved(event), "tenant_id": tenant_id, "conv": True}
     if not str(body.get("event_id", "") or ""):
         body["event_id"] = uuid.uuid4().hex  # replicas key state + idempotency on it
-    result = redis.publish(event_channel_name(CONVERSATIONAL_CHANNEL), json.dumps(body))
-    if hasattr(result, "__await__"):
-        await result
+    # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+    await publish_bus_event(redis, event_channel_name(CONVERSATIONAL_CHANNEL), body)
 
 
 # ── Tenant regex safety (TRG-20) ─────────────────────────────────────────────

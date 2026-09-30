@@ -1237,7 +1237,10 @@ class HITLGateway:
             "hitl_queue_id": "",
         }
         try:
-            await self._redis.publish(channel, json.dumps(payload))
+            from app.triggers.bus import publish_trigger_event
+
+            # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+            await publish_trigger_event(self._redis, channel, json.dumps(payload))
         except Exception as exc:
             from app.observability.logging import get_logger
 

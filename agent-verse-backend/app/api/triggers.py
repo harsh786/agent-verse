@@ -402,11 +402,17 @@ async def emit_trigger_event(
     redis = getattr(request.app.state, "trigger_event_redis", None)
     if redis is None:
         raise HTTPException(status_code=503, detail="Event bus unavailable")
+    from app.triggers.bus import TriggerBusPublishError
     from app.triggers.consumers.event import publish_trigger_event
 
-    await publish_trigger_event(
-        redis, event_channel=event_channel, tenant_id=tenant_ctx.tenant_id, payload=body
-    )
+    try:
+        await publish_trigger_event(
+            redis, event_channel=event_channel, tenant_id=tenant_ctx.tenant_id, payload=body
+        )
+    except TriggerBusPublishError as exc:
+        # Not durably on the trigger stream (TRG-18): never a 202 for a lost event.
+        logger.warning("trigger_event_publish_failed", channel=event_channel, error=str(exc))
+        raise HTTPException(status_code=503, detail="Event bus unavailable") from exc
     return {"published": True, "event_channel": event_channel}
 
 

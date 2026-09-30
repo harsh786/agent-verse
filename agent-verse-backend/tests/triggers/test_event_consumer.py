@@ -36,12 +36,17 @@ class _FakeRedis:
     def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
         self._messages = messages or []
         self.published: list[tuple[str, str]] = []
+        self.streamed: list[tuple[str, dict[str, str]]] = []
 
     def pubsub(self) -> _FakePubSub:
         return _FakePubSub(self._messages)
 
     def publish(self, channel: str, data: str) -> None:  # sync
         self.published.append((channel, data))
+
+    def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:  # sync
+        self.streamed.append((stream, fields))
+        return f"{len(self.streamed)}-0"
 
 
 class _FakeStore:

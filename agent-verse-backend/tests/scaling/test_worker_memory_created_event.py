@@ -26,10 +26,15 @@ from app.triggers.models import TriggerSpec, TriggerType
 class _Redis:
     def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
+        self.streamed: list[tuple[str, dict[str, str]]] = []
 
     async def publish(self, channel: str, data: str) -> int:
         self.published.append((channel, data))
         return 1
+
+    async def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:
+        self.streamed.append((stream, fields))  # TRG-18 durable trigger-bus copy
+        return "1-0"
 
 
 async def test_worker_memory_store_publishes_memory_created_and_fires(monkeypatch: Any) -> None:

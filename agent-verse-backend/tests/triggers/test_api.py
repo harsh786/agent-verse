@@ -425,6 +425,11 @@ def test_emit_event_publishes_with_tenant_stamped(app, client):
         def publish(self, channel, data):
             published.append((channel, data))
 
+        def xadd(self, stream, fields, **_):
+            streamed.append((stream, fields))
+            return "1-0"
+
+    streamed = []
     app.state.trigger_event_redis = _FakeRedis()
     resp = client.post("/triggers/events/deployments", json={"sha": "abc"})
     assert resp.status_code == 202
@@ -441,3 +446,20 @@ def test_emit_event_503_without_bus(app, client):
     app.state.trigger_event_redis = None
     resp = client.post("/triggers/events/deployments", json={})
     assert resp.status_code == 503
+
+
+def test_emit_event_503_when_stream_append_fails(app, client):
+    """TRG-18: the event is only accepted once it is durably in the trigger
+    stream; a failed XADD is an honest 503, not a 202 for a lost event."""
+
+    class _DownRedis:
+        def xadd(self, *_a, **_k):
+            raise ConnectionError("redis down")
+
+        def publish(self, *_a):
+            return 0
+
+    app.state.trigger_event_redis = _DownRedis()
+    resp = client.post("/triggers/events/deployments", json={"sha": "abc"})
+    assert resp.status_code == 503
+    assert "redis down" not in resp.text

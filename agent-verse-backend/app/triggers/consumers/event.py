@@ -20,6 +20,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Any
 
+from app.triggers.bus import publish_trigger_event as publish_bus_event
 from app.triggers.consumers.tenant_ctx import event_tenant_ctx, strip_reserved
 
 _log = logging.getLogger(__name__)
@@ -46,9 +47,8 @@ async def publish_trigger_event(
     # identical payloads are still two events (TRG-19).
     if not str(body.get("event_id", "") or ""):
         body["event_id"] = uuid.uuid4().hex
-    result = redis.publish(event_channel_name(event_channel), json.dumps(body))
-    if hasattr(result, "__await__"):
-        await result
+    # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+    await publish_bus_event(redis, event_channel_name(event_channel), body)
 
 
 def _decode(value: Any) -> str:

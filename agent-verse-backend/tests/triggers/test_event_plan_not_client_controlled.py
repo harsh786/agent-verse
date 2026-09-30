@@ -34,10 +34,16 @@ SPOOF = {"tenant_plan": "enterprise", "tenant_id": "victim", "event_channel": "o
 class _Redis:
     def __init__(self) -> None:
         self.published: list[tuple[str, dict[str, Any]]] = []
+        self.streamed: list[tuple[str, dict[str, str]]] = []
 
     async def publish(self, channel: str, data: str) -> int:
         self.published.append((channel, json.loads(data)))
         return 1
+
+    async def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:
+        # TRG-18: the durable trigger-bus copy (dual-published to the channel).
+        self.streamed.append((stream, fields))
+        return f"{len(self.streamed)}-0"
 
 
 async def test_publish_trigger_event_strips_reserved_keys_and_stamps_server_values() -> None:

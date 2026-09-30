@@ -2120,6 +2120,7 @@ def run_goal(
         except Exception as db_exc:
             logger.warning("DB status update failed (non-fatal): %s", db_exc)
 
+    from app.triggers.bus import publish_trigger_event_sync
     from app.triggers.consumers.chain import CHAIN_CHANNEL_FOR_EVENT, build_chain_event
 
     _chain_published: set[str] = set()
@@ -2154,7 +2155,9 @@ def run_goal(
             try:
                 _rc = _get_sync_redis()
                 if _rc is not None:
-                    _rc.publish(
+                    # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+                    publish_trigger_event_sync(
+                        _rc,
                         _chain_channel,
                         build_chain_event(
                             channel=_chain_channel,
@@ -4021,9 +4024,11 @@ def _publish_worker_score_below(
         redis_client = _get_sync_redis()
         if redis_client is None:
             return False
+        from app.triggers.bus import publish_trigger_event_sync
         from app.triggers.consumers.chain import build_chain_event
 
-        redis_client.publish(
+        publish_trigger_event_sync(
+            redis_client,
             "goal.score_below",
             build_chain_event(
                 channel="goal.score_below",

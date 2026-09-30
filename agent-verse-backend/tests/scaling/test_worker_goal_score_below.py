@@ -29,10 +29,16 @@ CTX = TenantContext(tenant_id="tenant-1", plan=PlanTier.FREE, api_key_id="k")
 class _SyncRedis:
     def __init__(self) -> None:
         self.published: list[tuple[str, str]] = []
+        self.streamed: list[tuple[str, dict[str, str]]] = []
 
     def publish(self, channel: str, data: str) -> int:
         self.published.append((channel, data))
         return 1
+
+    def xadd(self, stream: str, fields: dict[str, str], **_: Any) -> str:
+        # TRG-18: the durable trigger-bus copy of the same event.
+        self.streamed.append((stream, fields))
+        return "1-0"
 
 
 class _DedupRedis:
@@ -81,7 +87,7 @@ def _publish(monkeypatch: Any, score: float) -> list[str]:
     redis = _SyncRedis()
     monkeypatch.setattr(tasks, "_get_sync_redis", lambda: redis)
     for _ in range(2):  # a Celery retry / API relay publishes the same event again
-        tasks._publish_worker_score_below(
+        assert tasks._publish_worker_score_below(
             _state(score), tenant_id="tenant-1", goal_id="goal-w1", agent_id="agent-a",
             plan="free", trigger_chain_depth=0, source_trigger_id="",
         )

@@ -105,7 +105,11 @@ class LongTermMemoryStore:
 
         plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or "free"
         try:
-            await self._event_redis.publish(
+            from app.triggers.bus import publish_trigger_event
+
+            # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+            await publish_trigger_event(
+                self._event_redis,
                 "memory.created",
                 _json.dumps(
                     {

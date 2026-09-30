@@ -103,8 +103,6 @@ class StateMachine:
         """Publish a COMMITTED transition on the trigger EVENT bus."""
         if self._event_redis is None:
             return False
-        import json
-
         event = {
             "tenant_id": tenant_id,
             # One id per committed transition: consumers key shared state and
@@ -118,7 +116,9 @@ class StateMachine:
             "event": result.get("event", ""),
         }
         try:
-            await self._event_redis.publish(STATE_TRANSITION_CHANNEL, json.dumps(event))
+            from app.triggers.bus import publish_trigger_event
+
+            await publish_trigger_event(self._event_redis, STATE_TRANSITION_CHANNEL, event)
             return True
         except Exception as exc:
             _log.warning("state_transition_publish_failed: %s", exc)

@@ -2964,6 +2964,7 @@ class GoalService:
         if record.dry_run or self._redis is None or channel in record.chain_events_published:
             return
         record.chain_events_published.add(channel)
+        from app.triggers.bus import publish_trigger_event
         from app.triggers.consumers.chain import build_chain_event
 
         plan = getattr(getattr(tenant_ctx, "plan", None), "value", None) or str(
@@ -2981,7 +2982,8 @@ class GoalService:
             source_trigger_id=str(record.execution_context.get("source_trigger_id", "") or ""),
         )
         try:
-            await self._redis.publish(channel, payload)
+            # Stream XADD (+ legacy pub/sub while dual publish is on), TRG-18.
+            await publish_trigger_event(self._redis, channel, payload)
         except Exception as exc:
             record.chain_events_published.discard(channel)
             _svc_logger.warning(
