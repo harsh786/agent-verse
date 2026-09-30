@@ -77,7 +77,7 @@ async def test_nl_whitespace_raises(resolver: NLTriggerResolver) -> None:
 
 @pytest.mark.asyncio
 async def test_nl_unknown_no_llm_raises(resolver: NLTriggerResolver) -> None:
-    with pytest.raises(NLTriggerParseError, match="No LLM"):
+    with pytest.raises(NLTriggerParseError, match="no LLM provider is configured"):
         await resolver.resolve("when a Slack DM arrives")
 
 
