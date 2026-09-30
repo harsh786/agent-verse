@@ -2527,7 +2527,6 @@ def run_goal(
             from app.intelligence.eval_runner import EvalRunner
             from app.intelligence.guardrails import GuardrailChecker
             from app.memory.execution import ExecutionMemory
-            from app.memory.long_term import LongTermMemoryStore
             from app.reliability.dedup import DeduplicationCache
             from app.reliability.rollback import RollbackEngine
 
@@ -2540,7 +2539,7 @@ def run_goal(
             _hitl._redis = _worker_async_redis()
             _cost = CostController()
             _policy = _run_async(_load_worker_policy_engine(db_factory, tenant_id))
-            _ltm = LongTermMemoryStore()
+            _ltm = _worker_long_term_memory()
             _eval = EvalRunner()
             _exec_mem = ExecutionMemory()
 
@@ -3811,6 +3810,19 @@ def _build_worker_goal_service() -> tuple[Any, Any]:
     except Exception as exc:
         logger.warning("worker_goal_service_build_failed", error=str(exc)[:120])
         return None, None
+
+
+def _worker_long_term_memory() -> Any:
+    """The worker's LongTermMemoryStore, able to publish ``memory.created``.
+
+    A bare store has no event Redis, so memories written by worker-run goals
+    (i.e. production goals) never fired MEMORY_CREATED triggers (TRG-21).
+    """
+    from app.memory.long_term import LongTermMemoryStore
+
+    store = LongTermMemoryStore()
+    store.set_event_redis(_worker_async_redis())
+    return store
 
 
 def _worker_async_redis() -> Any:
