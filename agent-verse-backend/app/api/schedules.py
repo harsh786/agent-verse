@@ -190,8 +190,11 @@ async def list_schedules(
 ) -> list[dict[str, Any]]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _schedule_store(request)
-    records = await _durable(store.list_all_async(tenant_ctx=tenant_ctx, strict=True))
-    return [_record_to_dict(r) for r in records[offset : offset + limit]]
+    # TRG-30: paginated in SQL (it loaded every schedule and sliced in Python).
+    records = await _durable(
+        store.list_all_async(tenant_ctx=tenant_ctx, strict=True, limit=limit, offset=offset)
+    )
+    return [_record_to_dict(r) for r in records]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

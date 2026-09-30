@@ -187,6 +187,28 @@ def bind_refs_to_spec(spec: TriggerSpec, *, agent_id: str = "", goal_template: s
         spec.goal_template = goal_template
 
 
+# TRG-30: with a DB the in-process dict is only a cache; every DB read used to
+# add its rows to it forever. It is bounded (oldest-written entries go first).
+_CACHE_MAX_ENTRIES = 10_000
+
+
+class _BoundedCache(dict[tuple[str, str], dict[str, Any]]):
+    """Insertion-ordered dict that evicts its oldest entries beyond ``maxsize``
+    (``None`` = unbounded, for the in-memory mode where it IS the store)."""
+
+    def __init__(self, maxsize: int | None) -> None:
+        super().__init__()
+        self.maxsize = maxsize
+
+    def __setitem__(self, key: tuple[str, str], value: dict[str, Any]) -> None:
+        if key in self:
+            super().__delitem__(key)  # re-insert at the end (most recent)
+        super().__setitem__(key, value)
+        if self.maxsize is not None:
+            while len(self) > self.maxsize:
+                super().__delitem__(next(iter(self)))
+
+
 class ScheduleStore:
     """Per-tenant schedule registry."""
 
@@ -200,7 +222,9 @@ class ScheduleStore:
         # this is only a CACHE: the ``*_async`` read paths re-read the tenant's
         # rows from Postgres (the source of truth) so a trigger created, paused,
         # edited or deleted on another replica is seen here too.
-        self._data: dict[tuple[str, str], dict[str, Any]] = {}
+        self._data: dict[tuple[str, str], dict[str, Any]] = _BoundedCache(
+            _CACHE_MAX_ENTRIES if db_session_factory is not None else None
+        )
         self._db = db_session_factory
         self._redis = redis
         # Maintenance (BYPASSRLS) factory for the cross-tenant startup load. The
@@ -716,6 +740,8 @@ class ScheduleStore:
         trigger_type: str | None = None,
         webhook_token: str | None = None,
         strict: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]] | None:
         """Read this tenant's schedule rows under its RLS context and refresh the
         cache from them. Returns None when there is no DB, or when the read
@@ -737,6 +763,9 @@ class ScheduleStore:
                 stmt = stmt.where(Schedule.trigger_type == trigger_type)
             if webhook_token is not None:
                 stmt = stmt.where(Schedule.webhook_token == webhook_token)
+            if limit is not None:
+                # Paginate in SQL (TRG-30), in a stable order.
+                stmt = stmt.order_by(Schedule.created_at, Schedule.id).limit(limit).offset(offset)
             async with (
                 self._db() as session,
                 session.begin(),
@@ -806,9 +835,21 @@ class ScheduleStore:
         return None
 
     async def list_all_async(
-        self, *, tenant_ctx: TenantContext, strict: bool = False
+        self,
+        *,
+        tenant_ctx: TenantContext,
+        strict: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        fetched = await self._db_fetch_tenant(tenant_ctx.tenant_id, strict=strict)
+        """The tenant's schedules; ``limit``/``offset`` paginate in SQL (TRG-30)."""
+        fetched = await self._db_fetch_tenant(
+            tenant_ctx.tenant_id, strict=strict, limit=limit, offset=offset
+        )
+        if fetched is not None and limit is not None:
+            return fetched  # a page: cannot prune the cache from it
+        if fetched is None and limit is not None:
+            return self.list_all(tenant_ctx=tenant_ctx)[offset : offset + limit]
         if fetched is not None:
             live = {rec["schedule_id"] for rec in fetched}
             for key in [k for k in self._data if k[0] == tenant_ctx.tenant_id]:

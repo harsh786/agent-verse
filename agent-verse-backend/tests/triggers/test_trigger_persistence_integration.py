@@ -347,6 +347,9 @@ async def test_agent_schedules_deleted_across_replicas(dbs: SimpleNamespace) -> 
         goal_id="", spec=_spec(), tenant_ctx=ctx, agent_id=agent_other, goal_template="x"
     )
     assert replica_b.get(doomed, tenant_ctx=ctx) is None  # B never saw it
+    # TRG-30: SQL pagination runs on Postgres (stable created_at, id order).
+    page = await replica_b.list_all_async(tenant_ctx=ctx, strict=True, limit=1, offset=1)
+    assert [r["schedule_id"] for r in page] == [kept]
 
     assert await replica_b.delete_for_agent_async(agent_a, tenant_ctx=ctx) == [doomed]
 
