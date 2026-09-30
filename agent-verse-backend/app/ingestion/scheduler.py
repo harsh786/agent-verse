@@ -114,11 +114,28 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
         embedder=embedder,
         pii_analyzer=build_pii_analyzer(),
         quota_enforcer=IngestionQuotaEnforcer(db_factory),
+        kg_hook=_build_worker_kg_hook(db_factory),
     )
     _bind_worker_guardrail_rules(db_factory)
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
+
+
+def _build_worker_kg_hook(db_factory: object) -> object:
+    """The D-15 graph auto-population hook, persisted through the worker's factory.
+
+    It was never built here, so documents from scheduled / DLQ-retried syncs
+    produced no graph entities (only API-process ingestion did). Same
+    configuration as the API's hook: deterministic extraction (no LLM spend),
+    writes batched and awaited under each tenant's RLS context.
+    """
+    from app.knowledge_graph.ingestion_hook import KGIngestionHook
+    from app.knowledge_graph.store import KnowledgeGraphStore
+
+    store = KnowledgeGraphStore()
+    store.set_db(db_factory)
+    return KGIngestionHook(store=store)
 
 
 def _bind_worker_guardrail_rules(db_factory: object) -> None:
