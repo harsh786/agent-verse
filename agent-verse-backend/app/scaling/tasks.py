@@ -3356,6 +3356,16 @@ def run_goal(
                 "result_scope": "worker_only",
             }
         _run_async(mark_worker_complete(state.status.value, state.iterations))
+        if state.status.value == "complete" and not dry_run:
+            _publish_worker_score_below(
+                state,
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                agent_id=agent_id,
+                plan=getattr(plan, "value", str(plan)),
+                trigger_chain_depth=trigger_chain_depth,
+                source_trigger_id=source_trigger_id,
+            )
         # After the terminal status is recorded: learning never delays completion.
         _run_async(
             _learn_from_worker_goal(
@@ -3810,6 +3820,61 @@ def _build_worker_goal_service() -> tuple[Any, Any]:
     except Exception as exc:
         logger.warning("worker_goal_service_build_failed", error=str(exc)[:120])
         return None, None
+
+
+def _publish_worker_score_below(
+    state: Any,
+    *,
+    tenant_id: str,
+    goal_id: str,
+    agent_id: str,
+    plan: str,
+    trigger_chain_depth: int,
+    source_trigger_id: str,
+) -> bool:
+    """Publish ``goal.score_below`` for a worker-run goal from its scorecard.
+
+    The verifier scores a completed goal and leaves the scorecard on
+    ``state.context["eval_scorecard"]``. ``goal.score_below`` used to be
+    published only by GoalService's in-process eval path, so goal_score_below
+    triggers never fired for worker-run goals (TRG-22). Like that path, the score
+    is always published and ChainTriggerConsumer compares it with each trigger's
+    threshold; the deterministic ``completion_event_id`` makes a Celery retry or
+    an API relay of the same goal dispatch once.
+    """
+    context = getattr(state, "context", None)
+    scorecard = context.get("eval_scorecard") if isinstance(context, dict) else None
+    average = getattr(scorecard, "average_score", None)
+    if not callable(average):
+        return False
+    try:
+        score = float(average())
+    except Exception:
+        return False
+    try:
+        redis_client = _get_sync_redis()
+        if redis_client is None:
+            return False
+        from app.triggers.consumers.chain import build_chain_event
+
+        redis_client.publish(
+            "goal.score_below",
+            build_chain_event(
+                channel="goal.score_below",
+                tenant_id=tenant_id,
+                goal_id=goal_id,
+                agent_id=agent_id or "",
+                status="complete",
+                tenant_plan=plan,
+                trigger_chain_depth=trigger_chain_depth,
+                score=score,
+                source_trigger_id=source_trigger_id,
+            ),
+        )
+        return True
+    except Exception as exc:
+        logger.warning("goal_score_below_publish_failed goal=%s: %s", goal_id, exc)
+        return False
 
 
 def _worker_long_term_memory() -> Any:
