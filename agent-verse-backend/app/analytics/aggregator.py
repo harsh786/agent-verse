@@ -52,6 +52,26 @@ class AgentMetrics:
     avg_cost_usd: float = 0.0
 
 
+# Tool-call events as the executor emits them (EventStore stores the emitted
+# dict as the goal_events payload): the tool is under "tool" — older rows used
+# "tool_name" — and a successful call carries ``"success": true, "error": ""``.
+_TOOL_EVENT_TYPES = ("tool_call_complete", "tool_call_failed")
+
+
+def _event_tool_name(evt: dict[str, Any]) -> str | None:
+    name = evt.get("tool") or evt.get("tool_name")
+    return str(name) if name else None
+
+
+def _tool_event_failed(evt: dict[str, Any]) -> bool:
+    return (
+        evt.get("type") == "tool_call_failed"
+        or evt.get("success") is False
+        or evt.get("status") == "failed"
+        or bool(evt.get("error"))
+    )
+
+
 def _goal_status_completed(status: Any) -> bool:
     """Check if a goal status represents completion (tolerates StrEnum variants)."""
     s = str(status).lower()
@@ -276,13 +296,12 @@ class GoalAnalyticsAggregator:
         tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for g in goals:
             for evt in getattr(g, "events", []):
-                if evt.get("type") in ("tool_call_complete", "tool_call_failed", "step_complete"):
-                    tool_name = evt.get("tool", evt.get("tool_name", "unknown"))
-                    tool_calls[tool_name].append(evt)
+                if evt.get("type") in _TOOL_EVENT_TYPES and (name := _event_tool_name(evt)):
+                    tool_calls[name].append(evt)
 
         results: list[ToolMetrics] = []
         for tool_name, calls in tool_calls.items():
-            failures = sum(1 for c in calls if c.get("error") or c.get("status") == "failed")
+            failures = sum(1 for c in calls if _tool_event_failed(c))
             latencies = [c.get("latency_ms", 0.0) for c in calls if c.get("latency_ms")]
             m = ToolMetrics(
                 tool_name=tool_name,
@@ -296,6 +315,12 @@ class GoalAnalyticsAggregator:
 
     async def tool_metrics_db(self, tenant_id: str, days: int = 30) -> list[ToolMetrics]:
         """Query tool call metrics from goal_events table in PostgreSQL.
+
+        Reads the executor's event shape: the tool under ``tool`` (``tool_name``
+        on older rows); a call failed when it is a ``tool_call_failed`` event or
+        carries ``success: false``, ``status: failed`` or a non-empty ``error``.
+        It used to read only ``tool_name`` — which the executor never writes —
+        and counted every ``"error": ""`` success as a failure.
 
         Empty result = no tool calls; a failed query raises
         :class:`AnalyticsUnavailableError`. The tenant-filtered in-memory
@@ -315,20 +340,24 @@ class GoalAnalyticsAggregator:
                 result = await session.execute(
                     text("""
                         SELECT
-                            e.payload->>'tool_name' AS tool_name,
+                            COALESCE(NULLIF(e.payload->>'tool', ''),
+                                     NULLIF(e.payload->>'tool_name', '')) AS tool_name,
                             COUNT(*) AS call_count,
-                            SUM(CASE WHEN e.payload->>'status' = 'failed'
-                                          OR e.payload->>'error' IS NOT NULL
+                            SUM(CASE WHEN e.event_type = 'tool_call_failed'
+                                          OR e.payload->>'success' = 'false'
+                                          OR e.payload->>'status' = 'failed'
+                                          OR COALESCE(e.payload->>'error', '') <> ''
                                      THEN 1 ELSE 0 END) AS failure_count,
-                            AVG((e.payload->>'latency_ms')::numeric) AS avg_latency_ms
+                            AVG(NULLIF(e.payload->>'latency_ms', '')::numeric) AS avg_latency_ms
                         FROM goal_events e
                         JOIN goals g ON g.id = e.goal_id
                         WHERE g.tenant_id = :tid
-                          AND e.event_type IN
-                              ('tool_call_complete', 'tool_call_failed', 'step_complete')
+                          AND e.tenant_id = :tid
+                          AND e.event_type IN ('tool_call_complete', 'tool_call_failed')
                           AND e.created_at > NOW() - (:days * INTERVAL '1 day')
-                          AND e.payload->>'tool_name' IS NOT NULL
-                        GROUP BY e.payload->>'tool_name'
+                          AND COALESCE(NULLIF(e.payload->>'tool', ''),
+                                       NULLIF(e.payload->>'tool_name', '')) IS NOT NULL
+                        GROUP BY 1
                         ORDER BY call_count DESC
                         LIMIT 100
                     """),

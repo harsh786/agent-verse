@@ -333,13 +333,18 @@ def test_tool_metrics_empty_goals():
     assert agg.tool_metrics(tenant_id="t1") == []
 
 
-def test_tool_metrics_step_complete_event():
+def test_tool_metrics_step_complete_event_is_not_a_tool_call():
+    """A step event is not a tool call (no writer puts a tool on it; counting it
+    would double count the step's tool_call_complete)."""
     svc = MagicMock()
-    events = [{"type": "step_complete", "tool_name": "my_tool"}]
+    events = [
+        {"type": "step_complete", "tool_name": "my_tool"},
+        {"type": "tool_call_complete", "tool_name": "my_tool"},
+    ]
     svc._goals = {"g1": _mock_goal("complete", events=events)}
     agg = GoalAnalyticsAggregator(goal_service=svc)
     results = agg.tool_metrics(tenant_id="t1")
-    assert any(t.tool_name == "my_tool" for t in results)
+    assert [(t.tool_name, t.call_count) for t in results] == [("my_tool", 1)]
 
 
 # ---------------------------------------------------------------------------

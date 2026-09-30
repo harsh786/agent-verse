@@ -75,3 +75,23 @@ def test_agent_metrics_groups_by_agent():
     agent_ids = {a.agent_id for a in result}
     assert "agent-a" in agent_ids
     assert "agent-b" in agent_ids
+
+
+def test_tool_metrics_read_the_executor_event_shape():
+    """Events as the executor emits them: tool under "tool", a successful call
+    carries ``"success": True, "error": ""`` (not a failure), and step events
+    without a tool are not bucketed as a fake "unknown" tool."""
+    g = _make_mock_goal("complete")
+    g.events = [
+        {"type": "tool_call_complete", "tool": "jira_search", "success": True, "error": ""},
+        {"type": "tool_call_complete", "tool": "jira_search", "success": False, "error": "403"},
+        {"type": "tool_call_failed", "tool": "jira_search", "error": "timeout"},
+        {"type": "tool_call_complete", "tool_name": "legacy_tool", "status": "failed"},
+        {"type": "step_complete", "step": "x", "output": "y"},
+    ]
+    svc = MagicMock()
+    svc._goals = {"g1": g}
+    tools = {t.tool_name: t for t in GoalAnalyticsAggregator(svc).tool_metrics(tenant_id="t1")}
+    assert set(tools) == {"jira_search", "legacy_tool"}
+    assert (tools["jira_search"].call_count, tools["jira_search"].failure_count) == (3, 2)
+    assert tools["legacy_tool"].failure_count == 1

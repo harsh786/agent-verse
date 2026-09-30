@@ -12,6 +12,7 @@ Run with:
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import subprocess
@@ -67,7 +68,7 @@ async def app_factory(postgres_url: str) -> AsyncIterator[async_sessionmaker]:  
         )
         await conn.execute(text(f"GRANT CONNECT ON DATABASE test TO {role}"))
         await conn.execute(text(f"GRANT USAGE ON SCHEMA public TO {role}"))
-        await conn.execute(text(f"GRANT SELECT ON goals, cost_ledger TO {role}"))
+        await conn.execute(text(f"GRANT SELECT ON goals, cost_ledger, goal_events TO {role}"))
         for tid in (TENANT_A, TENANT_B, TENANT_EMPTY):
             await conn.execute(
                 text(
@@ -109,6 +110,36 @@ async def app_factory(postgres_url: str) -> AsyncIterator[async_sessionmaker]:  
                 ),
                 {"t": tid, "g": gid, "c": cost},
             )
+        # Tool events in the shape the executor writes (EventStore.append_event
+        # stores the emitted dict as the payload): the tool is under "tool",
+        # success under "success", and a successful call carries "error": "".
+        # One legacy row keys the tool as "tool_name".
+        events = [
+            (TENANT_A, "ga1", "tool_call_complete",
+             {"tool": "jira_search", "server_id": "s1", "success": True, "output": "ok",
+              "error": ""}),
+            (TENANT_A, "ga1", "tool_call_complete",
+             {"tool": "jira_search", "server_id": "s1", "success": True, "output": "ok",
+              "error": ""}),
+            (TENANT_A, "ga1", "tool_call_failed", {"tool": "jira_search", "error": "timeout"}),
+            (TENANT_A, "ga2", "tool_call_complete",
+             {"tool": "github_list", "server_id": "s2", "success": False, "output": "",
+              "error": "403"}),
+            (TENANT_A, "ga2", "tool_call_complete",
+             {"tool_name": "legacy_tool", "status": "failed"}),
+            (TENANT_A, "ga2", "step_complete", {"step": "x", "output": "y"}),
+            (TENANT_B, "gb1", "tool_call_complete",
+             {"tool": "their_tool", "success": True, "error": ""}),
+        ]
+        for seq, (tid, gid, etype, payload) in enumerate(events, start=1):
+            await conn.execute(
+                text(
+                    "INSERT INTO goal_events (id, tenant_id, goal_id, sequence, event_type, "
+                    "payload) VALUES (:id, :t, :g, :seq, :et, CAST(:p AS jsonb))"
+                ),
+                {"id": f"ev{seq}", "t": tid, "g": gid, "seq": seq, "et": etype,
+                 "p": json.dumps({"type": etype, **payload})},
+            )
     app_url = (
         make_url(postgres_url)
         .set(username=role, password=password)
@@ -147,3 +178,14 @@ async def test_empty_tenant_is_zero(
     assert m.total == 0
     assert await agg.agent_metrics_db(tenant_id=TENANT_EMPTY, days=30) == []
     assert await agg.cost_trends_db(tenant_id=TENANT_EMPTY, days=30) == []
+
+
+async def test_tool_metrics_read_the_executor_event_shape(
+    app_factory: async_sessionmaker,  # type: ignore[type-arg]
+) -> None:
+    agg = GoalAnalyticsAggregator(db=app_factory)
+    tools = {t.tool_name: t for t in await agg.tool_metrics_db(tenant_id=TENANT_A, days=30)}
+    assert set(tools) == {"jira_search", "github_list", "legacy_tool"}
+    assert (tools["jira_search"].call_count, tools["jira_search"].failure_count) == (3, 1)
+    assert (tools["github_list"].call_count, tools["github_list"].failure_count) == (1, 1)
+    assert (tools["legacy_tool"].call_count, tools["legacy_tool"].failure_count) == (1, 1)
