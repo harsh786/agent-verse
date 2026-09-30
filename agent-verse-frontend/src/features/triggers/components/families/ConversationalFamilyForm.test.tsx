@@ -9,6 +9,33 @@ function lastArg(fn: ReturnType<typeof vi.fn>): Record<string, unknown> {
 afterEach(() => vi.restoreAllMocks());
 
 describe('ConversationalFamilyForm', () => {
+  // TRG-20: the server's 422 reason for an unsafe regex shows under its field.
+  test('shows a server regex rejection inline under the offending field', () => {
+    const reason =
+      "keyword_pattern nests a repeated group inside a repetition (e.g. '(a+)+'), which can take exponential time";
+    render(
+      <ConversationalFamilyForm
+        triggerType="chat_keyword"
+        value={{ keyword_pattern: '(a+)+$' }}
+        onChange={vi.fn()}
+        fieldError={reason}
+      />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('nests a repeated group');
+  });
+
+  test('ignores a server error that belongs to another field', () => {
+    render(
+      <ConversationalFamilyForm
+        triggerType="chat_keyword"
+        value={{}}
+        onChange={vi.fn()}
+        fieldError="cron trigger requires a cron_expression"
+      />,
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   test('chat_command renders the command pattern field plus channel restrictions', () => {
     render(<ConversationalFamilyForm triggerType="chat_command" value={{}} onChange={vi.fn()} />);
     expect(screen.getByText('Command Pattern')).toBeInTheDocument();

@@ -4,11 +4,17 @@ interface FamilyFormProps {
   triggerType: TriggerType;
   value: Record<string, unknown>;
   onChange: (v: Record<string, unknown>) => void;
+  /** Server validation message (422). Shown under the field it names, e.g. an
+   * unsafe regex: "keyword_pattern nests a repeated group …". */
+  fieldError?: string;
 }
 
-export function ConversationalFamilyForm({ triggerType, value, onChange }: FamilyFormProps) {
+export function ConversationalFamilyForm({ triggerType, value, onChange, fieldError }: FamilyFormProps) {
   function set(key: string, val: unknown) {
     onChange({ ...value, [key]: val });
+  }
+  function errorFor(key: string): string | undefined {
+    return fieldError && fieldError.startsWith(`${key} `) ? fieldError : undefined;
   }
 
   return (
@@ -25,7 +31,7 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
         </Field>
       )}
       {(triggerType === 'chat_keyword' || triggerType === 'chat_mention') && (
-        <Field label="Keyword Pattern" hint="Regex pattern or keyword to match">
+        <Field label="Keyword Pattern" hint="Regex pattern or keyword to match" error={errorFor('keyword_pattern')}>
           <input
             type="text"
             value={(value.keyword_pattern as string) ?? ''}
@@ -70,7 +76,7 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
       )}
       {(triggerType === 'email_intent' || triggerType === 'email_arrival') && (
         <>
-          <Field label="Sender Filter (optional)" hint="Email or domain to filter by">
+          <Field label="Sender Filter (optional)" hint="Email or domain to filter by" error={errorFor('email_sender_filter')}>
             <input
               type="text"
               value={(value.email_sender_filter as string) ?? ''}
@@ -79,7 +85,7 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
               className={inputCls}
             />
           </Field>
-          <Field label="Subject Pattern" hint="Regex pattern for subject line">
+          <Field label="Subject Pattern" hint="Regex pattern for subject line" error={errorFor('email_subject_pattern')}>
             <input
               type="text"
               value={(value.email_subject_pattern as string) ?? ''}
@@ -91,7 +97,7 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
         </>
       )}
       {triggerType === 'sms_inbound' && (
-        <Field label="Phone Number Filter (optional)">
+        <Field label="Phone Number Filter (optional)" error={errorFor('phone_number_filter')}>
           <input
             type="tel"
             value={(value.phone_number_filter as string) ?? ''}
@@ -141,12 +147,17 @@ export function ConversationalFamilyForm({ triggerType, value, onChange }: Famil
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, error, children }: { label: string; hint?: string; error?: string; children: React.ReactNode }) {
   return (
     <div>
       <label className="block text-sm font-medium mb-1">{label}</label>
       {hint && <p className="text-xs text-muted-foreground mb-1.5">{hint}</p>}
       {children}
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

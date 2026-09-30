@@ -44,6 +44,11 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
         raise ValueError("priority must be one of: high, normal, low")
     if spec.expires_at_iso and not _is_iso(spec.expires_at_iso):
         raise ValueError(f"expires_at_iso is not a valid ISO datetime: {spec.expires_at_iso!r}")
+    # Tenant regexes (chat keyword / email / phone filters) must be safe to run
+    # on the event loop (TRG-20).
+    from app.triggers.consumers.conversational import validate_conversational_patterns
+
+    validate_conversational_patterns(spec)
 
     # ── Type-specific required fields ────────────────────────────────────────
     if v == "cron":

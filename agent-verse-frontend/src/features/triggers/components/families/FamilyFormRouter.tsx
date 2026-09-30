@@ -15,11 +15,13 @@ interface FamilyFormRouterProps {
   triggerType: TriggerType;
   value: Record<string, unknown>;
   onChange: (v: Record<string, unknown>) => void;
+  /** Last server validation message (422), shown inline by forms that own the field. */
+  serverError?: string;
 }
 
 /** Renders the family-specific config form for a trigger. Shared by the create
  * modal and the detail-drawer edit flow so both stay in lock-step. */
-export function FamilyFormRouter({ family, triggerType, value, onChange }: FamilyFormRouterProps) {
+export function FamilyFormRouter({ family, triggerType, value, onChange, serverError }: FamilyFormRouterProps) {
   const props = { triggerType, value, onChange };
   switch (family) {
     case 'time':
@@ -29,7 +31,7 @@ export function FamilyFormRouter({ family, triggerType, value, onChange }: Famil
     case 'webhook':
       return <WebhookFamilyForm {...props} />;
     case 'conversational':
-      return <ConversationalFamilyForm {...props} />;
+      return <ConversationalFamilyForm {...props} fieldError={serverError} />;
     case 'state_condition':
       return <ConditionFamilyForm {...props} />;
     case 'data':

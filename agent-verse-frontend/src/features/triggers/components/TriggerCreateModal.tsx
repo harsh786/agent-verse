@@ -155,6 +155,7 @@ export function TriggerCreateModal({ onClose }: TriggerCreateModalProps) {
                 triggerType={selectedType}
                 value={specFields}
                 onChange={setSpecFields}
+                serverError={create.error instanceof Error ? create.error.message : undefined}
               />
 
               {/* Cross-cutting production controls — apply to every trigger type */}
