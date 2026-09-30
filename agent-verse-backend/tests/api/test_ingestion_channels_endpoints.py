@@ -225,7 +225,11 @@ def test_teams_event_with_resolvable_tenant_calls_gateway(app_with_gateway_and_d
     client = TestClient(app)
     resp = client.post(
         "/channels/teams/events",
-        json={"type": "message", "serviceUrl": "https://teams.microsoft.com"},
+        json={
+            "type": "message",
+            "serviceUrl": "https://smba.trafficmanager.net/amer/",
+            "channelData": {"tenant": {"id": "72f988bf-86f1-41af-91ab-2d7cd011db47"}},
+        },
     )
     assert resp.status_code == 200
     gateway.ingest.assert_awaited_once()
@@ -500,7 +504,13 @@ def test_list_channel_mappings_returns_rows():
     resp = client.get("/channels/mappings")
     assert resp.status_code == 200
     assert resp.json() == [
-        {"id": "m1", "channel_type": "slack", "channel_id": "T1", "created_at": "2026-01-01"}
+        {
+            "id": "m1",
+            "channel_type": "slack",
+            "channel_id": "T1",
+            "created_at": "2026-01-01",
+            "needs_remapping": False,
+        }
     ]
 
 

@@ -9,6 +9,25 @@ interface ChannelMapping {
   channel_type: string;
   channel_id: string;
   created_at?: string;
+  /** Legacy Teams mapping keyed on the shared serviceUrl — it no longer routes. */
+  needs_remapping?: boolean;
+}
+
+// Teams routes inbound activities by the organisation's Microsoft 365 tenant ID.
+const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function channelIdLabel(channelType: string): string {
+  if (channelType === 'slack') return 'Workspace ID';
+  if (channelType === 'email') return 'Email Address';
+  if (channelType === 'teams') return 'Microsoft 365 tenant ID';
+  return 'Channel ID';
+}
+
+function channelIdPlaceholder(channelType: string): string {
+  if (channelType === 'slack') return 'T12345ABCD';
+  if (channelType === 'email') return 'support@company.com';
+  if (channelType === 'teams') return '00000000-0000-0000-0000-000000000000';
+  return 'channel-id';
 }
 
 const CHANNEL_ICONS: Record<string, string> = {
@@ -31,6 +50,9 @@ export function ChannelMappingsPage() {
     queryKey: ['channel-mappings'],
     queryFn: () => apiFetch<ChannelMapping[]>('/channels/mappings'),
   });
+
+  const trimmedId = channelId.trim();
+  const teamsIdInvalid = channelType === 'teams' && trimmedId !== '' && !GUID_RE.test(trimmedId);
 
   const createMapping = useMutation({
     mutationFn: (body: { channel_type: string; channel_id: string }) =>
@@ -102,10 +124,20 @@ export function ChannelMappingsPage() {
                 <div className="text-sm font-medium capitalize">{m.channel_type}</div>
                 <div className="text-xs text-muted-foreground font-mono">{m.channel_id}</div>
               </div>
-              <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
-                <CheckCircle className="h-3.5 w-3.5" />
-                Connected
-              </span>
+              {m.needs_remapping ? (
+                <span
+                  className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-400"
+                  title="Teams is now routed by Microsoft 365 tenant ID. Add a Teams channel with your tenant ID."
+                >
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Needs re-mapping
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Connected
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -132,16 +164,27 @@ export function ChannelMappingsPage() {
               </div>
               <div>
                 <label className="block text-sm font-medium mb-1.5">
-                  {channelType === 'slack' ? 'Workspace ID' : channelType === 'email' ? 'Email Address' : 'Channel ID'}
+                  {channelIdLabel(channelType)}
                 </label>
                 <input
                   type="text"
                   value={channelId}
                   onChange={(e) => setChannelId(e.target.value)}
-                  placeholder={channelType === 'slack' ? 'T12345ABCD' : channelType === 'email' ? 'support@company.com' : 'channel-id'}
+                  placeholder={channelIdPlaceholder(channelType)}
+                  aria-invalid={teamsIdInvalid || undefined}
                   className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
                 />
+                {teamsIdInvalid && (
+                  <p className="mt-1 text-xs text-destructive">
+                    The Microsoft 365 tenant ID must be a GUID (Entra admin center → Overview → Tenant ID).
+                  </p>
+                )}
               </div>
+              {createMapping.isError && (
+                <p className="text-xs text-destructive" role="status">
+                  {createMapping.error instanceof Error ? createMapping.error.message : 'Could not connect the channel.'}
+                </p>
+              )}
             </div>
             <div className="flex gap-2 justify-end mt-6">
               <button
@@ -151,8 +194,8 @@ export function ChannelMappingsPage() {
                 Cancel
               </button>
               <button
-                onClick={() => createMapping.mutate({ channel_type: channelType, channel_id: channelId })}
-                disabled={!channelId.trim() || createMapping.isPending}
+                onClick={() => createMapping.mutate({ channel_type: channelType, channel_id: trimmedId })}
+                disabled={!trimmedId || teamsIdInvalid || createMapping.isPending}
                 className="rounded-lg bg-primary text-primary-foreground px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50"
               >
                 {createMapping.isPending ? 'Connecting…' : 'Connect Channel'}

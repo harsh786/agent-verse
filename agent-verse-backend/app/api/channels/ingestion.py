@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -256,6 +257,39 @@ async def slack_events(
 # ── Microsoft Teams ───────────────────────────────────────────────────────────
 
 
+def _normalize_m365_tenant_id(value: Any) -> str:
+    """Canonical (lower-case, hyphenated) Microsoft 365 tenant GUID, or ``""``."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(uuid.UUID(raw))
+    except ValueError:
+        return ""
+
+
+def _teams_org_id(body: dict[str, Any]) -> str:
+    """The Microsoft 365 tenant (organisation) id of a Bot Framework activity.
+
+    Teams stamps it on ``channelData.tenant.id`` and ``conversation.tenantId``.
+    ``serviceUrl`` is deliberately NOT used: it is a regional Bot Framework
+    endpoint (``https://smba.trafficmanager.net/<region>/``) shared by every
+    Teams organisation, so mapping it routed every org's messages to whichever
+    AgentVerse tenant claimed the URL first.
+    """
+    channel_data = body.get("channelData")
+    if isinstance(channel_data, dict):
+        tenant = channel_data.get("tenant")
+        if isinstance(tenant, dict):
+            org = _normalize_m365_tenant_id(tenant.get("id"))
+            if org:
+                return org
+    conversation = body.get("conversation")
+    if isinstance(conversation, dict):
+        return _normalize_m365_tenant_id(conversation.get("tenantId"))
+    return ""
+
+
 @router.post("/teams/events")
 async def teams_events(request: Request) -> dict:
     """Handle Microsoft Teams webhook (Bot Framework JWT authenticated)."""
@@ -264,12 +298,14 @@ async def teams_events(request: Request) -> dict:
     body_bytes = await request.body()
     await _require_adapter_auth(MicrosoftTeamsAdapter(), request, body_bytes)
     body = _parse_json(body_bytes)
-    # The tenant comes only from the registered channel mapping. It used to fall
-    # back to a caller-supplied X-Tenant-ID header; a valid Bot Framework token
-    # proves the call is from Microsoft for OUR app, not which tenant it is for.
-    tenant_id = await _resolve_tenant_from_channel(
-        "teams", str(body.get("serviceUrl", "") or ""), _lookup_db(request)
-    )
+    # The tenant comes only from the registered channel mapping, keyed on the
+    # Microsoft 365 tenant id of the activity. A valid Bot Framework token proves
+    # the call is from Microsoft for OUR app, not which AgentVerse tenant it is
+    # for — never a caller-supplied X-Tenant-ID header, never the shared serviceUrl.
+    org_id = _teams_org_id(body)
+    tenant_id = await _resolve_tenant_from_channel("teams", org_id, _lookup_db(request))
+    if not tenant_id:
+        _log.warning("teams_event_unmapped_org org_id=%s", org_id or "<missing>")
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("teams", body, tenant_id=tenant_id)
@@ -482,9 +518,16 @@ async def create_channel_mapping(request: Request) -> dict:
     channel_id = str(body.get("channel_id") or "")
     if not channel_type or not channel_id:
         raise HTTPException(status_code=422, detail="channel_type and channel_id are required")
+    if channel_type == "teams":
+        # Teams routes by Microsoft 365 tenant id; a serviceUrl is shared by
+        # every Teams organisation and must not be claimable.
+        channel_id = _normalize_m365_tenant_id(channel_id)
+        if not channel_id:
+            raise HTTPException(
+                status_code=422,
+                detail="For Teams, channel_id must be your Microsoft 365 tenant ID (a GUID)",
+            )
     try:
-        import uuid
-
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
@@ -552,6 +595,14 @@ async def list_channel_mappings(request: Request) -> list[dict]:
                 ),
                 {"tid": tenant_id},
             )
-            return [dict(r._mapping) for r in rows]
+            return [_with_remap_flag(dict(r._mapping)) for r in rows]
     except Exception:
         return []
+
+
+def _with_remap_flag(row: dict[str, Any]) -> dict[str, Any]:
+    """Flag legacy Teams mappings keyed on serviceUrl — they no longer route."""
+    row["needs_remapping"] = row.get("channel_type") == "teams" and not (
+        _normalize_m365_tenant_id(row.get("channel_id"))
+    )
+    return row

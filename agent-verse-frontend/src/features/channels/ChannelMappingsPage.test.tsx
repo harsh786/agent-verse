@@ -152,9 +152,47 @@ describe('ChannelMappingsPage', () => {
     expect(within(dialog).getByText('Email Address')).toBeInTheDocument();
     expect(within(dialog).getByPlaceholderText('support@company.com')).toBeInTheDocument();
 
-    await userEvent.selectOptions(select, 'teams');
+    await userEvent.selectOptions(select, 'discord');
     expect(within(dialog).getByText('Channel ID')).toBeInTheDocument();
     expect(within(dialog).getByPlaceholderText('channel-id')).toBeInTheDocument();
+  });
+
+  // TRG-01: Teams routes by Microsoft 365 tenant ID, never the shared serviceUrl.
+  test('Teams asks for the Microsoft 365 tenant ID and validates it as a GUID', async () => {
+    const spy = mockFetch({ mappings: [] });
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /Add Channel/i }));
+    const dialog = await screen.findByRole('dialog', { name: /Add channel connection/i });
+    await userEvent.selectOptions(within(dialog).getByRole('combobox'), 'teams');
+    expect(within(dialog).getByText('Microsoft 365 tenant ID')).toBeInTheDocument();
+
+    const input = within(dialog).getByRole('textbox');
+    await userEvent.type(input, 'https://smba.trafficmanager.net/amer/');
+    expect(within(dialog).getByText(/must be a GUID/i)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: /Connect Channel/i })).toBeDisabled();
+
+    await userEvent.clear(input);
+    await userEvent.type(input, '72f988bf-86f1-41af-91ab-2d7cd011db47');
+    expect(within(dialog).queryByText(/must be a GUID/i)).not.toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: /Connect Channel/i }));
+    await waitFor(() =>
+      expect(spy.mock.calls.some(([u, i]) => {
+        const init = i as RequestInit | undefined;
+        return String(u).includes('/channels/mappings') && init?.method === 'POST' &&
+          String(init?.body ?? '').includes('72f988bf-86f1-41af-91ab-2d7cd011db47');
+      })).toBe(true),
+    );
+  });
+
+  test('flags a legacy Teams serviceUrl mapping as needing re-mapping', async () => {
+    mockFetch({
+      mappings: [
+        { id: 'm1', channel_type: 'teams', channel_id: 'https://smba.trafficmanager.net/amer/', needs_remapping: true },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByText(/Needs re-mapping/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^Connected$/)).not.toBeInTheDocument();
   });
 
   test('shows a connecting state while the create mutation is pending', async () => {
