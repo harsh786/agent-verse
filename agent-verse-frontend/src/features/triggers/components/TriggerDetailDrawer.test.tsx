@@ -79,6 +79,22 @@ describe('TriggerDetailDrawer', () => {
     expect(screen.queryByText('Paused')).not.toBeInTheDocument();
   });
 
+  test('shows an open goal-outcome circuit and when it retries (TRG-13)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      const body = url.includes('/circuit')
+        ? JSON.stringify({ state: 'open', consecutive_failures: 5, retry_at: '2030-01-01T10:15:00Z' })
+        : url.includes('/events')
+          ? '[]'
+          : '{}';
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderDrawer();
+    expect(await screen.findByLabelText('Trigger status: circuit open')).toBeInTheDocument();
+    expect(screen.getByText(/5 failed goals in a row/)).toBeInTheDocument();
+    expect(screen.getByText(/next probe/i)).toBeInTheDocument();
+  });
+
   test('the close button invokes onClose', async () => {
     mockFetch();
     const onClose = renderDrawer();

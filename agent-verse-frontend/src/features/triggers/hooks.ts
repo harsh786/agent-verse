@@ -41,6 +41,23 @@ export function useTrigger(scheduleId: string) {
   });
 }
 
+/** Goal-outcome circuit of a trigger (TRG-13): open after repeated failed goals. */
+export interface TriggerCircuit {
+  state: 'closed' | 'open' | 'half_open' | 'unknown';
+  consecutive_failures: number;
+  retry_at: string | null;
+}
+
+export function useTriggerCircuit(scheduleId: string) {
+  return useQuery({
+    queryKey: [...TRIGGER_KEYS.detail(scheduleId), 'circuit'] as const,
+    queryFn: () => apiFetch<TriggerCircuit>(`/schedules/${scheduleId}/circuit`),
+    enabled: !!scheduleId,
+    retry: false,
+    refetchInterval: 30_000,
+  });
+}
+
 export function useTriggerEvents(scheduleId: string, limit = 50) {
   return useQuery({
     queryKey: TRIGGER_KEYS.events(scheduleId),

@@ -355,3 +355,38 @@ async def test_agent_schedules_deleted_across_replicas(dbs: SimpleNamespace) -> 
     assert doomed not in left and kept in left
     # Another tenant's context deletes nothing (RLS).
     assert await replica_b.delete_for_agent_async(agent_other, tenant_ctx=_ctx(dbs.t2)) == []
+
+
+@pytest.mark.asyncio
+async def test_outcome_circuit_opens_from_failed_goals_on_the_app_role(
+    dbs: SimpleNamespace,
+) -> None:
+    """TRG-13: the circuit reads trigger_events ⋈ goals under RLS on the
+    least-privilege role, so every worker sees the same state."""
+    from app.triggers.outcome_circuit import FAILURE_THRESHOLD, read_outcome_circuit
+
+    trigger_id = uuid.uuid4().hex
+    async with dbs.admin() as s, s.begin():
+        for i in range(FAILURE_THRESHOLD):
+            gid = uuid.uuid4().hex
+            await s.execute(
+                text(
+                    "INSERT INTO goals (id, tenant_id, goal_text, status, priority, "
+                    "autonomy_mode, dry_run, iterations) "
+                    "VALUES (:g, :t, 'x', 'failed', 'normal', 'bounded-autonomous', false, 0)"
+                ),
+                {"g": gid, "t": dbs.t1},
+            )
+            await s.execute(
+                text(
+                    "INSERT INTO trigger_events (id, tenant_id, trigger_id, trigger_type, "
+                    "idempotency_key, fired_at, goal_created, goal_id) VALUES "
+                    "(:id, :t, :tid, 'cron', :k, NOW() - make_interval(mins => :m), true, :g)"
+                ),
+                {"id": str(uuid.uuid4()), "t": dbs.t1, "tid": trigger_id, "k": gid, "m": i + 1,
+                 "g": gid},
+            )
+
+    assert (await read_outcome_circuit(dbs.app, dbs.t1, trigger_id)).state == "open"
+    # Another tenant sees none of those rows.
+    assert (await read_outcome_circuit(dbs.app, dbs.t2, trigger_id)).state == "closed"

@@ -9,6 +9,7 @@ import {
   useUpdateTrigger,
   usePauseTrigger,
   useResumeTrigger,
+  useTriggerCircuit,
 } from '../hooks';
 import { TriggerStatusBadge } from './TriggerStatusBadge';
 import { TriggerHistoryPanel } from './TriggerHistoryPanel';
@@ -23,6 +24,9 @@ interface TriggerDetailDrawerProps {
 export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerProps) {
   const family = TRIGGER_TYPE_FAMILY[trigger.spec.trigger_type];
   const expired = isTriggerExpired(trigger.spec);
+  // TRG-13: the goal-outcome circuit (open after repeated failed goals).
+  const circuit = useTriggerCircuit(trigger.schedule_id).data;
+  const circuitOpen = circuit?.state === 'open';
   const simulate = useSimulateTrigger();
   const fireNow = useFireTriggerNow();
   const update = useUpdateTrigger();
@@ -76,7 +80,7 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               {trigger.spec.description ?? 'Trigger Detail'}
             </h2>
             <div className="mt-1">
-              <TriggerStatusBadge paused={trigger.paused} expired={expired} />
+              <TriggerStatusBadge paused={trigger.paused} expired={expired} circuitOpen={circuitOpen} />
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -167,6 +171,18 @@ export function TriggerDetailDrawer({ trigger, onClose }: TriggerDetailDrawerPro
               >
                 {expired ? 'Expired' : trigger.paused ? 'Paused' : 'Active'}
               </dd>
+              {(circuit?.state === 'open' || circuit?.state === 'half_open') && (
+                <>
+                  <dt className="text-muted-foreground">Circuit</dt>
+                  <dd className="text-red-600">
+                    {circuit.state === 'open' ? 'Open' : 'Half-open'} — {circuit.consecutive_failures}{' '}
+                    failed goals in a row;{' '}
+                    {circuit.state === 'open' && circuit.retry_at
+                      ? `next probe ${new Date(circuit.retry_at).toLocaleString()}`
+                      : 'the next fire is a probe'}
+                  </dd>
+                </>
+              )}
             </dl>
           </Section>
 

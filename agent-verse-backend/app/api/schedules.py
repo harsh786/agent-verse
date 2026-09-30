@@ -353,6 +353,32 @@ async def get_schedule(request: Request, schedule_id: str) -> dict[str, Any]:
     return _record_to_dict(await _get_or_404(store, schedule_id, tenant_ctx))
 
 
+@router.get("/{schedule_id}/circuit")
+async def get_schedule_circuit(request: Request, schedule_id: str) -> dict[str, Any]:
+    """The trigger's goal-outcome circuit (TRG-13): ``closed`` / ``open`` /
+    ``half_open``, consecutive failed goals, and when an open circuit probes
+    again. ``unknown`` when no database is configured."""
+    tenant_ctx: TenantContext = _require_tenant(request)
+    await _get_or_404(_schedule_store(request), schedule_id, tenant_ctx)
+    db_factory = getattr(request.app.state, "db_session_factory", None)
+    if db_factory is None:
+        return {"state": "unknown", "consecutive_failures": 0, "retry_at": None}
+    from app.triggers.outcome_circuit import read_outcome_circuit
+
+    try:
+        circuit = await read_outcome_circuit(db_factory, tenant_ctx.tenant_id, schedule_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Circuit state unavailable; retry",
+        ) from exc
+    return {
+        "state": circuit.state,
+        "consecutive_failures": circuit.consecutive_failures,
+        "retry_at": circuit.retry_at.isoformat() if circuit.retry_at else None,
+    }
+
+
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_schedule(request: Request, schedule_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)

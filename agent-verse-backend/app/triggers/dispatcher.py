@@ -303,7 +303,7 @@ class TriggerDispatcher:
 
         # ── Step 6: Circuit breaker check ─────────────────────────────────────
         cb = self._cb_registry.get(trigger_id)
-        if cb.is_open():
+        if cb.is_open() or await self._goal_outcomes_open(trigger_id, tenant_id):
             await self._release_dedup(idempotency_key, tenant_id)
             return self._make_skip_event(
                 trigger_id,
@@ -463,6 +463,26 @@ class TriggerDispatcher:
             await self._bulkhead.release(tenant_id)
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    async def _goal_outcomes_open(self, trigger_id: str, tenant_id: str) -> bool:
+        """TRG-13: open when the trigger's recent goals keep FAILING.
+
+        Read from Postgres (trigger_events ⋈ goals), so the circuit is the same
+        on every worker/replica and fed by goal outcomes — the in-process
+        breaker above only sees enqueue failures and starts empty in every
+        fresh dispatcher. A read error leaves the circuit closed (a breaker is
+        an availability guard, not an authorisation check) and is logged.
+        """
+        if self._db_factory is None or not trigger_id or trigger_id == "unknown":
+            return False
+        from app.triggers.outcome_circuit import read_outcome_circuit
+
+        try:
+            circuit = await read_outcome_circuit(self._db_factory, tenant_id, trigger_id)
+        except Exception as exc:
+            _log.warning("outcome_circuit_read_failed trigger_id=%s: %s", trigger_id, exc)
+            return False
+        return circuit.state == "open"
 
     def _payload_size_limit(self, plan: str) -> int:
         return {
