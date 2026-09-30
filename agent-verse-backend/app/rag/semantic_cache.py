@@ -423,6 +423,8 @@ class SemanticCache:
         """
         import uuid
 
+        if not response:
+            return  # nothing to serve: an empty answer is never an entry
         response = response[: self._max_response]  # cap length
         entry_id = uuid.uuid4().hex[:16]
         scope = await self._scope(tenant_id)
@@ -611,21 +613,12 @@ class SemanticCache:
 
         Returns: number of patterns successfully cached.
         """
-        # New path: pre-computed embeddings provided directly
+        # Pre-computed embeddings without answers: there is nothing to serve
+        # yet, so nothing is stored. This used to write response="" placeholder
+        # rows into L1, Redis and semantic_cache_entries (filtered on every read,
+        # never useful). Answers are cached when the steps actually run.
         if queries is not None and embeddings is not None:
-            count = 0
-            for query, embedding in zip(queries, embeddings, strict=False):
-                try:
-                    await self.store_async(
-                        embedding=embedding,
-                        query=query,
-                        response="",  # placeholder — used for prefetch warming only
-                        tenant_id=tenant_id,
-                    )
-                    count += 1
-                except Exception:
-                    pass
-            return count
+            return 0
 
         # Original path: patterns + embedder
         if not patterns or embedder is None:
