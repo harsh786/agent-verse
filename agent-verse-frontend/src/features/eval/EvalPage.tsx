@@ -997,18 +997,39 @@ function SuitesTab({ apiKey }: { apiKey: string }) {
                 <div className="border-t border-border p-4">
                   <h4 className="text-xs font-semibold text-muted-foreground mb-2">Recent Runs</h4>
                   <div className="space-y-1.5">
-                    {(suiteResultsMap.get(suite.suite_id) ?? []).slice(-5).map((r, i) => (
-                      <div key={r.run_id ?? i} className="flex items-center gap-3 text-xs">
-                        <span className="text-muted-foreground/60">#{i + 1}</span>
-                        <div className="flex-1 bg-muted rounded-full h-1.5">
-                          <div
-                            className="bg-emerald-500 h-1.5 rounded-full"
-                            style={{ width: `${((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100}%` }}
-                          />
+                    {(suiteResultsMap.get(suite.suite_id) ?? []).slice(-5).map((r, i) => {
+                      const unscored = (r.task_results ?? []).filter((t) => t.status === 'timeout' || t.status === 'error');
+                      return (
+                        <div key={r.run_id ?? i} className="space-y-1">
+                          <div className="flex items-center gap-3 text-xs">
+                            <span className="text-muted-foreground/60">#{i + 1}</span>
+                            <div className="flex-1 bg-muted rounded-full h-1.5">
+                              <div
+                                className="bg-emerald-500 h-1.5 rounded-full"
+                                style={{ width: `${((r.passed ?? 0) / Math.max((r.passed ?? 0) + (r.failed ?? 0), 1)) * 100}%` }}
+                              />
+                            </div>
+                            <span className="text-muted-foreground">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
+                            {unscored.length > 0 && (
+                              <span className="text-amber-500">{unscored.length} not scored</span>
+                            )}
+                          </div>
+                          {unscored.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pl-6">
+                              {unscored.map((t) => (
+                                <span
+                                  key={t.task_id}
+                                  title={t.failure_reasons?.join('; ')}
+                                  className="text-[10px] px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-500"
+                                >
+                                  {t.task_id}: {t.status === 'timeout' ? 'timed out' : 'error'}
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <span className="text-muted-foreground">{r.passed ?? 0}/{(r.passed ?? 0) + (r.failed ?? 0)} pass</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

@@ -129,6 +129,12 @@ async def execute_case(
     except Exception as exc:
         status = "stream_error"
         error = str(exc)[:500]
+    if status in {"timeout", "stream_error", "stream_ended"}:
+        # The case is not scored; the real goal must not keep running (and
+        # spending) after the run moved on.
+        from app.intelligence.eval_suite import cancel_unscored_goal
+
+        await cancel_unscored_goal(goal_service, goal_id, tenant_ctx)
 
     tools_called = [
         str(e.get("tool_name") or e.get("tool") or "")

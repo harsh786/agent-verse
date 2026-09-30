@@ -73,6 +73,9 @@ class GoldenTaskResult:
     tools_called: list[str] = field(default_factory=list)
     duration_seconds: float = 0.0
     actual_output: str = ""  # actual agent output for LLM judge evaluation
+    # "scored" — the goal reached a terminal state and was checked;
+    # "timeout" / "error" — it did not, so it was NOT scored (and never passes).
+    status: str = "scored"
 
 
 @dataclass
@@ -81,7 +84,8 @@ class EvalSuiteResult:
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     total_tasks: int = 0
     passed_tasks: int = 0
-    failed_tasks: int = 0
+    failed_tasks: int = 0  # every task that did not pass, unscored ones included
+    unscored_tasks: int = 0  # timed out / errored before a terminal state
     task_results: list[GoldenTaskResult] = field(default_factory=list)
     run_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -215,7 +219,25 @@ class LLMJudge:
         }
 
 
+_TERMINAL_EVENTS = frozenset({"goal_complete", "goal_failed", "goal_cancelled", "goal_rejected"})
+
+
+async def cancel_unscored_goal(goal_service: Any, goal_id: str, tenant_ctx: Any) -> None:
+    """Cancel an eval goal that will not be scored; a failure is logged, not raised."""
+    cancel = getattr(goal_service, "cancel_goal", None)
+    if cancel is None:
+        return
+    try:
+        await cancel(goal_id, tenant_ctx)
+    except Exception as exc:
+        logger.warning("eval_goal_cancel_failed", goal_id=goal_id, error=str(exc)[:200])
+
+
 class EvalSuiteRunner:
+    # How long one golden task's goal may run before it is cancelled and
+    # reported as timed out.
+    task_timeout_seconds: float = 60.0
+
     def __init__(self) -> None:
         self._suites: dict[str, list[GoldenTask]] = {}
         self._results: dict[str, list[EvalSuiteResult]] = {}
@@ -309,6 +331,8 @@ class EvalSuiteRunner:
                 result.passed_tasks += 1
             else:
                 result.failed_tasks += 1
+            if task_result.status != "scored":
+                result.unscored_tasks += 1
 
         self._results.setdefault(suite_id, []).append(result)
         return result
@@ -324,16 +348,6 @@ class EvalSuiteRunner:
                 goal=task.goal, priority="normal", dry_run=False, tenant_ctx=tenant_ctx
             )
             goal_id = sub["goal_id"]
-            try:
-                async with asyncio.timeout(60):
-                    async for evt in goal_service.subscribe_events(
-                        goal_id=goal_id, tenant_ctx=tenant_ctx
-                    ):
-                        events.append(evt)
-                        if evt.get("type") in {"goal_complete", "goal_failed", "goal_cancelled"}:
-                            break
-            except (TimeoutError, Exception) as exc:
-                logger.warning("eval_task_execution_failed: %s", exc)
         except Exception as exc:
             return GoldenTaskResult(
                 task_id=task.task_id,
@@ -341,6 +355,40 @@ class EvalSuiteRunner:
                 passed=False,
                 failure_reasons=[str(exc)],
                 duration_seconds=time.monotonic() - t0,
+                status="error",
+            )
+
+        # A task is scored only once its goal reached a terminal state. On a
+        # timeout or a broken/ended stream the partial events say nothing about
+        # the outcome, and the real goal would keep running (and spending)
+        # after being "scored" — so it is cancelled and reported unscored.
+        unscored: tuple[str, str] | None = None
+        timeout = self.task_timeout_seconds
+        try:
+            async with asyncio.timeout(timeout):
+                async for evt in goal_service.subscribe_events(
+                    goal_id=goal_id, tenant_ctx=tenant_ctx
+                ):
+                    events.append(evt)
+                    if evt.get("type") in _TERMINAL_EVENTS:
+                        break
+                else:
+                    unscored = ("error", "event stream ended before the goal finished")
+        except TimeoutError:
+            unscored = ("timeout", f"goal did not finish within {timeout:.0f}s")
+        except Exception as exc:
+            unscored = ("error", f"event stream failed: {str(exc)[:300]}")
+        if unscored is not None:
+            status, reason = unscored
+            logger.warning("eval_task_unscored", goal_id=goal_id, status=status, reason=reason)
+            await cancel_unscored_goal(goal_service, goal_id, tenant_ctx)
+            return GoldenTaskResult(
+                task_id=task.task_id,
+                goal=task.goal,
+                passed=False,
+                failure_reasons=[reason],
+                duration_seconds=time.monotonic() - t0,
+                status=status,
             )
 
         tools_called = [

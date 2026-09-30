@@ -198,6 +198,29 @@ describe('EvalPage SuitesTab handlers', () => {
     expect(screen.queryByText('Recent Runs')).not.toBeInTheDocument();
   });
 
+  test('timed-out and errored tasks are shown as not scored, per task', async () => {
+    makeSuitesFetch({
+      suites: [baseSuite],
+      suiteResults: {
+        s1: [{
+          run_id: 'r1', passed: 1, failed: 2,
+          task_results: [
+            { task_id: 't-ok', passed: true, status: 'scored' },
+            { task_id: 't-slow', passed: false, status: 'timeout', failure_reasons: ['goal did not finish within 60s'] },
+            { task_id: 't-broken', passed: false, status: 'error', failure_reasons: ['event stream failed'] },
+          ],
+        }],
+      },
+    });
+    renderPage();
+    await openSuitesTab();
+    await userEvent.click(await screen.findByText('Regression Suite'));
+
+    expect(await screen.findByText(/t-slow: timed out/i)).toBeInTheDocument();
+    expect(screen.getByText(/t-broken: error/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 not scored/i)).toBeInTheDocument();
+  });
+
   // ─── Run mutation ───────────────────────────────────────────────────────────
 
   test('clicking Run triggers the run mutation and refreshes/renders suite results', async () => {

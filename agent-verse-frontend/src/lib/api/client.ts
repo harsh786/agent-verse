@@ -2116,6 +2116,13 @@ export interface EvalSuiteResult {
   passed: number;
   failed: number;
   completed_at: string;
+  task_results?: Array<{
+    task_id: string;
+    passed: boolean;
+    /** "timeout" / "error": the goal never finished, so the task was not scored. */
+    status?: "scored" | "timeout" | "error";
+    failure_reasons?: string[];
+  }>;
 }
 
 export const evalSuitesApi = {

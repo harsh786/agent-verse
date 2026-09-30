@@ -250,6 +250,7 @@ class EvalSuiteStore:
             {
                 "task_id": r.task_id,
                 "passed": r.passed,
+                "status": r.status,
                 "failure_reasons": r.failure_reasons,
                 "duration_seconds": round(r.duration_seconds, 2),
             }
