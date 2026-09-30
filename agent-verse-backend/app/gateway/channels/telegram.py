@@ -150,6 +150,21 @@ class TelegramChannelAdapter(ChannelAdapter):
             payload["reply_markup"] = {"inline_keyboard": buttons}
         return payload
 
+    async def send_text(self, *, chat_id: str, text: str, token: str) -> dict[str, Any] | None:
+        """Send a plain-text reply with a per-binding bot token (not the env token)."""
+        if not token:
+            return None
+        payload = {"chat_id": chat_id, "text": text[:4096]}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(f"{TELEGRAM_API_BASE}{token}/sendMessage", json=payload)
+                r.raise_for_status()
+                result: dict[str, Any] = r.json()
+                return result
+        except Exception as exc:
+            _log.warning("telegram.send_text.failed", error=str(exc))
+            return None
+
     async def send_message(
         self,
         chat_id: str,

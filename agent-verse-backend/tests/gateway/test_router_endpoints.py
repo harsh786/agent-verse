@@ -432,8 +432,10 @@ class TestChannelChatBranches:
         chat.attach_engine(identity_service=IdentityService())
         app = self._app_with_state(chat_service=chat, channel_registry=reg)
 
-        sent_mock = AsyncMock(return_value=None)
-        monkeypatch.setattr(gw._telegram, "send_message", sent_mock)
+        # The reply goes out through send_text with the binding's token (TRG-41);
+        # the old send_message(... token=) call matched no adapter signature.
+        sent_mock = AsyncMock(return_value={"ok": True})
+        monkeypatch.setattr(gw._telegram, "send_text", sent_mock)
 
         client = SignedClient(app)
         r = client.post(

@@ -42,7 +42,6 @@ def _app() -> tuple[FastAPI, ChatService, IdentityService]:
 
 def _telegram_payload(user_id: str, text: str) -> dict:
     return {
-        "addressee": TG_BOT,
         "message": {"from": {"id": user_id, "first_name": "Ada"},
                     "chat": {"id": user_id}, "text": text},
     }
@@ -50,8 +49,9 @@ def _telegram_payload(user_id: str, text: str) -> dict:
 
 def _whatsapp_payload(from_number: str, text: str) -> dict:
     return {
-        "addressee": WA_NUM,
+        # Real Cloud API shape: the receiving number is metadata.phone_number_id.
         "entry": [{"changes": [{"value": {
+            "metadata": {"phone_number_id": WA_NUM},
             "contacts": [{"profile": {"name": "Ada"}}],
             "messages": [{"from": from_number, "type": "text", "text": {"body": text}}],
         }}]}],
@@ -61,7 +61,7 @@ def _whatsapp_payload(from_number: str, text: str) -> dict:
 def test_telegram_inbound_routes_through_chatservice() -> None:
     app, chat, _ = _app()
     client = SignedClient(app)
-    r = client.post("/v1/gateway/telegram/chat", json=_telegram_payload("42", "what can you do?"))
+    r = client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("42", "what can you do?"))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "ok" and body["channel"] == "telegram"
@@ -86,8 +86,8 @@ def test_whatsapp_inbound_routes_through_chatservice() -> None:
 def test_unknown_addressee_does_no_tenant_work() -> None:
     app, _, _ = _app()
     client = SignedClient(app)
-    r = client.post("/v1/gateway/telegram/chat",
-                    json={"addressee": "unknown-bot", "message": {"from": {"id": "1"},
+    r = client.post("/v1/gateway/telegram/chat/unknown-bot",
+                    json={"message": {"from": {"id": "1"},
                           "chat": {"id": "1"}, "text": "hi"}})
     assert r.status_code == 200
     assert r.json()["status"] == "ignored"
@@ -96,8 +96,8 @@ def test_unknown_addressee_does_no_tenant_work() -> None:
 def test_repeat_telegram_messages_continue_one_session() -> None:
     app, chat, _ = _app()
     client = SignedClient(app)
-    client.post("/v1/gateway/telegram/chat", json=_telegram_payload("99", "first message"))
-    client.post("/v1/gateway/telegram/chat", json=_telegram_payload("99", "second message"))
+    client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "first message"))
+    client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=_telegram_payload("99", "second message"))
     session = chat.get_or_create_channel_session(
         tenant_id=TENANT, channel="telegram", channel_user_id="99"
     )
@@ -122,11 +122,11 @@ def test_a_redelivered_telegram_webhook_does_not_create_a_second_turn() -> None:
     payload = _telegram_payload(user_id, "book me a meeting")
     payload["message"]["message_id"] = 4242
 
-    first = client.post("/v1/gateway/telegram/chat", json=payload)
+    first = client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=payload)
     assert first.status_code == 200, first.text
 
     # Identical redelivery — same platform message_id.
-    second = client.post("/v1/gateway/telegram/chat", json=payload)
+    second = client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=payload)
     assert second.status_code == 200, second.text
     assert second.json().get("reason") == "duplicate message ignored", second.json()
 
@@ -147,7 +147,7 @@ def test_a_genuinely_new_message_from_the_same_user_still_goes_through() -> None
     for i, text in enumerate(("first question", "second question"), start=1):
         payload = _telegram_payload(user_id, text)
         payload["message"]["message_id"] = 9000 + i
-        resp = client.post("/v1/gateway/telegram/chat", json=payload)
+        resp = client.post(f"/v1/gateway/telegram/chat/{TG_BOT}", json=payload)
         assert resp.status_code == 200
         assert resp.json().get("reason") != "duplicate message ignored", resp.json()
 

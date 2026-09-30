@@ -51,11 +51,20 @@ class ChannelRegistry:
 
     @classmethod
     def from_env(cls, raw: str | None = None) -> ChannelRegistry:
-        """Seed from ``CHANNEL_TENANT_MAP`` = ``channel:addressee:tenant[:org[:secret]]``.
+        """Seed from ``CHANNEL_TENANT_MAP``.
 
-        Entries are comma-separated. ``secret`` is the binding's per-tenant inbound
-        credential; an entry without one is still registered but every inbound
-        message for it is refused until a secret is configured.
+        Entry format (comma-separated entries)::
+
+            channel:addressee:tenant[:org[:secret]][;outbound_token=TOKEN]
+
+        ``addressee`` is what selects the binding: the Telegram bot id (used in
+        the webhook URL ``/v1/gateway/telegram/chat/<bot id>``, since updates do
+        not carry it), the WhatsApp ``phone_number_id``, or a generic webhook's
+        ``addressee``. ``secret`` is the binding's per-tenant inbound credential
+        (it may contain ``:``); an entry without one is still registered but every
+        inbound message for it is refused until a secret is configured.
+        ``outbound_token`` (after ``;``, so a Telegram ``id:hash`` token parses)
+        is used to send the reply back.
         """
         reg = cls()
         value = raw if raw is not None else os.getenv("CHANNEL_TENANT_MAP", "")
@@ -63,12 +72,19 @@ class ChannelRegistry:
             entry = entry.strip()
             if not entry:
                 continue
-            parts = entry.split(":")
+            head, *options = entry.split(";")
+            opts: dict[str, str] = {}
+            for option in options:
+                key, sep, val = option.partition("=")
+                if sep:
+                    opts[key.strip().lower()] = val.strip()
+            parts = head.strip().split(":")
             if len(parts) < 3 or not all(parts[:3]):
                 continue
             reg.register(
                 parts[0], parts[1], parts[2],
                 org_id=parts[3] if len(parts) > 3 else "",
                 secret=":".join(parts[4:]) if len(parts) > 4 else "",
+                outbound_token=opts.get("outbound_token", ""),
             )
         return reg

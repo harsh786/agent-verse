@@ -783,6 +783,46 @@ _CHAT_ADAPTERS: dict[str, Any] = {
 }
 
 
+def _chat_addressee(channel: str, raw: dict[str, Any], binding_id: str) -> str:
+    """Which binding a chat delivery is for (TRG-41).
+
+    Real Telegram updates carry no bot id, so Telegram bindings are addressed by
+    the webhook URL (``/{channel}/chat/{binding_id}``, registered with
+    setWebhook). WhatsApp Cloud payloads name the receiving number in
+    ``entry[].changes[].value.metadata.phone_number_id``. A top-level
+    ``addressee`` / ``bot_id`` / ``to`` is still honoured for generic webhooks.
+    Whatever is found only SELECTS a binding; the binding's secret authenticates.
+    """
+    if binding_id:
+        return binding_id.strip()
+    if channel == "whatsapp":
+        with suppress(Exception):
+            entry = (raw.get("entry") or [{}])[0]
+            change = (entry.get("changes") or [{}])[0]
+            metadata = (change.get("value") or {}).get("metadata") or {}
+            phone_number_id = str(metadata.get("phone_number_id") or "")
+            if phone_number_id:
+                return phone_number_id
+    return str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
+
+
+async def _send_chat_reply(
+    channel: str, adapter: Any, binding: Any, addressee: str, chat_id: str, text: str
+) -> bool:
+    """Send the reply back with the binding's own outbound token."""
+    token = getattr(binding, "outbound_token", "") if binding is not None else ""
+    if not token or not chat_id or not text:
+        return False
+    result: Any = None
+    if channel == "telegram":
+        result = await adapter.send_text(chat_id=chat_id, text=text, token=token)
+    elif channel == "whatsapp":
+        result = await adapter.send_text(
+            to=chat_id, text=text, token=token, phone_number_id=addressee
+        )
+    return result is not None
+
+
 @router.post(
     "/{channel}/chat",
     operation_id="gateway_channel_chat",
@@ -797,6 +837,23 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
     reply is sent back over the channel's outbound API when a token is configured,
     and always returned in the response (so it is testable without live creds).
     """
+    return await _channel_chat(channel, request, binding_id="")
+
+
+@router.post(
+    "/{channel}/chat/{binding_id}",
+    operation_id="gateway_channel_chat_binding",
+    summary="Inbound message for a specific binding (e.g. the Telegram bot id)",
+)
+async def channel_chat_for_binding(
+    channel: str, binding_id: str, request: Request
+) -> dict[str, Any]:
+    """Same as ``/{channel}/chat`` with the binding named in the URL — the form a
+    Telegram webhook must use, since Bot API updates do not name the bot."""
+    return await _channel_chat(channel, request, binding_id=binding_id)
+
+
+async def _channel_chat(channel: str, request: Request, *, binding_id: str) -> dict[str, Any]:
     channel = channel.strip().lower()
     adapter = _CHAT_ADAPTERS.get(channel)
     chat_service = getattr(request.app.state, "chat_service", None)
@@ -817,7 +874,7 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
     # with that binding's per-tenant secret — never with the platform-wide
     # channel secret, which every tenant configuring a bot would share and could
     # therefore use to address any other tenant's bot.
-    addressee = str(raw.get("addressee") or raw.get("bot_id") or raw.get("to") or "")
+    addressee = _chat_addressee(channel, raw, binding_id)
     binding = registry.resolve(channel, addressee) if registry is not None else None
     if binding is not None:
         if not binding.secret:
@@ -878,16 +935,17 @@ async def channel_chat(channel: str, request: Request) -> dict[str, Any]:
         channel_user_id=command.conversation_id or command.actor_id, text=command.text,
     )
 
-    # Send the reply back over the channel when an outbound sender is available.
+    # Send the reply back over the channel with the binding's outbound token. The
+    # old call passed keywords no adapter accepted, so it raised (suppressed) and
+    # no reply was ever sent.
     sent = False
-    sender = getattr(adapter, "send_message", None) or getattr(adapter, "send", None)
-    if callable(sender) and (binding and binding.outbound_token):
-        with suppress(Exception):
-            await sender(
-                chat_id=command.conversation_id or command.actor_id,
-                text=turn["reply"], token=binding.outbound_token,
-            )
-            sent = True
+    try:
+        sent = await _send_chat_reply(
+            channel, adapter, binding, addressee,
+            str(command.conversation_id or command.actor_id or ""), str(turn["reply"] or ""),
+        )
+    except Exception as exc:
+        _log.warning("gateway.chat_reply_failed", channel=channel, error=str(exc))
 
     return {
         "status": "ok", "channel": channel, "session_id": turn["session_id"],

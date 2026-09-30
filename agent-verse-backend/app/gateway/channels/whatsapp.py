@@ -85,6 +85,32 @@ class WhatsAppChannelAdapter(ChannelAdapter):
             "text": {"body": response.text[:4096]},
         }
 
+    async def send_text(
+        self, *, to: str, text: str, token: str, phone_number_id: str
+    ) -> dict[str, Any] | None:
+        """Send a plain-text reply from a binding's number with its access token."""
+        if not token or not phone_number_id:
+            return None
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": text[:4096]},
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(
+                    f"{_GRAPH_API}/{phone_number_id}/messages",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                r.raise_for_status()
+                result: dict[str, Any] = r.json()
+                return result
+        except Exception as exc:
+            _log.warning("whatsapp.send_text.failed", error=str(exc))
+            return None
+
     async def send_message(self, to: str, response: OrgResponse) -> dict[str, Any] | None:
         if not self._token or not self._phone_id:
             return None
