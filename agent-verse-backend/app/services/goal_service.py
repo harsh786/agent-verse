@@ -5188,6 +5188,30 @@ class GoalService:
             tenant_ctx=tenant_ctx,
         )
 
+    async def _restore_suspended(
+        self, record: GoalRecord, tenant_ctx: TenantContext, *, release_slot: bool
+    ) -> None:
+        """Undo a relaunch that could not be handed to a runner (best effort)."""
+        if record.status not in _TERMINAL_STATUSES:
+            record.status = GoalStatus.WAITING_HUMAN
+        record.execution_context[_SUSPENDED_KEY] = True
+        with suppress(Exception):
+            await self._db_update_goal_status(
+                record.goal_id,
+                tenant_ctx.tenant_id,
+                GoalStatus.WAITING_HUMAN.value,
+                only_if_active=True,
+            )
+        with suppress(Exception):
+            await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, True)
+        if release_slot:
+            from app.tenancy.limits import decrement_concurrent_goals
+
+            with suppress(Exception):
+                await decrement_concurrent_goals(
+                    tenant_id=tenant_ctx.tenant_id, redis=self._redis
+                )
+
     async def _relaunch_suspended_goal(
         self, record: GoalRecord, tenant_ctx: TenantContext
     ) -> None:
@@ -5197,35 +5221,57 @@ class GoalService:
         # The slot was released on suspension; a tenant at its limit gets a 429
         # and the goal stays waiting (the approval can be retried). A sub-goal
         # runs under its parent's slot and never held one.
-        if _holds_concurrency_slot(record.execution_context):
+        _takes_slot = _holds_concurrency_slot(record.execution_context)
+        if _takes_slot:
             await check_and_increment_concurrent_goals(tenant_ctx=tenant_ctx, redis=self._redis)
-        record.execution_context.pop(_SUSPENDED_KEY, None)
-        await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, False)
-        # The relaunch may run somewhere else than the original run did.
-        record.execution_context[_RUNNER_KEY] = self._runner_marker()
         try:
-            await self._db_set_runner(
-                record.goal_id, tenant_ctx.tenant_id, record.execution_context[_RUNNER_KEY]
-            )
-        except Exception as exc:
-            _svc_logger.warning("db_set_runner_failed", goal_id=record.goal_id, error=str(exc))
-        if self._task_queue is None:
-            await self._ensure_replica_heartbeat()
-        if self._task_queue is not None:
-            self._task_queue.enqueue_goal(
-                goal_id=record.goal_id,
-                tenant_id=tenant_ctx.tenant_id,
-                goal_text=record.goal_text,
-                priority=record.priority,
-                dry_run=False,
-                agent_id=record.agent_id,
-                connector_ids=[],
-                workflow_mode=record.workflow_mode,
-                goal_template="",
-                plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
-                **_subgoal_queue_kwargs(record.execution_context),
-            )
-            return
+            # WF-18: the durable status leaves waiting_human BEFORE run_goal is
+            # enqueued, so the worker's claim can refuse waiting_human rows (a
+            # redelivered message must never un-pause a goal awaiting a human)
+            # while this legitimate relaunch is still claimable. Fail closed: no
+            # message when the transition cannot be recorded.
+            if not await self._db_update_goal_status(
+                record.goal_id,
+                tenant_ctx.tenant_id,
+                GoalStatus.EXECUTING.value,
+                only_if_active=True,
+                raise_on_error=True,
+            ):
+                raise ConflictError(f"Goal {record.goal_id} is no longer resumable")
+            record.status = GoalStatus.EXECUTING
+            record.execution_context.pop(_SUSPENDED_KEY, None)
+            await self._db_set_suspended(record.goal_id, tenant_ctx.tenant_id, False)
+            # The relaunch may run somewhere else than the original run did.
+            record.execution_context[_RUNNER_KEY] = self._runner_marker()
+            try:
+                await self._db_set_runner(
+                    record.goal_id, tenant_ctx.tenant_id, record.execution_context[_RUNNER_KEY]
+                )
+            except Exception as exc:
+                _svc_logger.warning(
+                    "db_set_runner_failed", goal_id=record.goal_id, error=str(exc)
+                )
+            if self._task_queue is None:
+                await self._ensure_replica_heartbeat()
+            if self._task_queue is not None:
+                self._task_queue.enqueue_goal(
+                    goal_id=record.goal_id,
+                    tenant_id=tenant_ctx.tenant_id,
+                    goal_text=record.goal_text,
+                    priority=record.priority,
+                    dry_run=False,
+                    agent_id=record.agent_id,
+                    connector_ids=[],
+                    workflow_mode=record.workflow_mode,
+                    goal_template="",
+                    plan=getattr(tenant_ctx.plan, "value", tenant_ctx.plan),
+                    **_subgoal_queue_kwargs(record.execution_context),
+                )
+                return
+        except BaseException:
+            # Nothing will run it: leave the goal waiting and resumable again.
+            await self._restore_suspended(record, tenant_ctx, release_slot=_takes_slot)
+            raise
         tool_context = await self._build_tool_context(
             agent_id=record.agent_id, tenant_ctx=tenant_ctx, goal=record.goal_text
         )
@@ -5407,6 +5453,9 @@ class GoalService:
         # blocked in a pause gate to release: run it again (checkpoints skip the
         # steps it already finished).
         if record.execution_context.get(_SUSPENDED_KEY):
+            # Persists "executing" itself, BEFORE it re-enqueues run_goal (WF-18);
+            # writing it again afterwards could overwrite a fast run's terminal
+            # status.
             await self._relaunch_suspended_goal(record, tenant_ctx)
         else:
             # Release the runner's pause gate wherever it runs: clearing the Redis
@@ -5416,10 +5465,10 @@ class GoalService:
             from app.reliability.goal_lifecycle import signal_resume
 
             await self._signal_runner(record, signal_resume, "resume")
-        record.status = GoalStatus.EXECUTING
-        await self._db_update_goal_status(
-            goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
-        )
+            record.status = GoalStatus.EXECUTING
+            await self._db_update_goal_status(
+                goal_id, tenant_ctx.tenant_id, GoalStatus.EXECUTING.value
+            )
         record.events.append(
             {"type": "hitl_approved", "feedback": feedback, "ts": datetime.now(UTC).isoformat()}
         )

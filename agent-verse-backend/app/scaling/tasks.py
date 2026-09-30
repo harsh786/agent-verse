@@ -1891,6 +1891,8 @@ async def _goal_model_override(goal_id: str, tenant_id: str) -> str:
 
 
 _TERMINAL_GOAL_STATUSES = ("complete", "failed", "cancelled")
+# Paused for a human: resumable only through resume_goal, never by a redelivery.
+_WAITING_HUMAN_STATUS = "waiting_human"
 
 
 async def _mark_goal_blocked(goal_id: str, tenant_id: str, reason: str) -> bool:
@@ -1933,6 +1935,10 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
     A goal still ``executing`` is claimable: concurrent runs are excluded by the
     per-goal execution lock taken before this, so a claim of a running goal only
     succeeds when its previous worker died (crash recovery via acks_late).
+
+    A goal ``waiting_human`` is NOT claimable (WF-18): a redelivered or stale
+    message must not un-pause a goal awaiting a human. resume_goal moves the row
+    to ``executing`` before it re-enqueues run_goal, so a real relaunch claims.
     """
     from sqlalchemy import select, update
 
@@ -1948,7 +1954,7 @@ async def _claim_goal_for_execution(goal_id: str, tenant_id: str) -> str:
                 .where(
                     Goal.id == goal_id,
                     Goal.tenant_id == tenant_id,
-                    Goal.status.notin_(_TERMINAL_GOAL_STATUSES),
+                    Goal.status.notin_((*_TERMINAL_GOAL_STATUSES, _WAITING_HUMAN_STATUS)),
                 )
                 .values(status="executing")
                 .returning(Goal.id)
@@ -2375,17 +2381,19 @@ def run_goal(
             _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
             return {"status": "failed", "goal_id": goal_id, "reason": "goal_claim_unavailable"}
         if _claim != "claimed":
+            _waiting = _claim == _WAITING_HUMAN_STATUS
             logger.warning(
-                "goal_already_terminal_skipping goal_id=%s status=%s", goal_id, _claim
+                "goal_not_claimable_skipping goal_id=%s status=%s", goal_id, _claim
             )
             if _lock:
                 with contextlib.suppress(Exception):
                     _lock.release(goal_id)
-            # No counter decrement: the run that finished it released the slot.
+            # No counter decrement: the run that finished it released the slot,
+            # and a goal waiting for a human released it when it was suspended.
             return {
                 "status": "skipped",
                 "goal_id": goal_id,
-                "reason": "already_terminal",
+                "reason": "waiting_for_human" if _waiting else "already_terminal",
                 "goal_status": _claim,
             }
 
