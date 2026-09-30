@@ -23,7 +23,7 @@ Each rule has a predicate lambda. When the predicate matches it appends patterns
 
 **CRITICAL rules are inviolable**: the `force_no_hitl` agent config key is intentionally ignored when risk is CRITICAL or HIGH (`app/orchestration/pattern_selector.py:245`). Safety patterns can only be added, never removed.
 
-`react` is always forced to position zero in `reasoning_patterns` (`pattern_assembler.py:247–251`). Every goal therefore always runs ReAct as the base loop.
+`react` is always forced to position zero in `reasoning_patterns` (`app/orchestration/pattern_selector.py`; the former `pattern_assembler.py` was removed in CORE-23). Every goal therefore always runs ReAct as the base loop.
 
 ### DynamicGraphAssembler
 
@@ -689,7 +689,6 @@ Unit tests for patterns live in `tests/agent/`. Integration tests use the `integ
 | `tests/agent/test_reflexion.py` | Lesson storage, recall, format_for_context |
 | `tests/agent/test_tree_of_thoughts.py` | BFS phases, pruning, fallback to direct answer |
 | `tests/agent/test_peer_review.py` | Approval/rejection flow, fallback parser |
-| `tests/agent/test_pattern_assembler.py` | Rule priorities, CRITICAL safety cannot be overridden |
 | `tests/governance/test_hitl.py` | Approval flow, timeout, Redis vs in-memory paths |
 | `tests/reliability/test_rollback.py` | LIFO order, typed inverses, noop warning |
 
