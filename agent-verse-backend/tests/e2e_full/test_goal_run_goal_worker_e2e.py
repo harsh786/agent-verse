@@ -35,6 +35,9 @@ _TERMINAL = {"complete", "failed", "cancelled"}
 def goal_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     log_path = tmp_path_factory.mktemp("goalworker") / "worker.log"
     env = dict(os.environ)
+    # Run from the temp dir (no .env there): from the backend root the worker would
+    # load the developer's .env and call real LLM providers.
+    env["PYTHONPATH"] = str(_BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     assert env.get("DATABASE_URL") and env.get("REDIS_URL"), "app fixture must export DSNs"
     env["ENVIRONMENT"] = "development"  # FakeProvider is refused in production
     log_file = open(log_path, "w")
@@ -43,7 +46,7 @@ def goal_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
             sys.executable, "-m", "celery", "-A", "app.scaling.celery_app", "worker",
             "-Q", _GOAL_QUEUES, "--loglevel=info", "--concurrency=1", "-n", "goale2e@%h",
         ],
-        cwd=str(_BACKEND_ROOT),
+        cwd=str(log_path.parent),
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,

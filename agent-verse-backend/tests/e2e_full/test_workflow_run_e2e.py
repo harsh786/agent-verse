@@ -65,6 +65,9 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     """
     log_path = tmp_path_factory.mktemp("ws4worker") / "worker.log"
     env = dict(os.environ)
+    # Run from the temp dir (no .env there): from the backend root the worker would
+    # load the developer's .env and call real LLM providers.
+    env["PYTHONPATH"] = str(_BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     # Belt-and-braces: these are set by the app fixture, assert they're present
     # so a mis-wired harness fails loudly instead of the worker silently using a
     # different backend than the app under test.
@@ -88,7 +91,7 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     log_file = open(log_path, "w")
     proc = subprocess.Popen(
         cmd,
-        cwd=str(_BACKEND_ROOT),
+        cwd=str(log_path.parent),
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,

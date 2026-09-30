@@ -60,6 +60,9 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     """
     log_path = tmp_path_factory.mktemp("xhitlworker") / "worker.log"
     env = dict(os.environ)
+    # Run from the temp dir (no .env there): from the backend root the worker would
+    # load the developer's .env and call real LLM providers.
+    env["PYTHONPATH"] = str(_BACKEND_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     assert env.get("DATABASE_URL"), "DATABASE_URL not set by the app fixture"
     assert env.get("REDIS_URL"), "REDIS_URL not set by the app fixture"
 
@@ -80,7 +83,7 @@ def celery_worker(app: Any, tmp_path_factory: Any) -> Iterator[dict[str, Any]]:
     log_file = open(log_path, "w")
     proc = subprocess.Popen(
         cmd,
-        cwd=str(_BACKEND_ROOT),
+        cwd=str(log_path.parent),
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT,
