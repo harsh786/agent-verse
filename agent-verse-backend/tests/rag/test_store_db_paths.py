@@ -291,7 +291,8 @@ class TestDeleteCollectionAsync:
         assert await store.delete_collection_async("cid1", tenant_ctx=_CTX) is False
 
     async def test_db_found_deletes(self):
-        db = _ScriptedDB(_Result(scalar="cid1"))
+        # dimension lookup, one (short) chunk batch, then the collection row.
+        db = _ScriptedDB(_Result(rows=[(768,)]), _Result(rows=[]), _Result(scalar="cid1"))
         store = KnowledgeStore(db_session_factory=db)
         store._data[(_CTX.tenant_id, "cid1")] = None  # placeholder overwritten below
         from app.rag.store import _CollectionStore
@@ -304,7 +305,7 @@ class TestDeleteCollectionAsync:
         assert store._data.get((_CTX.tenant_id, "cid1")) is None
 
     async def test_db_not_found_returns_false(self):
-        db = _ScriptedDB(_Result(scalar=None))
+        db = _ScriptedDB(_Result(rows=[]), _Result(scalar=None))
         store = KnowledgeStore(db_session_factory=db)
         assert await store.delete_collection_async("cid1", tenant_ctx=_CTX) is False
 
@@ -942,8 +943,13 @@ class TestDeleteDocument:
         # update can subtract exact deltas (including total_size_bytes, which
         # the old full-recompute never touched at all) — the deleted count comes
         # from the returned rows, not rowcount.
+        # dimension, DELETE ... RETURNING (bytes, chunk_index, id), the graph
+        # node lookup for those chunks (none), then the counter update.
         db = _ScriptedDB(
-            _Result(rows=[(768,)]), _Result(rows=[(1,), (2,)], rowcount=2), _Result()
+            _Result(rows=[(768,)]),
+            _Result(rows=[(1, 0, "k1"), (2, 1, "k2")], rowcount=2),
+            _Result(rows=[]),
+            _Result(),
         )
         store = KnowledgeStore(db_session_factory=db)
         store._data[(_CTX.tenant_id, "c1")] = _CollectionStore(

@@ -174,15 +174,13 @@ async def _expire_tenant_documents(
             if not document_gone:
                 continue
             counts["knowledge_documents_expired"] += 1
-            nodes, edges = await _delete_document_graph(
-                session, tenant_id, document_id, removed
-            )
+            nodes, edges = await delete_document_graph(session, tenant_id, document_id, removed)
             counts["graph_nodes_deleted"] += nodes
             counts["graph_edges_deleted"] += edges
     return counts
 
 
-async def _delete_document_graph(
+async def delete_document_graph(
     session: Any, tenant_id: str, document_id: str, removed: list[Any]
 ) -> tuple[int, int]:
     """Delete the KG rows extracted from ``document_id``.

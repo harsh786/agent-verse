@@ -39,6 +39,12 @@ class EmbeddingDimensionError(ValueError):
     """An embedding width has no chunk table, or disagrees with a collection."""
 
 
+# Chunks removed per transaction when a collection is deleted: one cascading
+# DELETE over a large collection held row locks on the whole chunk table's
+# rows for the collection and produced one huge WAL burst.
+_COLLECTION_DELETE_BATCH = 1000
+
+
 def _chunk_table(dimension: int) -> str:
     if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
         raise EmbeddingDimensionError(
@@ -588,14 +594,76 @@ class KnowledgeStore:
         *,
         tenant_ctx: TenantContext,
     ) -> bool:
-        """Delete one owned collection and its cascaded persisted resources."""
+        """Delete one owned collection, its chunks and the graph extracted from them.
+
+        Chunks go in bounded batches (one short transaction each), each batch
+        taking the knowledge-graph rows stamped with its chunks along — the
+        graph has no FK to collections, so a cascade never reached it and
+        deleted documents' entities kept surfacing in GraphRAG. The collection
+        row goes last; its cascade then only sweeps chunks a concurrent ingest
+        added meanwhile.
+        """
         key = (tenant_ctx.tenant_id, collection_id)
         if self._db is None:
             return self._data.pop(key, None) is not None
         from sqlalchemy import text
 
         from app.db.rls import sqlalchemy_rls_context
+        from app.rag.retention import delete_document_graph
 
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            dimension_row = (
+                await session.execute(
+                    text(
+                        "SELECT embedding_dim FROM knowledge_collections "
+                        "WHERE id = :id AND tenant_id = :tenant_id"
+                    ),
+                    {"id": collection_id, "tenant_id": tenant_ctx.tenant_id},
+                )
+            ).fetchone()
+        dimension = (
+            int(dimension_row[0])
+            if dimension_row is not None and dimension_row[0] is not None
+            else None
+        )
+        # An unknown width has no chunk table to batch through; the collection
+        # row's cascade below is then the only cleanup there is.
+        if dimension in SUPPORTED_EMBEDDING_DIMENSIONS:
+            table = _chunk_table(int(dimension))  # type: ignore[arg-type]
+            while True:
+                async with (
+                    self._db() as session,
+                    session.begin(),
+                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+                ):
+                    removed = (
+                        await session.execute(
+                            text(
+                                f"DELETE FROM {table} WHERE id IN ("
+                                f"SELECT id FROM {table} WHERE collection_id = :cid "
+                                "AND tenant_id = :tid LIMIT :lim) "
+                                "RETURNING document_id, octet_length(content), chunk_index, id"
+                            ),
+                            {
+                                "cid": collection_id,
+                                "tid": tenant_ctx.tenant_id,
+                                "lim": _COLLECTION_DELETE_BATCH,
+                            },
+                        )
+                    ).fetchall()
+                    by_document: dict[str, list[Any]] = {}
+                    for row in removed:
+                        by_document.setdefault(str(row[0]), []).append(tuple(row[1:]))
+                    for document_id, rows in by_document.items():
+                        await delete_document_graph(
+                            session, tenant_ctx.tenant_id, document_id, rows
+                        )
+                if len(removed) < _COLLECTION_DELETE_BATCH:
+                    break
         async with (
             self._db() as session,
             session.begin(),
@@ -1529,7 +1597,7 @@ class KnowledgeStore:
                     text(
                         f"DELETE FROM {table} WHERE document_id = :did "
                         "AND collection_id = :cid AND tenant_id = :tid "
-                        "RETURNING octet_length(content)"
+                        "RETURNING octet_length(content), chunk_index, id"
                     ),
                     {
                         "did": document_id,
@@ -1540,6 +1608,14 @@ class KnowledgeStore:
             ).fetchall()
             deleted = len(removed)
             if deleted:
+                # The graph has no FK to the chunks it was extracted from: delete
+                # the nodes stamped with these chunks (and their edges) with them,
+                # or GraphRAG keeps surfacing the deleted document's entities.
+                from app.rag.retention import delete_document_graph
+
+                await delete_document_graph(
+                    session, tenant_ctx.tenant_id, document_id, [tuple(r) for r in removed]
+                )
                 # Incremental, like the ingest path — the recompute this replaces
                 # scanned the whole collection on every delete. It also never
                 # touched total_size_bytes at all, so a collection's reported
