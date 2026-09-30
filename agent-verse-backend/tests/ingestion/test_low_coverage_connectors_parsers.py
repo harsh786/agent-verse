@@ -537,13 +537,17 @@ class TestAzureBlobConnectorGetDelta:
             blob.content_settings = MagicMock(content_type=content_type)
         return blob
 
-    def test_import_error_yields_nothing(self):
+    def test_import_error_fails_the_sync(self):
+        # KB-19: a missing SDK used to yield nothing — a "successful" empty sync.
+        from app.ingestion.base_connector import ConnectorUnavailableError
         from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
 
         config = _config("azure_blob", {"account_name": "acct", "container": "c1"})
-        with patch.dict("sys.modules", {"azure.storage.blob": None}):
-            docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
-        assert docs == []
+        with (
+            patch.dict("sys.modules", {"azure.storage.blob": None}),
+            pytest.raises(ConnectorUnavailableError),
+        ):
+            _run(_collect(AzureBlobConnector().get_delta(config, None)))
 
     def test_yields_documents_with_content_type_fallback(self):
         from app.ingestion.connectors.azure_blob_connector import AzureBlobConnector
@@ -609,7 +613,12 @@ class TestAzureBlobConnectorGetDelta:
         config = _config("azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"})
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
-        assert docs == []
+        # KB-19: reported (not just logged) and the cursor does not pass it.
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
+        assert [d.metadata["name"] for d, _ in docs] == ["bad.txt"]
+        assert "timeout" in docs[0][0].metadata[CONNECTOR_FAILURE_KEY]
+        assert docs[0][1] == ""
 
     # Regression: every blob was downloaded whole with ``readall()`` — a
     # multi-GB object was buffered in the worker's memory before the pipeline's
@@ -632,7 +641,12 @@ class TestAzureBlobConnectorGetDelta:
         config = _config("azure_blob", {"account_name": "acct", "account_key": "k", "container": "c1"})
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
-        assert docs == []
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
+        # Reported as over the cap (KB-19), never downloaded.
+        assert [d.metadata["name"] for d, _ in docs] == ["huge.bin"]
+        assert "size cap" in docs[0][0].metadata[CONNECTOR_FAILURE_KEY]
+        assert docs[0][0].content == b""
         cc.download_blob.assert_not_called()
 
     def test_download_is_streamed_and_bounded_by_the_size_cap(self):
@@ -654,7 +668,11 @@ class TestAzureBlobConnectorGetDelta:
         config.max_doc_size_bytes = 4096
         with patch.dict("sys.modules", _fake_module_tree("azure.storage.blob", blob_mod)):
             docs = _run(_collect(AzureBlobConnector().get_delta(config, None)))
-        assert docs == []
+        from app.ingestion.source_config import CONNECTOR_FAILURE_KEY
+
+        assert [d.metadata.get(CONNECTOR_FAILURE_KEY, "") for d, _ in docs] == [
+            "blob exceeds the 4096-byte size cap"
+        ]
         assert len(pulled) <= 5  # stopped as soon as the cap was exceeded
         _args, kwargs = cc.download_blob.call_args
         assert kwargs.get("length") == 4097  # never asks for more than cap + 1 bytes
