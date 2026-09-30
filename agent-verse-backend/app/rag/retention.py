@@ -38,6 +38,17 @@ _log = get_logger(__name__)
 SCAN_BATCH = 5000  # expired chunk rows read per scan
 MAX_BATCHES = 20  # scans per dimension per run
 
+# A chunk under an in-force legal hold is never expired: a tenant-wide hold
+# covers every chunk of the tenant, a resource hold covers its collection or
+# document. Expiry used to delete held knowledge (and its graph) regardless.
+_NOT_UNDER_LEGAL_HOLD = (
+    "NOT EXISTS (SELECT 1 FROM legal_holds lh WHERE lh.tenant_id = {t}.tenant_id "
+    "AND lh.status = 'active' AND (lh.expires_at IS NULL OR lh.expires_at > now()) "
+    "AND (lh.resource_type = 'tenant' "
+    "OR lh.resource_ids @> jsonb_build_array(CAST({t}.collection_id AS text)) "
+    "OR lh.resource_ids @> jsonb_build_array(CAST({t}.document_id AS text))))"
+)
+
 
 async def expire_knowledge_chunks(
     *,
@@ -65,8 +76,9 @@ async def expire_knowledge_chunks(
                         await session.execute(
                             text(
                                 "SELECT DISTINCT tenant_id, collection_id, document_id FROM ("
-                                f"  SELECT tenant_id, collection_id, document_id FROM {table} "
+                                f"  SELECT tenant_id, collection_id, document_id FROM {table} c "
                                 "  WHERE expires_at IS NOT NULL AND expires_at < now() "
+                                f"  AND {_NOT_UNDER_LEGAL_HOLD.format(t='c')} "
                                 "  LIMIT :lim"
                                 ") AS due"
                             ),
@@ -119,10 +131,12 @@ async def _expire_tenant_documents(
             removed = (
                 await session.execute(
                     text(
-                        f"DELETE FROM {table} "
+                        # Re-checked here: a hold placed after the scan still wins.
+                        f"DELETE FROM {table} c "
                         "WHERE tenant_id = :tid AND collection_id = :cid "
                         "AND document_id = :did "
                         "AND expires_at IS NOT NULL AND expires_at < now() "
+                        f"AND {_NOT_UNDER_LEGAL_HOLD.format(t='c')} "
                         "RETURNING octet_length(content), chunk_index"
                     ),
                     params,

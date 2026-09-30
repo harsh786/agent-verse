@@ -1025,7 +1025,12 @@ function DocumentsTab({ collections }: { collections: Collection[] }) {
       toast({ kind: 'success', message: 'Document deleted' });
       void qc.invalidateQueries({ queryKey: ['knowledge-docs', selectedCollection] });
     },
-    onError: () => toast({ kind: 'error', message: 'Delete failed' }),
+    onError: (e) => toast({
+      kind: 'error',
+      message: e instanceof ApiError && e.status === 409
+        ? 'This document is under legal hold and cannot be deleted.'
+        : 'Delete failed',
+    }),
   });
 
   const reingestMutation = useMutation({

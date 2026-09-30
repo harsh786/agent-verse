@@ -546,6 +546,35 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
     }
 
 
+async def _refuse_if_under_legal_hold(
+    request: Request, tenant_ctx: TenantContext, *resource_ids: str
+) -> None:
+    """409 when any of ``resource_ids`` (or the whole tenant) is under legal hold.
+
+    Fail closed: an unverifiable hold state refuses the deletion (503) — it
+    must never let held data be deleted.
+    """
+    legal_hold_mgr = getattr(request.app.state, "legal_hold_manager", None)
+    if legal_hold_mgr is None:
+        return
+    try:
+        for resource_id in resource_ids:
+            if await legal_hold_mgr.is_under_hold(
+                resource_id=resource_id, tenant_id=tenant_ctx.tenant_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Resource is under legal hold and cannot be deleted",
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Legal hold state could not be verified; deletion refused",
+        ) from exc
+
+
 @router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_collection(request: Request, collection_id: str) -> None:
     tenant_ctx: TenantContext = _require_tenant(request)
@@ -560,26 +589,7 @@ async def delete_collection(request: Request, collection_id: str) -> None:
         )
 
     # H-5: Block deletion if a legal hold is active on this resource
-    _legal_hold_mgr = getattr(request.app.state, "legal_hold_manager", None)
-    if _legal_hold_mgr is not None:
-        try:
-            _is_held = await _legal_hold_mgr.is_under_hold(
-                resource_id=collection_id, tenant_id=tenant_ctx.tenant_id
-            )
-            if _is_held:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Resource is under legal hold and cannot be deleted",
-                )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            # Fail closed: an unverifiable hold state must not let held data be
-            # deleted (this used to "allow deletion").
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Legal hold state could not be verified; deletion refused",
-            ) from exc
+    await _refuse_if_under_legal_hold(request, tenant_ctx, collection_id)
 
     try:
         deleted = await store.delete_collection_async(
@@ -2812,6 +2822,9 @@ async def delete_document(
     """Delete a document from one of the caller's collections (404 if absent)."""
     tenant = _require_tenant(request)
     knowledge_store = await _owned_collection_or_404(request, collection_id, tenant)
+    # Same gate as collection delete: held data must not be removable one
+    # document at a time (a hold on the collection covers its documents).
+    await _refuse_if_under_legal_hold(request, tenant, collection_id, document_id)
     count = await knowledge_store.delete_document_async(
         document_id=document_id, collection_id=collection_id, tenant_ctx=tenant
     )

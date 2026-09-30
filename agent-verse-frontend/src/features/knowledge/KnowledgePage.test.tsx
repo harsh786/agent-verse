@@ -1210,6 +1210,26 @@ describe('KnowledgePage – Documents tab (remaining error paths & inputs)', () 
     await waitFor(() => expect(useToastStore.getState().toasts.some((t) => t.message === 'Delete failed')).toBe(true));
   });
 
+  test('a document under legal hold (409) says so instead of a generic failure', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url.includes('/documents/d1') && method === 'DELETE')
+        return new Response(JSON.stringify({ detail: 'Resource is under legal hold and cannot be deleted' }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/documents') && url.includes('/knowledge/collections/'))
+        return new Response(JSON.stringify({ documents: DOCS, total: DOCS.length }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url.includes('/knowledge/collections'))
+        return new Response(JSON.stringify([COLLECTION]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByRole('heading', { name: /knowledge/i });
+    await userEvent.click(screen.getByTestId('tab-documents'));
+    await screen.findByText('Runbook.md');
+    await userEvent.click(screen.getByTitle('Delete'));
+    await waitFor(() => expect(useToastStore.getState().toasts.some((t) => /under legal hold/i.test(t.message))).toBe(true));
+  });
+
   test('shows an error toast when document reingest fails', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);
