@@ -203,10 +203,12 @@ async def test_policy_require_approval_outside_supervised_mode_is_not_executed(
     executor = FakeProvider(responses=["must not run"])
     graph = _graph(executor=executor, policy_engine=policy, hitl_gateway=hitl, autonomy_mode=mode)
 
-    with pytest.raises(PermissionError, match="requires approval by policy"):
+    with pytest.raises(PermissionError, match=r"tenant policy.*supervised mode"):
         await graph._execute_step("do thing", _state(), T)
     assert executor.call_history == []
     hitl.wait_for_approval.assert_not_awaited()
+    # Nothing waits for a decision here, so no (orphaned) request is filed.
+    hitl.request_approval.assert_not_called()
 
 
 async def test_policy_require_approval_without_gateway_is_not_executed() -> None:

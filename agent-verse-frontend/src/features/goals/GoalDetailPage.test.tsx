@@ -1006,6 +1006,27 @@ describe('GoalDetailPage — additional coverage', () => {
     expect(screen.queryByRole('button', { name: /^markdown$/i })).not.toBeInTheDocument();
   });
 
+  test('failure banner shows why the goal failed (governance denial reason)', async () => {
+    const reason =
+      "Step 'deploy the api' requires human approval (high-risk step), but the goal runs in " +
+      "'bounded-autonomous' mode where no approval is awaited; the step was not executed. " +
+      'Run the goal in supervised mode to approve it.';
+    goalStreamState.current = {
+      ...goalStreamState.current,
+      events: [
+        { type: 'goal_started', status: 'executing' },
+        { type: 'worker_failed', reason },
+      ],
+    };
+    mockFailedGoalWithResultArtifact();
+    renderGoalDetailPage();
+
+    await waitFor(() => expect(screen.getByText(/goal did not fully complete/i)).toBeInTheDocument());
+    expect(screen.getByTestId('goal-failure-reason')).toHaveTextContent(
+      /run the goal in supervised mode to approve it/i
+    );
+  });
+
   test('evidence tab shows populated tool evidence with verification banner', async () => {
     mockCompletedGoalWithResultArtifact();
     renderGoalDetailPage();

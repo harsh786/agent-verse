@@ -67,15 +67,18 @@ def test_permission_matrix_tenant_allow_overrides_default_deny() -> None:
 
 
 @pytest.mark.asyncio
-async def test_destructive_tool_passes_without_matrix_today() -> None:
-    """Proves the gap: with no matrix (the current wiring) a destructive tool runs."""
+async def test_destructive_step_without_matrix_still_needs_approval() -> None:
+    """With no matrix a destructive step used to run; the high-risk approval gate
+    now denies it outside supervised mode (CORE-01) instead of running it."""
+    executor = FakeProvider(responses=["deleted"])
     graph = _graph(
         planner=FakeProvider(responses=['{"steps": ["call delete_all_records now"]}']),
+        executor=executor,
         permission_matrix=None,
     )
-    state = await graph.run(goal="Delete all records", tenant_ctx=T)
-    # No PermissionError raised — the step executed.
-    assert state is not None
+    with pytest.raises(PermissionError, match="requires human approval"):
+        await graph.run(goal="Delete all records", tenant_ctx=T)
+    assert executor.call_history == []
 
 
 @pytest.mark.asyncio
@@ -291,11 +294,18 @@ async def test_guardrail_engine_error_fails_closed_on_high_risk() -> None:
     engine.evaluate_tool_args = AsyncMock(side_effect=RuntimeError("boom"))
     app_state = SimpleNamespace(guardrail_engine=engine)
 
+    # Supervised + approved, so the step passes the high-risk approval gate and
+    # reaches the tool-args guardrail this test is about.
+    hitl = MagicMock(spec=HITLGateway)
+    hitl.request_approval.return_value = "req-1"
+    hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.APPROVED)
     graph = _graph(
         planner=FakeProvider(responses=['{"steps": ["call delete_customer for acme"]}']),
         executor=FakeProvider(
             responses=['{"tool": "delete_customer", "arguments": {"id": "acme"}}']
         ),
+        hitl_gateway=hitl,
+        autonomy_mode="supervised",
     )
     graph._app_state = app_state
     with pytest.raises(PermissionError, match="failing closed"):

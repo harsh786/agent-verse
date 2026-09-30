@@ -393,8 +393,9 @@ async def test_expire_timed_out_requests_auto_rejects() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_hitl_bounded_autonomous_graph_completes() -> None:
-    """In bounded-autonomous mode, high-risk step runs but HITL request is created."""
+async def test_hitl_bounded_autonomous_graph_denies_high_risk_step() -> None:
+    """In bounded-autonomous mode nothing awaits an approval, so a high-risk step
+    is denied and no (orphaned) approval request is filed (CORE-01)."""
     gateway = HITLGateway()
     tenant = _tenant("ba")
     p = FakeProvider(responses=[_DEPLOY_PLAN, _STEP, _VERIFY_OK])
@@ -405,12 +406,9 @@ async def test_hitl_bounded_autonomous_graph_completes() -> None:
         hitl_gateway=gateway,
         autonomy_mode="bounded-autonomous",
     )
-    state = await graph.run(goal="deploy service", tenant_ctx=tenant)
-    # Graph completes (doesn't block)
-    assert state is not None
-    # A HITL request may have been created (depends on step text analysis)
-    all_requests = list(gateway._requests.values())
-    assert isinstance(all_requests, list)  # Just ensures no crash
+    with pytest.raises(PermissionError, match="supervised mode"):
+        await graph.run(goal="deploy service", tenant_ctx=tenant)
+    assert gateway.list_pending(tenant_ctx=tenant) == []
 
 
 # ---------------------------------------------------------------------------

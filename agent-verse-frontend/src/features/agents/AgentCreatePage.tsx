@@ -213,8 +213,8 @@ export function AgentCreatePage() {
                   onChange={(e) => setManualForm((p) => ({ ...p, autonomy_mode: e.target.value }))}
                   className="w-full px-3 py-2 border border-neural-violet/20 rounded-lg bg-command-black text-white focus:ring-2 focus:ring-neural-violet/40 outline-none transition-colors"
                 >
-                  <option value="supervised" className="bg-command-black">Supervised (every action needs approval)</option>
-                  <option value="bounded-autonomous" className="bg-command-black">Bounded Autonomous (approve high-risk only)</option>
+                  <option value="supervised" className="bg-command-black">Supervised (high-risk steps wait for your approval)</option>
+                  <option value="bounded-autonomous" className="bg-command-black">Bounded Autonomous (high-risk steps are blocked)</option>
                   <option value="fully-autonomous" className="bg-command-black">Fully Autonomous (requires eval suite)</option>
                 </select>
               </div>

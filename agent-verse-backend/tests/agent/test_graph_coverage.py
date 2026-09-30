@@ -404,12 +404,13 @@ async def test_graph_requires_approval_for_jira_update_tool_call() -> None:
 
     pending = hitl.list_pending(tenant_ctx=T)
     assert mcp_client.calls == []
-    assert len(pending) == 1
-    assert pending[0].action == "jira_update_issue"
-    assert pending[0].risk_level == "write_high"
+    # CORE-01: bounded mode never awaits an approval, so none is filed.
+    assert pending == []
+    assert not any(event["type"] == "tool_call_pending_approval" for event in events)
     assert any(
-        event["type"] == "tool_call_pending_approval"
+        event["type"] == "tool_call_failed"
         and event["tool"] == "jira_update_issue"
+        and "requires approval" in str(event["error"])
         for event in events
     )
     assert "requires approval" in state.steps[0].output
@@ -443,14 +444,13 @@ async def test_graph_requires_approval_for_atlassian_update_jira_issue_tool_call
 
     pending = hitl.list_pending(tenant_ctx=T)
     assert mcp_client.calls == []
-    assert len(pending) == 1
-    assert pending[0].action == "update_jira_issue"
-    assert pending[0].risk_level == "write_high"
+    # CORE-01: bounded mode never awaits an approval, so none is filed.
+    assert pending == []
     assert "requires approval" in state.steps[0].output
 
 
 async def test_graph_denies_destructive_jira_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["delete Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
     executor = FakeProvider(
         responses=[
             '{"tool": "jira_delete_issue", "arguments": {"issue_key": "BAU-1"}}'
@@ -489,7 +489,7 @@ async def test_graph_denies_destructive_jira_tool_call() -> None:
 
 
 async def test_graph_denies_generic_delete_issue_on_jira_connector() -> None:
-    planner = FakeProvider(responses=['{"steps": ["delete Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
     executor = FakeProvider(
         responses=['{"tool": "delete_issue", "arguments": {"issue_key": "BAU-1"}}']
     )
@@ -566,9 +566,8 @@ async def test_graph_requires_approval_for_generic_update_issue_on_jira_connecto
 
     pending = hitl.list_pending(tenant_ctx=T)
     assert mcp_client.calls == []
-    assert len(pending) == 1
-    assert pending[0].action == "update_issue"
-    assert pending[0].risk_level == "write_high"
+    # CORE-01: bounded mode never awaits an approval, so none is filed.
+    assert pending == []
     assert "requires approval" in state.steps[0].output
 
 
@@ -604,7 +603,7 @@ async def test_graph_executes_generic_search_on_jira_connector_as_read() -> None
 
 
 async def test_graph_denies_camel_case_delete_jira_issue_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["delete Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
     executor = FakeProvider(
         responses=['{"tool": "deleteJiraIssue", "arguments": {"issue_key": "BAU-1"}}']
     )
@@ -665,7 +664,7 @@ async def test_graph_executes_atlassian_search_jira_issues_tool_call_as_read() -
 
 
 async def test_graph_denies_atlassian_delete_jira_issue_tool_call() -> None:
-    planner = FakeProvider(responses=['{"steps": ["delete Jira issue"]}'])
+    planner = FakeProvider(responses=['{"steps": ["remove Jira issue"]}'])
     executor = FakeProvider(
         responses=[
             '{"tool": "delete_jira_issue", "arguments": {"issue_key": "BAU-1"}}'
@@ -730,9 +729,8 @@ async def test_graph_requires_approval_for_unknown_jira_tool_call() -> None:
 
     pending = hitl.list_pending(tenant_ctx=T)
     assert mcp_client.calls == []
-    assert len(pending) == 1
-    assert pending[0].action == "jira_archive_issue"
-    assert pending[0].risk_level == "write_high"
+    # CORE-01: bounded mode never awaits an approval, so none is filed.
+    assert pending == []
 
 
 async def test_graph_sanitizes_tool_call_output_in_all_events_and_step_output() -> None:
@@ -1158,7 +1156,7 @@ async def test_graph_rollback_registers_points() -> None:
     """RollbackEngine has registered rollback points after successful steps."""
     p = FakeProvider(
         responses=[
-            '{"steps": ["deploy a", "configure b"]}',
+            '{"steps": ["prepare a", "configure b"]}',
             "a done",
             "b done",
             '{"success": true, "reason": "ok"}',

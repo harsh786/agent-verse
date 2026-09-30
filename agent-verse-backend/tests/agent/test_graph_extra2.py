@@ -316,7 +316,7 @@ async def test_hitl_rejection_note_in_plan_prompt() -> None:
     """hitl_rejection_note in context is injected into planner system prompt (lines 502-506)."""
     p = FakeProvider(
         responses=[
-            '{"steps": ["alternative deploy approach"]}',
+            '{"steps": ["alternative rollout approach"]}',
             "Deployed with alternative method",
             '{"success": true, "reason": "ok"}',
         ]
@@ -703,7 +703,7 @@ async def test_rag_knowledge_injected_into_plan_prompt() -> None:
     """rag_knowledge in agent_state.context is injected into plan prompt (line 474)."""
     p = FakeProvider(
         responses=[
-            '{"steps": ["apply deployment procedure"]}',
+            '{"steps": ["apply blue-green procedure"]}',
             "Deployment applied",
             '{"success": true, "reason": "ok"}',
         ]

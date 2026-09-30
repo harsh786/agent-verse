@@ -92,26 +92,30 @@ async def test_agent_graph_supervised_high_risk_proceeds_on_approval() -> None:
     hitl.wait_for_approval.assert_awaited_once()
 
 
+@pytest.mark.parametrize("mode", ["bounded-autonomous", "fully-autonomous"])
 @pytest.mark.asyncio
-async def test_agent_graph_non_supervised_does_not_block() -> None:
-    """C1: non-supervised mode — high-risk step logs but does NOT block."""
+async def test_agent_graph_non_supervised_denies_high_risk_step(mode: str) -> None:
+    """CORE-01: outside supervised mode nothing waits for an approval, so a
+    high-risk step is denied — it used to file a request and run anyway."""
     from app.agent.graph import AgentGraph
-    from app.agent.state import GoalStatus
     from app.providers.fake import FakeProvider
 
     hitl = MagicMock(spec=HITLGateway)
     hitl.request_approval.return_value = MagicMock(request_id="req-1")
     hitl.wait_for_approval = AsyncMock(return_value=ApprovalStatus.APPROVED)
+    executor = FakeProvider(responses=["done"])
 
     graph = AgentGraph(
         planner=FakeProvider(responses=['{"steps": ["deploy to production"]}']),
-        executor=FakeProvider(responses=["done"]),
+        executor=executor,
         verifier=FakeProvider(responses=['{"success": true, "reason": "ok"}']),
         hitl_gateway=hitl,
-        autonomy_mode="bounded-autonomous",
+        autonomy_mode=mode,
     )
-    state = await graph.run(goal="Deploy app", tenant_ctx=T)
-    assert state.status == GoalStatus.COMPLETE
+    with pytest.raises(PermissionError, match="supervised mode"):
+        await graph.run(goal="Deploy app", tenant_ctx=T)
+    assert executor.call_history == []
+    hitl.request_approval.assert_not_called()
     hitl.wait_for_approval.assert_not_awaited()
 
 

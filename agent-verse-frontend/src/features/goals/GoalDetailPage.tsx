@@ -177,6 +177,20 @@ function RichResultPanel({
     return null;
   }, [events]);
 
+  // Why the goal failed — e.g. a step denied because it needs a human approval
+  // the goal's autonomy mode never waits for. The API path emits goal_failed,
+  // the worker path worker_failed; both carry the reason.
+  const failureReason = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.type === "goal_failed" || e.type === "worker_failed") {
+        const reason = readStr(e.reason) ?? readStr(e.error);
+        if (reason) return reason;
+      }
+    }
+    return null;
+  }, [events]);
+
   // Determine if goal actually produced output despite being marked empty
   const hasRealOutput = finalOutput || (toolResults.length > 0);
 
@@ -192,6 +206,11 @@ function RichResultPanel({
           <AlertTriangle className={`h-4 w-4 mt-0.5 shrink-0 ${status === "complete" ? "text-amber-600" : "text-red-600"}`} aria-hidden="true" />
           <div className="space-y-1">
             <p className="font-medium">{status === "complete" ? "Goal completed with partial results" : "Goal did not fully complete"}</p>
+            {status === "failed" && failureReason && (
+              <p data-testid="goal-failure-reason" className="text-xs text-red-700 dark:text-red-400 whitespace-pre-wrap break-words">
+                {failureReason}
+              </p>
+            )}
             {verificationFeedback && (
               <p className="text-muted-foreground text-xs">{verificationFeedback}</p>
             )}

@@ -885,6 +885,30 @@ class ExecutorMixin:
                     tenant_ctx=tenant_ctx,
                 )
 
+    def _approval_unawaitable_error(self, step: str, reason: str) -> PermissionError | None:
+        """Return the denial for an approval-required step nobody can approve, else None.
+
+        CORE-01: only a supervised run with a wired HITL gateway waits for an
+        approval decision. Everywhere else the gates used to file an approval
+        request and then run the step anyway (or deny it and leave the request
+        pending forever) — approving or rejecting it changed nothing. An
+        approval-required step is therefore denied here, before any request is
+        filed, with an error that says how to get it approved.
+        """
+        label = step if len(step) <= 120 else step[:117] + "..."
+        if self._autonomy_mode != "supervised":
+            return PermissionError(
+                f"Step '{label}' requires human approval ({reason}), but the goal runs in "
+                f"'{self._autonomy_mode}' mode where no approval is awaited; the step was "
+                "not executed. Run the goal in supervised mode to approve it."
+            )
+        if self._hitl_gateway is None:
+            return PermissionError(
+                f"Step '{label}' requires human approval ({reason}), but no approval "
+                "gateway is configured; the step was not executed."
+            )
+        return None
+
     async def _execute_step(self, step: str, state: AgentState, tenant_ctx: TenantContext) -> str:
         """Run the governed per-step pipeline and record its real output for dedup."""
         output = await self._execute_step_pipeline(step, state, tenant_ctx)
@@ -963,10 +987,14 @@ class ExecutorMixin:
         # SAFE-3 (P0-14): route an action-safety HITL_REQUIRED verdict through the
         # HITL gateway. This is intentionally OUTSIDE the try/except above so an
         # approval rejection/timeout can never be swallowed and silently allowed.
-        _asp_hitl_done = False
         # True only once a human explicitly APPROVED this step (supervised wait).
         _step_approved = False
-        if _asp_hitl_required and self._hitl_gateway is not None:
+        if _asp_hitl_required:
+            _asp_denial = self._approval_unawaitable_error(step, f"action-safety: {_asp_reason}")
+            if _asp_denial is not None or self._hitl_gateway is None:
+                record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                raise _asp_denial or PermissionError(f"Step '{step}' requires approval.")
+            # Supervised with a gateway: block until a human decides.
             req_id = str(
                 self._hitl_gateway.request_approval(
                     goal_id=state.goal_id,
@@ -975,34 +1003,29 @@ class ExecutorMixin:
                     tenant_ctx=tenant_ctx,
                 )
             )
-            _asp_hitl_done = True
-            if self._autonomy_mode == "supervised":
-                await self._emit(
-                    {"type": "waiting_approval", "request_id": req_id, "action": step}
+            await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+            approval_started = time.monotonic()
+            final_status = await self._hitl_gateway.wait_for_approval(
+                req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+            )
+            record_approval_wait(time.monotonic() - approval_started)
+            if final_status == ApprovalStatus.REJECTED:
+                raise PermissionError(
+                    f"Step '{step}' rejected by human approver (action-safety: {_asp_reason})."
                 )
-                approval_started = time.monotonic()
-                final_status = await self._hitl_gateway.wait_for_approval(
-                    req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
+            if final_status == ApprovalStatus.TIMED_OUT:
+                raise PermissionError(
+                    f"Step '{step}' approval timed out (action-safety: {_asp_reason})."
                 )
-                record_approval_wait(time.monotonic() - approval_started)
-                if final_status == ApprovalStatus.REJECTED:
-                    raise PermissionError(
-                        f"Step '{step}' rejected by human approver "
-                        f"(action-safety: {_asp_reason})."
-                    )
-                if final_status == ApprovalStatus.TIMED_OUT:
-                    raise PermissionError(
-                        f"Step '{step}' approval timed out (action-safety: {_asp_reason})."
-                    )
-                if final_status != ApprovalStatus.APPROVED:
-                    # Only an explicit approval lets the step run (a still-pending
-                    # status used to fall through and execute).
-                    raise PermissionError(
-                        f"Step '{step}' approval not granted ({final_status}) "
-                        f"(action-safety: {_asp_reason})."
-                    )
-                _step_approved = True
-                await self._emit({"type": "approval_granted", "request_id": req_id})
+            if final_status != ApprovalStatus.APPROVED:
+                # Only an explicit approval lets the step run (a still-pending
+                # status used to fall through and execute).
+                raise PermissionError(
+                    f"Step '{step}' approval not granted ({final_status}) "
+                    f"(action-safety: {_asp_reason})."
+                )
+            _step_approved = True
+            await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 1. Cost check deferred — actual cost calculated after LLM call below.
 
@@ -1127,8 +1150,6 @@ class ExecutorMixin:
                 pass
 
         # 6b. Policy engine check (glob-based policies)
-        # Carry forward the action-safety HITL request so we do not double-prompt.
-        _hitl_already_requested = _asp_hitl_done
         if self._policy_engine is not None:
             policy_result = self._policy_engine.evaluate(tool_name=tool_name, tenant_ctx=tenant_ctx)
             if policy_result == PolicyResult.DENY:
@@ -1138,15 +1159,16 @@ class ExecutorMixin:
                     f"for tenant '{tenant_ctx.tenant_id}'."
                 )
             elif policy_result == PolicyResult.REQUIRE_APPROVAL and not _step_approved:
-                # A tenant policy demands approval. It used to be skipped when no
-                # gateway was wired, when an (unanswered) action-safety request
-                # had been filed, and outside supervised mode — where the request
-                # was orphaned and the step ran anyway. Fail closed in all three.
-                if self._hitl_gateway is None:
+                # A tenant policy demands approval. Only a supervised run with a
+                # gateway waits for it; anywhere else the step is denied before a
+                # request is filed (one used to be filed and left pending forever).
+                _policy_denial = self._approval_unawaitable_error(
+                    step, f"tenant policy on tool '{tool_name}'"
+                )
+                if _policy_denial is not None or self._hitl_gateway is None:
                     record_tool_call(tool_name, "policy", "approval_required", 0.0)
-                    raise PermissionError(
-                        f"Tool '{tool_name}' requires approval by policy; no approval "
-                        "gateway is configured, so the step was not executed."
+                    raise _policy_denial or PermissionError(
+                        f"Tool '{tool_name}' requires approval by policy."
                     )
                 req_id = str(
                     self._hitl_gateway.request_approval(
@@ -1156,62 +1178,55 @@ class ExecutorMixin:
                         tenant_ctx=tenant_ctx,
                     )
                 )
-                _hitl_already_requested = True
-                if self._autonomy_mode != "supervised":
-                    record_tool_call(tool_name, "policy", "approval_required", 0.0)
-                    raise PermissionError(
-                        f"Tool '{tool_name}' requires approval by policy (non-supervised "
-                        f"mode); the step was not executed. Approval request {req_id}."
-                    )
-                if self._autonomy_mode == "supervised":
-                    await self._emit(
-                        {"type": "waiting_approval", "request_id": req_id, "action": step}
-                    )
-                    approval_started = time.monotonic()
-                    final_status = await self._hitl_gateway.wait_for_approval(
-                        req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
-                    )
-                    record_approval_wait(time.monotonic() - approval_started)
-                    if final_status == ApprovalStatus.REJECTED:
-                        raise PermissionError(
-                            f"Step '{step}' was rejected by human approver via policy."
-                        )
-                    # Only an explicit APPROVED lets the step run: a timed-out (or
-                    # still-pending) policy approval used to fall through and execute.
-                    if final_status != ApprovalStatus.APPROVED:
-                        raise PermissionError(
-                            f"Step '{step}' policy approval not granted ({final_status})."
-                        )
-                    await self._emit({"type": "approval_granted", "request_id": req_id})
-
-        # 7. HITL gate
-        if not _hitl_already_requested and self._hitl_gateway is not None:
-            risk = "high" if _is_high_risk_step(step) else "low"
-            if risk == "high":
-                req_id = str(
-                    self._hitl_gateway.request_approval(
-                        goal_id=state.goal_id,
-                        action=step,
-                        risk_level=risk,
-                        tenant_ctx=tenant_ctx,
-                    )
+                await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+                approval_started = time.monotonic()
+                final_status = await self._hitl_gateway.wait_for_approval(
+                    req_id, tenant_ctx=tenant_ctx, timeout=self._hitl_timeout
                 )
-                if self._autonomy_mode == "supervised":
-                    # Actually BLOCK until a human approves or rejects
-                    await self._emit(
-                        {"type": "waiting_approval", "request_id": req_id, "action": step}
+                record_approval_wait(time.monotonic() - approval_started)
+                if final_status == ApprovalStatus.REJECTED:
+                    raise PermissionError(
+                        f"Step '{step}' was rejected by human approver via policy."
                     )
-                    approval_started = time.monotonic()
-                    final_status = await self._hitl_gateway.wait_for_approval(
-                        req_id, tenant_ctx=tenant_ctx
+                # Only an explicit APPROVED lets the step run: a timed-out (or
+                # still-pending) policy approval used to fall through and execute.
+                if final_status != ApprovalStatus.APPROVED:
+                    raise PermissionError(
+                        f"Step '{step}' policy approval not granted ({final_status})."
                     )
-                    record_approval_wait(time.monotonic() - approval_started)
-                    if final_status == ApprovalStatus.REJECTED:
-                        raise PermissionError(f"Step '{step}' was rejected by human approver.")
-                    elif final_status != ApprovalStatus.APPROVED:
-                        raise PermissionError(f"Step '{step}' approval timed out.")
-                    await self._emit({"type": "approval_granted", "request_id": req_id})
-                # In bounded/fully-autonomous: just log, don't block
+                _step_approved = True
+                await self._emit({"type": "approval_granted", "request_id": req_id})
+
+        # 7. HITL gate — a high-risk step (deploy/delete/prod/...) needs an explicit
+        # approval unless one was already granted for this step above. It used to
+        # be skipped when no gateway was wired, and outside supervised mode it filed
+        # a request and ran the step anyway.
+        if not _step_approved and _is_high_risk_step(step):
+            _gate7_denial = self._approval_unawaitable_error(step, "high-risk step")
+            if _gate7_denial is not None or self._hitl_gateway is None:
+                record_tool_call(tool_name, "policy", "approval_required", 0.0)
+                raise _gate7_denial or PermissionError(f"Step '{step}' requires approval.")
+            req_id = str(
+                self._hitl_gateway.request_approval(
+                    goal_id=state.goal_id,
+                    action=step,
+                    risk_level="high",
+                    tenant_ctx=tenant_ctx,
+                )
+            )
+            # Actually BLOCK until a human approves or rejects
+            await self._emit({"type": "waiting_approval", "request_id": req_id, "action": step})
+            approval_started = time.monotonic()
+            final_status = await self._hitl_gateway.wait_for_approval(
+                req_id, tenant_ctx=tenant_ctx
+            )
+            record_approval_wait(time.monotonic() - approval_started)
+            if final_status == ApprovalStatus.REJECTED:
+                raise PermissionError(f"Step '{step}' was rejected by human approver.")
+            elif final_status != ApprovalStatus.APPROVED:
+                raise PermissionError(f"Step '{step}' approval timed out.")
+            _step_approved = True
+            await self._emit({"type": "approval_granted", "request_id": req_id})
 
         # 8-pre. Dedup — AFTER every governance gate above, so a duplicate is never
         # a governance bypass. A hit serves the step's REAL recorded output; a hash
@@ -2266,9 +2281,17 @@ class ExecutorMixin:
                         raw_output = error
                         raw_output_sanitized = True
                     elif tool_risk == "write_high":
-                        if self._hitl_gateway is None:
+                        if self._hitl_gateway is None or self._autonomy_mode != "supervised":
+                            # Nobody will decide an approval here (no gateway, or a
+                            # non-supervised run), so the tool is not dispatched and
+                            # no approval request is filed — one used to be filed
+                            # and left pending forever (CORE-01).
                             error = self._sanitize_tool_raw_output(
                                 f"Tool '{tool_ref.name}' requires approval."
+                                if self._hitl_gateway is None
+                                else f"High-risk tool '{tool_ref.name}' requires approval "
+                                f"(non-supervised mode); it was not executed. Run the goal "
+                                f"in supervised mode to approve it."
                             )
                             await self._emit(
                                 {
@@ -2312,67 +2335,53 @@ class ExecutorMixin:
                                     "risk": tool_risk,
                                 }
                             )
-                            if self._autonomy_mode == "supervised":
-                                _hitl_start = time.monotonic()
-                                final_status = await self._hitl_gateway.wait_for_approval(
-                                    req_id, tenant_ctx=tenant_ctx
+                            _hitl_start = time.monotonic()
+                            final_status = await self._hitl_gateway.wait_for_approval(
+                                req_id, tenant_ctx=tenant_ctx
+                            )
+                            record_approval_wait(time.monotonic() - _hitl_start)
+                            if final_status == ApprovalStatus.REJECTED:
+                                raise PermissionError(
+                                    f"Tool '{tool_ref.name}' was rejected by human approver."
                                 )
-                                record_approval_wait(time.monotonic() - _hitl_start)
-                                if final_status == ApprovalStatus.REJECTED:
-                                    raise PermissionError(
-                                        f"Tool '{tool_ref.name}' was rejected by human approver."
-                                    )
-                                elif final_status == ApprovalStatus.TIMED_OUT:
-                                    raise PermissionError(
-                                        f"Tool '{tool_ref.name}' approval timed out."
-                                    )
-                                elif final_status != ApprovalStatus.APPROVED:
-                                    # Fail closed: only an explicit APPROVED runs the
-                                    # tool. A still-PENDING result (e.g. the wait was
-                                    # cut short by a Redis error) used to fall through.
-                                    raise PermissionError(
-                                        f"Tool '{tool_ref.name}' was not approved "
-                                        f"({final_status})."
-                                    )
-                                # APPROVED: now actually dispatch the tool call
-                                await self._emit({"type": "approval_granted", "request_id": req_id})
-                                _approved_result = await self._mcp_client.call_tool(
-                                    server_id=tool_ref.server_id,
-                                    tool_name=tool_ref.name,
-                                    arguments=tool_call.arguments,
-                                    tenant_ctx=tenant_ctx,
+                            elif final_status == ApprovalStatus.TIMED_OUT:
+                                raise PermissionError(
+                                    f"Tool '{tool_ref.name}' approval timed out."
                                 )
-                                raw_output = (
-                                    _approved_result.output
-                                    if _approved_result.success
-                                    else str(_approved_result.error)
+                            elif final_status != ApprovalStatus.APPROVED:
+                                # Fail closed: only an explicit APPROVED runs the
+                                # tool. A still-PENDING result (e.g. the wait was
+                                # cut short by a Redis error) used to fall through.
+                                raise PermissionError(
+                                    f"Tool '{tool_ref.name}' was not approved "
+                                    f"({final_status})."
                                 )
-                                raw_output_sanitized = False
-                                record_tool_call(
-                                    tool_ref.name,
-                                    tool_ref.server_id,
-                                    "success" if _approved_result.success else "failed",
-                                    time.monotonic() - tool_call_started,
-                                )
-                                if _approved_result.success:
-                                    _rb_executed = {
-                                        "tool": tool_ref.name,
-                                        "server_id": tool_ref.server_id,
-                                        "output": _approved_result.output,
-                                    }
-                            else:
-                                # Non-supervised: log the request but do not block
-                                raw_output = self._sanitize_tool_raw_output(
-                                    f"High-risk tool '{tool_ref.name}' "
-                                    "requires approval (non-supervised mode)."
-                                )
-                                raw_output_sanitized = True
-                                record_tool_call(
-                                    tool_ref.name,
-                                    tool_ref.server_id,
-                                    "approval",
-                                    time.monotonic() - tool_call_started,
-                                )
+                            # APPROVED: now actually dispatch the tool call
+                            await self._emit({"type": "approval_granted", "request_id": req_id})
+                            _approved_result = await self._mcp_client.call_tool(
+                                server_id=tool_ref.server_id,
+                                tool_name=tool_ref.name,
+                                arguments=tool_call.arguments,
+                                tenant_ctx=tenant_ctx,
+                            )
+                            raw_output = (
+                                _approved_result.output
+                                if _approved_result.success
+                                else str(_approved_result.error)
+                            )
+                            raw_output_sanitized = False
+                            record_tool_call(
+                                tool_ref.name,
+                                tool_ref.server_id,
+                                "success" if _approved_result.success else "failed",
+                                time.monotonic() - tool_call_started,
+                            )
+                            if _approved_result.success:
+                                _rb_executed = {
+                                    "tool": tool_ref.name,
+                                    "server_id": tool_ref.server_id,
+                                    "output": _approved_result.output,
+                                }
                     else:
                         # V4: Validate arguments against JSON schema before MCP dispatch
                         from app.agent.tool_calls import validate_tool_arguments as _validate_args

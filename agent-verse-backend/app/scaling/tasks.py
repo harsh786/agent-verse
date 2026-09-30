@@ -3458,6 +3458,18 @@ def run_goal(
             _run_async(meter_worker_goal("cancelled"))
         _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
         return {"status": "cancelled", "goal_id": goal_id, "reason": "cancelled_by_operator"}
+    except PermissionError as exc:
+        # A governance denial (an approval-required step outside supervised
+        # mode, a policy DENY, a rejected or timed-out approval) is final.
+        # Retrying re-ran the same denial and then dead-lettered the goal as
+        # "exceeded max retries", burying the real reason (CORE-01).
+        logger.info("goal_denied_by_governance goal_id=%s: %s", goal_id, exc)
+        _record_goal_duration_metric(
+            "failed", started_monotonic=started_monotonic, priority=priority
+        )
+        _run_async(mark_worker_failed(exc))
+        _run_async(_decrement_after_completion(tenant_id, REDIS_URL))
+        return {"status": "failed", "goal_id": goal_id, "reason": str(exc)}
     except Exception as exc:
         logger.error("Goal %s failed: %s", goal_id, exc)
         _record_goal_duration_metric(

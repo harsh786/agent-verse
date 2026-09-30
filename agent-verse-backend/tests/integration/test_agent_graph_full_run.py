@@ -170,8 +170,9 @@ async def test_self_consistency_majority_vote() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_hitl_request_created_for_deploy_step() -> None:
-    """A plan containing 'deploy' causes a HITL approval request (bounded-autonomous)."""
+async def test_deploy_step_denied_in_bounded_autonomous_mode() -> None:
+    """A 'deploy' step needs approval; bounded-autonomous awaits none, so the step
+    is denied without filing an orphaned approval request (CORE-01)."""
     deploy_plan = '{"steps": ["deploy the service to production"]}'
     p = FakeProvider(responses=[deploy_plan, _STEP_RESP, _VERIFY_OK])
     hitl = HITLGateway(timeout_seconds=60.0)
@@ -183,11 +184,9 @@ async def test_hitl_request_created_for_deploy_step() -> None:
         hitl_gateway=hitl,
         autonomy_mode="bounded-autonomous",
     )
-    state = await graph.run(goal="deploy the service", tenant_ctx=tenant)
-    # In bounded-autonomous mode the HITL request is created but execution continues
-    pending = hitl.list_pending(tenant_ctx=tenant)
-    # Either there are pending requests or the step was executed (no blocking)
-    assert state is not None
+    with pytest.raises(PermissionError, match="supervised mode"):
+        await graph.run(goal="deploy the service", tenant_ctx=tenant)
+    assert hitl.list_pending(tenant_ctx=tenant) == []
 
 
 # ---------------------------------------------------------------------------
