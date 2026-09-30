@@ -279,5 +279,14 @@ def _builtin_risk(tool_name: str) -> str | None:
             return None
         if declared == "high" and name in _RPA_WRITE_HIGH_TOOLS:
             return "write_high"
+        if declared == "high":
+            # RPA_INTERACTION_RISK (default write_low): operators can gate
+            # click / type / select behind approval too.
+            try:
+                from app.core.config import get_settings
+
+                return str(get_settings().rpa_interaction_risk)
+            except Exception:
+                return "write_high"  # unreadable config: the gated class
         return _RPA_RISK_MAP.get(declared)
     return None

@@ -235,6 +235,18 @@ class Settings(BaseSettings):
     # baseline already uses T1 typed normalization.
     grounding_policy_enabled: bool = True
 
+    # --- Agent runtime trade-off switches (defaults = shipped behaviour) -------
+    # An errored guardrail engine fails CLOSED only on high-risk steps by default
+    # (low-risk steps proceed, logged). true = fail closed on every step.
+    guardrail_fail_closed_all: bool = False
+    # Risk class of declared-"high" interactive RPA tools (rpa_click, rpa_type,
+    # rpa_select_option ...): write_low (no approval) or write_high (approval-gated
+    # like rpa_submit_form). Read-only RPA tools are unaffected.
+    rpa_interaction_risk: Literal["write_low", "write_high"] = "write_low"
+    # How often a model with no capability data probes richer execution modes
+    # (structured plans / parallel tool calls) before enough data exists. 0..1.
+    explore_rate_unknown: float = Field(default=1.0, ge=0.0, le=1.0)
+
     # --- Eval scoring (config-driven; NOTHING hardcoded in the scorer) --------
     # The 7-dimension eval scorer (app/intelligence/eval_runner.py) and the
     # self-improvement decision surfaces read every weight/threshold/budget from

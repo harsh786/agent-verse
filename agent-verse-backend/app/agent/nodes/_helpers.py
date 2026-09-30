@@ -156,7 +156,15 @@ def _guardrail_should_fail_closed(step: str, risk_level: Any = None) -> bool:
     """
     if risk_level is not None and str(risk_level).lower() in {"high", "critical"}:
         return True
-    return _is_high_risk_step(step)
+    if _is_high_risk_step(step):
+        return True
+    # GUARDRAIL_FAIL_CLOSED_ALL: operators can make every errored check fail closed.
+    try:
+        from app.core.config import get_settings
+
+        return bool(get_settings().guardrail_fail_closed_all)
+    except Exception:
+        return True  # unreadable config on an errored guardrail: fail closed
 
 
 def _is_ungrounded_status(status: Any) -> bool:

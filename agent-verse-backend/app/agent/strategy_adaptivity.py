@@ -81,12 +81,22 @@ def refine_strategy(
     return replace(base, plan_mode=plan_mode, tool_mode=tool_mode, reason="; ".join(reasons))
 
 
+def _explore_rate_unknown() -> float:
+    """EXPLORE_RATE_UNKNOWN setting (default: always probe an unknown model)."""
+    try:
+        from app.core.config import get_settings
+
+        return float(get_settings().explore_rate_unknown)
+    except Exception:
+        return _EXPLORE_RATE_UNKNOWN
+
+
 def _explore_probability(profile: ModelCapabilityProfile, *, already_capable: bool) -> float:
     """How often to probe the richer strategy for a model with no data yet."""
     if already_capable:
         return 0.0  # base is already the richer mode — nothing to discover
     if not is_seeded(profile.model_id):
-        return _EXPLORE_RATE_UNKNOWN  # unknown model — learn it
+        return _explore_rate_unknown()  # unknown model — learn it
     if profile.json_reliability == JsonReliability.LOW.value:
         return 0.0  # seed is confident it's incapable — don't waste probes
     return _EXPLORE_RATE_SEEDED_INCAPABLE  # seed says no but plausible — re-check rarely
