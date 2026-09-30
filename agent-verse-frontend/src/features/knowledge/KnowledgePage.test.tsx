@@ -864,7 +864,7 @@ describe('KnowledgePage – Ingest tab file queue', () => {
     expect(screen.getByRole('button', { name: /^powerpoint$/i })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /^image$/i }));
     const accept = (fileInput().getAttribute('accept') ?? '').split(',');
-    for (const ext of ['.pptx', '.png', '.jpg', '.jpeg', '.webp', '.pdf', '.docx']) expect(accept).toContain(ext);
+    for (const ext of ['.pptx', '.png', '.jpg', '.jpeg', '.webp', '.pdf', '.docx', '.xlsx', '.csv']) expect(accept).toContain(ext);
     expect(accept).not.toContain('.ppt');
     expect(screen.getByText(/save as \.pptx/i)).toBeInTheDocument();
   });

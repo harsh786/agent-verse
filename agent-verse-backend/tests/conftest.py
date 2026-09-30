@@ -13,6 +13,14 @@ os.environ.setdefault("AGENTVERSE_ALLOW_SUBPROCESS_EXEC", "true")
 # Ensure tests run in development mode (not production fail-closed)
 os.environ.setdefault("ENVIRONMENT", "development")
 
+# Tests must not depend on the developer's .env: a real provider key there (e.g.
+# NVIDIA_API_KEY) turned "no keys -> FakeProvider" tests into real-provider runs.
+# Opt-in real-provider suites (REAL_PROVIDERS=1) keep reading it.
+if os.getenv("REAL_PROVIDERS") != "1":
+    from app.core.config import Settings as _Settings
+
+    _Settings.model_config["env_file"] = None
+
 
 def _docker_available() -> bool:
     """Return True if a Docker daemon is reachable."""

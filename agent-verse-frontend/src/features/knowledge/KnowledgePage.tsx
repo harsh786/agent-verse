@@ -411,7 +411,7 @@ const TEXT_SOURCES = ['text', 'markdown', 'openapi'];
 const FILE_UPLOAD_SOURCES = [...FILE_ONLY_SOURCES, 'text', 'markdown'];
 /** Extensions POST /knowledge/ingest/file accepts. Legacy .ppt is deliberately
  *  absent — the backend refuses it with 415 and asks for .pptx. */
-const UPLOAD_EXTENSIONS = ['.txt', '.md', '.py', '.ts', '.js', '.json', '.pdf', '.docx', '.pptx', '.png', '.jpg', '.jpeg', '.webp'];
+const UPLOAD_EXTENSIONS = ['.txt', '.md', '.csv', '.py', '.ts', '.js', '.json', '.pdf', '.docx', '.xlsx', '.pptx', '.png', '.jpg', '.jpeg', '.webp'];
 const NO_COLLECTION_MSG = 'Select a collection first.';
 
 function formatBytes(n: number): string {

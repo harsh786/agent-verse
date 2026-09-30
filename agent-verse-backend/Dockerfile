@@ -12,11 +12,11 @@ WORKDIR /app
 # Avoid BuildKit-only RUN --mount syntax so this image builds on Minikube/Colima
 # Docker daemons that do not ship with buildx.
 COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-install-project --no-dev --extra browser
+RUN uv sync --frozen --no-install-project --no-dev --extra browser --extra ocr
 
 # Now copy the app and install the project itself.
 COPY . /app
-RUN uv sync --frozen --no-dev --extra browser
+RUN uv sync --frozen --no-dev --extra browser --extra ocr
 
 
 FROM python:3.12-slim-bookworm AS runtime
@@ -24,15 +24,14 @@ FROM python:3.12-slim-bookworm AS runtime
 # Non-root runtime user.
 RUN groupadd --system app && useradd --system --gid app --create-home app
 
-WORKDIR /app
-COPY --from=builder --chown=app:app /app /app
-
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
-
+# System packages before the ~11 GB venv copy, so this layer caches independently
+# of code and dependency changes.
 # Install Playwright system dependencies for Chromium (must run as root).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# apt over HTTPS: on some networks plain-HTTP responses from deb.debian.org arrive
+# altered ("invalid signature" on InRelease, "Hash Sum mismatch" on .debs).
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
     libgbm1 libasound2 libpango-1.0-0 libcairo2 \
@@ -40,6 +39,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-hin \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder --chown=app:app /app /app
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 USER app
 EXPOSE 8000

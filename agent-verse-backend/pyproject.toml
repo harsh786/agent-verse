@@ -74,6 +74,7 @@ dependencies = [
     "pypdf>=5.0",
     "python-docx>=1.1",
     "python-pptx>=1.0.2",
+    "openpyxl>=3.1.0",
 ]
 
 [project.scripts]
@@ -121,7 +122,6 @@ dev = [
     # Optional ingestion-format parsers (app/ingestion/{connectors,parsers}/*.py
     # lazy-import these; tests exercise the real parsing/feed logic, not fakes).
     "feedparser>=6.0.0",
-    "openpyxl>=3.1.0",
     "pyarrow>=17.0.0",
     "fastavro>=1.9.0",
     "beautifulsoup4>=4.12.0",
