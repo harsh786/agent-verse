@@ -74,10 +74,19 @@ class ChunkingStrategySelector:
         # orchestrator, so advertised strategies (layout/paragraph/dom/region/
         # row_group/record) reach their real chunker instead of silently
         # degrading to fixed-size chunking.
-        from app.ingestion.chunkers import get_chunker_for_strategy
+        from app.ingestion.chunkers import (
+            UnsupportedChunkingStrategyError,
+            get_chunker_for_strategy,
+        )
 
         try:
             chunker = get_chunker_for_strategy(strategy)
+        except UnsupportedChunkingStrategyError:
+            raise  # a configuration error, never silently replaced by fixed chunks
+        except Exception:
+            self.last_strategy = "fixed"
+            return self._fixed_chunk(text)
+        try:
             result = [c.content for c in chunker.chunk(text)]
             return [c for c in result if c.strip()]
         except Exception:

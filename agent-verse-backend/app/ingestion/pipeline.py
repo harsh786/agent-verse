@@ -613,11 +613,20 @@ class IngestionPipeline:
         chunk_size: int,
         overlap: int,
     ) -> list[str]:
-        """Dispatch to appropriate chunking strategy."""
+        """Dispatch to appropriate chunking strategy.
+
+        An unsupported strategy name propagates (the document fails with that
+        reason) — replacing it with fixed-size chunks would index the document
+        under a strategy the Source never asked for.
+        """
+        from app.ingestion.chunkers import UnsupportedChunkingStrategyError
+
         try:
             strategy_override = strategy if strategy != "auto" else None
             chunks = self._chunker_selector.select_and_chunk(text, content_type, strategy_override)
             return [c for c in chunks if c.strip()]
+        except UnsupportedChunkingStrategyError:
+            raise
         except Exception as e:
             _log.warning("pipeline_chunk_error: %s — falling back to fixed", e)
             # Fallback: simple fixed-size chunking

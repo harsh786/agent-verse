@@ -215,10 +215,16 @@ class TestGetChunkerForStrategy:
         chunker = get_chunker_for_strategy("heading")
         assert isinstance(chunker, HeadingChunker)
 
-    def test_unknown_strategy_returns_semantic(self) -> None:
-        from app.ingestion.chunkers import SemanticChunker, get_chunker_for_strategy
-        chunker = get_chunker_for_strategy("unknown_strategy")
-        assert isinstance(chunker, SemanticChunker)
+    def test_unknown_strategy_is_refused_not_aliased_to_semantic(self) -> None:
+        import pytest
+
+        from app.ingestion.chunkers import (
+            UnsupportedChunkingStrategyError,
+            get_chunker_for_strategy,
+        )
+
+        with pytest.raises(UnsupportedChunkingStrategyError):
+            get_chunker_for_strategy("unknown_strategy")
 
     def test_code_strategy_returns_ast(self) -> None:
         from app.ingestion.chunkers import ASTChunker, get_chunker_for_strategy

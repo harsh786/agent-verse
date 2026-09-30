@@ -23,7 +23,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.ingestion.source_config import SourceConfig, SourceFamily
 from app.observability.logging import get_logger
@@ -68,6 +68,19 @@ async def _load_source(request: Request, source_id: str, tenant_id: str) -> Any:
 # ── Request / Response models ─────────────────────────────────────────────────
 
 
+def _validate_chunking_strategy(value: str | None) -> str | None:
+    """422 for a chunking strategy with no implementation (it used to be accepted
+    and silently chunked as ``semantic``)."""
+    from app.ingestion.chunkers import SUPPORTED_CHUNKING_STRATEGIES
+
+    if value is not None and value not in SUPPORTED_CHUNKING_STRATEGIES:
+        raise ValueError(
+            f"unsupported chunking_strategy {value!r}; "
+            f"supported: {', '.join(sorted(SUPPORTED_CHUNKING_STRATEGIES))}"
+        )
+    return value
+
+
 class CreateSourceRequest(BaseModel):
     name: str = Field(..., min_length=1)
     family: str
@@ -86,6 +99,10 @@ class CreateSourceRequest(BaseModel):
 
     model_config = {"extra": "allow"}
 
+    _chunking_strategy_supported = field_validator("chunking_strategy")(
+        _validate_chunking_strategy
+    )
+
 
 class UpdateSourceRequest(BaseModel):
     name: str | None = None
@@ -99,6 +116,10 @@ class UpdateSourceRequest(BaseModel):
     tags: list[str] | None = None
 
     model_config = {"extra": "allow"}
+
+    _chunking_strategy_supported = field_validator("chunking_strategy")(
+        _validate_chunking_strategy
+    )
 
 
 # In-memory source store (replaced by DB-backed in production)
