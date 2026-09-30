@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -969,7 +970,7 @@ async def ingest_file(
     segments: list[tuple[int | None, str]] = []
     total_pages: int | None = None
     if not is_image:
-        segments, total_pages = _extract_upload_segments(
+        segments, total_pages = await _extract_upload_segments_async(
             content_bytes, ext=ext, filename=filename
         )
 
@@ -1077,11 +1078,12 @@ async def _extract_image_text_or_http(
     )
 
     try:
-        return await extract_image_text(
-            content_bytes,
-            filename=filename,
-            vision_provider=getattr(request.app.state, "llm_provider", None),
-        )
+        async with _upload_parse_slot():  # OCR is bounded like parsing
+            return await extract_image_text(
+                content_bytes,
+                filename=filename,
+                vision_provider=getattr(request.app.state, "llm_provider", None),
+            )
     except DocumentParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ParserUnavailableError as exc:
@@ -1098,6 +1100,37 @@ def _upload_source_type(ext: str) -> str:
     if ext in {"json", "jsonl", "ndjson", "yaml", "yml"}:
         return "structured"
     return "text"
+
+
+# Uploads parsed at once per replica (PDF / workbook parsing is CPU-heavy):
+# parsing runs in worker threads, and this bounds how many.
+_UPLOAD_PARSE_CONCURRENCY = max(1, int(os.getenv("KNOWLEDGE_UPLOAD_PARSE_CONCURRENCY", "2")))
+_upload_parse_slots: dict[int, asyncio.Semaphore] = {}
+
+
+def _upload_parse_slot() -> asyncio.Semaphore:
+    """This event loop's parse semaphore (one per loop; tests run several)."""
+    loop_id = id(asyncio.get_running_loop())
+    slot = _upload_parse_slots.get(loop_id)
+    if slot is None:
+        if len(_upload_parse_slots) > 16:
+            _upload_parse_slots.clear()
+        slot = _upload_parse_slots[loop_id] = asyncio.Semaphore(_UPLOAD_PARSE_CONCURRENCY)
+    return slot
+
+
+async def _extract_upload_segments_async(
+    content_bytes: bytes, *, ext: str, filename: str
+) -> tuple[list[tuple[int | None, str]], int | None]:
+    """:func:`_extract_upload_segments` in a worker thread, bounded per replica.
+
+    Parsing a 50 MiB PDF or a large workbook on the event loop froze the whole
+    replica (every tenant's requests) for the duration.
+    """
+    async with _upload_parse_slot():
+        return await asyncio.to_thread(
+            _extract_upload_segments, content_bytes, ext=ext, filename=filename
+        )
 
 
 def _extract_upload_segments(
