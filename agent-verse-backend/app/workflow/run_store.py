@@ -141,7 +141,9 @@ class WorkflowRunStore(Protocol):
         self, tenant_id: str, run_id: str, step_id: str
     ) -> dict[str, Any] | None: ...
 
-    async def get_retryable_webhooks(self, max_attempts: int = 3) -> list[dict[str, Any]]: ...
+    async def get_retryable_webhooks(
+        self, max_attempts: int = 3, *, backoff_seconds: float = 300.0
+    ) -> list[dict[str, Any]]: ...
 
     async def delete_expired_runs(self) -> int: ...
 
@@ -852,7 +854,9 @@ class PostgresWorkflowRunStore:
             return sum(int(r[0] or 0) for r in rows)
 
     # ── Maintenance (cross-tenant) ────────────────────────────────────────────
-    async def get_retryable_webhooks(self, max_attempts: int = 3) -> list[dict[str, Any]]:
+    async def get_retryable_webhooks(
+        self, max_attempts: int = 3, *, backoff_seconds: float = 300.0
+    ) -> list[dict[str, Any]]:
         from sqlalchemy import text as sa_text
 
         from app.db.rls import system_session
@@ -864,9 +868,13 @@ class PostgresWorkflowRunStore:
                     sa_text(
                         "SELECT id, tenant_id, workflow_id, payload FROM workflow_webhook_events "
                         "WHERE status IN ('pending', 'failed') AND attempts < :max_attempts "
+                        # Exponential backoff: ``base`` after the delivery and
+                        # after the 1st retry, then 2x, 4x, ... per failed retry.
+                        " AND COALESCE(last_attempted_at, received_at) <= NOW() - "
+                        "   make_interval(secs => :base * power(2, GREATEST(attempts - 1, 0))) "
                         "ORDER BY received_at ASC LIMIT 100"
                     ),
-                    {"max_attempts": max_attempts},
+                    {"max_attempts": max_attempts, "base": backoff_seconds},
                 )
             ).mappings().all()
             return [
@@ -1112,6 +1120,90 @@ class PostgresWorkflowRunStore:
             return self._stats_row(row)
 
     # ── Webhook events (workflow_webhook_events) ──────────────────────────────
+    async def record_webhook_failure(
+        self,
+        *,
+        tenant_id: str,
+        workflow_id: str,
+        token_fingerprint: str,
+        payload: dict[str, Any],
+        error: str,
+    ) -> str:
+        """Dead-letter a webhook delivery whose run could not be started.
+
+        ``attempts`` starts at 0; the retry task owns every later attempt. Only a
+        fingerprint of the webhook token is stored — the token is a credential.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "INSERT INTO workflow_webhook_events "
+                        "(tenant_id, workflow_id, webhook_token, payload, status, attempts, "
+                        " last_error) "
+                        "VALUES (CAST(:tid AS uuid), CAST(:wid AS uuid), :token, "
+                        " CAST(:payload AS jsonb), 'failed', 0, :error) RETURNING id"
+                    ),
+                    {
+                        "tid": tenant_id,
+                        "wid": workflow_id,
+                        "token": token_fingerprint,
+                        "payload": json.dumps(payload, default=str),
+                        "error": error[:2000],
+                    },
+                )
+            ).first()
+            await session.commit()
+            return str(row[0]) if row else ""
+
+    async def mark_webhook_attempt(
+        self,
+        *,
+        tenant_id: str,
+        event_id: str,
+        run_id: str | None = None,
+        error: str | None = None,
+        max_attempts: int = 3,
+    ) -> str | None:
+        """Record one retry of a dead-lettered delivery and return its new status.
+
+        Success (``run_id`` set) → ``succeeded``; a failure → ``failed``, or
+        ``dead`` once ``max_attempts`` is reached — so a row is never retried
+        forever and a succeeded row is never retried again. Guarded on the row
+        still being retryable, so two overlapping retry runs cannot both count.
+        """
+        from sqlalchemy import text as sa_text
+
+        async with self._db() as session:
+            await self._set_tenant(session, tenant_id)
+            row = (
+                await session.execute(
+                    sa_text(
+                        "UPDATE workflow_webhook_events SET "
+                        " attempts = attempts + 1, last_attempted_at = NOW(), "
+                        " status = CASE WHEN :ok THEN 'succeeded' "
+                        "   WHEN attempts + 1 >= :max THEN 'dead' ELSE 'failed' END, "
+                        " run_id = CASE WHEN :ok THEN CAST(:run_id AS uuid) ELSE run_id END, "
+                        " last_error = CASE WHEN :ok THEN last_error ELSE :error END, "
+                        " completed_at = CASE WHEN :ok THEN NOW() ELSE completed_at END "
+                        "WHERE id = CAST(:eid AS uuid) AND status IN ('pending', 'failed') "
+                        "RETURNING status"
+                    ),
+                    {
+                        "ok": run_id is not None,
+                        "run_id": run_id,
+                        "error": (error or "")[:2000],
+                        "max": max_attempts,
+                        "eid": event_id,
+                    },
+                )
+            ).first()
+            await session.commit()
+            return str(row[0]) if row else None
+
     async def list_webhook_events(
         self, tenant_id: str, workflow_id: str, *, limit: int = 20, offset: int = 0
     ) -> tuple[list[dict[str, Any]], int]:

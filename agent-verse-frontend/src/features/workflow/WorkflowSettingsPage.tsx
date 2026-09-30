@@ -319,8 +319,67 @@ function WebhookPanel({ wf }: { wf: WEWorkflow }) {
           webhook or api trigger. Run-completion callbacks are signed with HMAC-SHA256 in the{' '}
           <code>{data?.callback_signature_header ?? 'X-AgentVerse-Signature'}</code> header.
         </p>
+        <WebhookDeliveries wf={wf} />
       </div>
     </div>
+  );
+}
+
+const DELIVERY_STATUS_CLS: Record<string, string> = {
+  succeeded: 'bg-emerald-500/15 text-emerald-400',
+  failed: 'bg-amber-500/15 text-amber-400',
+  pending: 'bg-sky-500/15 text-sky-400',
+  dead: 'bg-red-500/15 text-red-400',
+};
+
+/** Deliveries whose run could not be started, and how their retries went. */
+function WebhookDeliveries({ wf }: { wf: WEWorkflow }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['workflow-engine', 'webhook-events', wf.id],
+    queryFn: () => workflowEngineApi.listWebhookEvents(wf.id, { per_page: 20 }),
+  });
+  const items = data?.items ?? [];
+  return (
+    <section aria-labelledby="webhook-deliveries-heading">
+      <h4 id="webhook-deliveries-heading" className="text-xs font-semibold text-[#F1F5F9]/70 mb-2">
+        Failed deliveries
+      </h4>
+      <p className="text-xs text-[#F1F5F9]/30 mb-2">
+        When a delivery arrives but its run cannot be started it is kept and retried
+        (up to 3 times, with backoff); after that it is marked dead.
+      </p>
+      <div className="rounded-xl border border-white/10 divide-y divide-white/5">
+        {isLoading ? (
+          <p className="p-3 text-xs text-[#F1F5F9]/30">Loading…</p>
+        ) : isError ? (
+          <p className="p-3 text-xs text-rose-400">Could not load deliveries.</p>
+        ) : items.length === 0 ? (
+          <p className="p-3 text-xs text-[#F1F5F9]/40">No failed deliveries.</p>
+        ) : (
+          items.map((d) => (
+            <div key={d.id} className="p-3 text-xs space-y-1" data-testid="webhook-delivery">
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-0.5 rounded-full ${DELIVERY_STATUS_CLS[d.status] ?? 'bg-white/10'}`}>
+                  {d.status}
+                </span>
+                <span className="text-[#F1F5F9]/50">
+                  {d.attempts} {d.attempts === 1 ? 'retry' : 'retries'}
+                </span>
+                {d.received_at && (
+                  <span className="ml-auto text-[#F1F5F9]/30">
+                    {new Date(d.received_at).toLocaleString()}
+                  </span>
+                )}
+              </div>
+              {d.last_error && d.status !== 'succeeded' && (
+                <p className="text-red-300/80 font-mono break-all">{d.last_error}</p>
+              )}
+              {d.run_id && <p className="text-[#F1F5F9]/40 font-mono">run {d.run_id}</p>}
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }
 

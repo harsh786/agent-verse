@@ -3125,6 +3125,19 @@ export interface WEWorkflow {
   access?: 'viewer' | 'runner' | 'editor' | 'admin' | null;
 }
 
+export interface WEWebhookDelivery {
+  id: string;
+  /** Fingerprint of the webhook token (never the token itself). */
+  webhook_token: string;
+  status: 'pending' | 'failed' | 'succeeded' | 'dead' | string;
+  attempts: number;
+  last_error?: string | null;
+  run_id?: string | null;
+  received_at?: string | null;
+  last_attempted_at?: string | null;
+  completed_at?: string | null;
+}
+
 export interface WEWorkflowPermission {
   id: string;
   subject_type: string;
@@ -3228,6 +3241,16 @@ export const workflowEngineApi = {
 
   validate: (id: string) =>
     request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
+
+  /** Dead-lettered webhook deliveries (runs that could not be started). */
+  listWebhookEvents: (id: string, params?: { page?: number; per_page?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.page) qs.set('page', String(params.page));
+    if (params?.per_page) qs.set('per_page', String(params.per_page));
+    return request<{ items: WEWebhookDelivery[]; total: number; page: number; per_page: number }>(
+      `${V1}/workflows/${id}/webhooks?${qs}`,
+    );
+  },
 
   // ── Per-workflow access control ───────────────────────────────────────────
   listPermissions: (id: string) =>

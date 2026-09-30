@@ -16,6 +16,7 @@ vi.mock('../../../lib/api/client', () => ({
     listPermissions: vi.fn(),
     addPermission: vi.fn(),
     removePermission: vi.fn(),
+    listWebhookEvents: vi.fn(),
   },
 }));
 
@@ -48,6 +49,9 @@ describe('WorkflowSettingsPage', () => {
     });
     vi.mocked(workflowEngineApi.update).mockResolvedValue(mockWf as any);
     vi.mocked(workflowEngineApi.listPermissions).mockResolvedValue([]);
+    vi.mocked(workflowEngineApi.listWebhookEvents).mockResolvedValue({
+      items: [], total: 0, page: 1, per_page: 20,
+    });
   });
 
   it('renders settings heading', async () => {
@@ -135,6 +139,46 @@ describe('WorkflowSettingsPage', () => {
     });
     expect(screen.queryByText(/api\/v1\/webhooks\/workflows/)).not.toBeInTheDocument();
     expect(workflowEngineApi.getWebhook).toHaveBeenCalledWith('wf-1');
+  });
+
+  // WF-07: dead-lettered deliveries are visible with status, retries and error.
+  it('webhook panel lists failed deliveries with retries and last error', async () => {
+    vi.mocked(workflowEngineApi.getWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', published: true,
+    });
+    vi.mocked(workflowEngineApi.listWebhookEvents).mockResolvedValue({
+      items: [
+        {
+          id: 'e1', webhook_token: 'fp', status: 'dead', attempts: 3,
+          last_error: 'broker unreachable', received_at: '2026-01-01T00:00:00Z',
+        },
+        { id: 'e2', webhook_token: 'fp', status: 'succeeded', attempts: 1, run_id: 'run-9' },
+      ],
+      total: 2, page: 1, per_page: 20,
+    });
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+
+    const rows = await screen.findAllByTestId('webhook-delivery');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('dead');
+    expect(rows[0]).toHaveTextContent('3 retries');
+    expect(rows[0]).toHaveTextContent('broker unreachable');
+    expect(rows[1]).toHaveTextContent('run run-9');
+  });
+
+  it('webhook panel shows an empty state when there are no failed deliveries', async () => {
+    vi.mocked(workflowEngineApi.getWebhook).mockResolvedValue({
+      workflow_id: 'wf-1', published: true,
+    });
+    vi.mocked(workflowEngineApi.listWebhookEvents).mockResolvedValue({
+      items: [], total: 0, page: 1, per_page: 20,
+    });
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /webhook/i }));
+    expect(await screen.findByText('No failed deliveries.')).toBeInTheDocument();
   });
 
   it('webhook panel tells the user to publish when no token is issued', async () => {

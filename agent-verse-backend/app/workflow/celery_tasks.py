@@ -370,27 +370,68 @@ def check_hitl_escalations() -> dict[str, int]:
     return result
 
 
-@celery_app.task(name="workflow.retry_dead_letter_webhooks")
-def retry_dead_letter_webhooks() -> None:
-    """Run every 5 minutes to retry failed webhook deliveries."""
+WEBHOOK_DLQ_MAX_ATTEMPTS = 3
 
-    async def _retry() -> None:
+
+async def retry_dead_letter_webhooks_async(runner: Any) -> dict[str, int]:
+    """Retry each due dead-lettered webhook delivery once and record the outcome.
+
+    Old bug: nothing updated the row, so a failing delivery was re-run every
+    5 minutes forever (and a succeeded one would have been too). Now every
+    attempt increments ``attempts``; success marks the row ``succeeded`` (never
+    retried again), and the ``WEBHOOK_DLQ_MAX_ATTEMPTS``-th failure marks it
+    ``dead``.
+    """
+    counts = {"retried": 0, "succeeded": 0, "failed": 0, "dead": 0}
+    run_store = getattr(runner, "_run_store", None) if runner else None
+    if run_store is None or not hasattr(run_store, "get_retryable_webhooks"):
+        return counts
+    events = await run_store.get_retryable_webhooks(max_attempts=WEBHOOK_DLQ_MAX_ATTEMPTS)
+    for event in events:
+        counts["retried"] += 1
+        run_id: str | None = None
+        error: str | None = None
         try:
-            runner = _get_runner()
-            run_store = getattr(runner, "_run_store", None) if runner else None
-            if run_store and hasattr(run_store, "get_retryable_webhooks"):
-                events = await run_store.get_retryable_webhooks(max_attempts=3)
-                for event in events:
-                    await runner.run(
-                        workflow_id=event["workflow_id"],
-                        tenant_id=event["tenant_id"],
-                        inputs=event["payload"],
-                        trigger_type="webhook",
-                    )
+            run_id = await runner.run(
+                workflow_id=event["workflow_id"],
+                tenant_id=event["tenant_id"],
+                inputs=event["payload"],
+                trigger_type="webhook",
+                trigger_payload=event["payload"],
+            )
+        except Exception as exc:
+            error = str(exc) or type(exc).__name__
+        try:
+            status = await run_store.mark_webhook_attempt(
+                tenant_id=event["tenant_id"],
+                event_id=event["id"],
+                run_id=str(run_id) if run_id else None,
+                error=error or ("run was not started" if not run_id else None),
+                max_attempts=WEBHOOK_DLQ_MAX_ATTEMPTS,
+            )
+        except Exception as exc:
+            _log.warning("dlq_mark_failed", event_id=event["id"], error=str(exc))
+            continue
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+@celery_app.task(name="workflow.retry_dead_letter_webhooks")
+def retry_dead_letter_webhooks() -> dict[str, int]:
+    """Run every 5 minutes to retry failed webhook deliveries (with backoff)."""
+
+    async def _retry() -> dict[str, int]:
+        try:
+            return await retry_dead_letter_webhooks_async(_get_runner())
         except Exception as exc:
             _log.warning("dlq_retry_failed", error=str(exc))
+            return {}
 
-    _run_async(_retry())
+    result: dict[str, int] = _run_async(_retry())
+    if result.get("retried"):
+        _log.info("dlq_retry_done", **result)
+    return result
 
 
 @celery_app.task(name="workflow.cleanup_expired_runs")

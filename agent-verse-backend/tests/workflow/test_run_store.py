@@ -383,6 +383,55 @@ async def test_list_webhook_events(seeded: dict, factories: tuple) -> None:
     assert b_total == 0 and b_events == []
 
 
+async def test_webhook_dlq_lifecycle(seeded: dict, factories: tuple) -> None:
+    """WF-07: a dead-lettered delivery is retried with backoff, counted, and
+    ends succeeded or dead — never retried forever."""
+    admin_factory, app_factory = factories
+    store = PostgresWorkflowRunStore(app_factory, system_db_factory=admin_factory)
+    tid, wid = seeded["tenant_a"], seeded["workflow_id"]
+
+    ok_id = await store.record_webhook_failure(
+        tenant_id=tid, workflow_id=wid, token_fingerprint="fp1",
+        payload={"n": 1}, error="broker down",
+    )
+    bad_id = await store.record_webhook_failure(
+        tenant_id=tid, workflow_id=wid, token_fingerprint="fp2",
+        payload={"n": 2}, error="broker down",
+    )
+    # Not due yet: the first retry waits the base backoff.
+    assert not {ok_id, bad_id} & {
+        e["id"] for e in await store.get_retryable_webhooks(backoff_seconds=3600)
+    }
+    due = {e["id"]: e for e in await store.get_retryable_webhooks(backoff_seconds=0)}
+    assert {ok_id, bad_id} <= set(due)
+    assert due[ok_id]["payload"] == {"n": 1} and due[ok_id]["tenant_id"] == tid
+
+    run_id = str(uuid.uuid4())
+    await store.create(run_id=run_id, workflow_id=wid, tenant_id=tid)
+    assert await store.mark_webhook_attempt(tenant_id=tid, event_id=ok_id, run_id=run_id) == (
+        "succeeded"
+    )
+    # A succeeded row is never retried or re-counted.
+    assert await store.mark_webhook_attempt(tenant_id=tid, event_id=ok_id, error="x") is None
+
+    statuses = [
+        await store.mark_webhook_attempt(tenant_id=tid, event_id=bad_id, error=f"e{i}")
+        for i in range(3)
+    ]
+    assert statuses == ["failed", "failed", "dead"]
+    remaining = {e["id"] for e in await store.get_retryable_webhooks(backoff_seconds=0)}
+    assert ok_id not in remaining and bad_id not in remaining
+
+    events, _ = await store.list_webhook_events(tid, wid)
+    by_id = {e["id"]: e for e in events}
+    assert by_id[ok_id]["status"] == "succeeded" and by_id[ok_id]["run_id"] == run_id
+    assert by_id[bad_id]["attempts"] == 3 and by_id[bad_id]["last_error"] == "e2"
+    # RLS: another tenant cannot mark (or see) this tenant's delivery.
+    assert (
+        await store.mark_webhook_attempt(tenant_id=seeded["tenant_b"], event_id=bad_id) is None
+    )
+
+
 # ── Idempotency, retry seeding, durable timer waits (real SQL) ────────────────
 
 

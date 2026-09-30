@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from app.observability.logging import get_logger
 from app.workflow.trigger_extract import extract_triggers
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/wf-hooks", tags=["workflow-webhooks"])
 
 
 @router.post("/{token}")
-async def fire_workflow_webhook(token: str, request: Request) -> dict[str, Any]:
+async def fire_workflow_webhook(token: str, request: Request) -> Any:
     """Fire a run for the workflow the signed token points at.
 
     The JSON body (if any) becomes the run ``inputs``, so a webhook can carry a
@@ -61,12 +62,65 @@ async def fire_workflow_webhook(token: str, request: Request) -> dict[str, Any]:
     # Fire the run tagged as webhook-triggered (not the generic "api" default),
     # passing the body as both inputs and the raw trigger payload so a
     # ``trigger_transform`` can map webhook fields into inputs if configured.
-    run_id = await runner.run(
-        workflow_id=workflow_id,
-        tenant_id=tenant_id,
-        inputs=inputs,
-        trigger_type="webhook",
-        trigger_payload=inputs,
-    )
+    try:
+        run_id = await runner.run(
+            workflow_id=workflow_id,
+            tenant_id=tenant_id,
+            inputs=inputs,
+            trigger_type="webhook",
+            trigger_payload=inputs,
+        )
+    except Exception as exc:
+        return await _dead_letter(
+            runner,
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            token=token,
+            payload=inputs,
+            exc=exc,
+        )
     _log.info("workflow_webhook_fired", workflow_id=workflow_id, run_id=run_id)
     return {"status": "accepted", "run_id": run_id, "workflow_id": workflow_id}
+
+
+async def _dead_letter(
+    runner: Any,
+    *,
+    tenant_id: str,
+    workflow_id: str,
+    token: str,
+    payload: dict[str, Any],
+    exc: BaseException,
+) -> JSONResponse:
+    """Keep a delivery whose run could not start, for the retry task.
+
+    Old bug: nothing wrote the dead-letter table, so such a delivery was lost.
+    If it cannot be stored either, answer 503 so the sender retries it.
+    """
+    import hashlib
+
+    error = str(exc) or type(exc).__name__
+    _log.error("workflow_webhook_run_start_failed", workflow_id=workflow_id, error=error)
+    run_store = getattr(runner, "_run_store", None)
+    recorder = getattr(run_store, "record_webhook_failure", None)
+    if recorder is None:
+        raise HTTPException(status_code=503, detail="Workflow run could not be started")
+    try:
+        event_id = await recorder(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            token_fingerprint=hashlib.sha256(token.encode()).hexdigest()[:16],
+            payload=payload,
+            error=error,
+        )
+    except Exception as dlq_exc:
+        _log.error("workflow_webhook_dead_letter_failed", error=str(dlq_exc))
+        raise HTTPException(status_code=503, detail="Workflow run could not be started") from exc
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "queued_for_retry",
+            "delivery_id": event_id,
+            "workflow_id": workflow_id,
+        },
+    )

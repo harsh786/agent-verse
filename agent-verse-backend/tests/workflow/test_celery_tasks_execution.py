@@ -207,12 +207,13 @@ def test_check_hitl_escalations_failure_fails_the_task(monkeypatch: pytest.Monke
 def test_retry_dead_letter_webhooks_retries_each_event(monkeypatch: pytest.MonkeyPatch) -> None:
     run_store = AsyncMock()
     run_store.get_retryable_webhooks.return_value = [
-        {"workflow_id": "wf1", "tenant_id": "t1", "payload": {"a": 1}},
-        {"workflow_id": "wf2", "tenant_id": "t2", "payload": {"b": 2}},
+        {"id": "e1", "workflow_id": "wf1", "tenant_id": "t1", "payload": {"a": 1}},
+        {"id": "e2", "workflow_id": "wf2", "tenant_id": "t2", "payload": {"b": 2}},
     ]
+    run_store.mark_webhook_attempt.return_value = "succeeded"
     runner = MagicMock()
     runner._run_store = run_store
-    runner.run = AsyncMock()
+    runner.run = AsyncMock(return_value="run-1")
     monkeypatch.setattr(ct, "_get_runner", lambda: runner)
 
     ct.retry_dead_letter_webhooks.run()
@@ -220,7 +221,16 @@ def test_retry_dead_letter_webhooks_retries_each_event(monkeypatch: pytest.Monke
     run_store.get_retryable_webhooks.assert_awaited_once_with(max_attempts=3)
     assert runner.run.await_count == 2
     runner.run.assert_any_await(
-        workflow_id="wf1", tenant_id="t1", inputs={"a": 1}, trigger_type="webhook"
+        workflow_id="wf1",
+        tenant_id="t1",
+        inputs={"a": 1},
+        trigger_type="webhook",
+        trigger_payload={"a": 1},
+    )
+    # Every attempt is recorded (WF-07), so no row is retried forever.
+    assert run_store.mark_webhook_attempt.await_count == 2
+    run_store.mark_webhook_attempt.assert_any_await(
+        tenant_id="t1", event_id="e1", run_id="run-1", error=None, max_attempts=3
     )
 
 
