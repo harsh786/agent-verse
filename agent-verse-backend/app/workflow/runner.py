@@ -417,9 +417,18 @@ class WorkflowRunner:
             current_status: str | None = None
             with contextlib.suppress(Exception):
                 current_status = await self._run_store.get_status(tenant_id, run_id)
+            # Also a crash-redelivered task (acks_late) for a run that already
+            # finished or suspended at an approval: re-invoking it would re-run
+            # the approval step (a duplicate approval) or replay finished work
+            # and fire the completion callback twice. The HITL resume uses
+            # execute_resume_fresh, and a timer wake re-queues as 'pending'.
             if current_status in (
                 WorkflowRunStatus.CANCELLED.value,
                 WorkflowRunStatus.PAUSED.value,
+                WorkflowRunStatus.COMPLETE.value,
+                WorkflowRunStatus.FAILED.value,
+                WorkflowRunStatus.TIMED_OUT.value,
+                WorkflowRunStatus.WAITING_HITL.value,
             ):
                 _log.info(
                     "workflow_run_start_skipped_terminal_or_paused",
