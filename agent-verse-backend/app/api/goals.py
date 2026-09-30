@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from app.agent.debate import MAX_DEBATE_ROUNDS
 from app.core.errors import NotFoundError
 from app.observability.logging import get_logger as _get_logger
 from app.orchestration.strategy_contracts import PatternLimits
@@ -56,8 +57,9 @@ class GoalRequest(BaseModel):
     dry_run: bool = False
     agent_id: str | None = None
     workflow_mode: str = "single_agent"
-    # Debate mode: number of debate rounds before consensus
-    debate_rounds: int = Field(default=2, ge=1, le=10)
+    # Debate mode: rounds (1 = propose + vote, 2 = + critiques). Bounded by what
+    # DebateOrchestrator runs (it used to clamp 4-10 to 3 silently).
+    debate_rounds: int = Field(default=2, ge=1, le=MAX_DEBATE_ROUNDS)
     # Persistence mode: keep trying until goal is achieved
     persistence_mode: bool = False
     persistence_config: PersistenceConfigRequest = Field(default_factory=PersistenceConfigRequest)

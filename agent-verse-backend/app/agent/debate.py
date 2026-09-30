@@ -8,12 +8,32 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+# The largest ``rounds`` the orchestrator runs (proposals, critiques, vote). The
+# API bounds ``debate_rounds`` with the same number so nothing is silently cut.
+MAX_DEBATE_ROUNDS = 3
+_AGENT_ID_RE = re.compile(r"agent_\d+")
+
+
+def parse_vote(raw: str, *, valid_ids: set[str]) -> str | None:
+    """The agent id a vote names, or None when it names no eligible agent.
+
+    Only ids in *valid_ids* (the other debaters) count; a reply that names none —
+    or only the voter itself — is not a vote. It used to be tallied verbatim, so
+    garbage could "win" and be reported as the winning agent.
+    """
+    for candidate in _AGENT_ID_RE.findall((raw or "").lower()):
+        if candidate in valid_ids:
+            return candidate
+    return None
 
 
 @dataclass
@@ -46,7 +66,7 @@ class DebateOrchestrator:
     ) -> None:
         self._provider = provider
         self._n_agents = max(2, min(n_agents, 5))  # 2-5 agents
-        self._rounds = max(1, min(rounds, 3))  # 1-3 rounds
+        self._rounds = max(1, min(rounds, MAX_DEBATE_ROUNDS))  # 1-3 rounds
 
     async def run(
         self,
@@ -120,12 +140,22 @@ class DebateOrchestrator:
         async def vote(voter: AgentProposal) -> str:
             from app.providers.base import CompletionRequest, Message
 
-            proposal_list = "\n".join(
-                [
-                    f"{i + 1}. [{p.agent_id}] {p.proposal}"
-                    for i, p in enumerate(proposals)
-                    if p.agent_id != voter.agent_id
+            # Each candidate proposal is shown with the critiques the other
+            # debaters wrote about it — they used to be generated and then never
+            # shown to anyone, so round 2 could not influence the vote.
+            def _entry(i: int, p: AgentProposal) -> str:
+                critiques = [
+                    f"   - {critic.agent_id}: {critic.critique_of[p.agent_id]}"
+                    for critic in proposals
+                    if p.agent_id in critic.critique_of
                 ]
+                block = f"{i + 1}. [{p.agent_id}] {p.proposal}"
+                if critiques:
+                    block += "\n   Critiques:\n" + "\n".join(critiques)
+                return block
+
+            proposal_list = "\n".join(
+                _entry(i, p) for i, p in enumerate(proposals) if p.agent_id != voter.agent_id
             )
             req = CompletionRequest(
                 messages=[
@@ -143,20 +173,30 @@ class DebateOrchestrator:
             resp = await self._provider.complete(req)
             return resp.content.strip()
 
-        votes = await asyncio.gather(*[vote(p) for p in proposals])
+        raw_votes = await asyncio.gather(*[vote(p) for p in proposals])
 
-        # Tally votes
-        from collections import Counter
+        # Tally only valid votes: a named other debater. Invalid replies are
+        # discarded (and counted) instead of being tallied as if they were ids.
+        valid_votes: list[str] = []
+        for voter, raw in zip(proposals, raw_votes, strict=True):
+            eligible = {p.agent_id for p in proposals if p.agent_id != voter.agent_id}
+            choice = parse_vote(raw, valid_ids=eligible)
+            if choice is not None:
+                valid_votes.append(choice)
+        invalid_votes = len(raw_votes) - len(valid_votes)
+        if invalid_votes:
+            logger.warning("debate_invalid_votes", invalid=invalid_votes, total=len(raw_votes))
 
-        tally = Counter(votes)
-        winning_agent_id = tally.most_common(1)[0][0] if tally else agent_ids[0]
+        tally = Counter(valid_votes)
+        for p in proposals:
+            p.votes_received = tally.get(p.agent_id, 0)
+        # Winner = most valid votes (first proposal on a tie / no valid votes);
+        # the reported agent is always the proposal actually chosen.
+        winner = max(proposals, key=lambda p: p.votes_received)
+        winning_agent_id = winner.agent_id
 
-        # Find winning proposal
-        winner = next((p for p in proposals if p.agent_id == winning_agent_id), proposals[0])
-        winner.votes_received = tally.get(winning_agent_id, 0)
-
-        # Consensus level = votes for winner / total votes
-        consensus = winner.votes_received / max(len(votes), 1)
+        # Consensus level = valid votes for the winner / all valid votes.
+        consensus = winner.votes_received / len(valid_votes) if valid_votes else 0.0
 
         result = DebateResult(
             winning_proposal=winner.proposal,
@@ -171,6 +211,7 @@ class DebateOrchestrator:
                 "type": "debate_complete",
                 "winner": winning_agent_id,
                 "votes": winner.votes_received,
+                "invalid_votes": invalid_votes,
                 "consensus": round(consensus, 2),
             }
         )
