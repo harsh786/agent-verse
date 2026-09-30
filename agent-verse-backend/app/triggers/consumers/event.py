@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -40,6 +41,11 @@ async def publish_trigger_event(
     in the client payload (``tenant_id`` / ``tenant_plan`` / ``event_channel``)
     are dropped: consumers resolve the plan from the tenant record."""
     body = {**strip_reserved(payload), "tenant_id": tenant_id, "event_channel": event_channel}
+    # Every event gets an id (the client's, else a fresh one): replicas key
+    # shared condition state and dispatcher idempotency on it, and two
+    # identical payloads are still two events (TRG-19).
+    if not str(body.get("event_id", "") or ""):
+        body["event_id"] = uuid.uuid4().hex
     result = redis.publish(event_channel_name(event_channel), json.dumps(body))
     if hasattr(result, "__await__"):
         await result

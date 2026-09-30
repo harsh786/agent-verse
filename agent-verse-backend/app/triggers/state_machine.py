@@ -107,6 +107,9 @@ class StateMachine:
 
         event = {
             "tenant_id": tenant_id,
+            # One id per committed transition: consumers key shared state and
+            # dispatcher idempotency on it (TRG-19).
+            "event_id": uuid.uuid4().hex,
             "event_type": "state_machine.transition",
             "state_machine_id": machine_id,
             "entity_id": entity_id,

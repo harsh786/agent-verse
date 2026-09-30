@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from types import SimpleNamespace
 from typing import Any
 
@@ -116,6 +117,8 @@ async def publish_conversational_event(
 ) -> None:
     """Publish a normalized conversational event onto the EVENT bus (tenant stamped)."""
     body = {**strip_reserved(event), "tenant_id": tenant_id, "conv": True}
+    if not str(body.get("event_id", "") or ""):
+        body["event_id"] = uuid.uuid4().hex  # replicas key state + idempotency on it
     result = redis.publish(event_channel_name(CONVERSATIONAL_CHANNEL), json.dumps(body))
     if hasattr(result, "__await__"):
         await result

@@ -59,6 +59,7 @@ def test_transition_publishes_on_the_trigger_event_bus() -> None:
     assert r.json()["trigger_event_published"] is True
     (call,) = [c for c in redis.publish.await_args_list if c.args[0] == STATE_TRANSITION_CHANNEL]
     ev = json.loads(call.args[1])
+    assert ev.pop("event_id")  # one id per committed transition (TRG-19)
     assert ev == {
         "tenant_id": CTX.tenant_id, "event_type": "state_machine.transition",
         "state_machine_id": mid, "entity_id": "o-1", "state": "paid",

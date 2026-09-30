@@ -20,8 +20,11 @@ TriggerDispatcher.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 from app.triggers.condition.evaluator import (
@@ -43,6 +46,10 @@ _FAMILY_TYPES = (
     "state_transition",
     "window_aggregate",
 )
+
+
+# Family D types whose evaluation depends on earlier events (shared in Redis).
+_STATEFUL_TYPES = frozenset({"counter_threshold", "window_aggregate", "state_transition"})
 
 
 class ConditionTriggerConsumer:
@@ -128,10 +135,130 @@ class ConditionTriggerConsumer:
                     continue
                 trigger_id = str(getattr(spec, "trigger_id", "") or id(trig))
                 try:
-                    if self._should_fire(ttype, spec, trigger_id, payload, index):
+                    if await self._should_fire_async(
+                        ttype, spec, trigger_id, payload, index, tenant_id
+                    ):
                         await self._dispatch(spec, payload, tenant_id)
                 except Exception as exc:
                     _log.warning("condition_eval_error type=%s: %s", ttype, exc)
+
+    # ── Shared (Redis) evaluator state — TRG-19 ───────────────────────────────
+    # Every replica receives every event (pub/sub fan-out) and used to keep
+    # counters / windows / last states in its own memory, so thresholds fired
+    # once per replica at different events, or never after a restart. With Redis
+    # the state is keyed by tenant + trigger, and each (trigger, event) pair is
+    # CLAIMED by exactly one replica (SET NX on the event id), which then applies
+    # it — so N replicas count every event once.
+
+    _STATE_TTL_S = 7 * 24 * 3600
+
+    def _stateful_redis(self) -> Any:
+        """The Redis to keep evaluator state in, or None (in-memory fallback)."""
+        redis = self._redis
+        return redis if redis is not None and hasattr(redis, "pipeline") else None
+
+    @staticmethod
+    def _event_member(payload: dict) -> str:
+        event_id = str(payload.get("event_id", "") or "")
+        if event_id:
+            return event_id
+        return (
+            "h:"
+            + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+        )
+
+    async def _claim(self, redis: Any, tenant_id: str, trigger_id: str, member: str) -> bool:
+        key = f"trigger:cond:seen:{tenant_id}:{trigger_id}:{member}"
+        return bool(await redis.set(key, "1", nx=True, ex=self._STATE_TTL_S))
+
+    async def _should_fire_async(
+        self,
+        ttype: str,
+        spec: Any,
+        trigger_id: str,
+        payload: dict,
+        index: dict[str, Any],
+        tenant_id: str,
+    ) -> bool:
+        redis = self._stateful_redis()
+        if redis is None or ttype not in _STATEFUL_TYPES:
+            return self._should_fire(ttype, spec, trigger_id, payload, index)
+        member = self._event_member(payload)
+        if ttype == "counter_threshold":
+            threshold = int(getattr(spec, "counter_threshold", 0) or 0)
+            if threshold <= 0 or not await self._claim(redis, tenant_id, trigger_id, member):
+                return False
+            window = int(getattr(spec, "counter_window_secs", 3600) or 3600)
+            key = (
+                f"trigger:cond:counter:{tenant_id}:{trigger_id}:"
+                f"{getattr(spec, 'counter_key', '') or 'default'}"
+            )
+            now = time.time()
+            async with redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(key, {member: now}, nx=True)
+                pipe.zremrangebyscore(key, "-inf", now - window)
+                pipe.zcard(key)
+                pipe.expire(key, window)
+                _, _, count, _ = await pipe.execute()
+            # Exactly one event can take the count to the threshold (the add and
+            # the count are atomic); it fires and removes the batch it completed.
+            if int(count) == threshold:
+                await redis.zremrangebyrank(key, 0, threshold - 1)
+                return True
+            return False
+        if ttype == "window_aggregate":
+            field = getattr(spec, "window_field", "") or ""
+            raw = extract_path(payload, field) if field else None
+            try:
+                value = float(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return False
+            if not await self._claim(redis, tenant_id, trigger_id, member):
+                return False
+            window = int(getattr(spec, "window_seconds", 300) or 300)
+            key = f"trigger:cond:window:{tenant_id}:{trigger_id}"
+            now = time.time()
+            async with redis.pipeline(transaction=True) as pipe:
+                pipe.zadd(key, {f"{member}|{value!r}": now}, nx=True)
+                pipe.zremrangebyscore(key, "-inf", now - window)
+                pipe.zrange(key, 0, -1)
+                pipe.expire(key, window)
+                _, _, members, _ = await pipe.execute()
+            values = []
+            for item in members:
+                text = item.decode() if isinstance(item, bytes) else str(item)
+                with contextlib.suppress(ValueError):
+                    values.append(float(text.rsplit("|", 1)[1]))
+            if not values:
+                return False
+            agg = WindowAggregateEvaluator.AGGREGATIONS.get(
+                getattr(spec, "window_aggregation", "sum") or "sum",
+                WindowAggregateEvaluator.AGGREGATIONS["avg"],
+            )
+            return bool(agg(values) > float(getattr(spec, "window_threshold", 0.0) or 0.0))  # type: ignore[operator]
+        # state_transition
+        current = str(payload.get("state", "") or "")
+        if not current:
+            return False
+        machine = getattr(spec, "state_machine_id", "") or ""
+        if machine and str(payload.get("state_machine_id", "") or "") != machine:
+            return False
+        if not await self._claim(redis, tenant_id, trigger_id, member):
+            return False
+        key = f"trigger:cond:state:{tenant_id}:{trigger_id}"
+        entity = str(payload.get("entity_id", "") or "")
+        tracked_raw = await redis.hget(key, entity)
+        await redis.hset(key, entity, current)
+        await redis.expire(key, self._STATE_TTL_S)
+        tracked = tracked_raw.decode() if isinstance(tracked_raw, bytes) else tracked_raw
+        prev = str(payload.get("from_state") or "") or (tracked or None)
+        if prev == current:
+            return False
+        to_state = getattr(spec, "to_state", "") or ""
+        from_state = getattr(spec, "from_state", "") or ""
+        if to_state and current != to_state:
+            return False
+        return not (from_state and prev != from_state)
 
     async def _dispatch(self, spec: Any, payload: dict, tenant_id: str) -> None:
         # Plan from the tenant record — never the (partly client-supplied) event.
