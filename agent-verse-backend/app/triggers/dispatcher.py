@@ -405,15 +405,27 @@ class TriggerDispatcher:
                     payload,
                 )
                 goal_id = None
+                enqueue_failed = True
+            else:
+                enqueue_failed = False
 
             # ── Step 12: Persist TriggerEvent ─────────────────────────────────
             processing_ms = int(time.monotonic() * 1000 - start_ms)
+            event_id = str(uuid.uuid4())
+            # A firing whose goal could not be enqueued has not run. Its Redis
+            # claim is released and its audit row is stored under its own key
+            # (like skip rows), so the durable dedup gate — which matches the
+            # real key in trigger_events — does not drop the redelivery (TRG-14).
+            persisted_key = idempotency_key
+            if enqueue_failed:
+                await self._release_dedup(idempotency_key, tenant_id)
+                persisted_key = f"{idempotency_key}:failed:{event_id}"
             event = TriggerEvent(
-                event_id=str(uuid.uuid4()),
+                event_id=event_id,
                 tenant_id=tenant_id,
                 trigger_id=trigger_id,
                 trigger_type=str(trigger_spec.trigger_type),
-                idempotency_key=idempotency_key,
+                idempotency_key=persisted_key,
                 fired_at=datetime.now(UTC),
                 payload=payload,
                 # Folded into an identical goal already in progress: no goal was

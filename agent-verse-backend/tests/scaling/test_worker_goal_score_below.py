@@ -36,14 +36,30 @@ class _SyncRedis:
 
 
 class _DedupRedis:
+    """SETNX for dedup plus the counters the (fail-closed) rate limit/bulkhead use."""
+
     def __init__(self) -> None:
-        self.keys: set[str] = set()
+        self.keys: dict[str, Any] = {}
 
     async def set(self, key: str, value: Any, ex: int = 0, nx: bool = False) -> Any:
         if nx and key in self.keys:
             return None
-        self.keys.add(key)
+        self.keys[key] = value
         return True
+
+    async def incr(self, key: str) -> int:
+        self.keys[key] = int(self.keys.get(key, 0)) + 1
+        return int(self.keys[key])
+
+    async def decr(self, key: str) -> int:
+        self.keys[key] = int(self.keys.get(key, 0)) - 1
+        return int(self.keys[key])
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        return True
+
+    async def delete(self, *keys: str) -> int:
+        return sum(1 for k in keys if self.keys.pop(k, None) is not None)
 
 
 class _GoalService:

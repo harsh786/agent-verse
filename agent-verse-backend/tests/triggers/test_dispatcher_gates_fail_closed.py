@@ -100,6 +100,27 @@ async def test_rate_limited_fire_can_be_redelivered_once_the_window_allows_it() 
     gs.create_goal.assert_awaited_once()
 
 
+async def test_failed_goal_enqueue_does_not_block_the_redelivery() -> None:
+    """A firing whose goal could not be enqueued has not run: neither the Redis
+    claim nor the durable trigger_events row may dedup its redelivery."""
+    d, gs = _dispatcher(_Redis())
+    d._rate_limiter.check = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    gs.create_goal = AsyncMock(side_effect=[RuntimeError("queue down"), {"goal_id": "g2"}])
+    persisted: list[Any] = []
+
+    async def _persist(event: Any) -> None:
+        persisted.append(event)
+
+    d._persist_event = _persist  # type: ignore[method-assign]
+    failed = await d.dispatch(_spec(max_per_hour=0), {"a": 1}, CTX, message_id="m5")
+    assert failed.goal_created is False
+    retry = await d.dispatch(_spec(max_per_hour=0), {"a": 1}, CTX, message_id="m5")
+    assert retry.goal_created is True and retry.goal_id == "g2"
+    # The failure row is audited under its own key, never the firing's real key.
+    assert persisted[0].idempotency_key != retry.idempotency_key
+    assert persisted[0].idempotency_key.startswith(retry.idempotency_key + ":failed:")
+
+
 async def test_a_real_duplicate_is_still_deduped() -> None:
     d, gs = _dispatcher(_Redis())
     d._rate_limiter.check = AsyncMock(return_value=True)  # type: ignore[method-assign]
