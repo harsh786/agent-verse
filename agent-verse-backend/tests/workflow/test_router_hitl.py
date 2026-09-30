@@ -36,13 +36,13 @@ def make_app(gateway: MagicMock) -> TestClient:
         plan = PlanTier.FREE
         api_key = "test-key"
         api_key_id = "key-1"
+        roles = ("approver",)
         limits = PlanLimits(60, 25, 3, 2, 1, 3600)
 
     @app.middleware("http")
     async def inject_state(request: Request, call_next):
         request.app.state.hitl_workflow_gateway = gateway
         request.app.state.tenant_context = FakeTenant()
-        request.app.state.current_user_id = "user-1"
         return await call_next(request)
 
     app.include_router(router, prefix="/api/v1")

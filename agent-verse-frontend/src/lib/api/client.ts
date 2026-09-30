@@ -3162,6 +3162,12 @@ export interface WEApprovalRequest {
   deadline_at: string | null;
   created_at: string;
   note?: string;
+  assigned_to?: string | null;
+  assigned_role?: string | null;
+  /** Whether the current caller may decide it (server-computed). */
+  can_decide?: boolean;
+  /** Deciding would be an audited admin override. */
+  requires_override?: boolean;
 }
 
 export interface WEStepResult {

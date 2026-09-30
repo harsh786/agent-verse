@@ -387,4 +387,49 @@ describe('ApprovalInboxPage', () => {
     expect(screen.queryByLabelText(/pending$/)).not.toBeInTheDocument();
     expect(screen.getByText((_, element) => element?.textContent === 'Avg resolution: —')).toBeInTheDocument();
   });
+
+  // WF-02: approvals assigned to someone else are shown but not decidable.
+  it('disables decisions on a request not assigned to the caller and shows the assignee', async () => {
+    vi.mocked(workflowEngineApi.listApprovals).mockResolvedValue({
+      items: [{ ...mockApprovals[0], assigned_to: 'key-alice', can_decide: false }],
+      total: 1,
+    });
+    renderPage();
+
+    const card = await screen.findByRole('article');
+    expect(within(card).getByTestId('assignment')).toHaveTextContent('Assigned to key-alice');
+    expect(within(card).getByText(/not assigned to you/i)).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: /approve request/i })).toBeDisabled();
+    expect(within(card).getByRole('button', { name: /reject request/i })).toBeDisabled();
+    expect(within(card).getByRole('checkbox')).toBeDisabled();
+  });
+
+  it('flags an admin override on a request assigned to someone else', async () => {
+    vi.mocked(workflowEngineApi.listApprovals).mockResolvedValue({
+      items: [
+        { ...mockApprovals[0], assigned_to: 'key-alice', can_decide: true, requires_override: true },
+      ],
+      total: 1,
+    });
+    renderPage();
+
+    const card = await screen.findByRole('article');
+    expect(within(card).getByText(/admin override/i)).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: /approve request/i })).toBeEnabled();
+  });
+
+  it('shows a "not your approval" toast when the server answers 403', async () => {
+    vi.mocked(workflowEngineApi.listApprovals).mockResolvedValue({
+      items: [mockApprovals[0]],
+      total: 1,
+    });
+    vi.mocked(workflowEngineApi.decideApproval).mockRejectedValue(
+      Object.assign(new Error('Forbidden'), { status: 403 }),
+    );
+    renderPage();
+
+    const card = await screen.findByRole('article');
+    fireEvent.click(within(card).getByRole('button', { name: /approve request/i }));
+    expect(await screen.findByText('Not your approval')).toBeInTheDocument();
+  });
 });

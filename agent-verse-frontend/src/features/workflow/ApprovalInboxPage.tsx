@@ -18,6 +18,7 @@ import {
   Loader2, RefreshCw, ChevronDown,
 } from 'lucide-react';
 import { workflowEngineApi } from '../../lib/api/client';
+import { useWorkflowToast, WorkflowToastStack } from './components/Toast';
 import { PRIORITY_COLORS } from './design/tokens';
 import { nodeBounce, slaPulse, swipeTint, springs } from './design/motion';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
@@ -79,6 +80,18 @@ interface ApprovalRequest {
   deadline_at: string | null;
   created_at: string;
   note?: string;
+  assigned_to?: string | null;
+  assigned_role?: string | null;
+  /** Whether the current caller may decide it (server-computed). */
+  can_decide?: boolean;
+  /** Deciding would be an audited admin override of someone else's approval. */
+  requires_override?: boolean;
+}
+
+function assigneeLabel(req: ApprovalRequest): string | null {
+  if (req.assigned_to) return req.assigned_to;
+  if (req.assigned_role) return `role: ${req.assigned_role}`;
+  return null;
 }
 
 function ApprovalCard({
@@ -96,6 +109,10 @@ function ApprovalCard({
 }) {
   const [note, setNote] = useState('');
   const [showNote, setShowNote] = useState(false);
+  // Older backends omit can_decide — treat that as decidable (server enforces).
+  const locked = req.can_decide === false;
+  const blocked = isDeciding || locked;
+  const assignee = assigneeLabel(req);
 
   return (
     <motion.article
@@ -119,6 +136,7 @@ function ApprovalCard({
               type="checkbox"
               checked={selected}
               onChange={() => onSelect(req.request_id)}
+              disabled={locked}
               aria-label={`Select request ${req.request_id}`}
               className="rounded border-white/20 bg-[#0F1826]/10 text-sky-500
                          focus:ring-sky-500 focus:ring-offset-[#0F1117]"
@@ -137,6 +155,16 @@ function ApprovalCard({
           <span className="truncate max-w-[150px] font-mono">{req.run_id.slice(0, 12)}…</span>
           <span className="ml-auto">{new Date(req.created_at).toLocaleTimeString()}</span>
         </div>
+
+        {(assignee || locked || req.requires_override) && (
+          <p className="text-xs mb-3 text-[#F1F5F9]/50" data-testid="assignment">
+            {assignee && <>Assigned to <span className="font-mono">{assignee}</span></>}
+            {locked && <span className="ml-2 text-amber-400">Not assigned to you</span>}
+            {!locked && req.requires_override && (
+              <span className="ml-2 text-amber-400">Admin override (audited)</span>
+            )}
+          </p>
+        )}
 
         {/* Context items */}
         {req.context?.length > 0 && (
@@ -174,7 +202,7 @@ function ApprovalCard({
               <button
                 key={action.id}
                 onClick={() => onDecide(req.request_id, action.id, note || undefined)}
-                disabled={isDeciding}
+                disabled={blocked}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium
                   transition-colors disabled:opacity-50 ${
                     action.id === 'approve' || action.id === 'approved'
@@ -196,7 +224,7 @@ function ApprovalCard({
                 whileTap={{ scale: 0.96 }}
                 transition={springs.snappy}
                 onClick={() => onDecide(req.request_id, 'approved', note || undefined)}
-                disabled={isDeciding}
+                disabled={blocked}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600/80
                            hover:bg-emerald-600 text-[#F1F5F9] text-xs font-medium transition-colors
                            disabled:opacity-50"
@@ -210,7 +238,7 @@ function ApprovalCard({
                 whileTap={{ scale: 0.96 }}
                 transition={springs.snappy}
                 onClick={() => onDecide(req.request_id, 'rejected', note || undefined)}
-                disabled={isDeciding}
+                disabled={blocked}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-600/60
                            hover:bg-red-600/80 text-[#F1F5F9] text-xs font-medium transition-colors
                            disabled:opacity-50"
@@ -245,6 +273,7 @@ export default function ApprovalInboxPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [priorityFilter, setPriorityFilter] = useState('');
   const [decidingId, setDecidingId] = useState<string | null>(null);
+  const toast = useWorkflowToast();
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ['workflow-engine', 'approvals', priorityFilter],
@@ -269,6 +298,15 @@ export default function ApprovalInboxPage() {
       qc.invalidateQueries({ queryKey: ['workflow-engine', 'approvals'] });
       qc.invalidateQueries({ queryKey: ['workflow-engine', 'approval-stats'] });
     },
+    onError: (err: unknown) => {
+      const status = (err as { status?: number } | null)?.status;
+      if (status === 403) {
+        toast.error('Not your approval', 'This request is assigned to someone else.');
+      } else {
+        toast.error('Decision failed', err instanceof Error ? err.message : undefined);
+      }
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'approvals'] });
+    },
     onSettled: () => setDecidingId(null),
   });
 
@@ -281,14 +319,16 @@ export default function ApprovalInboxPage() {
     });
   };
 
+  const items = (data?.items ?? []) as ApprovalRequest[];
+
   const handleBulkDecide = (action: string) => {
+    // Only requests the caller may decide are sent (the server re-checks).
+    const decidable = new Set(items.filter((r) => r.can_decide !== false).map((r) => r.request_id));
     for (const id of selected) {
-      decideMutation.mutate({ requestId: id, action });
+      if (decidable.has(id)) decideMutation.mutate({ requestId: id, action });
     }
     setSelected(new Set());
   };
-
-  const items = (data?.items ?? []) as ApprovalRequest[];
 
   return (
     <JARVISPageShell>
@@ -394,6 +434,7 @@ export default function ApprovalInboxPage() {
           </AnimatePresence>
         )}
       </main>
+      <WorkflowToastStack toasts={toast.toasts} onDismiss={toast.dismiss} />
     </JARVISStagger>
     </JARVISPageShell>
   );

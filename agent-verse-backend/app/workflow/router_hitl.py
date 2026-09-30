@@ -41,7 +41,7 @@ def _svc(request: Request) -> Any:
     return svc
 
 
-def _tenant_id(request: Request) -> str:
+def _caller(request: Request) -> Any:
     # Prefer the per-request tenant set by TenantMiddleware; fall back to the
     # app-state context (used in some test harnesses). Nothing sets
     # app.state.tenant_context in production, so the per-request path is normal.
@@ -50,11 +50,113 @@ def _tenant_id(request: Request) -> str:
         tenant = getattr(request.app.state, "tenant_context", None)
     if tenant is None:
         raise HTTPException(status_code=401, detail="Tenant context not resolved")
-    return tenant.tenant_id
+    return tenant
+
+
+def _tenant_id(request: Request) -> str:
+    return str(_caller(request).tenant_id)
 
 
 def _user_id(request: Request) -> str:
-    return getattr(request.app.state, "current_user_id", "anonymous")
+    """The calling principal (its API key id — SSO users map to their key).
+
+    Old bug: this read a process-global ``app.state.current_user_id`` that
+    nothing set, so every caller was "anonymous" and no decision could be
+    attributed to (or restricted to) a real reviewer.
+    """
+    return str(getattr(_caller(request), "api_key_id", "") or "anonymous")
+
+
+def _roles(request: Request) -> frozenset[str]:
+    """The caller's roles, expanded through the RBAC hierarchy."""
+    from app.tenancy.context import PlanTier, TenantContext
+    from app.tenancy.rbac import effective_roles
+
+    raw = tuple(getattr(_caller(request), "roles", ()) or ())
+    return effective_roles(
+        TenantContext(tenant_id="", plan=PlanTier.FREE, api_key_id="", roles=raw)
+    )
+
+
+def _authorize(request: Request, req: Any, verb: str) -> None:
+    """403 unless the caller may act on approval ``req``; audit admin overrides."""
+    from app.workflow.hitl_extension import authorize_reviewer
+
+    principal = _user_id(request)
+    auth = authorize_reviewer(req, principal, _roles(request))
+    if not auth.allowed:
+        _log.info(
+            "hitl_action_denied",
+            request_id=req.request_id,
+            verb=verb,
+            principal=principal,
+            reason=auth.reason,
+        )
+        raise HTTPException(
+            status_code=403, detail=f"Not your approval to {verb}: {auth.reason}"
+        )
+    if auth.override:
+        _audit_override(request, req, verb, principal, auth.reason)
+
+
+def _audit_override(request: Request, req: Any, verb: str, principal: str, reason: str) -> None:
+    _log.warning(
+        "hitl_admin_override",
+        request_id=req.request_id,
+        verb=verb,
+        principal=principal,
+        reason=reason,
+    )
+    audit_log = getattr(request.app.state, "audit_log", None)
+    if audit_log is None:
+        return
+    try:
+        from app.governance.audit import AuditEvent
+        from app.governance.permissions import ActionLevel
+
+        audit_log.record(
+            AuditEvent(
+                goal_id=str(req.run_id or req.request_id),
+                tool_name="workflow.approval.admin_override",
+                action_level=ActionLevel.ALLOW_LOG,
+                outcome=verb,
+                step_id=str(req.step_id or ""),
+                approver=principal,
+                api_key_id=principal,
+                note=f"request_id={req.request_id}; {reason}",
+            ),
+            tenant_ctx=_caller(request),
+        )
+    except Exception as exc:  # auditing must never break the call path
+        _log.warning("hitl_admin_override_audit_failed", error=str(exc))
+
+
+async def _load_for_action(request: Request, request_id: str, verb: str) -> Any:
+    req = await _svc(request).get_request(request_id, _tenant_id(request))
+    if req is None:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    _authorize(request, req, verb)
+    return req
+
+
+async def _visible_pending(request: Request, *, priority: str | None = None) -> list[Any]:
+    """Pending approvals the caller may act on (an admin sees the whole tenant)."""
+    from app.workflow.hitl_extension import authorize_reviewer
+
+    principal, roles = _user_id(request), _roles(request)
+    items, _ = await _svc(request).list_pending(
+        tenant_id=_tenant_id(request), priority=priority, page=1, per_page=100_000
+    )
+    return [r for r in items if authorize_reviewer(r, principal, roles).allowed]
+
+
+def _item(request: Request, req: Any) -> dict[str, Any]:
+    """An approval plus whether THIS caller may act on it (drives the inbox's
+    buttons) and whether doing so would be an audited admin override."""
+    from app.workflow.hitl_extension import authorize_reviewer
+
+    auth = authorize_reviewer(req, _user_id(request), _roles(request))
+    return {**req.__dict__, "can_decide": auth.allowed, "requires_override": auth.override}
 
 
 # ---------------------------------------------------------------------------
@@ -96,20 +198,17 @@ async def list_approvals(
     per_page: int = Query(20, ge=1, le=100),
     priority: str | None = Query(None),
 ) -> dict[str, Any]:
-    """List pending + recent approval requests for the current user."""
-    svc = _svc(request)
-    tenant_id = _tenant_id(request)
-    user_id = _user_id(request)
-    items, total = await svc.list_pending(
-        tenant_id=tenant_id,
-        assigned_to=user_id,
-        priority=priority,
-        page=page,
-        per_page=per_page,
-    )
+    """List the pending approvals the caller may act on: assigned to them, to
+    one of their roles, or unassigned for an approver (an admin sees all).
+
+    Each item carries ``can_decide`` / ``requires_override`` for the caller.
+    Old bug: this filtered on ``assigned_to == "anonymous"`` for every caller,
+    so role-assigned and unassigned approvals never reached anyone's inbox."""
+    visible = await _visible_pending(request, priority=priority)
+    start = (page - 1) * per_page
     return {
-        "items": [r.__dict__ for r in items],
-        "total": total,
+        "items": [_item(request, r) for r in visible[start : start + per_page]],
+        "total": len(visible),
         "page": page,
         "per_page": per_page,
     }
@@ -129,19 +228,20 @@ async def get_approval(request_id: str, request: Request) -> dict[str, Any]:
     req = await svc.get_request(request_id, _tenant_id(request))
     if req is None:
         raise HTTPException(status_code=404, detail="Approval request not found")
-    return req.__dict__
+    return _item(request, req)
 
 
 @router.post("/{request_id}/decide", status_code=status.HTTP_200_OK)
 async def decide_approval(request_id: str, body: DecideRequest, request: Request) -> dict[str, Any]:
-    """Submit a reviewer decision."""
+    """Submit a reviewer decision (only the assignee, a member of the assigned
+    role, or an admin — whose override is audited)."""
     svc = _svc(request)
-    user_id = _user_id(request)
+    await _load_for_action(request, request_id, "decide")
     try:
         req = await svc.decide(
             request_id=request_id,
             action=body.action,
-            actor_id=user_id,
+            actor_id=_user_id(request),
             note=body.note,
             form_data=body.form_data or None,
             tenant_id=_tenant_id(request),
@@ -156,11 +256,11 @@ async def delegate_approval(
     request_id: str, body: DelegateRequest, request: Request
 ) -> dict[str, Any]:
     svc = _svc(request)
-    user_id = _user_id(request)
+    await _load_for_action(request, request_id, "delegate")
     try:
         req = await svc.delegate(
             request_id=request_id,
-            from_user=user_id,
+            from_user=_user_id(request),
             to_user=body.to_user_id,
             note=body.note,
             tenant_id=_tenant_id(request),
@@ -173,10 +273,10 @@ async def delegate_approval(
 @router.post("/{request_id}/escalate", status_code=status.HTTP_200_OK)
 async def escalate_approval(request_id: str, request: Request) -> dict[str, Any]:
     svc = _svc(request)
-    user_id = _user_id(request)
+    await _load_for_action(request, request_id, "escalate")
     try:
         req = await svc.escalate(
-            request_id=request_id, actor_id=user_id, tenant_id=_tenant_id(request)
+            request_id=request_id, actor_id=_user_id(request), tenant_id=_tenant_id(request)
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -185,18 +285,40 @@ async def escalate_approval(request_id: str, request: Request) -> dict[str, Any]
 
 @router.post("/bulk-decide", status_code=status.HTTP_200_OK)
 async def bulk_decide(body: BulkDecideRequest, request: Request) -> dict[str, Any]:
-    """Bulk approve or reject multiple requests."""
+    """Bulk approve or reject. Requests the caller may not decide are skipped
+    and reported in ``denied``; unknown ids in ``not_found``."""
     svc = _svc(request)
-    user_id = _user_id(request)
-    results = await svc.bulk_decide(
-        request_ids=body.request_ids,
-        action=body.action,
-        actor_id=user_id,
-        note=body.note,
+    tenant_id = _tenant_id(request)
+    allowed: list[str] = []
+    denied: list[str] = []
+    not_found: list[str] = []
+    for rid in body.request_ids:
+        req = await svc.get_request(rid, tenant_id)
+        if req is None:
+            not_found.append(rid)
+            continue
+        try:
+            _authorize(request, req, "decide")
+        except HTTPException:
+            denied.append(rid)
+            continue
+        allowed.append(rid)
+    results = (
+        await svc.bulk_decide(
+            request_ids=allowed,
+            action=body.action,
+            actor_id=_user_id(request),
+            note=body.note,
+            tenant_id=tenant_id,
+        )
+        if allowed
+        else []
     )
     return {
         "decided": len(results),
         "request_ids": [r.request_id for r in results],
+        "denied": denied,
+        "not_found": not_found,
     }
 
 
@@ -265,21 +387,18 @@ async def delegate_all(body: DelegateAllRequest, request: Request) -> dict[str, 
 @router.get("/stream")
 async def stream_approvals(request: Request) -> StreamingResponse:
     """SSE stream of new approval inbox events for the current user."""
-    svc = _svc(request)
-    tenant_id = _tenant_id(request)
-    user_id = _user_id(request)
+    _svc(request)  # 503 up front when the gateway is missing
 
     async def event_gen() -> AsyncGenerator[str, None]:
         import asyncio
         import json as _json
 
-        # Poll every 5 seconds for new pending requests
+        # Poll every 5 seconds for new pending requests the caller may act on
+        # (same visibility as GET /approvals).
         seen: set[str] = set()
         for _ in range(60):  # max 5 min stream
             await asyncio.sleep(5)
-            items, _ = await svc.list_pending(
-                tenant_id=tenant_id, assigned_to=user_id, page=1, per_page=50
-            )
+            items = await _visible_pending(request)
             for item in items:
                 if item.request_id not in seen:
                     seen.add(item.request_id)

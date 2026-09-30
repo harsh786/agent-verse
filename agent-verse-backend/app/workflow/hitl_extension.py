@@ -115,6 +115,48 @@ class WorkflowHITLRequest:
 _SLA_ACTOR = "system:sla"
 
 
+@dataclass(frozen=True)
+class ReviewerAuthorization:
+    """Whether a caller may act (decide / delegate / escalate) on an approval.
+
+    ``override`` is True when only the caller's ``admin`` role allowed it — the
+    approval was assigned to someone else — so the caller must audit it.
+    """
+
+    allowed: bool
+    override: bool = False
+    reason: str = ""
+
+
+def authorize_reviewer(
+    req: WorkflowHITLRequest, principal: str, roles: frozenset[str]
+) -> ReviewerAuthorization:
+    """Decide whether ``principal`` (with expanded ``roles``) may act on ``req``.
+
+    * assigned to a user → only that user;
+    * assigned to a role (no user) → members of that role;
+    * unassigned → any ``approver``;
+    * ``admin`` may always act, flagged as an override when not eligible.
+
+    Old bug: nothing was checked, so any user or API key of the tenant could
+    approve or reject an approval assigned to someone else.
+    """
+    if req.assigned_to:
+        eligible = bool(principal) and principal == req.assigned_to
+        why = f"assigned to {req.assigned_to!r}"
+    elif req.assigned_role:
+        eligible = req.assigned_role in roles
+        why = f"assigned to role {req.assigned_role!r}"
+    else:
+        eligible = "approver" in roles
+        why = "unassigned approvals need the 'approver' role"
+    if eligible:
+        return ReviewerAuthorization(True)
+    if "admin" in roles:
+        return ReviewerAuthorization(True, override=True, reason=why)
+    return ReviewerAuthorization(False, reason=why)
+
+
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -359,12 +401,15 @@ class HITLWorkflowGateway:
         action: str,
         actor_id: str,
         note: str = "",
+        *,
+        tenant_id: str | None = None,
     ) -> list[WorkflowHITLRequest]:
-        """Decide multiple pending requests at once."""
+        """Decide multiple pending requests at once (resolved for ``tenant_id``,
+        so worker-created approvals in the durable store are found)."""
         results = []
         for rid in request_ids:
             try:
-                r = await self.decide(rid, action, actor_id, note)
+                r = await self.decide(rid, action, actor_id, note, tenant_id=tenant_id)
                 results.append(r)
             except Exception as exc:
                 _log.warning("bulk_decide_item_failed", request_id=rid, error=str(exc))
