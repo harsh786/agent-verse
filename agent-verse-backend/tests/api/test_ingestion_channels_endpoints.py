@@ -410,7 +410,8 @@ def _mapping_app(db):
     return TestClient(app)
 
 
-def test_create_channel_mapping_no_db_falls_back_to_in_memory():
+def test_create_channel_mapping_no_db_fails_closed():
+    # TRG-03: used to answer {"status": "mapped"} while storing nothing.
     app = FastAPI()
     app.include_router(router)
     app.state.channel_gateway = None
@@ -425,8 +426,7 @@ def test_create_channel_mapping_no_db_falls_back_to_in_memory():
     resp = client.post(
         "/channels/mappings", json={"channel_type": "slack", "channel_id": "T1"}
     )
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "mapped"
+    assert resp.status_code == 503
 
 
 def test_create_channel_mapping_requires_auth():
@@ -449,7 +449,16 @@ def test_create_channel_mapping_persists_to_db():
     begin_cm.__aenter__ = AsyncMock(return_value=session)
     begin_cm.__aexit__ = AsyncMock(return_value=False)
     session.begin = MagicMock(return_value=begin_cm)
-    session.execute = AsyncMock(return_value=MagicMock())
+
+    async def execute(query, params=None):
+        # No verified claim elsewhere, no own row yet; the INSERT returns its id.
+        result = MagicMock()
+        result.fetchone = MagicMock(
+            return_value=("m-new",) if "INSERT INTO" in str(query) else None
+        )
+        return result
+
+    session.execute = AsyncMock(side_effect=execute)
 
     def db():
         return session
@@ -459,11 +468,21 @@ def test_create_channel_mapping_persists_to_db():
         "/channels/mappings", json={"channel_type": "slack", "channel_id": "T99"}
     )
     assert resp.status_code == 200
-    assert resp.json() == {"status": "mapped"}
-    sqls = [str(c.args[0]) for c in session.execute.await_args_list]
-    # Tenant GUC is set first (the table is FORCE RLS), then exactly one INSERT.
-    assert "set_config('app.tenant_id'" in sqls[0]
-    assert sum("INSERT INTO channel_tenant_mappings" in s for s in sqls) == 1
+    data = resp.json()
+    # TRG-03: a new claim is pending until the code arrives on the channel.
+    assert data["status"] == "pending_verification"
+    code = data["verification_code"]
+    calls = session.execute.await_args_list
+    sqls = [str(c.args[0]) for c in calls]
+    # Tenant GUC is set before the tenant write (the table is FORCE RLS), then
+    # exactly one INSERT; only the code's hash is stored.
+    guc = next(i for i, q in enumerate(sqls) if "set_config('app.tenant_id'" in q)
+    insert = next(i for i, q in enumerate(sqls) if "INSERT INTO channel_tenant_mappings" in q)
+    assert guc < insert
+    assert sum("INSERT INTO channel_tenant_mappings" in q for q in sqls) == 1
+    assert calls[insert].args[1]["status"] == "pending_verification"
+    stored = [c.args[1] for c in calls if "verification_code_hash = :h" in str(c.args[0])]
+    assert stored and code not in str(stored)
 
 
 def test_create_channel_mapping_db_error_returns_500():

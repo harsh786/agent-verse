@@ -7,21 +7,35 @@ import { useAuthStore } from '@/stores/auth';
 import { ChannelMappingsPage } from './ChannelMappingsPage';
 
 const MAPPINGS = [
-  { id: 'm1', channel_type: 'slack', channel_id: 'T12345ABCD', created_at: '2026-01-01T00:00:00Z' },
-  { id: 'm2', channel_type: 'email', channel_id: 'support@company.com' },
+  { id: 'm1', channel_type: 'slack', channel_id: 'T12345ABCD', status: 'verified', created_at: '2026-01-01T00:00:00Z' },
+  { id: 'm2', channel_type: 'email', channel_id: 'support@company.com', status: 'legacy_unverified' },
+  { id: 'm4', channel_type: 'discord', channel_id: 'G-777', status: 'pending_verification' },
 ];
 
-interface MockOpts { mappings?: unknown[]; listError?: boolean }
+const ISSUED = {
+  id: 'm3',
+  channel_type: 'slack',
+  channel_id: 'T99999ZZZZ',
+  status: 'pending_verification',
+  verification_code: 'AV-ABCD2345',
+  verification_expires_at: '2026-10-01T12:00:00+00:00',
+  instructions: 'Send the code AV-ABCD2345 as a message on this slack channel.',
+};
+
+interface MockOpts { mappings?: unknown[]; listError?: boolean; postStatus?: number; postBody?: unknown }
 
 function mockFetch(opts: MockOpts = {}) {
-  const { mappings = MAPPINGS, listError = false } = opts;
+  const { mappings = MAPPINGS, listError = false, postStatus = 200, postBody = ISSUED } = opts;
   return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     const url = String(input);
     const method = ((init as RequestInit | undefined)?.method ?? 'GET').toUpperCase();
-    const json = (body: unknown) =>
-      new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
-    if (url.includes('/channels/mappings') && method === 'POST') return json({ id: 'm3' });
+    if (url.includes('/verify') && method === 'POST') {
+      return json({ ...ISSUED, id: 'm2', channel_type: 'email', status: 'legacy_unverified', verification_code: 'AV-WXYZ6789' });
+    }
+    if (url.includes('/channels/mappings') && method === 'POST') return json(postBody, postStatus);
     if (url.includes('/channels/mappings')) {
       if (listError) return new Response('boom', { status: 500 });
       return json(mappings);
@@ -58,7 +72,55 @@ describe('ChannelMappingsPage', () => {
     renderPage();
     expect(await screen.findByText('T12345ABCD')).toBeInTheDocument();
     expect(screen.getByText('support@company.com')).toBeInTheDocument();
-    expect(screen.getAllByText(/Connected/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  // TRG-03: channel ownership is proven from the channel itself.
+  test('shows each mapping\'s verification status and a Verify action for unproven ones', async () => {
+    mockFetch();
+    renderPage();
+    const slackRow = (await screen.findByText('T12345ABCD')).closest('[data-testid="channel-row"]') as HTMLElement;
+    const emailRow = screen.getByText('support@company.com').closest('[data-testid="channel-row"]') as HTMLElement;
+    const discordRow = screen.getByText('G-777').closest('[data-testid="channel-row"]') as HTMLElement;
+
+    expect(within(slackRow).getByText(/^Verified$/)).toBeInTheDocument();
+    expect(within(slackRow).queryByRole('button', { name: /Verify/i })).not.toBeInTheDocument();
+    expect(within(emailRow).getByText(/Unverified/i)).toBeInTheDocument();
+    expect(within(emailRow).getByRole('button', { name: /Verify/i })).toBeInTheDocument();
+    expect(within(discordRow).getByText(/Pending verification/i)).toBeInTheDocument();
+    expect(within(discordRow).getByRole('button', { name: /Verify/i })).toBeInTheDocument();
+  });
+
+  test('connecting a channel shows its one-time verification code', async () => {
+    mockFetch({ mappings: [] });
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /Add Channel/i }));
+    await userEvent.type(screen.getByPlaceholderText('T12345ABCD'), 'T99999ZZZZ');
+    await userEvent.click(screen.getByRole('button', { name: /Connect Channel/i }));
+    const panel = await screen.findByRole('region', { name: /Verify channel ownership/i });
+    expect(within(panel).getByText('AV-ABCD2345')).toBeInTheDocument();
+    expect(within(panel).getByText(/not routed until/i)).toBeInTheDocument();
+  });
+
+  test('Verify on a legacy mapping requests a fresh code for that mapping', async () => {
+    const spy = mockFetch();
+    renderPage();
+    const emailRow = (await screen.findByText('support@company.com')).closest('[data-testid="channel-row"]') as HTMLElement;
+    await userEvent.click(within(emailRow).getByRole('button', { name: /Verify/i }));
+    const panel = await screen.findByRole('region', { name: /Verify channel ownership/i });
+    expect(within(panel).getByText('AV-WXYZ6789')).toBeInTheDocument();
+    expect(within(panel).getByText(/keeps routing/i)).toBeInTheDocument();
+    expect(spy.mock.calls.some(([u, i]) =>
+      String(u).includes('/channels/mappings/m2/verify') && (i as RequestInit | undefined)?.method === 'POST',
+    )).toBe(true);
+  });
+
+  test('a channel already verified by another tenant shows an already-claimed message', async () => {
+    mockFetch({ mappings: [], postStatus: 409, postBody: { detail: 'Channel is already verified by another tenant' } });
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /Add Channel/i }));
+    await userEvent.type(screen.getByPlaceholderText('T12345ABCD'), 'T12345ABCD');
+    await userEvent.click(screen.getByRole('button', { name: /Connect Channel/i }));
+    expect(await screen.findByText(/already claimed by another organization/i)).toBeInTheDocument();
   });
 
   test('shows the empty state when there are no mappings', async () => {
@@ -216,7 +278,7 @@ describe('ChannelMappingsPage', () => {
     await userEvent.click(screen.getByRole('button', { name: /Connect Channel/i }));
     expect(await screen.findByRole('button', { name: /Connecting/i })).toBeInTheDocument();
 
-    resolvePost(new Response(JSON.stringify({ id: 'm3' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    resolvePost(new Response(JSON.stringify(ISSUED), { status: 200, headers: { 'Content-Type': 'application/json' } }));
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /Add channel connection/i })).not.toBeInTheDocument());
   });
 });

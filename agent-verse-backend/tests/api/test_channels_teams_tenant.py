@@ -142,7 +142,12 @@ def _recording_db() -> tuple[Any, list[tuple[str, dict[str, Any]]]]:
 
     async def execute(query: Any, params: dict[str, Any] | None = None) -> Any:
         calls.append((str(query), dict(params or {})))
-        return MagicMock()
+        result = MagicMock()
+        # No verified claim elsewhere / no own row; the INSERT returns its id.
+        result.fetchone = MagicMock(
+            return_value=("m-new",) if "INSERT INTO" in str(query) else None
+        )
+        return result
 
     session.execute = AsyncMock(side_effect=execute)
     return (lambda: session), calls

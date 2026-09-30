@@ -296,12 +296,19 @@ async def test_channel_mapping_created_and_resolved_under_rls(dbs: SimpleNamespa
     app.include_router(channels_router)
     app.state.channel_gateway = None
     app.state.db_session_factory = dbs.app
+    app.state.system_db_session_factory = dbs.admin
     team = f"T{uuid.uuid4().hex[:10]}"
     async with _client(app) as client:
         resp = await client.post(
             "/channels/mappings", json={"channel_type": "slack", "channel_id": team}
         )
         assert resp.status_code == 200, resp.text
+        # TRG-03: pending until the one-time code arrives on the channel itself.
+        assert await _resolve_tenant_from_channel("slack", team, dbs.admin) is None
+        from app.api.channels.verification import verify_from_inbound
+
+        code = resp.json()["verification_code"]
+        assert await verify_from_inbound(dbs.admin, "slack", team, {"text": code}) == dbs.t1
         assert await _resolve_tenant_from_channel("slack", team, dbs.admin) == dbs.t1
         listed = (await client.get("/channels/mappings")).json()
         assert [m["channel_id"] for m in listed] == [team]
@@ -312,7 +319,7 @@ async def test_channel_mapping_created_and_resolved_under_rls(dbs: SimpleNamespa
             "/channels/mappings", json={"channel_type": "slack", "channel_id": other}
         )
         assert resp.status_code == 200
-        # ... but another tenant cannot claim an already-mapped workspace.
+        # ... but another tenant cannot claim an already-verified workspace.
         current["tid"] = dbs.t2
         resp = await client.post(
             "/channels/mappings", json={"channel_type": "slack", "channel_id": team}

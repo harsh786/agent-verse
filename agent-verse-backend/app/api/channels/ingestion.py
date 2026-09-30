@@ -198,27 +198,54 @@ async def _resolve_tenant_from_channel(
     channel_id: str,
     db: Any,
 ) -> str | None:
-    """Look up tenant_id from channel_tenant_mappings (cross-tenant, system session)."""
+    """Look up tenant_id from channel_tenant_mappings (cross-tenant, system session).
+
+    Only a routable mapping (verified, or legacy pre-TRG-03) resolves; a pending
+    claim has not proven it owns the channel and routes nothing. At most one
+    routable mapping exists per channel (partial unique index).
+    """
     if db is None or not channel_id:
         return None
     try:
         from sqlalchemy import text
 
+        from app.api.channels.verification import STATUS_LEGACY, STATUS_VERIFIED
         from app.db.rls import system_session
 
         async with db() as session, session.begin(), system_session(session):
             row = await session.execute(
                 text(
                     "SELECT tenant_id FROM channel_tenant_mappings "
-                    "WHERE channel_type = :ct AND channel_id = :ci LIMIT 1"
+                    "WHERE channel_type = :ct AND channel_id = :ci "
+                    "AND status IN (:verified, :legacy) LIMIT 1"
                 ),
-                {"ct": channel_type, "ci": channel_id},
+                {
+                    "ct": channel_type,
+                    "ci": channel_id,
+                    "verified": STATUS_VERIFIED,
+                    "legacy": STATUS_LEGACY,
+                },
             )
             result = row.fetchone()
             return str(result[0]) if result else None
     except Exception as exc:
         _log.warning("channel_tenant_lookup_failed channel=%s: %s", channel_type, exc)
         return None
+
+
+async def _consume_ownership_proof(
+    request: Request, channel_type: str, channel_id: str, payload: Any
+) -> bool:
+    """TRG-03: True when this authenticated inbound message carried a pending
+    claim's one-time code for THIS channel and verified it. Such a message is the
+    proof itself, so the caller acknowledges it without routing it anywhere.
+    Messages without a code cost no DB round trip."""
+    from app.api.channels import verification
+
+    verified_tenant = await verification.verify_from_inbound(
+        _lookup_db(request), channel_type, channel_id, payload
+    )
+    return verified_tenant is not None
 
 
 # ── Slack Events API ──────────────────────────────────────────────────────────
@@ -241,6 +268,8 @@ async def slack_events(
         return {"challenge": body.get("challenge")}
 
     team_id = str(body.get("team_id", "") or "")
+    if await _consume_ownership_proof(request, "slack", team_id, body):
+        return {"ok": True}
     tenant_id = await _resolve_tenant_from_channel("slack", team_id, _lookup_db(request))
 
     gateway = _get_gateway(request)
@@ -303,6 +332,8 @@ async def teams_events(request: Request) -> dict:
     # the call is from Microsoft for OUR app, not which AgentVerse tenant it is
     # for — never a caller-supplied X-Tenant-ID header, never the shared serviceUrl.
     org_id = _teams_org_id(body)
+    if await _consume_ownership_proof(request, "teams", org_id, body):
+        return {"type": "message", "text": "Channel verified"}
     tenant_id = await _resolve_tenant_from_channel("teams", org_id, _lookup_db(request))
     if not tenant_id:
         _log.warning("teams_event_unmapped_org org_id=%s", org_id or "<missing>")
@@ -330,6 +361,8 @@ async def discord_events(request: Request) -> dict:
     if body.get("type") == 1:  # PING
         return {"type": 1}
     guild_id = str(body.get("guild_id", ""))
+    if await _consume_ownership_proof(request, "discord", guild_id, body):
+        return {"type": 4, "data": {"content": "Channel verified", "flags": 64}}
     tenant_id = await _resolve_tenant_from_channel("discord", guild_id, _lookup_db(request))
     gateway = _get_gateway(request)
     if gateway and tenant_id:
@@ -348,16 +381,19 @@ async def email_inbound(request: Request) -> dict:
     _require_channel_secret(request, "email")
     form = await request.form()
     to_email = str(form.get("to", ""))
-    tenant_id = _relay_tenant(request) or await _resolve_tenant_from_channel(
-        "email", to_email, _lookup_db(request)
-    )
-
     body = {
         "from": str(form.get("from", "")),
         "to": to_email,
         "subject": str(form.get("subject", "")),
         "text": str(form.get("text", "")),
     }
+    if await _consume_ownership_proof(
+        request, "email", to_email, {"subject": body["subject"], "text": body["text"]}
+    ):
+        return {"status": "ok"}
+    tenant_id = _relay_tenant(request) or await _resolve_tenant_from_channel(
+        "email", to_email, _lookup_db(request)
+    )
     gateway = _get_gateway(request)
     if gateway and tenant_id:
         await gateway.ingest("email", body, tenant_id=tenant_id)
@@ -406,6 +442,8 @@ async def sms_inbound(request: Request) -> Response:
 
     to_number = params.get("To", "")
     from_number = params.get("From", "")
+    if await _consume_ownership_proof(request, "sms", to_number, params.get("Body", "")):
+        return Response(content=_EMPTY_TWIML, media_type="application/xml")
     tenant_id = await _resolve_tenant_from_channel("sms", to_number, _lookup_db(request))
 
     ledger = (
@@ -460,6 +498,8 @@ async def form_submission(form_id: str, request: Request) -> dict:
     """Handle form submission webhook."""
     _require_channel_secret(request, "form")
     body = _parse_json(await request.body())
+    if await _consume_ownership_proof(request, "form", form_id, body):
+        return {"status": "ok"}
     tenant_id = _relay_tenant(request) or (
         await _resolve_tenant_from_channel("form", form_id, _lookup_db(request)) or ""
     )
@@ -481,11 +521,11 @@ async def meeting_ended(request: Request) -> dict:
     """Handle a meeting-ended webhook (Zoom / Teams / Google Meet)."""
     _require_channel_secret(request, "meeting")
     body = _parse_json(await request.body())
+    account_id = str(body.get("account_id", "") or "")
+    if await _consume_ownership_proof(request, "meeting", account_id, body):
+        return {"status": "ok"}
     tenant_id = _relay_tenant(request) or (
-        await _resolve_tenant_from_channel(
-            "meeting", str(body.get("account_id", "") or ""), _lookup_db(request)
-        )
-        or ""
+        await _resolve_tenant_from_channel("meeting", account_id, _lookup_db(request)) or ""
     )
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Unable to resolve tenant")
@@ -499,21 +539,33 @@ async def meeting_ended(request: Request) -> dict:
 # ── Channel mappings CRUD ─────────────────────────────────────────────────────
 
 
-@router.post("/mappings")
-async def create_channel_mapping(request: Request) -> dict:
-    """Register a channel (Slack workspace, Teams, etc.) to a tenant."""
-    body = await request.json()
+def _request_tenant(request: Request) -> str:
     tenant_id = getattr(getattr(request.state, "tenant", None), "tenant_id", "")
     if not tenant_id:
         raise HTTPException(status_code=401, detail="Not authenticated")
+    return str(tenant_id)
+
+
+_CLAIMED_DETAIL = "Channel is already verified by another tenant"
+
+
+@router.post("/mappings")
+async def create_channel_mapping(request: Request) -> dict:
+    """Claim a channel (Slack workspace, Teams org, Discord guild, number, address).
+
+    TRG-03: the claim is created ``pending_verification`` with a one-time code and
+    routes nothing until an inbound message on that channel carries the code. A
+    channel another tenant has verified is refused (409); re-posting an own claim
+    issues a fresh code (or reports ``verified``).
+    """
+    from app.api.channels import verification
+
+    tenant_id = _request_tenant(request)
+    body = await request.json()
     db = _tenant_db(request)
     if db is None:
-        # In-memory fallback
-        return {
-            "status": "mapped",
-            "channel_type": body.get("channel_type"),
-            "channel_id": body.get("channel_id"),
-        }
+        # Used to answer {"status": "mapped"} while storing nothing.
+        raise HTTPException(status_code=503, detail="Channel mappings need the database")
     channel_type = str(body.get("channel_type") or "")
     channel_id = str(body.get("channel_id") or "")
     if not channel_type or not channel_id:
@@ -528,58 +580,62 @@ async def create_channel_mapping(request: Request) -> dict:
                 detail="For Teams, channel_id must be your Microsoft 365 tenant ID (a GUID)",
             )
     try:
-        from sqlalchemy import text
-
-        from app.db.rls import sqlalchemy_rls_context
-
-        # Written under the tenant's RLS context (the table is FORCE RLS: a
-        # GUC-less INSERT is rejected under the app role). An external channel
-        # resolves to exactly one tenant (unique (channel_type, channel_id)), so
-        # a conflict is either this tenant re-mapping (idempotent) or another
-        # tenant's claim — which is refused instead of reported as "mapped".
-        async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-            inserted = (
-                await session.execute(
-                    text(
-                        "INSERT INTO channel_tenant_mappings "
-                        "(id, tenant_id, channel_type, channel_id) "
-                        "VALUES (:id, :tid, :ct, :ci) ON CONFLICT DO NOTHING RETURNING id"
-                    ),
-                    {
-                        "id": uuid.uuid4().hex,
-                        "tid": tenant_id,
-                        "ct": channel_type,
-                        "ci": channel_id,
-                    },
-                )
-            ).fetchone()
-            if inserted is None:
-                own = (
-                    await session.execute(
-                        text(
-                            "SELECT 1 FROM channel_tenant_mappings WHERE tenant_id = :tid "
-                            "AND channel_type = :ct AND channel_id = :ci"
-                        ),
-                        {"tid": tenant_id, "ct": channel_type, "ci": channel_id},
-                    )
-                ).fetchone()
-                if own is None:
-                    raise HTTPException(
-                        status_code=409, detail="Channel is already mapped to another tenant"
-                    )
-        return {"status": "mapped"}
-    except HTTPException:
-        raise
+        issued = await verification.claim_channel(
+            tenant_db=db,
+            system_db=_lookup_db(request),
+            tenant_id=tenant_id,
+            channel_type=channel_type,
+            channel_id=channel_id,
+        )
+    except verification.ChannelClaimedError:
+        raise HTTPException(status_code=409, detail=_CLAIMED_DETAIL) from None
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return issued.to_response()
+
+
+@router.post("/mappings/{mapping_id}/verify")
+async def verify_channel_mapping(mapping_id: str, request: Request) -> dict:
+    """Issue a fresh one-time code for a pending or legacy mapping ("Verify" in the UI).
+
+    A legacy mapping keeps routing while its code is outstanding.
+    """
+    from app.api.channels import verification
+
+    tenant_id = _request_tenant(request)
+    db = _tenant_db(request)
+    if db is None:
+        raise HTTPException(status_code=503, detail="Channel mappings need the database")
+    try:
+        issued = await verification.reissue_code(
+            tenant_db=db,
+            system_db=_lookup_db(request),
+            tenant_id=tenant_id,
+            mapping_id=mapping_id,
+        )
+    except verification.MappingNotFoundError:
+        raise HTTPException(status_code=404, detail="Channel mapping not found") from None
+    except verification.ChannelClaimedError:
+        raise HTTPException(status_code=409, detail=_CLAIMED_DETAIL) from None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return issued.to_response()
 
 
 @router.get("/mappings")
-async def list_channel_mappings(request: Request) -> list[dict]:
-    """List channel mappings for the tenant."""
-    tenant_id = getattr(getattr(request.state, "tenant", None), "tenant_id", "")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def list_channel_mappings(request: Request, status: str | None = None) -> list[dict]:
+    """List the tenant's channel mappings with their verification status.
+
+    ``?status=legacy_unverified`` lists the pre-TRG-03 mappings still awaiting proof.
+    """
+    from app.api.channels import verification
+
+    tenant_id = _request_tenant(request)
+    if status is not None and status not in verification.ALL_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"status must be one of {', '.join(verification.ALL_STATUSES)}",
+        )
     db = _tenant_db(request)
     if db is None:
         return []
@@ -588,13 +644,17 @@ async def list_channel_mappings(request: Request) -> list[dict]:
 
         from app.db.rls import sqlalchemy_rls_context
 
+        sql = (
+            "SELECT id, channel_type, channel_id, status, verified_at, "
+            "verification_expires_at, created_at FROM channel_tenant_mappings "
+            "WHERE tenant_id = :tid"
+        )
+        params: dict[str, Any] = {"tid": tenant_id}
+        if status is not None:
+            sql += " AND status = :status"
+            params["status"] = status
         async with db() as session, session.begin(), sqlalchemy_rls_context(session, tenant_id):
-            rows = await session.execute(
-                text(
-                    "SELECT id, channel_type, channel_id, created_at FROM channel_tenant_mappings WHERE tenant_id = :tid"  # noqa: E501
-                ),
-                {"tid": tenant_id},
-            )
+            rows = await session.execute(text(sql + " ORDER BY created_at"), params)
             return [_with_remap_flag(dict(r._mapping)) for r in rows]
     except Exception:
         return []
