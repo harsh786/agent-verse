@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import hashlib
 from typing import Any
 
@@ -164,10 +163,16 @@ async def extract_document(
     text into the knowledge base with ``source_type=ocr`` provenance (deduped
     against the one store).
     """
-    # Get provider from app state if available
+    # The tenant's provider (BYOK first), resolved once for every page. This read
+    # app.state.provider, which is never set, so the engine re-resolved a fresh
+    # platform provider per page and the tenant's key was ignored.
+    from app.api.llm_access import tenant_llm_provider
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
     provider: Any = None
-    with contextlib.suppress(Exception):
-        provider = getattr(request.app.state, "provider", None)
+    _tenant = getattr(request.state, "tenant", None)
+    if _tenant is not None:
+        provider = await tenant_llm_provider(request, _tenant)
 
     # WS-13: persist options may arrive via multipart Form (above) or the JSON body.
     persist_requested = persist_to_kb
@@ -221,8 +226,8 @@ async def extract_document(
                         " image_base64/pdf_base64 in the request body."
                     ),
                 )
-    except HTTPException:
-        raise
+    except (HTTPException, DecisionBudgetExceededError):
+        raise  # a budget refusal answers 429 via the app's handler
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -303,9 +308,13 @@ async def extract_documents_batch(
     body: BatchOcrRequest,
 ) -> BatchOcrResponse:
     """Process up to 10 documents concurrently."""
+    from app.api.llm_access import tenant_llm_provider
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
     provider: Any = None
-    with contextlib.suppress(Exception):
-        provider = getattr(request.app.state, "provider", None)
+    _tenant = getattr(request.state, "tenant", None)
+    if _tenant is not None:
+        provider = await tenant_llm_provider(request, _tenant)
 
     async def _extract_one(doc: OcrRequest) -> OcrResponse | None:
         try:
@@ -330,6 +339,8 @@ async def extract_documents_batch(
                 overall_confidence=res["overall_confidence"],
                 page_count=res["page_count"],
             )
+        except DecisionBudgetExceededError:
+            raise  # the whole batch answers 429, not N silent item failures
         except Exception as exc:
             _log.warning("Batch OCR item failed: %s", exc)
             return None

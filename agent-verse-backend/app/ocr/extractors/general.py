@@ -48,6 +48,7 @@ class LlmStructuredExtractor:
         """Async extraction using LLM provider."""
         if not raw_text.strip():
             return {}
+        from app.providers.guarded_completion import DecisionBudgetExceededError
 
         try:
             from app.providers.base import (  # type: ignore[import-untyped]
@@ -60,8 +61,16 @@ class LlmStructuredExtractor:
                 messages=[Message(role="user", content=prompt)],
                 model="default",
             )
-            response = await self._provider.complete(req)
+            from app.providers.guarded_completion import complete_decision
+
+            response = await complete_decision(
+                self._provider,
+                req,
+                role="ocr_extract",
+            )
             return self._parse_response(response.content)
+        except DecisionBudgetExceededError:
+            raise  # a budget refusal is not "no fields found"
         except Exception as exc:
             _log.warning("LLM structured extraction failed: %s", exc)
             return {}

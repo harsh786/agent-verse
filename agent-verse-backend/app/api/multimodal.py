@@ -42,9 +42,11 @@ async def ingest_asset(request: Request, body: IngestRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     pipeline = _get_pipeline(request)
 
-    provider = getattr(request.app.state, "_app_provider", None)
-    if provider:
-        pipeline.set_provider(provider)
+    # The tenant's provider (BYOK first) for this request only: set_provider()
+    # here used to swap the SHARED pipeline's provider on every request.
+    from app.api.llm_access import tenant_llm_provider
+
+    provider = await tenant_llm_provider(request, tenant)
 
     tid = tenant.tenant_id
     cid = body.collection_id
@@ -52,7 +54,7 @@ async def ingest_asset(request: Request, body: IngestRequest) -> dict[str, Any]:
 
     modality_map = {
         "text": lambda: pipeline.ingest_text(body.content or "", tid, cid),
-        "image": lambda: pipeline.ingest_image(data, tid, cid, body.filename),
+        "image": lambda: pipeline.ingest_image(data, tid, cid, body.filename, provider=provider),
         "pdf": lambda: pipeline.ingest_pdf(data, tid, cid, body.filename),
         "audio": lambda: pipeline.ingest_audio(data, tid, cid),
         "video": lambda: pipeline.ingest_video(data, tid, cid),

@@ -86,6 +86,7 @@ class OcrEngine:
 
     def __init__(self) -> None:
         self._classifier = DocumentClassifier()
+        self._fallback_provider: Any = None
 
     async def extract(
         self,
@@ -346,8 +347,17 @@ class OcrEngine:
         img: Any,
         *,
         provider: Any = None,
+        tenant_id: str | None = None,
     ) -> tuple[str, float, str]:
-        """Use LLM vision to extract text from an image."""
+        """Use LLM vision to extract text from an image.
+
+        Charged to ``tenant_id`` (else the request / goal scope). A budget
+        refusal is raised — never turned into an empty page of text.
+        """
+        from app.providers.guarded_completion import DecisionBudgetExceededError
+
+        if provider is None:
+            provider = getattr(self, "_fallback_provider", None)
         if provider is None:
             # Agent-callable OCR (extract_document) often runs with no injected
             # provider. Rather than return empty, resolve the system-configured
@@ -357,6 +367,8 @@ class OcrEngine:
                 from app.providers.registry import resolve_provider
 
                 provider = resolve_provider()
+                # Resolved once per engine, not once per page.
+                self._fallback_provider = provider
             except Exception as exc:
                 _log.warning("No provider for LLM vision OCR (%s); empty text", exc)
                 return "", 0.0, "llm_vision"
@@ -380,8 +392,21 @@ class OcrEngine:
                 # the empty case lets the provider fall back to its default model.
                 model=_ocr_model(),
             )
-            response = await provider.complete(req)
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            response = await complete_decision(
+                provider,
+                req,
+                role="ocr_vision",
+                tenant_id=tenant_id,
+                timeout_seconds=generation_timeout_seconds(),
+            )
             return response.content, 0.85, "llm_vision"
+        except DecisionBudgetExceededError:
+            raise
         except Exception as exc:
             _log.warning("LLM vision OCR failed: %s", exc)
             return "", 0.0, "llm_vision"

@@ -95,35 +95,9 @@ async def _tenant_decision_provider(request: Request, tenant: TenantContext) -> 
     that cannot be built (422) or read (503) refuses the submission — never a
     silent fallback to platform spend.
     """
-    from app.providers.tenant_provider import TenantProviderError, build_tenant_provider
-    from app.services.llm_config_store import LLMConfigReadError, get_llm_config_store
+    from app.api.llm_access import tenant_llm_provider
 
-    state = request.app.state
-    override = getattr(state, "_llm_provider_override", None)
-    if override is not None:
-        return override
-    store = getattr(state, "llm_config_store", None) or get_llm_config_store()
-    cfg: Any = None
-    if store is not None:
-        try:
-            try:
-                cfg = await store.get_config(tenant.tenant_id, strict=True)
-            except TypeError:  # a store without strict reads (tests/fakes)
-                cfg = await store.get_config(tenant.tenant_id)
-        except LLMConfigReadError as exc:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-                "Your LLM provider configuration could not be read; try again shortly.",
-            ) from exc
-    if cfg:
-        try:
-            return build_tenant_provider(dict(cfg), tenant_id=tenant.tenant_id)
-        except TenantProviderError as exc:
-            raise HTTPException(
-                422,  # (the starlette constant name is deprecated)
-                f"Your LLM provider configuration is unusable: {exc}",
-            ) from exc
-    return getattr(state, "_app_provider", None)
+    return await tenant_llm_provider(request, tenant)
 
 
 def _build_multimodal_goal_text(

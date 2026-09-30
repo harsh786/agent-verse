@@ -181,6 +181,8 @@ class SkillExecutor:
         5. Return successful SkillExecution
         6. On any exception → return failed SkillExecution with error=str(exc)
         """
+        from app.providers.guarded_completion import DecisionBudgetExceededError
+
         execution_id = str(uuid.uuid4())
         start = time.monotonic()
         now = datetime.datetime.now(datetime.UTC).isoformat()
@@ -207,8 +209,16 @@ class SkillExecutor:
                     max_tokens=1000,
                 )
                 # 3. Call with timeout
+                from app.providers.guarded_completion import complete_decision
+
                 resp = await asyncio.wait_for(
-                    self._provider.complete(req),
+                    complete_decision(
+                        self._provider,
+                        req,
+                        role="skill",
+                        tenant_id=tenant_id,
+                        timeout_seconds=self._timeout_seconds,
+                    ),
                     timeout=self._timeout_seconds,
                 )
                 output = resp.content
@@ -238,6 +248,8 @@ class SkillExecutor:
                 created_at=now,
             )
 
+        except DecisionBudgetExceededError:
+            raise  # the tenant's budget refused the call: surface it (429), never hide it
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
             # 6. Return failed execution on any exception

@@ -292,6 +292,19 @@ describe('OcrPage — single extraction flow', () => {
 });
 
 describe('OcrPage — error handling', () => {
+  test('an exhausted LLM budget is named, not shown as a generic failure', async () => {
+    const { ApiError, LLM_BUDGET_EXHAUSTED_MESSAGE } = await import('@/lib/api/client');
+    vi.mocked(ocrApi.extractFile).mockRejectedValue(
+      new ApiError(429, 'LLM budget exhausted: x', { code: 'llm_budget_exhausted' }),
+    );
+    renderPage();
+    await userEvent.upload(screen.getByTestId('file-input'), makeFile());
+    await userEvent.click(await screen.findByTestId('extract-btn'));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith({ kind: 'error', message: LLM_BUDGET_EXHAUSTED_MESSAGE }),
+    );
+  });
+
   test('shows error message on API failure', async () => {
     vi.mocked(ocrApi.extractFile).mockRejectedValue(new Error('OCR service unavailable'));
     renderPage();

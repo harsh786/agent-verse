@@ -270,6 +270,34 @@ describe('SkillsPage — extra coverage', () => {
     );
   });
 
+  test('test modal names an exhausted LLM budget', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/skills') && method === 'GET') {
+        return new Response(JSON.stringify({ skills: [...PLATFORM, ...CUSTOM] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (url.includes('/test')) {
+        return new Response(
+          JSON.stringify({ detail: 'LLM budget exhausted: x', code: 'llm_budget_exhausted' }),
+          { status: 429, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response('{}', { status: 200 });
+    });
+    renderPage();
+    await screen.findByText('my-research-skill');
+    await userEvent.click(screen.getAllByRole('button', { name: /Test/i })[0]);
+    const heading = await screen.findByText(/^Test:/);
+    const modal = heading.closest('div')!.parentElement as HTMLElement;
+    await userEvent.type(within(modal).getByPlaceholderText(/Enter test input/i), 'go');
+    await userEvent.click(within(modal).getByRole('button', { name: /Run Test/i }));
+    expect(await screen.findByText(/LLM budget exhausted — no model call was made/)).toBeInTheDocument();
+  });
+
   test('test modal error path renders the error text and X closes it', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = String(input);

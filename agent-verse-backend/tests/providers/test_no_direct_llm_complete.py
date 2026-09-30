@@ -28,7 +28,7 @@ _TRACING = (
     "complete_decision / complete_with_failover, which apply budget, breaker and timeout"
 )
 _NOT_LLM = "receiver is not an LLM provider"
-_OWNED = "pending migration in this wave (OPS-05 / PROV-02 / PROV-16 / PROV-25)"
+_OWNED = "pending migration in this wave (PROV-02 / PROV-16 / PROV-25)"
 
 # "<path relative to app/>::<qualname>": (number of .complete( calls, reason)
 ALLOWED: dict[str, tuple[int, str]] = {
@@ -38,18 +38,11 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "scaling/memory_tasks.py::process_due_memories": (1, _NOT_LLM + " (prospective memory)"),
     # ── pending, owned by later items of this wave ────────────────────────────
     "ai_router/shadow_router.py::ShadowRouter.shadow_call": (3, _OWNED),
-    "api/insights.py::analyze_failure": (1, _OWNED),
-    "api/insights.py::natural_language_query": (1, _OWNED),
     "api/model_registry.py::test_model": (1, _OWNED),
-    "api/skills_runtime.py::execute_skill": (1, _OWNED),
     "chat/service.py::ChatService._llm_summarize": (1, _OWNED),
     "chat/service.py::ChatService._merge_summary": (1, _OWNED),
     "chat/service.py::ChatService.run_qa": (1, _OWNED),
     "chat/understanding.py::_llm_decompose": (1, _OWNED),
-    "multimodal/pipeline.py::MultimodalPipeline._describe_image": (1, _OWNED),
-    "ocr/engine.py::OcrEngine._llm_vision_ocr": (1, _OWNED),
-    "ocr/extractors/general.py::LlmStructuredExtractor.extract_async": (1, _OWNED),
-    "skills_runtime/executor.py::SkillExecutor.execute": (1, _OWNED),
 }
 
 

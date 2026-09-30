@@ -556,8 +556,11 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
         failure_context += f"Last step: {last_step.get('description', '')}\n"
         failure_context += f"Last output: {str(last_step.get('output', ''))[:500]}\n"
 
-    # Use LLM for intelligent analysis if available
-    provider = getattr(request.app.state, "_app_provider", None)
+    # Use the tenant's LLM (BYOK) or the platform one for the analysis
+    from app.api.llm_access import tenant_llm_provider
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    provider = await tenant_llm_provider(request, tenant)
     suggestions: list[dict[str, str]] = []
     failure_reason = "Goal did not complete successfully."
 
@@ -575,18 +578,25 @@ async def analyze_failure(goal_id: str, request: Request) -> dict[str, Any]:
                 "Reply in this exact JSON format:\n"
                 '{"failure_reason": "...", "suggestions": [...]}'
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=500,
-                )
+                ),
+                role="insights_failure_analysis",
+                tenant_ctx=tenant,
             )
             import json as _json
 
             parsed = _json.loads(resp.content.strip())
             failure_reason = parsed.get("failure_reason", failure_reason)
             suggestions = parsed.get("suggestions", [])[:5]
+        except DecisionBudgetExceededError:
+            raise  # 429 via the app's handler: a budget refusal is not an LLM outage
         except Exception:
             pass  # Fall back to heuristic suggestions
 
@@ -669,8 +679,11 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
     cost_min: float | None = None
     llm_parsed = False
 
-    # ── Try LLM-powered parsing first ────────────────────────────────────────
-    provider = getattr(request.app.state, "_app_provider", None)
+    # ── Try LLM-powered parsing first (the tenant's LLM, BYOK first) ─────────
+    from app.api.llm_access import tenant_llm_provider
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    provider = await tenant_llm_provider(request, tenant)
     if provider is not None:
         try:
             from app.providers.base import CompletionRequest, Message
@@ -689,12 +702,17 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
                 '- "goals about deployment this week"'
                 ' → {"days": 7, "search": "deploy"}\n'
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=parse_prompt)],
                     model="",
                     max_tokens=150,
-                )
+                ),
+                role="insights_nl_query",
+                tenant_ctx=tenant,
             )
             import json as _json
 
@@ -703,6 +721,8 @@ async def natural_language_query(request: Request, body: NLQueryRequest) -> dict
             status_filter = parsed.get("status") or None
             cost_min = float(parsed["cost_min"]) if parsed.get("cost_min") else None
             llm_parsed = True
+        except DecisionBudgetExceededError:
+            raise  # 429 via the app's handler: a budget refusal is not an LLM outage
         except Exception:
             pass  # Fall back to regex parsing (the filters, not the results)
 

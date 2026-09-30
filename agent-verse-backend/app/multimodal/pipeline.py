@@ -85,7 +85,14 @@ class MultimodalPipeline:
         tenant_id: str,
         collection_id: str | None = None,
         filename: str | None = None,
+        *,
+        provider: Any = None,
     ) -> AssetIngestionJob:
+        """``provider`` (the requesting tenant's, BYOK first) overrides the
+        pipeline's default for this call only — the shared pipeline is never
+        mutated per request."""
+        from app.providers.guarded_completion import DecisionBudgetExceededError
+
         job = self._create_job(
             tenant_id, Modality.IMAGE, collection_id=collection_id, filename=filename
         )
@@ -100,7 +107,12 @@ class MultimodalPipeline:
 
         try:
             job.status = "processing"
-            description = await self._describe_image(image_base64, model=assignment.extractor_model)
+            description = await self._describe_image(
+                image_base64,
+                model=assignment.extractor_model,
+                provider=provider,
+                tenant_id=tenant_id,
+            )
             job.spans = [
                 ExtractedSpan(content=description, modality=Modality.IMAGE, confidence=0.9)
             ]
@@ -113,6 +125,12 @@ class MultimodalPipeline:
             job.metadata["embedding_strategy"] = "caption_then_text_embed"
             job.metadata["real_multimodal_embedding"] = False
             job.status = "completed"
+        except DecisionBudgetExceededError as exc:
+            # Recorded as failed, and raised so the caller answers 429.
+            job.status = "failed"
+            job.error = str(exc)
+            await self._job_store.save(job)
+            raise
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
@@ -426,17 +444,25 @@ class MultimodalPipeline:
             )
         return spans
 
-    async def _describe_image(self, image_base64: str, model: str = "") -> str:
+    async def _describe_image(
+        self,
+        image_base64: str,
+        model: str = "",
+        *,
+        provider: Any = None,
+        tenant_id: str | None = None,
+    ) -> str:
         """Use LLM vision to describe an image.
 
         ``model`` is the extractor model chosen by
         ``ModelOrchestrator.select_for_content_type`` (D-14) -- callers no
         longer hardcode a vision model name here.
         """
+        vision = provider if provider is not None else self._provider
         has_vision = (
-            self._provider is not None
-            and hasattr(self._provider, "supports_vision")
-            and self._provider.supports_vision()
+            vision is not None
+            and hasattr(vision, "supports_vision")
+            and vision.supports_vision()
         )
         if not has_vision:
             return "[Image content - vision provider not configured]"
@@ -447,7 +473,13 @@ class MultimodalPipeline:
             "Describe this image in detail, including any text, objects, "
             "scenes, and relevant information for search and retrieval."
         )
-        resp = await self._provider.complete(
+        from app.providers.guarded_completion import (
+            complete_decision,
+            generation_timeout_seconds,
+        )
+
+        resp = await complete_decision(
+            vision,
             CompletionRequest(
                 messages=[
                     Message(
@@ -463,9 +495,12 @@ class MultimodalPipeline:
                 ],
                 model=model,
                 max_tokens=500,
-            )
+            ),
+            role="multimodal_vision",
+            tenant_id=tenant_id,
+            timeout_seconds=generation_timeout_seconds(),
         )
-        return resp.content
+        return str(resp.content)
 
     async def _extract_pdf(self, pdf_base64: str) -> list[ExtractedSpan]:
         """Extract per-page text spans from a PDF.

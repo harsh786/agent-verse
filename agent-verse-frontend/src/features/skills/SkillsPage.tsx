@@ -3,7 +3,9 @@ import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Play, Trash2, Download, Upload, Search, X as XIcon, Wrench } from 'lucide-react';
 import { useAuthStore, getAuthHeader } from '../../stores/auth';
-import { API_BASE, errorMessageFromBody } from '@/lib/api/client';
+import {
+  API_BASE, ApiError, LLM_BUDGET_EXHAUSTED_MESSAGE, errorMessageFromBody, isLlmBudgetExhausted,
+} from '@/lib/api/client';
 import { toast } from '@/stores/toast';
 
 interface Skill {
@@ -22,7 +24,10 @@ interface Skill {
 /** The server's reason for a failed request (FastAPI ``detail``), not just the status. */
 async function failure(res: Response): Promise<Error> {
   const body = await res.json().catch(() => undefined);
-  return new Error(errorMessageFromBody(body) ?? `HTTP ${res.status}`);
+  const message = errorMessageFromBody(body) ?? `HTTP ${res.status}`;
+  // Keep the status/body for the LLM-budget refusal so it can be named.
+  if (res.status === 429) return new ApiError(429, message, body);
+  return new Error(message);
 }
 
 interface FormState {
@@ -279,7 +284,8 @@ export default function SkillsPage() {
       return res.json();
     },
     onSuccess: (data) => setTestResult(JSON.stringify(data, null, 2)),
-    onError: (e) => setTestResult(`Error: ${String(e)}`),
+    onError: (e) =>
+      setTestResult(isLlmBudgetExhausted(e) ? LLM_BUDGET_EXHAUSTED_MESSAGE : `Error: ${String(e)}`),
   });
 
   // ── Derived data ─────────────────────────────────────────────────────────────

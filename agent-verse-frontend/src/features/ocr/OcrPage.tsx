@@ -21,6 +21,7 @@ import {
 import {
   ocrApi,
   knowledgeApi,
+  llmErrorMessage,
   type OcrDocumentType,
   type OcrFieldResult,
   type OcrResponse,
@@ -525,7 +526,7 @@ export default function OcrPage() {
   const extractMutation = useMutation({
     mutationFn: (f: File) => ocrApi.extractFile(f),
     onSuccess: (data) => setResult(data),
-    onError: (e: Error) => toast({ kind: "error", message: e.message ?? 'Extraction failed' }),
+    onError: (e: Error) => toast({ kind: "error", message: llmErrorMessage(e, 'Extraction failed') }),
   });
 
   const batchMutation = useMutation({
@@ -559,7 +560,7 @@ export default function OcrPage() {
       );
       toast({ kind: "success", message: `${data.succeeded}/${data.total} documents extracted` });
     },
-    onError: (e: Error) => toast({ kind: "error", message: e.message ?? 'Batch extraction failed' }),
+    onError: (e: Error) => toast({ kind: "error", message: llmErrorMessage(e, 'Batch extraction failed') }),
   });
 
   // Generate image preview

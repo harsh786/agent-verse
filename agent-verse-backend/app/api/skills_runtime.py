@@ -363,7 +363,9 @@ async def execute_skill_by_id(
     if not skill_dict:
         raise HTTPException(404, f"Skill {body.skill_id!r} not found")
 
-    provider = getattr(request.app.state, "_app_provider", None)
+    from app.api.llm_access import tenant_llm_provider
+
+    provider = await tenant_llm_provider(request, tenant)
     executor = SkillExecutor(
         permission_checker=permission_checker,
         trigger_matcher=trigger_matcher,
@@ -399,7 +401,9 @@ async def execute_best_match(
         return {"matched": False}
 
     best_skill, score = ranked[0]
-    provider = getattr(request.app.state, "_app_provider", None)
+    from app.api.llm_access import tenant_llm_provider
+
+    provider = await tenant_llm_provider(request, tenant)
     executor = SkillExecutor(
         permission_checker=permission_checker,
         trigger_matcher=trigger_matcher,
@@ -545,8 +549,11 @@ async def execute_skill(
     execution_id = str(uuid.uuid4())
     now = datetime.datetime.now(datetime.UTC).isoformat()
 
-    # Execute using LLM if available
-    provider = getattr(request.app.state, "_app_provider", None)
+    # Execute using the tenant's LLM (BYOK) or the platform one
+    from app.api.llm_access import tenant_llm_provider
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    provider = await tenant_llm_provider(request, tenant)
     output = ""
     success = False
     error = None
@@ -561,16 +568,27 @@ async def execute_skill(
                 f"Instructions: {skill['instructions']}\n\n"
                 f"Input: {body.input_context[:2000]}"
             )
-            resp = await provider.complete(
+            from app.providers.guarded_completion import (
+                complete_decision,
+                generation_timeout_seconds,
+            )
+
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model="",
                     max_tokens=1000,
-                )
+                ),
+                role="skill",
+                tenant_ctx=tenant,
+                timeout_seconds=generation_timeout_seconds(),
             )
             output = resp.content
             success = True
             model_used = resp.model
+        except DecisionBudgetExceededError:
+            raise  # 429 via the app's handler: a budget refusal is not an LLM outage
         except Exception as exc:
             error = str(exc)
     else:
