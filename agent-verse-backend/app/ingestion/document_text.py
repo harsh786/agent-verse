@@ -260,7 +260,9 @@ def decode_text(data: bytes) -> str:
         return data.decode("cp1252", errors="replace")
 
 
-def extract_upload_text(data: bytes, *, ext: str, filename: str) -> str:
+def extract_upload_text(
+    data: bytes, *, ext: str, filename: str, report: dict[str, Any] | None = None
+) -> str:
     """The text of an uploaded file, by extension, or an exception — never garbage.
 
     Raises UnsupportedDocumentError (415), DocumentParseError (422: unreadable,
@@ -292,7 +294,9 @@ def extract_upload_text(data: bytes, *, ext: str, filename: str) -> str:
     if ext in {"xlsx", "xlsm"}:
         from app.ingestion.parsers.excel_parser import ExcelParser
 
-        text = ExcelParser().parse(data, filename=filename)
+        text, excel_report = ExcelParser().parse_with_report(data, filename=filename)
+        if report is not None:
+            report.update(excel_report)  # a truncated workbook is reported to the caller
         if not text.strip() or all(
             line.startswith("Sheet:") for line in text.splitlines() if line.strip()
         ):

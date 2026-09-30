@@ -619,12 +619,16 @@ function IngestTab() {
       fd.append('collection_id', collectionId);
       // The inline error + our own toast report failures, so silence the client's
       // generic 5xx toast (otherwise a 503 flashed two toasts).
-      return apiFetch<{ chunks_created: number; filename: string }>('/knowledge/ingest/file', { method: 'POST', body: fd }, { silenceServerErrorToast: true });
+      return apiFetch<{ chunks_created: number; filename: string; truncated?: boolean; truncated_sheets?: string[] }>('/knowledge/ingest/file', { method: 'POST', body: fd }, { silenceServerErrorToast: true });
     },
     onMutate: () => { setUploadError(null); setLastResult(null); },
     onSuccess: (r, file) => {
       const filename = r.filename || file.name;
       toast({ kind: 'success', message: `${filename}: ${r.chunks_created} chunks created.` });
+      if (r.truncated) {
+        const sheets = r.truncated_sheets?.length ? ` (sheets: ${r.truncated_sheets.join(', ')})` : '';
+        toast({ kind: 'info', message: `${filename}: workbook truncated at the row/sheet limit${sheets}; only part of it was indexed.` });
+      }
       setLastResult({ filename, chunks: r.chunks_created });
       setQueuedFile(null);
       void qc.invalidateQueries({ queryKey: ['knowledge-collections'] });

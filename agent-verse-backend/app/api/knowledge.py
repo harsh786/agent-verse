@@ -913,7 +913,9 @@ async def warm_cache(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _extract_upload_text(content_bytes: bytes, *, ext: str, filename: str) -> str:
+def _extract_upload_text(
+    content_bytes: bytes, *, ext: str, filename: str, report: dict[str, Any] | None = None
+) -> str:
     """Text of an uploaded file: 415 unsupported type, 422 unreadable/empty/textless,
     503 parser missing. Binary formats are parsed or refused, never decoded as text
     (that indexed raw "%PDF-1.3 … endobj" and reported success)."""
@@ -925,7 +927,7 @@ def _extract_upload_text(content_bytes: bytes, *, ext: str, filename: str) -> st
     )
 
     try:
-        return extract_upload_text(content_bytes, ext=ext, filename=filename)
+        return extract_upload_text(content_bytes, ext=ext, filename=filename, report=report)
     except UnsupportedDocumentError as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
     except DocumentParseError as exc:
@@ -969,9 +971,10 @@ async def ingest_file(
     # dedup check below (OCR / vision calls are expensive).
     segments: list[tuple[int | None, str]] = []
     total_pages: int | None = None
+    parse_report: dict[str, Any] = {}
     if not is_image:
         segments, total_pages = await _extract_upload_segments_async(
-            content_bytes, ext=ext, filename=filename
+            content_bytes, ext=ext, filename=filename, report=parse_report
         )
 
     doc_hash = hashlib.sha256(content_bytes).hexdigest()
@@ -1054,6 +1057,9 @@ async def ingest_file(
         "deduplicated": bool(rag_chunks) and not stored,
         "document_id": document_id if stored else None,
         "pages": total_pages,
+        # A workbook past the row / sheet caps was indexed only in part.
+        "truncated": bool(parse_report.get("excel_truncated")),
+        "truncated_sheets": list(parse_report.get("excel_row_truncated_sheets", [])),
     }
 
 
@@ -1120,7 +1126,7 @@ def _upload_parse_slot() -> asyncio.Semaphore:
 
 
 async def _extract_upload_segments_async(
-    content_bytes: bytes, *, ext: str, filename: str
+    content_bytes: bytes, *, ext: str, filename: str, report: dict[str, Any] | None = None
 ) -> tuple[list[tuple[int | None, str]], int | None]:
     """:func:`_extract_upload_segments` in a worker thread, bounded per replica.
 
@@ -1129,12 +1135,12 @@ async def _extract_upload_segments_async(
     """
     async with _upload_parse_slot():
         return await asyncio.to_thread(
-            _extract_upload_segments, content_bytes, ext=ext, filename=filename
+            _extract_upload_segments, content_bytes, ext=ext, filename=filename, report=report
         )
 
 
 def _extract_upload_segments(
-    content_bytes: bytes, *, ext: str, filename: str
+    content_bytes: bytes, *, ext: str, filename: str, report: dict[str, Any] | None = None
 ) -> tuple[list[tuple[int | None, str]], int | None]:
     """``(page, text)`` segments of an upload plus the PDF page count (None for
     other types); see _extract_upload_text for the error mapping."""
@@ -1152,7 +1158,8 @@ def _extract_upload_segments(
         except ParserUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return [(i + 1, t) for i, t in enumerate(pages) if t.strip()], len(pages)
-    return [(None, _extract_upload_text(content_bytes, ext=ext, filename=filename))], None
+    text = _extract_upload_text(content_bytes, ext=ext, filename=filename, report=report)
+    return [(None, text)], None
 
 
 # ---------------------------------------------------------------------------

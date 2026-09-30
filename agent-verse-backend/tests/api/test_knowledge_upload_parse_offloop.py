@@ -19,7 +19,7 @@ from app.api import knowledge as knowledge_api
 from tests.api.test_knowledge_extra4 import H, _create_collection, _make_app
 
 
-def _slow_parse(content_bytes: bytes, *, ext: str, filename: str) -> Any:
+def _slow_parse(content_bytes: bytes, *, ext: str, filename: str, **_: Any) -> Any:
     time.sleep(0.5)
     return [(None, "Parsed text about the retention policy for customer records.")], None
 
@@ -47,7 +47,7 @@ async def test_parse_runs_in_a_worker_thread_and_is_bounded() -> None:
     peak = 0
     lock = threading.Lock()
 
-    def _tracking(content_bytes: bytes, *, ext: str, filename: str) -> Any:
+    def _tracking(content_bytes: bytes, *, ext: str, filename: str, **_: Any) -> Any:
         nonlocal in_flight, peak
         with lock:
             in_flight += 1
@@ -73,7 +73,7 @@ async def test_parse_runs_in_a_worker_thread_and_is_bounded() -> None:
 def test_the_upload_route_parses_off_the_loop() -> None:
     calls: list[str] = []
 
-    async def _spy(content_bytes: bytes, *, ext: str, filename: str) -> Any:
+    async def _spy(content_bytes: bytes, *, ext: str, filename: str, **_: Any) -> Any:
         calls.append(filename)
         return [(None, "Parsed text about the retention policy for customer records.")], None
 

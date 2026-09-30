@@ -34,9 +34,14 @@ class ExcelParser:
         """``(text, report)``; ``report`` is empty unless the workbook was truncated."""
         try:
             import openpyxl  # type: ignore[import-not-found]
-        except ImportError:
-            _log.warning("openpyxl not installed — cannot parse Excel. pip install openpyxl")
-            return "", {}
+        except ImportError as exc:
+            # A server-side gap, not an unreadable file: it used to return "" and
+            # the upload was refused 422 "not a readable workbook".
+            from app.ingestion.document_text import ParserUnavailableError
+
+            raise ParserUnavailableError(
+                "Excel parsing is unavailable on this server (openpyxl is not installed)"
+            ) from exc
 
         try:
             wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)

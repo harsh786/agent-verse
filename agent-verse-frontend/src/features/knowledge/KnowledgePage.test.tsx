@@ -873,6 +873,19 @@ describe('KnowledgePage – Ingest tab file queue', () => {
     expect(screen.queryByTestId('queued-file')).not.toBeInTheDocument();
   });
 
+  test('a truncated workbook upload shows a warning', async () => {
+    mockFetchWithUpload(() =>
+      jsonResponse({ chunks_created: 9, filename: 'big.xlsx', truncated: true, truncated_sheets: ['Orders'] }),
+    );
+    await openIngest();
+    await selectCollection();
+    await userEvent.upload(fileInput(), new File(['xlsx'], 'big.xlsx', { type: 'application/octet-stream' }));
+    await userEvent.click(ingestButton());
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.some((t) => /workbook truncated.*Orders/i.test(t.message))).toBe(true),
+    );
+  });
+
   test('a 429 names the file and says the quota / budget limit was reached', async () => {
     mockFetchWithUpload(() => jsonResponse({ detail: "document quota exceeded for plan 'free': 1000/1000" }, 429));
     await openIngest();
