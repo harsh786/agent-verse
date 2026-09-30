@@ -498,6 +498,7 @@ class IngestionPipeline:
         # evaluated once, so a full regex pass is cheap and truncating would
         # let a secret past the halfway point of a long doc slip through.
         if _GUARDRAILS_AVAILABLE and guardrails_engine is not None:
+            _require_guardrail_rule_repository()
             try:
                 guardrails_engine.ensure_default_rules(tenant_id)
                 # The guardrail sees the ORIGINAL text: evaluated after
@@ -892,6 +893,26 @@ class IngestionScreeningUnavailableError(RuntimeError):
     Fail closed: the document is not indexed. Connector ingestion reports it as
     ``failed`` (DLQ, retried); the direct ingest routes answer 503.
     """
+
+
+def _require_guardrail_rule_repository() -> None:
+    """Refuse to screen in production when tenant guardrail rules can't be loaded.
+
+    Without a bound repository ``ensure_tenant_loaded`` is a no-op, so only the
+    baseline defaults would apply and a tenant's own RAG_INGEST block rules
+    (GDPR / PCI bundles, custom rules) would be silently skipped. The API
+    lifespan and the Celery worker both bind one; if that binding failed the
+    screen fails closed rather than indexing under the wrong policy.
+    """
+    from app.core.config import get_settings
+
+    if guardrails_engine is None or guardrails_engine.has_repository:
+        return
+    if get_settings().is_production:
+        raise IngestionScreeningUnavailableError(
+            "RAG_INGEST guardrail unavailable: tenant guardrail rules are not loadable "
+            "(no rule repository bound)"
+        )
 
 
 class IngestionPolicyRejectedError(ValueError):

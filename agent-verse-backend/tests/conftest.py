@@ -118,6 +118,22 @@ def _reset_worker_deployment_provider_cache():
 
 
 @pytest.fixture(autouse=True)
+def _restore_guardrail_rule_repository():
+    """Undo a guardrail rule repository bound during a test.
+
+    ``_build_worker_ingestion`` (like the API lifespan) binds the process-global
+    ``guardrails_engine`` to a DB repository; left bound, the next test's
+    evaluations would try to load rules from a mock or absent database.
+    """
+    from app.guardrails_v2.engine import guardrails_engine
+
+    repo, auto = guardrails_engine._repo, guardrails_engine._auto_persist
+    yield
+    if guardrails_engine._repo is not repo:
+        guardrails_engine.bind_repository(repo, auto_persist=auto)
+
+
+@pytest.fixture(autouse=True)
 def _reset_ip_rate_limit_windows():
     """Reset the in-process per-IP limiter (signup / SSO token endpoints).
 

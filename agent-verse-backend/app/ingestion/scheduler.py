@@ -110,9 +110,31 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
         pii_analyzer=build_pii_analyzer(),
         quota_enforcer=IngestionQuotaEnforcer(db_factory),
     )
+    _bind_worker_guardrail_rules(db_factory)
     tracker = IngestionJobTracker(db=db_factory, system_db=get_system_session_factory())
     source_store = SourceConfigStore(db=db_factory)
     return tracker, pipeline, source_store
+
+
+def _bind_worker_guardrail_rules(db_factory: object) -> None:
+    """Bind the RAG_INGEST guardrail engine to the tenant's persisted rules.
+
+    ``app.main``'s lifespan does this for the API; it never runs in a worker, so
+    ``ensure_tenant_loaded`` was a no-op here and scheduled / DLQ-retried syncs
+    were screened against the baseline defaults only — a tenant's own block
+    rules never applied. Each tenant's rules load under that tenant's RLS
+    context on its first evaluation. The worker writes no rules, so nothing is
+    auto-persisted. A failure here propagates: the sync must not run unscreened
+    (and ``screen_text`` refuses to screen in production without a repository).
+    """
+    from app.guardrails_v2.engine import guardrails_engine
+    from app.guardrails_v2.repository import PostgresGuardrailRuleRepository
+
+    if not guardrails_engine.has_repository:
+        guardrails_engine.bind_repository(
+            PostgresGuardrailRuleRepository(db_factory),  # type: ignore[arg-type]
+            auto_persist=False,
+        )
 
 
 async def _sync_source_async(*, task, source_id: str, tenant_id: str, triggered_by: str) -> dict:

@@ -274,6 +274,11 @@ class GuardrailsEngine:
         self._tenant_loaded_at.clear()
         self._tenant_load_failed_at.clear()
 
+    @property
+    def has_repository(self) -> bool:
+        """True when a persistence repository is bound (tenant rules are loadable)."""
+        return self._repo is not None
+
     def add_rule(self, rule: GuardrailRule) -> None:
         self._add(rule, seed=False)
 
