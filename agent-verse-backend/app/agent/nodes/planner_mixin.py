@@ -114,6 +114,20 @@ class PlannerMixin:
                 parts.append("[Prior reasoning about this goal]\n" + str(cot)[:4000])
         return parts
 
+
+    def _planner_block_failed(self, block: str, exc: BaseException) -> None:
+        """Log an optional planner block that failed (they used to ``pass`` silently).
+
+        The plan still proceeds without that block's contribution (CORE-22).
+        """
+        with contextlib.suppress(Exception):
+            self._logger.warning(
+                "planner_block_failed",
+                block=block,
+                error_type=type(exc).__name__,
+                error=str(exc)[:200],
+            )
+
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -292,8 +306,8 @@ class PlannerMixin:
                         extra_parts.append(
                             SchemaAwarePromptInjector.build_tool_call_format_reminder()
                         )
-        except Exception:
-            pass  # Never block execution on schema injection failure
+        except Exception as _blk_exc:
+            self._planner_block_failed("tool_schema_injection", _blk_exc)
 
         # Inject civilization blackboard context (shared agent findings)
         blackboard_ctx: str = agent_state.context.get("blackboard_context", "")
@@ -351,8 +365,8 @@ class PlannerMixin:
                     _skill_tools.update(_sk.allowed_tools)
                 if _skill_tools:
                     agent_state.context["skill_allowed_tools"] = list(_skill_tools)
-        except Exception:
-            pass  # skills must never block execution
+        except Exception as _blk_exc:
+            self._planner_block_failed("skill_selection", _blk_exc)
 
         # OutputContractBuilder — add output format constraint to planner prompt (M5c)
         try:
@@ -362,8 +376,8 @@ class PlannerMixin:
             _contract = _ocb.build(goal=agent_state.goal)
             if _contract.instructions:
                 extra_parts.append(f"[Output contract]\n{_contract.instructions}")
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("output_contract", _blk_exc)
 
         # Episodic memory recall — similar past experiences
         try:
@@ -377,8 +391,8 @@ class PlannerMixin:
                     _ep_ctx = self._episodic_memory.format_for_context(_ep_episodes)
                     if _ep_ctx:
                         extra_parts.append(_ep_ctx)
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("episodic_recall", _blk_exc)
 
         # Procedural memory recall — relevant skills
         try:
@@ -392,8 +406,8 @@ class PlannerMixin:
                     _proc_ctx = self._procedural_memory.format_for_context(_proc_skills)
                     if _proc_ctx:
                         extra_parts.append(_proc_ctx)
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("procedural_recall", _blk_exc)
 
         # Prospective memory recall — deferred intentions/reminders now due (T3.2).
         # Read-only (does NOT lease items for execution) so surfacing them in the
@@ -410,8 +424,8 @@ class PlannerMixin:
                 _pi_block = pending_intentions_block(_pending, _now)
                 if _pi_block:
                     extra_parts.append(f"[Pending intentions]\n{_pi_block}")
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("prospective_recall", _blk_exc)
 
         # D-17: Structured reflexion recall — evidence-backed lessons from ReflexionService
         try:
@@ -447,8 +461,8 @@ class PlannerMixin:
                         "[Structured reflexion — evidence-backed lessons]\n"
                         + "\n".join(_reflexion_lines)
                     )
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("reflexion_recall", _blk_exc)
 
         # Reasoning / multi-agent pattern outputs. These nodes (CoT think, tree of
         # thoughts, debate, supervisor) and the API debate workflow mode wrote
@@ -539,8 +553,8 @@ class PlannerMixin:
                     _runtime_profile_for_router,
                     budget_spent_ratio=min(1.0, _budget_ratio),
                 )
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("model_router_profile_update", _blk_exc)
         if self._model_router is not None:
             routed = self._model_router.model_for_goal("planning", goal=agent_state.goal)
             if routed:
@@ -570,8 +584,16 @@ class PlannerMixin:
                                 downgraded=_standard_model,
                             )
                             planning_model = _standard_model
-                except Exception:
-                    pass
+                except Exception as _blk_exc:
+                    # The expensive planning model stays: say so (was silent).
+                    self._planner_block_failed("cost_tier", _blk_exc)
+                    await self._emit(
+                        {
+                            "type": "cost_tier_unavailable",
+                            "error_type": type(_blk_exc).__name__,
+                            "planning_model": planning_model,
+                        }
+                    )
 
         # H21: Emit model_route_selected SSE after model selection
         try:
@@ -596,8 +618,8 @@ class PlannerMixin:
                         ),
                     )
                 )
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("model_route_event", _blk_exc)
 
         # ── Prompt Compression: reduce token count before LLM call ────────────
         try:
@@ -605,8 +627,8 @@ class PlannerMixin:
 
             system_content = _compressor.compress(system_content)
             user_content = _compressor.compress(user_content)
-        except Exception:
-            pass
+        except Exception as _blk_exc:
+            self._planner_block_failed("prompt_compression", _blk_exc)
 
         # ── LLM Response Cache: skip planner call on identical goals ──────────
         _llm_rc = getattr(self, "_llm_response_cache", None)
@@ -651,8 +673,8 @@ class PlannerMixin:
                     and self._planner.supports_structured_output()
                 ):
                     _response_schema = planner_schema()
-            except Exception:
-                pass
+            except Exception as _blk_exc:
+                self._planner_block_failed("structured_output_schema", _blk_exc)
 
             req = CompletionRequest(
                 messages=[
@@ -707,8 +729,8 @@ class PlannerMixin:
                             tenant_id=tenant_ctx.tenant_id,
                             task_type="planning",
                         )
-                except Exception:
-                    pass
+                except Exception as _blk_exc:
+                    self._planner_block_failed("llm_response_cache_store", _blk_exc)
         parsed = _parse_json(resp.content, key="steps")
         raw_steps = parsed.get("steps", [resp.content])
 
