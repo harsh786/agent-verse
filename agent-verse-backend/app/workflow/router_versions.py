@@ -14,14 +14,21 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from app.observability.logging import get_logger
+from app.workflow.permissions import workflow_access
 
 _log = get_logger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["workflow-versions"])
+
+# Per-workflow ACL (app/workflow/permissions.py).
+_CAN_VIEW = [Depends(workflow_access("viewer"))]
+_CAN_RUN = [Depends(workflow_access("runner"))]
+_CAN_EDIT = [Depends(workflow_access("editor"))]
+_CAN_ADMIN = [Depends(workflow_access("admin"))]
 
 
 def _svc(request: Request) -> Any:
@@ -58,7 +65,11 @@ class ApprovalDecisionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/versions", operation_id="workflow_versions_list")
+@router.get(
+    "/{workflow_id}/versions",
+    operation_id="workflow_versions_list",
+    dependencies=_CAN_VIEW,
+)
 async def list_versions(workflow_id: str, request: Request) -> list[dict[str, Any]]:
     """List all saved versions of a workflow definition."""
     svc = _svc(request)
@@ -67,7 +78,7 @@ async def list_versions(workflow_id: str, request: Request) -> list[dict[str, An
     return versions
 
 
-@router.get("/{workflow_id}/versions/{version}")
+@router.get("/{workflow_id}/versions/{version}", dependencies=_CAN_VIEW)
 async def get_version(workflow_id: str, version: int, request: Request) -> dict[str, Any]:
     """Get a specific workflow version."""
     svc = _svc(request)
@@ -82,6 +93,7 @@ async def get_version(workflow_id: str, version: int, request: Request) -> dict[
     "/{workflow_id}/versions/{version}/restore",
     status_code=status.HTTP_200_OK,
     operation_id="workflow_versions_restore",
+    dependencies=_CAN_EDIT,
 )
 async def restore_version(workflow_id: str, version: int, request: Request) -> dict[str, Any]:
     """Restore a workflow to a specific historical version (creates new draft)."""
@@ -96,7 +108,7 @@ async def restore_version(workflow_id: str, version: int, request: Request) -> d
     return result
 
 
-@router.get("/{workflow_id}/versions/{version_a}/diff/{version_b}")
+@router.get("/{workflow_id}/versions/{version_a}/diff/{version_b}", dependencies=_CAN_VIEW)
 async def diff_versions(
     workflow_id: str,
     version_a: int,
@@ -133,7 +145,11 @@ async def diff_versions(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{workflow_id}/submit-for-approval", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{workflow_id}/submit-for-approval",
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=_CAN_EDIT,
+)
 async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, Any]:
     """Submit a draft workflow for publish approval (enterprise feature)."""
     svc = _svc(request)
@@ -145,7 +161,11 @@ async def submit_for_approval(workflow_id: str, request: Request) -> dict[str, A
     return result
 
 
-@router.post("/{workflow_id}/approve-publish", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{workflow_id}/approve-publish",
+    status_code=status.HTTP_200_OK,
+    dependencies=_CAN_EDIT,
+)
 async def approve_publish(
     workflow_id: str, body: ApprovalDecisionRequest, request: Request
 ) -> dict[str, Any]:
@@ -164,7 +184,11 @@ async def approve_publish(
     return result
 
 
-@router.post("/{workflow_id}/reject-publish", status_code=status.HTTP_200_OK)
+@router.post(
+    "/{workflow_id}/reject-publish",
+    status_code=status.HTTP_200_OK,
+    dependencies=_CAN_EDIT,
+)
 async def reject_publish(
     workflow_id: str, body: ApprovalDecisionRequest, request: Request
 ) -> dict[str, Any]:
@@ -188,7 +212,7 @@ async def reject_publish(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/yaml")
+@router.get("/{workflow_id}/yaml", dependencies=_CAN_VIEW)
 async def export_yaml(workflow_id: str, request: Request) -> str:
     """Export the current workflow definition as canonical YAML."""
     svc = _svc(request)
@@ -238,7 +262,7 @@ async def import_yaml(request: Request) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{workflow_id}/clone", status_code=status.HTTP_201_CREATED)
+@router.post("/{workflow_id}/clone", status_code=status.HTTP_201_CREATED, dependencies=_CAN_VIEW)
 async def clone_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
     """Create a copy of a workflow definition as a new draft."""
     svc = _svc(request)

@@ -229,9 +229,12 @@ class WorkflowService:
     # ── Permissions ───────────────────────────────────────────────────────────
 
     async def get_permissions(self, tenant_id: str, workflow_id: str) -> list[dict[str, Any]]:
-        if self._run_store is None:
+        # A run store without ACL storage can hold no grants (tenant default).
+        getter = getattr(self._run_store, "get_permissions", None)
+        if getter is None:
             return []
-        return await self._run_store.get_permissions(tenant_id, workflow_id)
+        result: list[dict[str, Any]] = await getter(tenant_id, workflow_id)
+        return result
 
     async def add_permission(
         self,

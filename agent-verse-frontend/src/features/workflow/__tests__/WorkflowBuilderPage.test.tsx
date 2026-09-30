@@ -194,4 +194,47 @@ describe('WorkflowBuilderPage', () => {
       expect(workflowEngineApi.publish).toHaveBeenCalledWith('wf-1');
     });
   });
+
+  // WF-05: the per-workflow ACL level gates the builder's actions.
+  it('a viewer sees a view-only builder: no publish, save and test disabled', async () => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, access: 'viewer' } as any);
+    wrap();
+    await waitFor(() => screen.getByText('View only'));
+    expect(screen.queryByRole('button', { name: /publish/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /save workflow/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /test workflow/i })).toBeDisabled();
+  });
+
+  it('a runner may test-run but not save or publish', async () => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, access: 'runner' } as any);
+    wrap();
+    await waitFor(() => screen.getByText('View only'));
+    expect(screen.queryByRole('button', { name: /publish/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /save workflow/i })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /test workflow/i })).toBeEnabled();
+  });
+
+  it('shows the server reason when publishing is refused', async () => {
+    vi.mocked(workflowEngineApi.publish).mockRejectedValue(
+      Object.assign(new Error('Cannot publish: trigger type "event" is not supported'), {
+        status: 422,
+      }),
+    );
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /publish/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not publish: Cannot publish: trigger type "event" is not supported',
+    );
+  });
+
+  it('explains a 403 on save as a permission problem', async () => {
+    vi.mocked(workflowEngineApi.update).mockRejectedValue(
+      Object.assign(new Error('Forbidden'), { status: 403 }),
+    );
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /save workflow/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      "You don't have permission to save this workflow.",
+    );
+  });
 });

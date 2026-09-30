@@ -3121,6 +3121,17 @@ export interface WEWorkflow {
   schedule_cron?: string;
   created_at: string;
   updated_at: string;
+  /** Caller's per-workflow access level (detail endpoint only). */
+  access?: 'viewer' | 'runner' | 'editor' | 'admin' | null;
+}
+
+export interface WEWorkflowPermission {
+  id: string;
+  subject_type: string;
+  subject_id: string;
+  permission: 'viewer' | 'runner' | 'editor' | 'admin';
+  granted_by?: string | null;
+  granted_at?: string | null;
 }
 
 export interface WERun {
@@ -3217,6 +3228,21 @@ export const workflowEngineApi = {
 
   validate: (id: string) =>
     request<{ valid: boolean; errors: string[] }>(`${V1}/workflows/${id}/validate`, { method: 'POST', body: '{}' }),
+
+  // ── Per-workflow access control ───────────────────────────────────────────
+  listPermissions: (id: string) =>
+    request<WEWorkflowPermission[]>(`${V1}/workflows/${id}/permissions`),
+
+  addPermission: (
+    id: string,
+    body: { subject: string; role: WEWorkflowPermission['permission']; subject_type?: 'user' | 'role' },
+  ) =>
+    request<WEWorkflowPermission>(`${V1}/workflows/${id}/permissions`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  removePermission: (id: string, permissionId: string) =>
+    request<void>(`${V1}/workflows/${id}/permissions/${permissionId}`, { method: 'DELETE' }),
 
   /** The real inbound webhook (POST /wf-hooks/{token}); only issued once published. */
   getWebhook: (id: string) =>

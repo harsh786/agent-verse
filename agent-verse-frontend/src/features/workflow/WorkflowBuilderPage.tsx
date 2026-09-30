@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
+import { hasWorkflowAccess, workflowErrorMessage } from './access';
 import { workflowNodeTypes } from './builder/nodes/AllNodes';
 import { WorkflowToolPalette } from './builder/WorkflowToolPalette';
 import { WorkflowStepConfig } from './builder/WorkflowStepConfig';
@@ -88,10 +89,15 @@ function BuilderCanvas({
   wf,
   onSave,
   isSaving,
+  canEdit = true,
+  canRun = true,
 }: {
   wf: WEWorkflow;
   onSave: (definition: Record<string, unknown>) => void;
   isSaving: boolean;
+  /** Per-workflow ACL: editor may save; runner may test-run. */
+  canEdit?: boolean;
+  canRun?: boolean;
 }) {
   const rfInstance = useReactFlow();
   const navigate = useNavigate();
@@ -254,7 +260,8 @@ function BuilderCanvas({
   // run executes the current canvas.
   const testMutation = useMutation({
     mutationFn: async () => {
-      handleSave();
+      // A runner without edit access runs the saved definition as-is.
+      if (canEdit) handleSave();
       return workflowEngineApi.trigger(wf.id, {});
     },
     onMutate: () => setIsTestRunning(true),
@@ -350,7 +357,8 @@ function BuilderCanvas({
           {/* Test */}
           <button
             onClick={() => testMutation.mutate()}
-            disabled={isTestRunning}
+            disabled={isTestRunning || !canRun}
+            title={canRun ? undefined : 'Needs runner access to this workflow'}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500/15
                        hover:bg-amber-500/25 text-amber-400 text-xs font-medium transition-colors
                        disabled:opacity-50"
@@ -365,7 +373,8 @@ function BuilderCanvas({
           {/* Save */}
           <button
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || !canEdit}
+            title={canEdit ? undefined : 'Needs editor access to this workflow'}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600
                        hover:bg-sky-500 text-[#F1F5F9] text-xs font-medium transition-colors
                        disabled:opacity-60"
@@ -571,12 +580,24 @@ export default function WorkflowBuilderPage() {
 
   const qc = useQueryClient();
 
+  const [actionError, setActionError] = useState<string | null>(null);
+
   const saveMutation = useMutation({
     mutationFn: (definition: Record<string, unknown>) =>
       workflowEngineApi.update(id!, { definition }),
+    onMutate: () => setActionError(null),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] });
     },
+    onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'save')),
+  });
+
+  const publishMutation = useMutation({
+    mutationFn: () => workflowEngineApi.publish(id!),
+    onMutate: () => setActionError(null),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] }),
+    // A 422 carries the reason the definition can't go live — show it verbatim.
+    onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'publish')),
   });
 
   if (isLoading) {
@@ -622,6 +643,9 @@ export default function WorkflowBuilderPage() {
     );
   }
 
+  const canEdit = hasWorkflowAccess(wf.access, 'editor');
+  const canRun = hasWorkflowAccess(wf.access, 'runner');
+
   return (
     <JARVISPageShell>
     <JARVISStagger className="flex flex-col h-screen bg-[#060810] text-[#F1F5F9]">
@@ -639,14 +663,22 @@ export default function WorkflowBuilderPage() {
           <h1 className="text-sm font-bold text-[#F1F5F9] leading-tight">{wf.name}</h1>
           <p className="text-xs text-[#F1F5F9]/40">v{wf.version} · {wf.status}</p>
         </div>
+        {!canEdit && (
+          <span
+            className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 text-xs"
+            title={`Your access: ${wf.access ?? 'none'}`}
+          >
+            View only
+          </span>
+        )}
         <div className="flex items-center gap-2 ml-auto">
-          {wf.status === 'draft' && (
+          {wf.status === 'draft' && canEdit && (
             <button
-              onClick={() => workflowEngineApi.publish(id!).then(() =>
-                qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] })
-              )}
+              onClick={() => publishMutation.mutate()}
+              disabled={publishMutation.isPending}
               className="flex items-center gap-2 px-4 py-1.5 rounded-xl bg-emerald-600
-                         hover:bg-emerald-500 text-[#F1F5F9] text-xs font-medium transition-colors"
+                         hover:bg-emerald-500 text-[#F1F5F9] text-xs font-medium transition-colors
+                         disabled:opacity-60"
               aria-label="Publish workflow"
             >
               <Zap className="h-3.5 w-3.5" /> Publish
@@ -654,6 +686,14 @@ export default function WorkflowBuilderPage() {
           )}
         </div>
       </header>
+      {actionError && (
+        <div
+          className="shrink-0 px-4 py-2 text-xs text-red-300 bg-red-500/10 border-b border-red-500/20"
+          role="alert"
+        >
+          {actionError}
+        </div>
+      )}
 
       {/* Builder canvas */}
       <main className="flex-1 overflow-hidden">
@@ -662,6 +702,8 @@ export default function WorkflowBuilderPage() {
             wf={wf}
             onSave={saveMutation.mutate}
             isSaving={saveMutation.isPending}
+            canEdit={canEdit}
+            canRun={canRun}
           />
         </ReactFlowProvider>
       </main>

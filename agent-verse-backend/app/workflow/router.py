@@ -33,16 +33,23 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 
 from app.observability.logging import get_logger
 from app.workflow.dsl import WorkflowDefinition
+from app.workflow.permissions import caller_access, workflow_access
 from app.workflow.runner import WorkflowEngineUnavailableError, WorkflowValidationError
 
 _log = get_logger(__name__)
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
+
+# Per-workflow ACL (app/workflow/permissions.py).
+_CAN_VIEW = [Depends(workflow_access("viewer"))]
+_CAN_RUN = [Depends(workflow_access("runner"))]
+_CAN_EDIT = [Depends(workflow_access("editor"))]
+_CAN_ADMIN = [Depends(workflow_access("admin"))]
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +129,10 @@ class NLTriggerPreviewRequest(BaseModel):
 
 
 class PermissionRequest(BaseModel):
-    subject: str = Field(..., description="user_id or api_key_id")
+    subject: str = Field(..., description="api_key_id (principal) or RBAC role name")
     role: str = Field(..., pattern="^(viewer|editor|runner|admin)$")
+    # "role" grants the level to every caller holding that RBAC role.
+    subject_type: str = Field("user", pattern="^(user|role)$")
 
 
 class WorkflowResponse(BaseModel):
@@ -155,6 +164,9 @@ class WorkflowDetailResponse(WorkflowResponse):
     """
 
     definition: dict[str, Any] = Field(default_factory=dict)
+    # The caller's level on this workflow (viewer | runner | editor | admin) so
+    # the UI can disable what the per-workflow ACL would refuse.
+    access: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -294,17 +306,17 @@ async def marketplace(
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
 
-@router.get("/{workflow_id}", response_model=WorkflowDetailResponse)
+@router.get("/{workflow_id}", response_model=WorkflowDetailResponse, dependencies=_CAN_VIEW)
 async def get_workflow(workflow_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
     item = await svc.get(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    return item
+    return {**item, "access": await caller_access(request, workflow_id)}
 
 
-@router.patch("/{workflow_id}", response_model=WorkflowDetailResponse)
+@router.patch("/{workflow_id}", response_model=WorkflowDetailResponse, dependencies=_CAN_EDIT)
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdateRequest,
@@ -331,7 +343,7 @@ async def update_workflow(
     return result
 
 
-@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=_CAN_EDIT)
 async def delete_workflow(workflow_id: str, request: Request) -> None:
     """Archive a workflow (soft delete)."""
     svc = _svc(request)
@@ -346,7 +358,7 @@ async def delete_workflow(workflow_id: str, request: Request) -> None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{workflow_id}/publish", response_model=WorkflowResponse)
+@router.post("/{workflow_id}/publish", response_model=WorkflowResponse, dependencies=_CAN_EDIT)
 async def publish_workflow(workflow_id: str, request: Request) -> Any:
     """Validate DSL and activate cron/webhook triggers."""
     svc = _svc(request)
@@ -360,7 +372,7 @@ async def publish_workflow(workflow_id: str, request: Request) -> Any:
     return result
 
 
-@router.post("/{workflow_id}/unpublish", response_model=WorkflowResponse)
+@router.post("/{workflow_id}/unpublish", response_model=WorkflowResponse, dependencies=_CAN_EDIT)
 async def unpublish_workflow(workflow_id: str, request: Request) -> Any:
     """Deactivate triggers; running executions are unaffected."""
     svc = _svc(request)
@@ -380,6 +392,7 @@ async def unpublish_workflow(workflow_id: str, request: Request) -> Any:
     "/{workflow_id}/trigger",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=RunResponse,
+    dependencies=_CAN_RUN,
 )
 async def trigger_workflow(
     workflow_id: str,
@@ -415,7 +428,7 @@ async def trigger_workflow(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{workflow_id}/validate", status_code=status.HTTP_200_OK)
+@router.post("/{workflow_id}/validate", status_code=status.HTTP_200_OK, dependencies=_CAN_VIEW)
 async def validate_workflow(workflow_id: str, request: Request) -> dict[str, Any]:
     """Validate the current DSL without running it."""
     svc = _svc(request)
@@ -435,6 +448,7 @@ async def validate_workflow(workflow_id: str, request: Request) -> dict[str, Any
     "/{workflow_id}/test",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=RunResponse,
+    dependencies=_CAN_RUN,
 )
 async def test_workflow(
     workflow_id: str,
@@ -482,14 +496,18 @@ async def nl_trigger_preview(body: NLTriggerPreviewRequest, request: Request) ->
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/versions")
+@router.get("/{workflow_id}/versions", dependencies=_CAN_VIEW)
 async def list_versions(workflow_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
     return await svc.list_versions(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
 
 
-@router.post("/{workflow_id}/versions/{version}/restore", response_model=WorkflowResponse)
+@router.post(
+    "/{workflow_id}/versions/{version}/restore",
+    response_model=WorkflowResponse,
+    dependencies=_CAN_EDIT,
+)
 async def restore_version(workflow_id: str, version: int, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
@@ -507,14 +525,18 @@ async def restore_version(workflow_id: str, version: int, request: Request) -> A
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/permissions")
+@router.get("/{workflow_id}/permissions", dependencies=_CAN_VIEW)
 async def get_permissions(workflow_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
     return await svc.get_permissions(tenant_id=tenant.tenant_id, workflow_id=workflow_id)
 
 
-@router.post("/{workflow_id}/permissions", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{workflow_id}/permissions",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=_CAN_ADMIN,
+)
 async def add_permission(workflow_id: str, body: PermissionRequest, request: Request) -> Any:
     svc = _svc(request)
     tenant = _get_tenant(request)
@@ -523,11 +545,16 @@ async def add_permission(workflow_id: str, body: PermissionRequest, request: Req
         workflow_id=workflow_id,
         subject=body.subject,
         role=body.role,
+        subject_type=body.subject_type,
     )
     return perm
 
 
-@router.delete("/{workflow_id}/permissions/{permission_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{workflow_id}/permissions/{permission_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=_CAN_ADMIN,
+)
 async def remove_permission(workflow_id: str, permission_id: str, request: Request) -> None:
     svc = _svc(request)
     tenant = _get_tenant(request)
@@ -555,7 +582,7 @@ async def analytics_summary(
     return await svc.analytics_summary(tenant_id=tenant.tenant_id, days=days)
 
 
-@router.get("/{workflow_id}/analytics", tags=["workflow-analytics"])
+@router.get("/{workflow_id}/analytics", tags=["workflow-analytics"], dependencies=_CAN_VIEW)
 async def workflow_analytics(
     workflow_id: str,
     request: Request,
@@ -573,7 +600,7 @@ async def workflow_analytics(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{workflow_id}/webhooks", tags=["workflow-webhooks"])
+@router.get("/{workflow_id}/webhooks", tags=["workflow-webhooks"], dependencies=_CAN_VIEW)
 async def list_webhook_events(
     workflow_id: str,
     request: Request,
@@ -591,7 +618,7 @@ async def list_webhook_events(
     return {"items": items, "total": total, "page": page, "per_page": per_page}
 
 
-@router.get("/{workflow_id}/webhook", tags=["workflow-webhooks"])
+@router.get("/{workflow_id}/webhook", tags=["workflow-webhooks"], dependencies=_CAN_RUN)
 async def get_webhook_trigger(workflow_id: str, request: Request) -> dict[str, Any]:
     """The workflow's real inbound webhook URL (``POST /wf-hooks/{token}``) and
     the key used to sign its run-completion callbacks.

@@ -13,6 +13,9 @@ vi.mock('../../../lib/api/client', () => ({
     list: vi.fn(),
     update: vi.fn(),
     getWebhook: vi.fn(),
+    listPermissions: vi.fn(),
+    addPermission: vi.fn(),
+    removePermission: vi.fn(),
   },
 }));
 
@@ -44,6 +47,7 @@ describe('WorkflowSettingsPage', () => {
       items: [], total: 0, page: 1, per_page: 20,
     });
     vi.mocked(workflowEngineApi.update).mockResolvedValue(mockWf as any);
+    vi.mocked(workflowEngineApi.listPermissions).mockResolvedValue([]);
   });
 
   it('renders settings heading', async () => {
@@ -190,8 +194,8 @@ describe('WorkflowSettingsPage', () => {
   });
 
   it('permissions panel shows a loading indicator before resolving', async () => {
-    let resolveList!: (v: { items: never[]; total: number; page: number; per_page: number }) => void;
-    vi.mocked(workflowEngineApi.list).mockReturnValueOnce(
+    let resolveList!: (v: never[]) => void;
+    vi.mocked(workflowEngineApi.listPermissions).mockReturnValueOnce(
       new Promise((resolve) => { resolveList = resolve; })
     );
     wrap();
@@ -200,10 +204,56 @@ describe('WorkflowSettingsPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/loading permissions/i)).toBeInTheDocument();
     });
-    resolveList({ items: [], total: 0, page: 1, per_page: 20 });
+    resolveList([]);
     await waitFor(() => {
-      expect(screen.getByText(/access control/i)).toBeInTheDocument();
+      expect(screen.getByText(/organization-wide access/i)).toBeInTheDocument();
     });
+  });
+
+  // WF-05: the ACL panel lists, grants and revokes real per-workflow access.
+  it('lists grants and lets a workflow admin grant and revoke access', async () => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, access: 'admin' } as any);
+    vi.mocked(workflowEngineApi.listPermissions).mockResolvedValue([
+      { id: 'p1', subject_type: 'user', subject_id: 'key-v', permission: 'viewer' },
+      { id: 'p2', subject_type: 'role', subject_id: 'operator', permission: 'runner' },
+    ] as any);
+    vi.mocked(workflowEngineApi.addPermission).mockResolvedValue({} as any);
+    vi.mocked(workflowEngineApi.removePermission).mockResolvedValue(undefined);
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /permissions/i }));
+
+    expect(await screen.findAllByTestId('grant')).toHaveLength(2);
+    expect(screen.getByText('role: operator')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Subject'), { target: { value: 'key-e' } });
+    fireEvent.change(screen.getByLabelText('Access level'), { target: { value: 'editor' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Grant' }));
+    await waitFor(() => {
+      expect(workflowEngineApi.addPermission).toHaveBeenCalledWith('wf-1', {
+        subject: 'key-e', role: 'editor', subject_type: 'user',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /remove viewer access for key-v/i }));
+    await waitFor(() => {
+      expect(workflowEngineApi.removePermission).toHaveBeenCalledWith('wf-1', 'p1');
+    });
+  });
+
+  it('disables access changes for callers without workflow admin', async () => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, access: 'editor' } as any);
+    vi.mocked(workflowEngineApi.listPermissions).mockResolvedValue([
+      { id: 'p1', subject_type: 'user', subject_id: 'key-v', permission: 'viewer' },
+    ] as any);
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /permissions/i }));
+
+    await screen.findByTestId('grant');
+    expect(screen.getByRole('button', { name: 'Grant' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /remove viewer access/i })).toBeDisabled();
+    expect(screen.getByText(/only workflow admins can change access/i)).toBeInTheDocument();
   });
 
   it('marks the active panel button with aria-current', async () => {

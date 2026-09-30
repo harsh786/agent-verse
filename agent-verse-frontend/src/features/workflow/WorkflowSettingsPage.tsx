@@ -10,6 +10,9 @@ import {
   ChevronLeft, Settings, Lock, Key, Sliders, Bell, Globe, Loader2,
 } from 'lucide-react';
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
+import {
+  ACCESS_LEVELS, hasWorkflowAccess, workflowErrorMessage, type WorkflowAccess,
+} from './access';
 import { JARVISPageShell } from '@/components/ui/JARVISPageShell';
 import { JARVISStagger } from '@/components/ui/JARVISPageShell';
 
@@ -100,28 +103,136 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
 }
 
 function PermissionsPanel({ wf }: { wf: WEWorkflow }) {
-  const { isLoading } = useQuery({
-    queryKey: ['workflow-engine', 'permissions', wf.id],
-    queryFn: () => workflowEngineApi.list({ per_page: 1 }), // placeholder
+  const qc = useQueryClient();
+  const queryKey = ['workflow-engine', 'permissions', wf.id];
+  const [subject, setSubject] = useState('');
+  const [subjectType, setSubjectType] = useState<'user' | 'role'>('user');
+  const [level, setLevel] = useState<WorkflowAccess>('viewer');
+  const [error, setError] = useState<string | null>(null);
+  const canManage = hasWorkflowAccess(wf.access, 'admin');
+
+  const { data: grants, isLoading, error: loadError } = useQuery({
+    queryKey,
+    queryFn: () => workflowEngineApi.listPermissions(wf.id),
+  });
+
+  const onError = (action: string) => (err: unknown) => setError(workflowErrorMessage(err, action));
+  const addMutation = useMutation({
+    mutationFn: () =>
+      workflowEngineApi.addPermission(wf.id, {
+        subject: subject.trim(), role: level, subject_type: subjectType,
+      }),
+    onMutate: () => setError(null),
+    onSuccess: () => {
+      setSubject('');
+      qc.invalidateQueries({ queryKey });
+    },
+    onError: onError('change access to'),
+  });
+  const removeMutation = useMutation({
+    mutationFn: (permissionId: string) => workflowEngineApi.removePermission(wf.id, permissionId),
+    onMutate: () => setError(null),
+    onSuccess: () => qc.invalidateQueries({ queryKey }),
+    onError: onError('change access to'),
   });
 
   return (
     <div>
       <h3 className="text-sm font-semibold text-[#F1F5F9] mb-4">Access Control</h3>
-      <div className="rounded-xl border border-white/10 divide-y divide-white/5">
-        {isLoading ? (
-          <div className="p-4 text-xs text-[#F1F5F9]/40">Loading permissions…</div>
-        ) : (
-          <div className="p-4">
-            <p className="text-xs text-[#F1F5F9]/40">
-              Workflow RBAC — grant viewer, editor, runner, or admin access to users or roles.
-            </p>
-            <p className="text-xs text-[#F1F5F9]/30 mt-2">
-              Owner: {wf.id}
-            </p>
-          </div>
+      <div className="rounded-xl border border-white/10 p-4 mb-4">
+        <p className="text-xs text-[#F1F5F9]/50 mb-2">
+          With no grants, everyone in your organization has full access. Once any grant
+          exists, only listed keys or roles (and organization admins) can use this workflow.
+        </p>
+        <ul className="space-y-1" aria-label="Access levels">
+          {ACCESS_LEVELS.map((l) => (
+            <li key={l.id} className="text-xs text-[#F1F5F9]/40">
+              <span className="font-medium text-[#F1F5F9]/70">{l.label}</span> — {l.description}
+            </li>
+          ))}
+        </ul>
+        {wf.access && (
+          <p className="text-xs text-[#F1F5F9]/40 mt-2">
+            Your access: <span className="font-medium text-sky-400">{wf.access}</span>
+          </p>
         )}
       </div>
+
+      <div className="rounded-xl border border-white/10 divide-y divide-white/5 mb-4">
+        {isLoading ? (
+          <div className="p-4 text-xs text-[#F1F5F9]/40">Loading permissions…</div>
+        ) : loadError ? (
+          <div className="p-4 text-xs text-red-400" role="alert">
+            {workflowErrorMessage(loadError, 'view access for')}
+          </div>
+        ) : !grants?.length ? (
+          <div className="p-4 text-xs text-[#F1F5F9]/40">No grants — organization-wide access.</div>
+        ) : (
+          grants.map((g) => (
+            <div key={g.id} className="p-3 flex items-center gap-3 text-xs" data-testid="grant">
+              <span className="font-mono text-[#F1F5F9]/80 truncate">
+                {g.subject_type === 'role' ? `role: ${g.subject_id}` : g.subject_id}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-400">{g.permission}</span>
+              <button
+                onClick={() => removeMutation.mutate(g.id)}
+                disabled={!canManage || removeMutation.isPending}
+                className="ml-auto text-red-400/70 hover:text-red-400 disabled:opacity-40"
+                aria-label={`Remove ${g.permission} access for ${g.subject_id}`}
+              >
+                Remove
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (subject.trim()) addMutation.mutate();
+        }}
+      >
+        <select
+          value={subjectType}
+          onChange={(e) => setSubjectType(e.target.value as 'user' | 'role')}
+          disabled={!canManage}
+          aria-label="Grant to"
+          className="px-2 py-1.5 rounded-lg bg-[#0F1826] border border-white/10 text-xs"
+        >
+          <option value="user">API key</option>
+          <option value="role">Role</option>
+        </select>
+        <input
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          disabled={!canManage}
+          placeholder={subjectType === 'role' ? 'Role name (e.g. operator)' : 'API key id'}
+          aria-label="Subject"
+          className="flex-1 min-w-[10rem] px-3 py-1.5 rounded-lg bg-[#0F1826] border border-white/10 text-xs"
+        />
+        <select
+          value={level}
+          onChange={(e) => setLevel(e.target.value as WorkflowAccess)}
+          disabled={!canManage}
+          aria-label="Access level"
+          className="px-2 py-1.5 rounded-lg bg-[#0F1826] border border-white/10 text-xs"
+        >
+          {ACCESS_LEVELS.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
+        </select>
+        <button
+          type="submit"
+          disabled={!canManage || !subject.trim() || addMutation.isPending}
+          className="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-xs font-medium disabled:opacity-50"
+        >
+          Grant
+        </button>
+      </form>
+      {!canManage && (
+        <p className="text-xs text-[#F1F5F9]/40 mt-2">Only workflow admins can change access.</p>
+      )}
+      {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
     </div>
   );
 }

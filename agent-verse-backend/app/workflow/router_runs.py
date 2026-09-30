@@ -18,16 +18,21 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from app.observability.logging import get_logger
+from app.workflow.permissions import run_access
 from app.workflow.state import WorkflowRunStatus
 
 _log = get_logger(__name__)
 
 router = APIRouter(prefix="/runs", tags=["workflow-runs"])
+
+# Per-workflow ACL on the run's workflow (app/workflow/permissions.py).
+_RUN_VIEW = [Depends(run_access("viewer"))]
+_RUN_RUN = [Depends(run_access("runner"))]
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +134,7 @@ async def list_runs(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}", response_model=RunDetailResponse)
+@router.get("/{run_id}", response_model=RunDetailResponse, dependencies=_RUN_VIEW)
 async def get_run(run_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -139,14 +144,14 @@ async def get_run(run_id: str, request: Request) -> Any:
     return item
 
 
-@router.get("/{run_id}/steps", response_model=list[StepResultResponse])
+@router.get("/{run_id}/steps", response_model=list[StepResultResponse], dependencies=_RUN_VIEW)
 async def list_step_results(run_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
     return await svc.list_step_results(tenant_id=tenant_id, run_id=run_id)
 
 
-@router.get("/{run_id}/steps/{step_id}", response_model=StepResultResponse)
+@router.get("/{run_id}/steps/{step_id}", response_model=StepResultResponse, dependencies=_RUN_VIEW)
 async def get_step_result(run_id: str, step_id: str, request: Request) -> Any:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -161,7 +166,7 @@ async def get_step_result(run_id: str, step_id: str, request: Request) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED, dependencies=_RUN_RUN)
 async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -171,7 +176,7 @@ async def cancel_run(run_id: str, request: Request) -> dict[str, str]:
     return {"run_id": run_id, "status": WorkflowRunStatus.CANCELLED.value}
 
 
-@router.post("/{run_id}/pause", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{run_id}/pause", status_code=status.HTTP_202_ACCEPTED, dependencies=_RUN_RUN)
 async def pause_run(run_id: str, request: Request) -> dict[str, str]:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -181,7 +186,7 @@ async def pause_run(run_id: str, request: Request) -> dict[str, str]:
     return {"run_id": run_id, "status": WorkflowRunStatus.PAUSED.value}
 
 
-@router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{run_id}/resume", status_code=status.HTTP_202_ACCEPTED, dependencies=_RUN_RUN)
 async def resume_run(run_id: str, request: Request) -> dict[str, str]:
     svc = _svc(request)
     tenant_id = _tenant_id(request)
@@ -204,7 +209,7 @@ async def resume_run(run_id: str, request: Request) -> dict[str, str]:
     return {"run_id": run_id, "status": WorkflowRunStatus.RUNNING.value}
 
 
-@router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED, dependencies=_RUN_RUN)
 async def retry_run(run_id: str, request: Request) -> dict[str, str]:
     """Retry a failed run as a new, dispatched run that reuses the failed run's
     completed step results (only the failed/unfinished steps execute again)."""
@@ -241,7 +246,7 @@ async def retry_run(run_id: str, request: Request) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/debug")
+@router.get("/{run_id}/debug", dependencies=_RUN_VIEW)
 async def debug_run(run_id: str, request: Request) -> Any:
     """Return full run state including step outputs and variable snapshot.
 
@@ -260,7 +265,7 @@ async def debug_run(run_id: str, request: Request) -> Any:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{run_id}/stream")
+@router.get("/{run_id}/stream", dependencies=_RUN_VIEW)
 async def stream_run(run_id: str, request: Request) -> StreamingResponse:
     """Server-Sent Events stream for a workflow run.
 
