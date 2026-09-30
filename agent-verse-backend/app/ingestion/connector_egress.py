@@ -43,11 +43,12 @@ driver that cannot be pinned at all (librdkafka) is refused while
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import ipaddress
 import socket
 import ssl
 import threading
-from collections.abc import AsyncIterator, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, unquote, urlencode, urlsplit, urlunsplit
@@ -67,12 +68,14 @@ __all__ = [
     "assert_source_url",
     "check_source_dsn",
     "check_source_host",
+    "egress_checked_lookups",
     "guarded_request",
     "pin_source_dsn",
     "pin_source_hosts",
     "pin_source_urls",
     "pin_source_urls_sync",
     "require_pinnable_driver",
+    "run_driver_call",
     "source_client",
     "source_url_is_allowed",
 ]
@@ -335,11 +338,79 @@ async def check_source_dsn(dsn: object, *, context: str) -> None:
 _pins: dict[str, list[tuple[str, ...]]] = {}
 _pins_lock = threading.Lock()
 
+# Set (to the egress context name) only inside :func:`egress_checked_lookups`,
+# i.e. on the worker thread running a driver's blocking work. While set, a
+# lookup of a name that is *not* pinned is egress-checked before it is answered.
+_checked_scope: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "connector_egress_checked_scope", default=None
+)
+
 
 def _host_key(host: object) -> str:
     if isinstance(host, bytes | bytearray):
         host = bytes(host).decode("ascii", errors="replace")
     return str(host or "").strip().strip("[]").lower().rstrip(".")
+
+
+def _numeric_answers(
+    inner: Any,
+    key: str,
+    ips: Iterable[str],
+    port: Any,
+    family: int,
+    type_: int,
+    proto: int,
+    flags: int,
+) -> Any:
+    """Answer a lookup of ``key`` with ``ips`` only — numerically, never from DNS."""
+    results: list[Any] = []
+    for ip in dict.fromkeys(ips):
+        try:
+            results.extend(inner(ip, port, family, type_, proto, flags | socket.AI_NUMERICHOST))
+        except socket.gaierror:
+            continue  # e.g. an IPv6 address asked for AF_INET only
+    if results:
+        return results
+    raise socket.gaierror(socket.EAI_NONAME, f"no checked address for {key!r} matches the request")
+
+
+def _pinned_ip(key: str) -> bool:
+    """True when ``key`` is an address some active pin block already checked."""
+    with _pins_lock:
+        return any(key in entry for entries in _pins.values() for entry in entries)
+
+
+def _checked_lookup(
+    inner: Any,
+    scope: str,
+    host: Any,
+    port: Any,
+    family: int,
+    type_: int,
+    proto: int,
+    flags: int,
+) -> Any:
+    """A lookup made inside :func:`egress_checked_lookups` of a name nobody pinned.
+
+    This is how a driver reaches a host the *server* named — a Neo4j routing
+    table entry, an HTTP redirect target inside an SDK, a cluster's advertised
+    member. The name is checked under the egress policy right here and answered
+    with the checked addresses only; an internal one raises
+    :class:`ConnectorEgressBlockedError` instead of being dialled.
+    """
+    key = _host_key(host)
+    if _is_ip_literal(key) and _pinned_ip(key):
+        # A driver handed the address pinned for its checked seed (pins.ip()).
+        return inner(host, port, family, type_, proto, flags)
+    token = _checked_scope.set(None)  # the check's own lookup must not recurse
+    try:
+        ips = assert_source_host(key, context=scope)
+    finally:
+        _checked_scope.reset(token)
+    if not ips:
+        # Operator-allowlisted internal name that does not resolve from here.
+        return inner(host, port, family, type_, proto, flags)
+    return _numeric_answers(inner, key, ips, port, family, type_, proto, flags)
 
 
 def _make_pinned_getaddrinfo(inner: Any) -> Any:
@@ -353,25 +424,18 @@ def _make_pinned_getaddrinfo(inner: Any) -> Any:
         proto: int = 0,
         flags: int = 0,
     ) -> Any:
-        if _pins and host is not None:
+        if host is None:
+            return inner(host, port, family, type, proto, flags)
+        if _pins:
             key = _host_key(host)
             with _pins_lock:
                 entries = list(_pins.get(key, ()))
             if entries:
-                ips = list(dict.fromkeys(ip for entry in entries for ip in entry))
-                results: list[Any] = []
-                for ip in ips:
-                    try:
-                        results.extend(
-                            inner(ip, port, family, type, proto, flags | socket.AI_NUMERICHOST)
-                        )
-                    except socket.gaierror:
-                        continue  # e.g. an IPv6 pin asked for AF_INET only
-                if results:
-                    return results
-                raise socket.gaierror(
-                    socket.EAI_NONAME, f"no pinned address for {key!r} matches the request"
-                )
+                ips = [ip for entry in entries for ip in entry]
+                return _numeric_answers(inner, key, ips, port, family, type, proto, flags)
+        scope = _checked_scope.get()
+        if scope is not None:
+            return _checked_lookup(inner, scope, host, port, family, type, proto, flags)
         return inner(host, port, family, type, proto, flags)
 
     _pinned_getaddrinfo._egress_pin_wrapper = True  # type: ignore[attr-defined]
@@ -392,6 +456,46 @@ def _ensure_resolver_pinning_installed() -> None:
         if getattr(current, "_egress_pin_wrapper", False):
             return
         socket.getaddrinfo = _make_pinned_getaddrinfo(current)
+
+
+@contextlib.contextmanager
+def egress_checked_lookups(context: str) -> Iterator[None]:
+    """Egress-check every name resolved on *this thread* for the block.
+
+    Pinning covers the hosts a connector knows up front (its seed). A driver can
+    learn more from the server — a ``neo4j://`` routing table, a redirect an SDK
+    follows, a cluster's advertised members — and would dial those with a plain
+    ``socket.getaddrinfo``. Inside this block such a lookup is checked under the
+    same policy (:func:`assert_source_host`) and answered with the checked
+    addresses only; an internal target raises :class:`ConnectorEgressBlockedError`.
+
+    The scope is a context variable, so it covers only the code running in this
+    thread's context — the driver's blocking work — never the platform's own
+    connections elsewhere in the process. Use :func:`run_driver_call`.
+    """
+    _ensure_resolver_pinning_installed()
+    token = _checked_scope.set(context)
+    try:
+        yield
+    finally:
+        _checked_scope.reset(token)
+
+
+async def run_driver_call[T](
+    func: Callable[..., T], /, *args: Any, context: str, **kwargs: Any
+) -> T:
+    """Run a driver's blocking ``func`` off the event loop, egress-checked.
+
+    The call runs on a worker thread inside :func:`egress_checked_lookups`, so
+    every host the driver resolves — not only the pinned seed — is checked.
+    """
+    import asyncio
+
+    def _call() -> T:
+        with egress_checked_lookups(context):
+            return func(*args, **kwargs)
+
+    return await asyncio.to_thread(_call)
 
 
 def _is_ip_literal(host: str) -> bool:

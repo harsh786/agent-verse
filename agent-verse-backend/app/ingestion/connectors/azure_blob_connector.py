@@ -17,7 +17,11 @@ from app.ingestion.base_connector import (
     ConnectionHealth,
     ConnectorUnavailableError,
 )
-from app.ingestion.connector_egress import ConnectorEgressBlockedError, pin_source_urls
+from app.ingestion.connector_egress import (
+    ConnectorEgressBlockedError,
+    pin_source_urls,
+    run_driver_call,
+)
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -184,10 +188,10 @@ class AzureBlobConnector(BaseConnector):
         blob that could not be downloaded is reported (the pipeline fails it
         with the reason → DLQ) and the cursor never moves past it, so the next
         sync retries it. An oversized blob is reported too (retrying cannot
-        help, so it does not hold the cursor). SDK calls run in a thread.
+        help, so it does not hold the cursor). SDK calls run in a worker thread,
+        egress-checked: azure-core follows redirects, and a redirect target is a
+        host nobody pinned.
         """
-        import asyncio
-
         from app.ingestion.source_config import CONNECTOR_FAILURE_KEY, RawDocument
 
         try:
@@ -217,7 +221,7 @@ class AzureBlobConnector(BaseConnector):
             return list(cc.list_blobs(name_starts_with=prefix))
 
         pending: list[tuple[str, Any]] = []
-        for blob in await asyncio.to_thread(_list):
+        for blob in await run_driver_call(_list, context="azure_blob"):
             if not self._matches(blob.name, config.include_patterns, config.exclude_patterns):
                 continue
             blob_ts = blob.last_modified.isoformat() if blob.last_modified else ""
@@ -262,7 +266,9 @@ class AzureBlobConnector(BaseConnector):
             data: bytes | None = None
             if not too_big:
                 try:
-                    data = await asyncio.to_thread(_download_capped, cc, blob.name, cap)
+                    data = await run_driver_call(
+                        _download_capped, cc, blob.name, cap, context="azure_blob"
+                    )
                 except Exception as exc:
                     _log.warning("azure_blob: download failed for blob %s: %s", blob.name, exc)
                     if held_below is None or blob_ts < held_below:

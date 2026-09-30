@@ -6,14 +6,13 @@ Exports nodes and relationships as structured text for embedding.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import pin_source_dsn
+from app.ingestion.connector_egress import pin_source_dsn, run_driver_call
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -44,9 +43,10 @@ class Neo4jConnector(BaseConnector):
                     driver.verify_connectivity()
 
             # No bolt://localhost default, the host must resolve public, and the
-            # driver's own lookups answer with the checked addresses only.
+            # driver's own lookups answer with the checked addresses only —
+            # including the routers/readers/writers a neo4j:// routing table names.
             async with pin_source_dsn(cc.get("uri", ""), context="neo4j"):
-                await asyncio.to_thread(_verify)
+                await run_driver_call(_verify, context="neo4j")
             latency = (time.perf_counter() - t0) * 1000
             return ConnectionHealth(ok=True, latency_ms=latency, metadata={"uri": cc.get("uri")})
         except ImportError:
@@ -87,7 +87,9 @@ class Neo4jConnector(BaseConnector):
             except ImportError:
                 _log.error("neo4j not installed")
                 return
-            records = await asyncio.to_thread(_run_query)
+            # A neo4j:// routing table makes the driver dial hosts the *server*
+            # names; run_driver_call egress-checks every one of those lookups.
+            records = await run_driver_call(_run_query, context="neo4j")
 
         new_cursor = cursor or ""
         for record in records:
@@ -97,7 +99,7 @@ class Neo4jConnector(BaseConnector):
                 if hasattr(v, "_properties"):  # neo4j Node
                     node = dict(v._properties)
                     node["_labels"] = list(v.labels)
-                    node["_id"] = v.id
+                    node["_id"] = getattr(v, "element_id", None) or v.id
                     break
             if node is None:
                 node = record

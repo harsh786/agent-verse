@@ -6,14 +6,13 @@ Supports InfluxDB 2.x (Flux queries) and 3.x.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from app.ingestion.base_connector import BaseConnector, ConnectionHealth
-from app.ingestion.connector_egress import pin_source_urls
+from app.ingestion.connector_egress import pin_source_urls, run_driver_call
 from app.ingestion.connector_registry import register
 
 if TYPE_CHECKING:
@@ -48,9 +47,10 @@ class InfluxDBConnector(BaseConnector):
                 ) as client:
                     return client.health()
 
-            # The HTTP client's own lookups answer with the checked addresses.
+            # The HTTP client's own lookups answer with the checked addresses, and
+            # a redirect it follows (urllib3 does by default) is egress-checked.
             async with pin_source_urls([url], context="influxdb"):
-                health = await asyncio.to_thread(_health)
+                health = await run_driver_call(_health, context="influxdb")
             latency = (time.perf_counter() - t0) * 1000
             if health.status == "pass":
                 return ConnectionHealth(
@@ -103,7 +103,7 @@ class InfluxDBConnector(BaseConnector):
             except ImportError:
                 _log.error("influxdb-client not installed")
                 return
-            rows = await asyncio.to_thread(_query)
+            rows = await run_driver_call(_query, context="influxdb")
 
         new_cursor = cursor or range_start
         for row in rows:
