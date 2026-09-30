@@ -36,7 +36,18 @@ async def _tenant(app: Any, client: Any) -> tuple[Any, str]:
     return c, str(body["tenant_id"])
 
 
+_RLS_PROBE_ROLE = "e2e_rls_probe"
+
+
 async def _count_rows(app: Any, table: str, tenant_id: str, where: str, params: dict) -> int:
+    """Count ``table`` rows visible to ``tenant_id`` through its RLS policy.
+
+    The default e2e_full connection is the testcontainer's SUPERUSER, which
+    bypasses RLS even on FORCE'd tables, so every row would be visible to every
+    tenant. In that case the count runs as a throwaway NOLOGIN NOBYPASSRLS role
+    (``SET LOCAL ROLE``, same transaction and ``app.tenant_id``), so the policy
+    is genuinely exercised whether or not ``E2E_LEAST_PRIVILEGE=1`` is set.
+    """
     from sqlalchemy import text
 
     from app.db.rls import sqlalchemy_rls_context
@@ -46,6 +57,25 @@ async def _count_rows(app: Any, table: str, tenant_id: str, where: str, params: 
         s.begin(),
         sqlalchemy_rls_context(s, tenant_id),
     ):
+        bypasses_rls = (
+            await s.execute(
+                text(
+                    "SELECT rolsuper OR rolbypassrls FROM pg_roles "
+                    "WHERE rolname = current_user"
+                )
+            )
+        ).scalar_one()
+        if bypasses_rls:
+            await s.execute(
+                text(
+                    "DO $$ BEGIN IF NOT EXISTS "
+                    f"(SELECT 1 FROM pg_roles WHERE rolname = '{_RLS_PROBE_ROLE}') "
+                    f"THEN CREATE ROLE {_RLS_PROBE_ROLE} NOLOGIN NOBYPASSRLS; "
+                    "END IF; END $$"
+                )
+            )
+            await s.execute(text(f"GRANT SELECT ON {table} TO {_RLS_PROBE_ROLE}"))
+            await s.execute(text(f"SET LOCAL ROLE {_RLS_PROBE_ROLE}"))
         return int(
             (await s.execute(text(f"SELECT count(*) FROM {table} WHERE {where}"), params))
             .scalar_one()
