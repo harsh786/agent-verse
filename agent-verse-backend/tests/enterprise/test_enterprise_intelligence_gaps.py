@@ -151,14 +151,26 @@ def test_get_experiments_success() -> None:
 
 def test_get_suggestions_success() -> None:
     """GET /intelligence/suggestions returns suggestions from self_optimizer."""
+    from unittest.mock import AsyncMock
+
     mock_opt = MagicMock()
-    mock_opt.list_suggestions = MagicMock(return_value=[])
+    mock_opt.alist_suggestions = AsyncMock(return_value=[])
     client = TestClient(
         _make_app(self_optimizer=mock_opt), raise_server_exceptions=False
     )
     resp = client.get("/intelligence/suggestions", headers=_HDR)
-    # Accept either success or 422 if endpoint has extra query validation
-    assert resp.status_code in (200, 422)
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_get_suggestions_store_outage_is_503() -> None:
+    """MEM-26: the DB is authoritative; an outage is 503, not a partial list."""
+    from unittest.mock import AsyncMock
+
+    mock_opt = MagicMock()
+    mock_opt.alist_suggestions = AsyncMock(side_effect=RuntimeError("db down"))
+    client = TestClient(_make_app(self_optimizer=mock_opt), raise_server_exceptions=False)
+    assert client.get("/intelligence/suggestions", headers=_HDR).status_code == 503
 
 
 def test_get_suggestions_requires_auth() -> None:

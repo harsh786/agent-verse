@@ -1273,11 +1273,14 @@ class AgentGraph(
         SelfOptimizer REST API.
         """
         try:
-            suggestions = self._self_optimizer.analyze_and_suggest(
+            # MEM-26: persisted (tenant-scoped, awaited) so /suggestions is the
+            # same on every replica and survives a restart.
+            suggestions = await self._self_optimizer.analyze_and_persist(
                 goal=getattr(state, "goal", ""),
                 scorecard=scorecard,
                 error_log=getattr(state, "error_message", "") or "",
                 tenant_ctx=tenant_ctx,
+                goal_id=str(getattr(state, "goal_id", "") or ""),
             )
             if suggestions:
                 self._logger.info(

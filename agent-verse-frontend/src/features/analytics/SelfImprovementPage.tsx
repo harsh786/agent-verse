@@ -576,6 +576,14 @@ export function SelfImprovementPage(): JSX.Element {
 
           {suggestionsQuery.isLoading ? (
             <LoadingSpinner />
+          ) : suggestionsQuery.isError ? (
+            <div role="alert" className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+              <AlertCircle className="h-8 w-8 opacity-40 mb-2" />
+              <p className="text-sm">Failed to load suggestions — the suggestion store is unavailable</p>
+              <button onClick={() => void suggestionsQuery.refetch()} className="mt-2 text-xs text-primary hover:underline">
+                Retry
+              </button>
+            </div>
           ) : suggestions.length === 0 ? (
             <EmptyState
           icon={<Inbox size={40} />}

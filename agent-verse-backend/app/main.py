@@ -1770,6 +1770,9 @@ def create_app(
 
                 get_dept_memory().set_db(db_factory)
                 logger.info("dept_memory_db_wired")
+                # MEM-26: v1 optimizer suggestions live in Postgres (RLS),
+                # shared across replicas instead of per-process lists.
+                app.state.self_optimizer._db = db_factory
             except Exception as _dm_db_exc:
                 logger.warning("dept_memory_db_wire_failed", error=str(_dm_db_exc))
 

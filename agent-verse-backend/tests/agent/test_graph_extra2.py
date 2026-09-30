@@ -476,7 +476,7 @@ async def test_self_optimizer_triggered_on_low_eval_score() -> None:
 
     # Track if SelfOptimizer was called
     self_opt = MagicMock(spec=SelfOptimizer)
-    self_opt.analyze_and_suggest.return_value = ["Use a more capable model"]
+    self_opt.analyze_and_persist = AsyncMock(return_value=["Use a more capable model"])
 
     g = AgentGraph(
         planner=p, executor=p, verifier=p,
@@ -491,8 +491,8 @@ async def test_self_optimizer_triggered_on_low_eval_score() -> None:
     # Wait for background tasks (fire-and-forget)
     await asyncio.sleep(0.05)
 
-    # SelfOptimizer was consulted since score < 0.5
-    self_opt.analyze_and_suggest.assert_called_once()
+    # SelfOptimizer was consulted (and persisted, MEM-26) since score < 0.5
+    self_opt.analyze_and_persist.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

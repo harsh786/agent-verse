@@ -13,8 +13,13 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.db.rls import sqlalchemy_rls_context
 from app.intelligence.eval import EvalScorecard
 from app.tenancy.context import TenantContext
+
+#: Per-tenant cap on the in-process suggestion list (the DB is authoritative
+#: when wired; this only bounds a DB-less process and the RPA dedup window).
+_MAX_SUGGESTIONS_PER_TENANT = 200
 
 warnings.warn(
     "app.intelligence.self_optimization is deprecated. Use app.intelligence.self_optimizer_v2 instead. "  # noqa: E501
@@ -39,6 +44,7 @@ class OptimizationSuggestion:
     applied: bool = False
     rejected: bool = False
     tenant_id: str = ""
+    created_at: str = ""
 
 
 class SelfOptimizer:
@@ -48,7 +54,40 @@ class SelfOptimizer:
         self._suggestions: dict[str, list[OptimizationSuggestion]] = {}
         self._eval_history: dict[str, list[EvalScorecard]] = {}
         self._applied_changes: dict[str, list] = {}
-        self._db: Any = None  # Set externally to enable async DB persistence
+        # Set by the app lifespan / worker: suggestions then live in Postgres
+        # (tenant-scoped under RLS) and are shared across replicas/restarts.
+        self._db: Any = None
+        self._pending_writes: set[Any] = set()
+
+    def _remember(self, tenant_id: str, suggestions: list[OptimizationSuggestion]) -> None:
+        bucket = self._suggestions.setdefault(tenant_id, [])
+        bucket.extend(suggestions)
+        if len(bucket) > _MAX_SUGGESTIONS_PER_TENANT:
+            del bucket[: len(bucket) - _MAX_SUGGESTIONS_PER_TENANT]
+
+    def _schedule_persist(
+        self, suggestions: list[OptimizationSuggestion], tenant_ctx: TenantContext
+    ) -> None:
+        """Persist from a sync caller: a tracked task (never a dropped one)."""
+        if self._db is None or not suggestions:
+            return
+        import asyncio as _asyncio
+
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            from app.observability.logging import get_logger
+
+            get_logger(__name__).warning(
+                "suggestion_persist_skipped_no_loop", tenant_id=tenant_ctx.tenant_id
+            )
+            return
+        for sug in suggestions:
+            task = loop.create_task(
+                self.persist_suggestion(sug, tenant_ctx=tenant_ctx, db=self._db)
+            )
+            self._pending_writes.add(task)
+            task.add_done_callback(self._pending_writes.discard)
 
     def record_eval(
         self, *, goal_id: str, scorecard: EvalScorecard, tenant_ctx: TenantContext
@@ -81,8 +120,6 @@ class SelfOptimizer:
                         f"Goal scored {avg:.2f} — review planner instructions for "
                         "more precise task decomposition and completion criteria"
                     ),
-                    before="Current planner system prompt",
-                    after="Enhanced prompt with domain-specific decomposition guidance",
                     confidence=0.7 if avg < 0.5 else 0.5,
                 )
             )
@@ -96,8 +133,6 @@ class SelfOptimizer:
                         "Tool lookup failure detected — expand available tool "
                         "context in executor prompt"
                     ),
-                    before="Tool list not injected into executor",
-                    after="Inject discovered tools from MCP registry into executor system prompt",
                     confidence=0.8,
                 )
             )
@@ -112,29 +147,34 @@ class SelfOptimizer:
                         "Efficiency is low — reduce max_iterations or add "
                         "early-termination on repeated steps"
                     ),
-                    before="max_iterations=15",
                     after="max_iterations=8 with repeated-step detection",
                     confidence=0.6,
                 )
             )
 
-        tid = tenant_ctx.tenant_id
-        self._suggestions.setdefault(tid, []).extend(suggestions)
+        for sug in suggestions:
+            sug.tenant_id = tenant_ctx.tenant_id
+        self._remember(tenant_ctx.tenant_id, suggestions)
+        return suggestions
 
-        # Async-persist suggestions when DB is wired
+    async def analyze_and_persist(
+        self,
+        *,
+        goal: str,
+        scorecard: EvalScorecard,
+        error_log: str,
+        tenant_ctx: TenantContext,
+        goal_id: str = "",
+    ) -> list[OptimizationSuggestion]:
+        """Analyze a low-scoring goal and persist its suggestions (awaited)."""
+        suggestions = self.analyze_and_suggest(
+            goal=goal, scorecard=scorecard, error_log=error_log, tenant_ctx=tenant_ctx
+        )
         if self._db is not None:
-            import asyncio as _asyncio
-
-            for _s in suggestions:
-                _s.tenant_id = tenant_ctx.tenant_id
-                try:
-                    loop = _asyncio.get_running_loop()
-                    loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                        self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
-                    )
-                except RuntimeError:
-                    pass  # Not in async context — caller can persist separately
-
+            for sug in suggestions:
+                await self.persist_suggestion(
+                    sug, tenant_ctx=tenant_ctx, db=self._db, source_goal_id=goal_id
+                )
         return suggestions
 
     def analyze_rpa_failure(
@@ -249,23 +289,10 @@ class SelfOptimizer:
                 )
             )
 
-        # Store in memory
-        self._suggestions.setdefault(tenant_ctx.tenant_id, []).extend(suggestions)
-
-        # Async-persist when DB is wired
-        if self._db is not None:
-            import asyncio as _asyncio
-
-            for _s in suggestions:
-                _s.tenant_id = tenant_ctx.tenant_id
-                try:
-                    loop = _asyncio.get_running_loop()
-                    loop.create_task(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                        self.persist_suggestion(_s, tenant_ctx=tenant_ctx, db=self._db)
-                    )
-                except RuntimeError:
-                    pass
-
+        for sug in suggestions:
+            sug.tenant_id = tenant_ctx.tenant_id
+        self._remember(tenant_ctx.tenant_id, suggestions)
+        self._schedule_persist(suggestions, tenant_ctx)
         return suggestions
 
     def list_suggestions(
@@ -358,6 +385,73 @@ class SelfOptimizer:
 
         return True
 
+    async def alist_suggestions(
+        self, *, tenant_ctx: TenantContext, applied: bool | None = None, limit: int = 200
+    ) -> list[OptimizationSuggestion]:
+        """Suggestions for the tenant — from Postgres when wired (shared across
+        replicas and restarts), else this process's list. A DB failure raises."""
+        if self._db is None:
+            return self.list_suggestions(tenant_ctx=tenant_ctx, applied=applied)
+        where_applied = "AND applied = :applied" if applied is not None else ""
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            rows = (
+                await session.execute(
+                    text(f"""
+                    SELECT suggestion_id, category, change_type, description,
+                           before_text, after_text, confidence, applied, rejected,
+                           created_at
+                      FROM self_optimization_suggestions
+                     WHERE tenant_id = :tid {where_applied}
+                     ORDER BY created_at DESC
+                     LIMIT :lim
+                """),
+                    {
+                        "tid": tenant_ctx.tenant_id,
+                        "lim": max(1, limit),
+                        **({"applied": applied} if applied is not None else {}),
+                    },
+                )
+            ).fetchall()
+        return [
+            OptimizationSuggestion(
+                suggestion_id=str(r[0]),
+                category=str(r[1] or ""),
+                change_type=str(r[2] or ""),
+                description=str(r[3] or ""),
+                before=str(r[4] or ""),
+                after=str(r[5] or ""),
+                confidence=float(r[6] or 0.0),
+                applied=bool(r[7]),
+                rejected=bool(r[8]),
+                tenant_id=tenant_ctx.tenant_id,
+                created_at=r[9].isoformat() if hasattr(r[9], "isoformat") else "",
+            )
+            for r in rows
+        ]
+
+    async def areject_suggestion(self, *, suggestion_id: str, tenant_ctx: TenantContext) -> bool:
+        """Reject a suggestion durably (Postgres when wired). A DB failure raises."""
+        local = self.reject_suggestion(suggestion_id=suggestion_id, tenant_ctx=tenant_ctx)
+        if self._db is None:
+            return local
+        async with (
+            self._db() as session,
+            session.begin(),
+            sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+        ):
+            res = await session.execute(
+                text(
+                    "UPDATE self_optimization_suggestions SET rejected = TRUE "
+                    "WHERE tenant_id = :tid AND suggestion_id = :sid"
+                ),
+                {"tid": tenant_ctx.tenant_id, "sid": suggestion_id},
+            )
+        return bool(getattr(res, "rowcount", 0))
+
     def get_applied_changes(self, *, tenant_ctx: TenantContext) -> list[dict]:
         """Return list of applied configuration changes for this tenant."""
         return self._applied_changes.get(tenant_ctx.tenant_id, [])
@@ -379,13 +473,19 @@ class SelfOptimizer:
     ) -> None:
         """Persist a suggestion to self_optimization_suggestions table.
 
-        Non-fatal — DB write failure is logged and swallowed so suggestion
-        generation never blocks goal execution.
+        Runs under the tenant's RLS GUC (the table is FORCE ROW LEVEL SECURITY;
+        without it a NOBYPASSRLS role rejected every insert). Non-fatal — a DB
+        write failure is logged at warning and counted so suggestion generation
+        never blocks goal execution, but it is never silent.
         """
         if db is None:
             return
         try:
-            async with db() as session, session.begin():
+            async with (
+                db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
                 await session.execute(
                     text("""
                         INSERT INTO self_optimization_suggestions
@@ -399,7 +499,8 @@ class SelfOptimizer:
                         ON CONFLICT (id) DO NOTHING
                     """),
                     {
-                        "id": uuid.uuid4().hex,
+                        # id == suggestion_id: re-persisting one suggestion is a no-op.
+                        "id": suggestion.suggestion_id,
                         "tenant_id": tenant_ctx.tenant_id,
                         "suggestion_id": suggestion.suggestion_id,
                         "category": suggestion.category,
@@ -416,4 +517,9 @@ class SelfOptimizer:
         except Exception as exc:
             from app.observability.logging import get_logger
 
-            get_logger(__name__).warning("suggestion_persist_failed", error=str(exc))
+            get_logger(__name__).warning(
+                "suggestion_persist_failed",
+                tenant_id=tenant_ctx.tenant_id,
+                suggestion_id=suggestion.suggestion_id,
+                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )

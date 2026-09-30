@@ -460,6 +460,21 @@ describe('SelfImprovementPage', () => {
     expect(screen.getByText('Swap search tool for a faster provider')).toBeInTheDocument();
   });
 
+  test('suggestion store outage shows an error state, not "No suggestions" (MEM-26)', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/intelligence/suggestions')) {
+        return new Response(JSON.stringify({ detail: 'Suggestion store unavailable' }), { status: 503 });
+      }
+      return new Response(JSON.stringify([]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    renderPage();
+    await user.click(await screen.findByRole('tab', { name: /suggestions/ }));
+    expect(await screen.findByText(/failed to load suggestions/i)).toBeInTheDocument();
+    expect(screen.queryByText('No suggestions')).not.toBeInTheDocument();
+  });
+
   test('rejecting a pending suggestion posts to the reject endpoint and shows success toast', async () => {
     const user = userEvent.setup();
     const calls: string[] = [];

@@ -2789,11 +2789,13 @@ class GoalService:
                                 error_log = " | ".join(
                                     e.get("reason", str(e)) for e in failed_events
                                 )
-                                self_optimizer.analyze_and_suggest(
+                                # Persisted (MEM-26): shared across replicas.
+                                await self_optimizer.analyze_and_persist(
                                     goal=record.goal_text,
                                     scorecard=scorecard,
                                     error_log=error_log,
                                     tenant_ctx=tenant_ctx_for_record,
+                                    goal_id=goal_id,
                                 )
                             except Exception as opt_exc:
                                 _logger.warning(

@@ -953,7 +953,17 @@ async def list_suggestions(request: Request, applied: bool | None = None) -> lis
     from datetime import datetime as _dt
 
     ctx = _require_tenant(request)
-    suggestions = _self_optimizer(request).list_suggestions(tenant_ctx=ctx, applied=applied)
+    try:
+        suggestions = await _self_optimizer(request).alist_suggestions(
+            tenant_ctx=ctx, applied=applied
+        )
+    except Exception as exc:
+        # Postgres is authoritative once wired (MEM-26): an outage is 503,
+        # never this replica's partial in-process list.
+        _mkt_logger.warning("suggestions_list_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=503, detail="Suggestion store unavailable; please retry"
+        ) from exc
     now_iso = _dt.now(UTC).isoformat()
     return [
         {
@@ -962,7 +972,7 @@ async def list_suggestions(request: Request, applied: bool | None = None) -> lis
             "description": s.description,
             "confidence": s.confidence,
             "agent_id": getattr(s, "agent_id", None),
-            "status": "applied" if s.applied else "pending",
+            "status": "applied" if s.applied else "rejected" if s.rejected else "pending",
             "created_at": getattr(s, "created_at", now_iso) or now_iso,
         }
         for s in suggestions
@@ -994,7 +1004,15 @@ async def apply_suggestion(request: Request, suggestion_id: str) -> dict[str, An
 @intelligence_router.post("/suggestions/{suggestion_id}/reject")
 async def reject_suggestion(request: Request, suggestion_id: str) -> dict[str, Any]:
     ctx = _require_tenant(request)
-    ok = _self_optimizer(request).reject_suggestion(suggestion_id=suggestion_id, tenant_ctx=ctx)
+    try:
+        ok = await _self_optimizer(request).areject_suggestion(
+            suggestion_id=suggestion_id, tenant_ctx=ctx
+        )
+    except Exception as exc:
+        _mkt_logger.warning("suggestion_reject_failed", error=str(exc)[:200])
+        raise HTTPException(
+            status_code=503, detail="Suggestion store unavailable; please retry"
+        ) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     return {"suggestion_id": suggestion_id, "rejected": True}
