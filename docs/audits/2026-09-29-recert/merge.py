@@ -126,6 +126,18 @@ def main() -> None:
         f"Items: **{n_fixed} verified fixed**, **{n_open} still open**, **{n_new} new defects** "
         f"({', '.join(f'{v} {k}' for k, v in new_sev.most_common())}).",
         "",
+        "## Fixed after this re-certification",
+        "",
+        "- `23057af00` (workflow, user-reported hang): run-control state keys got a last-write "
+        "reducer, so a failing step beside parallel branches pauses the run on that step instead "
+        "of dying with LangGraph `InvalidUpdateError`; credential-free built-ins (web_search, "
+        "http_request, OCR) are provisioned on first use for tenants created after startup; the "
+        "legacy `helm/agentverse` worker now consumes the workflows.* and plan goals.* queues. "
+        "Proven by `tests/workflow/test_parallel_failure_state.py`, "
+        "`tests/mcp/test_builtin_lazy_provisioning.py` and the real-worker "
+        "`tests/e2e_full/test_workflow_parallel_failure_worker_e2e.py`. Workflow run execution "
+        "stays FAIL: the Celery HITL resume re-runs pre-approval steps (see below).",
+        "",
         "## Status changes",
         "",
         "| previous → new | features |",

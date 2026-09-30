@@ -2,7 +2,46 @@
 
 Follow-up to DEEP_AUDIT_SESSION_REPORT.md. Scope: ingestion and connectors, knowledge bases, embeddings, goals, retrieval, triggers (Telegram and other channels), workflows, scheduling, evals, governance, security and grants, judged against millions of documents, multi-replica deployment and Postgres as the source of truth. Every fix has a regression test that failed before the change. Statuses are re-certified against the current code by independent read-only reviewers; nothing is marked Pass without an end-to-end path and tests.
 
-## Certification summary
+## Post-wave-7 re-certification (2026-09-30)
+
+Waves 7A–7D were re-certified read-only against `main` at `287cb90f7` by one reviewer per area group;
+every prior gap and defect was re-checked at its current `file:line`. Full detail:
+`docs/audits/2026-09-29-recert/certification-matrix.json` and `open-gaps.md`.
+
+| Status | Before wave 7 | After wave 7 |
+|---|---:|---:|
+| Pass | 20 | 21 |
+| Partial | 149 | 147 |
+| Fail | 9 | 7 |
+| Not implemented | 14 | 15 |
+| Parked (owner decision, not re-verified) | 0 | 2 |
+
+126 items verified fixed, 684 still open, 294 new defects (17 high, 164 medium). The g06 group also
+certified each of the 58 trigger types and 5 channels separately (48 PASS/PARTIAL, 5 FAIL, 10 not built).
+
+- **Up:** HITL pause/resume, incident controls (e-stop), Insights and platform admin left FAIL; agent
+  loop kernel, planner, executor, dynamic orchestration, tenant BYOK and the frontend shell reached PASS;
+  golden datasets and paid marketplace are now honest 501s.
+- **Down:** built-in MCP servers FAIL (317 of 324 handlers ignore tenant credentials and use platform env
+  keys); tool reliability memory FAIL (never records real calls; the executor's lookup raises TypeError);
+  analytics FAIL (in-memory fallback leaks other tenants' goals whenever the tenant's DB result is empty);
+  agent-scoped keys FAIL (issued but never resolved by any auth path).
+- **Still FAIL:** workflow run execution and workflow HITL — on the Celery path, approving re-runs every
+  pre-approval step, and a second approval step recreates the first, so multi-approval workflows never finish.
+- **Parked:** Org Brain and Unified Chat, at the owner's request.
+
+### Fixed after the re-certification: user-reported workflow hang (`23057af00`)
+Reproduced with the user's workflow on a real Celery worker. (1) A failing step beside parallel branches
+made the next superstep's steps write `status` concurrently, and LangGraph raised `InvalidUpdateError`, so
+the run died with a framework message instead of pausing on the failing step; run-control state keys now
+use a last-write reducer. (2) Credential-free built-ins (web_search, http_request, OCR) were only wired at
+startup for tenants that existed then; they are now provisioned on first use for later tenants. (3) The
+legacy `helm/agentverse` worker consumed none of the workflow queues. After the fix the user's workflow
+runs every step in ~5 s and pauses on its deliberately raising final step, with that error shown.
+Note for local testing: the Docker stack on this machine runs images built 6 days ago, and an old local
+Celery worker (started 2026-09-23) also consumes the same Redis queues; both run pre-wave-7 code.
+
+## Certification summary (pre-wave-7 re-audit, `a4d172588`)
 
 192 features, re-certified against current `main`.
 

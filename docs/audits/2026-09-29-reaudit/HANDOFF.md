@@ -351,3 +351,13 @@ Started against `287cb90f7`. Plan, per-group output files and the resume procedu
 `docs/audits/2026-09-29-recert/README.md` (agent prompt: `PROMPT.md`). Groups g01, g04, g05, g06 were
 launched first; g02, g03, g07, g08, g09, g10 queue behind them. If this session ran out, check which
 `gNN-*.json` files are missing/incomplete and resume those groups with `PROMPT.md`.
+
+## 2026-09-30 — Post-wave-7 re-certification COMPLETE
+All groups re-certified read-only against `287cb90f7`; merged into
+`docs/audits/2026-09-29-recert/certification-matrix.json` and `open-gaps.md` (21 PASS · 147 PARTIAL ·
+7 FAIL · 15 NOT_IMPLEMENTED · 2 PARKED; 126 items verified fixed, 684 still open, 294 new defects incl.
+17 high). Remaining FAILs: built-in MCP servers (platform-credential confused deputy), agent-scoped keys
+(x2), tool reliability memory, workflow run execution + workflow HITL (Celery resume re-runs
+pre-approval steps), analytics (cross-tenant in-memory fallback).
+After the recert, `23057af00` fixed the user-reported workflow hang (parallel-failure InvalidUpdateError,
+built-ins missing for tenants created after startup, legacy helm worker queues).
