@@ -50,7 +50,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_alertmanager_requires_the_bearer_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    gs = MagicMock(submit_goal=AsyncMock(return_value={"goal_id": "g"}))
+    gs = MagicMock(create_goal=AsyncMock(return_value={"goal_id": "g"}))
     client = _client(goal_service=gs)
     alert = {"alerts": [{"status": "firing", "labels": {"alertname": "X"}}]}
     assert client.post("/integrations/events/alertmanager", json=alert).status_code == 503
@@ -58,7 +58,7 @@ def test_alertmanager_requires_the_bearer_token(monkeypatch: pytest.MonkeyPatch)
     assert client.post("/integrations/events/alertmanager", json=alert).status_code == 401
     bad = {"Authorization": "Bearer nope"}
     assert client.post("/integrations/events/alertmanager", json=alert, headers=bad).status_code == 401
-    gs.submit_goal.assert_not_called()
+    gs.create_goal.assert_not_called()
     ok = client.post("/integrations/events/alertmanager", json=alert,
                      headers={"Authorization": "Bearer tok"})
     assert ok.status_code == 200 and ok.json()["goals_created"] == 1

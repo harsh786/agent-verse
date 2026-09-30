@@ -33,6 +33,60 @@ async def _tenant_plan(request: Request, tenant_id: str) -> PlanTier:
     )
 
 
+async def _dispatch_alert(
+    request: Request,
+    *,
+    source: str,
+    tenant_id: str,
+    goal_text: str,
+    payload: dict[str, Any],
+    message_id: str | None,
+    priority: str,
+) -> Any:
+    """Fire an external alert through the TriggerDispatcher (TRG-35).
+
+    These routes submitted goals directly: no dedup (every re-send of an alert
+    made a new goal), no rate limit / circuit breaker / bulkhead, no audit
+    row. Returns the dispatcher's event (a dedup or throttle skip is an event
+    with ``goal_created=False``), or ``None`` when the goal could not be
+    created — the caller answers 5xx so the sender retries.
+    """
+    from app.tenancy.context import TenantContext
+    from app.triggers.dispatcher import TriggerDispatcher
+    from app.triggers.models import TriggerSpec, TriggerType
+
+    state = request.app.state
+    dispatcher = getattr(state, "trigger_dispatcher", None)
+    if dispatcher is None:
+        goal_service = getattr(state, "goal_service", None)
+        if goal_service is None:
+            raise HTTPException(status_code=503, detail="Goal service unavailable")
+        dispatcher = TriggerDispatcher(
+            goal_service=goal_service,
+            db_session_factory=getattr(state, "db_session_factory", None),
+            redis=getattr(state, "redis", None),
+        )
+    spec = TriggerSpec(
+        trigger_type=TriggerType(source), goal_template=goal_text, priority=priority
+    )
+    # A stable per-integration trigger id keys the rate limit, circuit breaker
+    # and audit trail (trigger_events.trigger_id is VARCHAR(36)).
+    spec.trigger_id = f"integration-{source}"  # type: ignore[attr-defined]
+    ctx = TenantContext(
+        tenant_id=tenant_id, plan=await _tenant_plan(request, tenant_id), api_key_id=source
+    )
+    try:
+        event = await dispatcher.dispatch(spec, payload, ctx, message_id=message_id)
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("%s_alert_dispatch_failed: %s", source, exc)
+        return None
+    if not getattr(event, "goal_created", False) and not getattr(event, "skip_reason", None):
+        return None  # the dispatcher could not create the goal (see its DLQ)
+    return event
+
+
 def _get_slack_tenant_id() -> str:
     return os.getenv("SLACK_TENANT_ID", "")
 
@@ -388,12 +442,12 @@ async def receive_alertmanager_event(
         env_var="ALERTMANAGER_WEBHOOK_TOKEN",
         label="Alertmanager",
     )
-    goal_service = getattr(request.app.state, "goal_service", None)
+    alert_tenant = os.getenv("ALERTMANAGER_TENANT_ID", "")
     created_goals: list[str] = []
+    firing = [a for a in payload.alerts if a.get("status") == "firing"]
+    failed = 0
 
-    for alert in payload.alerts:
-        if alert.get("status") != "firing":
-            continue
+    for alert in firing:
         alertname = alert.get("labels", {}).get("alertname", "Unknown Alert")
         severity = alert.get("labels", {}).get("severity", "warning")
         annotations = alert.get("annotations", {})
@@ -404,33 +458,27 @@ async def receive_alertmanager_event(
             f"Summary: {summary}\n"
             f"Investigate and resolve this {severity} alert."
         )
+        if not alert_tenant:
+            continue
+        # TRG-35: one firing episode (fingerprint + startsAt) is one goal;
+        # Alertmanager re-sends it every repeat_interval.
+        episode = f"{alert.get('fingerprint') or alertname}:{alert.get('startsAt') or ''}"
+        event = await _dispatch_alert(
+            request,
+            source="alertmanager",
+            tenant_id=alert_tenant,
+            goal_text=goal_text,
+            payload={"alert": alert, "alertname": alertname, "severity": severity},
+            message_id=episode,
+            priority="high" if severity == "critical" else "normal",
+        )
+        if event is None:
+            failed += 1
+        elif getattr(event, "goal_created", False) and getattr(event, "goal_id", None):
+            created_goals.append(str(event.goal_id))
 
-        if goal_service is not None:
-            try:
-                from app.tenancy.context import TenantContext
-
-                alert_tenant = os.getenv("ALERTMANAGER_TENANT_ID", "")
-                if not alert_tenant:
-                    continue
-                tenant_ctx = TenantContext(
-                    tenant_id=alert_tenant,
-                    plan=await _tenant_plan(request, alert_tenant),
-                    api_key_id="alertmanager",
-                )
-                # priority/dry_run are required by submit_goal; omitting them
-                # raised a TypeError (swallowed below) so no goal was ever made.
-                result = await goal_service.submit_goal(
-                    goal=goal_text,
-                    priority="high" if severity == "critical" else "normal",
-                    dry_run=False,
-                    tenant_ctx=tenant_ctx,
-                )
-                created_goals.append(result.get("goal_id", ""))
-            except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).warning("alertmanager_goal_create_failed: %s", exc)
-
+    if firing and alert_tenant and failed == len(firing):
+        raise HTTPException(status_code=503, detail="Alert goals could not be created; retry")
     return {
         "received": len(payload.alerts),
         "goals_created": len(created_goals),
@@ -474,33 +522,24 @@ async def receive_datadog_event(
             "reason": f"alert_type={payload.alert_type} not critical",
         }
 
-    goal_service = getattr(request.app.state, "goal_service", None)
     goal_id: str | None = None
-    if goal_service is not None:
+    dd_tenant = os.getenv("DATADOG_TENANT_ID", "")
+    if dd_tenant:
         goal_text = f"Datadog Alert: {payload.title}\n{payload.text[:500]}"
-        dd_tenant = os.getenv("DATADOG_TENANT_ID", "")
-        if dd_tenant:
-            try:
-                from app.tenancy.context import TenantContext
-
-                ctx = TenantContext(
-                    tenant_id=dd_tenant,
-                    plan=await _tenant_plan(request, dd_tenant),
-                    api_key_id="datadog",
-                )
-                # priority/dry_run are required by submit_goal (see alertmanager).
-                result = await goal_service.submit_goal(
-                    goal=goal_text,
-                    priority="normal" if payload.alert_type == "warning" else "high",
-                    dry_run=False,
-                    tenant_ctx=ctx,
-                )
-                goal_id = result.get("goal_id")
-            except Exception as exc:
-                import logging
-
-                logging.getLogger(__name__).warning("datadog_goal_failed: %s", exc)
-
+        # TRG-35: a re-sent event (same id) is deduplicated by the dispatcher.
+        event = await _dispatch_alert(
+            request,
+            source="datadog",
+            tenant_id=dd_tenant,
+            goal_text=goal_text,
+            payload=payload.model_dump(),
+            message_id=payload.id or None,
+            priority="normal" if payload.alert_type == "warning" else "high",
+        )
+        if event is None:
+            raise HTTPException(status_code=503, detail="Alert goal could not be created; retry")
+        if getattr(event, "goal_created", False):
+            goal_id = getattr(event, "goal_id", None)
     return {
         "status": "processed",
         "goal_id": goal_id,

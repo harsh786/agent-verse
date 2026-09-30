@@ -32,7 +32,7 @@ class _Session:
         if self._fail:
             raise RuntimeError("db down")
         self.queries.append(params)
-        return _Result(self._plans.get(params["t"]))
+        return _Result(self._plans.get(params.get("t", "")))
 
 
 def plan_db(plans: dict[str, str], *, fail: bool = False) -> Any:

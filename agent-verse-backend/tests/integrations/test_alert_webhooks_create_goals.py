@@ -27,7 +27,8 @@ def _app() -> tuple[TestClient, object]:
     app = FastAPI()
     app.include_router(router)
     goal_service = create_autospec(GoalService, instance=True)
-    goal_service.submit_goal.return_value = {"goal_id": "g-alert"}
+    # TRG-35: alerts go through the TriggerDispatcher, which calls create_goal.
+    goal_service.create_goal.return_value = {"goal_id": "g-alert"}
     app.state.goal_service = goal_service
     return TestClient(app), goal_service
 
@@ -63,10 +64,10 @@ def test_alertmanager_firing_alert_creates_goal(monkeypatch: pytest.MonkeyPatch)
     assert r.status_code == 200, r.text
     assert r.json()["goals_created"] == 1
     assert r.json()["goal_ids"] == ["g-alert"]
-    goal_service.submit_goal.assert_awaited_once()  # type: ignore[attr-defined]
-    kwargs = goal_service.submit_goal.await_args.kwargs  # type: ignore[attr-defined]
-    assert "HighCPU" in kwargs["goal"]
-    assert kwargs["dry_run"] is False
+    goal_service.create_goal.assert_awaited_once()  # type: ignore[attr-defined]
+    kwargs = goal_service.create_goal.await_args.kwargs  # type: ignore[attr-defined]
+    assert "HighCPU" in kwargs["goal_text"]
+    assert kwargs["idempotency_key"]
     assert kwargs["tenant_ctx"].tenant_id == "tenant-ops"
 
 
@@ -85,6 +86,6 @@ def test_datadog_critical_event_creates_goal(monkeypatch: pytest.MonkeyPatch) ->
 
     assert r.status_code == 200, r.text
     assert r.json()["goal_id"] == "g-alert"
-    kwargs = goal_service.submit_goal.await_args.kwargs  # type: ignore[attr-defined]
-    assert "DB down" in kwargs["goal"]
+    kwargs = goal_service.create_goal.await_args.kwargs  # type: ignore[attr-defined]
+    assert "DB down" in kwargs["goal_text"]
     assert kwargs["tenant_ctx"].tenant_id == "tenant-dd"

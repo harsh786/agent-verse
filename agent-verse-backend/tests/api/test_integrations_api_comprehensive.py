@@ -569,7 +569,7 @@ def test_alertmanager_firing_alert_no_tenant_id_ignored(monkeypatch) -> None:
 def test_alertmanager_firing_alert_creates_goal(monkeypatch) -> None:
     monkeypatch.setenv("ALERTMANAGER_TENANT_ID", "am-tenant-2")
     mock_svc = MagicMock()
-    mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "ag2"})
+    mock_svc.create_goal = AsyncMock(return_value={"goal_id": "ag2"})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
         "/integrations/events/alertmanager",
@@ -615,7 +615,7 @@ def test_datadog_critical_alert_creates_goal(monkeypatch) -> None:
     monkeypatch.setenv("DATADOG_TENANT_ID", "dd-tenant")
     monkeypatch.delenv("DATADOG_WEBHOOK_SECRET", raising=False)
     mock_svc = MagicMock()
-    mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "dd-goal-1"})
+    mock_svc.create_goal = AsyncMock(return_value={"goal_id": "dd-goal-1"})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
         "/integrations/events/datadog",
@@ -628,7 +628,7 @@ def test_datadog_critical_alert_creates_goal(monkeypatch) -> None:
 def test_datadog_warning_alert_creates_goal(monkeypatch) -> None:
     monkeypatch.setenv("DATADOG_TENANT_ID", "dd-tenant-2")
     mock_svc = MagicMock()
-    mock_svc.submit_goal = AsyncMock(return_value={"goal_id": "dd-goal-2"})
+    mock_svc.create_goal = AsyncMock(return_value={"goal_id": "dd-goal-2"})
     client = TestClient(_make_app(goal_service=mock_svc))
     resp = client.post(
         "/integrations/events/datadog",

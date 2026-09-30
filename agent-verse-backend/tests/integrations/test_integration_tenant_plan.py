@@ -25,7 +25,7 @@ def _app(plans: dict[str, str]) -> tuple[TestClient, Any]:
     app = FastAPI()
     app.include_router(router)
     goal_service = create_autospec(GoalService, instance=True)
-    goal_service.submit_goal.return_value = {"goal_id": "g-1"}
+    goal_service.create_goal.return_value = {"goal_id": "g-1"}
     app.state.goal_service = goal_service
     app.state.db_session_factory = plan_db(plans)
     return TestClient(app), goal_service
@@ -53,7 +53,7 @@ def test_enterprise_tenant_alertmanager_goal_runs_as_enterprise(
     )
 
     assert r.status_code == 200, r.text
-    ctx = goal_service.submit_goal.await_args.kwargs["tenant_ctx"]
+    ctx = goal_service.create_goal.await_args.kwargs["tenant_ctx"]
     assert ctx.plan is PlanTier.ENTERPRISE
 
 
@@ -69,7 +69,7 @@ def test_free_tenant_alertmanager_goal_runs_as_free(monkeypatch: pytest.MonkeyPa
     )
 
     assert r.status_code == 200, r.text
-    ctx = goal_service.submit_goal.await_args.kwargs["tenant_ctx"]
+    ctx = goal_service.create_goal.await_args.kwargs["tenant_ctx"]
     assert ctx.plan is PlanTier.FREE
 
 
