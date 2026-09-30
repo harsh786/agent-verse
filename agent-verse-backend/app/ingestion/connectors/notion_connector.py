@@ -65,12 +65,15 @@ class NotionConnector:
         self,
         database_id: str,
         page_size: int = 50,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query a Notion database and return all page objects."""
+        """Query a Notion database; at most ``max_pages`` page objects (None = all)."""
         pages: list[dict[str, Any]] = []
         has_more = True
         start_cursor: str | None = None
         while has_more:
+            if max_pages is not None and len(pages) >= max_pages:
+                break
             payload: dict[str, Any] = {"page_size": page_size}
             if start_cursor:
                 payload["start_cursor"] = start_cursor
@@ -78,7 +81,7 @@ class NotionConnector:
             pages.extend(data.get("results", []))
             has_more = data.get("has_more", False)
             start_cursor = data.get("next_cursor")
-        return pages
+        return pages if max_pages is None else pages[:max_pages]
 
     async def fetch_page_content(self, page_id: str) -> str:
         """Return the plain-text content of a Notion page by fetching its blocks."""

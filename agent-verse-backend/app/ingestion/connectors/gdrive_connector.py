@@ -49,9 +49,12 @@ class GDriveConnector:
         self,
         credentials: Any | None = None,
         key_path: str | None = None,
+        service_account_info: dict[str, Any] | None = None,
     ) -> None:
         self._creds = credentials
         self._key_path = key_path
+        # The parsed service-account key, kept in memory (never written to disk).
+        self._service_account_info = service_account_info
         self._service: Any = None
 
     # ------------------------------------------------------------------
@@ -73,6 +76,12 @@ class GDriveConnector:
 
         if self._creds is not None:
             self._service = build("drive", "v3", credentials=self._creds)
+        elif self._service_account_info is not None:
+            creds = service_account.Credentials.from_service_account_info(
+                self._service_account_info,
+                scopes=["https://www.googleapis.com/auth/drive.readonly"],
+            )
+            self._service = build("drive", "v3", credentials=creds)
         elif self._key_path is not None:
             creds = service_account.Credentials.from_service_account_file(
                 self._key_path,
@@ -91,13 +100,14 @@ class GDriveConnector:
         self,
         folder_id: str,
         page_size: int = 100,
+        max_files: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return file metadata for all files in a Google Drive folder."""
+        """File metadata of a Drive folder; at most ``max_files`` (None = all)."""
         service = self._build_service()
         files: list[dict[str, Any]] = []
         page_token: str | None = None
         query = f"'{folder_id}' in parents and trashed = false"
-        while True:
+        while max_files is None or len(files) < max_files:
             params: dict[str, Any] = {
                 "q": query,
                 "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, size)",
@@ -110,10 +120,14 @@ class GDriveConnector:
             page_token = result.get("nextPageToken")
             if not page_token:
                 break
-        return files
+        return files if max_files is None else files[:max_files]
 
-    def download_file(self, file_id: str, mime_type: str) -> str:
-        """Download or export a Drive file and return its content as a string."""
+    def download_file(self, file_id: str, mime_type: str, max_bytes: int | None = None) -> str:
+        """Download or export a Drive file and return its content as a string.
+
+        Raises ``ValueError`` once more than ``max_bytes`` have been downloaded
+        (the whole file used to be buffered in memory, however large).
+        """
         service = self._build_service()
 
         export_mime = self._EXPORT_MIME.get(mime_type)
@@ -133,6 +147,8 @@ class GDriveConnector:
         done = False
         while not done:
             _, done = downloader.next_chunk()
+            if max_bytes is not None and buf.tell() > max_bytes:
+                raise ValueError(f"file exceeds the {max_bytes}-byte download cap")
         return buf.getvalue().decode("utf-8", errors="replace")
 
     def get_file_metadata(self, file_id: str) -> dict[str, Any]:

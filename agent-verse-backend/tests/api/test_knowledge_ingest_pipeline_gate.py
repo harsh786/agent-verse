@@ -240,7 +240,7 @@ def test_legacy_ingestor_path_redacts_and_dedups_per_document() -> None:
         first = client.post("/knowledge/ingest/slack", json=body, headers=_HDRS)
         # Re-ingest: doc-1 and doc-2 are already indexed → nothing new.
         second = client.post("/knowledge/ingest/slack", json=body, headers=_HDRS)
-    assert first.status_code == 202, first.text
+    assert first.status_code == 200, first.text  # synchronous (KB-11), not 202
     assert first.json()["chunks_ingested"] == 2
     assert second.json()["chunks_ingested"] == 0
     assert all(_SSN not in t for t in embedder.seen)

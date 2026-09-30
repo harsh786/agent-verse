@@ -2048,7 +2048,7 @@ async def ingest_docx(
     return {"chunks_ingested": ingested, "source": filename, "source_type": "docx"}
 
 
-@router.post("/ingest/github", status_code=202)
+@router.post("/ingest/github", status_code=200)
 async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str, Any]:
     """Ingest a GitHub repository into a knowledge collection via GitHub REST API."""
     tenant = _require_tenant(request)
@@ -2075,7 +2075,7 @@ async def ingest_github(request: Request, body: GitHubIngestRequest) -> dict[str
     }
 
 
-@router.post("/ingest/confluence", status_code=202)
+@router.post("/ingest/confluence", status_code=200)
 async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> dict[str, Any]:
     """Ingest a Confluence space into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -2107,7 +2107,7 @@ async def ingest_confluence(request: Request, body: ConfluenceIngestRequest) -> 
     }
 
 
-@router.post("/ingest/jira", status_code=202)
+@router.post("/ingest/jira", status_code=200)
 async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, Any]:
     """Ingest Jira project issues into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -2143,7 +2143,7 @@ async def ingest_jira(request: Request, body: JiraIngestRequest) -> dict[str, An
     }
 
 
-@router.post("/ingest/slack", status_code=202)
+@router.post("/ingest/slack", status_code=200)
 async def ingest_slack(request: Request, body: SlackIngestRequest) -> dict[str, Any]:
     """Ingest a Slack channel's message history into a knowledge collection."""
     tenant = _require_tenant(request)
@@ -3082,12 +3082,21 @@ class EmailIngestRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# Legacy Notion / Drive ingestion runs inside the request: it is bounded.
+_LEGACY_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+
+
 class NotionIngestRequest(BaseModel):
     api_key: SecretStr = Field(..., description="Notion integration token")
     page_id: str | None = None
     database_id: str | None = None
     collection_id: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # A database used to be paged in full, however large.
+    max_pages: int = Field(default=200, ge=1, le=1000)
+    max_total_bytes: int = Field(
+        default=_LEGACY_MAX_TOTAL_BYTES, ge=1, le=_LEGACY_MAX_TOTAL_BYTES
+    )
 
 
 class GDriveIngestRequest(BaseModel):
@@ -3095,6 +3104,11 @@ class GDriveIngestRequest(BaseModel):
     collection_id: str
     service_account_key_json: str = Field(..., description="Service account key JSON as a string")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Every file of the folder used to be downloaded and ingested, unbounded.
+    max_files: int = Field(default=200, ge=1, le=1000)
+    max_total_bytes: int = Field(
+        default=_LEGACY_MAX_TOTAL_BYTES, ge=1, le=_LEGACY_MAX_TOTAL_BYTES
+    )
 
 
 @router.post("/ingest/email")
@@ -3179,6 +3193,8 @@ async def ingest_notion(
         )
 
         total_chunks = 0
+        pages_ingested = 0
+        truncated = False
         if body.page_id:
             content = await connector.fetch_page_content(body.page_id)
             if content.strip():
@@ -3192,13 +3208,20 @@ async def ingest_notion(
                     in_memory_only=False,
                 )
                 total_chunks += res.chunks_created
+                pages_ingested += 1
         elif body.database_id:
-            pages = await connector.list_pages(body.database_id)
+            pages = await connector.list_pages(body.database_id, max_pages=body.max_pages)
+            truncated = len(pages) >= body.max_pages
+            total_bytes = 0
             for page in pages:
                 pid = page["id"]
                 content = await connector.fetch_page_content(pid)
                 if not content.strip():
                     continue
+                total_bytes += len(content.encode("utf-8"))
+                if total_bytes > body.max_total_bytes:
+                    truncated = True
+                    break
                 res = await orch.ingest(
                     content,
                     content_type="text",
@@ -3209,8 +3232,15 @@ async def ingest_notion(
                     in_memory_only=False,
                 )
                 total_chunks += res.chunks_created
+                pages_ingested += 1
 
-        return {"status": "ingested", "chunks_created": total_chunks, "source": "notion"}
+        return {
+            "status": "ingested",
+            "chunks_created": total_chunks,
+            "source": "notion",
+            "pages_ingested": pages_ingested,
+            "truncated": truncated,
+        }
     except HTTPException:
         raise
     except IngestionPolicyRejectedError as exc:
@@ -3260,53 +3290,72 @@ async def ingest_gdrive_folder(
         raise HTTPException(status_code=503, detail="Knowledge store not available")
 
     try:
-        import os
-        import tempfile
+        service_account_info = json.loads(body.service_account_key_json)
+        if not isinstance(service_account_info, dict):
+            raise ValueError("not a JSON object")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail="service_account_key_json must be a JSON object"
+        ) from exc
 
+    try:
         from app.ingestion.connectors.gdrive_connector import GDriveConnector
         from app.ingestion.orchestrator import IngestionOrchestrator
 
-        # Write SA key to temp file so googleapiclient can read it
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            f.write(body.service_account_key_json)
-            key_path = f.name
-
-        try:
-            connector = GDriveConnector(key_path=key_path)
-            files = connector.list_files(body.folder_id)
-            orch = IngestionOrchestrator(
-                knowledge_store=knowledge_store,
-                embedder=getattr(request.app.state, "embedder", None),
-                embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
-            )
-            total_chunks = 0
-            ingested_count = 0
-            failed: list[dict[str, str]] = []
-            skipped: list[dict[str, str]] = []
-            for file_meta in files:
-                fid = file_meta["id"]
-                fname = file_meta.get("name", fid)
-                mime = file_meta.get("mimeType", "")
-                try:
-                    content = connector.download_file(fid, mime)
-                    if not content.strip():
-                        skipped.append({"file_id": fid, "filename": fname, "reason": "empty"})
-                        continue
-                    res = await orch.ingest(
-                        content,
-                        content_type="auto",
-                        collection_id=body.collection_id,
-                        tenant_ctx=tenant,
-                        source_url=f"gdrive:{fid}",
-                        metadata={"gdrive_file_id": fid, "filename": fname, **body.metadata},
-                        in_memory_only=False,
-                    )
-                    total_chunks += res.chunks_created
-                    ingested_count += 1
-                except Exception as file_exc:
-                    failed.append({"file_id": fid, "filename": fname, "error": str(file_exc)})
-        finally:
-            os.unlink(key_path)
+        # The key stays in memory (it used to be written to a temp file), and
+        # the synchronous Drive SDK runs in a worker thread, bounded by count
+        # and total bytes.
+        connector = GDriveConnector(service_account_info=service_account_info)
+        files = await asyncio.to_thread(
+            connector.list_files, body.folder_id, max_files=body.max_files
+        )
+        truncated = len(files) >= body.max_files
+        total_bytes = 0
+        orch = IngestionOrchestrator(
+            knowledge_store=knowledge_store,
+            embedder=getattr(request.app.state, "embedder", None),
+            embed_provider_resolver=getattr(request.app.state, "embed_provider_resolver", None),
+        )
+        total_chunks = 0
+        ingested_count = 0
+        failed: list[dict[str, str]] = []
+        skipped: list[dict[str, str]] = []
+        for file_meta in files:
+            fid = file_meta["id"]
+            fname = file_meta.get("name", fid)
+            mime = file_meta.get("mimeType", "")
+            remaining = body.max_total_bytes - total_bytes
+            if remaining <= 0:
+                truncated = True
+                break
+            try:
+                content = await asyncio.to_thread(
+                    connector.download_file, fid, mime, max_bytes=remaining
+                )
+                size = len(content.encode("utf-8"))
+                if size > remaining:
+                    truncated = True
+                    break
+                total_bytes += size
+                if not content.strip():
+                    skipped.append({"file_id": fid, "filename": fname, "reason": "empty"})
+                    continue
+                res = await orch.ingest(
+                    content,
+                    content_type="auto",
+                    collection_id=body.collection_id,
+                    tenant_ctx=tenant,
+                    source_url=f"gdrive:{fid}",
+                    metadata={"gdrive_file_id": fid, "filename": fname, **body.metadata},
+                    in_memory_only=False,
+                )
+                total_chunks += res.chunks_created
+                ingested_count += 1
+            except Exception as file_exc:
+                if "download cap" in str(file_exc):
+                    truncated = True
+                    break
+                failed.append({"file_id": fid, "filename": fname, "error": str(file_exc)})
 
         if failed and ingested_count == 0:
             outcome = "failed"
@@ -3320,6 +3369,7 @@ async def ingest_gdrive_folder(
             "source": "gdrive",
             "files_processed": len(files),
             "files_ingested": ingested_count,
+            "truncated": truncated,
             "failed": failed,
             "skipped": skipped,
             "errors": [f"{f['filename']}: {f['error']}" for f in failed],
