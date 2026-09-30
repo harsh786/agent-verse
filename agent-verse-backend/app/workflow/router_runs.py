@@ -40,7 +40,7 @@ class StepResultResponse(BaseModel):
     step_type: str
     status: str
     input: dict[str, Any] | None = None
-    output: dict[str, Any] | None = None
+    output: Any = None  # any JSON value (an HTTP step may return an array)
     error: str | None = None
     started_at: str | None = None
     finished_at: str | None = None

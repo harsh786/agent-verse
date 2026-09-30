@@ -319,11 +319,12 @@ class WorkflowCompiler:
                     _prior = None
                     with contextlib.suppress(Exception):
                         _prior = await run_store.get_step_result(_tid, _rid, step.id)
-                    if (
-                        _prior
-                        and _prior.get("status") == StepStatus.COMPLETE.value
-                        and _prior.get("output") is not None
-                    ):
+                    # Any COMPLETE step is skipped — also one whose output is
+                    # not a JSON object or is empty — so resuming never replays
+                    # an earlier step's side effect.
+                    if _prior and _prior.get("status") == StepStatus.COMPLETE.value:
+                        if _prior.get("output") is None:
+                            return {}
                         return {"step_outputs": {step.id: _prior["output"]}}
                 # STOP / PAUSE: honor an operator control status set via the API.
                 # Raising halts the whole run (propagates out of ainvoke) so no
@@ -374,7 +375,7 @@ class WorkflowCompiler:
                             run_store,
                             state,
                             step,
-                            result.get("status") or StepStatus.COMPLETE,
+                            self._step_status_for(result.get("status")),
                             (result.get("step_outputs") or {}).get(step.id),
                             result.get("error"),
                         )
@@ -441,6 +442,25 @@ class WorkflowCompiler:
             _log.warning("step_start_persist_failed", step_id=step.id, error=str(exc))
 
     @staticmethod
+    def _step_status_for(run_status: Any) -> Any:
+        """The step-result status for a node that returned ``run_status``.
+
+        A node's ``status`` key is the *run* status it asks for (``running``
+        after an approval decision, ``waiting_hitl`` when it suspends, ...). A
+        node that returned normally has finished its own work, so ``running``
+        (or no status) means the STEP is ``complete``. Persisting ``running``
+        made a decided approval look unfinished: the next resume re-entered it
+        as a new suspend and created a duplicate approval, so a workflow with
+        two approval gates never finished. Halting statuses are kept as-is.
+        """
+        if not run_status or run_status in (
+            WorkflowRunStatus.RUNNING,
+            WorkflowRunStatus.COMPLETE,
+        ):
+            return StepStatus.COMPLETE
+        return run_status
+
+    @staticmethod
     async def _record_step_finish(
         run_store: Any,
         state: WorkflowState,
@@ -455,7 +475,9 @@ class WorkflowCompiler:
                 tenant_id=state["tenant_id"],
                 step_id=step.id,
                 status=status,
-                output=output if isinstance(output, dict) else None,
+                # Any JSON value (an HTTP step may return an array): dropping a
+                # non-object output made the step look output-less on resume.
+                output=output,
                 error=error,
             )
         except Exception as exc:

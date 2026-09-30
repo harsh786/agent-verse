@@ -128,7 +128,7 @@ class WorkflowRunStore(Protocol):
         tenant_id: str,
         step_id: str,
         status: Any,
-        output: dict[str, Any] | None = None,
+        output: Any = None,
         error: str | None = None,
         cost_usd: float | None = None,
     ) -> bool: ...
@@ -530,7 +530,7 @@ class PostgresWorkflowRunStore:
         tenant_id: str,
         step_id: str,
         status: Any,
-        output: dict[str, Any] | None = None,
+        output: Any = None,
         error: str | None = None,
         cost_usd: float | None = None,
     ) -> bool:
