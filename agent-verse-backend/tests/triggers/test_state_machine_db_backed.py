@@ -288,7 +288,7 @@ def test_sync_transition_autocreates_instance() -> None:
     result = sm.transition("m1", "e-auto", "complete", "t1")
     assert result["transitioned"] is True
     assert result["from_state"] == "pending"
-    assert sm.get_instance("e-auto", "t1") is not None
+    assert sm.get_instance("m1", "e-auto", "t1") is not None
 
 
 def test_sync_transition_unknown_machine_raises() -> None:
@@ -382,7 +382,7 @@ async def test_get_instance_async_no_db() -> None:
     sm = StateMachine()
     sm.define(_defn())
     created = sm.create_instance("m1", "e1", "t1")
-    result = await sm.get_instance_async("e1", "t1")
+    result = await sm.get_instance_async("m1", "e1", "t1")
     assert result is created
 
 
@@ -403,7 +403,7 @@ async def test_get_instance_async_found_in_db() -> None:
     session = FakeSession(execute_results=[_Result(), _Result(scalar=row)])
     sm = StateMachine()
     sm._db_factory = session
-    result = await sm.get_instance_async("e1", "t1")
+    result = await sm.get_instance_async("m1", "e1", "t1")
     assert result is not None
     assert result.instance_id == "i1"
     assert result.history == [{"event": "x"}]
@@ -414,7 +414,7 @@ async def test_get_instance_async_not_found_in_db() -> None:
     session = FakeSession(execute_results=[_Result(), _Result(scalar=None)])
     sm = StateMachine()
     sm._db_factory = session
-    assert await sm.get_instance_async("missing", "t1") is None
+    assert await sm.get_instance_async("m1", "missing", "t1") is None
 
 
 @pytest.mark.asyncio
@@ -424,7 +424,7 @@ async def test_get_instance_async_db_failure_falls_back_to_memory() -> None:
     created = sm.create_instance("m1", "e1", "t1")
     session = FakeSession(raise_on_call_index=0)
     sm._db_factory = session
-    result = await sm.get_instance_async("e1", "t1")
+    result = await sm.get_instance_async("m1", "e1", "t1")
     assert result is created
 
 

@@ -137,7 +137,7 @@ async def test_instance_transition_persists(db_factory: async_sessionmaker) -> N
         # Fresh registry reads the persisted current_state.
         sm2 = StateMachine()
         sm2._db_factory = db_factory
-        reloaded = await sm2.get_instance_async("order-1", tenant)
+        reloaded = await sm2.get_instance_async(machine_id, "order-1", tenant)
         assert reloaded is not None
         assert reloaded.current_state == "processing"
         assert reloaded.status == "running"
@@ -161,7 +161,7 @@ async def test_terminal_transition_marks_completed(db_factory: async_sessionmake
 
         sm2 = StateMachine()
         sm2._db_factory = db_factory
-        reloaded = await sm2.get_instance_async("order-2", tenant)
+        reloaded = await sm2.get_instance_async(machine_id, "order-2", tenant)
         assert reloaded is not None
         assert reloaded.current_state == "completed"
         assert reloaded.status == "completed"

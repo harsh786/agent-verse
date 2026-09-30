@@ -62,7 +62,7 @@ def test_sm_transition_chain():
     sm.transition("m1", "order-002", "start", "t1")
     result = sm.transition("m1", "order-002", "complete", "t1")
     assert result["to_state"] == "completed"
-    instance = sm.get_instance("order-002", "t1")
+    instance = sm.get_instance("m1", "order-002", "t1")
     assert instance.status == "completed"
 
 
@@ -79,7 +79,7 @@ def test_sm_history_recorded():
     sm.create_instance("m1", "order-004", "t1")
     sm.transition("m1", "order-004", "start", "t1")
     sm.transition("m1", "order-004", "cancel", "t1")
-    instance = sm.get_instance("order-004", "t1")
+    instance = sm.get_instance("m1", "order-004", "t1")
     assert len(instance.history) == 2
     assert instance.history[0]["event"] == "start"
     assert instance.history[1]["event"] == "cancel"
@@ -89,7 +89,7 @@ def test_sm_tenant_isolation():
     sm, _ = make_simple_sm()
     sm.create_instance("m1", "order-005", "t1")
     # Tenant 2 cannot access tenant 1's instance
-    instance = sm.get_instance("order-005", "t2")
+    instance = sm.get_instance("m1", "order-005", "t2")
     assert instance is None
 
 

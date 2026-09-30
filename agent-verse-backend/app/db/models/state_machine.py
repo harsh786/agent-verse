@@ -41,11 +41,14 @@ class StateMachineDefinitionRow(Base):
 
 
 class StateMachineInstanceRow(Base):
-    """A running instance of a state machine, keyed by (tenant_id, entity_id)."""
+    """A running instance of a state machine, keyed by (tenant_id, machine_id,
+    entity_id) — two machines can track the same entity independently."""
 
     __tablename__ = "trigger_state_machine_instances"
     __table_args__ = (
-        UniqueConstraint("tenant_id", "entity_id", name="uq_tsm_inst_tenant_entity"),
+        UniqueConstraint(
+            "tenant_id", "machine_id", "entity_id", name="uq_tsm_inst_tenant_machine_entity"
+        ),
     )
 
     instance_id: Mapped[str] = mapped_column(Text, primary_key=True)

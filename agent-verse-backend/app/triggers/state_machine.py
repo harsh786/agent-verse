@@ -84,7 +84,7 @@ class StateMachine:
 
     def __init__(self) -> None:
         self._definitions: dict[tuple[str, str], StateMachineDefinition] = {}
-        self._instances: dict[tuple[str, str], StateMachineInstance] = {}
+        self._instances: dict[tuple[str, str, str], StateMachineInstance] = {}
         # Wired at startup by lifespan so the async methods persist to Postgres.
         # When None (tests / no-DB dev) the async methods fall back to the
         # in-memory dicts above.
@@ -151,11 +151,13 @@ class StateMachine:
             current_state=initial,
             updated_at=datetime.now(UTC).isoformat(),
         )
-        self._instances[(tenant_id, entity_id)] = instance
+        self._instances[(tenant_id, machine_id, entity_id)] = instance
         return instance
 
-    def get_instance(self, entity_id: str, tenant_id: str) -> StateMachineInstance | None:
-        return self._instances.get((tenant_id, entity_id))
+    def get_instance(
+        self, machine_id: str, entity_id: str, tenant_id: str
+    ) -> StateMachineInstance | None:
+        return self._instances.get((tenant_id, machine_id, entity_id))
 
     def transition(
         self,
@@ -169,7 +171,7 @@ class StateMachine:
 
         Returns a dict with {from_state, to_state, event, transitioned}.
         """
-        instance = self.get_instance(entity_id, tenant_id)
+        instance = self.get_instance(machine_id, entity_id, tenant_id)
         if instance is None:
             instance = self.create_instance(machine_id, entity_id, tenant_id)
 
@@ -411,6 +413,7 @@ class StateMachine:
                     await session.execute(
                         select(StateMachineInstanceRow).where(
                             StateMachineInstanceRow.tenant_id == tenant_id,
+                            StateMachineInstanceRow.machine_id == machine_id,
                             StateMachineInstanceRow.entity_id == entity_id,
                         )
                     )
@@ -428,8 +431,9 @@ class StateMachine:
                         )
                     )
                 else:
-                    # Recreating resets the instance (mirrors in-memory overwrite).
-                    existing.machine_id = machine_id
+                    # Recreating resets this machine's instance (mirrors the
+                    # in-memory overwrite); other machines' instances of the
+                    # same entity are separate rows.
                     existing.current_state = initial
                     existing.history = []
                     existing.status = "running"
@@ -444,11 +448,11 @@ class StateMachine:
         return instance
 
     async def get_instance_async(
-        self, entity_id: str, tenant_id: str
+        self, machine_id: str, entity_id: str, tenant_id: str
     ) -> StateMachineInstance | None:
         db = self._db_factory
         if db is None:
-            return self.get_instance(entity_id, tenant_id)
+            return self.get_instance(machine_id, entity_id, tenant_id)
         try:
             from sqlalchemy import select
             from sqlalchemy import text as _t
@@ -463,6 +467,7 @@ class StateMachine:
                     await session.execute(
                         select(StateMachineInstanceRow).where(
                             StateMachineInstanceRow.tenant_id == tenant_id,
+                            StateMachineInstanceRow.machine_id == machine_id,
                             StateMachineInstanceRow.entity_id == entity_id,
                         )
                     )
@@ -481,7 +486,7 @@ class StateMachine:
             )
         except Exception as exc:
             get_logger(__name__).warning("state_machine_get_inst_db_failed", error=str(exc))
-            return self.get_instance(entity_id, tenant_id)
+            return self.get_instance(machine_id, entity_id, tenant_id)
 
     async def transition_async(
         self,
@@ -509,7 +514,7 @@ class StateMachine:
                 )
             return result
 
-        instance = await self.get_instance_async(entity_id, tenant_id)
+        instance = await self.get_instance_async(machine_id, entity_id, tenant_id)
         if instance is None:
             instance = await self.create_instance_async(machine_id, entity_id, tenant_id)
 
@@ -554,6 +559,7 @@ class StateMachine:
                     await session.execute(
                         select(StateMachineInstanceRow).where(
                             StateMachineInstanceRow.tenant_id == tenant_id,
+                            StateMachineInstanceRow.machine_id == machine_id,
                             StateMachineInstanceRow.entity_id == entity_id,
                         )
                     )

@@ -182,7 +182,7 @@ async def transition_instance(
 async def get_instance(machine_id: str, entity_id: str, request: Request) -> dict:
     tenant = _require_tenant(request)
     registry = _get_registry(request)
-    instance = await registry.get_instance_async(entity_id, tenant.tenant_id)
+    instance = await registry.get_instance_async(machine_id, entity_id, tenant.tenant_id)
     if instance is None:
         raise HTTPException(status_code=404, detail="Instance not found")
     return {
