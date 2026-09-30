@@ -509,10 +509,16 @@ export function MemoryExplorerPage() {
   const total: number = (memoryData as any)?.total ?? (memories as MemoryEntry[]).length;
   const safeMemories: MemoryEntry[] = Array.isArray(memories) ? (memories as MemoryEntry[]) : [];
 
-  const { data: reliability = [] } = useQuery({
+  const {
+    data: reliability = [],
+    isLoading: reliabilityLoading,
+    isError: reliabilityError,
+    refetch: refetchReliability,
+  } = useQuery({
     queryKey: ['tool-reliability'],
     queryFn: () => memoryApi.toolReliability(),
   });
+  const unreliableCount = reliability.filter((t) => t.unreliable).length;
 
   const { data: execMemories = [], isLoading: execLoading } = useQuery({
     queryKey: ['execution-memories'],
@@ -775,16 +781,35 @@ export function MemoryExplorerPage() {
             <h2 className="text-sm font-semibold flex items-center gap-2 text-white/80">
               <Wrench className="h-4 w-4 text-risk-amber" aria-hidden="true" />
               Tool Reliability
-              <span className="text-[10px] text-white/30 font-normal">(tools below 70% success threshold)</span>
+              <span className="text-[10px] text-white/30 font-normal">(learned from real tool calls; flagged below 70% success)</span>
             </h2>
           </div>
-          {reliability.length === 0 ? (
-            <div className="px-5 py-6 flex items-center gap-3 text-sm text-verified-green">
-              <CheckCircle2 className="h-5 w-5 shrink-0" aria-hidden="true" />
-              All tools are performing above the reliability threshold.
+          {reliabilityLoading ? (
+            <div className="px-5 py-6 text-sm text-white/40">Loading tool reliability…</div>
+          ) : reliabilityError ? (
+            <div role="alert" className="px-5 py-6 flex items-center gap-3 text-sm text-mission-red">
+              <AlertTriangle className="h-5 w-5 shrink-0" aria-hidden="true" />
+              Could not load tool reliability — the memory store is unavailable.
+              <button
+                type="button"
+                onClick={() => void refetchReliability()}
+                className="ml-2 underline text-white/70 hover:text-white"
+              >
+                Retry
+              </button>
+            </div>
+          ) : reliability.length === 0 ? (
+            <div className="px-5 py-6 text-sm text-white/40">
+              No tool calls recorded yet.
             </div>
           ) : (
             <div className="overflow-x-auto">
+              {unreliableCount === 0 && (
+                <div className="px-5 py-3 flex items-center gap-3 text-sm text-verified-green">
+                  <CheckCircle2 className="h-5 w-5 shrink-0" aria-hidden="true" />
+                  All tools are performing above the reliability threshold.
+                </div>
+              )}
               <table className="w-full text-sm" aria-label="Tool reliability table">
                 <thead>
                   <tr className="text-left text-xs text-white/30 border-b border-neural-violet/15 bg-command-black/30">
@@ -802,7 +827,14 @@ export function MemoryExplorerPage() {
                     const barColor = pct >= 70 ? 'bg-verified-green' : pct >= 50 ? 'bg-risk-amber' : 'bg-mission-red';
                     return (
                       <tr key={t.tool_name} className={`border-b border-neural-violet/10 last:border-0 ${rowColor}`}>
-                        <td className="px-5 py-3 font-mono text-xs font-medium text-telemetry-cyan">{t.tool_name}</td>
+                        <td className="px-5 py-3 font-mono text-xs font-medium text-telemetry-cyan">
+                          {t.tool_name}
+                          {t.blacklisted && (
+                            <span className="ml-2 rounded bg-mission-red/15 px-1.5 py-0.5 text-[10px] font-sans text-mission-red">
+                              blacklisted
+                            </span>
+                          )}
+                        </td>
                         <td className="px-5 py-3 text-white/40 font-mono text-xs">{t.total_calls ?? (t.success_count + t.failure_count)}</td>
                         <td className="px-5 py-3">
                           {t.failure_count > 0 && (

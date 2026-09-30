@@ -245,6 +245,7 @@ async def test_low_score_dispatches_reflexion_prompt_variant_and_blacklist_actio
     graph._app_state = MagicMock(prompt_optimizer=prompt_optimizer)
     tool_reliability_store = MagicMock()
     tool_reliability_store.record = AsyncMock()
+    tool_reliability_store.blacklist = AsyncMock()
     graph._tool_reliability_store = tool_reliability_store
 
     agent_state = _agent_state("run the batch job")
@@ -276,8 +277,10 @@ async def test_low_score_dispatches_reflexion_prompt_variant_and_blacklist_actio
     # counted every run twice.
     prompt_optimizer.record_result.assert_not_called()
 
-    # BLACKLIST_TOOL_PATTERN dispatch: failed tools recorded as unreliable.
-    assert tool_reliability_store.record.await_count == 2
+    # BLACKLIST_TOOL_PATTERN dispatch (MEM-01): failed tools are flagged as
+    # blacklisted — never recorded as synthetic failures.
+    assert tool_reliability_store.blacklist.await_count == 2
+    tool_reliability_store.record.assert_not_called()
     assert set(result["agent_state"].context["_blacklisted_tools"]) == {
         "flaky.tool",
         "other.tool",
@@ -336,7 +339,7 @@ async def test_action_dispatch_exception_does_not_crash_verification() -> None:
     verifier = FakeProvider(responses=['{"success": true, "reason": "technically completed"}'])
     graph = _make_graph(verifier=verifier)
     broken_store = MagicMock()
-    broken_store.record = MagicMock(side_effect=RuntimeError("store unavailable"))
+    broken_store.blacklist = MagicMock(side_effect=RuntimeError("store unavailable"))
     graph._tool_reliability_store = broken_store
 
     agent_state = _agent_state("run the batch job")

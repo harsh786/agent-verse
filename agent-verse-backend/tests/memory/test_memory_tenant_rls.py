@@ -97,9 +97,9 @@ async def test_tool_reliability_upsert_runs_under_tenant_guc() -> None:
 async def test_tool_reliability_reads_run_under_tenant_guc() -> None:
     def rows_for(sql: str, _p: dict) -> list:
         if "SELECT success_count, failure_count, total_latency_ms" in sql:
-            return [(8, 2, 1000.0, None)]
+            return [(8, 2, 1000.0, None, None, None)]
         if "SELECT tool_name, success_count" in sql:
-            return [("flaky.tool", 1, 9, 0.1)]
+            return [("flaky.tool", 1, 9, 900.0, None, None, None)]
         return []
 
     db = RlsRecordingDb(rows_for=rows_for)

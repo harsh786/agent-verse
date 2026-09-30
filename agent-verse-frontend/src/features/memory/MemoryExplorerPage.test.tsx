@@ -699,3 +699,48 @@ describe('MemoryExplorerPage — Tool reliability thresholds & exec memory failu
     expect(await screen.findByText(/no execution memories/i)).toBeInTheDocument();
   });
 });
+
+// ── MEM-01: tool reliability error / empty / flagged states ─────────────────
+
+describe('MemoryExplorerPage — tool reliability states (MEM-01)', () => {
+  function mockReliability(res: () => Response) {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/memory/tool-reliability')) return res();
+      return new Response('[]', { status: 200 });
+    });
+  }
+
+  test('shows an error state (not "all good") when the query fails', async () => {
+    mockReliability(() => new Response(JSON.stringify({ detail: 'Memory store unavailable' }), { status: 503 }));
+    renderPage();
+    expect(await screen.findByText(/could not load tool reliability/i)).toBeInTheDocument();
+    expect(screen.queryByText(/all tools are performing/i)).not.toBeInTheDocument();
+  });
+
+  test('shows "No tool calls recorded yet" when there are no rows', async () => {
+    mockReliability(() => new Response('[]', { status: 200 }));
+    renderPage();
+    expect(await screen.findByText(/no tool calls recorded yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/all tools are performing/i)).not.toBeInTheDocument();
+  });
+
+  test('shows the all-good banner only when recorded tools are all reliable', async () => {
+    mockReliability(() => new Response(JSON.stringify([
+      { tool_name: 'solid_tool', success_count: 9, failure_count: 1, total_calls: 10, success_rate: 0.9, unreliable: false },
+    ]), { status: 200 }));
+    renderPage();
+    expect(await screen.findByText('solid_tool')).toBeInTheDocument();
+    expect(screen.getByText(/all tools are performing/i)).toBeInTheDocument();
+  });
+
+  test('marks blacklisted tools', async () => {
+    mockReliability(() => new Response(JSON.stringify([
+      { tool_name: 'bad_tool', success_count: 0, failure_count: 0, total_calls: 0, success_rate: 1, unreliable: true, blacklisted: true },
+    ]), { status: 200 }));
+    renderPage();
+    expect(await screen.findByText('bad_tool')).toBeInTheDocument();
+    expect(screen.getByText('blacklisted')).toBeInTheDocument();
+    expect(screen.queryByText(/all tools are performing/i)).not.toBeInTheDocument();
+  });
+});

@@ -655,23 +655,25 @@ class VerifierMixin:
                                                     _tn = _tc.get("tool_name", "")
                                                     if _tn and _tn not in _failed_tools:
                                                         _failed_tools.append(_tn)
+                                        # MEM-01: a blacklist is its own flag, never a
+                                        # synthetic failure count.
                                         for _ft in _failed_tools[:3]:
-                                            import asyncio as _bl_asyncio
-
-                                            _bl_asyncio.ensure_future(  # noqa: RUF006  # fire-and-forget by design: intentionally not awaited/cancelled
-                                                _tr_store.record(
-                                                    tool_name=_ft,
-                                                    tenant_id=tenant_ctx.tenant_id,
-                                                    success=False,
-                                                    latency_ms=5000.0,
-                                                    error="blacklisted_by_self_improvement",
-                                                )
+                                            await _tr_store.blacklist(
+                                                tenant_id=tenant_ctx.tenant_id,
+                                                tool_name=_ft,
+                                                reason="blacklisted_by_self_improvement",
                                             )
                                         agent_state.context["_blacklisted_tools"] = _failed_tools[
                                             :3
                                         ]
-                                except Exception:
-                                    pass
+                                except Exception as _bl_exc:
+                                    from app.observability.logging import get_logger
+
+                                    get_logger(__name__).warning(
+                                        "tool_blacklist_record_failed",
+                                        goal_id=agent_state.goal_id,
+                                        error=str(_bl_exc)[:200],
+                                    )
                                 from app.observability.logging import get_logger
 
                                 get_logger(__name__).warning(

@@ -1448,6 +1448,12 @@ export interface ToolReliabilityRow {
   failure_count: number;
   total_calls: number;
   success_rate: number;
+  avg_latency_ms?: number;
+  last_used_at?: string | null;
+  /** Below the success threshold (or blacklisted) — the executor deprioritises it. */
+  unreliable?: boolean;
+  blacklisted?: boolean;
+  blacklist_reason?: string | null;
   [key: string]: unknown;
 }
 

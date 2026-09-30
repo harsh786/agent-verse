@@ -96,28 +96,54 @@ class TestToolReliabilityStoreWithDBError:
         assert store._cache[key]["success_count"] == 1
 
     @pytest.mark.asyncio
-    async def test_get_reliability_with_failing_db_falls_back_to_cache(self):
-        """When DB fails, get_reliability must fall back to in-process cache."""
-        store = ToolReliabilityStore(db_session_factory=_FailingDB())
-        # Pre-populate cache
-        await store.record(tenant_id="t1", tool_name="cached_tool", success=True, latency_ms=30.0)
+    async def test_get_reliability_with_failing_db_raises(self):
+        """MEM-01: a DB failure is an error, not a stale per-process answer."""
+        from app.memory.tool_reliability import ToolReliabilityUnavailableError
 
-        result = await store.get_reliability(tenant_id="t1", tool_name="cached_tool")
-        assert result["success_count"] == 1
+        store = ToolReliabilityStore(db_session_factory=_FailingDB())
+        with pytest.raises(ToolReliabilityUnavailableError):
+            await store.get_reliability(tenant_id="t1", tool_name="cached_tool")
 
     @pytest.mark.asyncio
-    async def test_get_unreliable_tools_no_db_returns_empty(self):
-        """get_unreliable_tools without DB always returns empty list."""
+    async def test_get_unreliable_tools_no_db_uses_recorded_calls(self):
+        """Without a DB, unreliable tools come from this process's recorded calls."""
         store = ToolReliabilityStore()
-        result = await store.get_unreliable_tools(tenant_id="t1")
-        assert result == []
+        assert await store.get_unreliable_tools(tenant_id="t1") == []
+        for _ in range(3):
+            await store.record(tenant_id="t1", tool_name="flaky", success=False)
+        await store.record(tenant_id="t1", tool_name="solid", success=True)
+        rows = await store.get_unreliable_tools(tenant_id="t1")
+        assert [r["tool_name"] for r in rows] == ["flaky"]
+        assert await store.get_unreliable_tools(tenant_id="t2") == []
 
     @pytest.mark.asyncio
-    async def test_get_unreliable_tools_with_failing_db_returns_empty(self):
-        """DB failure in get_unreliable_tools returns empty list."""
+    async def test_get_unreliable_tools_with_failing_db_raises(self):
+        """MEM-01: DB failure must not read as "no unreliable tools"."""
+        from app.memory.tool_reliability import ToolReliabilityUnavailableError
+
         store = ToolReliabilityStore(db_session_factory=_FailingDB())
-        result = await store.get_unreliable_tools(tenant_id="t1")
-        assert result == []
+        with pytest.raises(ToolReliabilityUnavailableError):
+            await store.get_unreliable_tools(tenant_id="t1")
+
+    @pytest.mark.asyncio
+    async def test_blacklist_is_a_flag_not_a_failure(self):
+        store = ToolReliabilityStore()
+        await store.blacklist(tenant_id="t1", tool_name="bad", reason="self_improvement")
+        stats = await store.get_reliability(tenant_id="t1", tool_name="bad")
+        assert stats["failure_count"] == 0 and stats["total_calls"] == 0
+        assert stats["blacklisted"] is True
+        rows = await store.get_unreliable_tools(tenant_id="t1")
+        assert rows[0]["tool_name"] == "bad" and rows[0]["blacklisted"] is True
+
+    @pytest.mark.asyncio
+    async def test_list_tools_reports_every_recorded_tool(self):
+        store = ToolReliabilityStore()
+        await store.record(tenant_id="t1", tool_name="solid", success=True, latency_ms=10)
+        for _ in range(3):
+            await store.record(tenant_id="t1", tool_name="flaky", success=False)
+        rows = await store.list_tools(tenant_id="t1")
+        assert [r["tool_name"] for r in rows] == ["flaky", "solid"]
+        assert rows[0]["unreliable"] is True and rows[1]["unreliable"] is False
 
     @pytest.mark.asyncio
     async def test_record_no_db_field_None(self):

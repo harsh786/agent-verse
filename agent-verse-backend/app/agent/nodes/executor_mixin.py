@@ -314,6 +314,75 @@ class ExecutorMixin:
         except Exception:
             pass
 
+    async def _record_tool_reliability(
+        self,
+        tenant_ctx: TenantContext,
+        tool_name: str,
+        *,
+        success: bool,
+        started: float,
+        error: object = "",
+    ) -> None:
+        """MEM-01: record one real tool dispatch outcome in ToolReliabilityStore.
+
+        Awaited (not fire-and-forget) so the next step's reliability read sees it.
+        A store failure is logged; it never fails the tool call.
+        """
+        store = getattr(self, "_tool_reliability_store", None)
+        if store is None or not tool_name:
+            return
+        error_class = ""
+        if not success:
+            error_class = (
+                type(error).__name__ if isinstance(error, BaseException) else str(error or "")
+            )[:120]
+        try:
+            await store.record(
+                tenant_id=tenant_ctx.tenant_id,
+                tool_name=tool_name,
+                success=success,
+                latency_ms=(time.monotonic() - started) * 1000.0,
+                error=error_class,
+            )
+        except Exception as exc:
+            self._logger.warning(
+                "tool_reliability_record_failed", tool=tool_name, error=str(exc)[:200]
+            )
+
+    async def _tool_reliability_view(
+        self, state: AgentState, tenant_ctx: TenantContext
+    ) -> tuple[dict[str, float], set[str]]:
+        """MEM-01: ``({unreliable tool: success_rate}, {blacklisted tools})``.
+
+        A store outage is logged and flagged in ``state.context`` (never read as
+        "every tool is reliable").
+        """
+        store = getattr(self, "_tool_reliability_store", None)
+        if store is None:
+            return {}, set()
+        try:
+            rows = await store.get_unreliable_tools(tenant_id=tenant_ctx.tenant_id)
+        except Exception as exc:
+            self._logger.warning(
+                "tool_reliability_read_failed",
+                tenant_id=tenant_ctx.tenant_id,
+                error=str(exc)[:200],
+            )
+            state.context["_tool_reliability_degraded"] = True
+            return {}, set()
+        unreliable: dict[str, float] = {}
+        blacklisted: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("tool_name") or "")
+            if not name:
+                continue
+            unreliable[name] = float(row.get("success_rate", 0.0) or 0.0)
+            if row.get("blacklisted"):
+                blacklisted.add(name)
+        return unreliable, blacklisted
+
     async def _charge_grant_spend(
         self, state: AgentState, tenant_ctx: TenantContext, cost_usd: float
     ) -> None:
@@ -1694,9 +1763,30 @@ class ExecutorMixin:
         # Grant enforcement: offer the model only granted tools (computed by the
         # planner, see PlannerMixin._granted_tool_names); dispatch still checks.
         _granted_names = state.context.get(GRANTED_TOOLS_KEY)
+        # MEM-01: tool reliability learned from real dispatches. Unreliable tools
+        # are offered last (with a hint); blacklisted tools are not offered when
+        # another tool remains.
+        _unreliable_rates: dict[str, float] = {}
+        _avoid_names: set[str] = set()
+        if _tc_ctx is not None and hasattr(_tc_ctx, "tools") and _tc_ctx.tools:
+            _unreliable_rates, _blacklisted = await self._tool_reliability_view(
+                state, tenant_ctx
+            )
+            _offerable = {
+                _t.name
+                for _t in _tc_ctx.tools
+                if not (isinstance(_granted_names, list) and _t.name not in _granted_names)
+            }
+            if _offerable - _blacklisted:
+                _avoid_names = _blacklisted & _offerable
         if _tc_ctx is not None and hasattr(_tc_ctx, "tools"):
-            for _t in _tc_ctx.tools:
+            _ordered_tools = sorted(
+                _tc_ctx.tools, key=lambda _t: getattr(_t, "name", "") in _unreliable_rates
+            )
+            for _t in _ordered_tools:
                 if isinstance(_granted_names, list) and _t.name not in _granted_names:
+                    continue
+                if _t.name in _avoid_names:
                     continue
                 import re as _re
 
@@ -1737,6 +1827,7 @@ class ExecutorMixin:
                     # The ALLOWED TOOLS grounding must not list ungranted tools
                     # either: the model called them from this list.
                     _allowed_tools_set &= set(_granted_names)
+                _allowed_tools_set -= _avoid_names
             except Exception:
                 pass
 
@@ -1764,27 +1855,27 @@ class ExecutorMixin:
         except Exception:
             pass
 
-        # N10: Tag unreliable tools (informational — don't hard-block, just log)
-        try:
-            _tr_store = getattr(self, "_tool_reliability_store", None)
-            if _tr_store is not None and _tool_defs:
-                _unreliable = await _tr_store.get_unreliable_tools(
-                    tenant_id=tenant_ctx.tenant_id, threshold=0.3
+        # N10 / MEM-01: tell the model which offered tools have been unreliable
+        # (they are already ordered last) so it prefers an alternative.
+        _offered_names = {getattr(_t, "name", "") for _t in (getattr(_tc_ctx, "tools", None) or [])}
+        _unreliable_offered = sorted(
+            (n for n in _unreliable_rates if n in _offered_names and n not in _avoid_names),
+            key=lambda n: _unreliable_rates[n],
+        )
+        if _unreliable_offered:
+            state.context["_unreliable_tools"] = _unreliable_offered
+            _unreliable_hint = (
+                "\n[Tool reliability: these tools have failed often for this tenant — "
+                "prefer an alternative when one fits: "
+                + ", ".join(
+                    f"{n} ({round(_unreliable_rates[n] * 100)}% success)"
+                    for n in _unreliable_offered[:5]
                 )
-                _unreliable_names = {
-                    t.get("tool_name", "") if isinstance(t, dict) else str(t)
-                    for t in (_unreliable or [])
-                }
-                if _unreliable_names:
-                    state.context["_unreliable_tools"] = list(_unreliable_names)
-                    # Add a hint to the step context
-                    _unreliable_hint = (
-                        f"\n[Note: these tools have had reliability issues: "
-                        f"{', '.join(list(_unreliable_names)[:3])}]"
-                    )
-                    content = content + _unreliable_hint if content else _unreliable_hint
-        except Exception:
-            pass
+                + "]"
+            )
+            content = content + _unreliable_hint if content else _unreliable_hint
+        if _avoid_names:
+            state.context["_avoided_tools"] = sorted(_avoid_names)
 
         # Select executor system prompt via PromptOptimizer if wired (Task 7)
         _executor_prompt = EXECUTOR_SYSTEM
@@ -2686,6 +2777,13 @@ class ExecutorMixin:
                                 "success" if _approved_result.success else "failed",
                                 time.monotonic() - tool_call_started,
                             )
+                            await self._record_tool_reliability(
+                                tenant_ctx,
+                                tool_ref.name,
+                                success=bool(_approved_result.success),
+                                started=tool_call_started,
+                                error=_approved_result.error,
+                            )
                             if _approved_result.success:
                                 _rb_executed = {
                                     "tool": tool_ref.name,
@@ -2770,12 +2868,19 @@ class ExecutorMixin:
                                             arguments=tool_call.arguments,
                                             tenant_ctx=tenant_ctx,
                                         )
-                                except Exception:
+                                except Exception as _dispatch_exc:
                                     record_tool_call(
                                         tool_ref.name,
                                         tool_ref.server_id,
                                         "failed",
                                         time.monotonic() - tool_call_started,
+                                    )
+                                    await self._record_tool_reliability(
+                                        tenant_ctx,
+                                        tool_ref.name,
+                                        success=False,
+                                        started=tool_call_started,
+                                        error=_dispatch_exc,
                                     )
                                     raise
                                 # Apply PII check to raw tool output (H3 fix: result is ToolCallResult not dict)  # noqa: E501
@@ -2944,6 +3049,13 @@ class ExecutorMixin:
                                     tool_ref.server_id,
                                     "success" if result.success else "failed",
                                     time.monotonic() - tool_call_started,
+                                )
+                                await self._record_tool_reliability(
+                                    tenant_ctx,
+                                    tool_ref.name,
+                                    success=bool(result.success),
+                                    started=tool_call_started,
+                                    error=result.error,
                                 )
                                 if result.success:
                                     _rb_executed = {
@@ -3443,12 +3555,22 @@ class ExecutorMixin:
                 record_tool_call(
                     tool_ref.name, tool_ref.server_id, "failed", time.monotonic() - _t0
                 )
+                await self._record_tool_reliability(
+                    tenant_ctx, tool_ref.name, success=False, started=_t0, error=exc
+                )
                 return (tool_ref.name, f"[error: {exc}]")
             record_tool_call(
                 tool_ref.name,
                 tool_ref.server_id,
                 "success" if result.success else "failed",
                 time.monotonic() - _t0,
+            )
+            await self._record_tool_reliability(
+                tenant_ctx,
+                tool_ref.name,
+                success=bool(result.success),
+                started=_t0,
+                error=result.error,
             )
             if result.success and self._rollback_engine is not None:
                 self._rollback_engine.register_tool_call(

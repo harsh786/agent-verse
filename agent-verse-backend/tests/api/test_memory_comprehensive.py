@@ -315,3 +315,43 @@ def test_get_tool_reliability() -> None:
     resp = client.get("/memory/tool-reliability", headers={"X-API-Key": _VALID_KEY})
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+def test_tool_reliability_reports_real_recorded_calls() -> None:
+    """MEM-01: every recorded tool is reported with its flags, least reliable first."""
+    import asyncio
+
+    from app.memory.tool_reliability import ToolReliabilityStore
+
+    store = ToolReliabilityStore()
+
+    async def _seed() -> None:
+        await store.record(tenant_id=_CTX.tenant_id, tool_name="solid", success=True)
+        for _ in range(3):
+            await store.record(tenant_id=_CTX.tenant_id, tool_name="flaky", success=False)
+        await store.record(tenant_id="someone-else", tool_name="theirs", success=False)
+
+    asyncio.run(_seed())
+    app = _make_app()
+    app.state.tool_reliability_store = store
+    client = TestClient(app, raise_server_exceptions=False)
+    rows = client.get("/memory/tool-reliability", headers={"X-API-Key": _VALID_KEY}).json()
+    assert [(r["tool_name"], r["unreliable"]) for r in rows] == [("flaky", True), ("solid", False)]
+    only = client.get(
+        "/memory/tool-reliability?unreliable_only=true", headers={"X-API-Key": _VALID_KEY}
+    ).json()
+    assert [r["tool_name"] for r in only] == ["flaky"]
+
+
+def test_tool_reliability_store_outage_is_503_not_empty() -> None:
+    from app.memory.tool_reliability import ToolReliabilityUnavailableError
+
+    class _Down:
+        async def list_tools(self, **_kw: object) -> list[dict[str, object]]:
+            raise ToolReliabilityUnavailableError("db down")
+
+    app = _make_app()
+    app.state.tool_reliability_store = _Down()
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.get("/memory/tool-reliability", headers={"X-API-Key": _VALID_KEY})
+    assert resp.status_code == 503

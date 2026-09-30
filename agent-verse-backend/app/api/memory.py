@@ -598,13 +598,30 @@ async def delete_memory(request: Request, memory_id: str) -> None:
 
 
 @router.get("/tool-reliability")
-async def get_tool_reliability(request: Request) -> list[dict]:
-    """Get per-tool reliability stats (tools with poor success rates) for this tenant."""
-    tenant_ctx = _require_tenant(request)
-    from app.memory.tool_reliability import ToolReliabilityStore
+async def get_tool_reliability(request: Request, unreliable_only: bool = False) -> list[dict]:
+    """Per-tool reliability learned from real tool calls for this tenant (MEM-01).
 
-    store = ToolReliabilityStore(db_session_factory=_get_db(request))
-    return await store.get_unreliable_tools(tenant_id=tenant_ctx.tenant_id, min_calls=3)
+    Every tool with recorded calls (or a blacklist flag), least reliable first;
+    each row carries ``unreliable`` / ``blacklisted`` flags. An empty list means
+    no tool call has been recorded yet. A store outage is 503, never ``[]``.
+    """
+    tenant_ctx = _require_tenant(request)
+    from app.memory.tool_reliability import (
+        ToolReliabilityStore,
+        ToolReliabilityUnavailableError,
+    )
+
+    store = getattr(request.app.state, "tool_reliability_store", None)
+    if store is None:
+        store = ToolReliabilityStore(db_session_factory=_get_db(request))
+    try:
+        if unreliable_only:
+            rows: list[dict] = await store.get_unreliable_tools(tenant_id=tenant_ctx.tenant_id)
+        else:
+            rows = await store.list_tools(tenant_id=tenant_ctx.tenant_id)
+    except ToolReliabilityUnavailableError as exc:
+        raise _db_unavailable("tool_reliability", exc) from exc
+    return rows
 
 
 @router.delete("", status_code=204)
