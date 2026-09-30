@@ -58,12 +58,35 @@ def _has_async(store: Any, name: str) -> bool:
     return inspect.iscoroutinefunction(getattr(store, name, None))
 
 
+def _strict(fn: Any) -> dict[str, Any]:
+    """``{"strict": True}`` when the store method supports it (test doubles may not)."""
+    import inspect
+
+    try:
+        return {"strict": True} if "strict" in inspect.signature(fn).parameters else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+async def _durable_read(awaitable: Any) -> Any:
+    """TRG-29: a DB outage is a 503 (as on /schedules), never an answer from this
+    replica's possibly stale per-process cache."""
+    from app.triggers.store import ScheduleStoreUnavailableError
+
+    try:
+        return await awaitable
+    except ScheduleStoreUnavailableError as exc:
+        raise HTTPException(status_code=503, detail="Trigger store unavailable; retry") from exc
+
+
 async def _store_get(store: Any, schedule_id: str, tenant_ctx: TenantContext) -> Any:
     """DB read-through lookup (the in-memory ``get`` only knows this replica)."""
     if store is None:
         return None
     if _has_async(store, "get_async"):
-        return await store.get_async(schedule_id, tenant_ctx=tenant_ctx)
+        return await _durable_read(
+            store.get_async(schedule_id, tenant_ctx=tenant_ctx, **_strict(store.get_async))
+        )
     return store.get(schedule_id, tenant_ctx=tenant_ctx)
 
 
@@ -280,7 +303,9 @@ async def list_triggers(request: Request) -> list[dict[str, Any]]:
     if store is None:
         return []
     if _has_async(store, "list_all_async"):
-        records = await store.list_all_async(tenant_ctx=tenant_ctx)
+        records = await _durable_read(
+            store.list_all_async(tenant_ctx=tenant_ctx, **_strict(store.list_all_async))
+        )
     else:
         records = store.list_all(tenant_ctx=tenant_ctx)
     return [_serialize_record(r) for r in records]
@@ -354,7 +379,8 @@ async def create_trigger(request: Request, body: CreateTriggerRequest) -> dict[s
             )
     except TriggerQuotaExceeded as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
-    rec = store.get(schedule_id, tenant_ctx=tenant_ctx)
+    # Read back through the durable store (the cache is only this replica's).
+    rec = await _store_get(store, schedule_id, tenant_ctx)
     if rec is None:
         raise HTTPException(status_code=500, detail="Failed to retrieve created trigger")
     return _serialize_record(rec)
