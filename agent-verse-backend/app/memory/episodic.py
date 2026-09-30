@@ -105,6 +105,23 @@ def _rank(
     return scored[:limit]
 
 
+class EpisodicMemoryUnavailableError(RuntimeError):
+    """The durable episodic store could not be read."""
+
+
+def _log_degraded(op: str, tenant_id: str, exc: BaseException) -> None:
+    from app.observability.logging import get_logger
+    from app.observability.metrics import record_memory_degraded
+
+    record_memory_degraded("episodic", op)
+    get_logger(__name__).warning(
+        "episodic_memory_degraded",
+        op=op,
+        tenant_id=tenant_id,
+        error=f"{type(exc).__name__}: {str(exc)[:200]}",
+    )
+
+
 class EpisodicMemoryStore:
     """DB-backed episodic memory for cross-session experience recall."""
 
@@ -172,8 +189,10 @@ class EpisodicMemoryStore:
                 resp = await self._embedder.embed(EmbedRequest(texts=[state.goal[:200]]))
                 if resp.embeddings:
                     episode.embedding = resp.embeddings[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                # The episode is still stored, but only keyword recall can find
+                # it — say so instead of swallowing the failure.
+                _log_degraded("embed", tenant_ctx.tenant_id, exc)
 
         # In-memory cache
         self._cache.setdefault(tenant_ctx.tenant_id, []).append(episode)
@@ -223,14 +242,11 @@ class EpisodicMemoryStore:
                         },
                     )
             except Exception as exc:
-                try:
-                    from app.observability.logging import get_logger
+                _log_degraded("record", tenant_ctx.tenant_id, exc)
 
-                    get_logger(__name__).warning("episodic_memory_persist_failed", error=str(exc))
-                except Exception:
-                    pass
-
-    async def _embed_query(self, goal: str) -> list[float] | None:
+    async def _embed_query(
+        self, goal: str, tenant_id: str, degraded: list[str] | None
+    ) -> list[float] | None:
         if self._embedder is None:
             return None
         try:
@@ -239,9 +255,9 @@ class EpisodicMemoryStore:
             resp = await self._embedder.embed(EmbedRequest(texts=[goal[:200]]))
             return _parse_embedding(resp.embeddings[0]) if resp.embeddings else None
         except Exception as exc:
-            from app.observability.logging import get_logger
-
-            get_logger(__name__).warning("episodic_query_embed_failed", error=str(exc)[:200])
+            _log_degraded("embed", tenant_id, exc)
+            if degraded is not None:
+                degraded.append("episodic_query_embed_failed")
             return None
 
     async def recall(
@@ -251,14 +267,17 @@ class EpisodicMemoryStore:
         tenant_id: str,
         limit: int = 3,
         outcome_filter: str | None = None,
+        degraded: list[str] | None = None,
     ) -> list[Episode]:
         """Recall similar past episodes for a given goal.
 
         Semantic (embedding cosine) when an embedder is wired and episodes carry
-        a stored vector; keyword overlap otherwise.
+        a stored vector; keyword overlap otherwise. A failed query embedding is
+        appended to ``degraded`` (keyword-only recall). A DB failure raises
+        :class:`EpisodicMemoryUnavailableError` — it never silently answers from
+        this process's cache.
         """
-        query_vec = await self._embed_query(goal)
-        # Try DB first if available
+        query_vec = await self._embed_query(goal, tenant_id, degraded)
         if self._db is not None:
             try:
                 return await self._recall_from_db(
@@ -268,10 +287,11 @@ class EpisodicMemoryStore:
                     outcome_filter=outcome_filter,
                     query_vec=query_vec,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_degraded("recall", tenant_id, exc)
+                raise EpisodicMemoryUnavailableError(str(exc)) from exc
 
-        # Fall back to in-memory cache
+        # DB-less build: the per-process store is the store.
         episodes = self._cache.get(tenant_id, [])
         if outcome_filter:
             episodes = [e for e in episodes if e.outcome == outcome_filter]
@@ -317,22 +337,33 @@ class EpisodicMemoryStore:
                     },
                 )
             ).fetchall()
-        episodes = [
-            Episode(
-                episode_id=str(row[0]),
-                tenant_id=tenant_id,
-                goal_id=str(row[1]),
-                goal_text=str(row[2]),
-                action_summary=str(row[3]),
-                outcome=str(row[4]),
-                lessons=str(row[5]),
-                quality_score=float(row[6]),
-                steps_count=int(row[7]),
-                tools_used=json.loads(row[8]) if row[8] else [],
-                embedding=_parse_embedding(row[9]) if len(row) > 9 else None,
+        episodes: list[Episode] = []
+        for row in rows:
+            try:
+                tools = json.loads(row[8]) if isinstance(row[8], str) else (row[8] or [])
+            except ValueError:
+                # One corrupt row must not sink recall: skip it, visibly.
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "episodic_memory_corrupt_row", tenant_id=tenant_id, episode_id=str(row[0])
+                )
+                continue
+            episodes.append(
+                Episode(
+                    episode_id=str(row[0]),
+                    tenant_id=tenant_id,
+                    goal_id=str(row[1]),
+                    goal_text=str(row[2]),
+                    action_summary=str(row[3]),
+                    outcome=str(row[4]),
+                    lessons=str(row[5]),
+                    quality_score=float(row[6]),
+                    steps_count=int(row[7]),
+                    tools_used=list(tools),
+                    embedding=_parse_embedding(row[9]) if len(row) > 9 else None,
+                )
             )
-            for row in rows
-        ]
         return _rank(episodes, goal, query_vec, limit)
 
     def format_for_context(self, episodes: list[Episode]) -> str:

@@ -181,20 +181,20 @@ async def test_episodic_tools_used_deduplicated_and_capped_at_ten(tenant_ctx):
     assert len(set(episodes[0].tools_used)) == len(episodes[0].tools_used)
 
 
-async def test_episodic_recall_db_failure_falls_back_to_in_memory_cache(tenant_ctx):
-    """A DB error on recall must not raise — falls back to the in-memory cache."""
+async def test_episodic_recall_db_failure_raises_not_silent_cache(tenant_ctx):
+    """MEM-12: a DB error on recall is surfaced, never answered from this process's cache."""
+    from app.memory.episodic import EpisodicMemoryUnavailableError
 
     def _boom() -> None:
         raise RuntimeError("db connection refused")
 
     store = EpisodicMemoryStore(db_factory=MagicMock(side_effect=_boom))
-    # record() also tries the (failing) db_factory but must still cache in-memory.
+    # record() also tries the (failing) db_factory: logged + counted, not raised.
     state = _make_state(tenant_ctx)
     await store.record(state=state, tenant_ctx=tenant_ctx)
 
-    episodes = await store.recall(goal=state.goal, tenant_id="t1")
-    assert len(episodes) == 1
-    assert episodes[0].outcome == "success"
+    with pytest.raises(EpisodicMemoryUnavailableError):
+        await store.recall(goal=state.goal, tenant_id="t1")
 
 
 async def test_episodic_recall_db_malformed_tools_used_json_does_not_raise(tenant_ctx):
@@ -215,7 +215,7 @@ async def test_episodic_recall_db_malformed_tools_used_json_does_not_raise(tenan
     db_factory = MagicMock(return_value=mock_session)
 
     store = EpisodicMemoryStore(db_factory=db_factory)
-    # No exception should propagate; falls back to the (empty) in-memory cache.
+    # The corrupt row is skipped (logged); no exception propagates.
     episodes = await store.recall(goal="goal text", tenant_id="t1")
     assert episodes == []
 

@@ -128,6 +128,28 @@ class PlannerMixin:
                 error=str(exc)[:200],
             )
 
+    async def _memory_degraded(
+        self, agent_state: AgentState, source: str, exc: BaseException | None = None
+    ) -> None:
+        """MEM-12: record a memory source that failed for this plan and tell SSE.
+
+        The plan proceeds without it, but the goal context and event stream say
+        so — memory quality never silently drops to "nothing recalled".
+        """
+        degraded = agent_state.context.setdefault("memory_degraded", [])
+        if source not in degraded:
+            degraded.append(source)
+        if exc is not None:
+            self._planner_block_failed(source, exc)
+        with contextlib.suppress(Exception):
+            await self._emit(
+                {
+                    "type": "memory_degraded",
+                    "source": source,
+                    "error": (f"{type(exc).__name__}: {str(exc)[:160]}" if exc else ""),
+                }
+            )
+
     async def _node_plan(self, state: GraphState) -> dict[str, Any]:
         agent_state: AgentState = state["agent_state"]
         tenant_ctx: TenantContext = state["tenant_ctx"]
@@ -396,17 +418,21 @@ class PlannerMixin:
         # Episodic memory recall — similar past experiences
         try:
             if self._episodic_memory is not None:
+                _ep_degraded: list[str] = []
                 _ep_episodes = await self._episodic_memory.recall(
                     goal=agent_state.goal,
                     tenant_id=tenant_ctx.tenant_id,
                     limit=3,
+                    degraded=_ep_degraded,
                 )
+                for _ep_reason in _ep_degraded:
+                    await self._memory_degraded(agent_state, _ep_reason)
                 if _ep_episodes:
                     _ep_ctx = self._episodic_memory.format_for_context(_ep_episodes)
                     if _ep_ctx:
                         extra_parts.append(_ep_ctx)
         except Exception as _blk_exc:
-            self._planner_block_failed("episodic_recall", _blk_exc)
+            await self._memory_degraded(agent_state, "episodic_recall", _blk_exc)
 
         # Procedural memory recall — relevant skills
         try:
@@ -421,7 +447,7 @@ class PlannerMixin:
                     if _proc_ctx:
                         extra_parts.append(_proc_ctx)
         except Exception as _blk_exc:
-            self._planner_block_failed("procedural_recall", _blk_exc)
+            await self._memory_degraded(agent_state, "procedural_recall", _blk_exc)
 
         # Prospective memory recall — deferred intentions/reminders now due (T3.2).
         # Read-only (does NOT lease items for execution) so surfacing them in the
