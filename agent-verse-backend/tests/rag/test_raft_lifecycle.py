@@ -42,11 +42,14 @@ from app.rag.raft import (
 from app.tenancy.context import TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
-TENANT = TenantContext(tenant_id="tenant-1", api_key_id="key-1", plan="enterprise")
+TENANT = TenantContext(
+    tenant_id="tenant-1", api_key_id="key-1", plan="enterprise", roles=("admin",)
+)
 OTHER_TENANT = TenantContext(
     tenant_id="tenant-2",
     api_key_id="key-2",
     plan="enterprise",
+    roles=("admin",),
 )
 
 

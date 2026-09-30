@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.orchestration.strategy_registry import get_strategy_registry
@@ -33,6 +33,7 @@ from app.rag.raft import (
 )
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
+from app.tenancy.rbac import require_role
 
 router = APIRouter(prefix="/rag", tags=["rag-platform"])
 
@@ -65,6 +66,12 @@ class RAFTJobRequest(BaseModel):
     provider_id: str = Field(min_length=1, max_length=64)
     base_model: str = Field(min_length=1, max_length=200)
     confirmation_token: str = Field(default="", max_length=256)
+
+
+# Submitting, refreshing, reconciling, evaluating and deploying a RAFT job start
+# paid provider fine-tunes / inference: admin only (only the generic
+# unregistered-write fallback used to guard them).
+_REQUIRE_ADMIN = require_role("admin")
 
 
 def _raft_service(request: Request) -> RAFTService:
@@ -275,7 +282,11 @@ async def preview_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, 
     }
 
 
-@router.post("/raft/jobs", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/raft/jobs",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_REQUIRE_ADMIN)],
+)
 async def submit_raft_job(request: Request, body: RAFTJobRequest) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -301,7 +312,7 @@ async def get_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/refresh")
+@router.post("/raft/jobs/{job_id}/refresh", dependencies=[Depends(_REQUIRE_ADMIN)])
 async def refresh_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -311,7 +322,7 @@ async def refresh_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/reconcile")
+@router.post("/raft/jobs/{job_id}/reconcile", dependencies=[Depends(_REQUIRE_ADMIN)])
 async def reconcile_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -321,7 +332,7 @@ async def reconcile_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/evaluate")
+@router.post("/raft/jobs/{job_id}/evaluate", dependencies=[Depends(_REQUIRE_ADMIN)])
 async def evaluate_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     tenant = _require_tenant(request)
     try:
@@ -331,7 +342,7 @@ async def evaluate_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     return _job_response(job)
 
 
-@router.post("/raft/jobs/{job_id}/deploy")
+@router.post("/raft/jobs/{job_id}/deploy", dependencies=[Depends(_REQUIRE_ADMIN)])
 async def deploy_raft_job(request: Request, job_id: str) -> dict[str, Any]:
     """Serve this completed job's fine-tuned model for its collection's RAFT queries."""
     tenant = _require_tenant(request)

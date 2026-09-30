@@ -40,8 +40,12 @@ from app.rag.raft import (
 from app.tenancy.context import TenantContext
 from app.tenancy.middleware import TenantMiddleware
 
-TENANT = TenantContext(tenant_id="tenant-e2e", api_key_id="key-e2e", plan="enterprise")
-OTHER = TenantContext(tenant_id="tenant-other", api_key_id="key-other", plan="enterprise")
+TENANT = TenantContext(
+    tenant_id="tenant-e2e", api_key_id="key-e2e", plan="enterprise", roles=("admin",)
+)
+OTHER = TenantContext(
+    tenant_id="tenant-other", api_key_id="key-other", plan="enterprise", roles=("admin",)
+)
 COLLECTION = "collection-e2e"
 FINE_TUNED_MODEL = "ft:base-model:tenant-e2e:raft:abc123"
 
