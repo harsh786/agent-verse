@@ -98,8 +98,23 @@ describe('WorkflowListPage', () => {
     });
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText(/no workflows yet/i)).toBeInTheDocument();
+      expect(screen.getByText(/no (published )?workflows( yet)?/i)).toBeInTheDocument();
     });
+  });
+
+  // UI-WF-SAVE: a saved draft "vanished" — the list opens on the Published
+  // filter and the empty state claimed there were no workflows at all.
+  it('an empty filtered view names the filter and offers to show all workflows', async () => {
+    vi.mocked(workflowEngineApi.list).mockImplementation(async (params?: { status?: string }) =>
+      (params?.status === 'published'
+        ? { items: [], total: 0, page: 1, per_page: 100 }
+        : { items: [mockWorkflows[1]], total: 1, page: 1, per_page: 100 }) as any,
+    );
+    renderPage();
+    expect(await screen.findByText(/no published workflows/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no workflows yet/i)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /show all workflows/i }));
+    expect(await screen.findByText('Invoice Processing')).toBeInTheDocument();
   });
 
   it('filters by search term', async () => {
@@ -353,7 +368,7 @@ describe('WorkflowListPage', () => {
         items: [] as any, total: 0, page: 1, per_page: 100,
       });
       renderPage();
-      await waitFor(() => screen.getByText(/no workflows yet/i));
+      await waitFor(() => screen.getByText(/no (published )?workflows( yet)?/i));
 
       fireEvent.click(screen.getByRole('button', { name: /create from yaml/i }));
       expect(screen.getByTestId('yaml-modal')).toBeInTheDocument();
@@ -365,7 +380,7 @@ describe('WorkflowListPage', () => {
       });
       vi.mocked(workflowEngineApi.create).mockResolvedValue({ id: 'wf-empty' } as any);
       renderPage();
-      await waitFor(() => screen.getByText(/no workflows yet/i));
+      await waitFor(() => screen.getByText(/no (published )?workflows( yet)?/i));
 
       fireEvent.click(screen.getByRole('button', { name: /create blank workflow/i }));
 
@@ -379,7 +394,7 @@ describe('WorkflowListPage', () => {
         items: [] as any, total: 0, page: 1, per_page: 100,
       });
       renderPage();
-      await waitFor(() => screen.getByText(/no workflows yet/i));
+      await waitFor(() => screen.getByText(/no (published )?workflows( yet)?/i));
 
       fireEvent.click(screen.getByRole('button', { name: /browse templates/i }));
       expect(mockNavigate).toHaveBeenCalledWith('/workflows/marketplace');

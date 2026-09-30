@@ -254,10 +254,14 @@ function WorkflowCard({
 
 // ── Empty state ───────────────────────────────────────────────────────────────
 
-function EmptyState({ onCreateBlank, onBrowseTemplates, onCreateYaml }: {
+function EmptyState({ onCreateBlank, onBrowseTemplates, onCreateYaml, filter = '', onShowAll }: {
   onCreateBlank: () => void;
   onBrowseTemplates: () => void;
   onCreateYaml: () => void;
+  /** Active status filter ('' = all). A filtered view being empty doesn't mean
+   *  the tenant has no workflows — e.g. a just-saved draft under "published". */
+  filter?: string;
+  onShowAll?: () => void;
 }) {
   return (
     <div
@@ -277,11 +281,24 @@ function EmptyState({ onCreateBlank, onBrowseTemplates, onCreateYaml }: {
         </div>
       </div>
 
-      <h2 className="text-xl font-semibold text-[#F1F5F9] mb-2">No workflows yet</h2>
-      <p className="text-[#F1F5F9]/50 text-sm mb-8 max-w-xs leading-relaxed">
-        Build repeatable business processes that run autonomously with AI, tools, and
-        human approval checkpoints.
-      </p>
+      <h2 className="text-xl font-semibold text-[#F1F5F9] mb-2">
+        {filter ? `No ${filter} workflows` : 'No workflows yet'}
+      </h2>
+      {filter ? (
+        <p className="text-[#F1F5F9]/50 text-sm mb-8 max-w-xs leading-relaxed">
+          Only {filter} workflows are shown.{' '}
+          {onShowAll && (
+            <button onClick={onShowAll} className="text-sky-400 hover:underline">
+              Show all workflows
+            </button>
+          )}
+        </p>
+      ) : (
+        <p className="text-[#F1F5F9]/50 text-sm mb-8 max-w-xs leading-relaxed">
+          Build repeatable business processes that run autonomously with AI, tools, and
+          human approval checkpoints.
+        </p>
+      )}
 
       <div className="flex items-center gap-3 flex-wrap justify-center">
         <button
@@ -509,6 +526,8 @@ export default function WorkflowListPage() {
             onCreateBlank={createBlank}
             onBrowseTemplates={() => navigate('/workflows/marketplace')}
             onCreateYaml={() => setShowYamlCreate(true)}
+            filter={statusFilter}
+            onShowAll={() => resetWindow('')}
           />
         ) : (
           <div

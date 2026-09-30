@@ -35,11 +35,16 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
   const qc = useQueryClient();
   const [name, setName] = useState(wf.name);
   const [description, setDescription] = useState(wf.description);
-  const [retention, setRetention] = useState(90);
+  const trimmedName = name.trim();
 
   const saveMutation = useMutation({
-    mutationFn: () => workflowEngineApi.update(wf.id, { name, description }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', wf.id] }),
+    mutationFn: () =>
+      workflowEngineApi.update(wf.id, { name: trimmedName, description }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', wf.id] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine-list'] });
+    },
   });
 
   return (
@@ -54,7 +59,11 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
             <input
               id="wf-name"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              maxLength={200}
+              onChange={(e) => {
+                setName(e.target.value);
+                saveMutation.reset();
+              }}
               className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
             />
@@ -66,36 +75,35 @@ function GeneralPanel({ wf }: { wf: WEWorkflow }) {
             <textarea
               id="wf-desc"
               value={description}
-              onChange={(e) => setDescription(e.target.value)}
+              onChange={(e) => {
+                setDescription(e.target.value);
+                saveMutation.reset();
+              }}
               rows={3}
               className="w-full px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
                          text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 resize-none"
             />
           </div>
-          <div>
-            <label className="block text-xs font-medium text-[#F1F5F9]/50 mb-1" htmlFor="retention">
-              Run Retention (days)
-            </label>
-            <input
-              id="retention"
-              type="number"
-              value={retention}
-              onChange={(e) => setRetention(Number(e.target.value))}
-              min={1}
-              max={365}
-              className="w-32 px-3 py-2 rounded-xl bg-[#0F1826]/5 border border-white/10 text-[#F1F5F9]
-                         text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
-            />
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => saveMutation.mutate()}
+              disabled={saveMutation.isPending || !trimmedName}
+              title={trimmedName ? undefined : 'Workflow name cannot be blank'}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500
+                         text-[#F1F5F9] text-sm font-medium transition-colors disabled:opacity-60"
+            >
+              {saveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              Save Changes
+            </button>
+            {saveMutation.isSuccess && (
+              <span role="status" className="text-xs text-emerald-400">Saved</span>
+            )}
           </div>
-          <button
-            onClick={() => saveMutation.mutate()}
-            disabled={saveMutation.isPending}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500
-                       text-[#F1F5F9] text-sm font-medium transition-colors disabled:opacity-60"
-          >
-            {saveMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Save Changes
-          </button>
+          {saveMutation.isError && (
+            <p role="alert" className="text-xs text-red-400">
+              {workflowErrorMessage(saveMutation.error, 'save')}
+            </p>
+          )}
         </div>
       </div>
     </div>

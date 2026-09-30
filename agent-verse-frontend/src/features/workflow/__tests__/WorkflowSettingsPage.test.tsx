@@ -360,10 +360,6 @@ describe('WorkflowSettingsPage', () => {
     const descInput = screen.getByLabelText(/description/i) as HTMLTextAreaElement;
     fireEvent.change(descInput, { target: { value: 'New description' } });
     expect(descInput.value).toBe('New description');
-
-    const retentionInput = screen.getByLabelText(/run retention/i) as HTMLInputElement;
-    fireEvent.change(retentionInput, { target: { value: '30' } });
-    expect(retentionInput.value).toBe('30');
   });
 
   it('clicking Save Changes calls the update API with the current name/description', async () => {
@@ -379,6 +375,43 @@ describe('WorkflowSettingsPage', () => {
         description: 'A test workflow',
       });
     });
+  });
+
+  // UI-WF-SAVE: Save Changes succeeded or failed silently, and the name could be
+  // saved blank.
+  it('confirms a successful save and trims the name', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.change(screen.getByLabelText(/workflow name/i), { target: { value: '  Trimmed  ' } });
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    await waitFor(() =>
+      expect(workflowEngineApi.update).toHaveBeenCalledWith('wf-1', {
+        name: 'Trimmed',
+        description: 'A test workflow',
+      }),
+    );
+    expect(await screen.findByRole('status')).toHaveTextContent(/saved/i);
+  });
+
+  it('shows the server error when saving fails', async () => {
+    vi.mocked(workflowEngineApi.update).mockRejectedValue(new Error('Workflow not found'));
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save: Workflow not found');
+  });
+
+  it('does not allow saving a blank name', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    fireEvent.change(screen.getByLabelText(/workflow name/i), { target: { value: '   ' } });
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
+  });
+
+  it('does not offer a run-retention setting that is never saved', async () => {
+    wrap();
+    await waitFor(() => screen.getByText('General Settings'));
+    expect(screen.queryByLabelText(/run retention/i)).not.toBeInTheDocument();
   });
 
   it('shows a full-page loading spinner while the workflow query is pending', () => {

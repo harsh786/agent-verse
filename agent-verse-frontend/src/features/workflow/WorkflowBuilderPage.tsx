@@ -22,8 +22,8 @@
  * - Dark mode (dark: prefix Tailwind)
  * - WCAG 2.2 AA
  */
-import { useState, useCallback, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ReactFlow, Background, Controls, MiniMap, BackgroundVariant,
@@ -36,7 +36,7 @@ import '@xyflow/react/dist/style.css';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Save, Play, Zap, Code2, Undo2, Redo2, Layout, X,
-  ChevronLeft, AlertCircle, Loader2, History,
+  ChevronLeft, AlertCircle, Loader2, History, Pencil, Settings, CheckCircle2,
 } from 'lucide-react';
 
 import { workflowEngineApi, type WEWorkflow } from '../../lib/api/client';
@@ -93,7 +93,8 @@ function BuilderCanvas({
   canRun = true,
 }: {
   wf: WEWorkflow;
-  onSave: (definition: Record<string, unknown>) => void;
+  /** Persists the definition; resolves once the PATCH succeeded (rejects on failure). */
+  onSave: (definition: Record<string, unknown>) => Promise<unknown>;
   isSaving: boolean;
   /** Per-workflow ACL: editor may save; runner may test-run. */
   canEdit?: boolean;
@@ -221,7 +222,7 @@ function BuilderCanvas({
   }, [nodes, edges, applyLayout, setNodes, setEdges, rfInstance]);
 
   // ── Save ────────────────────────────────────────────────────────────────────
-  const handleSave = () => {
+  const handleSave = (): Promise<unknown> => {
     try {
       let def: Record<string, unknown>;
       if (showYaml) {
@@ -248,9 +249,9 @@ function BuilderCanvas({
         def.name = wf.name || (preservedName && preservedName !== 'Untitled' ? preservedName : 'Untitled');
         updateFromCanvas(nodes, edges); // keep the YAML tab current for next open
       }
-      onSave(Object.keys(def).length ? def : { name: wf.name, steps: [] });
+      return onSave(Object.keys(def).length ? def : { name: wf.name, steps: [] });
     } catch {
-      onSave({ name: wf.name, steps: [] });
+      return onSave({ name: wf.name, steps: [] });
     }
   };
 
@@ -260,8 +261,10 @@ function BuilderCanvas({
   // run executes the current canvas.
   const testMutation = useMutation({
     mutationFn: async () => {
-      // A runner without edit access runs the saved definition as-is.
-      if (canEdit) handleSave();
+      // A runner without edit access runs the saved definition as-is. Wait for
+      // the save to land first — firing both at once ran the PREVIOUS
+      // definition — and don't run at all when the save was refused.
+      if (canEdit) await handleSave();
       return workflowEngineApi.trigger(wf.id, {});
     },
     onMutate: () => setIsTestRunning(true),
@@ -372,7 +375,10 @@ function BuilderCanvas({
 
           {/* Save */}
           <button
-            onClick={handleSave}
+            onClick={() => {
+              // Failures surface through the page's error banner (onError).
+              handleSave().catch(() => undefined);
+            }}
             disabled={isSaving || !canEdit}
             title={canEdit ? undefined : 'Needs editor access to this workflow'}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-sky-600
@@ -581,16 +587,63 @@ export default function WorkflowBuilderPage() {
   const qc = useQueryClient();
 
   const [actionError, setActionError] = useState<string | null>(null);
+  // Brief "Saved" confirmation — the save used to succeed silently, which read
+  // as "the Save button does nothing".
+  const [justSaved, setJustSaved] = useState(false);
+  useEffect(() => {
+    if (!justSaved) return;
+    const t = setTimeout(() => setJustSaved(false), 4000);
+    return () => clearTimeout(t);
+  }, [justSaved]);
+
+  // Inline rename (the builder had no way to change the workflow's name).
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
 
   const saveMutation = useMutation({
     mutationFn: (definition: Record<string, unknown>) =>
       workflowEngineApi.update(id!, { definition }),
-    onMutate: () => setActionError(null),
+    onMutate: () => {
+      setActionError(null);
+      setJustSaved(false);
+    },
     onSuccess: () => {
+      setJustSaved(true);
       qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] });
     },
     onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'save')),
   });
+
+  const renameMutation = useMutation({
+    mutationFn: (name: string) => workflowEngineApi.update(id!, { name }),
+    onMutate: () => setActionError(null),
+    onSuccess: (updated, name) => {
+      // Show the new name right away; keep the caller's `access` (the PATCH
+      // response doesn't carry it) so the ACL-gated controls don't flicker off.
+      qc.setQueryData<WEWorkflow>(['workflow-engine', 'get', id], (old) =>
+        old ? { ...old, name: updated?.name ?? name } : old,
+      );
+      setEditingName(false);
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'get', id] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine', 'list'] });
+      qc.invalidateQueries({ queryKey: ['workflow-engine-list'] });
+    },
+    onError: (err: unknown) => setActionError(workflowErrorMessage(err, 'rename')),
+  });
+
+  const commitRename = (current: string) => {
+    const name = nameDraft.trim();
+    if (!name) {
+      setActionError('Workflow name cannot be blank.');
+      return;
+    }
+    if (name === current) {
+      setEditingName(false);
+      return;
+    }
+    renameMutation.mutate(name);
+  };
 
   const publishMutation = useMutation({
     mutationFn: () => workflowEngineApi.publish(id!),
@@ -659,10 +712,55 @@ export default function WorkflowBuilderPage() {
         >
           <ChevronLeft className="h-5 w-5" />
         </button>
-        <div>
-          <h1 className="text-sm font-bold text-[#F1F5F9] leading-tight">{wf.name}</h1>
+        <div className="min-w-0">
+          {editingName ? (
+            <input
+              autoFocus
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  commitRename(wf.name);
+                } else if (e.key === 'Escape') {
+                  setEditingName(false);
+                  setActionError(null);
+                }
+              }}
+              onBlur={() => {
+                if (!renameMutation.isPending) commitRename(wf.name);
+              }}
+              disabled={renameMutation.isPending}
+              maxLength={200}
+              aria-label="Workflow name"
+              className="text-sm font-bold bg-[#0A0D14] border border-sky-500/50 rounded-md px-2 py-0.5
+                         text-[#F1F5F9] focus:outline-none focus:ring-2 focus:ring-sky-500 w-64"
+            />
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-sm font-bold text-[#F1F5F9] leading-tight truncate">{wf.name}</h1>
+              {canEdit && (
+                <button
+                  onClick={() => {
+                    setNameDraft(wf.name);
+                    setEditingName(true);
+                  }}
+                  className="text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
+                  aria-label="Rename workflow"
+                  title="Rename"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          )}
           <p className="text-xs text-[#F1F5F9]/40">v{wf.version} · {wf.status}</p>
         </div>
+        {justSaved && (
+          <span role="status" className="flex items-center gap-1 text-xs text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5" /> Saved
+          </span>
+        )}
         {!canEdit && (
           <span
             className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 text-xs"
@@ -672,6 +770,14 @@ export default function WorkflowBuilderPage() {
           </span>
         )}
         <div className="flex items-center gap-2 ml-auto">
+          <Link
+            to={`/workflows/${wf.id}/settings`}
+            className="p-1.5 rounded-lg text-[#F1F5F9]/40 hover:text-[#F1F5F9] transition-colors"
+            aria-label="Workflow settings"
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </Link>
           {wf.status === 'draft' && canEdit && (
             <button
               onClick={() => publishMutation.mutate()}
@@ -700,7 +806,7 @@ export default function WorkflowBuilderPage() {
         <ReactFlowProvider>
           <BuilderCanvas
             wf={wf}
-            onSave={saveMutation.mutate}
+            onSave={saveMutation.mutateAsync}
             isSaving={saveMutation.isPending}
             canEdit={canEdit}
             canRun={canRun}

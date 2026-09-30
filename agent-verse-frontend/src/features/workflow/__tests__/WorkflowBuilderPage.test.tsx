@@ -238,3 +238,98 @@ describe('WorkflowBuilderPage', () => {
     );
   });
 });
+
+// UI-WF-SAVE: the workflow name could not be changed from the builder and Save
+// gave no feedback (and Test raced the save it had just started).
+describe('WorkflowBuilderPage — rename + save feedback (UI-WF-SAVE)', () => {
+  beforeEach(() => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue(mockWf as any);
+    vi.mocked(workflowEngineApi.update).mockReset();
+    vi.mocked(workflowEngineApi.update).mockResolvedValue(mockWf as any);
+    vi.mocked(workflowEngineApi.trigger).mockReset();
+    vi.mocked(workflowEngineApi.trigger).mockResolvedValue({
+      run_id: 'run-1', workflow_id: 'wf-1', status: 'pending',
+    } as any);
+  });
+
+  it('renames the workflow via PATCH {name} and shows the new name', async () => {
+    vi.mocked(workflowEngineApi.update).mockImplementation(async () => {
+      // The server now holds the new name, so the post-save refetch returns it.
+      vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, name: 'Renamed Flow' } as any);
+      return { ...mockWf, name: 'Renamed Flow' } as any;
+    });
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /rename workflow/i }));
+    const input = screen.getByRole('textbox', { name: /workflow name/i });
+    expect(input).toHaveValue('My Test Workflow');
+    fireEvent.change(input, { target: { value: '  Renamed Flow ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() =>
+      expect(workflowEngineApi.update).toHaveBeenCalledWith('wf-1', { name: 'Renamed Flow' }),
+    );
+    expect(await screen.findByRole('heading', { name: 'Renamed Flow' })).toBeInTheDocument();
+  });
+
+  it('rejects a blank name without calling the API', async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /rename workflow/i }));
+    const input = screen.getByRole('textbox', { name: /workflow name/i });
+    fireEvent.change(input, { target: { value: '   ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/name cannot be blank/i);
+    expect(workflowEngineApi.update).not.toHaveBeenCalled();
+  });
+
+  it('Escape cancels the rename', async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /rename workflow/i }));
+    const input = screen.getByRole('textbox', { name: /workflow name/i });
+    fireEvent.change(input, { target: { value: 'Nope' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.getByRole('heading', { name: 'My Test Workflow' })).toBeInTheDocument();
+    expect(workflowEngineApi.update).not.toHaveBeenCalled();
+  });
+
+  it('a viewer cannot rename', async () => {
+    vi.mocked(workflowEngineApi.get).mockResolvedValue({ ...mockWf, access: 'viewer' } as any);
+    wrap();
+    await screen.findByRole('heading', { name: 'My Test Workflow' });
+    expect(screen.queryByRole('button', { name: /rename workflow/i })).not.toBeInTheDocument();
+  });
+
+  it('shows a Saved confirmation after a successful save', async () => {
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /save workflow/i }));
+    expect(await screen.findByRole('status')).toHaveTextContent(/saved/i);
+  });
+
+  it('Test waits for the save to finish before triggering the run', async () => {
+    let resolveSave: (v: unknown) => void = () => {};
+    vi.mocked(workflowEngineApi.update).mockImplementation(
+      () => new Promise((r) => { resolveSave = r; }) as any,
+    );
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /test workflow/i }));
+    await waitFor(() => expect(workflowEngineApi.update).toHaveBeenCalled());
+    expect(workflowEngineApi.trigger).not.toHaveBeenCalled();
+    resolveSave(mockWf);
+    await waitFor(() => expect(workflowEngineApi.trigger).toHaveBeenCalledWith('wf-1', {}));
+  });
+
+  it('does not trigger a test run when the save fails', async () => {
+    vi.mocked(workflowEngineApi.update).mockRejectedValue(
+      Object.assign(new Error('Invalid workflow DSL'), { status: 400 }),
+    );
+    wrap();
+    fireEvent.click(await screen.findByRole('button', { name: /test workflow/i }));
+    await waitFor(() => expect(workflowEngineApi.update).toHaveBeenCalled());
+    await screen.findByRole('alert');
+    expect(workflowEngineApi.trigger).not.toHaveBeenCalled();
+  });
+
+  it('links to the workflow settings page', async () => {
+    wrap();
+    const link = await screen.findByRole('link', { name: /workflow settings/i });
+    expect(link).toHaveAttribute('href', '/workflows/wf-1/settings');
+  });
+});
