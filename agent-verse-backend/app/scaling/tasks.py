@@ -5207,18 +5207,43 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                         processed: set[str] = set()
                         new_files: list[str] = []
 
-                        if watch_path:
+                        # TRG-32: the tenant-supplied path is confined to
+                        # FILE_DROP_ROOT/<tenant_id> (realpath, so symlinks and
+                        # paths stored before validation cannot escape it); it
+                        # used to be listed as-is (/etc, other tenants' folders).
+                        from app.triggers.validation import (
+                            is_within as _is_within_fd,
+                        )
+                        from app.triggers.validation import (
+                            resolve_file_drop_dir as _resolve_fd,
+                        )
+
+                        _watch_dir = (
+                            _resolve_fd(str(sched.get("tenant_id") or ""), str(watch_path))
+                            if watch_path
+                            else None
+                        )
+                        if watch_path and _watch_dir is None:
+                            logger.warning(
+                                "file_drop_path_refused", schedule=key, path=str(watch_path)[:200]
+                            )
+                        if _watch_dir is not None:
                             try:
-                                if _os_fd.path.isdir(watch_path):
-                                    all_files = _os_fd.listdir(watch_path)
+                                if _os_fd.path.isdir(_watch_dir):
+                                    all_files = _os_fd.listdir(_watch_dir)
                                     if r is not None:
                                         _proc_raw = r.get(processed_key)
                                         if _proc_raw:
                                             processed = set(_json_fd.loads(_proc_raw))
                                     new_files = [
-                                        _os_fd.path.join(watch_path, f)
+                                        _os_fd.path.join(_watch_dir, f)
                                         for f in all_files
-                                        if _fnmatch.fnmatch(f, watch_pattern) and f not in processed
+                                        if _fnmatch.fnmatch(f, watch_pattern)
+                                        and f not in processed
+                                        and _is_within_fd(
+                                            _os_fd.path.realpath(_os_fd.path.join(_watch_dir, f)),
+                                            _watch_dir,
+                                        )
                                     ]
                             except OSError as _os_err:
                                 logger.warning(

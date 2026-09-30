@@ -171,14 +171,18 @@ def test_webhook_signature_secret_round_trips(client):
     ("rest", {}),
     ("event", {}),
     ("api_poll", {"poll_url": "https://api.example.com/status"}),
-    ("file_drop", {"file_drop_path": "/watch/inbox"}),
+    ("file_drop", {"file_drop_path": "inbox"}),
     ("cloudwatch", {}),
     ("state_transition", {"state_machine_id": "sm-1"}),
 ])
-def test_reconciled_supported_types_are_creatable(client, trigger_type, extra):
+def test_reconciled_supported_types_are_creatable(client, trigger_type, extra, monkeypatch):
     """Every trigger type the UI now offers (aligned to the backend dispatch map),
     given its required fields, must actually create — no more 'Unknown
     trigger_type' 422s from UI-only names like custom_webhook / kafka_message."""
+    from app.core.config import get_settings
+
+    # file_drop is enabled only with an operator drop root (TRG-32).
+    monkeypatch.setattr(get_settings(), "file_drop_root", "/srv/drops")
     resp = client.post("/triggers", json={
         "spec": {"trigger_type": trigger_type, **extra},
         "goal_id": f"g-{trigger_type}",

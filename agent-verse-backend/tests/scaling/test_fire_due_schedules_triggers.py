@@ -148,15 +148,20 @@ class TestDeadlineAndBusinessCalendar:
 
 
 class TestFileDropTrigger:
-    def test_new_file_dispatches_goal(self):
+    def test_new_file_dispatches_goal(self, tmp_path, monkeypatch):
+        from app.core.config import get_settings
         from app.scaling.tasks import fire_due_schedules
 
+        # TRG-32: the watch folder is relative to FILE_DROP_ROOT/<tenant_id>.
+        (tmp_path / "t1" / "watch").mkdir(parents=True)
+        (tmp_path / "t1" / "watch" / "report.txt").write_text("x")
+        monkeypatch.setattr(get_settings(), "file_drop_root", str(tmp_path))
         mock_r = _redis_mock(
             {
                 "schedule:t1:filedrop1": {
                     "trigger_type": "file_drop",
                     "tenant_id": "t1",
-                    "file_watch_path": "/tmp/watch",
+                    "file_watch_path": "watch",
                     "file_pattern": "*.txt",
                 }
             }
@@ -164,8 +169,6 @@ class TestFileDropTrigger:
         with (
             patch("redis.from_url", return_value=mock_r),
             patch("app.scaling.tasks._db_schedule_discovery_enabled", return_value=False),
-            patch("os.path.isdir", return_value=True),
-            patch("os.listdir", return_value=["report.txt"]),
             patch(
                 "app.scaling.tasks._build_goal_kwargs_for_alert",
                 new=AsyncMock(

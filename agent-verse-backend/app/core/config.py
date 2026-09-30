@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # must be a bare identifier and is checked against this list before querying,
     # so a tenant-supplied db_table can never inject SQL or read an off-limits table.
     db_row_change_tables: str = ""
+    # FILE_DROP trigger: the directory tenant drop folders live under. A trigger's
+    # file_drop_path is a folder RELATIVE to <file_drop_root>/<tenant_id> and is
+    # confined to it. Empty (default) → file_drop triggers are disabled.
+    file_drop_root: str = ""
 
     # --- infrastructure DSNs ---
     database_url: str = "postgresql+asyncpg://agentverse:agentverse@localhost:5432/agentverse"

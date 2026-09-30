@@ -164,12 +164,15 @@ export function DataFamilyForm({ triggerType, value, onChange }: FamilyFormProps
         </>
       )}
       {triggerType === 'file_drop' && (
-        <Field label="File Drop Path" hint="Watched directory or glob, e.g. /inbox or s3://bucket/incoming/*.csv">
+        <Field
+          label="Drop Folder"
+          hint="A folder relative to your tenant drop folder on the server, e.g. inbox or inbox/invoices. Absolute paths and '..' are refused."
+        >
           <input
             type="text"
             value={(value.file_drop_path as string) ?? ''}
             onChange={(e) => set('file_drop_path', e.target.value)}
-            placeholder="/inbox/*.csv"
+            placeholder="inbox/invoices"
             className={`${inputCls} font-mono`}
           />
         </Field>

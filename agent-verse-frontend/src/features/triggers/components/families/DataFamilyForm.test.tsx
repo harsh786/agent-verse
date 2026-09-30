@@ -100,23 +100,20 @@ describe('DataFamilyForm', () => {
     expect(lastArg(onChange)).toEqual({ poll_interval_seconds: 120 });
   });
 
-  test('file_drop shows the watched-path field and preserves existing value', () => {
+  test('file_drop shows the folder field relative to the tenant drop root (TRG-32)', () => {
     render(
-      <DataFamilyForm
-        triggerType="file_drop"
-        value={{ file_drop_path: '/inbox/*.csv' }}
-        onChange={vi.fn()}
-      />,
+      <DataFamilyForm triggerType="file_drop" value={{ file_drop_path: 'inbox' }} onChange={vi.fn()} />,
     );
-    expect(screen.getByText('File Drop Path')).toBeInTheDocument();
-    expect(screen.getByDisplayValue('/inbox/*.csv')).toBeInTheDocument();
+    expect(screen.getByText('Drop Folder')).toBeInTheDocument();
+    expect(screen.getByText(/relative to your tenant drop folder/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('inbox')).toBeInTheDocument();
   });
 
   test('file_drop path field reports edits', () => {
     const onChange = vi.fn();
     render(<DataFamilyForm triggerType="file_drop" value={{}} onChange={onChange} />);
-    fireEvent.change(screen.getByPlaceholderText('/inbox/*.csv'), { target: { value: '/incoming/*.json' } });
-    expect(lastArg(onChange)).toEqual({ file_drop_path: '/incoming/*.json' });
+    fireEvent.change(screen.getByPlaceholderText('inbox/invoices'), { target: { value: 'incoming' } });
+    expect(lastArg(onChange)).toEqual({ file_drop_path: 'incoming' });
   });
 
   test('rss_feed renders only the feed URL field', () => {

@@ -42,6 +42,59 @@ def db_row_change_allowlist() -> frozenset[str]:
     return frozenset(t for t in (p.strip() for p in raw.split(",")) if _SAFE_TABLE.match(t))
 
 
+_SAFE_TENANT = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def file_drop_root() -> str:
+    from app.core.config import get_settings
+
+    return str(getattr(get_settings(), "file_drop_root", "") or "").strip()
+
+
+def file_drop_path_error(path: str) -> str | None:
+    """Why *path* is not an acceptable ``file_drop_path`` (TRG-32), else None.
+
+    It must be a folder relative to the tenant's drop root: absolute paths,
+    ``..``, ``~`` and backslashes are refused, and the type is disabled when the
+    operator has not configured ``FILE_DROP_ROOT``.
+    """
+    if not file_drop_root():
+        return "file_drop triggers are disabled: the operator has not configured FILE_DROP_ROOT"
+    p = path.strip()
+    if not p:
+        return "file_drop trigger requires file_drop_path"
+    parts = p.split("/")
+    if p.startswith(("/", "~")) or "\\" in p or ":" in p or ".." in parts:
+        return (
+            "file_drop_path must be a folder relative to your tenant drop folder "
+            "(no absolute paths, '..', '~' or backslashes)"
+        )
+    return None
+
+
+def resolve_file_drop_dir(tenant_id: str, path: str) -> str | None:
+    """The real directory a file_drop trigger may list, or None (TRG-32).
+
+    Resolved with ``realpath`` under ``<FILE_DROP_ROOT>/<tenant_id>`` at fire
+    time, so a symlink (or a path stored before validation existed) cannot
+    escape the tenant's folder.
+    """
+    import os
+
+    root = file_drop_root()
+    if not root or not _SAFE_TENANT.match(tenant_id or "") or file_drop_path_error(path):
+        return None
+    base = os.path.realpath(os.path.join(root, tenant_id))
+    target = os.path.realpath(os.path.join(base, path.strip()))
+    return target if is_within(target, base) else None
+
+
+def is_within(path: str, base: str) -> bool:
+    import os
+
+    return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
+
+
 def _require_iso(value: str, missing: str) -> None:
     if not value.strip():
         raise ValueError(missing)
@@ -164,8 +217,8 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
                 + (", ".join(sorted(allowed)) or "none configured")
             )
     elif v == "file_drop":
-        if not spec.file_drop_path.strip():
-            raise ValueError("file_drop trigger requires file_drop_path")
+        if (reason := file_drop_path_error(spec.file_drop_path)) is not None:
+            raise ValueError(reason)
     elif v == "condition":
         if not (spec.condition_expression.strip() or spec.condition.strip()):
             raise ValueError("condition trigger requires condition_expression (a CEL expression)")
