@@ -170,7 +170,7 @@ def test_webhook_signature_secret_round_trips(client):
     ("webhook", {}),
     ("rest", {}),
     ("event", {}),
-    ("api_poll", {"poll_url": "https://api.example.com/status"}),
+    ("api_poll", {"poll_url": "https://api.example.com/status", "poll_interval_seconds": 900}),
     ("file_drop", {"file_drop_path": "inbox"}),
     ("cloudwatch", {}),
     ("state_transition", {"state_machine_id": "sm-1"}),

@@ -205,6 +205,8 @@ def validate_spec(spec: TriggerSpec, *, plan: str = "free") -> None:
             raise ValueError("api_poll trigger requires poll_url")
         if spec.poll_interval_seconds <= 0:
             raise ValueError("api_poll trigger requires poll_interval_seconds > 0")
+        # TRG-33: the beat now honours the interval; it gets the plan floor too.
+        check_plan_interval(spec.poll_interval_seconds, plan)
     elif v == "rss_feed":
         if not spec.rss_url.strip():
             raise ValueError("rss_feed trigger requires rss_url")

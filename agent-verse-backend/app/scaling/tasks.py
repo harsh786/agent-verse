@@ -5573,7 +5573,28 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
 
                         poll_url = sched.get("poll_url", "")
                         _tenant_id_ap = str(sched.get("tenant_id") or "")
-                        if poll_url and _tenant_id_ap:
+                        # TRG-33: poll at most every poll_interval_seconds (it
+                        # was never read: every trigger polled each 60s tick).
+                        # SET NX EX is an atomic per-trigger claim, shared by
+                        # every beat replica. Without Redis: every tick.
+                        _ap_due = True
+                        if poll_url and _tenant_id_ap and r is not None:
+                            _ap_interval = max(int(sched.get("poll_interval_seconds") or 0), 60)
+                            try:
+                                # 5s slack so the claim has expired by the next due tick.
+                                _ap_due = bool(
+                                    r.set(
+                                        f"api_poll_claim:{key}",
+                                        now.isoformat(),
+                                        nx=True,
+                                        ex=max(_ap_interval - 5, 1),
+                                    )
+                                )
+                            except Exception as _ap_claim_exc:
+                                logger.warning(
+                                    "api_poll_claim_failed", error=str(_ap_claim_exc)[:100]
+                                )
+                        if poll_url and _tenant_id_ap and _ap_due:
                             last_key = f"api_poll_last:{key}"
                             last_value: Any = None
                             if r is not None:
@@ -5599,18 +5620,8 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                     last_value,
                                     sched.get("poll_expected_value", ""),
                                 ):
-                                    from app.tenancy.context import (
-                                        PlanTier as _PT_ap,
-                                    )
-                                    from app.tenancy.context import (
-                                        TenantContext as _TC_ap,
-                                    )
-
-                                    _tc_ap = _TC_ap(
-                                        tenant_id=_tenant_id_ap,
-                                        plan=_PT_ap.PROFESSIONAL,
-                                        api_key_id="trigger-api-poll",
-                                    )
+                                    # Only the goal text is used; the governed
+                                    # dispatch resolves the real plan (TRG-06).
                                     _ap_alert = {
                                         "poll_url": poll_url,
                                         "value": current,
@@ -5622,7 +5633,7 @@ def fire_due_schedules(self: Any) -> dict[str, Any]:
                                             "api_poll",
                                             _ap_alert,
                                             goal_service=None,
-                                            tenant_ctx=_tc_ap,
+                                            tenant_ctx=None,
                                         )
                                     )
                                     # Governed dispatch (was a direct run_goal).
