@@ -66,6 +66,9 @@ def worker(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             )
             self._policy_engine = None  # governance is covered elsewhere
             self._enforce_grants = False
+            # Budgets are covered elsewhere; the worker's Redis-backed controller
+            # has no Redis here and would (correctly) fail closed.
+            self._cost_controller = None
             state = AgentState(goal="open it", tenant_ctx=T)
             state.steps.append(StepResult(description="open the page", status=StepStatus.RUNNING))
             seen["outputs"].append(await self._execute_step("open the page", state, T))

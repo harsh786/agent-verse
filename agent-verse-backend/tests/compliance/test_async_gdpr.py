@@ -50,8 +50,19 @@ def test_consent_record_endpoint_exists():
     )
 
 
-def test_gdpr_export_async():
+def test_gdpr_export_async_without_database_is_503(monkeypatch):
+    """The export job lives only in Postgres: with no database, 503 — never 'pending'.
+
+    This used to assert 200/'pending'; it passed only because the endpoint fell
+    back to the global engine and inserted the job into the developer's database.
+    The DB-backed happy path is covered in tests/api (fake session) and e2e_full.
+    """
     from app.main import create_app
+
+    def _no_database():
+        raise RuntimeError("no database configured in this test")
+
+    monkeypatch.setattr("app.db.session.get_session_factory", _no_database)
     app = create_app()
     client = TestClient(app)
     r = client.post("/tenants/signup", json={"name": "GDPRTest", "email": "g@test.com"})
@@ -59,10 +70,8 @@ def test_gdpr_export_async():
         pytest.skip("signup failed")
     h = {"X-API-Key": r.json().get("api_key", "")}
     resp = client.post("/compliance/export/start", headers=h)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "job_id" in data
-    assert data["status"] == "pending"
+    assert resp.status_code == 503
+    assert "no database configured" in resp.json()["detail"]
 
 
 def test_consent_record_and_revoke():

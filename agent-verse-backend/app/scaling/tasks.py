@@ -160,6 +160,13 @@ return 0
             self._redis.eval(self._RELEASE_SCRIPT, 1, key, self._value)
 
 
+def _goal_lock_client(redis_url: str) -> Any:
+    """The synchronous Redis client run_goal's per-goal execution lock uses."""
+    import redis
+
+    return redis.from_url(redis_url, decode_responses=True)
+
+
 # True while this worker thread runs a supervisor sub-goal (set by run_goal from
 # its ``subgoal`` kwarg on every invocation). A sub-goal runs under its parent's
 # concurrent-goal slot and never took one, so it must not release one (CORE-07).
@@ -2298,10 +2305,7 @@ def run_goal(
         if _redis_url:
             import uuid as _uuid
 
-            import redis as _sync_redis_mod
-
-            _lock_redis_sync = _sync_redis_mod.from_url(_redis_url, decode_responses=True)
-            _lock = _SyncGoalLock(_lock_redis_sync, _uuid.uuid4().hex)
+            _lock = _SyncGoalLock(_goal_lock_client(_redis_url), _uuid.uuid4().hex)
             # The lock TTL must cover the goal's *entire* allowed execution
             # window (per-plan goal_timeout_seconds below, in the isolation
             # check further down — free=1h, starter=2h, professional=8h,

@@ -449,12 +449,22 @@ def _restore_lifespan_db_singletons():
 
 
 class _GuardLocks:
-    """In-memory stand-in for the beat guard's Redis lock (SET NX EX + release)."""
+    """In-memory stand-in for a Redis lock (SET NX EX/PX + Lua check-and-delete).
+
+    Used for the beat guard lock and run_goal's per-goal execution lock.
+    """
 
     def __init__(self) -> None:
         self.held: dict[str, str] = {}
 
-    def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+    def set(
+        self,
+        key: str,
+        value: str,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> bool | None:
         if nx and key in self.held:
             return None
         self.held[key] = value
@@ -528,3 +538,19 @@ def test_backends(pg_url, redis_url, monkeypatch):
     reset_db_singletons()
     yield pg_url, redis_url
     reset_db_singletons()
+
+
+
+@pytest.fixture
+def in_memory_goal_lock(monkeypatch: pytest.MonkeyPatch) -> _GuardLocks:
+    """Give run_goal's per-goal execution lock an in-memory Redis stand-in.
+
+    run_goal fails closed (retries, then fails the goal) when it cannot take its
+    Redis lock. Unit tests of what happens after the lock use this instead of a
+    Redis server; the lock itself is tested in tests/scaling/test_*lock*.py.
+    """
+    import app.scaling.tasks as tasks_mod
+
+    locks = _GuardLocks()
+    monkeypatch.setattr(tasks_mod, "_goal_lock_client", lambda _url: locks)
+    return locks

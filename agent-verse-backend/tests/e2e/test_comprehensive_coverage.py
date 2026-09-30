@@ -128,11 +128,14 @@ def test_celery_beat_schedule_has_required_entries():
     assert any("schedule" in k for k in keys)
 
 
-def test_run_goal_task_executes_with_fake_provider(monkeypatch: Any) -> None:
+def test_run_goal_task_executes_with_fake_provider(
+    monkeypatch: Any, in_memory_goal_lock: Any
+) -> None:
     """run_goal task completes without crashing (uses FakeProvider, ALWAYS_EAGER).
 
     Patches get_session_factory so the task runs entirely in-memory:
     no real PostgreSQL connection is attempted and no asyncpg sockets are opened.
+    The per-goal execution lock uses an in-memory stand-in (no Redis server).
     This makes the test hermetic and eliminates dangling-connection ResourceWarnings
     that would otherwise corrupt the next test's environment.
     """

@@ -56,3 +56,11 @@ def _goal_claim_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(tasks, "_claim_goal_for_execution", _claimed)
 
+
+
+@pytest.fixture(autouse=True)
+def _goal_lock_in_memory(in_memory_goal_lock: object) -> None:
+    """run_goal's execution lock uses an in-memory stand-in, never a Redis server.
+
+    Tests that exercise the lock itself replace ``tasks._SyncGoalLock``.
+    """
