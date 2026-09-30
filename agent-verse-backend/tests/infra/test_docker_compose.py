@@ -90,7 +90,10 @@ def test_backend_env_has_embedding_dim():
     compose = _load_compose(COMPOSE_PATH)
     backend_env = compose["services"]["backend"].get("environment", {})
     assert "EMBEDDING_DIM" in backend_env, "EMBEDDING_DIM must be in backend environment"
-    assert str(backend_env["EMBEDDING_DIM"]) == "1536", "EMBEDDING_DIM must be 1536"
+    # Overridable via infra/.env (a 2048-d NVIDIA embedder needs 2048); default 1536.
+    assert str(backend_env["EMBEDDING_DIM"]) in {"1536", "${EMBEDDING_DIM:-1536}"}, (
+        "EMBEDDING_DIM must default to 1536"
+    )
 
 
 def test_runtime_services_load_local_provider_credentials():

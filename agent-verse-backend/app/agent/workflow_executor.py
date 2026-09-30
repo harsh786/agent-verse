@@ -473,12 +473,22 @@ class WorkflowExecutor:
             'Reply as JSON: {"success": true|false, "reason": "<one sentence>"}'
         )
         try:
-            resp = await provider.complete(
+            from app.providers.guarded_completion import complete_decision
+
+            # Breaker + timeout via complete_decision; spend is charged below through
+            # the goal's tool gate, like the step call itself (charge=False: no double
+            # charge).
+            resp = await complete_decision(
+                provider,
                 CompletionRequest(
                     messages=[Message(role="user", content=prompt)],
                     model=getattr(provider, "_default_model", ""),
                     max_tokens=200,
-                )
+                ),
+                role="verifier",
+                tenant_ctx=tenant_ctx,
+                goal_id=self._goal_id,
+                charge=False,
             )
             if not await self._tool_gate.charge_llm(
                 goal_id=self._goal_id, tenant_ctx=tenant_ctx, resp=resp

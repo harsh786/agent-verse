@@ -6,6 +6,8 @@ Exercises the complete 12-step pipeline with every optional dependency.
 
 from __future__ import annotations
 
+import pytest
+
 from app.agent.graph import AgentGraph
 from app.agent.state import GoalStatus
 from app.governance.audit import AuditLog
@@ -171,7 +173,10 @@ async def test_circuit_breaker_open_skips_step() -> None:
 
 # ── Test 7: HITL gateway creates approval request for high-risk steps ─────────
 
-async def test_hitl_request_created_for_high_risk_step() -> None:
+async def test_high_risk_step_is_refused_outside_supervised_mode() -> None:
+    """CORE-01: outside supervised mode a step that needs approval is refused with a
+    clear error and never executed (it used to run while filing an approval request
+    nothing waited on)."""
     provider = FakeProvider(responses=[
         '{"steps": ["deploy to production server"]}',
         "deployed",
@@ -184,13 +189,10 @@ async def test_hitl_request_created_for_high_risk_step() -> None:
         verifier=provider,
         hitl_gateway=hitl,
     )
-    state = await loop.run(goal="deploy production app", tenant_ctx=TENANT)
-    assert state is not None
-    # The "deploy to production" step should have triggered an approval request
-    pending = hitl.list_pending(tenant_ctx=TENANT)
-    # Approval requests are created and auto-proceeded; they are no longer PENDING
-    # if there were no pending from other runs — just verify no exception was raised
-    assert isinstance(pending, list)
+    with pytest.raises(PermissionError, match="supervised"):
+        await loop.run(goal="deploy production app", tenant_ctx=TENANT)
+    # Nothing was filed that no one would ever decide.
+    assert hitl.list_pending(tenant_ctx=TENANT) == []
 
 
 # ── Test 8: Result processor redacts secrets ─────────────────────────────────

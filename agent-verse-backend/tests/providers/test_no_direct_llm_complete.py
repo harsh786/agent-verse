@@ -143,7 +143,6 @@ ALLOWED: dict[str, tuple[int, str]] = {
     "rag_platform/retriever.py::MinimalCitationVerifier._provider_entails": (1, _DEBT),
     "rag_platform/retriever.py::RAGRetriever.synthesize": (1, _DEBT),
     "skills_runtime/executor.py::SkillExecutor.execute": (1, _DEBT),
-    "workflow/nl_trigger.py::NLTriggerResolver._llm_parse": (1, _DEBT),
 }
 
 

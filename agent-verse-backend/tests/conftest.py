@@ -375,3 +375,37 @@ def _restore_lifespan_db_singletons():
     saved = singletons.snapshot()
     yield
     singletons.restore(saved)
+
+
+class _GuardLocks:
+    """In-memory stand-in for the beat guard's Redis lock (SET NX EX + release)."""
+
+    def __init__(self) -> None:
+        self.held: dict[str, str] = {}
+
+    def set(self, key: str, value: str, ex: int | None = None, nx: bool = False) -> bool | None:
+        if nx and key in self.held:
+            return None
+        self.held[key] = value
+        return True
+
+    def eval(self, _script: str, _numkeys: int, key: str, token: str) -> int:
+        if self.held.get(key) == token:
+            del self.held[key]
+            return 1
+        return 0
+
+
+@pytest.fixture(autouse=True)
+def _beat_guard_lock(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give guarded beat tasks a working overlap lock.
+
+    The guard fails closed (skips the run) when it cannot take its Redis lock, and
+    many tests monkeypatch ``redis.from_url`` with fakes that have no SET NX, so
+    every guarded task would silently skip. test_beat_guard.py tests the real guard
+    client and is left alone.
+    """
+    if request.module.__name__.endswith("test_beat_guard"):
+        return
+    locks = _GuardLocks()
+    monkeypatch.setattr("app.scaling.beat_guard._guard_client", lambda *_a, **_k: locks)
