@@ -225,15 +225,32 @@ async def _sync_source_async(
                 return {"skipped": True, "reason": "backoff", "retry_in_seconds": backoff - elapsed}
 
     # ── Get connector ────────────────────────────────────────────────────────
-    connector_cls = get_connector(config.source_type)
-    if connector_cls is None:
-        await tracker.release_lock(source_id, tenant_id)
-        return {"error": f"no_connector_for_{config.source_type}"}
+    import uuid as _uuid
+
+    try:
+        connector_cls = get_connector(config.source_type)
+    except (KeyError, RuntimeError) as exc:
+        # The module failed to import / the type is unknown / its flag is off.
+        # Record a failed job (the UI's sync status shows the reason) and free
+        # the lock — this used to escape before the try/finally, holding it.
+        from app.ingestion.connector_registry import connector_error_message
+
+        message = connector_error_message(exc)
+        try:
+            failed_job = await tracker.create_job(
+                config, job_id=job_id or str(_uuid.uuid4()), triggered_by=triggered_by
+            )
+            await tracker.complete_job(failed_job, error=message)
+            await source_store.mark_synced(
+                source_id, tenant_id, docs_indexed=0, chunks=0, failed=1
+            )
+        finally:
+            await tracker.release_lock(source_id, tenant_id)
+        return {"error": message}
 
     connector = connector_cls()
 
     # ── Create job record ────────────────────────────────────────────────────
-    import uuid as _uuid
 
     job = await tracker.create_job(
         config,

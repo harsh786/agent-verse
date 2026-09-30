@@ -156,6 +156,25 @@ describe('SourceDetailDrawer', () => {
     });
     renderDrawer();
     expect(await screen.findByText('✕ Error')).toBeInTheDocument();
+    // SRC-RSS: the reason is shown, not just a red cross.
+    expect(screen.getByRole('alert')).toHaveTextContent('timeout');
+  });
+
+  test('a refused sync shows the server reason (e.g. a connector that failed to load)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (url.includes('/health')) return json({ ok: true, latency_ms: 5, error: null, metadata: {} });
+      if (url.includes('/sync/status')) return json({ status: 'never_synced' });
+      if (url.includes('/sync') && method === 'POST') {
+        return json({ detail: "The 'rss' connector is unavailable on this server: connector module failed to load" }, 422);
+      }
+      if (url.includes('/ingestion/documents')) return json([]);
+      return json({});
+    });
+    renderDrawer();
+    await userEvent.click(screen.getByRole('button', { name: /Sync source/i }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('connector module failed to load');
   });
 
   test('shows a latency indicator in the header when the health check succeeds', async () => {

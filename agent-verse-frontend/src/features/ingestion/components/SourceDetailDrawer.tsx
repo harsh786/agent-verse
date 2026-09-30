@@ -25,12 +25,20 @@ export function SourceDetailDrawer({ source, onClose }: Props) {
               <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono">{source.source_type}</span>
               <span className="text-xs text-muted-foreground">{familyCfg.label}</span>
               {health && (
-                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`}>
+                <span className={`text-xs ${health.ok ? 'text-emerald-600' : 'text-red-600'}`} title={health.ok ? undefined : health.error ?? undefined}>
                   {health.ok ? `● ${Math.round(health.latency_ms)}ms` : '✕ Error'}
                 </span>
               )}
             </div>
             <h2 className="mt-1 text-base font-semibold">{source.name}</h2>
+            {health && !health.ok && health.error && (
+              <p role="alert" className="mt-1 text-xs text-red-600 break-words">{health.error}</p>
+            )}
+            {triggerSync.isError && (
+              <p role="alert" className="mt-1 text-xs text-red-600 break-words">
+                Sync failed to start: {triggerSync.error instanceof Error ? triggerSync.error.message : String(triggerSync.error)}
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button

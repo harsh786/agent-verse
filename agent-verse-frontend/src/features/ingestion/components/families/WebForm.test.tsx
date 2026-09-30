@@ -35,12 +35,20 @@ describe('WebForm', () => {
     expect(lastArg(onChange)).toEqual({ max_depth: 5 });
   });
 
-  test('renders feed URL field for rss_feed', () => {
+  test.each(['rss', 'atom'])('%s sends the feed as `url`, the key the connector reads', (type) => {
     const onChange = vi.fn();
-    render(<WebForm sourceType="rss_feed" value={{}} onChange={onChange} />);
+    render(<WebForm sourceType={type} value={{}} onChange={onChange} />);
     expect(screen.getByText('Feed URL')).toBeInTheDocument();
+    expect(screen.queryByText('Start URL(s)')).not.toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText('https://example.com/feed.xml'), { target: { value: 'https://x/feed.xml' } });
-    expect(lastArg(onChange)).toEqual({ feed_url: 'https://x/feed.xml' });
+    expect(lastArg(onChange)).toEqual({ url: 'https://x/feed.xml' });
+  });
+
+  test('rss max entries is sent as a number', () => {
+    const onChange = vi.fn();
+    render(<WebForm sourceType="rss" value={{}} onChange={onChange} />);
+    fireEvent.change(screen.getByDisplayValue('200'), { target: { value: '50' } });
+    expect(lastArg(onChange)).toEqual({ max_entries: 50 });
   });
 
   test('renders sitemap URL field for sitemap', () => {

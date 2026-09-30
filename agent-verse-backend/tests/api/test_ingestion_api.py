@@ -282,13 +282,13 @@ def test_health_check_unregistered_connector_type() -> None:
     client = _client()
     with patch(
         "app.ingestion.connector_registry.get_connector",
-        side_effect=KeyError("no connector"),
+        side_effect=KeyError("No connector registered for source_type='totally-unknown'"),
     ):
         resp = client.get(f"/sources/{source.source_id}/health", headers=_auth())
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is False
-    assert "No connector" in body["error"]
+    assert body["error"] == "No connector registered for source_type='totally-unknown'"
 
 
 def test_health_check_connector_raises_generic_exception() -> None:

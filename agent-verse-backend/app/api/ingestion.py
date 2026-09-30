@@ -276,10 +276,10 @@ async def health_check(source_id: str, request: Request) -> dict:
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
 
-    try:
-        from app.ingestion.connector_registry import get_connector
+    from app.ingestion.connector_registry import connector_error_message
 
-        connector_cls = get_connector(source.source_type)
+    try:
+        connector_cls = _available_connector(source.source_type)
         connector = connector_cls()
         health = await connector.validate_connection(source)
         return {
@@ -288,10 +288,17 @@ async def health_check(source_id: str, request: Request) -> dict:
             "error": health.error or None,
             "metadata": health.metadata,
         }
-    except KeyError:
-        return {"ok": False, "error": f"No connector for source_type={source.source_type!r}"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": connector_error_message(exc)}
+
+
+def _available_connector(source_type: str) -> Any:
+    """The connector class for ``source_type``; raises KeyError/RuntimeError with an
+    honest message (module failed to load, unknown type, disabled by flag)."""
+    from app.ingestion.connector_registry import get_connector, load_all_connectors
+
+    load_all_connectors()  # idempotent; records modules that fail to import
+    return get_connector(source_type)
 
 
 # ── Sync control ──────────────────────────────────────────────────────────────
@@ -309,6 +316,15 @@ async def trigger_sync(source_id: str, request: Request) -> dict:
     source = await _load_source(request, source_id, tenant.tenant_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
+
+    # Refuse up front when the connector cannot run here: queuing the job would
+    # only fail later in the worker, where the UI could not see why.
+    from app.ingestion.connector_registry import connector_error_message
+
+    try:
+        _available_connector(source.source_type)
+    except (KeyError, RuntimeError) as exc:
+        raise HTTPException(status_code=422, detail=connector_error_message(exc)) from exc
 
     tracker = _get_tracker(request)
     pipeline = _get_pipeline(request)

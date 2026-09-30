@@ -238,13 +238,18 @@ async def test_sync_no_connector_registered() -> None:
 
     with (
         _worker_mocks(tracker=tracker, source_store=source_store),
-        patch("app.ingestion.connector_registry.get_connector", return_value=None),
+        patch(
+            "app.ingestion.connector_registry.get_connector",
+            side_effect=KeyError("No connector registered for source_type='no_such_type'"),
+        ),
     ):
         result = await _sync_source_async(
             task=MagicMock(), source_id="src-1", tenant_id="t1", triggered_by="scheduler"
         )
 
-    assert result == {"error": "no_connector_for_no_such_type"}
+    assert result == {"error": "No connector registered for source_type='no_such_type'"}
+    tracker.complete_job.assert_awaited_once()
+    tracker.release_lock.assert_awaited_once_with("src-1", "t1")
 
 
 @pytest.mark.asyncio

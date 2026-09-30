@@ -286,13 +286,17 @@ class TestRSSConnectorGetDelta:
         from app.ingestion.connectors import rss_connector
 
         monkeypatch.setattr(rss_connector, "_fetch_feed", AsyncMock(return_value=b"<rss/>"))
-    def test_import_error_yields_nothing(self):
+    def test_import_error_fails_the_sync(self):
+        # SRC-RSS: an empty generator was recorded as a successful, empty sync.
+        from app.ingestion.base_connector import ConnectorUnavailableError
         from app.ingestion.connectors.rss_connector import RSSConnector
 
         config = _config("rss", {"url": "http://example.com/feed"})
-        with patch.dict("sys.modules", {"feedparser": None}):
-            docs = _run(_collect(RSSConnector().get_delta(config, None)))
-        assert docs == []
+        with (
+            patch.dict("sys.modules", {"feedparser": None}),
+            pytest.raises(ConnectorUnavailableError, match="feedparser"),
+        ):
+            _run(_collect(RSSConnector().get_delta(config, None)))
 
     def test_skips_entries_older_than_cursor(self):
         from app.ingestion.connectors.rss_connector import RSSConnector

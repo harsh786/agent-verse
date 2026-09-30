@@ -32,6 +32,11 @@ _REGISTRY: dict[str, type[BaseConnector]] = {}
 # Feature flags: source_type → settings attribute name
 _FEATURE_FLAGS: dict[str, str] = {}
 
+# Connector modules that failed to import: module path → error. Reported by
+# get_connector so the Sources UI shows *why* a connector is missing instead
+# of a bare "not registered".
+_LOAD_ERRORS: dict[str, str] = {}
+
 
 def register(source_type: str, *, feature_flag: str | None = None):
     """Class decorator: register a connector in the global registry.
@@ -76,6 +81,11 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
         RuntimeError: feature flag disabled for this source_type
     """
     if source_type not in _REGISTRY:
+        failed = connector_load_error(source_type)
+        if failed:
+            raise KeyError(
+                f"The {source_type!r} connector is unavailable on this server: {failed}"
+            )
         raise KeyError(
             f"No connector registered for source_type={source_type!r}. "
             f"Available: {sorted(_REGISTRY)}"
@@ -98,6 +108,22 @@ def get_connector(source_type: str, *, settings: object | None = None) -> type[B
             )
 
     return _REGISTRY[source_type]
+
+
+def connector_load_error(source_type: str) -> str:
+    """Why the module that would provide ``source_type`` failed to import, or ``""``."""
+    for module_path, error in _LOAD_ERRORS.items():
+        stem = module_path.rsplit(".", 1)[-1].removesuffix("_connector")
+        if stem == source_type or stem.startswith(f"{source_type}_"):
+            return f"connector module {module_path} failed to load ({error})"
+    return ""
+
+
+def connector_error_message(exc: BaseException) -> str:
+    """The human-readable message of a get_connector failure (KeyError reprs its arg)."""
+    if isinstance(exc, KeyError) and exc.args:
+        return str(exc.args[0])
+    return str(exc)
 
 
 def list_registered() -> list[str]:
@@ -178,12 +204,15 @@ def load_all_connectors() -> None:
         "app.ingestion.connectors.sentry_connector",
         "app.ingestion.connectors.neo4j_connector",
     ]
+    import importlib
+
     for module_path in connector_modules:
         try:
-            import importlib
-
             importlib.import_module(module_path)
-        except ImportError as exc:
-            _log.debug("connector_module_not_available %s: %s", module_path, exc)
         except Exception as exc:
+            # Not DEBUG: a connector the catalogue offers but cannot load is an
+            # operator problem, and the Sources API reports it per source type.
+            _LOAD_ERRORS[module_path] = f"{type(exc).__name__}: {exc}"
             _log.warning("connector_module_error %s: %s", module_path, exc)
+        else:
+            _LOAD_ERRORS.pop(module_path, None)
