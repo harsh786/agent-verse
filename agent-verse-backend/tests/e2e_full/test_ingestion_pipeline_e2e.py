@@ -34,11 +34,15 @@ _CONTENT = (
 
 @pytest.fixture
 def _fake_embedder(app: Any) -> Any:
-    """Pin a deterministic 768-dim embedder for both ingest and search.
+    """Pin a deterministic 768-dim embedder for ingest, search and collection sizing.
 
     Ingest reads ``app.state.embedder``; search reads the retrieval gateway's
-    frozen ``dependencies.embedder``. Collections default to a 768-dim pgvector
-    column, so the fake must emit 768-dim vectors.
+    frozen ``dependencies.embedder``. New collections are sized to the width the
+    knowledge store was bound to at startup (the resolved embedder's, else
+    ``settings.embedding_dim`` = 2048 — the e2e env resolves no embedder), so it
+    is pinned to 768 too, as in a deployment whose embedder emits 768-dim
+    vectors. Without it an empty collection is a 2048-dim one queried with a
+    768-dim vector, which is a genuine width mismatch (503), not "no results".
     """
     import contextlib
     import dataclasses
@@ -46,6 +50,9 @@ def _fake_embedder(app: Any) -> Any:
     fake = FakeProvider(embed_dim=768)
     prev_embedder = getattr(app.state, "embedder", None)
     app.state.embedder = fake
+    store = app.state.knowledge_store
+    prev_dim = getattr(store, "_embedding_dim", None)
+    store.set_embedding_dim(768)
 
     gw = getattr(app.state, "retrieval_gateway", None)
     prev_deps = None
@@ -57,6 +64,7 @@ def _fake_embedder(app: Any) -> Any:
         yield
     finally:
         app.state.embedder = prev_embedder
+        store.set_embedding_dim(prev_dim)
         if gw is not None and prev_deps is not None:
             gw.dependencies = prev_deps
 
