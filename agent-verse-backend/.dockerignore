@@ -1,13 +1,35 @@
+# Keep the build context small: the image only needs pyproject.toml, uv.lock,
+# alembic.ini, app/ and scripts/. Local venvs, caches and reports must never enter it.
 .venv/
+**/.venv
+node_modules/
+**/node_modules
 .git/
+.github/
+**/__pycache__
+**/*.pyc
+**/*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-__pycache__/
-*.pyc
+.headroom-cache/
+.opencode/
 htmlcov/
+coverage/
 .coverage
+.coverage.*
+coverage.xml
+playwright-report/
+test-results/
+graphify-out/
 .env
 .env.*
 tests/
 infra/
+helm/
+docs/
+*.md
+analyze_gaps.py
+openapi.json
+Dockerfile
+.dockerignore
