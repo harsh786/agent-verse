@@ -284,7 +284,9 @@ async def test_procedural_db_persistence(tenant_ctx):
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
-    mock_session.execute = AsyncMock()
+    mock_session.execute = AsyncMock(
+        return_value=MagicMock(fetchone=MagicMock(return_value=("sid", 1, 1.0)))
+    )
     mock_begin = AsyncMock()
     mock_begin.__aenter__ = AsyncMock(return_value=mock_begin)
     mock_begin.__aexit__ = AsyncMock(return_value=False)
@@ -295,6 +297,9 @@ async def test_procedural_db_persistence(tenant_ctx):
     state = _make_state(tenant_ctx)
     await store.learn(state=state, tenant_ctx=tenant_ctx)
     assert mock_session.execute.called
+    sqls = [str(c.args[0]) for c in mock_session.execute.await_args_list]
+    # MEM-11: an upsert on (tenant_id, goal_pattern), never a blind insert.
+    assert any("ON CONFLICT (tenant_id, goal_pattern) DO UPDATE" in q for q in sqls)
 
 
 async def test_procedural_learn_skips_when_no_tool_calls(tenant_ctx):
@@ -385,17 +390,19 @@ async def test_procedural_recall_domain_filter_excludes_other_domains(tenant_ctx
     assert jira_only[0].domain == "jira"
 
 
-async def test_procedural_recall_db_failure_falls_back_to_in_memory_cache(tenant_ctx):
+async def test_procedural_db_failure_raises_not_silent_cache(tenant_ctx):
+    """MEM-11/12: a DB failure is surfaced, never answered from this process's cache."""
+    from app.memory.procedural import ProceduralMemoryUnavailableError
+
     def _boom() -> None:
         raise RuntimeError("db connection refused")
 
     store = ProceduralMemoryStore(db_factory=MagicMock(side_effect=_boom))
     state = _make_state(tenant_ctx)
-    await store.learn(state=state, tenant_ctx=tenant_ctx, success=True)
-
-    skills = await store.recall(goal=state.goal, tenant_id="t1", min_success_rate=0.0)
-    assert len(skills) == 1
-    assert "jira.search_issues" in skills[0].tool_sequence
+    with pytest.raises(ProceduralMemoryUnavailableError):
+        await store.learn(state=state, tenant_ctx=tenant_ctx, success=True)
+    with pytest.raises(ProceduralMemoryUnavailableError):
+        await store.recall(goal=state.goal, tenant_id="t1", min_success_rate=0.0)
 
 
 async def test_procedural_recall_db_malformed_tool_sequence_json_does_not_raise(tenant_ctx):

@@ -671,29 +671,53 @@ async def test_verify_records_episodic_memory_on_both_success_and_failure() -> N
 
 
 @pytest.mark.asyncio
-async def test_verify_procedural_memory_learns_only_on_success() -> None:
-    """Procedural skill learning must only trigger on a successful goal —
-    learning a 'procedure' from a failed run would reinforce bad behavior."""
+async def test_verify_node_does_not_learn_procedural_skills() -> None:
+    """MEM-11: the verify node runs once per iteration; procedural learning is
+    done once per goal from its terminal outcome (AgentGraph.run), for success
+    AND failure — so the node itself must not learn (no double counting)."""
     procedural = MagicMock()
     procedural.learn = AsyncMock()
-
-    # Failure case: learn() must not be scheduled.
-    verifier_fail = FakeProvider(responses=['{"success": false, "reason": "no", "retry": true}'])
-    graph_fail = _make_graph(verifier=verifier_fail, procedural_memory=procedural)
-    agent_state_fail = _agent_state()
-    agent_state_fail.steps.append(_completed_step())
-    await graph_fail._node_verify({"agent_state": agent_state_fail, "tenant_ctx": T})
-    await asyncio.sleep(0)
+    for verdict in ('{"success": false, "reason": "no", "retry": true}',
+                    '{"success": true, "reason": "done"}'):
+        graph = _make_graph(verifier=FakeProvider(responses=[verdict]),
+                            procedural_memory=procedural)
+        agent_state = _agent_state()
+        agent_state.steps.append(_completed_step())
+        await graph._node_verify({"agent_state": agent_state, "tenant_ctx": T})
+        await asyncio.sleep(0)
     procedural.learn.assert_not_called()
 
-    # Success case: learn() must be scheduled.
-    verifier_ok = FakeProvider(responses=['{"success": true, "reason": "done"}'])
-    graph_ok = _make_graph(verifier=verifier_ok, procedural_memory=procedural)
-    agent_state_ok = _agent_state()
-    agent_state_ok.steps.append(_completed_step())
-    await graph_ok._node_verify({"agent_state": agent_state_ok, "tenant_ctx": T})
-    await asyncio.sleep(0)
-    procedural.learn.assert_called_once()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("status", "expected"), [("complete", True), ("failed", False)])
+async def test_terminal_goal_outcome_is_learned_once(status: str, expected: bool) -> None:
+    from app.agent.state import GoalStatus
+
+    procedural = MagicMock()
+    procedural.learn = AsyncMock()
+    graph = _make_graph(procedural_memory=procedural)
+    final = _agent_state()
+    final.status = GoalStatus(status)
+
+    await graph._learn_procedural_outcome(final, T)
+
+    procedural.learn.assert_awaited_once()
+    assert procedural.learn.await_args.kwargs["success"] is expected
+
+
+@pytest.mark.asyncio
+async def test_procedural_learn_failure_is_flagged_not_silent() -> None:
+    from app.agent.state import GoalStatus
+
+    procedural = MagicMock()
+    procedural.learn = AsyncMock(side_effect=RuntimeError("db down"))
+    graph = _make_graph(procedural_memory=procedural)
+    final = _agent_state()
+    final.status = GoalStatus.FAILED
+
+    await graph._learn_procedural_outcome(final, T)
+
+    assert final.context["memory_degraded"] == ["procedural_learn"]
 
 
 # ===========================================================================

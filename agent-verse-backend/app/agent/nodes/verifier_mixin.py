@@ -953,21 +953,8 @@ class VerifierMixin:
         except Exception:
             pass
 
-        # Learn procedural skill after successful goal
-        try:
-            if self._procedural_memory is not None and success and tenant_ctx is not None:
-                _proc_task = asyncio.ensure_future(
-                    self._procedural_memory.learn(
-                        state=agent_state,
-                        tenant_ctx=tenant_ctx,
-                        success=success,
-                    )
-                )
-                if hasattr(self, "_background_tasks"):
-                    self._background_tasks.add(_proc_task)
-                    _proc_task.add_done_callback(self._background_tasks.discard)
-        except Exception:
-            pass
+        # Procedural skills are learned once per goal from its terminal outcome
+        # (success AND failure) by AgentGraph._learn_procedural_outcome (MEM-11).
 
         return {"agent_state": agent_state}
 

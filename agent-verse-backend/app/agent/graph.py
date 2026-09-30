@@ -588,6 +588,35 @@ class AgentGraph(
 
         return await enforce_emergency_stop(getattr(state, "_redis", None), tenant_id, org_id)
 
+    async def _learn_procedural_outcome(
+        self, final: AgentState, tenant_ctx: TenantContext
+    ) -> None:
+        """MEM-11: fold a terminal goal's outcome into procedural memory.
+
+        Runs once per goal for BOTH outcomes (it used to run only on success, so
+        every stored success_rate was 1.0). Bounded and never fails the goal; a
+        store failure is logged and flagged on the final state.
+        """
+        store = getattr(self, "_procedural_memory", None)
+        if store is None or final.status not in (GoalStatus.COMPLETE, GoalStatus.FAILED):
+            return
+        try:
+            await asyncio.wait_for(
+                store.learn(
+                    state=final,
+                    tenant_ctx=tenant_ctx,
+                    success=final.status == GoalStatus.COMPLETE,
+                ),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            final.context.setdefault("memory_degraded", []).append("procedural_learn")
+            self._logger.warning(
+                "procedural_learn_failed",
+                goal_id=final.goal_id,
+                error=f"{type(exc).__name__}: {str(exc)[:200]}",
+            )
+
     async def run(
         self,
         *,
@@ -884,6 +913,7 @@ class AgentGraph(
                     # Emit failure event if the loop ran out of iterations without success
                     if final.status == GoalStatus.FAILED and event_callback:
                         await self._emit({"type": "goal_failed", "reason": final.error_message})
+                    await self._learn_procedural_outcome(final, tenant_ctx)
                     return final
                 except PermissionError as exc:
                     # "Planning unavailable: ..." / "Verification unavailable: ..." come

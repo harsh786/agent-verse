@@ -68,6 +68,26 @@ def _extract_domain(tools: list[str]) -> str:
     return "general"
 
 
+_CACHE_PER_TENANT = 200
+
+
+class ProceduralMemoryUnavailableError(RuntimeError):
+    """The durable procedural store could not be read or written."""
+
+
+def _log_degraded(op: str, tenant_id: str, exc: BaseException) -> None:
+    from app.observability.logging import get_logger
+    from app.observability.metrics import record_memory_degraded
+
+    record_memory_degraded("procedural", op)
+    get_logger(__name__).warning(
+        "procedural_memory_degraded",
+        op=op,
+        tenant_id=tenant_id,
+        error=f"{type(exc).__name__}: {str(exc)[:200]}",
+    )
+
+
 class ProceduralMemoryStore:
     """DB-backed procedural memory for cross-session skill learning."""
 
@@ -96,42 +116,48 @@ class ProceduralMemoryStore:
 
         goal_pattern = _extract_goal_pattern(state.goal)
         domain = _extract_domain(tools)
+        outcome = 1.0 if success else 0.0
 
-        # Check if skill already exists in cache
-        cached = self._cache.get(tenant_ctx.tenant_id, [])
-        existing = next((s for s in cached if s.goal_pattern == goal_pattern), None)
-        if existing:
-            # Update existing skill
-            total = existing.use_count + 1
-            existing.success_rate = (
-                existing.success_rate * existing.use_count + (1.0 if success else 0.0)
-            ) / total
-            existing.use_count = total
-            skill = existing
-        else:
+        # In-process cache (the DB-less build's store; with a DB it mirrors the
+        # upserted row so this process's recall is current).
+        cached = self._cache.setdefault(tenant_ctx.tenant_id, [])
+        skill = next((s for s in cached if s.goal_pattern == goal_pattern), None)
+        if skill is None:
             skill = Skill(
                 skill_id=uuid.uuid4().hex,
                 tenant_id=tenant_ctx.tenant_id,
                 goal_pattern=goal_pattern,
                 domain=domain,
                 tool_sequence=tools[:8],
-                use_count=1,
-                success_rate=1.0 if success else 0.0,
+                use_count=0,
+                success_rate=0.0,
             )
-            self._cache.setdefault(tenant_ctx.tenant_id, []).append(skill)
+            cached.append(skill)
+            if len(cached) > _CACHE_PER_TENANT:
+                del cached[0]
+        skill.success_rate = (skill.success_rate * skill.use_count + outcome) / (
+            skill.use_count + 1
+        )
+        skill.use_count += 1
+        if success:
+            skill.tool_sequence = tools[:8]
 
-        # DB persistence
-        if self._db is not None:
-            try:
-                import json
+        if self._db is None:
+            return
+        # One row per (tenant, pattern): every outcome — success or failure —
+        # bumps use_count and folds into the running success rate. A failed run
+        # keeps the stored tool sequence (the one that worked).
+        import json
 
-                from sqlalchemy import text
+        from sqlalchemy import text
 
-                async with (
-                    self._db() as session,
-                    session.begin(),
-                    sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
-                ):
+        try:
+            async with (
+                self._db() as session,
+                session.begin(),
+                sqlalchemy_rls_context(session, tenant_ctx.tenant_id),
+            ):
+                row = (
                     await session.execute(
                         text("""
                         INSERT INTO procedural_memories
@@ -139,26 +165,38 @@ class ProceduralMemoryStore:
                              use_count, success_rate, last_used_at, created_at)
                         VALUES
                             (:id, :tenant_id, :goal_pattern, :domain,
-                             CAST(:tool_sequence AS jsonb), :use_count, :success_rate, NOW(), NOW())
-                        ON CONFLICT DO NOTHING
+                             CAST(:tool_sequence AS jsonb), 1, :outcome, NOW(), NOW())
+                        ON CONFLICT (tenant_id, goal_pattern) DO UPDATE SET
+                            success_rate = (procedural_memories.success_rate
+                                            * procedural_memories.use_count + :outcome)
+                                           / (procedural_memories.use_count + 1),
+                            use_count = procedural_memories.use_count + 1,
+                            tool_sequence = CASE WHEN :success
+                                THEN CAST(:tool_sequence AS jsonb)
+                                ELSE procedural_memories.tool_sequence END,
+                            domain = CASE WHEN :success THEN :domain
+                                ELSE procedural_memories.domain END,
+                            last_used_at = NOW()
+                        RETURNING id, use_count, success_rate
                     """),
                         {
-                            "id": skill.skill_id,
+                            "id": uuid.uuid4().hex,
                             "tenant_id": tenant_ctx.tenant_id,
                             "goal_pattern": goal_pattern,
                             "domain": domain,
                             "tool_sequence": json.dumps(tools[:8]),
-                            "use_count": skill.use_count,
-                            "success_rate": skill.success_rate,
+                            "outcome": outcome,
+                            "success": success,
                         },
                     )
-            except Exception as exc:
-                try:
-                    from app.observability.logging import get_logger
-
-                    get_logger(__name__).warning("procedural_memory_persist_failed", error=str(exc))
-                except Exception:
-                    pass
+                ).fetchone()
+        except Exception as exc:
+            _log_degraded("learn", tenant_ctx.tenant_id, exc)
+            raise ProceduralMemoryUnavailableError(str(exc)) from exc
+        if row is not None:
+            skill.skill_id = str(row[0])
+            skill.use_count = int(row[1])
+            skill.success_rate = float(row[2])
 
     async def recall(
         self,
@@ -169,7 +207,15 @@ class ProceduralMemoryStore:
         min_success_rate: float = 0.6,
         limit: int = 3,
     ) -> list[Skill]:
-        """Recall skills relevant to a goal."""
+        """Recall skills relevant to a goal.
+
+        With a DB, candidates are filtered and ranked in SQL by trigram
+        similarity to the goal's pattern (then success rate and use count)
+        before the LIMIT — a tenant with many skills gets the matching ones, not
+        an arbitrary top-by-rate window. A DB failure raises
+        :class:`ProceduralMemoryUnavailableError` (logged + counted); it never
+        silently falls back to this process's cache.
+        """
         if self._db is not None:
             try:
                 return await self._recall_from_db(
@@ -179,10 +225,10 @@ class ProceduralMemoryStore:
                     min_success_rate=min_success_rate,
                     limit=limit,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _log_degraded("recall", tenant_id, exc)
+                raise ProceduralMemoryUnavailableError(str(exc)) from exc
 
-        # In-memory fallback
         skills = [
             s
             for s in self._cache.get(tenant_id, [])
@@ -190,6 +236,7 @@ class ProceduralMemoryStore:
         ]
         query_words = set(goal.lower().split())
         scored = [(sum(1 for w in query_words if w in s.goal_pattern.lower()), s) for s in skills]
+        scored = [(rel, s) for rel, s in scored if rel > 0]
         scored.sort(key=lambda x: (-x[0], -x[1].success_rate, -x[1].use_count))
         return [s for _, s in scored[:limit]]
 
@@ -201,6 +248,7 @@ class ProceduralMemoryStore:
         from sqlalchemy import text
 
         where_domain = "AND domain = :domain" if domain else ""
+        pattern = _extract_goal_pattern(goal)
         # Explicit transaction: the GUC set by sqlalchemy_rls_context is
         # transaction-local (SET LOCAL semantics), so it must share one
         # transaction with the SELECT rather than rely on autobegin ordering.
@@ -213,38 +261,50 @@ class ProceduralMemoryStore:
                 await session.execute(
                     text(f"""
                 SELECT id, goal_pattern, domain, tool_sequence,
-                       use_count, success_rate
+                       use_count, success_rate,
+                       GREATEST(similarity(goal_pattern, :pattern),
+                                word_similarity(:pattern, goal_pattern)) AS relevance
                 FROM procedural_memories
                 WHERE tenant_id = :tenant_id
                   AND success_rate >= :min_rate
+                  AND (goal_pattern % :pattern OR :pattern <% goal_pattern)
                   {where_domain}
-                ORDER BY success_rate DESC, use_count DESC
+                ORDER BY relevance DESC, success_rate DESC, use_count DESC
                 LIMIT :limit
             """),
                     {
                         "tenant_id": tenant_id,
+                        "pattern": pattern,
                         "min_rate": min_success_rate,
-                        "limit": limit * 3,
+                        "limit": limit,
                         **({"domain": domain} if domain else {}),
                     },
                 )
             ).fetchall()
-        query_words = set(goal.lower().split())
-        skills = []
+        skills: list[Skill] = []
         for row in rows:
-            skill = Skill(
-                skill_id=str(row[0]),
-                tenant_id=tenant_id,
-                goal_pattern=str(row[1]),
-                domain=str(row[2]),
-                tool_sequence=json.loads(row[3]) if row[3] else [],
-                use_count=int(row[4]),
-                success_rate=float(row[5]),
+            try:
+                sequence = json.loads(row[3]) if isinstance(row[3], str) else row[3]
+            except ValueError:
+                # One corrupt row must not sink recall: skip it, visibly.
+                from app.observability.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "procedural_memory_corrupt_row", tenant_id=tenant_id, skill_id=str(row[0])
+                )
+                continue
+            skills.append(
+                Skill(
+                    skill_id=str(row[0]),
+                    tenant_id=tenant_id,
+                    goal_pattern=str(row[1]),
+                    domain=str(row[2]),
+                    tool_sequence=list(sequence or []),
+                    use_count=int(row[4]),
+                    success_rate=float(row[5]),
+                )
             )
-            relevance = sum(1 for w in query_words if w in skill.goal_pattern.lower())
-            skills.append((relevance, skill))
-        skills.sort(key=lambda x: (-x[0], -x[1].success_rate))
-        return [s for _, s in skills[:limit]]
+        return skills
 
     def format_for_context(self, skills: list[Skill]) -> str:
         """Format skills as a context block for planner prompt."""
