@@ -195,7 +195,7 @@ services:
       # SMTP_PASSWORD: ""
       SMTP_TLS: "false"
       SEARXNG_URL: http://searxng:8080
-      EMBEDDING_DIM: "1536"
+      EMBEDDING_DIM: "${EMBEDDING_DIM:-1536}"
       FAKE_LLM_WARNING: "WARNING: No LLM API keys set. Agent goals will use FakeProvider and return dummy responses. Set ANTHROPIC_API_KEY or OPENAI_API_KEY."
     volumes:
       # Mount local migration files so new migrations are visible without rebuilding
