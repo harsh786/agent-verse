@@ -21,6 +21,7 @@ from app.ingestion.scheduler import (
     retry_dlq_entries_task,
     sync_source_task,
 )
+from app.providers.embedder_factory import EmbedderResolution
 from app.ingestion.source_config import (
     IngestionJob,
     PipelineResult,
@@ -117,7 +118,8 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
         # configured query embedder, so documents must be too (same vector space).
         patch("app.providers.registry.resolve_provider", return_value=MagicMock()),
         patch(
-            "app.providers.embedder_factory.build_query_embedder", return_value=fake_provider
+            "app.providers.embedder_factory.resolve_embedder",
+            return_value=EmbedderResolution(embedder=fake_provider, dimension=768),
         ),
         patch("app.rag.store.KnowledgeStore", return_value=fake_knowledge_store) as ks_cls,
         patch(
@@ -135,7 +137,8 @@ def test_build_worker_ingestion_wires_db_backed_services() -> None:
     assert tracker is fake_tracker
     assert pipeline is fake_pipeline
     assert source_store is fake_source_store
-    ks_cls.assert_called_once_with(fake_db_factory)
+    # New collections are sized to the resolved embedder's real width.
+    ks_cls.assert_called_once_with(fake_db_factory, embedding_dim=768)
     pipeline_cls.assert_called_once()
     kwargs = pipeline_cls.call_args.kwargs
     assert kwargs["knowledge_store"] is fake_knowledge_store

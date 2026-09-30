@@ -108,7 +108,14 @@ class LocalEmbedProvider:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise ImportError("Install 'sentence-transformers' to use LocalEmbedProvider") from exc
+        self._model_name = model_name
+        # Loads (and on first use downloads) the model: raises on a bad name or
+        # no network — the embedder factory records and logs that loudly.
         self._model = SentenceTransformer(model_name)
+        dim = self._model.get_sentence_embedding_dimension()
+        # The REAL output width, so new collections are sized to it (not to a
+        # static EMBEDDING_DIM setting that may disagree, e.g. 768 vs 2048).
+        self.embedding_dim: int | None = int(dim) if dim else None
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         raise NotImplementedError(

@@ -7,31 +7,143 @@ often different dimensions — so document and query vectors lived in different
 spaces and similarity scores were noise: retrieval quality silently broken,
 with nothing failing.
 
-:func:`build_query_embedder` is the selection ``create_app`` always used for
-``app.state.embedder`` (moved here verbatim so the Celery worker builds the
-exact same embedder instead of re-implementing — or skipping — the priority
-order). :func:`embedder_model_name` names the model so each chunk can record the
-``embedding_model`` that produced its vector (LAW-08).
+:func:`resolve_embedder` is the ONE selection every process uses (the API's
+``create_app`` and the Celery worker alike), so both build the exact same
+embedder from the same configuration. It reads typed :class:`Settings` first
+(which include ``.env``) and ``os.environ`` as a fallback, applies the NVIDIA /
+on-prem embedding endpoint itself (:func:`apply_embedding_endpoint_settings` —
+this used to happen only inside ``create_app``, so the worker had no embedder
+on NVIDIA-only config), tries every configured provider in priority order (a
+provider that fails no longer silently skips the rest) and logs each failure at
+error level. :func:`embedder_model_name` names the model so each chunk can record
+the ``embedding_model`` that produced its vector (LAW-08).
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
-__all__ = ["build_query_embedder", "embedder_model_name"]
+__all__ = [
+    "EmbedderResolution",
+    "apply_embedding_endpoint_settings",
+    "build_query_embedder",
+    "embedder_dimension",
+    "embedder_model_name",
+    "resolve_embedder",
+]
 
 
-def build_query_embedder(settings: Any = None) -> Any:
-    """Return the configured embedding provider, or ``None`` when none is set.
+@dataclass
+class EmbedderResolution:
+    """Outcome of embedder selection: the embedder, or why there is none."""
 
-    Priority (unchanged from ``create_app``): a dedicated OpenAI-compatible
-    ``EMBEDDING_BASE_URL`` endpoint, then Voyage, OpenAI, Gemini, and finally a
-    local sentence-transformers model.
+    embedder: Any = None
+    provider: str = ""  # dedicated | voyage | openai | gemini | sentence_transformers
+    model: str = ""
+    dimension: int | None = None
+    # (provider, reason) for every CONFIGURED provider that failed to build.
+    errors: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        if self.embedder is not None:
+            return "available"
+        return "unavailable" if self.errors else "not_configured"
+
+    def reason(self) -> str:
+        """Human-readable reason there is no embedder (for authenticated 503s)."""
+        if self.embedder is not None:
+            return ""
+        if not self.errors:
+            return (
+                "embedding provider not configured (set EMBEDDING_BASE_URL, "
+                "VOYAGE_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, NVIDIA_EMBED_MODEL or "
+                "SENTENCE_TRANSFORMERS_MODEL)"
+            )
+        return "; ".join(f"{p} failed to load ({r})" for p, r in self.errors)
+
+    def public_summary(self) -> dict[str, Any]:
+        """Status for the unauthenticated /health route — never error text."""
+        return {
+            "status": self.status,
+            "provider": self.provider or None,
+            "model": self.model or None,
+            "dimension": self.dimension,
+            "failed_providers": [p for p, _ in self.errors],
+        }
+
+
+def _setting(settings: Any, attr: str, env: str, default: str = "") -> str:
+    """Typed setting first (it includes ``.env``), then the raw process env."""
+    value = getattr(settings, attr, "") or os.getenv(env, "") or default
+    return str(value)
+
+
+def apply_embedding_endpoint_settings(settings: Any) -> None:
+    """Point the dedicated embedding endpoint at NVIDIA / the on-prem cluster.
+
+    NVIDIA's embedding model wins when keyed and set (its dim must match the DB),
+    else the on-prem embedding endpoint. Only fills when no embedding endpoint is
+    explicitly configured (in Settings or the process env). Idempotent. Shared by
+    ``create_app`` and :func:`resolve_embedder`, so the Celery worker — which never
+    runs ``create_app`` — resolves the same embedder as the API.
+    """
+    if getattr(settings, "embedding_base_url", "") or os.getenv("EMBEDDING_BASE_URL", ""):
+        return
+    nvidia_on = bool(str(getattr(settings, "nvidia_api_key", "") or "").strip())
+    onprem_on = bool(
+        getattr(settings, "onprem_enabled", False)
+        and str(getattr(settings, "onprem_qwen_base_url", "") or "").strip()
+    )
+    nvidia_model = str(getattr(settings, "nvidia_embed_model", "") or "").strip()
+    try:
+        if nvidia_on and nvidia_model:
+            settings.embedding_base_url = settings.nvidia_base_url
+            settings.embedding_model = nvidia_model
+            settings.embedding_api_key = settings.nvidia_api_key
+            settings.embedding_dim = settings.nvidia_embed_dim
+        elif onprem_on and bool(getattr(settings, "onprem_embedding_base_url", None)):
+            settings.embedding_base_url = settings.onprem_embedding_base_url
+            settings.embedding_model = settings.embedding_model or settings.onprem_embedding_model
+            settings.embedding_api_key = settings.embedding_api_key or settings.onprem_api_key
+            settings.embedding_dim = settings.onprem_embedding_dim
+    except (AttributeError, TypeError, ValueError) as exc:  # frozen/duck-typed settings
+        logger.error("embedding_endpoint_settings_failed", error=str(exc))
+
+
+def _declared_endpoint_dim(settings: Any) -> int | None:
+    """Model-specific dim of an NVIDIA / on-prem embedding endpoint, else None.
+
+    Those deployments declare their model's width (``nvidia_embed_dim`` /
+    ``onprem_embedding_dim``); a generic ``EMBEDDING_BASE_URL`` has only the
+    static ``embedding_dim`` default, which is not evidence of the real width.
+    """
+    base_url = getattr(settings, "embedding_base_url", "")
+    if not base_url:
+        return None
+    if base_url == getattr(settings, "nvidia_base_url", None) and getattr(
+        settings, "embedding_model", ""
+    ) == getattr(settings, "nvidia_embed_model", None):
+        return int(settings.nvidia_embed_dim)
+    if base_url == getattr(settings, "onprem_embedding_base_url", None):
+        return int(settings.onprem_embedding_dim)
+    return None
+
+
+def resolve_embedder(settings: Any = None) -> EmbedderResolution:
+    """Select the embedding provider; record (and log loudly) every failure.
+
+    Priority: a dedicated OpenAI-compatible ``EMBEDDING_BASE_URL`` endpoint
+    (including NVIDIA / on-prem, see :func:`apply_embedding_endpoint_settings`),
+    then Voyage, OpenAI, Gemini, and finally a local sentence-transformers model.
+    Every configured provider is tried in turn until one builds.
     """
     from app.ai_router.selection import resolve_embed_model
     from app.core.config import get_provider_env
@@ -41,78 +153,111 @@ def build_query_embedder(settings: Any = None) -> Any:
 
         settings = get_settings()
 
-    embedder: Any = None
-    openai_key = get_provider_env("OPENAI_API_KEY")
-    voyage_key = get_provider_env("VOYAGE_API_KEY")
+    apply_embedding_endpoint_settings(settings)
+
+    def _key(attr: str, env: str) -> str:
+        return str(getattr(settings, attr, "") or "") or get_provider_env(env)
+
+    candidates: list[tuple[str, Callable[[], Any], int | None]] = []
+
     # Highest priority: a dedicated OpenAI-compatible embedding endpoint (its own
-    # base_url + model), e.g. a self-hosted Qwen3-Embedding on vLLM. This is
-    # separate from the chat LLM base_url so reasoning and embedding can live on
-    # different servers.
-    embed_base_url = os.getenv("EMBEDDING_BASE_URL", "") or getattr(
-        settings, "embedding_base_url", ""
-    )
+    # base_url + model), e.g. a self-hosted Qwen3-Embedding on vLLM or NVIDIA NIM.
+    embed_base_url = _setting(settings, "embedding_base_url", "EMBEDDING_BASE_URL")
     if embed_base_url:
-        try:
+        embed_model = _setting(settings, "embedding_model", "EMBEDDING_MODEL")
+        embed_key = _setting(settings, "embedding_api_key", "EMBEDDING_API_KEY", "sk-noauth")
+
+        def _dedicated() -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
-            embed_model = os.getenv("EMBEDDING_MODEL", "") or getattr(
-                settings, "embedding_model", ""
+            model = embed_model or resolve_embed_model("text-embedding-3-small")
+            return OpenAICompatibleProvider(
+                api_key=embed_key, base_url=embed_base_url, default_model=model, embed_model=model
             )
-            embedder = OpenAICompatibleProvider(
-                api_key=(
-                    os.getenv("EMBEDDING_API_KEY", "")
-                    or getattr(settings, "embedding_api_key", "")
-                    or "sk-noauth"
-                ),
-                base_url=embed_base_url,
-                default_model=embed_model or resolve_embed_model("text-embedding-3-small"),
-                embed_model=embed_model or resolve_embed_model("text-embedding-3-small"),
-            )
-            logger.info(
-                "dedicated_embed_provider_wired", base_url=embed_base_url, model=embed_model
-            )
-        except Exception as exc:
-            logger.warning("dedicated_embed_provider_failed", error=str(exc))
-    if voyage_key and not embedder:
-        try:
+
+        candidates.append(("dedicated", _dedicated, _declared_endpoint_dim(settings)))
+
+    voyage_key = _key("voyage_api_key", "VOYAGE_API_KEY")
+    if voyage_key:
+
+        def _voyage() -> Any:
             from app.providers.voyage_provider import VoyageProvider
 
-            embedder = VoyageProvider(api_key=voyage_key)
-        except Exception:
-            pass
-    elif openai_key and not embedder:
-        try:
+            return VoyageProvider(api_key=voyage_key)
+
+        candidates.append(("voyage", _voyage, None))
+
+    openai_key = _key("openai_api_key", "OPENAI_API_KEY")
+    if openai_key:
+
+        def _openai() -> Any:
             from app.providers.openai_compatible import OpenAICompatibleProvider
 
-            embedder = OpenAICompatibleProvider(
+            return OpenAICompatibleProvider(
                 api_key=openai_key,
                 base_url=os.getenv("OPENAI_BASE_URL", ""),
                 default_model=resolve_embed_model("text-embedding-3-small"),
                 embed_model=resolve_embed_model("text-embedding-3-small"),
             )
-        except Exception:
-            pass
-    elif get_provider_env("GOOGLE_API_KEY") and not embedder:
-        try:
+
+        candidates.append(("openai", _openai, None))
+
+    google_key = _key("google_api_key", "GOOGLE_API_KEY")
+    if google_key:
+
+        def _gemini() -> Any:
             from app.providers.gemini_provider import GeminiProvider
 
-            embedder = GeminiProvider(api_key=get_provider_env("GOOGLE_API_KEY"))
-        except Exception:
-            pass
-    elif os.getenv("SENTENCE_TRANSFORMERS_MODEL", "") and not embedder:
-        try:
+            return GeminiProvider(api_key=google_key)
+
+        candidates.append(("gemini", _gemini, None))
+
+    st_model = _setting(settings, "sentence_transformers_model", "SENTENCE_TRANSFORMERS_MODEL")
+    if st_model:
+
+        def _local() -> Any:
             from app.providers.voyage_provider import LocalEmbedProvider
 
-            embedder = LocalEmbedProvider(
-                model_name=os.getenv("SENTENCE_TRANSFORMERS_MODEL", "all-MiniLM-L6-v2")
-            )
-            logger.info(
-                "local_embed_provider_wired",
-                model=os.getenv("SENTENCE_TRANSFORMERS_MODEL"),
-            )
+            return LocalEmbedProvider(model_name=st_model)
+
+        candidates.append(("sentence_transformers", _local, None))
+
+    resolution = EmbedderResolution()
+    for name, build, declared_dim in candidates:
+        try:
+            embedder = build()
         except Exception as exc:
-            logger.warning("local_embed_provider_failed", error=str(exc))
-    return embedder
+            reason = f"{type(exc).__name__}: {str(exc)[:300]}"
+            resolution.errors.append((name, reason))
+            logger.error("embedder_provider_failed", provider=name, reason=reason)
+            continue
+        resolution.embedder = embedder
+        resolution.provider = name
+        resolution.model = embedder_model_name(embedder)
+        resolution.dimension = embedder_dimension(embedder) or (
+            int(declared_dim) if declared_dim else None
+        )
+        logger.info(
+            "embedder_resolved",
+            provider=name,
+            model=resolution.model,
+            dimension=resolution.dimension,
+            skipped_failed=[p for p, _ in resolution.errors],
+        )
+        return resolution
+
+    if resolution.errors:
+        logger.error(
+            "embedder_unavailable",
+            failed_providers=[p for p, _ in resolution.errors],
+            reason=resolution.reason(),
+        )
+    return resolution
+
+
+def build_query_embedder(settings: Any = None) -> Any:
+    """Return the configured embedding provider, or ``None`` when none is usable."""
+    return resolve_embedder(settings).embedder
 
 
 def embedder_model_name(embedder: Any) -> str:
@@ -125,3 +270,14 @@ def embedder_model_name(embedder: Any) -> str:
         if isinstance(value, str) and value:
             return value
     return type(embedder).__name__
+
+
+def embedder_dimension(embedder: Any) -> int | None:
+    """The embedder's REAL output dimension when it is known locally, else None."""
+    if embedder is None:
+        return None
+    for attr in ("embedding_dim", "embedding_dimension", "dimension", "_embed_dim"):
+        value = getattr(embedder, attr, None)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+    return None

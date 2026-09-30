@@ -87,7 +87,9 @@ class TestRpaUrlIngest:
     @pytest.fixture(autouse=True)
     def _stub_embed(self):
         """Provide zero-cost embeddings so tests don't hit the 503 'no embedder' guard."""
-        async def _fake_embed(texts: list[str], embedder: object) -> list[list[float]]:
+        async def _fake_embed(
+            texts: list[str], embedder: object, **_kw: object
+        ) -> list[list[float]]:
             return [[0.0] * 768 for _ in texts]
 
         with patch("app.api.knowledge._embed_texts_or_http", _fake_embed):

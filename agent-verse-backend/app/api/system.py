@@ -23,8 +23,25 @@ async def health(request: Request) -> JSONResponse:
         "checks": checks,
         # Alias for backward-compat: old frontend code reads `health.dependencies`
         "dependencies": checks,
+        # Non-fatal capabilities: reported for visibility, never counted toward
+        # readiness (a deployment without embeddings is legitimate). Lets an
+        # operator see "embedder unavailable" without uploading a document.
+        "capabilities": {"embedder": _embedder_capability(request)},
     }
     return JSONResponse(payload, status_code=200 if healthy else 503)
+
+
+def _embedder_capability(request: Request) -> dict[str, Any]:
+    """Embedder status for the unauthenticated /health route (no error text)."""
+    resolution = getattr(request.app.state, "embedder_resolution", None)
+    if resolution is not None and hasattr(resolution, "public_summary"):
+        summary: dict[str, Any] = resolution.public_summary()
+        if summary.get("status") != "available" and getattr(request.app.state, "embedder", None):
+            # An embedder injected after resolution (tests / custom wiring).
+            summary["status"] = "available"
+        return summary
+    available = getattr(request.app.state, "embedder", None) is not None
+    return {"status": "available" if available else "unknown"}
 
 
 @router.get("/metrics")

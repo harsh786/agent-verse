@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     embedding_base_url: str = ""  # e.g. http://host:30082/v1
     embedding_model: str = ""  # e.g. Qwen/Qwen3-Embedding-0.6B
     embedding_api_key: str = ""  # optional; many self-hosted servers ignore it
+    # Local sentence-transformers embedding model (lowest-priority embedder), e.g.
+    # all-mpnet-base-v2 (768-d). A typed field so a value set only in .env is seen:
+    # pydantic reads .env without exporting it to os.environ.
+    sentence_transformers_model: str = ""
     ollama_auto_pull: bool = False
 
     # --- Embedding vector dimension (must match the embed model) --------------

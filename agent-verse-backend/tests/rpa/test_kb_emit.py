@@ -72,7 +72,9 @@ async def test_scrape_to_kb_persists_and_dedups() -> None:
         KnowledgeCollection(name="C", collection_id="c1"), tenant_ctx=ctx
     )
 
-    async def _fake_embed(texts: list[str], embedder: object) -> list[list[float]]:
+    async def _fake_embed(
+        texts: list[str], embedder: object, **_kw: object
+    ) -> list[list[float]]:
         return [[0.1] * 768 for _ in texts]
 
     with (

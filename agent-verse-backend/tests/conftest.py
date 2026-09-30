@@ -122,6 +122,21 @@ def _reset_ip_rate_limit_windows():
 
 
 @pytest.fixture(autouse=True)
+def _reset_tenant_fallback_rate_limit():
+    """Reset the in-process per-TENANT fallback limiter (no-Redis path).
+
+    ``TenantMiddleware`` keeps a process-global fixed 60 s window per tenant id;
+    many tests reuse tenant ids like ``tenant-a`` on the FREE plan, so whether a
+    later test got a 429 depended on how fast the preceding tests ran.
+    """
+    from app.tenancy import middleware
+
+    middleware._fallback_counters.clear()
+    yield
+    middleware._fallback_counters.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_process_embedding_cache():
     """Reset the process-wide RAG embedding cache between tests.
 

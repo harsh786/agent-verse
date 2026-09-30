@@ -154,16 +154,11 @@ def _apply_onprem_settings(settings: Settings) -> None:
 
     # Embeddings: NVIDIA embedding model wins when set (dim must match the DB),
     # else the on-prem embedding endpoint. Only fill when not already configured.
-    if nvidia_on and settings.nvidia_embed_model.strip() and not settings.embedding_base_url:
-        settings.embedding_base_url = settings.nvidia_base_url
-        settings.embedding_model = settings.nvidia_embed_model
-        settings.embedding_api_key = settings.nvidia_api_key
-        settings.embedding_dim = settings.nvidia_embed_dim
-    elif onprem_on and settings.onprem_embedding_base_url and not settings.embedding_base_url:
-        settings.embedding_base_url = settings.onprem_embedding_base_url
-        settings.embedding_model = settings.embedding_model or settings.onprem_embedding_model
-        settings.embedding_api_key = settings.embedding_api_key or settings.onprem_api_key
-        settings.embedding_dim = settings.onprem_embedding_dim
+    # Shared with the embedder factory so the Celery worker (which never runs
+    # create_app) resolves the same embedder.
+    from app.providers.embedder_factory import apply_embedding_endpoint_settings
+
+    apply_embedding_endpoint_settings(settings)
     if onprem_on and settings.onprem_reranker_url and not settings.rag_hosted_reranker_url:
         settings.rag_hosted_reranker_url = settings.onprem_reranker_url
         settings.rag_hosted_reranker_model = settings.onprem_reranker_model
@@ -751,9 +746,12 @@ def create_app(
     # Selection lives in app.providers.embedder_factory so the Celery worker's
     # ingestion pipeline builds the SAME embedder (document and query vectors
     # must come from one model/space).
-    from app.providers.embedder_factory import build_query_embedder
+    from app.providers.embedder_factory import resolve_embedder
 
-    _embedder = build_query_embedder(settings)
+    # Resolution keeps WHY there is no embedder (surfaced on /health and in the
+    # ingest 503s) instead of a bare None.
+    _embedder_resolution = resolve_embedder(settings)
+    _embedder = _embedder_resolution.embedder
     # app.state.embedder is set after app = FastAPI(...)
 
     # Multi-model embedding routing (D-10): map EVERY configured embedding
@@ -1539,7 +1537,15 @@ def create_app(
                 # (under the NOBYPASSRLS app role it used to load nothing).
                 system_db_session_factory=app.state.system_db_session_factory,
             )
-            _knowledge_store_db = KnowledgeStoreClass(db_session_factory=db_factory)
+            from app.providers.embedder_factory import embedder_dimension
+
+            # New collections are sized to the embedder's REAL output width when
+            # it is known (else settings.embedding_dim), not a static setting.
+            _knowledge_store_db = KnowledgeStoreClass(
+                db_session_factory=db_factory,
+                embedding_dim=embedder_dimension(getattr(app.state, "embedder", None))
+                or getattr(getattr(app.state, "embedder_resolution", None), "dimension", None),
+            )
             _collab_store_db = CollaborationStore(db_session_factory=db_factory)
 
             await _audit_log_db.sync_from_db()
@@ -2547,6 +2553,7 @@ def create_app(
     # overwriting it with None when no real provider API key is available.
     if getattr(app.state, "embedder", None) is None:
         app.state.embedder = _embedder
+    app.state.embedder_resolution = _embedder_resolution
     # The ingestion pipeline embeds documents with the SAME provider retrieval
     # embeds queries with. It used to get the chat LLM (_app_provider) — a
     # different model/space, so document and query vectors were incomparable

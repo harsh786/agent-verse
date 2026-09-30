@@ -93,8 +93,17 @@ class OcrEngine:
         image_bytes: bytes | None = None,
         pdf_bytes: bytes | None = None,
         provider: Any = None,
+        extract_fields: bool = True,
+        vision_fallback: bool = True,
     ) -> OcrResult:
-        """Extract text and structured fields from an image or PDF."""
+        """Extract text and structured fields from an image or PDF.
+
+        ``extract_fields=False`` returns the OCR text only (no classification /
+        field extraction — no extra LLM call when the caller just indexes text).
+        ``vision_fallback=False`` never falls back to LLM vision: low-confidence
+        Tesseract text is returned as-is (the caller has no vision-capable
+        provider, and the system default one might return canned text).
+        """
         pages = self._to_images(image_bytes=image_bytes, pdf_bytes=pdf_bytes)
         if not pages:
             return OcrResult(
@@ -106,12 +115,23 @@ class OcrEngine:
 
         raw_texts: list[tuple[str, float, str]] = []
         for page_img in pages:
-            text, conf, engine_name = await self._ocr_page(page_img, provider=provider)
+            text, conf, engine_name = await self._ocr_page(
+                page_img, provider=provider, vision_fallback=vision_fallback
+            )
             raw_texts.append((text, conf, engine_name))
 
         raw_text = "\n\n".join(t for t, _, _ in raw_texts)
         overall_conf = sum(c for _, c, _ in raw_texts) / len(raw_texts)
         engine_used = raw_texts[0][2] if raw_texts else "tesseract"
+
+        if not extract_fields:
+            return OcrResult(
+                raw_text=raw_text,
+                document_type=DocumentType.GENERAL,
+                engine_used=engine_used,  # type: ignore[arg-type]
+                overall_confidence=overall_conf,
+                page_count=len(pages),
+            )
 
         doc_type = self._classifier.classify(raw_text)
         extractor = get_extractor(doc_type, provider=provider)
@@ -270,8 +290,10 @@ class OcrEngine:
         img: Any,
         *,
         provider: Any = None,
+        vision_fallback: bool = True,
     ) -> tuple[str, float, str]:
         """Run OCR on a single page image. Returns (text, confidence, engine_name)."""
+        low_conf: tuple[str, float, str] = ("", 0.0, "tesseract")
         try:
             import pytesseract
 
@@ -300,13 +322,14 @@ class OcrEngine:
             confs = [c for c in data.get("conf", []) if isinstance(c, (int, float)) and c >= 0]
             avg_conf = (sum(confs) / len(confs) / 100.0) if confs else 0.0
 
+            text = " ".join(
+                t
+                for t, c in zip(data.get("text", []), data.get("conf", []), strict=False)
+                if isinstance(c, (int, float)) and c >= 0 and t.strip()
+            )
             if avg_conf >= CONFIDENCE_THRESHOLD:
-                text = " ".join(
-                    t
-                    for t, c in zip(data.get("text", []), data.get("conf", []), strict=False)
-                    if isinstance(c, (int, float)) and c >= 0 and t.strip()
-                )
                 return text, avg_conf, "tesseract"
+            low_conf = (text, avg_conf, "tesseract")
 
             _log.debug("Tesseract confidence %.2f below threshold; using LLM vision", avg_conf)
         except ImportError:
@@ -314,6 +337,8 @@ class OcrEngine:
         except Exception as exc:
             _log.warning("Tesseract failed: %s; using LLM vision fallback", exc)
 
+        if not vision_fallback:
+            return low_conf
         return await self._llm_vision_ocr(img, provider=provider)
 
     async def _llm_vision_ocr(

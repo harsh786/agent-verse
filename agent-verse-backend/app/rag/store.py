@@ -35,9 +35,17 @@ SUPPORTED_EMBEDDING_DIMENSIONS = (768, 1024, 1536, 2048, 3072)
 _log = get_logger(__name__)
 
 
+class EmbeddingDimensionError(ValueError):
+    """An embedding width has no chunk table, or disagrees with a collection."""
+
+
 def _chunk_table(dimension: int) -> str:
     if dimension not in SUPPORTED_EMBEDDING_DIMENSIONS:
-        raise ValueError(f"Unsupported embedding dimension: {dimension}")
+        raise EmbeddingDimensionError(
+            f"Unsupported embedding dimension: {dimension} (supported: "
+            f"{', '.join(str(d) for d in SUPPORTED_EMBEDDING_DIMENSIONS)}); "
+            "configure an embedding model with a supported output dimension"
+        )
     return f"knowledge_chunks_{dimension}"
 
 
@@ -137,11 +145,20 @@ class KnowledgeStore:
     persisted mutations use explicit awaited transaction boundaries.
     """
 
-    def __init__(self, db_session_factory: Any = None) -> None:
+    def __init__(
+        self, db_session_factory: Any = None, *, embedding_dim: int | None = None
+    ) -> None:
         # Key: (tenant_id, collection_id) → _CollectionStore
         self._data: dict[tuple[str, str], _CollectionStore] = {}
         self._index_records: dict[tuple[str, str], list[RAGIndexRecord]] = {}
         self._db = db_session_factory
+        # The active embedder's REAL output width, when known. New collections are
+        # sized to it instead of the static settings.embedding_dim.
+        self._embedding_dim = embedding_dim
+
+    def set_embedding_dim(self, dimension: int | None) -> None:
+        """Bind the active embedder's real output dimension (None = unknown)."""
+        self._embedding_dim = dimension
 
     def create_collection(
         self, collection: KnowledgeCollection, *, tenant_ctx: TenantContext
@@ -183,12 +200,19 @@ class KnowledgeStore:
         from app.core.config import get_settings
         from app.db.rls import sqlalchemy_rls_context
 
-        # Size the collection's vector column to the CONFIGURED embedder, not a
-        # hardcoded 768 — the active embedder (e.g. NVIDIA nemotron @ 2048-d)
-        # must match or every chunk/query insert fails on a dimension mismatch.
-        dim = int(getattr(get_settings(), "embedding_dim", 768) or 768)
-        if dim not in SUPPORTED_EMBEDDING_DIMENSIONS:
-            dim = 768
+        # Size the collection to the ACTIVE embedder's real output width when it
+        # is known (e.g. all-mpnet-base-v2 → 768 even with EMBEDDING_DIM=2048);
+        # a known width with no chunk table is a clear error, not a collection
+        # that can never be written. Unknown → the configured embedding_dim.
+        # Existing collections are untouched (and an empty one still adopts the
+        # real width on its first write, see _persist_chunks).
+        if self._embedding_dim:
+            dim = int(self._embedding_dim)
+            _chunk_table(dim)  # raises EmbeddingDimensionError when unsupported
+        else:
+            dim = int(getattr(get_settings(), "embedding_dim", 768) or 768)
+            if dim not in SUPPORTED_EMBEDDING_DIMENSIONS:
+                dim = 768
         async with (
             self._db() as session,
             session.begin(),
@@ -2207,8 +2231,10 @@ class KnowledgeStore:
             stored_dimension = int(collection_row[0])
             chunk_count = int(collection_row[1])
             if chunk_count and stored_dimension != dimension:
-                raise ValueError(
-                    f"Collection {collection_id} uses {stored_dimension}-dimensional embeddings"
+                raise EmbeddingDimensionError(
+                    f"Collection {collection_id} uses {stored_dimension}-dimensional "
+                    f"embeddings but the active embedder produces {dimension}-dimensional "
+                    "vectors; re-embed the collection or use a new one"
                 )
             if not chunk_count and stored_dimension != dimension:
                 await session.execute(

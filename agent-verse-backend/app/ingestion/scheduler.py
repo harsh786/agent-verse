@@ -90,15 +90,18 @@ def _build_worker_ingestion() -> tuple[object, object, object]:
     from app.ingestion.pipeline import IngestionPipeline
     from app.ingestion.quota import IngestionQuotaEnforcer
     from app.ingestion.source_store import SourceConfigStore
-    from app.providers.embedder_factory import build_query_embedder
+    from app.providers.embedder_factory import resolve_embedder
     from app.rag.store import KnowledgeStore
 
     db_factory = get_session_factory()
     # The SAME embedder the API's retrieval embeds queries with — not the chat
     # LLM provider (resolve_provider()), whose vectors live in a different
     # model/space, so scheduled documents were unretrievable by similarity.
-    embedder = build_query_embedder()
-    knowledge_store = KnowledgeStore(db_factory)
+    # resolve_embedder applies the NVIDIA / on-prem embedding endpoint itself
+    # (create_app never runs in a worker) and logs any load failure loudly.
+    resolution = resolve_embedder()
+    embedder = resolution.embedder
+    knowledge_store = KnowledgeStore(db_factory, embedding_dim=resolution.dimension)
     # Stage 1 (quota) and Stage 6 (PII) were never wired here, so every
     # scheduled/DLQ-retried document skipped both.
     pipeline = IngestionPipeline(

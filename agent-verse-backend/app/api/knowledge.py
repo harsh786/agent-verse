@@ -63,7 +63,12 @@ from app.rag.contracts import (
 from app.rag.gateway import CollectionNotFoundError
 from app.rag.models import Chunk, Document, KnowledgeCollection
 from app.rag.semantic_cache import SemanticCache
-from app.rag.store import DuplicateContentError, EmbeddingProviderUnavailableError, KnowledgeStore
+from app.rag.store import (
+    DuplicateContentError,
+    EmbeddingDimensionError,
+    EmbeddingProviderUnavailableError,
+    KnowledgeStore,
+)
 from app.rag_platform.retriever import RAGRetriever, RAGSynthesisError
 from app.tenancy.context import TenantContext
 
@@ -345,7 +350,7 @@ def _fallback_embedding(dim: int = _EMBEDDING_DIM) -> list[float]:
         detail=(
             "Embedding provider not configured. "
             "Set one of: VOYAGE_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY "
-            "(cloud embeddings) or SENTENCE_TRANSFORMERS_MODEL=all-MiniLM-L6-v2 "
+            "(cloud embeddings) or SENTENCE_TRANSFORMERS_MODEL=all-mpnet-base-v2 "
             "(local CPU embeddings via sentence-transformers)."
         ),
     )
@@ -373,6 +378,8 @@ async def _persist_chunks_or_http(
         return []
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Knowledge collection not found") from exc
+    except EmbeddingDimensionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="Invalid knowledge ingestion payload") from exc
     except Exception as exc:
@@ -382,9 +389,22 @@ async def _persist_chunks_or_http(
         ) from exc
 
 
-async def _embed_texts_or_http(texts: list[str], embedder: Any) -> list[list[float]]:
+def _embedder_unavailable_detail(request: Request | None) -> str:
+    """'Embedding provider is unavailable' plus WHY (not configured / failed to load)."""
+    resolution = (
+        getattr(request.app.state, "embedder_resolution", None) if request is not None else None
+    )
+    reason = resolution.reason() if resolution is not None else ""
+    if reason:
+        return f"Embedding provider is unavailable: {reason}"
+    return "Embedding provider is unavailable"
+
+
+async def _embed_texts_or_http(
+    texts: list[str], embedder: Any, *, request: Request | None = None
+) -> list[list[float]]:
     if embedder is None:
-        raise HTTPException(status_code=503, detail="Embedding provider is unavailable")
+        raise HTTPException(status_code=503, detail=_embedder_unavailable_detail(request))
     from app.providers.base import embed_texts
 
     try:
@@ -493,6 +513,10 @@ async def create_collection(request: Request, body: CreateCollectionRequest) -> 
     )
     try:
         cid = await store.create_collection_async(collection, tenant_ctx=tenant_ctx)
+    except EmbeddingDimensionError as exc:
+        # The active embedder's width has no chunk table: a clear client-facing
+        # configuration error, not "persistence unavailable".
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         # A duplicate (tenant_id, name) is a client conflict, not a server outage —
         # return 409 rather than masking it as 503 "persistence unavailable".
@@ -575,6 +599,13 @@ async def delete_collection(request: Request, collection_id: str) -> None:
 async def ingest_document(request: Request, body: IngestRequest) -> dict[str, Any]:
     tenant_ctx: TenantContext = _require_tenant(request)
     store = _knowledge_store(request)
+    # Empty/whitespace content used to answer 201 with chunks_created 0 (and
+    # "deduplicated": true) — a success that indexed nothing.
+    if not body.content.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="content is empty or whitespace-only; nothing to ingest",
+        )
 
     # Verify collection exists.
     collection = await store.get_collection_async(body.collection_id, tenant_ctx=tenant_ctx)
@@ -625,12 +656,19 @@ async def ingest_document(request: Request, body: IngestRequest) -> dict[str, An
                 {"content": screened.strip(), "start_char": 0, "end_char": len(screened)},
             )()
         ]
+    if not chunks_text:
+        # Screening (e.g. PII redaction) left nothing to index — not a success.
+        raise HTTPException(
+            status_code=422,
+            detail="content has no indexable text after screening; nothing to ingest",
+        )
 
     chunks: list[Chunk] = []
     embedder = getattr(request.app.state, "embedder", None)
     embeddings = await _embed_texts_or_http(
         [text_chunk.content for text_chunk in chunks_text],
         embedder,
+        request=request,
     )
     for idx, text_chunk in enumerate(chunks_text):
         chunk_text = text_chunk.content
@@ -820,22 +858,34 @@ async def ingest_file(
     """Ingest a file into a knowledge collection.
 
     PDF (chunked per page, page citations), DOCX (paragraphs and tables), XLSX,
+    PPTX (slide text, tables and speaker notes), images (PNG/JPEG/WebP, via OCR),
     CSV/TSV, HTML, JSON/JSONL, YAML, Jupyter notebooks, e-mail (.eml), Markdown,
-    plain text and source code. Unsupported or unreadable files are refused
-    (415/422) instead of being indexed as garbage.
+    plain text and source code. The type comes from the filename extension, else
+    the part's MIME type. Unsupported or unreadable files are refused (415/422)
+    instead of being indexed as garbage; an image with no OCR engine or
+    vision-capable provider configured is a 503 (never a placeholder text).
     """
+    from app.ingestion.document_text import IMAGE_UPLOAD_EXTS
+
     tenant = _require_tenant(request)
     store = _knowledge_store(request)
     embedder = getattr(request.app.state, "embedder", None)
 
     content_bytes = await _read_upload_capped(file)
     filename = file.filename or "uploaded_file"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
+    ext = _upload_ext(filename, file.content_type)
     source_type = _upload_source_type(ext)
+    is_image = ext in IMAGE_UPLOAD_EXTS
 
     # (label, page_number, text) segments: a PDF keeps its pages so results can
-    # cite them; everything else is one segment.
-    segments, total_pages = _extract_upload_segments(content_bytes, ext=ext, filename=filename)
+    # cite them; everything else is one segment. Images are OCR'd after the
+    # dedup check below (OCR / vision calls are expensive).
+    segments: list[tuple[int | None, str]] = []
+    total_pages: int | None = None
+    if not is_image:
+        segments, total_pages = _extract_upload_segments(
+            content_bytes, ext=ext, filename=filename
+        )
 
     doc_hash = hashlib.sha256(content_bytes).hexdigest()
     if await _already_indexed_or_http(
@@ -849,6 +899,13 @@ async def ingest_file(
             "deduplicated": True,
             "document_id": None,
         }
+
+    ocr_engine_used = ""
+    if is_image:
+        image_text, ocr_engine_used = await _extract_image_text_or_http(
+            request, content_bytes, filename=filename
+        )
+        segments = [(None, image_text)]
 
     from app.knowledge.chunker_v2 import chunk_by_tokens as _chunk_by_tokens_file
 
@@ -868,7 +925,7 @@ async def ingest_file(
         raise HTTPException(422, "File is empty or could not be parsed")
 
     document_id = _uuid.uuid4().hex
-    embeddings = await _embed_texts_or_http([c for c, _, _ in pieces], embedder)
+    embeddings = await _embed_texts_or_http([c for c, _, _ in pieces], embedder, request=request)
     rag_chunks: list[Chunk] = []
     for idx, ((content, page, offset), embedding) in enumerate(
         zip(pieces, embeddings, strict=True)
@@ -883,6 +940,9 @@ async def ingest_file(
         if page is not None:
             metadata["page"] = str(page)
             metadata["total_pages"] = str(total_pages)
+        if ocr_engine_used:
+            metadata["ocr_used"] = "true"
+            metadata["ocr_engine"] = ocr_engine_used
         rag_chunks.append(
             Chunk(
                 document_id=document_id,
@@ -910,7 +970,41 @@ async def ingest_file(
     }
 
 
+def _upload_ext(filename: str, content_type: str | None) -> str:
+    """Upload type: the filename extension, else the MIME type, else ``txt``."""
+    if "." in filename:
+        return filename.rsplit(".", 1)[-1].lower()
+    from app.ingestion.document_text import UPLOAD_MIME_EXTS
+
+    mime = (content_type or "").split(";")[0].strip().lower()
+    return UPLOAD_MIME_EXTS.get(mime, "txt")
+
+
+async def _extract_image_text_or_http(
+    request: Request, content_bytes: bytes, *, filename: str
+) -> tuple[str, str]:
+    """OCR an uploaded image: 422 unreadable/textless, 503 no OCR/vision available."""
+    from app.ingestion.document_text import (
+        DocumentParseError,
+        ParserUnavailableError,
+        extract_image_text,
+    )
+
+    try:
+        return await extract_image_text(
+            content_bytes,
+            filename=filename,
+            vision_provider=getattr(request.app.state, "llm_provider", None),
+        )
+    except DocumentParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ParserUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 def _upload_source_type(ext: str) -> str:
+    if ext in {"png", "jpg", "jpeg", "webp"}:
+        return "image"
     if ext in {"py", "ts", "js", "jsx", "tsx", "go", "java", "rs", "rb", "c", "cpp", "cs"}:
         return "code"
     if ext in {"csv", "tsv", "xlsx", "xlsm"}:
@@ -975,7 +1069,9 @@ async def ingest_repository(request: Request, body: RepoIngestRequest) -> dict[s
     )
     if collection is None:
         raise HTTPException(status_code=404, detail="Knowledge collection not found")
-    await _embed_texts_or_http(["Repository ingestion readiness check"], embedder)
+    await _embed_texts_or_http(
+        ["Repository ingestion readiness check"], embedder, request=request
+    )
     try:
         await store.reconcile_stale_ingestion_jobs_async(
             tenant_ctx=tenant,
@@ -1443,7 +1539,9 @@ async def ingest_openapi(request: Request, body: OpenAPIIngestRequest) -> dict[s
 
     # One batched embed call instead of one provider round trip per endpoint.
     embeddings = (
-        await _embed_texts_or_http([t for _, t in endpoint_texts], embedder)
+        await _embed_texts_or_http(
+            [t for _, t in endpoint_texts], embedder, request=request
+        )
         if endpoint_texts
         else []
     )
@@ -1617,7 +1715,9 @@ async def ingest_from_url(request: Request, body: UrlIngestRequest) -> dict[str,
     kept = [(idx, chunk) for idx, chunk in enumerate(chunks) if chunk.content.strip()]
     # One batched embed call instead of one provider round trip per chunk.
     embeddings = (
-        await _embed_texts_or_http([chunk.content for _, chunk in kept], embedder)
+        await _embed_texts_or_http(
+            [chunk.content for _, chunk in kept], embedder, request=request
+        )
         if kept
         else []
     )
@@ -1705,7 +1805,7 @@ async def _ingest_chunks_from_source(
             )
             for c in doc_chunks
         ]
-        embeddings = await _embed_texts_or_http(texts, embedder)
+        embeddings = await _embed_texts_or_http(texts, embedder, request=request)
         rag_chunks = [
             Chunk(
                 document_id=source_doc_id,
@@ -2752,7 +2852,7 @@ async def reingest_document(
     pieces = [p for p in chunk_by_tokens(content, max_tokens=512, overlap_tokens=64) if p.strip()]
     pieces = pieces or [content.strip()]
     embedder = getattr(request.app.state, "embedder", None)
-    embeddings = await _embed_texts_or_http(pieces, embedder)
+    embeddings = await _embed_texts_or_http(pieces, embedder, request=request)
     new_id = _uuid.uuid4().hex
     chunks = [
         RagChunk(

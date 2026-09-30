@@ -2713,49 +2713,20 @@ def run_goal(
             except Exception as _p3cv_exc:
                 logger.debug("phase3_consensus_unavailable: %s", _p3cv_exc)
 
-            # Build embedder for pgvector LTM recall (same priority as main.py)
+            # Build embedder for pgvector LTM recall + RAG: the SAME shared
+            # selection the API uses (embedder_factory), so goal-time query
+            # vectors live in the same space as the documents they search. This
+            # used to re-implement the priority (Voyage before the dedicated
+            # endpoint, no NVIDIA/on-prem, no local model) and diverge from it.
             _embedder_for_graph = None
             try:
-                from app.core.config import get_provider_env as _gpe
+                from app.providers.embedder_factory import (
+                    build_query_embedder as _build_query_embedder,
+                )
 
-                _v_key = _gpe("VOYAGE_API_KEY")
-                _o_key = _gpe("OPENAI_API_KEY")
-                # Prefer a dedicated embedding endpoint (EMBEDDING_BASE_URL/MODEL),
-                # e.g. a self-hosted Qwen3-Embedding on vLLM. Without base_url the
-                # embedder hit the official OpenAI API with sk-noauth and 401'd
-                # during LTM/RAG recall, failing the goal step.
-                _embed_base_url = os.getenv("EMBEDDING_BASE_URL", "")
-                _embed_model = os.getenv("EMBEDDING_MODEL", "")
-                if _v_key:
-                    from app.providers.voyage_provider import VoyageProvider
-
-                    _embedder_for_graph = VoyageProvider(api_key=_v_key)
-                elif _embed_base_url:
-                    from app.providers.openai_compatible import OpenAICompatibleProvider
-
-                    _embedder_for_graph = OpenAICompatibleProvider(
-                        api_key=os.getenv("EMBEDDING_API_KEY", "") or _o_key or "sk-noauth",
-                        base_url=_embed_base_url,
-                        default_model=_embed_model or "text-embedding-3-small",
-                        embed_model=_embed_model or "text-embedding-3-small",
-                    )
-                elif _o_key:
-                    # Honour OPENAI_BASE_URL when set so a self-hosted chat+embed
-                    # endpoint is never bypassed for the official OpenAI API.
-                    from app.providers.model_defaults import configured_embed_model
-                    from app.providers.openai_compatible import OpenAICompatibleProvider
-
-                    _embed_model_name = configured_embed_model("text-embedding-3-small")
-                    _embedder_for_graph = OpenAICompatibleProvider(
-                        api_key=_o_key,
-                        base_url=os.getenv("EMBEDDING_BASE_URL")
-                        or os.getenv("OPENAI_BASE_URL")
-                        or None,
-                        default_model=_embed_model_name,
-                        embed_model=_embed_model_name,
-                    )
+                _embedder_for_graph = _build_query_embedder()
             except Exception as _emb_exc:
-                logger.warning("worker_embedder_build_failed: %s", _emb_exc)
+                logger.error("worker_embedder_build_failed: %s", _emb_exc)
 
             # Wire KnowledgeStore so RAG context is retrieved before planning.
             # Without this, the rag_retrieval node is a no-op in the worker.

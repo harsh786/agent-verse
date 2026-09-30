@@ -66,7 +66,7 @@ def client(app: FastAPI) -> TestClient:
 def _mocks():
     mock = AsyncMock(return_value=_FIXTURE_RESULT)
 
-    async def _fake_embed(texts, embedder):
+    async def _fake_embed(texts, embedder, **_kw):
         return [[0.1] * 768 for _ in texts]
 
     with (

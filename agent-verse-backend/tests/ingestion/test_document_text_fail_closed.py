@@ -219,7 +219,9 @@ def test_xlsx_rows_and_docx_tables_are_extracted() -> None:
 @pytest.mark.parametrize(
     ("ext", "data", "code"),
     [
-        ("pptx", b"PK\x03\x04 slides", 415),
+        # .pptx is parsed now: a corrupt deck is unreadable (422); legacy .ppt is 415.
+        ("pptx", b"PK\x03\x04 slides", 422),
+        ("ppt", b"\xd0\xcf\x11\xe0 legacy slides", 415),
         ("xls", b"\xd0\xcf\x11\xe0 legacy", 415),
         ("xlsx", b"PK\x03\x04 not a workbook", 422),
         ("txt", b"", 422),

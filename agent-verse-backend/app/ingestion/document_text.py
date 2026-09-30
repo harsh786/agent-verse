@@ -1,4 +1,4 @@
-"""Text extraction for binary documents (PDF, DOCX) — one fail-closed path.
+"""Text extraction for binary documents (PDF, DOCX, PPTX, images) — one fail-closed path.
 
 Every upload path used to "degrade" when a parser was missing or failed: the
 raw bytes were decoded as UTF-8 (so a PDF was indexed as ``%PDF-1.3 … endobj``)
@@ -10,6 +10,7 @@ healthy. These helpers either return the document's real text or raise.
 from __future__ import annotations
 
 import io
+from typing import Any
 
 
 class DocumentParseError(ValueError):
@@ -107,8 +108,145 @@ class UnsupportedDocumentError(ValueError):
 
 # Known binary office/e-book formats with no extractor installed.
 _UNSUPPORTED_BINARY_EXTS = frozenset(
-    {"doc", "xls", "ppt", "pptx", "odt", "ods", "odp", "rtf", "epub", "pages", "numbers", "key"}
+    {"doc", "xls", "odt", "ods", "odp", "rtf", "epub", "pages", "numbers", "key"}
 )
+
+# Images accepted by the upload path; their text comes from OCR (async, see
+# extract_image_text), never from extract_upload_text.
+IMAGE_UPLOAD_EXTS = frozenset({"png", "jpg", "jpeg", "webp"})
+
+# MIME → extension, for uploads whose filename carries no extension.
+UPLOAD_MIME_EXTS: dict[str, str] = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+}
+
+
+class OcrUnavailableError(ParserUnavailableError):
+    """No OCR engine (Tesseract) and no vision-capable provider is configured."""
+
+
+def extract_pptx_text(data: bytes, *, filename: str = "slides.pptx") -> str:
+    """Slide text (titles, text boxes, tables, grouped shapes) and speaker notes."""
+    try:
+        from pptx import Presentation
+    except ImportError as exc:  # pragma: no cover - python-pptx is a core dependency
+        raise ParserUnavailableError("PPTX parsing requires python-pptx") from exc
+    try:
+        prs = Presentation(io.BytesIO(data))
+    except Exception as exc:  # python-pptx raises several unrelated types
+        raise DocumentParseError(f"{filename}: not a readable .pptx ({exc})") from exc
+    blocks: list[str] = []
+    for number, slide in enumerate(prs.slides, start=1):
+        lines = [line for shape in slide.shapes for line in _pptx_shape_lines(shape)]
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame
+            if notes is not None and notes.text.strip():
+                lines.append(f"Notes: {notes.text.strip()}")
+        if lines:
+            blocks.append(f"Slide {number}:\n" + "\n".join(lines))
+    text = "\n\n".join(blocks)
+    if not text.strip():
+        raise DocumentParseError(f"{filename}: the presentation has no text")
+    return text
+
+
+def _pptx_shape_lines(shape: Any) -> list[str]:
+    from pptx.shapes.group import GroupShape
+
+    lines: list[str] = []
+    if isinstance(shape, GroupShape):
+        for child in shape.shapes:
+            lines.extend(_pptx_shape_lines(child))
+        return lines
+    if getattr(shape, "has_table", False):
+        rows = [[cell.text.strip() for cell in row.cells] for row in shape.table.rows]
+        lines.extend(" | ".join(c for c in row if c) for row in rows if any(row))
+        return lines
+    if getattr(shape, "has_text_frame", False):
+        text = shape.text_frame.text.strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def tesseract_available() -> bool:
+    """True when pytesseract AND the tesseract binary are usable on this host."""
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+    except Exception:
+        return False
+    return True
+
+
+def is_vision_provider(provider: Any) -> bool:
+    """A real provider that says it accepts images (never the canned FakeProvider)."""
+    if provider is None:
+        return False
+    from app.providers.fake import FakeProvider
+
+    if isinstance(provider, FakeProvider):
+        return False
+    supports = getattr(provider, "supports_vision", None)
+    try:
+        return bool(callable(supports) and supports())
+    except Exception:
+        return False
+
+
+async def extract_image_text(
+    data: bytes,
+    *,
+    filename: str,
+    vision_provider: Any = None,
+    ocr_engine: Any = None,
+) -> tuple[str, str]:
+    """OCR an image with the existing OcrEngine; return ``(text, engine_used)``.
+
+    Raises DocumentParseError (unreadable image, or no text found) or
+    OcrUnavailableError when neither Tesseract nor a vision-capable provider is
+    available — never a placeholder string posing as document text.
+    """
+    try:
+        from PIL import Image
+
+        with Image.open(io.BytesIO(data)) as probe:
+            probe.verify()
+    except ImportError as exc:  # pragma: no cover - Pillow is a core dependency
+        raise ParserUnavailableError("Image ingestion requires Pillow") from exc
+    except Exception as exc:
+        raise DocumentParseError(f"{filename}: not a readable image ({exc})") from exc
+
+    has_vision = is_vision_provider(vision_provider)
+    if not has_vision and not tesseract_available():
+        raise OcrUnavailableError(
+            f"{filename}: image ingestion needs OCR, but no OCR engine is available: "
+            "install Tesseract (the tesseract binary plus the 'ocr' extra) or configure "
+            "a vision-capable model provider"
+        )
+    if ocr_engine is None:
+        from app.ocr.engine import OcrEngine
+
+        ocr_engine = OcrEngine()
+    result = await ocr_engine.extract(
+        image_bytes=data,
+        provider=vision_provider if has_vision else None,
+        extract_fields=False,
+        vision_fallback=has_vision,
+    )
+    text = (getattr(result, "raw_text", "") or "").strip()
+    if not text:
+        raise DocumentParseError(f"{filename}: no text could be extracted from the image")
+    return text, str(getattr(result, "engine_used", "") or "")
 
 
 def decode_text(data: bytes) -> str:
@@ -135,9 +273,21 @@ def extract_upload_text(data: bytes, *, ext: str, filename: str) -> str:
         return "\n".join(extract_pdf_pages(data, filename=filename))
     if ext == "docx":
         return extract_docx_text(data, filename=filename)
+    if ext == "pptx":
+        return extract_pptx_text(data, filename=filename)
+    if ext == "ppt":
+        raise UnsupportedDocumentError(
+            f"{filename}: legacy binary .ppt files are not supported; "
+            "save the presentation as .pptx (or PDF) and upload that"
+        )
+    if ext in IMAGE_UPLOAD_EXTS:
+        raise UnsupportedDocumentError(
+            f"{filename}: images are OCR'd by the upload endpoint, not text extraction"
+        )
     if ext in _UNSUPPORTED_BINARY_EXTS:
         raise UnsupportedDocumentError(
-            f"{filename}: .{ext} files are not supported; convert to PDF, DOCX, XLSX or text"
+            f"{filename}: .{ext} files are not supported; "
+            "convert to PDF, DOCX, XLSX, PPTX or text"
         )
     if ext in {"xlsx", "xlsm"}:
         from app.ingestion.parsers.excel_parser import ExcelParser
