@@ -194,20 +194,32 @@ async def judge_case(
     task_input: str,
     expected: str,
     actual: str,
+    tenant_ctx: Any = None,
+    goal_id: str | None = None,
 ) -> dict[str, Any]:
-    """LLM-as-judge one case. Returns {scores, score, reasoning} or {error}."""
+    """LLM-as-judge one case. Returns {scores, score, reasoning} or {error}.
+
+    The call is charged to the tenant running the dataset, bounded by the
+    decision timeout and the per-model circuit breaker; a budget refusal is a
+    judge error (nothing was spent).
+    """
     from app.providers.base import CompletionRequest, Message
+    from app.providers.guarded_completion import complete_decision
 
     dims: list[str] = list(judge.get("evaluation_dimensions") or DEFAULT_JUDGE_DIMENSIONS)
     prompt = _render_judge_prompt(judge, task_input=task_input, expected=expected, actual=actual)
     try:
-        resp = await provider.complete(
+        resp = await complete_decision(
+            provider,
             CompletionRequest(
                 messages=[Message(role="user", content=prompt)],
                 model=str(judge.get("model") or getattr(provider, "_default_model", "") or ""),
                 max_tokens=400,
                 json_object=True,
-            )
+            ),
+            role="ai_ops_judge",
+            tenant_ctx=tenant_ctx,
+            goal_id=goal_id,
         )
         match = re.search(r"\{.*\}", str(resp.content), re.DOTALL)
         if match is None:
@@ -286,6 +298,8 @@ async def run_dataset(
                 task_input=task_input,
                 expected=expected,
                 actual=actual,
+                tenant_ctx=tenant_ctx,
+                goal_id=exec_res["goal_id"],
             )
             if "error" in verdict:
                 case.update(status="judge_error", score=0.0, passed=False, error=verdict["error"])

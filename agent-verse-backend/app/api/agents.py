@@ -773,7 +773,15 @@ async def create_agent_nl(request: Request, body: MetaAgentCreateRequest) -> dic
     store = _agent_store(request)
     planner = _meta_agent(request)
 
-    config = await planner.plan(command=body.command, tenant_ctx=tenant_ctx)
+    from app.providers.guarded_completion import DecisionBudgetExceededError
+
+    try:
+        config = await planner.plan(command=body.command, tenant_ctx=tenant_ctx)
+    except DecisionBudgetExceededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"LLM budget exhausted — cannot design the agent: {exc}",
+        ) from exc
     generated_by = str(getattr(config, "generated_by", "llm") or "llm")
 
     # The planner could not reach/parse the LLM and fell back to a name-and-

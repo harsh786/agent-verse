@@ -14,7 +14,6 @@ The result is used by POST /agents/create to bootstrap a live agent.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import re
@@ -166,11 +165,24 @@ class MetaAgentPlanner:
             ],
             model="",
         )
+        from app.providers.guarded_completion import (
+            DecisionBudgetExceededError,
+            complete_decision,
+        )
+
         try:
-            resp = await asyncio.wait_for(
-                self._provider.complete(req),
-                timeout=self._timeout_seconds,
+            # Charged to the caller's tenant, circuit-broken and bounded; a
+            # budget refusal propagates (the API answers 429) rather than
+            # being dressed up as a heuristic draft.
+            resp = await complete_decision(
+                self._provider,
+                req,
+                role="meta_agent",
+                tenant_ctx=tenant_ctx,
+                timeout_seconds=self._timeout_seconds,
             )
+        except DecisionBudgetExceededError:
+            raise
         except Exception as exc:
             reason = (
                 f"provider timed out after {self._timeout_seconds:g}s"
