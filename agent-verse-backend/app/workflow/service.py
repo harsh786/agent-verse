@@ -27,6 +27,43 @@ _log = structlog.get_logger(__name__)
 _TERMINAL_STATUSES = {"complete", "failed", "cancelled", "timed_out"}
 
 
+_STEP_EVENTS = {
+    "running": "step_started",
+    "complete": "step_completed",
+    "failed": "step_failed",
+    "skipped": "step_skipped",
+}
+
+
+def _step_event(step: dict[str, Any], status: str) -> dict[str, Any]:
+    event: dict[str, Any] = {
+        "event": _STEP_EVENTS.get(status, "step_status"),
+        "step_id": step.get("step_id"),
+        "step_type": step.get("step_type"),
+        "status": status,
+    }
+    if status == "failed" and step.get("error"):
+        event["error"] = step["error"]
+    output = step.get("output")
+    if status == "complete" and isinstance(output, dict):
+        event["output_keys"] = sorted(output)
+    return event
+
+
+def _terminal_event(run: dict[str, Any]) -> dict[str, Any]:
+    status = str(run.get("status") or "")
+    if status == "complete":
+        return {"event": "run_completed", "status": status, "outputs": run.get("outputs") or {}}
+    if status == "cancelled":
+        return {"event": "run_cancelled", "status": status}
+    return {
+        "event": "run_failed",
+        "status": status,
+        "error": run.get("error"),
+        "error_step_id": run.get("error_step_id"),
+    }
+
+
 def publish_problems(definition: dict[str, Any]) -> list[str]:
     """Reasons a definition must not be published (empty = publishable).
 
@@ -507,25 +544,79 @@ class WorkflowService:
         }
 
     async def stream_run_events(
-        self, tenant_id: str, run_id: str
+        self,
+        tenant_id: str,
+        run_id: str,
+        *,
+        poll_interval: float = 1.0,
+        heartbeat_interval: float = 15.0,
+        max_duration: float = 3600.0,
     ) -> Any:
-        """Minimal terminal-state SSE stream: emits step results then a final event."""
+        """Live run event stream, read from the persisted run (any replica).
+
+        Polls the run row and its step rows and emits what changed:
+        ``step_started`` / ``step_completed`` / ``step_failed`` / ``step_skipped``
+        / ``step_status``, ``run_status`` on every run-status change,
+        ``run_waiting`` when it waits for a human or timer, ``heartbeat`` when
+        quiet, and ends only on a terminal status with ``run_completed`` /
+        ``run_failed`` / ``run_cancelled`` (or ``stream_timeout`` after
+        ``max_duration`` — the client reconnects).
+
+        Old bug: a one-shot snapshot that ended with ``run_failed`` for every
+        non-terminal run, so a UI watching a running or waiting run showed it as
+        failed.
+        """
+        import asyncio
+        import time
+
         run = await self.get_run(tenant_id, run_id) if self._run_store else None
         if run is None:
-            yield {"event": "run_failed", "status": "failed", "error": "run not found"}
+            yield {"event": "run_not_found", "error": "run not found"}
             return
-        for step in await self.list_step_results(tenant_id, run_id):
-            yield {
-                "event": "step_completed",
-                "step_id": step["step_id"],
-                "status": step.get("status"),
-            }
-        terminal = run.get("status") in _TERMINAL_STATUSES
-        yield {
-            "event": "run_completed" if terminal else "run_failed",
-            "status": run.get("status"),
-            "outputs": run.get("outputs", {}),
-        }
+
+        started = last_emit = time.monotonic()
+        seen_steps: dict[str, str] = {}
+        last_status: str | None = None
+        while True:
+            events: list[dict[str, Any]] = []
+            for step in await self.list_step_results(tenant_id, run_id):
+                key = f"{step.get('step_id')}@{step.get('started_at') or ''}"
+                status = str(step.get("status") or "")
+                if seen_steps.get(key) == status:
+                    continue
+                seen_steps[key] = status
+                events.append(_step_event(step, status))
+
+            status = str(run.get("status") or "")
+            if status != last_status:
+                last_status = status
+                events.append({"event": "run_status", "status": status})
+                if status in ("waiting_hitl", "waiting_timer"):
+                    events.append({"event": "run_waiting", "status": status})
+            terminal = _terminal_event(run) if status in _TERMINAL_STATUSES else None
+            if terminal is not None:
+                events.append(terminal)
+
+            now = time.monotonic()
+            if events:
+                last_emit = now
+                for event in events:
+                    yield event
+            elif now - last_emit >= heartbeat_interval:
+                last_emit = now
+                yield {"event": "heartbeat", "status": status}
+            if terminal is not None:
+                return
+            if now - started >= max_duration:
+                yield {"event": "stream_timeout", "status": status}
+                return
+
+            await asyncio.sleep(poll_interval)
+            refreshed = await self.get_run(tenant_id, run_id)
+            if refreshed is None:
+                yield {"event": "run_not_found", "error": "run not found"}
+                return
+            run = refreshed
 
     # ── Marketplace ───────────────────────────────────────────────────────────
 

@@ -64,8 +64,9 @@ describe('useRunSSE', () => {
 
     const { result } = renderHook(() => useRunSSE({ runId: 'run-42' }));
 
-    await waitFor(() => expect(result.current.isConnected).toBe(true));
+    // (isConnected drops back to false as soon as this short stream closes.)
     await waitFor(() => expect(result.current.events).toHaveLength(2));
+    expect(result.current.error).toBeNull();
     expect(result.current.events[0].event).toBe('step_started');
     expect(result.current.lastEvent?.event).toBe('step_finished');
     expect(String(spy.mock.calls[0][0])).toContain('/api/v1/runs/run-42/stream');
@@ -112,5 +113,57 @@ describe('useRunSSE', () => {
 
     act(() => result.current.clearEvents());
     expect(result.current.events).toEqual([]);
+  });
+
+  // WF-06: a waiting run is watched until it finishes, never reported failed.
+  test('reconnects when the stream closes before the run is terminal', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        streamResponse([
+          dataFrame({ event: 'run_status', status: 'waiting_hitl' }),
+          dataFrame({ event: 'run_waiting', status: 'waiting_hitl' }),
+          dataFrame({ event: 'heartbeat', status: 'waiting_hitl' }),
+          dataFrame({ event: 'stream_timeout', status: 'waiting_hitl' }),
+          'data: [DONE]\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(
+        streamResponse([
+          dataFrame({ event: 'run_status', status: 'complete' }),
+          dataFrame({ event: 'run_completed', status: 'complete', outputs: {} }),
+          'data: [DONE]\n\n',
+        ]),
+      );
+
+    const { result } = renderHook(() => useRunSSE({ runId: 'run-w', reconnectDelayMs: 10 }));
+
+    await waitFor(() => expect(result.current.isTerminal).toBe(true));
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe('complete');
+    const names = result.current.events.map((e) => e.event);
+    expect(names).not.toContain('run_failed');
+    expect(names).not.toContain('heartbeat');
+    expect(names).toContain('run_waiting');
+    expect(result.current.error).toBeNull();
+  });
+
+  test('does not reconnect after a terminal event or a 4xx', async () => {
+    const spy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        streamResponse([dataFrame({ event: 'run_failed', status: 'failed', error: 'x' })]),
+      );
+    const { result } = renderHook(() => useRunSSE({ runId: 'run-f', reconnectDelayMs: 10 }));
+    await waitFor(() => expect(result.current.isTerminal).toBe(true));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    spy.mockReset();
+    spy.mockResolvedValue(streamResponse([], 404));
+    const { result: gone } = renderHook(() => useRunSSE({ runId: 'run-x', reconnectDelayMs: 10 }));
+    await waitFor(() => expect(gone.current.error).toBe('SSE failed: 404'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });

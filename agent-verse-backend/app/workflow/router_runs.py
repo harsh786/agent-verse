@@ -267,25 +267,38 @@ async def debug_run(run_id: str, request: Request) -> Any:
 
 @router.get("/{run_id}/stream", dependencies=_RUN_VIEW)
 async def stream_run(run_id: str, request: Request) -> StreamingResponse:
-    """Server-Sent Events stream for a workflow run.
+    """Live Server-Sent Events stream for a workflow run (read from the DB).
 
     Emits events:
-      data: {"event": "step_started", "step_id": "...", "type": "..."}
-      data: {"event": "step_completed", "step_id": "...", "output_keys": [...]}
-      data: {"event": "step_failed", "step_id": "...", "error": "..."}
-      data: {"event": "run_completed", "status": "success", "outputs": {...}}
-      data: {"event": "run_failed", "status": "failed", "error": "..."}
+      data: {"event": "step_started" | "step_completed" | "step_failed" | ..., "step_id": ...}
+      data: {"event": "run_status", "status": "..."}          (every status change)
+      data: {"event": "run_waiting", "status": "waiting_hitl"} (waiting on a human/timer)
+      data: {"event": "heartbeat"}                             (while quiet)
+      data: {"event": "run_completed" | "run_failed" | "run_cancelled", ...}  (terminal)
+      data: {"event": "stream_timeout"}                        (reconnect to continue)
       data: [DONE]
+
+    The stream stays open until the run is terminal; a stream that closes
+    without a terminal event does not mean the run failed.
     """
     svc = _svc(request)
     tenant_id = _tenant_id(request)
+    final_events = {
+        "run_completed",
+        "run_failed",
+        "run_cancelled",
+        "run_not_found",
+        "stream_timeout",
+    }
 
     async def event_generator() -> AsyncGenerator[str, None]:
         import json as _json
 
         async for event in svc.stream_run_events(tenant_id=tenant_id, run_id=run_id):
-            yield f"data: {_json.dumps(event)}\n\n"
-            if event.get("event") in ("run_completed", "run_failed"):
+            if await request.is_disconnected():
+                return
+            yield f"data: {_json.dumps(event, default=str)}\n\n"
+            if event.get("event") in final_events:
                 break
         yield "data: [DONE]\n\n"
 
